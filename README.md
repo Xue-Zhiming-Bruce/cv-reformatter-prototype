@@ -1,6 +1,6 @@
 # CV Reformatter MVP
 
-Local prototype for turning a candidate's DOCX resume into validated candidate profile JSON, flagging missing recruiter-critical information, and saving debug artifacts.
+Prototype for a CV reformat SaaS product. This local MVP turns a candidate's DOCX resume into validated candidate profile JSON, flags missing recruiter-critical information, and saves debug artifacts.
 
 This first milestone intentionally implements only:
 
