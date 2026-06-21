@@ -1,0 +1,18 @@
+.env
+.venv/
+.venv-*/
+.test_deps/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+
+# Local candidate data and generated artifacts may contain personal data.
+data/input_samples/*
+data/output_samples/*
+data/generated_outputs/*
+!data/input_samples/.gitkeep
+!data/output_samples/.gitkeep
+!data/generated_outputs/.gitkeep
