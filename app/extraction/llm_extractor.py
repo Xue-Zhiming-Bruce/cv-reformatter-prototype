@@ -15,6 +15,10 @@ class LLMExtractionError(RuntimeError):
     """Raised when an LLM response cannot be converted to a profile."""
 
 
+class LLMConfigurationError(RuntimeError):
+    """Raised when an LLM provider is selected but not configured."""
+
+
 class LLMClient(ABC):
     @abstractmethod
     def complete_json(self, system_prompt: str, user_prompt: str) -> str:
@@ -22,10 +26,16 @@ class LLMClient(ABC):
 
 
 class OpenAILLMClient(LLMClient):
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(self, model: str | None = None, api_key: str | None = None) -> None:
         from openai import OpenAI
 
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not resolved_api_key:
+            raise LLMConfigurationError(
+                "OpenAI is selected but no API key is configured. "
+                "Set OPENAI_API_KEY or a stage-specific key such as OPENAI_EXTRACT_API_KEY."
+            )
+        self.client = OpenAI(api_key=resolved_api_key)
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
     def complete_json(self, system_prompt: str, user_prompt: str) -> str:
@@ -44,10 +54,16 @@ class OpenAILLMClient(LLMClient):
 
 
 class AnthropicLLMClient(LLMClient):
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(self, model: str | None = None, api_key: str | None = None) -> None:
         from anthropic import Anthropic
 
-        self.client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        resolved_api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        if not resolved_api_key:
+            raise LLMConfigurationError(
+                "Anthropic is selected but no API key is configured. "
+                "Set ANTHROPIC_API_KEY or a stage-specific key such as ANTHROPIC_EXTRACT_API_KEY."
+            )
+        self.client = Anthropic(api_key=resolved_api_key)
         self.model = model or os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
 
     def complete_json(self, system_prompt: str, user_prompt: str) -> str:
@@ -91,15 +107,28 @@ class MockLLMClient(LLMClient):
         return json.dumps(profile)
 
 
-def build_llm_client(provider: str | None = None) -> LLMClient:
+def build_llm_client(provider: str | None = None, stage: str = "extract") -> LLMClient:
     provider_name = (provider or os.getenv("LLM_PROVIDER") or "openai").lower()
     if provider_name == "openai":
-        return OpenAILLMClient()
+        return OpenAILLMClient(
+            api_key=_stage_env_value("OPENAI", stage, "API_KEY"),
+            model=_stage_env_value("OPENAI", stage, "MODEL"),
+        )
     if provider_name == "anthropic":
-        return AnthropicLLMClient()
+        return AnthropicLLMClient(
+            api_key=_stage_env_value("ANTHROPIC", stage, "API_KEY"),
+            model=_stage_env_value("ANTHROPIC", stage, "MODEL"),
+        )
     if provider_name == "mock":
         return MockLLMClient()
     raise ValueError(f"Unsupported LLM_PROVIDER: {provider_name}")
+
+
+def _stage_env_value(provider_prefix: str, stage: str, setting: str) -> str | None:
+    normalized_stage = stage.upper().replace("-", "_")
+    return os.getenv(f"{provider_prefix}_{normalized_stage}_{setting}") or os.getenv(
+        f"{provider_prefix}_{setting}"
+    )
 
 
 def extract_candidate_profile(

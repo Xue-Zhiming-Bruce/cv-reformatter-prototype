@@ -10,6 +10,7 @@ except ModuleNotFoundError:
         return False
 
 from app.ingestion.docx_reader import read_docx
+from app.ingestion.pdf_reader import read_pdf_text
 from app.extraction.llm_extractor import MockLLMClient, build_llm_client, extract_candidate_profile
 from app.validation.followup_message_generator import generate_followup_message
 
@@ -21,8 +22,8 @@ OUTPUT_DIR = PROJECT_ROOT / "data" / "generated_outputs"
 
 def main() -> None:
     load_dotenv()
-    parser = argparse.ArgumentParser(description="Run the DOCX extraction milestone demo.")
-    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT, help="Path to a synthetic DOCX resume.")
+    parser = argparse.ArgumentParser(description="Run the resume extraction milestone demo.")
+    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT, help="Path to a synthetic DOCX or PDF resume.")
     parser.add_argument("--mock", action="store_true", help="Use deterministic mock extraction instead of a real LLM.")
     parser.add_argument("--job-description", type=str, default=None, help="Optional job description text.")
     args = parser.parse_args()
@@ -31,13 +32,13 @@ def main() -> None:
     if resume_path == DEFAULT_INPUT and not resume_path.exists():
         create_synthetic_resume(resume_path)
 
-    content = read_docx(resume_path)
+    resume_text = read_resume_text(resume_path)
     llm_client = MockLLMClient() if args.mock else build_llm_client()
-    profile = extract_candidate_profile(content.plain_text, llm_client, args.job_description)
+    profile = extract_candidate_profile(resume_text, llm_client, args.job_description)
     followup_message = generate_followup_message(profile)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUTPUT_DIR / "raw_extracted_text.txt").write_text(content.plain_text, encoding="utf-8")
+    (OUTPUT_DIR / "raw_extracted_text.txt").write_text(resume_text, encoding="utf-8")
     (OUTPUT_DIR / "candidate_profile.json").write_text(
         json.dumps(profile.model_dump(mode="json"), indent=2),
         encoding="utf-8",
@@ -52,6 +53,12 @@ def main() -> None:
     print(f"Candidate: {profile.full_name or 'Unknown'}")
     print(f"Missing fields: {', '.join(field.label for field in profile.missing_fields) or 'None'}")
     print(f"Artifacts: {OUTPUT_DIR}")
+
+
+def read_resume_text(path: Path) -> str:
+    if path.suffix.lower() == ".pdf":
+        return read_pdf_text(path)
+    return read_docx(path).plain_text
 
 
 def create_synthetic_resume(path: Path) -> None:
