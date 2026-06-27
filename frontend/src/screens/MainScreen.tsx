@@ -8,9 +8,12 @@ const SAVED_FORMATS = ["Apex Standard", "Blind", "English"]
 
 type MainScreenProps = {
   onConvert: (resumeFile: File) => void
+  isLoading: boolean
+  error: string | null
+  onDismissError: () => void
 }
 
-export function MainScreen({ onConvert }: MainScreenProps) {
+export function MainScreen({ onConvert, isLoading, error, onDismissError }: MainScreenProps) {
   const [resumeFile, setResumeFile] = useState<File | null>(null)
   const [targetFile, setTargetFile] = useState<File | null>(null)
   const [selectedFormat, setSelectedFormat] = useState<string | null>(null)
@@ -67,15 +70,24 @@ export function MainScreen({ onConvert }: MainScreenProps) {
         ))}
       </section>
 
+      {error && (
+        <div className="error-banner" role="alert">
+          <span>{error}</span>
+          <button type="button" className="error-banner__dismiss" onClick={onDismissError} aria-label="Dismiss">
+            ×
+          </button>
+        </div>
+      )}
+
       <section className="convert-row">
         <button
           type="button"
           className="convert-button"
-          disabled={!resumeFile}
+          disabled={!resumeFile || isLoading}
           onClick={() => resumeFile && onConvert(resumeFile)}
         >
-          <PencilIcon />
-          Convert
+          {isLoading ? <span className="spinner" aria-hidden="true" /> : <PencilIcon />}
+          {isLoading ? "Converting…" : "Convert"}
         </button>
       </section>
 

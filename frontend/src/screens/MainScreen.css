@@ -79,6 +79,46 @@
   cursor: not-allowed;
 }
 
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 32px;
+  padding: 12px 16px;
+  border-radius: var(--radius-control);
+  background: #fff1f1;
+  border: 1px solid #fca5a5;
+  color: #b91c1c;
+  font-size: 14px;
+}
+
+.error-banner__dismiss {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+
 .lossless-footer {
   display: flex;
   align-items: center;
