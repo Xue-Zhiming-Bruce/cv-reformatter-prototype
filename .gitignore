@@ -8,6 +8,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .DS_Store
+*.egg-info/
 
 # Local candidate data and generated artifacts may contain personal data.
 data/input_samples/*
@@ -16,3 +17,6 @@ data/generated_outputs/*
 !data/input_samples/.gitkeep
 !data/output_samples/.gitkeep
 !data/generated_outputs/.gitkeep
+
+# Local dataset archives may contain resumes or personal data.
+tests/*.zip
