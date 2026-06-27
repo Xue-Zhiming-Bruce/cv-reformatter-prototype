@@ -1,0 +1,30 @@
+.app-card {
+  max-width: 880px;
+  margin: 48px auto;
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brand__icon {
+  color: var(--color-accent-green);
+}
+
+.brand__name {
+  font-size: 18px;
+  font-weight: 700;
+}
