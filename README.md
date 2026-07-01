@@ -8,9 +8,10 @@ This first milestone intentionally implements only:
 - Plain text, paragraph, and table extraction
 - LLM-driven `CandidateProfile` JSON validation
 - Missing-field detection
+- Backend generation from reviewed `CandidateProfile` JSON to DOCX/PDF
 - A CLI demo using either a mock extractor or a configured LLM provider
 
-PDF export, template rendering, and Streamlit review UI are scaffolded for later milestones.
+The frontend review/export flow is owned separately and should call the backend generation API.
 
 ## Current Status
 
@@ -24,11 +25,13 @@ Implemented:
 - Offline mock extractor for tests and demos
 - Missing-field detection
 - Draft follow-up message generation
+- Client-facing render context with disclosure and blind-profile behavior
+- Controlled MVP DOCX rendering
+- LibreOffice/`soffice` DOCX-to-PDF export
+- FastAPI generation and download endpoints
 
 Still scaffolded:
 
-- Client-ready DOCX template rendering
-- DOCX-to-PDF export
 - Streamlit upload/review/download UI
 
 ## Setup
@@ -63,9 +66,10 @@ For Anthropic, use the matching `ANTHROPIC_EXTRACT_API_KEY` and
 pytest
 ```
 
-Optional dataset integration tests run when `tests/archive.zip` is present
-locally. They extract sample resume PDFs from the zip and verify PDF text
-extraction. Do not commit real resume datasets or generated candidate outputs.
+Optional local dataset tests run when `tests/local_datasets/` contains local
+resume datasets. They verify DOCX dataset extraction/rendering and PDF text
+extraction. Do not commit real resume datasets, API keys, generated candidate
+outputs, or generated test reports.
 
 ## Run The Local Demo
 

@@ -84,19 +84,22 @@ class MockLLMClient(LLMClient):
 
     def complete_json(self, _system_prompt: str, user_prompt: str) -> str:
         resume_text = user_prompt.split("Resume text:", 1)[-1]
+        sections = _sections_by_heading(resume_text)
+        work_experience = _work_experience_from_sections(sections)
         profile: dict[str, Any] = {
             "full_name": _first_nonempty_line(resume_text),
             "email": _first_match(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", resume_text),
             "phone": _first_match(r"(?:\+?\d[\d\s().-]{7,}\d)", resume_text),
-            "location": _value_after_label("Location", resume_text),
+            "location": _value_after_label("Location", resume_text) or _value_after_label("Address", resume_text),
             "linkedin_url": _first_match(r"https?://(?:www\.)?linkedin\.com/[^\s)]+", resume_text),
             "portfolio_url": _first_match(r"https?://(?:github\.com|[\w.-]+\.[A-Za-z]{2,})/[^\s)]+", resume_text),
-            "professional_summary": _section_after_heading("Summary", resume_text),
-            "skills": _comma_section("Skills", resume_text),
-            "languages": [{"name": lang} for lang in _comma_section("Languages", resume_text)],
-            "work_experience": [],
-            "education": [],
-            "certifications": [],
+            "professional_summary": _section_text(sections, "professional_summary")
+            or _section_after_heading("Summary", resume_text),
+            "skills": _comma_section("Skills", resume_text) or _list_section(sections, "skills"),
+            "languages": [{"name": lang} for lang in (_comma_section("Languages", resume_text) or _list_section(sections, "languages"))],
+            "work_experience": work_experience,
+            "education": _education_from_sections(sections),
+            "certifications": _certifications_from_sections(sections),
             "salary_expectation": _value_after_label("Salary expectation", resume_text),
             "notice_period": _value_after_label("Notice period", resume_text),
             "work_authorization": _value_after_label("Work authorization", resume_text),
@@ -158,6 +161,22 @@ def _parse_json_payload(raw_response: str) -> Any:
         return json.loads(match.group(0))
 
 
+SECTION_HEADINGS: dict[str, str] = {
+    "summary": "professional_summary",
+    "professional summary": "professional_summary",
+    "skills": "skills",
+    "languages": "languages",
+    "experience": "experience",
+    "work experience": "experience",
+    "employment history": "experience",
+    "education": "education",
+    "certifications": "certifications",
+    "certification": "certifications",
+    "projects": "projects",
+    "achievements": "achievements",
+}
+
+
 def _first_nonempty_line(text: str) -> str | None:
     for line in text.splitlines():
         stripped = line.strip()
@@ -190,3 +209,120 @@ def _comma_section(heading: str, text: str) -> list[str]:
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _sections_by_heading(text: str) -> dict[str, list[str]]:
+    sections: dict[str, list[str]] = {}
+    active_section: str | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        heading = SECTION_HEADINGS.get(line.rstrip(":").lower())
+        if heading:
+            active_section = heading
+            sections.setdefault(active_section, [])
+            continue
+        if active_section:
+            sections[active_section].append(line)
+    return sections
+
+
+def _section_text(sections: dict[str, list[str]], section_name: str) -> str | None:
+    lines = [_clean_list_item(line) for line in sections.get(section_name, [])]
+    present_lines = [line for line in lines if line]
+    return " ".join(present_lines) if present_lines else None
+
+
+def _list_section(sections: dict[str, list[str]], section_name: str) -> list[str]:
+    items: list[str] = []
+    for line in sections.get(section_name, []):
+        for part in re.split(r",|;|\|", line):
+            item = _clean_list_item(part)
+            if item:
+                items.append(item)
+    return items
+
+
+def _work_experience_from_sections(sections: dict[str, list[str]]) -> list[dict[str, Any]]:
+    experience_lines = sections.get("experience", [])
+    if not experience_lines:
+        return []
+
+    first_line = _clean_list_item(experience_lines[0])
+    match = re.match(
+        r"(?P<title>.+?)\s+at\s+(?P<company>.+?)(?:\s*\((?P<dates>[^)]+)\))?$",
+        first_line,
+        re.IGNORECASE,
+    )
+    if match:
+        title = match.group("title").strip()
+        company = match.group("company").strip()
+        start_date, end_date = _split_date_range(match.group("dates"))
+        description = [_clean_list_item(line) for line in experience_lines[1:]]
+    else:
+        title = first_line or None
+        company = None
+        start_date = None
+        end_date = None
+        description = [_clean_list_item(line) for line in experience_lines[1:]]
+
+    description.extend(f"Project: {item}" for item in _list_section(sections, "projects"))
+    description.extend(f"Achievement: {item}" for item in _list_section(sections, "achievements"))
+
+    return [
+        {
+            "company": company,
+            "title": title,
+            "location": None,
+            "start_date": start_date,
+            "end_date": end_date,
+            "description": [item for item in description if item],
+        }
+    ]
+
+
+def _education_from_sections(sections: dict[str, list[str]]) -> list[dict[str, str | None]]:
+    education: list[dict[str, str | None]] = []
+    for line in sections.get("education", []):
+        value = _clean_list_item(line)
+        if not value:
+            continue
+        date_match = re.search(r"\((?P<date>[^)]+)\)\s*$", value)
+        end_date = date_match.group("date").strip() if date_match else None
+        without_date = re.sub(r"\s*\([^)]+\)\s*$", "", value).strip()
+        parts = re.split(r"\s+[–—-]\s+", without_date, maxsplit=1)
+        degree = parts[0].strip() if parts else without_date
+        institution = parts[1].strip() if len(parts) > 1 else None
+        education.append(
+            {
+                "institution": institution,
+                "degree": degree or None,
+                "field_of_study": None,
+                "start_date": None,
+                "end_date": end_date,
+            }
+        )
+    return education
+
+
+def _certifications_from_sections(sections: dict[str, list[str]]) -> list[dict[str, str | None]]:
+    certifications: list[dict[str, str | None]] = []
+    for line in sections.get("certifications", []):
+        value = _clean_list_item(line)
+        if value:
+            certifications.append({"name": value, "issuer": None, "date": None})
+    return certifications
+
+
+def _split_date_range(value: str | None) -> tuple[str | None, str | None]:
+    if not value:
+        return None, None
+    parts = [part.strip() for part in re.split(r"\s+(?:-|–|—|to)\s+", value, maxsplit=1)]
+    if len(parts) == 1:
+        return parts[0], None
+    return parts[0] or None, parts[1] or None
+
+
+def _clean_list_item(value: str) -> str:
+    return re.sub(r"^[-•*]\s*", "", value.strip()).strip()

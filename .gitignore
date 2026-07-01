@@ -20,3 +20,11 @@ data/generated_outputs/*
 
 # Local dataset archives may contain resumes or personal data.
 tests/*.zip
+
+# Local resume datasets may contain real candidate data. Keep structure docs only.
+tests/local_datasets/*
+!tests/local_datasets/README.md
+
+# Generated local test run reports.
+tests/test_results/*
+!tests/test_results/.gitkeep
