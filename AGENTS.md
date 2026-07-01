@@ -1,5 +1,30 @@
 CV Reformatter — Project Instructions
 
+Product contract and roadmap requirement
+
+Before making product, UI, API, workflow, extraction, validation, or generation changes, read:
+
+* docs/MVP_PRODUCT_SPEC.md
+* docs/MVP_BUILD_ROADMAP.md
+
+Use these as the product contract and build checklist. Identify the current stage before coding. If implementation details conflict with the spec or roadmap, pause and clarify before coding.
+
+Ownership boundary
+
+The frontend is owned and supported by the user's co-founder. The user is responsible for the backend.
+
+Default agent responsibility is backend implementation and backend quality:
+
+* FastAPI API behavior;
+* ingestion and extraction;
+* CandidateProfile validation;
+* missing-field detection;
+* client-facing render context;
+* DOCX/PDF generation;
+* backend tests and local artifacts.
+
+Do not change frontend code unless the user explicitly asks for frontend edits. Frontend alignment issues may be reviewed and described, but implementation should stay on the backend side by default.
+
 Product purpose
 
 Build an MVP for boutique headhunters and recruitment agencies.
@@ -47,6 +72,7 @@ Support first:
 * DOCX resumes;
 * text-based PDFs;
 * one recruiter/agency DOCX template;
+* recruiter-provided PDF sample resumes as visual/reference formats when needed;
 * optional job-description text;
 * local-only usage.
 
@@ -60,6 +86,23 @@ Do not build yet:
 * complex dashboards;
 * multiple templates;
 * automatic client sending.
+
+Template/sample format rule
+
+There are two different document inputs:
+
+* candidate CV/resume: the source document extracted into CandidateProfile;
+* recruiter sample/template: the target client-facing format the recruiter wants to match.
+
+Recruiters may sometimes upload a PDF as a sample resume or preferred output format. Treat that PDF as a visual/reference format, not as the core data model and not as a directly editable template.
+
+For MVP, use a controlled DOCX renderer for generated output. If a recruiter uploads a DOCX template, it can be used as the first true template source. If a recruiter uploads a PDF sample, use it only to understand layout/style expectations, while still rendering from reviewed CandidateProfile data into the app’s DOCX/PDF output pipeline.
+
+Do not build automatic PDF-template reverse engineering in the MVP.
+
+Do not implement:
+
+sample PDF → LLM → final PDF
 
 Required MVP outputs
 
@@ -145,6 +188,43 @@ Salary expectation: Available upon request
 
 The recruiter remains in control of client-facing disclosure.
 
+Blind profile / anonymization rules
+
+Anonymization is required for client-facing blind candidate profiles.
+
+Anonymization affects only generated client-facing previews/exports. Never delete, overwrite, or anonymize the internal CandidateProfile source data.
+
+When blind profile mode is enabled, hide or replace direct identifiers in the client-facing output:
+
+* full name → Candidate A, initials, or another neutral label;
+* email → hidden;
+* phone → hidden;
+* LinkedIn URL → hidden;
+* portfolio/GitHub URL → hidden by default unless the recruiter explicitly chooses to show it;
+* current employer → hide or generalize when recruiter marks it sensitive;
+* exact location → generalize when needed.
+
+Preservation promise rules
+
+The product should preserve original extracted resume text for recruiter comparison, but must not claim a literal lossless conversion guarantee.
+
+Do not promise:
+
+Nothing gets dropped.
+Lossless guarantee.
+
+Preferred product promise:
+
+Original preserved. Recruiter approved.
+
+This means:
+
+* original extracted text remains visible during review;
+* structured fields are editable before export;
+* missing or sensitive fields are flagged;
+* the recruiter controls what appears in the client-facing output;
+* final output is not treated as client-ready until reviewed.
+
 Suggested stack
 
 * Python 3.12+
@@ -169,6 +249,19 @@ Code-quality requirements
 * Preserve existing document styles where possible.
 * Prefer small, reviewable changes over large rewrites.
 * Explain changes and how to run tests after implementation.
+
+Testing resources
+
+When testing ingestion, extraction, rendering, or export behavior, prefer the existing test files and datasets in the repository, especially:
+
+* tests/ for automated test cases;
+* data/input_samples/ for synthetic sample inputs;
+* data/generated_outputs/ for local debug artifacts and generated outputs;
+* local dataset folders only when they are safe for local testing and not committed as real candidate data.
+
+When running tests, save the terminal test output to `tests/test_results/` with a timestamped filename so the user can inspect the result later. Do not commit generated test result files unless the user explicitly asks for them.
+
+Do not introduce or commit real resumes or personal data for tests.
 
 Development order
 

@@ -12,7 +12,11 @@ from app.ingestion.pdf_reader import (
 )
 
 
-PDF_RESUME_DATASET = Path(__file__).with_name("archive.zip")
+TESTS_DIR = Path(__file__).parent
+PDF_RESUME_DATASETS = [
+    TESTS_DIR / "local_datasets" / "resume_archive" / "source.zip",
+    TESTS_DIR / "archive.zip",
+]
 
 
 def test_read_pdf_text_extracts_text_from_dataset_sample(tmp_path: Path) -> None:
@@ -70,9 +74,13 @@ def test_read_pdf_text_rejects_pdf_without_extractable_text(tmp_path: Path) -> N
 
 
 def _require_pdf_resume_dataset() -> Path:
-    if not PDF_RESUME_DATASET.exists():
-        pytest.skip(f"Dataset fixture is not available: {PDF_RESUME_DATASET}")
-    return PDF_RESUME_DATASET
+    for dataset_path in PDF_RESUME_DATASETS:
+        if dataset_path.exists():
+            return dataset_path
+    pytest.skip(
+        "Dataset fixture is not available in any expected location: "
+        + ", ".join(str(path) for path in PDF_RESUME_DATASETS)
+    )
 
 
 def _dataset_pdf_members(dataset_path: Path) -> list[str]:

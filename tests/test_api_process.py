@@ -2,6 +2,7 @@ from pathlib import Path
 
 from docx import Document
 from fastapi.testclient import TestClient
+from pytest import MonkeyPatch
 
 from app.main import app
 
@@ -17,7 +18,8 @@ def _build_resume_docx(path: Path) -> None:
     document.save(path)
 
 
-def test_process_returns_profile_and_ledger(tmp_path: Path) -> None:
+def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
     resume_path = tmp_path / "resume.docx"
     _build_resume_docx(resume_path)
 
