@@ -71,9 +71,9 @@ Checklist:
 - [x] Real LLM extraction through `.env`.
 - [x] Missing-field detection.
 - [x] Draft follow-up message generation.
-- [~] FastAPI `/api/process` currently accepts DOCX only.
-- [ ] Wire text-based PDF resume upload into `/api/process`.
-- [ ] Add clear API errors for scanned PDFs or PDFs with no extractable text.
+- [x] FastAPI `/api/process` accepts DOCX and text-based PDF candidate resumes.
+- [x] Wire text-based PDF resume upload into `/api/process`.
+- [x] Add clear API errors for scanned PDFs or PDFs with no extractable text.
 - [ ] Save API-side debug artifacts consistently, not only CLI demo artifacts.
 
 Current rule:

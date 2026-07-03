@@ -23,6 +23,7 @@ from app.generation.pdf_exporter import PdfExportError, export_docx_to_pdf
 from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME, build_client_render_context
 from app.ingestion.docx_reader import read_docx
 from app.ingestion.file_validator import CorruptedFileError, UnsupportedFileTypeError
+from app.ingestion.pdf_reader import CorruptedPdfError, EmptyPdfTextError, UnsupportedPdfTypeError, read_pdf_text
 from app.validation.followup_message_generator import generate_followup_message
 from app.validation.missing_fields import apply_missing_field_detection
 
@@ -77,29 +78,48 @@ def health() -> dict[str, str]:
 
 @app.post("/api/process")
 async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
-    if not file.filename or not file.filename.lower().endswith(".docx"):
+    if not file.filename:
         raise HTTPException(
             status_code=400,
-            detail="Only .docx files are supported in this milestone.",
+            detail="A candidate resume file is required.",
+        )
+
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in {".docx", ".pdf"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Only .docx and text-based .pdf candidate resumes are supported in this milestone.",
         )
 
     contents = await file.read()
-    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(contents)
         tmp_path = Path(tmp.name)
 
     try:
         try:
-            extracted = read_docx(tmp_path)
+            extracted_text = _read_candidate_resume_text(tmp_path)
         except (UnsupportedFileTypeError, CorruptedFileError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except UnsupportedPdfTypeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except CorruptedPdfError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except EmptyPdfTextError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "This PDF has no extractable text. Scanned PDFs are not supported in the MVP; "
+                    "please upload a text-based PDF or DOCX resume."
+                ),
+            ) from exc
 
         try:
             llm_client = build_llm_client(provider=os.getenv("API_LLM_PROVIDER"))
         except (LLMConfigurationError, ValueError) as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         try:
-            profile = extract_candidate_profile(extracted.plain_text, llm_client)
+            profile = extract_candidate_profile(extracted_text, llm_client)
         except LLMExtractionError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
@@ -108,7 +128,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
     return ProcessResponse(
         profile=profile,
         ledger=_build_ledger(profile),
-        original_text=extracted.plain_text,
+        original_text=extracted_text,
     )
 
 
@@ -181,6 +201,12 @@ def _build_ledger(profile: CandidateProfile) -> LedgerSummary:
     extracted_count = _count_populated(payload)
     needs_review = len(profile.missing_fields)
     return LedgerSummary(extracted=extracted_count, placed=extracted_count, needs_review=needs_review)
+
+
+def _read_candidate_resume_text(path: Path) -> str:
+    if path.suffix.lower() == ".pdf":
+        return read_pdf_text(path)
+    return read_docx(path).plain_text
 
 
 def _count_populated(value: Any) -> int:
