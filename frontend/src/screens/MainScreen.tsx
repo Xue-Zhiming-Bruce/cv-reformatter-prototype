@@ -29,73 +29,90 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError }: Main
   }
 
   return (
-    <div className="app-card">
-      <header className="main-header">
-        <div className="brand">
-          <LogoIcon className="brand__icon" />
-          <span className="brand__name">Reform</span>
+    <div className="page-wrapper">
+      <header className="site-header">
+        <div className="site-header__inner">
+          <div className="brand">
+            <LogoIcon className="brand__icon" />
+            <span className="brand__name">Reform</span>
+          </div>
+          <nav className="site-nav">
+            <a className="site-nav__link" href="#">Home</a>
+            <a className="site-nav__link" href="#">Pricing</a>
+          </nav>
+          <div className="site-header__auth">
+            <button type="button" className="login-button">Log in</button>
+            <button type="button" className="signup-button">Sign up</button>
+          </div>
         </div>
-        <button type="button" className="account-button">
-          Account
-        </button>
       </header>
-      <hr className="divider" />
 
-      <section className="hero">
-        <h1>Drop two, you're done</h1>
-        <p className="hero__subtitle">Any resume, poured into your format — nothing lost.</p>
-      </section>
-
-      <section className="dropzones">
-        <Dropzone
-          icon={<FileIcon className="dropzone__icon--blue" />}
-          title="Received resume"
-          subtitle="Candidate's PDF · DOCX · image"
-          file={resumeFile}
-          onFileSelected={setResumeFile}
-          accept=".docx,.pdf,.png,.jpg,.jpeg"
-        />
-        <Dropzone
-          icon={<GridIcon className="dropzone__icon--green" />}
-          title="Your target format"
-          subtitle="Upload your template · or saved format"
-          file={targetFile}
-          onFileSelected={handleTargetFileSelected}
-        />
-      </section>
-
-      <section className="format-chips">
-        {SAVED_FORMATS.map((format) => (
-          <Chip key={format} label={format} selected={selectedFormat === format} onClick={() => handleFormatSelected(format)} />
-        ))}
-      </section>
-
-      {error && (
-        <div className="error-banner" role="alert">
-          <span>{error}</span>
-          <button type="button" className="error-banner__dismiss" onClick={onDismissError} aria-label="Dismiss">
-            ×
-          </button>
+      <main className="hero-layout">
+        <div className="hero-left">
+          <div className="sample-preview">
+            <span className="sample-preview__label">Sample output preview</span>
+          </div>
+          <h1 className="hero-headline">Reformat<br />any resume.</h1>
+          <p className="hero-subtitle">Instantly, in your format.</p>
+          <span className="hero-tag">
+            <ShieldCheckIcon size={13} />
+            Lossless
+          </span>
         </div>
-      )}
 
-      <section className="convert-row">
-        <button
-          type="button"
-          className="convert-button"
-          disabled={!resumeFile || isLoading}
-          onClick={() => resumeFile && onConvert(resumeFile)}
-        >
-          {isLoading ? <span className="spinner" aria-hidden="true" /> : <PencilIcon />}
-          {isLoading ? "Converting…" : "Convert"}
-        </button>
-      </section>
+        <div className="upload-card">
+          <Dropzone
+            icon={<FileIcon className="dropzone__icon--blue" />}
+            title="Received resume"
+            subtitle="Candidate's PDF · DOCX · image"
+            file={resumeFile}
+            onFileSelected={setResumeFile}
+            accept=".docx,.pdf,.png,.jpg,.jpeg"
+          />
+          <Dropzone
+            icon={<GridIcon className="dropzone__icon--green" />}
+            title="Your target format"
+            subtitle="Upload your template · or saved format"
+            file={targetFile}
+            onFileSelected={handleTargetFileSelected}
+          />
 
-      <hr className="divider" />
-      <footer className="lossless-footer">
-        <ShieldCheckIcon className="lossless-footer__icon" />
-        <span>Nothing gets dropped — lossless guarantee</span>
-      </footer>
+          <div className="format-chips">
+            {SAVED_FORMATS.map((format) => (
+              <Chip
+                key={format}
+                label={format}
+                selected={selectedFormat === format}
+                onClick={() => handleFormatSelected(format)}
+              />
+            ))}
+          </div>
+
+          {error && (
+            <div className="error-banner" role="alert">
+              <span>{error}</span>
+              <button type="button" className="error-banner__dismiss" onClick={onDismissError} aria-label="Dismiss">
+                ×
+              </button>
+            </div>
+          )}
+
+          <button
+            type="button"
+            className="convert-button"
+            disabled={!resumeFile || isLoading}
+            onClick={() => resumeFile && onConvert(resumeFile)}
+          >
+            {isLoading ? <span className="spinner" aria-hidden="true" /> : <PencilIcon />}
+            {isLoading ? "Converting…" : "Convert"}
+          </button>
+
+          <p className="upload-card__footer">
+            <ShieldCheckIcon className="lossless-footer__icon" size={14} />
+            Nothing gets dropped — lossless guarantee
+          </p>
+        </div>
+      </main>
     </div>
   )
 }

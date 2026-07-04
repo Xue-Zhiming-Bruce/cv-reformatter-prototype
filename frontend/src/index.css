@@ -1,11 +1,11 @@
 :root {
-  --color-bg-page: #eeede7;
+  --color-bg-page: #f7f9fb;
   --color-card-bg: #ffffff;
-  --color-border: #e3e1da;
-  --color-border-strong: #d8d5cc;
+  --color-border: #e8ecf1;
+  --color-border-strong: #d0d7df;
   --color-text-primary: #16181b;
-  --color-text-secondary: #6b6f76;
-  --color-text-muted: #9a9da3;
+  --color-text-secondary: #6b7280;
+  --color-text-muted: #9ca3af;
 
   --color-accent-green: #1f7a5c;
   --color-accent-green-bg: #ddf3e8;
@@ -13,13 +13,13 @@
 
   --color-accent-blue: #2f6fed;
 
-  --color-dropzone-bg: #faf9f6;
-  --color-dropzone-border: #d6d3cb;
+  --color-dropzone-bg: #ffffff;
+  --color-dropzone-border: #dde2ea;
 
   --color-needs-review-bg: #f8e3c2;
   --color-needs-review-text: #8a5a16;
 
-  --radius-card: 20px;
+  --radius-card: 24px;
   --radius-control: 999px;
   --radius-dropzone: 16px;
 

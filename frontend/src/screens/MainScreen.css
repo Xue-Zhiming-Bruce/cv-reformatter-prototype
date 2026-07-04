@@ -1,42 +1,159 @@
-.main-header {
+/* ── Page wrapper ─────────────────────────────────────── */
+.page-wrapper {
+  min-height: 100vh;
+}
+
+/* ── Site header ──────────────────────────────────────── */
+.site-header {
+  background: #ffffff;
+  border-bottom: 1px solid var(--color-border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.site-header__inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 40px;
+  height: 60px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 20px 32px;
+  gap: 36px;
 }
 
-.account-button {
-  padding: 8px 18px;
-  border-radius: var(--radius-control);
-  border: 1px solid var(--color-border-strong);
-  background: var(--color-card-bg);
-  color: var(--color-text-primary);
-  font-size: 14px;
-  cursor: pointer;
-}
-
-.hero {
-  text-align: center;
-  padding: 40px 32px 28px;
+.site-nav {
+  flex: 1;
   display: flex;
-  flex-direction: column;
+  justify-content: center;
+  gap: 28px;
+}
+
+.site-nav__link {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.site-nav__link:hover {
+  color: var(--color-text-primary);
+}
+
+.site-header__auth {
+  display: flex;
+  align-items: center;
   gap: 10px;
 }
 
-.hero h1 {
-  font-size: 30px;
-  font-weight: 700;
-}
-
-.hero__subtitle {
-  color: var(--color-text-secondary);
+.login-button {
+  background: none;
+  border: none;
   font-size: 15px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  padding: 8px 4px;
+  transition: color 0.15s ease;
 }
 
-.dropzones {
+.login-button:hover {
+  color: var(--color-text-secondary);
+}
+
+.signup-button {
+  background: var(--color-accent-green);
+  color: #ffffff;
+  border: none;
+  border-radius: var(--radius-control);
+  font-size: 15px;
+  font-weight: 600;
+  padding: 9px 22px;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.signup-button:hover {
+  opacity: 0.88;
+}
+
+/* ── Two-column hero ──────────────────────────────────── */
+.hero-layout {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 64px 40px 80px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 60px;
+  align-items: center;
+}
+
+/* ── Left column ──────────────────────────────────────── */
+.hero-left {
   display: flex;
-  gap: 24px;
-  padding: 0 32px;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.sample-preview {
+  width: 100%;
+  height: 240px;
+  background: var(--color-border);
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sample-preview__label {
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.hero-headline {
+  font-size: 52px;
+  font-weight: 800;
+  letter-spacing: -1.5px;
+  line-height: 1.05;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.hero-subtitle {
+  font-size: 18px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.hero-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  background: var(--color-accent-green-bg);
+  color: var(--color-accent-green);
+  border-radius: var(--radius-control);
+  padding: 5px 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ── Right column: upload card ────────────────────────── */
+.upload-card {
+  background: #ffffff;
+  border-radius: 24px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.10), 0 2px 8px rgba(0, 0, 0, 0.05);
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.upload-card .dropzone {
+  min-height: 140px;
+  padding: 24px 20px;
 }
 
 .dropzone__icon--blue {
@@ -49,33 +166,38 @@
 
 .format-chips {
   display: flex;
-  justify-content: center;
-  gap: 12px;
-  padding: 28px 32px 0;
-}
-
-.convert-row {
-  display: flex;
-  justify-content: center;
-  padding: 24px 32px 36px;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .convert-button {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  padding: 12px 28px;
+  width: 100%;
+  padding: 16px;
   border-radius: var(--radius-control);
-  border: 1px solid var(--color-accent-green-border);
-  background: var(--color-accent-green-bg);
-  color: var(--color-accent-green);
-  font-size: 16px;
+  border: none;
+  background: var(--color-accent-green);
+  color: #ffffff;
+  font-size: 17px;
   font-weight: 600;
   cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.1s ease;
+}
+
+.convert-button:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.convert-button:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 .convert-button:disabled {
-  opacity: 0.5;
+  opacity: 0.38;
   cursor: not-allowed;
 }
 
@@ -99,9 +221,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin: 0 32px;
   padding: 12px 16px;
-  border-radius: var(--radius-control);
+  border-radius: 12px;
   background: #fff1f1;
   border: 1px solid #fca5a5;
   color: #b91c1c;
@@ -119,16 +240,41 @@
   flex-shrink: 0;
 }
 
-.lossless-footer {
+.upload-card__footer {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 18px 32px;
-  color: var(--color-text-secondary);
-  font-size: 14px;
+  gap: 6px;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
 }
 
 .lossless-footer__icon {
   color: var(--color-accent-green);
+}
+
+/* ── Responsive ───────────────────────────────────────── */
+@media (max-width: 800px) {
+  .site-header__inner {
+    padding: 0 20px;
+  }
+
+  .site-nav {
+    display: none;
+  }
+
+  .hero-layout {
+    grid-template-columns: 1fr;
+    padding: 40px 20px 60px;
+    gap: 36px;
+  }
+
+  .hero-headline {
+    font-size: 40px;
+  }
+
+  .sample-preview {
+    height: 180px;
+  }
 }
