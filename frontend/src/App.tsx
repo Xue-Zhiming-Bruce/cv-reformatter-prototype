@@ -1,11 +1,14 @@
 import { useState } from "react"
 import { MainScreen } from "./screens/MainScreen"
 import { ReviewScreen } from "./screens/ReviewScreen"
+import { AuthScreen } from "./screens/AuthScreen"
 import type { ProcessResponse } from "./types"
 import "./App.css"
 
 type AppState =
   | { status: "idle" }
+  | { status: "login" }
+  | { status: "signup" }
   | { status: "loading"; fileName: string }
   | { status: "error"; message: string }
   | { status: "done"; data: ProcessResponse; fileName: string }
@@ -43,6 +46,16 @@ export default function App() {
     }
   }
 
+  if (state.status === "login" || state.status === "signup") {
+    return (
+      <AuthScreen
+        mode={state.status}
+        onSwitchMode={() => setState({ status: state.status === "login" ? "signup" : "login" })}
+        onGoHome={() => setState({ status: "idle" })}
+      />
+    )
+  }
+
   if (state.status === "done") {
     return (
       <ReviewScreen
@@ -60,6 +73,8 @@ export default function App() {
       isLoading={state.status === "loading"}
       error={state.status === "error" ? state.message : null}
       onDismissError={() => setState({ status: "idle" })}
+      onLogin={() => setState({ status: "login" })}
+      onSignup={() => setState({ status: "signup" })}
     />
   )
 }
