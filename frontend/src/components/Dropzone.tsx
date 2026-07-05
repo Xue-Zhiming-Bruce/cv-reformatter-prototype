@@ -10,12 +10,15 @@ type DropzoneProps = {
   file: File | null
   onFileSelected: (file: File | null) => void
   accept?: string
+  variant?: "primary" | "secondary"
+  uploadLabel?: string
 }
 
-export function Dropzone({ icon, title, subtitle, file, onFileSelected, accept }: DropzoneProps) {
+export function Dropzone({ icon, title, subtitle, file, onFileSelected, accept, variant, uploadLabel }: DropzoneProps) {
   const inputId = useId()
   const inputRef = useRef<HTMLInputElement>(null)
   const [isDragging, setIsDragging] = useState(false)
+  const isPrimary = variant === "primary"
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault()
@@ -26,7 +29,7 @@ export function Dropzone({ icon, title, subtitle, file, onFileSelected, accept }
 
   return (
     <div
-      className={`dropzone${isDragging ? " dropzone--dragging" : ""}`}
+      className={`dropzone${isPrimary ? " dropzone--primary" : ""}${isDragging ? " dropzone--dragging" : ""}`}
       role="button"
       tabIndex={0}
       onClick={() => inputRef.current?.click()}
@@ -58,6 +61,7 @@ export function Dropzone({ icon, title, subtitle, file, onFileSelected, accept }
         <>
           <span className="dropzone__icon">{icon}</span>
           <p className="dropzone__title">{title}</p>
+          {uploadLabel && <span className="dropzone__upload-btn">{uploadLabel}</span>}
           <p className="dropzone__subtitle">{subtitle}</p>
         </>
       )}
