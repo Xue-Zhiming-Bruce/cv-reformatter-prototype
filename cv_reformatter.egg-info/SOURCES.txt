@@ -27,10 +27,14 @@ cv_reformatter.egg-info/SOURCES.txt
 cv_reformatter.egg-info/dependency_links.txt
 cv_reformatter.egg-info/requires.txt
 cv_reformatter.egg-info/top_level.txt
+tests/test_api_generate.py
 tests/test_api_process.py
 tests/test_candidate_schema.py
+tests/test_dataset_smoke.py
 tests/test_docx_reader.py
 tests/test_docx_renderer.py
 tests/test_llm_extractor.py
 tests/test_missing_fields.py
+tests/test_pdf_exporter.py
 tests/test_pdf_reader.py
+tests/test_template_mapper.py
