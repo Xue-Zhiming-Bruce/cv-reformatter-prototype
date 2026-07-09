@@ -261,6 +261,8 @@ When testing ingestion, extraction, rendering, or export behavior, prefer the ex
 
 When running tests, save the terminal test output to `tests/test_results/` with a timestamped filename so the user can inspect the result later. Do not commit generated test result files unless the user explicitly asks for them.
 
+Cross-format test fixture rule: when a backend test needs example resume files, DOCX resumes may be used as content examples while testing PDF-related behavior, and PDF resumes may be used as content examples while testing DOCX-related behavior. Test names and saved reports should clearly state the actual source format used and the backend behavior under test. This rule is only for backend testing convenience; it must not weaken the architecture rule, turn a PDF sample into an editable template, or create a direct `PDF -> LLM -> PDF` path.
+
 Do not introduce or commit real resumes or personal data for tests.
 
 Development order

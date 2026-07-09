@@ -14,9 +14,11 @@ __pycache__/
 data/input_samples/*
 data/output_samples/*
 data/generated_outputs/*
+data/local/*
 !data/input_samples/.gitkeep
 !data/output_samples/.gitkeep
 !data/generated_outputs/.gitkeep
+!data/local/.gitkeep
 
 # Local dataset archives may contain resumes or personal data.
 tests/*.zip

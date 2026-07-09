@@ -74,7 +74,14 @@ Checklist:
 - [x] FastAPI `/api/process` accepts DOCX and text-based PDF candidate resumes.
 - [x] Wire text-based PDF resume upload into `/api/process`.
 - [x] Add clear API errors for scanned PDFs or PDFs with no extractable text.
-- [ ] Save API-side debug artifacts consistently, not only CLI demo artifacts.
+- [x] Save API-side debug artifacts consistently, not only CLI demo artifacts.
+- [x] Return an `artifact_id` from `/api/process` for one upload/generation session.
+- [x] Save original extracted text, `CandidateProfile` JSON, and missing-fields JSON during `/api/process`.
+- [x] Create an original resume PDF preview artifact when possible:
+  - uploaded PDF resumes are copied as `original_resume_preview.pdf`;
+  - uploaded DOCX resumes are converted to `original_resume_preview.pdf` when LibreOffice is available.
+- [x] Add optional real OpenAI extraction smoke test behind `RUN_REAL_LLM_SMOKE=1`.
+- [x] Add local SQLite artifact/job metadata index for API-side process/generate sessions.
 
 Current rule:
 
@@ -101,13 +108,13 @@ There are two target-format input types:
 
 Checklist:
 
-- [ ] Add backend representation for target format input.
-- [ ] Accept a DOCX target template upload.
-- [ ] Accept a PDF sample upload as reference metadata or stored artifact.
-- [ ] Do not attempt automatic PDF-template reverse engineering.
-- [ ] Do not implement `sample PDF -> LLM -> final PDF`.
+- [x] Add backend representation for target format input.
+- [x] Accept a DOCX target template upload as a stored MVP target-format artifact.
+- [x] Accept a PDF sample upload as reference metadata or stored artifact.
+- [x] Do not attempt automatic PDF-template reverse engineering.
+- [x] Do not implement `sample PDF -> LLM -> final PDF`.
 - [x] Decide first built-in template name, for example `apex_standard`.
-- [~] Store target format selection/upload alongside the generation request.
+- [x] Store target format selection/upload alongside the generation request.
 
 MVP decision:
 
@@ -241,11 +248,15 @@ Suggested request fields:
 - `client_display_rules`
 - `blind_profile`
 - `template_name` or target format reference
+- `artifact_id` from `/api/process` when generation should reuse the same session folder
 
 Suggested response fields:
 
+- `artifact_id`
 - `docx_download_url`
 - `pdf_download_url`
+- `pdf_preview_url`
+- `artifact_metadata_url`
 - `followup_message`
 - artifact/debug metadata
 
@@ -258,7 +269,11 @@ Checklist:
 - [x] Render DOCX.
 - [x] Export PDF.
 - [x] Return download URLs or artifact IDs.
+- [x] Return a generated PDF preview URL for the converted resume.
 - [x] Add download endpoints for generated files.
+- [x] Add read-only local artifact metadata endpoints:
+  - `GET /api/artifacts/{artifact_id}/metadata`
+  - `GET /api/artifacts`
 - [x] Ensure local generated outputs do not expose secrets or committed real candidate data.
 - [x] Add API tests using synthetic data only.
 
@@ -273,12 +288,17 @@ Recruiter reviews extracted JSON
 -> exports DOCX/PDF
 ```
 
+Detailed API/UI handoff and current frontend mismatch notes are documented in `docs/FRONTEND_BACKEND_ALIGNMENT.md`.
+
 Checklist:
 
 - [~] Upload/review prototype exists.
+- [x] Document current frontend/backend alignment gaps after the frontend pull from `main`.
 - [ ] Candidate upload UI should honestly reflect supported candidate inputs.
 - [ ] Wire PDF candidate upload when backend supports it.
 - [ ] Keep target format upload, but label PDF samples as reference if not fully parsed.
+- [ ] Show original resume PDF preview from `/api/process`.
+- [ ] Show generated/reformatted PDF preview from `/api/generate`, preferably on the right side of the review/export page.
 - [ ] Add editable fields for core `CandidateProfile` data.
 - [ ] Add missing-field panel.
 - [ ] Add client disclosure controls.
@@ -300,12 +320,14 @@ Review/edit discussion still needed:
 The first successful demo is complete when a user can:
 
 - [ ] Upload one synthetic DOCX CV.
+- [ ] See the original resume as a PDF preview.
 - [ ] See extracted candidate fields.
 - [ ] Correct fields manually.
 - [ ] See missing information.
 - [ ] Choose disclosure behavior for missing or sensitive fields.
 - [ ] Enable blind profile mode.
 - [ ] Generate a branded DOCX.
+- [ ] See the reformatted resume as a generated PDF preview.
 - [ ] Download a PDF version.
 - [ ] Copy a drafted follow-up message.
 - [ ] Inspect saved debug artifacts:
@@ -354,8 +376,10 @@ When testing:
 3. Use `data/generated_outputs/` for local debug artifacts and generated outputs.
 4. Use local datasets only when they are safe for local testing and not committed as real candidate data.
 5. Keep local resume datasets under `tests/local_datasets/`; commit only `tests/local_datasets/README.md`.
-6. Save test command output under `tests/test_results/` with a timestamped filename.
-7. Do not introduce real resumes or personal data as fixtures.
+6. Cross-format resume fixtures are allowed for backend testing: DOCX resume examples may be used while testing PDF-related behavior, and PDF resume examples may be used while testing DOCX-related behavior, as long as the saved test report states the actual source format and the behavior being validated.
+7. Do not use cross-format fixtures to bypass the structured pipeline, reinterpret a PDF sample as an editable template, or create a direct `PDF -> LLM -> PDF` flow.
+8. Save test command output under `tests/test_results/` with a timestamped filename.
+9. Do not introduce real resumes or personal data as fixtures.
 
 After coding:
 

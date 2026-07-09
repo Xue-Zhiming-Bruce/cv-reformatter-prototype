@@ -2,6 +2,8 @@
 
 For the stage-by-stage build checklist, see `docs/MVP_BUILD_ROADMAP.md`.
 
+For the current frontend/backend handoff contract, see `docs/FRONTEND_BACKEND_ALIGNMENT.md`.
+
 ## Product Promise
 
 CV Reformatter helps boutique recruiters turn messy candidate CVs into client-ready submissions while preserving recruiter judgment over missing, sensitive, or uncertain information.
@@ -63,6 +65,7 @@ Supported first:
 - One recruiter/agency DOCX template.
 - Recruiter-provided PDF sample resume as a visual/reference format when needed.
 - Local-only usage.
+- Local SQLite metadata index for artifact/job status when needed.
 
 Unsupported in MVP:
 
@@ -74,6 +77,27 @@ Unsupported in MVP:
 - Multiple templates.
 - Automatic client sending.
 - Candidate database or dashboard.
+
+## Local Database Scope
+
+The MVP may use a local SQLite database to index artifact/job metadata for the current machine.
+
+Allowed local database contents:
+
+- `artifact_id`
+- workflow status such as `processed`, `target_format_uploaded`, or `generated`
+- local artifact folder path
+- preview/download URLs
+- source and target file metadata
+- missing-field labels/counts
+- debug artifact file paths
+
+Guardrails:
+
+- Do not build multi-user accounts, Google sign-in, or user management in the MVP.
+- Do not build a searchable candidate database or dashboard in the MVP.
+- Keep full `CandidateProfile` JSON and raw extracted text in the existing local artifact files, not as the primary SQLite product model.
+- Keep the local database file ignored from git because filenames and artifact paths may contain candidate-identifying information.
 
 ## Template And Sample Format Inputs
 
@@ -91,6 +115,22 @@ MVP rule:
 - If a recruiter uploads a PDF sample, use it to understand layout/style expectations, but still render from reviewed `CandidateProfile` data into the app's DOCX/PDF output pipeline.
 - Do not build automatic PDF-template reverse engineering in the MVP.
 - Do not implement `sample PDF -> LLM -> final PDF` as the generation architecture.
+
+## PDF Preview Artifacts
+
+The interface may use PDF files as visual preview artifacts.
+
+Allowed preview behavior:
+
+- A DOCX candidate resume may be converted to PDF so the recruiter can inspect the original layout in the UI.
+- A candidate PDF resume may be shown directly as the original-layout preview.
+- The converted client-facing preview should show the generated PDF created from the reviewed `CandidateProfile` through the controlled DOCX/PDF renderer.
+
+Guardrail:
+
+- PDF preview files are display artifacts only.
+- They must not replace the structured extraction/review/rendering pipeline.
+- The architecture must still remain `resume file -> extracted text -> CandidateProfile JSON -> recruiter review/edit -> template rendering -> DOCX/PDF output`.
 
 ## CandidateProfile Data
 
@@ -232,6 +272,7 @@ The MVP must generate:
    - Missing-fields JSON.
    - Generated DOCX.
    - Generated PDF.
+   - Local SQLite artifact/job metadata.
 
 ## Required Screens
 
@@ -258,6 +299,7 @@ Purpose:
 Required behavior:
 
 - Show original extracted text beside structured candidate fields.
+- Show the original resume as a PDF preview when a preview artifact is available.
 - Let recruiter edit core `CandidateProfile` fields.
 - Show missing fields prominently.
 - Show draft follow-up message.
@@ -287,6 +329,7 @@ Required behavior:
 
 - Generate DOCX.
 - Generate PDF from the same reviewed profile.
+- Show the generated PDF as the converted client-facing preview when available.
 - Provide download actions for both.
 - Save debug artifacts locally.
 
@@ -362,5 +405,6 @@ Recommended implementation order:
 - Preserve the original extracted text for review, but do not claim perfect lossless conversion.
 - Apply anonymization only to client-facing output, never to the internal source profile.
 - Use synthetic resumes only in fixtures and tests.
+- For backend testing, DOCX resume examples may be used while testing PDF-related behavior, and PDF resume examples may be used while testing DOCX-related behavior, provided the test report states the actual source format and this does not bypass the structured `CandidateProfile` pipeline.
 - Do not commit real resumes, candidate data, API keys, or generated personal data.
 - Prefer small, reviewable changes that strengthen the demo path.
