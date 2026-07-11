@@ -25,7 +25,7 @@ const HOW_ICONS = [
 ]
 
 type MainScreenProps = {
-  onConvert: (resumeFile: File) => void
+  onConvert: (resumeFile: File, targetFile: File) => void
   isLoading: boolean
   error: string | null
   onDismissError: () => void
@@ -34,8 +34,9 @@ type MainScreenProps = {
   onPricing: () => void
 }
 
-function nl(text: string) {
-  return text.split("\n").map((line, i, arr) => (
+function nl(text: string | string[]) {
+  const lines = Array.isArray(text) ? text : text.split("\n")
+  return lines.map((line, i, arr) => (
     <span key={i} style={i < arr.length - 1 ? { display: "block" } : undefined}>{line}</span>
   ))
 }
@@ -65,7 +66,6 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
     setResumeFile(file)
   }
 
-  const heroSubLines = t("hero.sub", { returnObjects: true }) as string[]
   const howSteps = t("how.steps", { returnObjects: true }) as Array<{ title: string; body: string }>
   const whyItems = t("why.items", { returnObjects: true }) as Array<{ title: string; body: string }>
 
@@ -136,7 +136,7 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
             </span>
             <span className="hero-headline__line">{t("hero.headlineAfter")}</span>
           </h1>
-          <p className="hero-sub">{nl(t("hero.sub"))}</p>
+          <p className="hero-sub">{nl(t("hero.sub", { returnObjects: true }) as string[])}</p>
 
           {!resumeFile ? (
             <div className="upload-zone">
@@ -231,7 +231,7 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
         </div>
       </section>
 
-      {/* ── Step 2: Template upload — slides in after resume is selected ── */}
+      {/* ── Step 2: Target format upload — slides in after resume is selected ── */}
       {resumeFile && (
         <section className="step2">
           <div className="step2__inner">
@@ -274,7 +274,7 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
                 type="button"
                 className={`convert-button${canConvert ? " convert-button--ready" : ""}`}
                 disabled={!canConvert}
-                onClick={() => resumeFile && onConvert(resumeFile)}
+                onClick={() => resumeFile && templateFile && onConvert(resumeFile, templateFile)}
               >
                 {isLoading ? <span className="spinner" aria-hidden="true" /> : <PencilIcon />}
                 {isLoading ? t("converter.convertingBtn") : t("converter.convertBtn")}

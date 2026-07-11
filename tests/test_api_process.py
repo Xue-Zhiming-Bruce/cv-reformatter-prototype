@@ -115,6 +115,8 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
     preview_response = client.get(body["original_pdf_preview_url"])
     metadata_response = client.get(body["artifact_metadata_url"])
     assert preview_response.status_code == 200
+    assert preview_response.headers["content-type"] == "application/pdf"
+    assert preview_response.headers["content-disposition"].startswith("inline;")
     assert metadata_response.status_code == 200
     metadata = metadata_response.json()
     assert metadata["artifact_id"] == body["artifact_id"]
@@ -153,6 +155,10 @@ def test_process_accepts_text_pdf_upload(tmp_path: Path, monkeypatch: MonkeyPatc
 
     metadata_response = client.get(body["artifact_metadata_url"])
     assert metadata_response.status_code == 200
+    preview_response = client.get(body["original_pdf_preview_url"])
+    assert preview_response.status_code == 200
+    assert preview_response.headers["content-type"] == "application/pdf"
+    assert preview_response.headers["content-disposition"].startswith("inline;")
     metadata = metadata_response.json()
     assert metadata["status"] == "processed"
     assert metadata["source_file_type"] == "pdf"

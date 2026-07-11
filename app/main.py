@@ -394,12 +394,18 @@ def get_artifact_metadata(artifact_id: str) -> ArtifactMetadataResponse:
 @app.get("/api/artifacts/{artifact_id}/{filename}")
 def download_generated_artifact(artifact_id: str, filename: str) -> FileResponse:
     artifact_path = _resolve_download_artifact(artifact_id, filename)
+    is_docx = artifact_path.suffix.lower() == ".docx"
     media_type = (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        if artifact_path.suffix.lower() == ".docx"
+        if is_docx
         else "application/pdf"
     )
-    return FileResponse(artifact_path, media_type=media_type, filename=filename)
+    return FileResponse(
+        artifact_path,
+        media_type=media_type,
+        filename=filename,
+        content_disposition_type="attachment" if is_docx else "inline",
+    )
 
 
 def _build_ledger(profile: CandidateProfile) -> LedgerSummary:

@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react"
 import { useTranslation } from "react-i18next"
-import mammoth from "mammoth"
-import { DownloadIcon, LogoIcon, PencilIcon } from "../components/icons"
+import { LogoIcon, PencilIcon } from "../components/icons"
 import type { ProcessResponse } from "../types"
 import "./ReviewScreen.css"
 
@@ -120,11 +119,13 @@ function joinDefined(values: Array<string | null | undefined>, separator = " –
   return values.filter((v): v is string => Boolean(v?.trim())).join(separator)
 }
 
+function pdfViewerUrl(url: string): string {
+  return `${url}${url.includes("#") ? "&" : "#"}toolbar=0&navpanes=0&view=FitH`
+}
+
 export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onBack }: ReviewScreenProps) {
   const { t } = useTranslation()
   const [edits, setEdits] = useState<Record<string, string>>({})
-  const [docxHtml, setDocxHtml] = useState<string | null>(null)
-  const [exportConfirmOpen, setExportConfirmOpen] = useState(false)
   const [blindProfile, setBlindProfile] = useState(false)
   const { profile, ledger } = data
 
@@ -136,23 +137,9 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
   const objectUrl = useMemo(() => URL.createObjectURL(resumeFile), [resumeFile])
   useEffect(() => () => URL.revokeObjectURL(objectUrl), [objectUrl])
 
-  const isDocx = /\.docx$/i.test(resumeFile.name) || resumeFile.type.includes("wordprocessingml")
   const isPdf = /\.pdf$/i.test(resumeFile.name) || resumeFile.type === "application/pdf"
-  const isImage = /\.(png|jpe?g|gif|webp)$/i.test(resumeFile.name) || resumeFile.type.startsWith("image/")
-
-  useEffect(() => {
-    if (!isDocx) return
-    const reader = new FileReader()
-    reader.onload = async (e) => {
-      try {
-        const result = await mammoth.convertToHtml({ arrayBuffer: e.target!.result as ArrayBuffer })
-        setDocxHtml(result.value)
-      } catch {
-        setDocxHtml(`<p>${t("review.docxRenderError")}</p>`)
-      }
-    }
-    reader.readAsArrayBuffer(resumeFile)
-  }, [resumeFile, isDocx, t])
+  const originalPreviewUrl = data.original_pdf_preview_url ?? (isPdf ? objectUrl : null)
+  const originalPdfViewerUrl = originalPreviewUrl ? pdfViewerUrl(originalPreviewUrl) : null
 
   function handleEdit(path: string, value: string) {
     setEdits((prev) => {
@@ -164,39 +151,6 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
   }
 
   const editCount = Object.keys(edits).length
-
-  function handleExportClick() {
-    if (ledger.needs_review > 0) {
-      setExportConfirmOpen(true)
-    } else {
-      doExport()
-    }
-  }
-
-  const IDENTITY_FIELDS = ["full_name", "email", "phone", "location", "linkedin_url", "portfolio_url"]
-
-  function doExport() {
-    setExportConfirmOpen(false)
-    const exportedProfile = blindProfile
-      ? { ...profile, ...Object.fromEntries(IDENTITY_FIELDS.map((k) => [k, null])) }
-      : profile
-    const exportedEdits = blindProfile
-      ? Object.fromEntries(Object.entries(edits).filter(([k]) => !IDENTITY_FIELDS.includes(k)))
-      : edits
-    const exported = {
-      profile: exportedProfile,
-      edits: exportedEdits,
-      editCount,
-      ...(blindProfile && { blind_profile: true }),
-    }
-    const blob = new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `${resumeFileName.replace(/\.[^.]+$/, "")}-reformatted.json`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
 
   function ef(path: string, value: string | null, opts: { multiline?: boolean; className?: string } = {}) {
     return (
@@ -248,10 +202,6 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
             <span className="rv-blind-toggle__hint">{t("review.blindProfileHint")}</span>
           </span>
         </label>
-        <button type="button" className="rv-export-btn" onClick={handleExportClick}>
-          <DownloadIcon />
-          {t("review.exportBtn")}
-        </button>
       </header>
 
       {/* ── Two panes ── */}
@@ -259,28 +209,18 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
         {/* Left — original file */}
         <div className="rv-pane rv-pane--left">
           <div className="pane-label">{t("review.leftLabel")}</div>
-          <div className={`pane-body${isPdf ? " pane-body--pdf" : ""}`}>
-            {isPdf && (
-              <object data={objectUrl} type="application/pdf" className="pdf-embed">
+          <div className={`pane-body${originalPdfViewerUrl ? " pane-body--pdf" : ""}`}>
+            {originalPdfViewerUrl ? (
+              <object data={originalPdfViewerUrl} type="application/pdf" className="pdf-embed">
                 <p className="pane-fallback">{t("review.pdfFallback")}</p>
               </object>
-            )}
-            {isDocx && (
-              <div className="docx-doc">
-                {docxHtml
-                  ? <div className="docx-content" dangerouslySetInnerHTML={{ __html: docxHtml }} />
-                  : <p className="pane-loading">{t("review.docxLoading")}</p>
-                }
-              </div>
-            )}
-            {isImage && (
-              <div className="image-pane">
-                <img src={objectUrl} alt={t("review.uploadedResumeAlt")} className="image-preview" />
-              </div>
-            )}
-            {!isPdf && !isDocx && !isImage && (
-              <div className="docx-doc">
-                <p className="pane-fallback">{t("review.previewFallback")}</p>
+            ) : (
+              <div className="original-text-preview">
+                <p className="original-text-preview__title">{t("review.originalTextFallbackTitle")}</p>
+                {data.original_preview_error && (
+                  <p className="original-text-preview__note">{data.original_preview_error}</p>
+                )}
+                <pre className="original-text-preview__body">{data.original_text}</pre>
               </div>
             )}
           </div>
@@ -497,32 +437,6 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
         )}
       </footer>
 
-      {/* ── Export confirm dialog ── */}
-      {exportConfirmOpen && (
-        <div className="rv-overlay" onClick={() => setExportConfirmOpen(false)}>
-          <div className="rv-dialog" onClick={(e) => e.stopPropagation()}>
-            <p className="rv-dialog__message">
-              {t("review.exportConfirmMsg", { count: ledger.needs_review })}
-            </p>
-            <div className="rv-dialog__actions">
-              <button
-                type="button"
-                className="rv-dialog__btn rv-dialog__btn--secondary"
-                onClick={() => setExportConfirmOpen(false)}
-              >
-                {t("review.exportGoBack")}
-              </button>
-              <button
-                type="button"
-                className="rv-dialog__btn rv-dialog__btn--primary"
-                onClick={doExport}
-              >
-                {t("review.exportAnyway")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

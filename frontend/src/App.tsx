@@ -12,15 +12,15 @@ type AppState =
   | { status: "pricing" }
   | { status: "login" }
   | { status: "signup" }
-  | { status: "loading"; fileName: string }
+  | { status: "loading"; fileName: string; targetFormatName: string }
   | { status: "error"; message: string }
-  | { status: "done"; data: ProcessResponse; fileName: string; resumeFile: File }
+  | { status: "done"; data: ProcessResponse; fileName: string; targetFormatName: string; resumeFile: File }
 
 export default function App() {
   const [state, setState] = useState<AppState>({ status: "idle" })
 
-  async function handleConvert(resumeFile: File) {
-    setState({ status: "loading", fileName: resumeFile.name })
+  async function handleConvert(resumeFile: File, targetFile: File) {
+    setState({ status: "loading", fileName: resumeFile.name, targetFormatName: targetFile.name })
 
     const formData = new FormData()
     formData.append("file", resumeFile)
@@ -40,7 +40,19 @@ export default function App() {
       }
 
       const data: ProcessResponse = await res.json()
-      setState({ status: "done", data, fileName: resumeFile.name, resumeFile })
+      const targetFormData = new FormData()
+      targetFormData.append("file", targetFile)
+      targetFormData.append("artifact_id", data.artifact_id)
+      const targetRes = await fetch("/api/target-format", { method: "POST", body: targetFormData })
+
+      if (!targetRes.ok) {
+        const body = await targetRes.json().catch(() => ({}))
+        const detail: string = body.detail ?? "Unknown error"
+        setState({ status: "error", message: `Target format error — ${detail}` })
+        return
+      }
+
+      setState({ status: "done", data, fileName: resumeFile.name, targetFormatName: targetFile.name, resumeFile })
     } catch {
       setState({
         status: "error",
@@ -65,7 +77,7 @@ export default function App() {
         data={state.data}
         resumeFile={state.resumeFile}
         resumeFileName={state.fileName}
-        formatName="Apex Standard"
+        formatName={state.targetFormatName}
         onBack={() => setState({ status: "idle" })}
       />
     )

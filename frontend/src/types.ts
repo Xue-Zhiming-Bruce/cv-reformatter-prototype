@@ -62,7 +62,12 @@ export interface LedgerSummary {
 }
 
 export interface ProcessResponse {
+  artifact_id: string
   profile: CandidateProfile
   ledger: LedgerSummary
   original_text: string
+  original_pdf_preview_url: string | null
+  original_preview_error: string | null
+  debug_artifacts: Record<string, string>
+  artifact_metadata_url: string
 }

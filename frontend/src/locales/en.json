@@ -13,14 +13,14 @@
     "headlineBefore": "Any resume",
     "headlineAfter": "your format.",
     "sub": [
-      "Upload any resume and your template.",
-      "Reformatted to your exact layout.",
-      "Original preserved — you review before it ships."
+      "Upload a candidate resume and your target format.",
+      "Extract, review, and generate a client-ready CV.",
+      "Original preserved — recruiter approved."
     ],
     "uploadCta": "Upload resume",
     "uploadHint": "or drop it here · PDF, DOCX",
     "baaBeforeLabel": "Their resume",
-    "baaAfterLabel": "Your template",
+    "baaAfterLabel": "Client-ready CV",
     "sampleLink": "Try a sample resume →",
     "sampleLoading": "Loading…",
     "dropOverlay": "Drop to upload resume"
@@ -28,12 +28,12 @@
   "converter": {
     "badgeChange": "Change",
     "connectorLabel": "reformat into",
-    "templateTitle": "Upload your template",
-    "templateSubtitle": "DOCX or PDF · the format to apply",
-    "templateBtn": "Upload template",
-    "convertBtn": "Convert",
-    "convertingBtn": "Converting…",
-    "convertHint": "Upload your template to convert"
+    "templateTitle": "Upload target format",
+    "templateSubtitle": "DOCX template or PDF reference sample",
+    "templateBtn": "Upload format",
+    "convertBtn": "Convert & review",
+    "convertingBtn": "Extracting…",
+    "convertHint": "Upload a target format to continue"
   },
   "how": {
     "heading": "How it works",
@@ -44,18 +44,18 @@
         "body": "PDF or DOCX — text-based files supported."
       },
       {
-        "title": "Upload your template",
-        "body": "The DOCX or PDF that defines the format you want applied."
+        "title": "Upload target format",
+        "body": "Use a DOCX template, or upload a PDF as a visual reference sample."
       },
       {
-        "title": "Review and download",
-        "body": "Check every field side by side, edit anything, then export."
+        "title": "Review and generate",
+        "body": "Compare the original preview with extracted fields, edit anything, then generate client-ready output."
       }
     ]
   },
   "showcase": {
-    "heading": "Any resume, your format.",
-    "sub": "Paste any CV in any layout — reformatted to your exact template. Original preserved.",
+    "heading": "Any resume, your client-ready format.",
+    "sub": "Extract into structured fields, preserve the original for review, and render through the controlled DOCX/PDF pipeline.",
     "beforeLabel": "Before",
     "afterLabel": "After",
     "arrowLabel": "reformatted"
@@ -65,11 +65,11 @@
     "items": [
       {
         "title": "Original preserved. Recruiter approved.",
-        "body": "Nothing is added, nothing is lost. Every field comes directly from the original — gaps are flagged for you to fill, never invented. You review every field before it ships."
+        "body": "Source content is preserved for comparison. Fields come from the original, gaps are flagged for you to fill, and missing facts are never invented."
       },
       {
         "title": "Review before it ships",
-        "body": "Side-by-side review screen shows the original next to the reformatted result. Click any field to edit before you export."
+        "body": "Side-by-side review shows the original resume preview next to the structured result. Click any field to edit before generation."
       },
       {
         "title": "About 20 seconds",
@@ -83,7 +83,7 @@
     "item3": "★ Trusted by recruiters worldwide"
   },
   "footer": {
-    "brandDesc": "Reformat any resume into your exact template — original preserved, recruiter approved.",
+    "brandDesc": "Reformat candidate resumes into recruiter-approved, client-ready CVs.",
     "product": "Product",
     "company": "Company",
     "legal": "Legal",
@@ -108,12 +108,12 @@
     "freeFeatures": [
       "5 conversions per month",
       "Full review & edit screen",
-      "Export to JSON",
+      "Original PDF preview",
       "No credit card required"
     ],
     "proFeatures": [
       "Unlimited conversions (fair use)",
-      "Saved templates",
+      "Saved target formats",
       "Priority processing",
       "Everything in Free"
     ],
@@ -121,7 +121,7 @@
     "faq": [
       {
         "q": "What if the result has mistakes?",
-        "a": "You review and edit every field on the review screen before exporting. Nothing ships until you say so."
+        "a": "You review and edit every field on the review screen before generation. Nothing ships until you say so."
       },
       {
         "q": "What happens to uploaded files?",
@@ -135,12 +135,13 @@
     ]
   },
   "review": {
-    "leftLabel": "Original",
-    "rightLabel": "Reformatted",
-    "rightLabelHint": "Click any field to edit",
+    "leftLabel": "Original resume preview",
+    "rightLabel": "Reformatted draft",
+    "rightLabelHint": "Click fields to edit",
     "pdfFallback": "PDF preview not available in this browser.",
     "docxLoading": "Rendering document…",
     "previewFallback": "Preview not available for this file type.",
+    "originalTextFallbackTitle": "Original extracted text",
     "emptySlot": "Not in original — click to fill",
     "ledgerLabel": "Ledger",
     "ledgerExtracted": "Extracted {{count}}",
@@ -149,11 +150,6 @@
     "ledgerAllPlaced": "All placed ✓",
     "ledgerEdited": "Edited {{count}}",
     "ledgerMissing": "Missing: {{fields}}",
-    "exportBtn": "Export",
-    "exportConfirmMsg_one": "{{count}} field still needs review. Export anyway?",
-    "exportConfirmMsg_other": "{{count}} fields still need review. Export anyway?",
-    "exportGoBack": "Go back",
-    "exportAnyway": "Export anyway",
     "sectionSummary": "Summary",
     "sectionExperience": "Experience",
     "sectionEducation": "Education",

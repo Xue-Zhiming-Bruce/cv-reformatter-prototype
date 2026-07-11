@@ -72,8 +72,13 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
     }
 
     download_response = client.get(body["docx_download_url"])
+    pdf_response = client.get(body["pdf_download_url"])
     metadata_response = client.get(body["artifact_metadata_url"])
     assert download_response.status_code == 200
+    assert download_response.headers["content-disposition"].startswith("attachment;")
+    assert pdf_response.status_code == 200
+    assert pdf_response.headers["content-type"] == "application/pdf"
+    assert pdf_response.headers["content-disposition"].startswith("inline;")
     assert metadata_response.status_code == 200
     metadata = metadata_response.json()
     assert metadata["status"] == "generated"

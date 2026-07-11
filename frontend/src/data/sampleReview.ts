@@ -3,6 +3,7 @@ import type { ProcessResponse } from "../types"
 // Placeholder data matching the design mockup, used until the Convert button
 // is wired to POST /api/process and render a real response.
 export const sampleReview: ProcessResponse = {
+  artifact_id: "sample_review",
   original_text: [
     "Dohyun Kim / Seoul / 010-1234-5678",
     "8-yr backend engineer. Large-scale commerce traffic, team lead.",
@@ -54,4 +55,8 @@ export const sampleReview: ProcessResponse = {
     placed: 12,
     needs_review: 2,
   },
+  original_pdf_preview_url: null,
+  original_preview_error: null,
+  debug_artifacts: {},
+  artifact_metadata_url: "/api/artifacts/sample_review/metadata",
 }
