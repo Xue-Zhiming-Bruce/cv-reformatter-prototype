@@ -1,0 +1,197 @@
+{
+  "header": {
+    "home": "Home",
+    "pricing": "Pricing",
+    "login": "Log in",
+    "signup": "Sign up"
+  },
+  "lang": {
+    "ko": "한국어",
+    "en": "EN"
+  },
+  "hero": {
+    "headlineBefore": "Any resume",
+    "headlineAfter": "your format.",
+    "sub": [
+      "Upload any resume and your template.",
+      "Reformatted to your exact layout.",
+      "Original preserved — you review before it ships."
+    ],
+    "uploadCta": "Upload resume",
+    "uploadHint": "or drop it here · PDF, DOCX",
+    "baaBeforeLabel": "Their resume",
+    "baaAfterLabel": "Your template",
+    "sampleLink": "Try a sample resume →",
+    "sampleLoading": "Loading…",
+    "dropOverlay": "Drop to upload resume"
+  },
+  "converter": {
+    "badgeChange": "Change",
+    "connectorLabel": "reformat into",
+    "templateTitle": "Upload your template",
+    "templateSubtitle": "DOCX or PDF · the format to apply",
+    "templateBtn": "Upload template",
+    "convertBtn": "Convert",
+    "convertingBtn": "Converting…",
+    "convertHint": "Upload your template to convert"
+  },
+  "how": {
+    "heading": "How it works",
+    "sub": "Three steps. About 20 seconds.",
+    "steps": [
+      {
+        "title": "Upload any resume",
+        "body": "PDF or DOCX — text-based files supported."
+      },
+      {
+        "title": "Upload your template",
+        "body": "The DOCX or PDF that defines the format you want applied."
+      },
+      {
+        "title": "Review and download",
+        "body": "Check every field side by side, edit anything, then export."
+      }
+    ]
+  },
+  "showcase": {
+    "heading": "Any resume, your format.",
+    "sub": "Paste any CV in any layout — reformatted to your exact template. Original preserved.",
+    "beforeLabel": "Before",
+    "afterLabel": "After",
+    "arrowLabel": "reformatted"
+  },
+  "why": {
+    "heading": "Why Reform",
+    "items": [
+      {
+        "title": "Original preserved. Recruiter approved.",
+        "body": "Nothing is added, nothing is lost. Every field comes directly from the original — gaps are flagged for you to fill, never invented. You review every field before it ships."
+      },
+      {
+        "title": "Review before it ships",
+        "body": "Side-by-side review screen shows the original next to the reformatted result. Click any field to edit before you export."
+      },
+      {
+        "title": "About 20 seconds",
+        "body": "From upload to formatted output in roughly twenty seconds. No queue, no account required to get started."
+      }
+    ]
+  },
+  "trust": {
+    "item1": "1 resume ≈ 20 seconds",
+    "item2": "Original preserved. Recruiter approved.",
+    "item3": "★ Trusted by recruiters worldwide"
+  },
+  "footer": {
+    "brandDesc": "Reformat any resume into your exact template — original preserved, recruiter approved.",
+    "product": "Product",
+    "company": "Company",
+    "legal": "Legal",
+    "home": "Home",
+    "pricing": "Pricing",
+    "contact": "Contact",
+    "terms": "Terms",
+    "privacy": "Privacy",
+    "copyright": "© 2026 Reform"
+  },
+  "pricing": {
+    "heading": "Simple pricing",
+    "sub": "Start free. Upgrade when you need more.",
+    "perMonth": "/month",
+    "freeName": "Free",
+    "proName": "Pro",
+    "badge": "Launch offer",
+    "startFreeBtn": "Start free",
+    "getProBtn": "Get Pro",
+    "freeFootnote": "No credit card required",
+    "proFootnote": "Cancel anytime · no lock-in",
+    "freeFeatures": [
+      "5 conversions per month",
+      "Full review & edit screen",
+      "Export to JSON",
+      "No credit card required"
+    ],
+    "proFeatures": [
+      "Unlimited conversions (fair use)",
+      "Saved templates",
+      "Priority processing",
+      "Everything in Free"
+    ],
+    "faqHeading": "Frequently asked",
+    "faq": [
+      {
+        "q": "What if the result has mistakes?",
+        "a": "You review and edit every field on the review screen before exporting. Nothing ships until you say so."
+      },
+      {
+        "q": "What happens to uploaded files?",
+        "a": "TODO: Files are processed in memory and not permanently stored on our servers. Update with real data-retention policy before launch.",
+        "isTodo": true
+      },
+      {
+        "q": "Can I cancel anytime?",
+        "a": "Yes — Pro is billed monthly with no lock-in. Cancel any time from your account settings."
+      }
+    ]
+  },
+  "review": {
+    "leftLabel": "Original",
+    "rightLabel": "Reformatted",
+    "rightLabelHint": "Click any field to edit",
+    "pdfFallback": "PDF preview not available in this browser.",
+    "docxLoading": "Rendering document…",
+    "previewFallback": "Preview not available for this file type.",
+    "emptySlot": "Not in original — click to fill",
+    "ledgerLabel": "Ledger",
+    "ledgerExtracted": "Extracted {{count}}",
+    "ledgerPlaced": "Placed {{count}}",
+    "ledgerNeedsReview": "Needs review {{count}}",
+    "ledgerAllPlaced": "All placed ✓",
+    "ledgerEdited": "Edited {{count}}",
+    "ledgerMissing": "Missing: {{fields}}",
+    "exportBtn": "Export",
+    "exportConfirmMsg_one": "{{count}} field still needs review. Export anyway?",
+    "exportConfirmMsg_other": "{{count}} fields still need review. Export anyway?",
+    "exportGoBack": "Go back",
+    "exportAnyway": "Export anyway",
+    "sectionSummary": "Summary",
+    "sectionExperience": "Experience",
+    "sectionEducation": "Education",
+    "sectionSkills": "Skills",
+    "sectionLanguages": "Languages",
+    "sectionCertifications": "Certifications",
+    "sectionAdditional": "Additional",
+    "clickToEdit": "Click to edit",
+    "present": "Present",
+    "docxRenderError": "Could not render document preview.",
+    "uploadedResumeAlt": "Uploaded resume",
+    "blindProfileLabel": "Blind profile",
+    "blindProfileHint": "Hides identity from client"
+  },
+  "auth": {
+    "loginTitle": "Welcome back",
+    "loginSubtitle": "Sign in to Reform",
+    "signupTitle": "Create your account",
+    "signupSubtitle": "Start reformatting resumes",
+    "nameLabel": "Full name",
+    "namePlaceholder": "Jane Smith",
+    "emailLabel": "Email address",
+    "emailPlaceholder": "jane@example.com",
+    "passwordLabel": "Password",
+    "loginBtn": "Log in",
+    "signupBtn": "Sign up",
+    "orDivider": "or",
+    "googleLogin": "Sign in with Google",
+    "googleSignup": "Sign up with Google",
+    "noAccount": "Don't have an account?",
+    "hasAccount": "Already have an account?",
+    "switchToSignup": "Sign up",
+    "switchToLogin": "Log in"
+  },
+  "errors": {
+    "unsupported": "Unsupported file — {{detail}}",
+    "server": "Server error — please try again. ({{detail}})",
+    "network": "Could not reach the server — check your connection and try again.",
+    "invalidFileType": "Only PDF and DOCX files are supported."
+  }
+}

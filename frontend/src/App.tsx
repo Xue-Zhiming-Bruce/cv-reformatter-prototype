@@ -1,14 +1,20 @@
 import { useState } from "react"
 import { MainScreen } from "./screens/MainScreen"
 import { ReviewScreen } from "./screens/ReviewScreen"
+import { AuthScreen } from "./screens/AuthScreen"
+import { PricingScreen } from "./screens/PricingScreen"
+import { FEATURES } from "./constants/features"
 import type { ProcessResponse } from "./types"
 import "./App.css"
 
 type AppState =
   | { status: "idle" }
+  | { status: "pricing" }
+  | { status: "login" }
+  | { status: "signup" }
   | { status: "loading"; fileName: string }
   | { status: "error"; message: string }
-  | { status: "done"; data: ProcessResponse; fileName: string }
+  | { status: "done"; data: ProcessResponse; fileName: string; resumeFile: File }
 
 export default function App() {
   const [state, setState] = useState<AppState>({ status: "idle" })
@@ -34,7 +40,7 @@ export default function App() {
       }
 
       const data: ProcessResponse = await res.json()
-      setState({ status: "done", data, fileName: resumeFile.name })
+      setState({ status: "done", data, fileName: resumeFile.name, resumeFile })
     } catch {
       setState({
         status: "error",
@@ -43,13 +49,35 @@ export default function App() {
     }
   }
 
+  if (FEATURES.auth && (state.status === "login" || state.status === "signup")) {
+    return (
+      <AuthScreen
+        mode={state.status}
+        onSwitchMode={() => setState({ status: state.status === "login" ? "signup" : "login" })}
+        onGoHome={() => setState({ status: "idle" })}
+      />
+    )
+  }
+
   if (state.status === "done") {
     return (
       <ReviewScreen
         data={state.data}
+        resumeFile={state.resumeFile}
         resumeFileName={state.fileName}
         formatName="Apex Standard"
         onBack={() => setState({ status: "idle" })}
+      />
+    )
+  }
+
+  if (state.status === "pricing") {
+    return (
+      <PricingScreen
+        onHome={() => setState({ status: "idle" })}
+        onPricing={() => setState({ status: "pricing" })}
+        onLogin={() => { if (FEATURES.auth) setState({ status: "login" }) }}
+        onSignup={() => { if (FEATURES.auth) setState({ status: "signup" }) }}
       />
     )
   }
@@ -60,6 +88,9 @@ export default function App() {
       isLoading={state.status === "loading"}
       error={state.status === "error" ? state.message : null}
       onDismissError={() => setState({ status: "idle" })}
+      onLogin={() => { if (FEATURES.auth) setState({ status: "login" }) }}
+      onSignup={() => { if (FEATURES.auth) setState({ status: "signup" }) }}
+      onPricing={() => setState({ status: "pricing" })}
     />
   )
 }
