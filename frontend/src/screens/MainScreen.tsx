@@ -109,7 +109,10 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
       <section className={`hero-primary${resumeFile ? " hero-primary--compact" : ""}`}>
         <div className="hero-primary__inner">
           <h1 className="hero-headline">
-            {t("hero.headlineBefore")} <span className="hero-headline__arrow">→</span> {t("hero.headlineAfter")}
+            <span className="hero-headline__line">
+              {t("hero.headlineBefore")} <span className="hero-headline__arrow">→</span>
+            </span>
+            <span className="hero-headline__line">{t("hero.headlineAfter")}</span>
           </h1>
           <p className="hero-sub">{t("hero.sub")}</p>
 

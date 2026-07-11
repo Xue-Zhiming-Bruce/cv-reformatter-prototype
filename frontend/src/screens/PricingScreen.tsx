@@ -1,40 +1,9 @@
 import { useState } from "react"
+import { useTranslation } from "react-i18next"
 import { SiteHeader } from "../components/SiteHeader"
 import { Footer } from "../components/Footer"
-import { PRICING } from "../constants/pricing"
+import { getPricing } from "../constants/pricing"
 import "./PricingScreen.css"
-
-const { currency, free, pro } = PRICING
-
-const FREE_FEATURES = [
-  `${free.conversionsPerMonth} conversions per month`,
-  "Full review & edit screen",
-  "Export to JSON",
-  "No credit card required",
-]
-
-const PRO_FEATURES = [
-  "Unlimited conversions (fair use)",
-  "Saved templates",
-  "Priority processing",
-  "Everything in Free",
-]
-
-const FAQ: Array<{ q: string; a: string; isTodo?: boolean }> = [
-  {
-    q: "What if the result has mistakes?",
-    a: "You review and edit every field on the review screen before exporting. Nothing ships until you say so.",
-  },
-  {
-    q: "What happens to uploaded files?",
-    a: "TODO: Files are processed in memory and not permanently stored on our servers. Update with real data-retention policy before launch.",
-    isTodo: true,
-  },
-  {
-    q: "Can I cancel anytime?",
-    a: "Yes — Pro is billed monthly with no lock-in. Cancel any time from your account settings.",
-  },
-]
 
 type PricingScreenProps = {
   onHome: () => void
@@ -44,7 +13,15 @@ type PricingScreenProps = {
 }
 
 export function PricingScreen({ onHome, onPricing, onLogin, onSignup }: PricingScreenProps) {
+  const { t, i18n } = useTranslation()
   const [openFaq, setOpenFaq] = useState<number | null>(null)
+
+  const lng = i18n.resolvedLanguage ?? i18n.language
+  const p = getPricing(lng)
+
+  const freeFeatures = t("pricing.freeFeatures", { returnObjects: true }) as string[]
+  const proFeatures = t("pricing.proFeatures", { returnObjects: true }) as string[]
+  const faqItems = t("pricing.faq", { returnObjects: true }) as Array<{ q: string; a: string; isTodo?: boolean }>
 
   return (
     <div className="pricing-page">
@@ -58,8 +35,8 @@ export function PricingScreen({ onHome, onPricing, onLogin, onSignup }: PricingS
 
       {/* ── Hero ── */}
       <section className="pricing-hero">
-        <h1 className="pricing-hero__heading">Simple pricing</h1>
-        <p className="pricing-hero__sub">Start free. Upgrade when you need more.</p>
+        <h1 className="pricing-hero__heading">{t("pricing.heading")}</h1>
+        <p className="pricing-hero__sub">{t("pricing.sub")}</p>
       </section>
 
       {/* ── Plan cards ── */}
@@ -68,14 +45,14 @@ export function PricingScreen({ onHome, onPricing, onLogin, onSignup }: PricingS
           {/* Free */}
           <div className="plan-card">
             <div className="plan-card__top">
-              <span className="plan-card__name">Free</span>
+              <span className="plan-card__name">{t("pricing.freeName")}</span>
               <div className="plan-card__price-row">
-                <span className="plan-card__price">{currency}0</span>
-                <span className="plan-card__period">/month</span>
+                <span className="plan-card__price">{p.currency}0</span>
+                <span className="plan-card__period">{t("pricing.perMonth")}</span>
               </div>
             </div>
             <ul className="plan-card__features">
-              {FREE_FEATURES.map((f) => (
+              {freeFeatures.map((f) => (
                 <li key={f} className="plan-card__feature">
                   <span className="plan-card__check" aria-hidden="true">✓</span>
                   {f}
@@ -83,24 +60,28 @@ export function PricingScreen({ onHome, onPricing, onLogin, onSignup }: PricingS
               ))}
             </ul>
             <button type="button" className="plan-card__cta plan-card__cta--free" onClick={onHome}>
-              Start free
+              {t("pricing.startFreeBtn")}
             </button>
-            <p className="plan-card__footnote">No credit card required</p>
+            <p className="plan-card__footnote">{t("pricing.freeFootnote")}</p>
           </div>
 
           {/* Pro — emphasized */}
           <div className="plan-card plan-card--pro">
-            <div className="plan-badge">{pro.badge}</div>
+            <div className="plan-badge">{t("pricing.badge")}</div>
             <div className="plan-card__top">
-              <span className="plan-card__name">Pro</span>
+              <span className="plan-card__name">{t("pricing.proName")}</span>
               <div className="plan-card__price-row">
-                <span className="plan-card__price">{currency}{pro.price.toLocaleString()}</span>
-                <span className="plan-card__period">/month</span>
-                <span className="plan-card__original">{currency}{pro.originalPrice.toLocaleString()}</span>
+                <span className="plan-card__price">
+                  {p.currency}{p.pro.price.toLocaleString()}
+                </span>
+                <span className="plan-card__period">{t("pricing.perMonth")}</span>
+                <span className="plan-card__original">
+                  {p.currency}{p.pro.originalPrice.toLocaleString()}
+                </span>
               </div>
             </div>
             <ul className="plan-card__features">
-              {PRO_FEATURES.map((f) => (
+              {proFeatures.map((f) => (
                 <li key={f} className="plan-card__feature">
                   <span className="plan-card__check plan-card__check--pro" aria-hidden="true">✓</span>
                   {f}
@@ -108,9 +89,9 @@ export function PricingScreen({ onHome, onPricing, onLogin, onSignup }: PricingS
               ))}
             </ul>
             <button type="button" className="plan-card__cta plan-card__cta--pro" onClick={onSignup}>
-              Get Pro
+              {t("pricing.getProBtn")}
             </button>
-            <p className="plan-card__footnote plan-card__footnote--pro">Cancel anytime · no lock-in</p>
+            <p className="plan-card__footnote plan-card__footnote--pro">{t("pricing.proFootnote")}</p>
           </div>
         </div>
       </section>
@@ -118,9 +99,9 @@ export function PricingScreen({ onHome, onPricing, onLogin, onSignup }: PricingS
       {/* ── FAQ ── */}
       <section className="faq-section">
         <div className="faq-inner">
-          <h2 className="faq-heading">Frequently asked</h2>
+          <h2 className="faq-heading">{t("pricing.faqHeading")}</h2>
           <div className="faq-list">
-            {FAQ.map((item, i) => (
+            {faqItems.map((item, i) => (
               <div key={i} className={`faq-item${openFaq === i ? " faq-item--open" : ""}`}>
                 <button
                   type="button"

@@ -149,7 +149,18 @@
     "exportConfirmMsg_one": "{{count}} field still needs review. Export anyway?",
     "exportConfirmMsg_other": "{{count}} fields still need review. Export anyway?",
     "exportGoBack": "Go back",
-    "exportAnyway": "Export anyway"
+    "exportAnyway": "Export anyway",
+    "sectionSummary": "Summary",
+    "sectionExperience": "Experience",
+    "sectionEducation": "Education",
+    "sectionSkills": "Skills",
+    "sectionLanguages": "Languages",
+    "sectionCertifications": "Certifications",
+    "sectionAdditional": "Additional",
+    "clickToEdit": "Click to edit",
+    "present": "Present",
+    "docxRenderError": "Could not render document preview.",
+    "uploadedResumeAlt": "Uploaded resume"
   },
   "auth": {
     "loginTitle": "Welcome back",

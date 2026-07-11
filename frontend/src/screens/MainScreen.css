@@ -186,7 +186,11 @@
   max-width: 420px;
 }
 
-/* ── Hero headline purple arrow ───────────────────────── */
+/* ── Hero headline two intentional lines ─────────────── */
+.hero-headline__line {
+  display: block;
+}
+
 .hero-headline__arrow {
   color: var(--color-accent);
 }

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react"
+import { useTranslation } from "react-i18next"
 import mammoth from "mammoth"
 import { DownloadIcon, LogoIcon, PencilIcon } from "../components/icons"
 import type { ProcessResponse } from "../types"
@@ -28,6 +29,7 @@ type EditableFieldProps = {
 }
 
 function EditableField({ value, path, edits, onEdit, isMissing, multiline, className }: EditableFieldProps) {
+  const { t } = useTranslation()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState("")
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null)
@@ -92,7 +94,7 @@ function EditableField({ value, path, edits, onEdit, isMissing, multiline, class
         className={`empty-slot${className ? ` ${className}` : ""}`}
         onClick={startEdit}
       >
-        <span className="empty-slot__badge">Not in original — click to fill</span>
+        <span className="empty-slot__badge">{t("review.emptySlot")}</span>
       </button>
     )
   }
@@ -105,7 +107,7 @@ function EditableField({ value, path, edits, onEdit, isMissing, multiline, class
       onClick={startEdit}
       role="button"
       tabIndex={0}
-      title="Click to edit"
+      title={t("review.clickToEdit")}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") startEdit() }}
     >
       {effective}
@@ -119,6 +121,7 @@ function joinDefined(values: Array<string | null | undefined>, separator = " –
 }
 
 export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onBack }: ReviewScreenProps) {
+  const { t } = useTranslation()
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [docxHtml, setDocxHtml] = useState<string | null>(null)
   const [exportConfirmOpen, setExportConfirmOpen] = useState(false)
@@ -144,11 +147,11 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
         const result = await mammoth.convertToHtml({ arrayBuffer: e.target!.result as ArrayBuffer })
         setDocxHtml(result.value)
       } catch {
-        setDocxHtml("<p>Could not render document preview.</p>")
+        setDocxHtml(`<p>${t("review.docxRenderError")}</p>`)
       }
     }
     reader.readAsArrayBuffer(resumeFile)
-  }, [resumeFile, isDocx])
+  }, [resumeFile, isDocx, t])
 
   function handleEdit(path: string, value: string) {
     setEdits((prev) => {
@@ -195,7 +198,6 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
     )
   }
 
-  // Contact items: only show fields that have a value or are in missing_fields
   const contactItems = [
     { key: "email", value: profile.email },
     { key: "phone", value: profile.phone },
@@ -222,7 +224,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
         </div>
         <button type="button" className="rv-export-btn" onClick={handleExportClick}>
           <DownloadIcon />
-          Export
+          {t("review.exportBtn")}
         </button>
       </header>
 
@@ -230,29 +232,29 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
       <div className="rv-panes">
         {/* Left — original file */}
         <div className="rv-pane rv-pane--left">
-          <div className="pane-label">Original</div>
+          <div className="pane-label">{t("review.leftLabel")}</div>
           <div className={`pane-body${isPdf ? " pane-body--pdf" : ""}`}>
             {isPdf && (
               <object data={objectUrl} type="application/pdf" className="pdf-embed">
-                <p className="pane-fallback">PDF preview not available in this browser.</p>
+                <p className="pane-fallback">{t("review.pdfFallback")}</p>
               </object>
             )}
             {isDocx && (
               <div className="docx-doc">
                 {docxHtml
                   ? <div className="docx-content" dangerouslySetInnerHTML={{ __html: docxHtml }} />
-                  : <p className="pane-loading">Rendering document…</p>
+                  : <p className="pane-loading">{t("review.docxLoading")}</p>
                 }
               </div>
             )}
             {isImage && (
               <div className="image-pane">
-                <img src={objectUrl} alt="Uploaded resume" className="image-preview" />
+                <img src={objectUrl} alt={t("review.uploadedResumeAlt")} className="image-preview" />
               </div>
             )}
             {!isPdf && !isDocx && !isImage && (
               <div className="docx-doc">
-                <p className="pane-fallback">Preview not available for this file type.</p>
+                <p className="pane-fallback">{t("review.previewFallback")}</p>
               </div>
             )}
           </div>
@@ -261,8 +263,8 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
         {/* Right — editable reformatted doc */}
         <div className="rv-pane rv-pane--right">
           <div className="pane-label">
-            Reformatted · {formatName}
-            <span className="pane-label__hint">Click any field to edit</span>
+            {t("review.rightLabel")} · {formatName}
+            <span className="pane-label__hint">{t("review.rightLabelHint")}</span>
           </div>
           <div className="pane-body">
             <div className="rdoc">
@@ -291,7 +293,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
               {/* Summary */}
               {(profile.professional_summary || missingNames.has("professional_summary")) && (
                 <div className="rdoc-section">
-                  <div className="rdoc-section__head">Summary</div>
+                  <div className="rdoc-section__head">{t("review.sectionSummary")}</div>
                   <div className="rdoc-summary">
                     {ef("professional_summary", profile.professional_summary, { multiline: true })}
                   </div>
@@ -301,7 +303,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
               {/* Experience */}
               {profile.work_experience.length > 0 && (
                 <div className="rdoc-section">
-                  <div className="rdoc-section__head">Experience</div>
+                  <div className="rdoc-section__head">{t("review.sectionExperience")}</div>
                   {profile.work_experience.map((entry, i) => (
                     <div key={i} className="rdoc-entry">
                       <div className="rdoc-entry__top">
@@ -318,7 +320,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
                         <span className="rdoc-entry__dates">
                           {joinDefined([
                             edits[`work_experience.${i}.start_date`] ?? entry.start_date,
-                            edits[`work_experience.${i}.end_date`] ?? entry.end_date ?? "Present",
+                            edits[`work_experience.${i}.end_date`] ?? entry.end_date ?? t("review.present"),
                           ])}
                         </span>
                       </div>
@@ -341,7 +343,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
               {/* Education */}
               {profile.education.length > 0 && (
                 <div className="rdoc-section">
-                  <div className="rdoc-section__head">Education</div>
+                  <div className="rdoc-section__head">{t("review.sectionEducation")}</div>
                   {profile.education.map((entry, i) => (
                     <div key={i} className="rdoc-entry">
                       <div className="rdoc-entry__top">
@@ -376,7 +378,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
               {/* Skills */}
               {(profile.skills.length > 0 || missingNames.has("skills")) && (
                 <div className="rdoc-section">
-                  <div className="rdoc-section__head">Skills</div>
+                  <div className="rdoc-section__head">{t("review.sectionSkills")}</div>
                   <div className="rdoc-skills">
                     {ef("skills", profile.skills.join(", ") || null, { multiline: false })}
                   </div>
@@ -386,7 +388,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
               {/* Languages */}
               {profile.languages.length > 0 && (
                 <div className="rdoc-section">
-                  <div className="rdoc-section__head">Languages</div>
+                  <div className="rdoc-section__head">{t("review.sectionLanguages")}</div>
                   <div className="rdoc-skills">
                     {profile.languages.map((lang, i) => (
                       <span key={i}>
@@ -408,7 +410,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
               {/* Certifications */}
               {profile.certifications.length > 0 && (
                 <div className="rdoc-section">
-                  <div className="rdoc-section__head">Certifications</div>
+                  <div className="rdoc-section__head">{t("review.sectionCertifications")}</div>
                   {profile.certifications.map((cert, i) => (
                     <div key={i} className="rdoc-entry">
                       <div className="rdoc-entry__top">
@@ -435,7 +437,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
               {/* Additional */}
               {(profile.work_authorization || profile.notice_period || profile.salary_expectation) && (
                 <div className="rdoc-section">
-                  <div className="rdoc-section__head rdoc-section__head--muted">Additional</div>
+                  <div className="rdoc-section__head rdoc-section__head--muted">{t("review.sectionAdditional")}</div>
                   <div className="rdoc-additional">
                     {ef("work_authorization", profile.work_authorization)}
                     {ef("notice_period", profile.notice_period)}
@@ -452,19 +454,19 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
 
       {/* ── Ledger bar ── */}
       <footer className="rv-ledger">
-        <span className="rv-ledger__label">Ledger</span>
-        <span className="rv-ledger__item">Extracted {ledger.extracted}</span>
-        <span className="rv-ledger__item">Placed {ledger.placed}</span>
+        <span className="rv-ledger__label">{t("review.ledgerLabel")}</span>
+        <span className="rv-ledger__item">{t("review.ledgerExtracted", { count: ledger.extracted })}</span>
+        <span className="rv-ledger__item">{t("review.ledgerPlaced", { count: ledger.placed })}</span>
         {ledger.needs_review > 0
-          ? <span className="rv-ledger__item rv-ledger__item--review">Needs review {ledger.needs_review}</span>
-          : <span className="rv-ledger__item rv-ledger__item--ok">All placed ✓</span>
+          ? <span className="rv-ledger__item rv-ledger__item--review">{t("review.ledgerNeedsReview", { count: ledger.needs_review })}</span>
+          : <span className="rv-ledger__item rv-ledger__item--ok">{t("review.ledgerAllPlaced")}</span>
         }
         {editCount > 0 && (
-          <span className="rv-ledger__item rv-ledger__item--edited">Edited {editCount}</span>
+          <span className="rv-ledger__item rv-ledger__item--edited">{t("review.ledgerEdited", { count: editCount })}</span>
         )}
         {profile.missing_fields.length > 0 && (
           <span className="rv-ledger__missing">
-            Missing: {profile.missing_fields.map((f) => f.label).join(" · ")}
+            {t("review.ledgerMissing", { fields: profile.missing_fields.map((f) => f.label).join(" · ") })}
           </span>
         )}
       </footer>
@@ -474,8 +476,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
         <div className="rv-overlay" onClick={() => setExportConfirmOpen(false)}>
           <div className="rv-dialog" onClick={(e) => e.stopPropagation()}>
             <p className="rv-dialog__message">
-              {ledger.needs_review} field{ledger.needs_review !== 1 ? "s" : ""} still need
-              {ledger.needs_review === 1 ? "s" : ""} review. Export anyway?
+              {t("review.exportConfirmMsg", { count: ledger.needs_review })}
             </p>
             <div className="rv-dialog__actions">
               <button
@@ -483,14 +484,14 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
                 className="rv-dialog__btn rv-dialog__btn--secondary"
                 onClick={() => setExportConfirmOpen(false)}
               >
-                Go back
+                {t("review.exportGoBack")}
               </button>
               <button
                 type="button"
                 className="rv-dialog__btn rv-dialog__btn--primary"
                 onClick={doExport}
               >
-                Export anyway
+                {t("review.exportAnyway")}
               </button>
             </div>
           </div>

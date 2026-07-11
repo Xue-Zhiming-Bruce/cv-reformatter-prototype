@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next"
 import { LogoIcon } from "./icons"
 import "./Footer.css"
 
@@ -48,6 +49,14 @@ function ChevronDownIcon() {
 }
 
 export function Footer({ onHome, onPricing }: FooterProps) {
+  const { t, i18n } = useTranslation()
+  const lng = i18n.resolvedLanguage ?? i18n.language
+  const lngLabel = lng === "ko" ? "한국어" : "English"
+
+  function toggleLang() {
+    i18n.changeLanguage(lng === "ko" ? "en" : "ko")
+  }
+
   return (
     <footer className="site-footer">
       {/* ── Link columns ── */}
@@ -59,23 +68,21 @@ export function Footer({ onHome, onPricing }: FooterProps) {
               <LogoIcon className="brand__icon" />
               <span className="brand__name">Reform</span>
             </div>
-            <p className="footer-brand__desc">
-              Reformat any resume into your exact template — in seconds, nothing invented.
-            </p>
+            <p className="footer-brand__desc">{t("footer.brandDesc")}</p>
           </div>
 
           {/* Product */}
           <div className="footer-col">
-            <h3 className="footer-col__heading">Product</h3>
+            <h3 className="footer-col__heading">{t("footer.product")}</h3>
             <ul className="footer-col__list">
               <li>
                 <button type="button" className="footer-col__link footer-col__link--btn" onClick={onHome}>
-                  Home
+                  {t("footer.home")}
                 </button>
               </li>
               <li>
                 <button type="button" className="footer-col__link footer-col__link--btn" onClick={onPricing}>
-                  Pricing
+                  {t("footer.pricing")}
                 </button>
               </li>
             </ul>
@@ -83,20 +90,20 @@ export function Footer({ onHome, onPricing }: FooterProps) {
 
           {/* Company */}
           <div className="footer-col">
-            <h3 className="footer-col__heading">Company</h3>
+            <h3 className="footer-col__heading">{t("footer.company")}</h3>
             <ul className="footer-col__list">
               <li>
-                <a href="mailto:hello@reformcv.com" className="footer-col__link">Contact</a>
+                <a href="mailto:hello@reformcv.com" className="footer-col__link">{t("footer.contact")}</a>
               </li>
             </ul>
           </div>
 
           {/* Legal */}
           <div className="footer-col">
-            <h3 className="footer-col__heading">Legal</h3>
+            <h3 className="footer-col__heading">{t("footer.legal")}</h3>
             <ul className="footer-col__list">
-              <li><a href="#" className="footer-col__link">Terms</a></li>
-              <li><a href="#" className="footer-col__link">Privacy</a></li>
+              <li><a href="#" className="footer-col__link">{t("footer.terms")}</a></li>
+              <li><a href="#" className="footer-col__link">{t("footer.privacy")}</a></li>
             </ul>
           </div>
         </div>
@@ -105,9 +112,9 @@ export function Footer({ onHome, onPricing }: FooterProps) {
       {/* ── Bottom bar ── */}
       <div className="footer-bar">
         <div className="footer-bar__inner">
-          <button type="button" className="footer-lang">
+          <button type="button" className="footer-lang" onClick={toggleLang} aria-label="Switch language">
             <GlobeIcon />
-            <span>English</span>
+            <span>{lngLabel}</span>
             <ChevronDownIcon />
           </button>
 
@@ -118,9 +125,9 @@ export function Footer({ onHome, onPricing }: FooterProps) {
           </div>
 
           <div className="footer-legal">
-            <span className="footer-legal__copy">© 2026 Reform</span>
-            <a href="#" className="footer-legal__link">Terms</a>
-            <a href="#" className="footer-legal__link">Privacy</a>
+            <span className="footer-legal__copy">{t("footer.copyright")}</span>
+            <a href="#" className="footer-legal__link">{t("footer.terms")}</a>
+            <a href="#" className="footer-legal__link">{t("footer.privacy")}</a>
           </div>
         </div>
       </div>

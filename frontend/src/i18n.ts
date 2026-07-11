@@ -25,4 +25,12 @@ i18n
     },
   })
 
+// Keep html[lang] in sync — drives [lang="ko"] CSS rules globally
+function syncHtmlLang(lng: string) {
+  document.documentElement.lang = lng
+}
+i18n.on("languageChanged", syncHtmlLang)
+// Also apply immediately in case languageChanged already fired during init
+if (i18n.language) syncHtmlLang(i18n.language)
+
 export default i18n

@@ -54,3 +54,9 @@ h3,
 p {
   margin: 0;
 }
+
+/* Korean text: prevent mid-syllable breaks, allow break at word boundaries */
+[lang="ko"] {
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
