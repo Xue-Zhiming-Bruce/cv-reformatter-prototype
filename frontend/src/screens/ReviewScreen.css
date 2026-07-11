@@ -79,6 +79,66 @@
   opacity: 0.88;
 }
 
+/* ── Blind profile toggle ────────────────────────────────── */
+.rv-blind-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 4px 0;
+}
+
+.rv-blind-toggle__check {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+  flex-shrink: 0;
+  margin: 0;
+}
+
+.rv-blind-toggle__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rv-blind-toggle__label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.2;
+}
+
+.rv-blind-toggle__hint {
+  font-size: 10.5px;
+  color: var(--color-text-muted);
+  line-height: 1.2;
+}
+
+/* ── Blind mode: redact identity in right pane ───────────── */
+.rdoc-header--blind .rdoc-name-row .ef,
+.rdoc-header--blind .rdoc-title-row .ef,
+.rdoc-header--blind .rdoc-contact .ef {
+  background: #16181b;
+  color: transparent;
+  border-radius: 3px;
+  cursor: default;
+  user-select: none;
+  pointer-events: none;
+}
+
+.rdoc-header--blind .rdoc-name-row .ef .ef__pencil,
+.rdoc-header--blind .rdoc-contact .ef .ef__pencil {
+  display: none;
+}
+
+.rdoc-header--blind .empty-slot {
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* ── Two-pane grid ─────────────────────────────────────────── */
 .rv-panes {
   flex: 1;

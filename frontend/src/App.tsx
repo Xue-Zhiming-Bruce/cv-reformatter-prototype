@@ -3,6 +3,7 @@ import { MainScreen } from "./screens/MainScreen"
 import { ReviewScreen } from "./screens/ReviewScreen"
 import { AuthScreen } from "./screens/AuthScreen"
 import { PricingScreen } from "./screens/PricingScreen"
+import { FEATURES } from "./constants/features"
 import type { ProcessResponse } from "./types"
 import "./App.css"
 
@@ -48,7 +49,7 @@ export default function App() {
     }
   }
 
-  if (state.status === "login" || state.status === "signup") {
+  if (FEATURES.auth && (state.status === "login" || state.status === "signup")) {
     return (
       <AuthScreen
         mode={state.status}
@@ -75,8 +76,8 @@ export default function App() {
       <PricingScreen
         onHome={() => setState({ status: "idle" })}
         onPricing={() => setState({ status: "pricing" })}
-        onLogin={() => setState({ status: "login" })}
-        onSignup={() => setState({ status: "signup" })}
+        onLogin={() => { if (FEATURES.auth) setState({ status: "login" }) }}
+        onSignup={() => { if (FEATURES.auth) setState({ status: "signup" }) }}
       />
     )
   }
@@ -87,8 +88,8 @@ export default function App() {
       isLoading={state.status === "loading"}
       error={state.status === "error" ? state.message : null}
       onDismissError={() => setState({ status: "idle" })}
-      onLogin={() => setState({ status: "login" })}
-      onSignup={() => setState({ status: "signup" })}
+      onLogin={() => { if (FEATURES.auth) setState({ status: "login" }) }}
+      onSignup={() => { if (FEATURES.auth) setState({ status: "signup" }) }}
       onPricing={() => setState({ status: "pricing" })}
     />
   )

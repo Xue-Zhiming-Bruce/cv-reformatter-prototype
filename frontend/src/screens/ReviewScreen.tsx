@@ -125,6 +125,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [docxHtml, setDocxHtml] = useState<string | null>(null)
   const [exportConfirmOpen, setExportConfirmOpen] = useState(false)
+  const [blindProfile, setBlindProfile] = useState(false)
   const { profile, ledger } = data
 
   const missingNames = useMemo(
@@ -172,9 +173,22 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
     }
   }
 
+  const IDENTITY_FIELDS = ["full_name", "email", "phone", "location", "linkedin_url", "portfolio_url"]
+
   function doExport() {
     setExportConfirmOpen(false)
-    const exported = { profile, edits, editCount }
+    const exportedProfile = blindProfile
+      ? { ...profile, ...Object.fromEntries(IDENTITY_FIELDS.map((k) => [k, null])) }
+      : profile
+    const exportedEdits = blindProfile
+      ? Object.fromEntries(Object.entries(edits).filter(([k]) => !IDENTITY_FIELDS.includes(k)))
+      : edits
+    const exported = {
+      profile: exportedProfile,
+      edits: exportedEdits,
+      editCount,
+      ...(blindProfile && { blind_profile: true }),
+    }
     const blob = new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
@@ -222,6 +236,18 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
           <span className="rv-header__arrow" aria-hidden="true">→</span>
           <span className="rv-header__format">{formatName}</span>
         </div>
+        <label className="rv-blind-toggle">
+          <input
+            type="checkbox"
+            className="rv-blind-toggle__check"
+            checked={blindProfile}
+            onChange={(e) => setBlindProfile(e.target.checked)}
+          />
+          <span className="rv-blind-toggle__body">
+            <span className="rv-blind-toggle__label">{t("review.blindProfileLabel")}</span>
+            <span className="rv-blind-toggle__hint">{t("review.blindProfileHint")}</span>
+          </span>
+        </label>
         <button type="button" className="rv-export-btn" onClick={handleExportClick}>
           <DownloadIcon />
           {t("review.exportBtn")}
@@ -269,7 +295,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
           <div className="pane-body">
             <div className="rdoc">
               {/* Header block */}
-              <div className="rdoc-header">
+              <div className={`rdoc-header${blindProfile ? " rdoc-header--blind" : ""}`}>
                 <div className="rdoc-name-row">
                   {ef("full_name", profile.full_name)}
                 </div>

@@ -34,16 +34,38 @@ type MainScreenProps = {
   onPricing: () => void
 }
 
+function nl(text: string) {
+  return text.split("\n").map((line, i, arr) => (
+    <span key={i} style={i < arr.length - 1 ? { display: "block" } : undefined}>{line}</span>
+  ))
+}
+
 export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogin, onSignup, onPricing }: MainScreenProps) {
   const { t } = useTranslation()
   const [resumeFile, setResumeFile] = useState<File | null>(null)
   const [templateFile, setTemplateFile] = useState<File | null>(null)
   const [sampleLoading, setSampleLoading] = useState(false)
   const [pageDragging, setPageDragging] = useState(false)
+  const [fileTypeError, setFileTypeError] = useState<string | null>(null)
   const resumeInputRef = useRef<HTMLInputElement>(null)
 
   const canConvert = !!resumeFile && !!templateFile && !isLoading
 
+  function isAllowedFile(file: File): boolean {
+    const ext = file.name.split(".").pop()?.toLowerCase()
+    return ext === "docx" || ext === "pdf"
+  }
+
+  function acceptFile(file: File) {
+    if (!isAllowedFile(file)) {
+      setFileTypeError(t("errors.invalidFileType"))
+      return
+    }
+    setFileTypeError(null)
+    setResumeFile(file)
+  }
+
+  const heroSubLines = t("hero.sub", { returnObjects: true }) as string[]
   const howSteps = t("how.steps", { returnObjects: true }) as Array<{ title: string; body: string }>
   const whyItems = t("why.items", { returnObjects: true }) as Array<{ title: string; body: string }>
 
@@ -78,7 +100,7 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
     setPageDragging(false)
     if (!resumeFile) {
       const file = e.dataTransfer.files?.[0]
-      if (file) setResumeFile(file)
+      if (file) acceptFile(file)
     }
   }
 
@@ -114,18 +136,19 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
             </span>
             <span className="hero-headline__line">{t("hero.headlineAfter")}</span>
           </h1>
-          <p className="hero-sub">{t("hero.sub")}</p>
+          <p className="hero-sub">{nl(t("hero.sub"))}</p>
 
           {!resumeFile ? (
             <div className="upload-zone">
               <input
                 ref={resumeInputRef}
                 type="file"
-                accept=".docx,.pdf,.png,.jpg,.jpeg"
+                accept=".docx,.pdf"
                 className="file-input-hidden"
                 onChange={(e) => {
                   const f = e.target.files?.[0]
-                  if (f) setResumeFile(f)
+                  if (f) acceptFile(f)
+                  e.target.value = ""
                 }}
               />
               <button
@@ -136,6 +159,10 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
                 {t("hero.uploadCta")}
               </button>
               <p className="upload-hint">{t("hero.uploadHint")}</p>
+
+              {fileTypeError && (
+                <p className="upload-type-error" role="alert">{fileTypeError}</p>
+              )}
 
               {/* Compact before→after strip */}
               <div className="baa-strip" aria-hidden="true">
@@ -369,7 +396,7 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
             <div key={i} className="feature-card">
               <div className="feature-card__num">0{i + 1}</div>
               <h3 className="feature-card__title">{item.title}</h3>
-              <p className="feature-card__body">{item.body}</p>
+              <p className="feature-card__body">{nl(item.body)}</p>
             </div>
           ))}
         </div>

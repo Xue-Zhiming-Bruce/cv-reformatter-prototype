@@ -12,9 +12,13 @@
   "hero": {
     "headlineBefore": "Any resume",
     "headlineAfter": "your format.",
-    "sub": "Upload any CV and your template — get it back perfectly reformatted. Nothing lost.",
+    "sub": [
+      "Upload any resume and your template.",
+      "Reformatted to your exact layout.",
+      "Original preserved — you review before it ships."
+    ],
     "uploadCta": "Upload resume",
-    "uploadHint": "or drop it here · PDF, DOCX, image",
+    "uploadHint": "or drop it here · PDF, DOCX",
     "baaBeforeLabel": "Their resume",
     "baaAfterLabel": "Your template",
     "sampleLink": "Try a sample resume →",
@@ -37,7 +41,7 @@
     "steps": [
       {
         "title": "Upload any resume",
-        "body": "PDF, DOCX, or scanned image — we handle every format."
+        "body": "PDF or DOCX — text-based files supported."
       },
       {
         "title": "Upload your template",
@@ -51,7 +55,7 @@
   },
   "showcase": {
     "heading": "Any resume, your format.",
-    "sub": "Paste any CV in any layout — we reformat it exactly to yours, every time.",
+    "sub": "Paste any CV in any layout — reformatted to your exact template. Original preserved.",
     "beforeLabel": "Before",
     "afterLabel": "After",
     "arrowLabel": "reformatted"
@@ -60,8 +64,8 @@
     "heading": "Why Reform",
     "items": [
       {
-        "title": "Nothing invented, nothing lost",
-        "body": "We never fabricate content. Anything we can't find in the original is flagged for you to fill — never silently invented."
+        "title": "Original preserved. Recruiter approved.",
+        "body": "Nothing is added, nothing is lost. Every field comes directly from the original — gaps are flagged for you to fill, never invented. You review every field before it ships."
       },
       {
         "title": "Review before it ships",
@@ -75,11 +79,11 @@
   },
   "trust": {
     "item1": "1 resume ≈ 20 seconds",
-    "item2": "Nothing invented, nothing lost",
+    "item2": "Original preserved. Recruiter approved.",
     "item3": "★ Trusted by recruiters worldwide"
   },
   "footer": {
-    "brandDesc": "Reformat any resume into your exact template — in seconds, nothing invented.",
+    "brandDesc": "Reformat any resume into your exact template — original preserved, recruiter approved.",
     "product": "Product",
     "company": "Company",
     "legal": "Legal",
@@ -160,7 +164,9 @@
     "clickToEdit": "Click to edit",
     "present": "Present",
     "docxRenderError": "Could not render document preview.",
-    "uploadedResumeAlt": "Uploaded resume"
+    "uploadedResumeAlt": "Uploaded resume",
+    "blindProfileLabel": "Blind profile",
+    "blindProfileHint": "Hides identity from client"
   },
   "auth": {
     "loginTitle": "Welcome back",
@@ -185,6 +191,7 @@
   "errors": {
     "unsupported": "Unsupported file — {{detail}}",
     "server": "Server error — please try again. ({{detail}})",
-    "network": "Could not reach the server — check your connection and try again."
+    "network": "Could not reach the server — check your connection and try again.",
+    "invalidFileType": "Only PDF and DOCX files are supported."
   }
 }

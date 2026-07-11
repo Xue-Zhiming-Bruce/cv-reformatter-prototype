@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next"
 import { LogoIcon } from "./icons"
+import { FEATURES } from "../constants/features"
 import "./SiteHeader.css"
 
 type SiteHeaderProps = {
@@ -51,8 +52,12 @@ export function SiteHeader({ activePage, onHome, onPricing, onLogin, onSignup }:
               {t("lang.en")}
             </span>
           </button>
-          <button type="button" className="login-button" onClick={onLogin}>{t("header.login")}</button>
-          <button type="button" className="signup-button" onClick={onSignup}>{t("header.signup")}</button>
+          {FEATURES.auth && (
+            <>
+              <button type="button" className="login-button" onClick={onLogin}>{t("header.login")}</button>
+              <button type="button" className="signup-button" onClick={onSignup}>{t("header.signup")}</button>
+            </>
+          )}
         </div>
       </div>
     </header>

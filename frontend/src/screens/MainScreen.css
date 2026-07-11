@@ -191,6 +191,10 @@
   display: block;
 }
 
+.hero-sub__line {
+  display: block;
+}
+
 .hero-headline__arrow {
   color: var(--color-accent);
 }
@@ -240,6 +244,13 @@
   font-size: 14px;
   color: var(--color-text-muted);
   margin: 0;
+}
+
+.upload-type-error {
+  font-size: 13px;
+  color: #c0392b;
+  margin: 0;
+  font-weight: 500;
 }
 
 .sample-link {
@@ -913,6 +924,11 @@
   .hero-headline {
     font-size: 38px;
     letter-spacing: -1.5px;
+  }
+
+  .hero-sub {
+    font-size: 16px;
+    max-width: 320px;
   }
 
   .upload-cta {
