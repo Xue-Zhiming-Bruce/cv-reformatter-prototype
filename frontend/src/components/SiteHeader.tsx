@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next"
 import { LogoIcon } from "./icons"
 import "./SiteHeader.css"
 
@@ -10,6 +11,13 @@ type SiteHeaderProps = {
 }
 
 export function SiteHeader({ activePage, onHome, onPricing, onLogin, onSignup }: SiteHeaderProps) {
+  const { t, i18n } = useTranslation()
+  const lng = i18n.resolvedLanguage ?? i18n.language
+
+  function toggleLang() {
+    i18n.changeLanguage(lng === "ko" ? "en" : "ko")
+  }
+
   return (
     <header className="site-header">
       <div className="site-header__inner">
@@ -23,19 +31,28 @@ export function SiteHeader({ activePage, onHome, onPricing, onLogin, onSignup }:
             className={`site-nav__btn${activePage === "home" ? " site-nav__btn--active" : ""}`}
             onClick={onHome}
           >
-            Home
+            {t("header.home")}
           </button>
           <button
             type="button"
             className={`site-nav__btn${activePage === "pricing" ? " site-nav__btn--active" : ""}`}
             onClick={onPricing}
           >
-            Pricing
+            {t("header.pricing")}
           </button>
         </nav>
         <div className="site-header__auth">
-          <button type="button" className="login-button" onClick={onLogin}>Log in</button>
-          <button type="button" className="signup-button" onClick={onSignup}>Sign up</button>
+          <button type="button" className="lang-toggle" onClick={toggleLang} aria-label="Switch language">
+            <span className={lng === "ko" ? "lang-toggle__opt lang-toggle__opt--active" : "lang-toggle__opt"}>
+              {t("lang.ko")}
+            </span>
+            <span className="lang-toggle__sep">/</span>
+            <span className={lng === "en" ? "lang-toggle__opt lang-toggle__opt--active" : "lang-toggle__opt"}>
+              {t("lang.en")}
+            </span>
+          </button>
+          <button type="button" className="login-button" onClick={onLogin}>{t("header.login")}</button>
+          <button type="button" className="signup-button" onClick={onSignup}>{t("header.signup")}</button>
         </div>
       </div>
     </header>

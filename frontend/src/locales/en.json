@@ -18,7 +18,8 @@
     "baaBeforeLabel": "Their resume",
     "baaAfterLabel": "Your template",
     "sampleLink": "Try a sample resume →",
-    "sampleLoading": "Loading…"
+    "sampleLoading": "Loading…",
+    "dropOverlay": "Drop to upload resume"
   },
   "converter": {
     "badgeChange": "Change",

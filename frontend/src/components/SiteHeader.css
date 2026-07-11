@@ -85,6 +85,41 @@
   background: #2c2f33;
 }
 
+.lang-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: none;
+  border: none;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 6px;
+  transition: background 0.15s ease;
+  margin-right: 4px;
+}
+
+.lang-toggle:hover {
+  background: #f4f5f7;
+}
+
+.lang-toggle__opt {
+  color: var(--color-text-muted, #aaa);
+  transition: color 0.15s ease;
+}
+
+.lang-toggle__opt--active {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.lang-toggle__sep {
+  margin: 0 3px;
+  color: var(--color-border-strong, #d0d3d8);
+  font-weight: 400;
+}
+
 @media (max-width: 860px) {
   .site-header__inner {
     padding: 0 20px;

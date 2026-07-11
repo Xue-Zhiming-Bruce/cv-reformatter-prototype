@@ -1,4 +1,5 @@
-import { useState, useRef } from "react"
+import React, { useState, useRef } from "react"
+import { useTranslation } from "react-i18next"
 import { Dropzone } from "../components/Dropzone"
 import { GridIcon, PencilIcon } from "../components/icons"
 import { SiteHeader } from "../components/SiteHeader"
@@ -7,6 +8,21 @@ import "./MainScreen.css"
 
 // Insertion point: saved templates for logged-in users will be added to this array
 const formats: Array<{ id: string; label: string }> = []
+
+const HOW_ICONS = [
+  <svg key="upload" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <polyline points="17 8 12 3 7 8" />
+    <line x1="12" y1="3" x2="12" y2="15" />
+  </svg>,
+  <svg key="template" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <path d="M3 9h18M9 21V9" />
+  </svg>,
+  <svg key="check" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="20 6 9 17 4 12" />
+  </svg>,
+]
 
 type MainScreenProps = {
   onConvert: (resumeFile: File) => void
@@ -19,6 +35,7 @@ type MainScreenProps = {
 }
 
 export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogin, onSignup, onPricing }: MainScreenProps) {
+  const { t } = useTranslation()
   const [resumeFile, setResumeFile] = useState<File | null>(null)
   const [templateFile, setTemplateFile] = useState<File | null>(null)
   const [sampleLoading, setSampleLoading] = useState(false)
@@ -26,6 +43,9 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
   const resumeInputRef = useRef<HTMLInputElement>(null)
 
   const canConvert = !!resumeFile && !!templateFile && !isLoading
+
+  const howSteps = t("how.steps", { returnObjects: true }) as Array<{ title: string; body: string }>
+  const whyItems = t("why.items", { returnObjects: true }) as Array<{ title: string; body: string }>
 
   async function handleLoadSample() {
     setSampleLoading(true)
@@ -72,7 +92,7 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
       {pageDragging && (
         <div className="page-drop-overlay">
           <div className="page-drop-overlay__box">
-            <p className="page-drop-overlay__text">Drop to upload resume</p>
+            <p className="page-drop-overlay__text">{t("hero.dropOverlay")}</p>
           </div>
         </div>
       )}
@@ -89,9 +109,9 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
       <section className={`hero-primary${resumeFile ? " hero-primary--compact" : ""}`}>
         <div className="hero-primary__inner">
           <h1 className="hero-headline">
-            Any resume <span className="hero-headline__arrow">→</span> your format.
+            {t("hero.headlineBefore")} <span className="hero-headline__arrow">→</span> {t("hero.headlineAfter")}
           </h1>
-          <p className="hero-sub">Upload any CV and your template — get it back perfectly reformatted. Nothing lost.</p>
+          <p className="hero-sub">{t("hero.sub")}</p>
 
           {!resumeFile ? (
             <div className="upload-zone">
@@ -110,14 +130,14 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
                 className="upload-cta"
                 onClick={() => resumeInputRef.current?.click()}
               >
-                Upload resume
+                {t("hero.uploadCta")}
               </button>
-              <p className="upload-hint">or drop it here · PDF, DOCX, image</p>
+              <p className="upload-hint">{t("hero.uploadHint")}</p>
 
               {/* Compact before→after strip */}
               <div className="baa-strip" aria-hidden="true">
                 <div className="baa-mini">
-                  <span className="baa-mini__label">Their resume</span>
+                  <span className="baa-mini__label">{t("hero.baaBeforeLabel")}</span>
                   <div className="baa-mini__doc baa-mini__doc--before">
                     <div className="baa-mini__bar baa-mini__bar--name" />
                     <div className="baa-mini__bar baa-mini__bar--sub" />
@@ -139,7 +159,7 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
                 </div>
 
                 <div className="baa-mini">
-                  <span className="baa-mini__label">Your template</span>
+                  <span className="baa-mini__label">{t("hero.baaAfterLabel")}</span>
                   <div className="baa-mini__doc baa-mini__doc--after">
                     <div className="baa-mini__header" />
                     <div className="baa-mini__section">
@@ -162,7 +182,7 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
                 onClick={handleLoadSample}
                 disabled={sampleLoading}
               >
-                {sampleLoading ? "Loading…" : "Try a sample resume →"}
+                {sampleLoading ? t("hero.sampleLoading") : t("hero.sampleLink")}
               </button>
             </div>
           ) : (
@@ -174,7 +194,7 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
                 className="resume-badge__change"
                 onClick={() => { setResumeFile(null); setTemplateFile(null) }}
               >
-                Change
+                {t("converter.badgeChange")}
               </button>
             </div>
           )}
@@ -189,18 +209,18 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 5v14M5 12l7 7 7-7" />
               </svg>
-              <span className="step2__connector-label">reformat into</span>
+              <span className="step2__connector-label">{t("converter.connectorLabel")}</span>
             </div>
 
             <Dropzone
               icon={<GridIcon className="dropzone__icon--green" />}
-              title="Upload your template"
-              subtitle="DOCX or PDF · the format to apply"
+              title={t("converter.templateTitle")}
+              subtitle={t("converter.templateSubtitle")}
               file={templateFile}
               onFileSelected={setTemplateFile}
               accept=".docx,.pdf"
               variant="primary"
-              uploadLabel="Upload template"
+              uploadLabel={t("converter.templateBtn")}
             />
 
             {/* formats insertion point — logged-in users' saved templates render here */}
@@ -227,10 +247,10 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
                 onClick={() => resumeFile && onConvert(resumeFile)}
               >
                 {isLoading ? <span className="spinner" aria-hidden="true" /> : <PencilIcon />}
-                {isLoading ? "Converting…" : "Convert"}
+                {isLoading ? t("converter.convertingBtn") : t("converter.convertBtn")}
               </button>
               {!templateFile && !isLoading && (
-                <p className="convert-hint">Upload your template to convert</p>
+                <p className="convert-hint">{t("converter.convertHint")}</p>
               )}
             </div>
           </div>
@@ -241,53 +261,27 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
       <section className="how-section">
         <div className="how-inner">
           <div className="how-header">
-            <h2 className="how-heading">How it works</h2>
-            <p className="how-sub">Three steps. About 20 seconds.</p>
+            <h2 className="how-heading">{t("how.heading")}</h2>
+            <p className="how-sub">{t("how.sub")}</p>
           </div>
           <div className="how-steps">
-            <div className="how-step">
-              <div className="how-step__icon-wrap">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="17 8 12 3 7 8" />
-                  <line x1="12" y1="3" x2="12" y2="15" />
-                </svg>
-              </div>
-              <span className="how-step__num">01</span>
-              <h3 className="how-step__title">Upload any resume</h3>
-              <p className="how-step__body">PDF, DOCX, or scanned image — we handle every format.</p>
-            </div>
-            <div className="how-connector" aria-hidden="true">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M5 12h14M13 6l6 6-6 6" />
-              </svg>
-            </div>
-            <div className="how-step">
-              <div className="how-step__icon-wrap">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <rect x="3" y="3" width="18" height="18" rx="2" />
-                  <path d="M3 9h18M9 21V9" />
-                </svg>
-              </div>
-              <span className="how-step__num">02</span>
-              <h3 className="how-step__title">Upload your template</h3>
-              <p className="how-step__body">The DOCX or PDF that defines the format you want applied.</p>
-            </div>
-            <div className="how-connector" aria-hidden="true">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M5 12h14M13 6l6 6-6 6" />
-              </svg>
-            </div>
-            <div className="how-step">
-              <div className="how-step__icon-wrap">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              </div>
-              <span className="how-step__num">03</span>
-              <h3 className="how-step__title">Review and download</h3>
-              <p className="how-step__body">Check every field side by side, edit anything, then export.</p>
-            </div>
+            {howSteps.map((step, i) => (
+              <React.Fragment key={i}>
+                {i > 0 && (
+                  <div className="how-connector" aria-hidden="true">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M5 12h14M13 6l6 6-6 6" />
+                    </svg>
+                  </div>
+                )}
+                <div className="how-step">
+                  <div className="how-step__icon-wrap">{HOW_ICONS[i]}</div>
+                  <span className="how-step__num">0{i + 1}</span>
+                  <h3 className="how-step__title">{step.title}</h3>
+                  <p className="how-step__body">{step.body}</p>
+                </div>
+              </React.Fragment>
+            ))}
           </div>
         </div>
       </section>
@@ -296,13 +290,13 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
       <section className="showcase-section">
         <div className="showcase-inner">
           <div className="showcase-header">
-            <h2 className="showcase-heading">Any resume, your format.</h2>
-            <p className="showcase-sub">Paste any CV in any layout — we reformat it exactly to yours, every time.</p>
+            <h2 className="showcase-heading">{t("showcase.heading")}</h2>
+            <p className="showcase-sub">{t("showcase.sub")}</p>
           </div>
 
           <div className="showcase-cards">
             <div className="showcase-doc">
-              <span className="showcase-label">Before</span>
+              <span className="showcase-label">{t("showcase.beforeLabel")}</span>
               <div className="showcase-card">
                 <div className="resume-preview resume-preview--before">
                   <p className="rp-messy-name">Alex Kim &nbsp; New York | alex.kim@gmail.com | 555-0171</p>
@@ -325,11 +319,11 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M5 12h14M13 6l6 6-6 6" />
               </svg>
-              <span className="showcase-arrow__label">reformatted</span>
+              <span className="showcase-arrow__label">{t("showcase.arrowLabel")}</span>
             </div>
 
             <div className="showcase-doc">
-              <span className="showcase-label showcase-label--after">After</span>
+              <span className="showcase-label showcase-label--after">{t("showcase.afterLabel")}</span>
               <div className="showcase-card showcase-card--after">
                 <div className="resume-preview resume-preview--after">
                   <p className="rp-name">Alex Kim</p>
@@ -365,34 +359,26 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
       {/* ── Why Reform ── */}
       <section className="features-section">
         <div className="features-header">
-          <h2 className="features-heading">Why Reform</h2>
+          <h2 className="features-heading">{t("why.heading")}</h2>
         </div>
         <div className="features-inner">
-          <div className="feature-card">
-            <div className="feature-card__num">01</div>
-            <h3 className="feature-card__title">Nothing invented, nothing lost</h3>
-            <p className="feature-card__body">We never fabricate content. Anything we can't find in the original is flagged for you to fill — never silently invented.</p>
-          </div>
-          <div className="feature-card">
-            <div className="feature-card__num">02</div>
-            <h3 className="feature-card__title">Review before it ships</h3>
-            <p className="feature-card__body">Side-by-side review screen shows the original next to the reformatted result. Click any field to edit before you export.</p>
-          </div>
-          <div className="feature-card">
-            <div className="feature-card__num">03</div>
-            <h3 className="feature-card__title">About 20 seconds</h3>
-            <p className="feature-card__body">From upload to formatted output in roughly twenty seconds. No queue, no account required to get started.</p>
-          </div>
+          {whyItems.map((item, i) => (
+            <div key={i} className="feature-card">
+              <div className="feature-card__num">0{i + 1}</div>
+              <h3 className="feature-card__title">{item.title}</h3>
+              <p className="feature-card__body">{item.body}</p>
+            </div>
+          ))}
         </div>
       </section>
 
       {/* Trust strip */}
       <div className="trust-strip">
-        <span>1 resume ≈ 20 seconds</span>
+        <span>{t("trust.item1")}</span>
         <span className="trust-sep" aria-hidden="true">·</span>
-        <span>Nothing invented, nothing lost</span>
+        <span>{t("trust.item2")}</span>
         <span className="trust-sep" aria-hidden="true">·</span>
-        <span>★ Trusted by recruiters worldwide</span>
+        <span>{t("trust.item3")}</span>
       </div>
 
       <Footer onHome={() => { setResumeFile(null); setTemplateFile(null) }} onPricing={onPricing} />

@@ -18,7 +18,8 @@
     "baaBeforeLabel": "원본 이력서",
     "baaAfterLabel": "우리 양식",
     "sampleLink": "샘플 이력서로 체험하기 →",
-    "sampleLoading": "불러오는 중…"
+    "sampleLoading": "불러오는 중…",
+    "dropOverlay": "여기에 드롭해서 이력서 업로드"
   },
   "converter": {
     "badgeChange": "변경",
