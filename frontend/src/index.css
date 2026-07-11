@@ -1,5 +1,5 @@
 :root {
-  --color-bg-page: #f7f9fb;
+  --color-bg-page: #ffffff;
   --color-card-bg: #ffffff;
   --color-border: #e8ecf1;
   --color-border-strong: #d0d7df;
@@ -7,9 +7,15 @@
   --color-text-secondary: #6b7280;
   --color-text-muted: #9ca3af;
 
-  --color-accent-green: #1f7a5c;
-  --color-accent-green-bg: #ddf3e8;
-  --color-accent-green-border: #a9d9c0;
+  /* Single purple accent — swap here to try #6D28D9 or any other */
+  --color-accent: #635BFF;
+  --color-accent-bg: #edeeff;
+  --color-accent-border: #c4c0ff;
+
+  /* Legacy aliases — all green references now resolve to purple */
+  --color-accent-green: var(--color-accent);
+  --color-accent-green-bg: var(--color-accent-bg);
+  --color-accent-green-border: var(--color-accent-border);
 
   --color-accent-blue: #2f6fed;
 

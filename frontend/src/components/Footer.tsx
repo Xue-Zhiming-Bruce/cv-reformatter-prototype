@@ -1,23 +1,10 @@
+import { LogoIcon } from "./icons"
 import "./Footer.css"
 
-const COLUMNS = [
-  {
-    heading: "Product",
-    links: ["How it works", "Pricing", "API", "Bulk Editing"],
-  },
-  {
-    heading: "Tools",
-    links: ["Reformat Resume", "Compare Formats", "Templates"],
-  },
-  {
-    heading: "Support",
-    links: ["Help Center", "Contact Us", "Status"],
-  },
-  {
-    heading: "Company",
-    links: ["About", "Blog", "Careers", "Press"],
-  },
-]
+type FooterProps = {
+  onHome?: () => void
+  onPricing?: () => void
+}
 
 function XIcon() {
   return (
@@ -60,24 +47,58 @@ function ChevronDownIcon() {
   )
 }
 
-export function Footer() {
+export function Footer({ onHome, onPricing }: FooterProps) {
   return (
     <footer className="site-footer">
       {/* ── Link columns ── */}
       <div className="footer-upper">
         <div className="footer-upper__inner">
-          {COLUMNS.map((col) => (
-            <div key={col.heading} className="footer-col">
-              <h3 className="footer-col__heading">{col.heading}</h3>
-              <ul className="footer-col__list">
-                {col.links.map((link) => (
-                  <li key={link}>
-                    <a href="#" className="footer-col__link">{link}</a>
-                  </li>
-                ))}
-              </ul>
+          {/* Brand column */}
+          <div className="footer-brand-col">
+            <div className="brand footer-brand">
+              <LogoIcon className="brand__icon" />
+              <span className="brand__name">Reform</span>
             </div>
-          ))}
+            <p className="footer-brand__desc">
+              Reformat any resume into your exact template — in seconds, nothing invented.
+            </p>
+          </div>
+
+          {/* Product */}
+          <div className="footer-col">
+            <h3 className="footer-col__heading">Product</h3>
+            <ul className="footer-col__list">
+              <li>
+                <button type="button" className="footer-col__link footer-col__link--btn" onClick={onHome}>
+                  Home
+                </button>
+              </li>
+              <li>
+                <button type="button" className="footer-col__link footer-col__link--btn" onClick={onPricing}>
+                  Pricing
+                </button>
+              </li>
+            </ul>
+          </div>
+
+          {/* Company */}
+          <div className="footer-col">
+            <h3 className="footer-col__heading">Company</h3>
+            <ul className="footer-col__list">
+              <li>
+                <a href="mailto:hello@reformcv.com" className="footer-col__link">Contact</a>
+              </li>
+            </ul>
+          </div>
+
+          {/* Legal */}
+          <div className="footer-col">
+            <h3 className="footer-col__heading">Legal</h3>
+            <ul className="footer-col__list">
+              <li><a href="#" className="footer-col__link">Terms</a></li>
+              <li><a href="#" className="footer-col__link">Privacy</a></li>
+            </ul>
+          </div>
         </div>
       </div>
 
@@ -97,7 +118,7 @@ export function Footer() {
           </div>
 
           <div className="footer-legal">
-            <span className="footer-legal__copy">© 2025 Reform</span>
+            <span className="footer-legal__copy">© 2026 Reform</span>
             <a href="#" className="footer-legal__link">Terms</a>
             <a href="#" className="footer-legal__link">Privacy</a>
           </div>

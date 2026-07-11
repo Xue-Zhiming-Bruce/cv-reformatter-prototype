@@ -1,141 +1,501 @@
-import { useState } from "react"
-import { DownloadIcon, LogoIcon } from "../components/icons"
+import { useState, useEffect, useMemo, useRef } from "react"
+import mammoth from "mammoth"
+import { DownloadIcon, LogoIcon, PencilIcon } from "../components/icons"
 import type { ProcessResponse } from "../types"
 import "./ReviewScreen.css"
 
+// TODO: When API returns per-field confidence scores, set this to true.
+// Expected addition to ProcessResponse: field_confidence?: Record<string, number> (0.0–1.0)
+// Fields below 0.7 would be highlighted amber. Render logic gated here.
+const SHOW_CONFIDENCE = false
+
 type ReviewScreenProps = {
   data: ProcessResponse
+  resumeFile: File
   resumeFileName: string
   formatName: string
   onBack: () => void
 }
 
-function joinDefined(values: Array<string | null | undefined>, separator = " · "): string {
-  return values.filter((value): value is string => Boolean(value && value.trim())).join(separator)
+type EditableFieldProps = {
+  value: string | null
+  path: string
+  edits: Record<string, string>
+  onEdit: (path: string, value: string) => void
+  isMissing?: boolean
+  multiline?: boolean
+  className?: string
 }
 
-export function ReviewScreen({ data, resumeFileName, formatName, onBack }: ReviewScreenProps) {
-  const [anonymize, setAnonymize] = useState(false)
-  const { profile, ledger, original_text } = data
+function EditableField({ value, path, edits, onEdit, isMissing, multiline, className }: EditableFieldProps) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState("")
+  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null)
 
-  const headerLine = joinDefined([profile.full_name, profile.work_experience[0]?.title])
-  const additionalLine = joinDefined([
-    profile.work_authorization,
-    profile.portfolio_url ? `Portfolio: ${profile.portfolio_url}` : null,
-  ])
-  const missingLabels = profile.missing_fields.map((field) => field.label).join(" · ")
+  const effective = path in edits ? edits[path] : (value ?? "")
+  const isEmpty = !effective.trim()
+
+  function startEdit() {
+    setDraft(effective)
+    setEditing(true)
+  }
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus()
+  }, [editing])
+
+  function save() {
+    onEdit(path, draft.trim())
+    setEditing(false)
+  }
+
+  function cancel() {
+    setEditing(false)
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter" && !multiline) { e.preventDefault(); save() }
+    if (e.key === "Escape") cancel()
+  }
+
+  if (editing) {
+    const cls = `ef-input${multiline ? " ef-input--multiline" : ""}${className ? ` ${className}` : ""}`
+    if (multiline) {
+      return (
+        <textarea
+          ref={inputRef as React.RefObject<HTMLTextAreaElement>}
+          className={cls}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={save}
+          onKeyDown={handleKeyDown}
+          rows={3}
+        />
+      )
+    }
+    return (
+      <input
+        ref={inputRef as React.RefObject<HTMLInputElement>}
+        className={cls}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={handleKeyDown}
+      />
+    )
+  }
+
+  if (isEmpty && isMissing) {
+    return (
+      <button
+        type="button"
+        className={`empty-slot${className ? ` ${className}` : ""}`}
+        onClick={startEdit}
+      >
+        <span className="empty-slot__badge">Not in original — click to fill</span>
+      </button>
+    )
+  }
+
+  if (isEmpty) return null
 
   return (
-    <div className="app-card review-card">
-      <header className="review-header">
-        <button type="button" className="brand brand--link" onClick={onBack}>
+    <span
+      className={`ef${className ? ` ${className}` : ""}`}
+      onClick={startEdit}
+      role="button"
+      tabIndex={0}
+      title="Click to edit"
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") startEdit() }}
+    >
+      {effective}
+      <PencilIcon className="ef__pencil" size={11} />
+    </span>
+  )
+}
+
+function joinDefined(values: Array<string | null | undefined>, separator = " – "): string {
+  return values.filter((v): v is string => Boolean(v?.trim())).join(separator)
+}
+
+export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onBack }: ReviewScreenProps) {
+  const [edits, setEdits] = useState<Record<string, string>>({})
+  const [docxHtml, setDocxHtml] = useState<string | null>(null)
+  const [exportConfirmOpen, setExportConfirmOpen] = useState(false)
+  const { profile, ledger } = data
+
+  const missingNames = useMemo(
+    () => new Set(profile.missing_fields.map((f) => f.field_name)),
+    [profile.missing_fields]
+  )
+
+  const objectUrl = useMemo(() => URL.createObjectURL(resumeFile), [resumeFile])
+  useEffect(() => () => URL.revokeObjectURL(objectUrl), [objectUrl])
+
+  const isDocx = /\.docx$/i.test(resumeFile.name) || resumeFile.type.includes("wordprocessingml")
+  const isPdf = /\.pdf$/i.test(resumeFile.name) || resumeFile.type === "application/pdf"
+  const isImage = /\.(png|jpe?g|gif|webp)$/i.test(resumeFile.name) || resumeFile.type.startsWith("image/")
+
+  useEffect(() => {
+    if (!isDocx) return
+    const reader = new FileReader()
+    reader.onload = async (e) => {
+      try {
+        const result = await mammoth.convertToHtml({ arrayBuffer: e.target!.result as ArrayBuffer })
+        setDocxHtml(result.value)
+      } catch {
+        setDocxHtml("<p>Could not render document preview.</p>")
+      }
+    }
+    reader.readAsArrayBuffer(resumeFile)
+  }, [resumeFile, isDocx])
+
+  function handleEdit(path: string, value: string) {
+    setEdits((prev) => {
+      const next = { ...prev }
+      if (value === "") delete next[path]
+      else next[path] = value
+      return next
+    })
+  }
+
+  const editCount = Object.keys(edits).length
+
+  function handleExportClick() {
+    if (ledger.needs_review > 0) {
+      setExportConfirmOpen(true)
+    } else {
+      doExport()
+    }
+  }
+
+  function doExport() {
+    setExportConfirmOpen(false)
+    const exported = { profile, edits, editCount }
+    const blob = new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${resumeFileName.replace(/\.[^.]+$/, "")}-reformatted.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function ef(path: string, value: string | null, opts: { multiline?: boolean; className?: string } = {}) {
+    return (
+      <EditableField
+        value={value}
+        path={path}
+        edits={edits}
+        onEdit={handleEdit}
+        isMissing={missingNames.has(path)}
+        multiline={opts.multiline}
+        className={opts.className}
+      />
+    )
+  }
+
+  // Contact items: only show fields that have a value or are in missing_fields
+  const contactItems = [
+    { key: "email", value: profile.email },
+    { key: "phone", value: profile.phone },
+    { key: "location", value: profile.location },
+    { key: "linkedin_url", value: profile.linkedin_url },
+    { key: "portfolio_url", value: profile.portfolio_url },
+  ].filter(({ key, value }) => {
+    const eff = (edits[key] ?? value ?? "").trim()
+    return eff !== "" || missingNames.has(key)
+  })
+
+  return (
+    <div className="review-page">
+      {/* ── Header ── */}
+      <header className="rv-header">
+        <button type="button" className="brand brand--link rv-brand" onClick={onBack}>
           <LogoIcon className="brand__icon" />
           <span className="brand__name">Reform</span>
         </button>
-        <span className="review-header__file">{resumeFileName}</span>
-        <span className="review-header__format">{formatName}</span>
-        <div className="review-header__actions">
-          <label className="anonymize-toggle">
-            <span>Anonymize</span>
-            <span
-              className={`toggle-switch${anonymize ? " toggle-switch--on" : ""}`}
-              role="switch"
-              aria-checked={anonymize}
-              tabIndex={0}
-              onClick={() => setAnonymize((value) => !value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") setAnonymize((value) => !value)
-              }}
-            >
-              <span className="toggle-switch__knob" />
-            </span>
-          </label>
-          <button type="button" className="export-button">
-            <DownloadIcon />
-            Export
-          </button>
+        <div className="rv-header__meta">
+          <span className="rv-header__filename">{resumeFileName}</span>
+          <span className="rv-header__arrow" aria-hidden="true">→</span>
+          <span className="rv-header__format">{formatName}</span>
         </div>
+        <button type="button" className="rv-export-btn" onClick={handleExportClick}>
+          <DownloadIcon />
+          Export
+        </button>
       </header>
-      <hr className="divider" />
 
-      <section className="review-columns">
-        <div className="review-column">
-          <h2 className="review-column__title">Original (as received)</h2>
-          <div className="original-text">
-            {original_text.split("\n").map((line, index) => (
-              <p key={index}>{line}</p>
-            ))}
+      {/* ── Two panes ── */}
+      <div className="rv-panes">
+        {/* Left — original file */}
+        <div className="rv-pane rv-pane--left">
+          <div className="pane-label">Original</div>
+          <div className={`pane-body${isPdf ? " pane-body--pdf" : ""}`}>
+            {isPdf && (
+              <object data={objectUrl} type="application/pdf" className="pdf-embed">
+                <p className="pane-fallback">PDF preview not available in this browser.</p>
+              </object>
+            )}
+            {isDocx && (
+              <div className="docx-doc">
+                {docxHtml
+                  ? <div className="docx-content" dangerouslySetInnerHTML={{ __html: docxHtml }} />
+                  : <p className="pane-loading">Rendering document…</p>
+                }
+              </div>
+            )}
+            {isImage && (
+              <div className="image-pane">
+                <img src={objectUrl} alt="Uploaded resume" className="image-preview" />
+              </div>
+            )}
+            {!isPdf && !isDocx && !isImage && (
+              <div className="docx-doc">
+                <p className="pane-fallback">Preview not available for this file type.</p>
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="review-column review-column--converted">
-          <h2 className="review-column__title review-column__title--accent">Converted · {formatName}</h2>
-
-          {headerLine && <p className="converted-name">{headerLine}</p>}
-
-          {profile.professional_summary && <p className="converted-summary">{profile.professional_summary}</p>}
-
-          {profile.work_experience.length > 0 && (
-            <div className="converted-section">
-              <h3>Experience</h3>
-              {profile.work_experience.map((entry, index) => (
-                <div key={index} className="experience-entry">
-                  <p className="experience-entry__title">
-                    {joinDefined([entry.company, entry.title, joinDefined([entry.start_date, entry.end_date], "–")])}
-                  </p>
-                  {entry.description.length > 0 && <p className="experience-entry__description">{entry.description.join(" · ")}</p>}
+        {/* Right — editable reformatted doc */}
+        <div className="rv-pane rv-pane--right">
+          <div className="pane-label">
+            Reformatted · {formatName}
+            <span className="pane-label__hint">Click any field to edit</span>
+          </div>
+          <div className="pane-body">
+            <div className="rdoc">
+              {/* Header block */}
+              <div className="rdoc-header">
+                <div className="rdoc-name-row">
+                  {ef("full_name", profile.full_name)}
                 </div>
-              ))}
-            </div>
-          )}
+                {(profile.work_experience[0]?.title || missingNames.has("current_title")) && (
+                  <div className="rdoc-title-row">
+                    {ef("current_title", profile.work_experience[0]?.title ?? null)}
+                  </div>
+                )}
+                {contactItems.length > 0 && (
+                  <div className="rdoc-contact">
+                    {contactItems.map(({ key, value }, i) => (
+                      <span key={key} className="rdoc-contact__item-wrap">
+                        {i > 0 && <span className="rdoc-sep" aria-hidden="true">·</span>}
+                        {ef(key, value)}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
 
-          {profile.skills.length > 0 && (
-            <div className="converted-section">
-              <h3>Skills</h3>
-              <p>{profile.skills.join(" · ")}</p>
-            </div>
-          )}
+              {/* Summary */}
+              {(profile.professional_summary || missingNames.has("professional_summary")) && (
+                <div className="rdoc-section">
+                  <div className="rdoc-section__head">Summary</div>
+                  <div className="rdoc-summary">
+                    {ef("professional_summary", profile.professional_summary, { multiline: true })}
+                  </div>
+                </div>
+              )}
 
-          {profile.languages.length > 0 && (
-            <div className="converted-section">
-              <h3>Languages</h3>
-              <p>{profile.languages.map((lang) => joinDefined([lang.name, lang.proficiency])).join(" · ")}</p>
-            </div>
-          )}
+              {/* Experience */}
+              {profile.work_experience.length > 0 && (
+                <div className="rdoc-section">
+                  <div className="rdoc-section__head">Experience</div>
+                  {profile.work_experience.map((entry, i) => (
+                    <div key={i} className="rdoc-entry">
+                      <div className="rdoc-entry__top">
+                        <span className="rdoc-entry__company">
+                          {ef(`work_experience.${i}.company`, entry.company)}
+                        </span>
+                        {((edits[`work_experience.${i}.company`] ?? entry.company) &&
+                          (edits[`work_experience.${i}.title`] ?? entry.title)) && (
+                          <span className="rdoc-entry__sep">·</span>
+                        )}
+                        <span className="rdoc-entry__role">
+                          {ef(`work_experience.${i}.title`, entry.title)}
+                        </span>
+                        <span className="rdoc-entry__dates">
+                          {joinDefined([
+                            edits[`work_experience.${i}.start_date`] ?? entry.start_date,
+                            edits[`work_experience.${i}.end_date`] ?? entry.end_date ?? "Present",
+                          ])}
+                        </span>
+                      </div>
+                      {(edits[`work_experience.${i}.location`] ?? entry.location) && (
+                        <div className="rdoc-entry__location">
+                          {ef(`work_experience.${i}.location`, entry.location)}
+                        </div>
+                      )}
+                      {entry.description.map((bullet, j) => (
+                        <div key={j} className="rdoc-entry__bullet">
+                          <span className="rdoc-bullet-dot" aria-hidden="true">·</span>
+                          <span>{ef(`work_experience.${i}.description.${j}`, bullet)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
 
-          {profile.education.length > 0 && (
-            <div className="converted-section">
-              <h3>Education</h3>
-              {profile.education.map((entry, index) => (
-                <p key={index}>{joinDefined([entry.institution, entry.degree, entry.field_of_study])}</p>
-              ))}
-            </div>
-          )}
+              {/* Education */}
+              {profile.education.length > 0 && (
+                <div className="rdoc-section">
+                  <div className="rdoc-section__head">Education</div>
+                  {profile.education.map((entry, i) => (
+                    <div key={i} className="rdoc-entry">
+                      <div className="rdoc-entry__top">
+                        <span className="rdoc-entry__company">
+                          {ef(`education.${i}.institution`, entry.institution)}
+                        </span>
+                        {((edits[`education.${i}.institution`] ?? entry.institution) &&
+                          (edits[`education.${i}.degree`] ?? entry.degree)) && (
+                          <span className="rdoc-entry__sep">·</span>
+                        )}
+                        <span className="rdoc-entry__role">
+                          {ef(`education.${i}.degree`, entry.degree)}
+                        </span>
+                        {(edits[`education.${i}.field_of_study`] ?? entry.field_of_study) && (
+                          <>
+                            <span className="rdoc-entry__sep">·</span>
+                            {ef(`education.${i}.field_of_study`, entry.field_of_study)}
+                          </>
+                        )}
+                        <span className="rdoc-entry__dates">
+                          {joinDefined([
+                            edits[`education.${i}.start_date`] ?? entry.start_date,
+                            edits[`education.${i}.end_date`] ?? entry.end_date,
+                          ])}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
-          {profile.certifications.length > 0 && (
-            <div className="converted-section">
-              <h3>Certifications</h3>
-              <p>{profile.certifications.map((cert) => joinDefined([cert.name, cert.issuer, cert.date])).join(" · ")}</p>
-            </div>
-          )}
+              {/* Skills */}
+              {(profile.skills.length > 0 || missingNames.has("skills")) && (
+                <div className="rdoc-section">
+                  <div className="rdoc-section__head">Skills</div>
+                  <div className="rdoc-skills">
+                    {ef("skills", profile.skills.join(", ") || null, { multiline: false })}
+                  </div>
+                </div>
+              )}
 
-          {additionalLine && (
-            <div className="converted-section">
-              <h3 className="converted-section__title--accent">Additional · preserved</h3>
-              <p>{additionalLine}</p>
+              {/* Languages */}
+              {profile.languages.length > 0 && (
+                <div className="rdoc-section">
+                  <div className="rdoc-section__head">Languages</div>
+                  <div className="rdoc-skills">
+                    {profile.languages.map((lang, i) => (
+                      <span key={i}>
+                        {ef(`languages.${i}.name`, lang.name)}
+                        {(edits[`languages.${i}.proficiency`] ?? lang.proficiency) && (
+                          <span className="rdoc-lang-prof">
+                            {" ("}
+                            {ef(`languages.${i}.proficiency`, lang.proficiency)}
+                            {")"}
+                          </span>
+                        )}
+                        {i < profile.languages.length - 1 && <span className="rdoc-sep"> · </span>}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Certifications */}
+              {profile.certifications.length > 0 && (
+                <div className="rdoc-section">
+                  <div className="rdoc-section__head">Certifications</div>
+                  {profile.certifications.map((cert, i) => (
+                    <div key={i} className="rdoc-entry">
+                      <div className="rdoc-entry__top">
+                        <span className="rdoc-entry__company">
+                          {ef(`certifications.${i}.name`, cert.name)}
+                        </span>
+                        {(edits[`certifications.${i}.issuer`] ?? cert.issuer) && (
+                          <>
+                            <span className="rdoc-entry__sep">·</span>
+                            {ef(`certifications.${i}.issuer`, cert.issuer)}
+                          </>
+                        )}
+                        {(edits[`certifications.${i}.date`] ?? cert.date) && (
+                          <span className="rdoc-entry__dates">
+                            {ef(`certifications.${i}.date`, cert.date)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Additional */}
+              {(profile.work_authorization || profile.notice_period || profile.salary_expectation) && (
+                <div className="rdoc-section">
+                  <div className="rdoc-section__head rdoc-section__head--muted">Additional</div>
+                  <div className="rdoc-additional">
+                    {ef("work_authorization", profile.work_authorization)}
+                    {ef("notice_period", profile.notice_period)}
+                    {ef("salary_expectation", profile.salary_expectation)}
+                  </div>
+                </div>
+              )}
+
+              {SHOW_CONFIDENCE && null /* per-field confidence highlights rendered here when enabled */}
             </div>
-          )}
+          </div>
         </div>
-      </section>
+      </div>
 
-      <hr className="divider" />
-      <footer className="ledger-bar">
-        <span className="ledger-bar__label">Lossless ledger</span>
-        <span>Extracted {ledger.extracted}</span>
-        <span>Placed {ledger.placed}</span>
-        <span className="needs-review-pill">Needs review {ledger.needs_review}</span>
-        {missingLabels && <span className="ledger-bar__missing">{missingLabels} missing</span>}
+      {/* ── Ledger bar ── */}
+      <footer className="rv-ledger">
+        <span className="rv-ledger__label">Ledger</span>
+        <span className="rv-ledger__item">Extracted {ledger.extracted}</span>
+        <span className="rv-ledger__item">Placed {ledger.placed}</span>
+        {ledger.needs_review > 0
+          ? <span className="rv-ledger__item rv-ledger__item--review">Needs review {ledger.needs_review}</span>
+          : <span className="rv-ledger__item rv-ledger__item--ok">All placed ✓</span>
+        }
+        {editCount > 0 && (
+          <span className="rv-ledger__item rv-ledger__item--edited">Edited {editCount}</span>
+        )}
+        {profile.missing_fields.length > 0 && (
+          <span className="rv-ledger__missing">
+            Missing: {profile.missing_fields.map((f) => f.label).join(" · ")}
+          </span>
+        )}
       </footer>
+
+      {/* ── Export confirm dialog ── */}
+      {exportConfirmOpen && (
+        <div className="rv-overlay" onClick={() => setExportConfirmOpen(false)}>
+          <div className="rv-dialog" onClick={(e) => e.stopPropagation()}>
+            <p className="rv-dialog__message">
+              {ledger.needs_review} field{ledger.needs_review !== 1 ? "s" : ""} still need
+              {ledger.needs_review === 1 ? "s" : ""} review. Export anyway?
+            </p>
+            <div className="rv-dialog__actions">
+              <button
+                type="button"
+                className="rv-dialog__btn rv-dialog__btn--secondary"
+                onClick={() => setExportConfirmOpen(false)}
+              >
+                Go back
+              </button>
+              <button
+                type="button"
+                className="rv-dialog__btn rv-dialog__btn--primary"
+                onClick={doExport}
+              >
+                Export anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

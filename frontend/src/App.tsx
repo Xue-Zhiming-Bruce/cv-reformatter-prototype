@@ -2,16 +2,18 @@ import { useState } from "react"
 import { MainScreen } from "./screens/MainScreen"
 import { ReviewScreen } from "./screens/ReviewScreen"
 import { AuthScreen } from "./screens/AuthScreen"
+import { PricingScreen } from "./screens/PricingScreen"
 import type { ProcessResponse } from "./types"
 import "./App.css"
 
 type AppState =
   | { status: "idle" }
+  | { status: "pricing" }
   | { status: "login" }
   | { status: "signup" }
   | { status: "loading"; fileName: string }
   | { status: "error"; message: string }
-  | { status: "done"; data: ProcessResponse; fileName: string }
+  | { status: "done"; data: ProcessResponse; fileName: string; resumeFile: File }
 
 export default function App() {
   const [state, setState] = useState<AppState>({ status: "idle" })
@@ -37,7 +39,7 @@ export default function App() {
       }
 
       const data: ProcessResponse = await res.json()
-      setState({ status: "done", data, fileName: resumeFile.name })
+      setState({ status: "done", data, fileName: resumeFile.name, resumeFile })
     } catch {
       setState({
         status: "error",
@@ -60,9 +62,21 @@ export default function App() {
     return (
       <ReviewScreen
         data={state.data}
+        resumeFile={state.resumeFile}
         resumeFileName={state.fileName}
         formatName="Apex Standard"
         onBack={() => setState({ status: "idle" })}
+      />
+    )
+  }
+
+  if (state.status === "pricing") {
+    return (
+      <PricingScreen
+        onHome={() => setState({ status: "idle" })}
+        onPricing={() => setState({ status: "pricing" })}
+        onLogin={() => setState({ status: "login" })}
+        onSignup={() => setState({ status: "signup" })}
       />
     )
   }
@@ -75,6 +89,7 @@ export default function App() {
       onDismissError={() => setState({ status: "idle" })}
       onLogin={() => setState({ status: "login" })}
       onSignup={() => setState({ status: "signup" })}
+      onPricing={() => setState({ status: "pricing" })}
     />
   )
 }
