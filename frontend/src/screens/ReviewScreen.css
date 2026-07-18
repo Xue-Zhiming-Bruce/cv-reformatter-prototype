@@ -262,6 +262,133 @@
   min-height: 520px;
 }
 
+/* Manually onboarded classic PDF blueprint. Interactive affordances remain subtle,
+   while all resume content follows the reference's black serif presentation. */
+.rdoc--classic-10554236 {
+  display: flex;
+  flex-direction: column;
+  max-width: 700px;
+  padding: 34px 36px;
+  border-radius: 0;
+  font-family: "Times New Roman", Times, serif;
+  font-size: 14px;
+  line-height: 1.12;
+  color: #000000;
+}
+
+.rdoc--classic-10554236 .rdoc-header {
+  order: 0;
+  margin-bottom: 4px;
+}
+
+.rdoc--classic-10554236 .rdoc-name-row,
+.rdoc--classic-10554236 .rdoc-contact {
+  display: none;
+}
+
+.rdoc--classic-10554236 .rdoc-title-row {
+  margin: 0;
+  font: inherit;
+  color: #000000;
+  text-transform: uppercase;
+}
+
+.rdoc--classic-10554236 .rdoc-section {
+  border: 0;
+  padding: 0;
+  margin: 0 0 8px;
+}
+
+.rdoc--classic-10554236 .rdoc-section--summary { order: 1; }
+.rdoc--classic-10554236 .rdoc-section--skills { order: 2; }
+.rdoc--classic-10554236 .rdoc-section--languages { order: 3; }
+.rdoc--classic-10554236 .rdoc-section--experience { order: 4; }
+.rdoc--classic-10554236 .rdoc-section--education { order: 5; }
+.rdoc--classic-10554236 .rdoc-section--certifications { order: 6; }
+.rdoc--classic-10554236 .rdoc-section--additional { order: 7; }
+
+.rdoc--classic-10554236 .rdoc-section__head,
+.rdoc--classic-10554236 .rdoc-section__head--muted {
+  margin: 7px 0 5px;
+  font: inherit;
+  color: #000000;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.rdoc--classic-10554236 .rdoc-summary,
+.rdoc--classic-10554236 .rdoc-skills,
+.rdoc--classic-10554236 .rdoc-lang-prof,
+.rdoc--classic-10554236 .rdoc-additional,
+.rdoc--classic-10554236 .rdoc-entry__company,
+.rdoc--classic-10554236 .rdoc-entry__role,
+.rdoc--classic-10554236 .rdoc-entry__dates,
+.rdoc--classic-10554236 .rdoc-entry__location,
+.rdoc--classic-10554236 .rdoc-entry__bullet {
+  font: inherit;
+  color: #000000;
+}
+
+.rdoc--classic-10554236 .rdoc-entry {
+  margin-bottom: 8px;
+}
+
+.rdoc--classic-10554236 .rdoc-entry__top {
+  gap: 0 4px;
+  margin: 0;
+}
+
+.rdoc--classic-10554236 .rdoc-entry__company {
+  order: 1;
+  font-weight: 400;
+}
+
+.rdoc--classic-10554236 .rdoc-entry__dates {
+  order: 2;
+  margin: 0;
+  padding: 0;
+}
+
+.rdoc--classic-10554236 .rdoc-entry__role {
+  order: 3;
+}
+
+.rdoc--classic-10554236 .rdoc-entry__sep {
+  display: none;
+}
+
+.rdoc--classic-10554236 .rdoc-entry__location {
+  margin: 0 0 5px;
+}
+
+.rdoc--classic-10554236 .rdoc-entry__bullet {
+  gap: 8px;
+  margin: 1px 0 0 20px;
+  line-height: 1.14;
+}
+
+.rdoc--classic-10554236 .rdoc-bullet-dot {
+  color: #000000;
+  line-height: inherit;
+}
+
+.rdoc-classic-highlights {
+  columns: 2;
+  column-gap: 44px;
+  margin: 0;
+  padding-left: 25px;
+  color: #000000;
+}
+
+.rdoc-classic-highlights li {
+  break-inside: avoid;
+  margin: 0 0 2px;
+}
+
+.rdoc--classic-10554236 .ef__pencil {
+  color: #555555;
+}
+
 .rdoc-header {
   margin-bottom: 24px;
 }
@@ -367,6 +494,20 @@
   color: var(--color-text-muted);
   white-space: nowrap;
   padding-left: 12px;
+}
+
+.rdoc-entry__dates .ef {
+  white-space: nowrap;
+}
+
+.rdoc-entry__dates .empty-slot {
+  border: 0;
+  padding: 1px 3px;
+  color: inherit;
+}
+
+.rdoc-date-separator {
+  user-select: none;
 }
 
 .rdoc-entry__location {
@@ -500,13 +641,13 @@
   align-items: center;
   gap: 16px;
   padding: 0 20px;
-  height: 40px;
+  min-height: 52px;
   background: #ffffff;
   border-top: 1px solid var(--color-border);
   flex-shrink: 0;
   font-size: 12px;
   flex-wrap: wrap;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .rv-ledger__label {
@@ -519,6 +660,55 @@
 
 .rv-ledger__item {
   color: var(--color-text-secondary);
+}
+
+.rv-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.rv-actions__error {
+  max-width: 340px;
+  color: #b42318;
+  font-size: 11px;
+}
+
+.rv-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 13px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-strong);
+  font: inherit;
+  font-weight: 650;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.rv-action--primary {
+  color: #ffffff;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.rv-action--secondary {
+  color: var(--color-text-primary);
+  background: #ffffff;
+}
+
+.rv-action:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+@media (max-width: 980px) {
+  .rv-ledger__missing {
+    display: none;
+  }
 }
 
 .rv-ledger__item--review {

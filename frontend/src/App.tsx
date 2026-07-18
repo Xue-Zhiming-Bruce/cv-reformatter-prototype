@@ -4,7 +4,7 @@ import { ReviewScreen } from "./screens/ReviewScreen"
 import { AuthScreen } from "./screens/AuthScreen"
 import { PricingScreen } from "./screens/PricingScreen"
 import { FEATURES } from "./constants/features"
-import type { ProcessResponse } from "./types"
+import type { ProcessResponse, TargetFormatMetadata, TargetFormatUploadResponse } from "./types"
 import "./App.css"
 
 type AppState =
@@ -14,7 +14,14 @@ type AppState =
   | { status: "signup" }
   | { status: "loading"; fileName: string; targetFormatName: string }
   | { status: "error"; message: string }
-  | { status: "done"; data: ProcessResponse; fileName: string; targetFormatName: string; resumeFile: File }
+  | {
+      status: "done"
+      data: ProcessResponse
+      fileName: string
+      targetFormatName: string
+      targetFormat: TargetFormatMetadata
+      resumeFile: File
+    }
 
 export default function App() {
   const [state, setState] = useState<AppState>({ status: "idle" })
@@ -52,7 +59,15 @@ export default function App() {
         return
       }
 
-      setState({ status: "done", data, fileName: resumeFile.name, targetFormatName: targetFile.name, resumeFile })
+      const targetData: TargetFormatUploadResponse = await targetRes.json()
+      setState({
+        status: "done",
+        data,
+        fileName: resumeFile.name,
+        targetFormatName: targetFile.name,
+        targetFormat: targetData.target_format,
+        resumeFile,
+      })
     } catch {
       setState({
         status: "error",
@@ -78,6 +93,7 @@ export default function App() {
         resumeFile={state.resumeFile}
         resumeFileName={state.fileName}
         formatName={state.targetFormatName}
+        targetFormat={state.targetFormat}
         onBack={() => setState({ status: "idle" })}
       />
     )

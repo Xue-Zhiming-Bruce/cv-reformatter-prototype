@@ -154,6 +154,7 @@
     "sectionExperience": "경력",
     "sectionEducation": "학력",
     "sectionSkills": "보유 기술",
+    "sectionHighlights": "주요 역량",
     "sectionLanguages": "언어 능력",
     "sectionCertifications": "자격증",
     "sectionAdditional": "기타 정보",
@@ -162,7 +163,18 @@
     "docxRenderError": "문서 미리보기를 불러올 수 없습니다.",
     "uploadedResumeAlt": "업로드한 이력서",
     "blindProfileLabel": "블라인드 프로필",
-    "blindProfileHint": "클라이언트에게 신원 정보를 숨깁니다"
+    "blindProfileHint": "클라이언트에게 신원 정보를 숨깁니다",
+    "addStartDate": "시작일 추가",
+    "addEndDate": "종료일 추가",
+    "generate": "파일 생성",
+    "generating": "생성 중…",
+    "generateError": "출력 파일을 생성할 수 없습니다.",
+    "downloadDocx": "DOCX 다운로드",
+    "downloadPdf": "PDF 다운로드",
+    "viewGenerated": "생성본 보기",
+    "editDraft": "초안 수정",
+    "generatedPreviewLabel": "생성된 PDF 미리보기",
+    "generatedPreviewHint": "임시 수정 내용을 반영한 결과"
   },
   "auth": {
     "loginTitle": "다시 오셨군요",

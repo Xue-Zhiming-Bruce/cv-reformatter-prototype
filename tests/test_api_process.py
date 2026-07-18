@@ -1,7 +1,10 @@
 from pathlib import Path
+import base64
+import io
 
 import pytest
 from docx import Document
+from docx.shared import Inches
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 from pytest import MonkeyPatch
@@ -126,6 +129,40 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
     assert metadata["original_pdf_preview_url"] == body["original_pdf_preview_url"]
     assert metadata["needs_review_count"] == len(body["profile"]["missing_fields"])
     assert metadata["debug_artifacts"]["candidate_profile"] == str(artifact_dir / "candidate_profile.json")
+
+
+def test_process_accepts_docx_with_embedded_image(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(main, "export_docx_to_pdf", _fake_pdf_export)
+    resume_path = tmp_path / "resume-with-image.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    image = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X3mNvwAAAABJRU5ErkJggg=="
+    )
+    document.add_picture(io.BytesIO(image), width=Inches(0.25))
+    document.add_paragraph("jane@example.com")
+    document.add_paragraph("Skills: Python, SQL")
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    resume_path.name,
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["profile"]["full_name"] == "Jane Candidate"
+    assert body["profile"]["email"] == "jane@example.com"
+    assert "Skills: Python, SQL" in body["original_text"]
 
 
 def test_process_accepts_text_pdf_upload(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

@@ -1,0 +1,46 @@
+{
+  "template_id": "client_10554236_v1",
+  "version": 1,
+  "display_name": "Classic Accounting Resume",
+  "source_reference_type": "pdf_reference",
+  "source_sha256": ["8f80e114c8340ef1ff3b7a76003615cc0366ea5d4ad007ae5c061e7f5fd759e8"],
+  "renderer_key": "classic_10554236",
+  "page": {
+    "width_inches": 8.2639,
+    "height_inches": 11.6944,
+    "top_margin_inches": 0.42,
+    "right_margin_inches": 0.46,
+    "bottom_margin_inches": 0.5,
+    "left_margin_inches": 0.46,
+    "header_distance_inches": 0.2,
+    "footer_distance_inches": 0.2
+  },
+  "typography": {
+    "normal": {"font_name": "Times New Roman", "size_pt": 10.0, "bold": false, "italic": false, "color_hex": "000000", "line_spacing": 1.0, "space_before_pt": 0.0, "space_after_pt": 1.5},
+    "title": {"font_name": "Times New Roman", "size_pt": 10.5, "bold": false, "italic": false, "color_hex": "000000", "line_spacing": 1.0, "space_before_pt": 0.0, "space_after_pt": 1.0},
+    "section": {"font_name": "Times New Roman", "size_pt": 10.0, "bold": false, "italic": false, "color_hex": "000000", "line_spacing": 1.0, "space_before_pt": 9.0, "space_after_pt": 4.0},
+    "entry_heading": {"font_name": "Times New Roman", "size_pt": 10.0, "bold": false, "italic": false, "color_hex": "000000", "line_spacing": 1.0, "space_before_pt": 7.0, "space_after_pt": 0.0}
+  },
+  "section_order": ["header", "summary", "highlights", "languages", "experience", "education", "certifications", "additional_details", "skills"],
+  "field_mappings": {
+    "header": "candidate_subheading_or_heading",
+    "summary": "professional_summary",
+    "highlights": "skills",
+    "languages": "languages",
+    "experience": "work_experience",
+    "education": "education",
+    "certifications": "certifications",
+    "additional_details": "additional_details",
+    "skills": "skills"
+  },
+  "skills_columns": 2,
+  "bullet_left_indent_inches": 0.22,
+  "bullet_hanging_indent_inches": 0.12,
+  "overflow": {
+    "allow_automatic_page_breaks": true,
+    "keep_experience_heading_with_first_bullet": true,
+    "keep_section_heading_with_next": true,
+    "widow_control": true,
+    "split_long_experience_entries": true
+  }
+}

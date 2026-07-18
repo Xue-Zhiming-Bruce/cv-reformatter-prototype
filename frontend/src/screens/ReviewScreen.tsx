@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { LogoIcon, PencilIcon } from "../components/icons"
-import type { ProcessResponse } from "../types"
+import type { CandidateProfile, GenerateResponse, ProcessResponse, TargetFormatMetadata } from "../types"
 import "./ReviewScreen.css"
 
 // TODO: When API returns per-field confidence scores, set this to true.
@@ -14,6 +14,7 @@ type ReviewScreenProps = {
   resumeFile: File
   resumeFileName: string
   formatName: string
+  targetFormat: TargetFormatMetadata
   onBack: () => void
 }
 
@@ -25,9 +26,10 @@ type EditableFieldProps = {
   isMissing?: boolean
   multiline?: boolean
   className?: string
+  emptyLabel?: string
 }
 
-function EditableField({ value, path, edits, onEdit, isMissing, multiline, className }: EditableFieldProps) {
+function EditableField({ value, path, edits, onEdit, isMissing, multiline, className, emptyLabel }: EditableFieldProps) {
   const { t } = useTranslation()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState("")
@@ -86,14 +88,14 @@ function EditableField({ value, path, edits, onEdit, isMissing, multiline, class
     )
   }
 
-  if (isEmpty && isMissing) {
+  if (isEmpty && (isMissing || emptyLabel)) {
     return (
       <button
         type="button"
         className={`empty-slot${className ? ` ${className}` : ""}`}
         onClick={startEdit}
       >
-        <span className="empty-slot__badge">{t("review.emptySlot")}</span>
+        <span className="empty-slot__badge">{emptyLabel ?? t("review.emptySlot")}</span>
       </button>
     )
   }
@@ -115,19 +117,47 @@ function EditableField({ value, path, edits, onEdit, isMissing, multiline, class
   )
 }
 
-function joinDefined(values: Array<string | null | undefined>, separator = " – "): string {
-  return values.filter((v): v is string => Boolean(v?.trim())).join(separator)
-}
-
 function pdfViewerUrl(url: string): string {
   return `${url}${url.includes("#") ? "&" : "#"}toolbar=0&navpanes=0&view=FitH`
 }
 
-export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onBack }: ReviewScreenProps) {
+function applyEditsToProfile(profile: CandidateProfile, edits: Record<string, string>): CandidateProfile {
+  const edited = structuredClone(profile)
+
+  for (const [path, value] of Object.entries(edits)) {
+    if (path === "skills") {
+      edited.skills = value.split(/[,\n]/).map((item) => item.trim()).filter(Boolean)
+      continue
+    }
+    if (path === "current_title") {
+      if (edited.work_experience[0]) edited.work_experience[0].title = value || null
+      continue
+    }
+
+    const parts = path.split(".")
+    let cursor: unknown = edited
+    for (const part of parts.slice(0, -1)) {
+      if (cursor === null || typeof cursor !== "object") break
+      cursor = (cursor as Record<string, unknown>)[part]
+    }
+    if (cursor !== null && typeof cursor === "object") {
+      ;(cursor as Record<string, unknown>)[parts.at(-1)!] = value || null
+    }
+  }
+
+  return edited
+}
+
+export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, targetFormat, onBack }: ReviewScreenProps) {
   const { t } = useTranslation()
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [blindProfile, setBlindProfile] = useState(false)
+  const [generation, setGeneration] = useState<GenerateResponse | null>(null)
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [generationError, setGenerationError] = useState<string | null>(null)
+  const [showGeneratedPreview, setShowGeneratedPreview] = useState(false)
   const { profile, ledger } = data
+  const isClassicBlueprint = targetFormat.matched_template_id === "client_10554236_v1"
 
   const missingNames = useMemo(
     () => new Set(profile.missing_fields.map((f) => f.field_name)),
@@ -142,17 +172,18 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
   const originalPdfViewerUrl = originalPreviewUrl ? pdfViewerUrl(originalPreviewUrl) : null
 
   function handleEdit(path: string, value: string) {
-    setEdits((prev) => {
-      const next = { ...prev }
-      if (value === "") delete next[path]
-      else next[path] = value
-      return next
-    })
+    setEdits((prev) => ({ ...prev, [path]: value }))
+    setGeneration(null)
+    setShowGeneratedPreview(false)
   }
 
   const editCount = Object.keys(edits).length
 
-  function ef(path: string, value: string | null, opts: { multiline?: boolean; className?: string } = {}) {
+  function ef(
+    path: string,
+    value: string | null,
+    opts: { multiline?: boolean; className?: string; emptyLabel?: string } = {},
+  ) {
     return (
       <EditableField
         value={value}
@@ -162,6 +193,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
         isMissing={missingNames.has(path)}
         multiline={opts.multiline}
         className={opts.className}
+        emptyLabel={opts.emptyLabel}
       />
     )
   }
@@ -176,6 +208,35 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
     const eff = (edits[key] ?? value ?? "").trim()
     return eff !== "" || missingNames.has(key)
   })
+
+  async function handleGenerate() {
+    setIsGenerating(true)
+    setGenerationError(null)
+    try {
+      const response = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile: applyEditsToProfile(profile, edits),
+          blind_profile: blindProfile,
+          artifact_id: data.artifact_id,
+          original_text: data.original_text,
+          target_format: targetFormat,
+        }),
+      })
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(body.detail ?? t("review.generateError"))
+      }
+      const result: GenerateResponse = await response.json()
+      setGeneration(result)
+      setShowGeneratedPreview(true)
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : t("review.generateError"))
+    } finally {
+      setIsGenerating(false)
+    }
+  }
 
   return (
     <div className="review-page">
@@ -229,11 +290,20 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
         {/* Right — editable reformatted doc */}
         <div className="rv-pane rv-pane--right">
           <div className="pane-label">
-            {t("review.rightLabel")} · {formatName}
-            <span className="pane-label__hint">{t("review.rightLabelHint")}</span>
+            {showGeneratedPreview ? t("review.generatedPreviewLabel") : t("review.rightLabel")} · {formatName}
+            <span className="pane-label__hint">
+              {showGeneratedPreview ? t("review.generatedPreviewHint") : t("review.rightLabelHint")}
+            </span>
           </div>
+          {showGeneratedPreview && generation ? (
+            <div className="pane-body pane-body--pdf">
+              <object data={pdfViewerUrl(generation.pdf_preview_url)} type="application/pdf" className="pdf-embed">
+                <p className="pane-fallback">{t("review.pdfFallback")}</p>
+              </object>
+            </div>
+          ) : (
           <div className="pane-body">
-            <div className="rdoc">
+            <div className={`rdoc${isClassicBlueprint ? " rdoc--classic-10554236" : ""}`}>
               {/* Header block */}
               <div className={`rdoc-header${blindProfile ? " rdoc-header--blind" : ""}`}>
                 <div className="rdoc-name-row">
@@ -258,7 +328,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
 
               {/* Summary */}
               {(profile.professional_summary || missingNames.has("professional_summary")) && (
-                <div className="rdoc-section">
+                <div className="rdoc-section rdoc-section--summary">
                   <div className="rdoc-section__head">{t("review.sectionSummary")}</div>
                   <div className="rdoc-summary">
                     {ef("professional_summary", profile.professional_summary, { multiline: true })}
@@ -268,7 +338,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
 
               {/* Experience */}
               {profile.work_experience.length > 0 && (
-                <div className="rdoc-section">
+                <div className="rdoc-section rdoc-section--experience">
                   <div className="rdoc-section__head">{t("review.sectionExperience")}</div>
                   {profile.work_experience.map((entry, i) => (
                     <div key={i} className="rdoc-entry">
@@ -284,10 +354,13 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
                           {ef(`work_experience.${i}.title`, entry.title)}
                         </span>
                         <span className="rdoc-entry__dates">
-                          {joinDefined([
-                            edits[`work_experience.${i}.start_date`] ?? entry.start_date,
-                            edits[`work_experience.${i}.end_date`] ?? entry.end_date ?? t("review.present"),
-                          ])}
+                          {ef(`work_experience.${i}.start_date`, entry.start_date, {
+                            emptyLabel: t("review.addStartDate"),
+                          })}
+                          <span className="rdoc-date-separator">{isClassicBlueprint ? " to " : " – "}</span>
+                          {ef(`work_experience.${i}.end_date`, entry.end_date, {
+                            emptyLabel: t("review.present"),
+                          })}
                         </span>
                       </div>
                       {(edits[`work_experience.${i}.location`] ?? entry.location) && (
@@ -308,7 +381,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
 
               {/* Education */}
               {profile.education.length > 0 && (
-                <div className="rdoc-section">
+                <div className="rdoc-section rdoc-section--education">
                   <div className="rdoc-section__head">{t("review.sectionEducation")}</div>
                   {profile.education.map((entry, i) => (
                     <div key={i} className="rdoc-entry">
@@ -330,10 +403,13 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
                           </>
                         )}
                         <span className="rdoc-entry__dates">
-                          {joinDefined([
-                            edits[`education.${i}.start_date`] ?? entry.start_date,
-                            edits[`education.${i}.end_date`] ?? entry.end_date,
-                          ])}
+                          {ef(`education.${i}.start_date`, entry.start_date, {
+                            emptyLabel: t("review.addStartDate"),
+                          })}
+                          <span className="rdoc-date-separator">{isClassicBlueprint ? " to " : " – "}</span>
+                          {ef(`education.${i}.end_date`, entry.end_date, {
+                            emptyLabel: t("review.addEndDate"),
+                          })}
                         </span>
                       </div>
                     </div>
@@ -343,17 +419,27 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
 
               {/* Skills */}
               {(profile.skills.length > 0 || missingNames.has("skills")) && (
-                <div className="rdoc-section">
-                  <div className="rdoc-section__head">{t("review.sectionSkills")}</div>
-                  <div className="rdoc-skills">
-                    {ef("skills", profile.skills.join(", ") || null, { multiline: false })}
+                <div className="rdoc-section rdoc-section--skills">
+                  <div className="rdoc-section__head">
+                    {isClassicBlueprint ? t("review.sectionHighlights") : t("review.sectionSkills")}
                   </div>
+                  {isClassicBlueprint ? (
+                    <ul className="rdoc-classic-highlights">
+                      {profile.skills.map((skill, i) => (
+                        <li key={i}>{ef(`skills.${i}`, skill)}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="rdoc-skills">
+                      {ef("skills", profile.skills.join(", ") || null, { multiline: false })}
+                    </div>
+                  )}
                 </div>
               )}
 
               {/* Languages */}
               {profile.languages.length > 0 && (
-                <div className="rdoc-section">
+                <div className="rdoc-section rdoc-section--languages">
                   <div className="rdoc-section__head">{t("review.sectionLanguages")}</div>
                   <div className="rdoc-skills">
                     {profile.languages.map((lang, i) => (
@@ -375,7 +461,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
 
               {/* Certifications */}
               {profile.certifications.length > 0 && (
-                <div className="rdoc-section">
+                <div className="rdoc-section rdoc-section--certifications">
                   <div className="rdoc-section__head">{t("review.sectionCertifications")}</div>
                   {profile.certifications.map((cert, i) => (
                     <div key={i} className="rdoc-entry">
@@ -402,7 +488,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
 
               {/* Additional */}
               {(profile.work_authorization || profile.notice_period || profile.salary_expectation) && (
-                <div className="rdoc-section">
+                <div className="rdoc-section rdoc-section--additional">
                   <div className="rdoc-section__head rdoc-section__head--muted">{t("review.sectionAdditional")}</div>
                   <div className="rdoc-additional">
                     {ef("work_authorization", profile.work_authorization)}
@@ -415,6 +501,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
               {SHOW_CONFIDENCE && null /* per-field confidence highlights rendered here when enabled */}
             </div>
           </div>
+          )}
         </div>
       </div>
 
@@ -435,6 +522,36 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
             {t("review.ledgerMissing", { fields: profile.missing_fields.map((f) => f.label).join(" · ") })}
           </span>
         )}
+        <div className="rv-actions">
+          {generationError && <span className="rv-actions__error">{generationError}</span>}
+          {generation && (
+            <>
+              <button
+                type="button"
+                className="rv-action rv-action--secondary"
+                onClick={() => setShowGeneratedPreview((current) => !current)}
+              >
+                {showGeneratedPreview ? t("review.editDraft") : t("review.viewGenerated")}
+              </button>
+              <a className="rv-action rv-action--secondary" href={generation.docx_download_url}>
+                {t("review.downloadDocx")}
+              </a>
+              <a className="rv-action rv-action--primary" href={generation.pdf_download_url}>
+                {t("review.downloadPdf")}
+              </a>
+            </>
+          )}
+          {!generation && (
+            <button
+              type="button"
+              className="rv-action rv-action--primary"
+              disabled={isGenerating}
+              onClick={handleGenerate}
+            >
+              {isGenerating ? t("review.generating") : t("review.generate")}
+            </button>
+          )}
+        </div>
       </footer>
 
     </div>

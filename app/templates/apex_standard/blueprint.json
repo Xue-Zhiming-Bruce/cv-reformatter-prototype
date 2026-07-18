@@ -1,0 +1,43 @@
+{
+  "template_id": "apex_standard",
+  "version": 1,
+  "display_name": "Apex Standard",
+  "source_reference_type": "built_in",
+  "source_sha256": [],
+  "renderer_key": "apex_standard",
+  "page": {
+    "width_inches": 8.27,
+    "height_inches": 11.69,
+    "top_margin_inches": 0.75,
+    "right_margin_inches": 0.75,
+    "bottom_margin_inches": 0.75,
+    "left_margin_inches": 0.75,
+    "header_distance_inches": 0.3,
+    "footer_distance_inches": 0.3
+  },
+  "typography": {
+    "normal": {"font_name": "Arial", "size_pt": 10.0, "bold": false, "italic": false, "color_hex": "000000", "line_spacing": 1.08, "space_before_pt": 0.0, "space_after_pt": 4.0},
+    "title": {"font_name": "Arial", "size_pt": 20.0, "bold": true, "italic": false, "color_hex": "203452", "line_spacing": 1.0, "space_before_pt": 0.0, "space_after_pt": 6.0},
+    "section": {"font_name": "Arial", "size_pt": 12.0, "bold": true, "italic": false, "color_hex": "203452", "line_spacing": 1.0, "space_before_pt": 8.0, "space_after_pt": 4.0},
+    "entry_heading": {"font_name": "Arial", "size_pt": 10.0, "bold": true, "italic": false, "color_hex": "000000", "line_spacing": 1.0, "space_before_pt": 3.0, "space_after_pt": 2.0}
+  },
+  "section_order": ["header", "contact", "summary", "highlights", "languages", "experience", "education", "certifications", "additional_details"],
+  "field_mappings": {
+    "header": "candidate_heading",
+    "summary": "professional_summary",
+    "highlights": "skills",
+    "experience": "work_experience",
+    "education": "education",
+    "certifications": "certifications"
+  },
+  "skills_columns": 1,
+  "bullet_left_indent_inches": 0.25,
+  "bullet_hanging_indent_inches": 0.14,
+  "overflow": {
+    "allow_automatic_page_breaks": true,
+    "keep_experience_heading_with_first_bullet": true,
+    "keep_section_heading_with_next": true,
+    "widow_control": true,
+    "split_long_experience_entries": true
+  }
+}

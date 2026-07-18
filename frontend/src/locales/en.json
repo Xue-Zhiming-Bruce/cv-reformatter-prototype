@@ -154,6 +154,7 @@
     "sectionExperience": "Experience",
     "sectionEducation": "Education",
     "sectionSkills": "Skills",
+    "sectionHighlights": "Highlights",
     "sectionLanguages": "Languages",
     "sectionCertifications": "Certifications",
     "sectionAdditional": "Additional",
@@ -162,7 +163,18 @@
     "docxRenderError": "Could not render document preview.",
     "uploadedResumeAlt": "Uploaded resume",
     "blindProfileLabel": "Blind profile",
-    "blindProfileHint": "Hides identity from client"
+    "blindProfileHint": "Hides identity from client",
+    "addStartDate": "Add start",
+    "addEndDate": "Add end",
+    "generate": "Generate files",
+    "generating": "Generating…",
+    "generateError": "Could not generate the output files.",
+    "downloadDocx": "Download DOCX",
+    "downloadPdf": "Download PDF",
+    "viewGenerated": "View generated",
+    "editDraft": "Edit draft",
+    "generatedPreviewLabel": "Generated PDF preview",
+    "generatedPreviewHint": "Generated from your temporary edits"
   },
   "auth": {
     "loginTitle": "Welcome back",

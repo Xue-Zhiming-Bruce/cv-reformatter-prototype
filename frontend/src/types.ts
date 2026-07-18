@@ -71,3 +71,38 @@ export interface ProcessResponse {
   debug_artifacts: Record<string, string>
   artifact_metadata_url: string
 }
+
+export interface TargetFormatMetadata {
+  artifact_id: string
+  input_filename: string
+  stored_filename: string
+  input_type: "docx" | "pdf"
+  role: "docx_template" | "pdf_reference"
+  generation_strategy: string
+  accepted_for_generation: boolean
+  used_as_template_source: boolean
+  download_url: string
+  note: string
+  matched_template_id: string | null
+  blueprint_version: number | null
+  format_support: "manual_blueprint" | "reference_only"
+}
+
+export interface TargetFormatUploadResponse {
+  artifact_id: string
+  target_format: TargetFormatMetadata
+  debug_artifacts: Record<string, string>
+  artifact_metadata_url: string
+}
+
+export interface GenerateResponse {
+  artifact_id: string
+  template_id: string
+  docx_download_url: string
+  pdf_download_url: string
+  pdf_preview_url: string
+  artifact_metadata_url: string
+  followup_message: string
+  missing_fields: MissingField[]
+  debug_artifacts: Record<string, string>
+}

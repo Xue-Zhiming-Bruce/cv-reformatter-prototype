@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
@@ -21,6 +21,12 @@ from app.extraction.llm_extractor import (
 )
 from app.generation.docx_renderer import DocxRenderingError, render_docx
 from app.generation.pdf_exporter import PdfExportError, export_docx_to_pdf
+from app.generation.target_format_blueprint import (
+    SourceReferenceType,
+    UnknownTargetFormatBlueprintError,
+    get_target_format_blueprint,
+    match_target_format_blueprint,
+)
 from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME, build_client_render_context
 from app.ingestion.docx_reader import read_docx
 from app.ingestion.file_validator import CorruptedFileError, UnsupportedFileTypeError
@@ -68,6 +74,9 @@ class TargetFormatMetadata(BaseModel):
     used_as_template_source: bool
     download_url: str
     note: str
+    matched_template_id: str | None = None
+    blueprint_version: int | None = None
+    format_support: str = "reference_only"
 
 
 class ProcessResponse(BaseModel):
@@ -100,6 +109,7 @@ class GenerateRequest(BaseModel):
 
 class GenerateResponse(BaseModel):
     artifact_id: str
+    template_id: str
     docx_download_url: str
     pdf_download_url: str
     pdf_preview_url: str
@@ -303,10 +313,20 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     if target_format is not None and target_format.artifact_id != artifact_id:
         raise HTTPException(status_code=400, detail="target_format.artifact_id must match artifact_id.")
 
+    effective_template_id = (
+        target_format.matched_template_id
+        if target_format is not None and target_format.matched_template_id
+        else request.template_name
+    )
+    try:
+        blueprint = get_target_format_blueprint(effective_template_id)
+    except UnknownTargetFormatBlueprintError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     render_context = build_client_render_context(
         reviewed_profile,
         blind_profile=request.blind_profile,
-        template_name=request.template_name,
+        template_name=effective_template_id,
     )
 
     artifact_dir = _prepare_artifact_dir(
@@ -328,7 +348,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     )
 
     try:
-        render_docx(render_context, docx_path)
+        render_docx(render_context, docx_path, blueprint=blueprint)
         exported_pdf_path = export_docx_to_pdf(docx_path, output_dir=artifact_dir)
     except (DocxRenderingError, PdfExportError, FileNotFoundError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -339,18 +359,19 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     debug_artifacts["generated_docx"] = str(docx_path)
     debug_artifacts["generated_pdf"] = str(pdf_path)
 
-    docx_url = _artifact_url(artifact_id, "candidate_profile.docx")
-    pdf_url = _artifact_url(artifact_id, "candidate_profile.pdf")
+    docx_url = _artifact_url(artifact_id, "candidate_profile.docx", download=True)
+    pdf_preview_url = _artifact_url(artifact_id, "candidate_profile.pdf")
+    pdf_download_url = _artifact_url(artifact_id, "candidate_profile.pdf", download=True)
 
     try:
         _local_artifact_store().record_generated_outputs(
             artifact_id=artifact_id,
             artifact_dir=artifact_dir,
-            template_name=request.template_name,
+            template_name=effective_template_id,
             blind_profile=request.blind_profile,
             docx_download_url=docx_url,
-            pdf_download_url=pdf_url,
-            pdf_preview_url=pdf_url,
+            pdf_download_url=pdf_download_url,
+            pdf_preview_url=pdf_preview_url,
             missing_fields=reviewed_profile.missing_fields,
             debug_artifacts=debug_artifacts,
         )
@@ -359,9 +380,10 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
 
     return GenerateResponse(
         artifact_id=artifact_id,
+        template_id=effective_template_id,
         docx_download_url=docx_url,
-        pdf_download_url=pdf_url,
-        pdf_preview_url=pdf_url,
+        pdf_download_url=pdf_download_url,
+        pdf_preview_url=pdf_preview_url,
         artifact_metadata_url=_artifact_metadata_url(artifact_id),
         followup_message=generate_followup_message(reviewed_profile),
         missing_fields=reviewed_profile.missing_fields,
@@ -392,7 +414,11 @@ def get_artifact_metadata(artifact_id: str) -> ArtifactMetadataResponse:
 
 
 @app.get("/api/artifacts/{artifact_id}/{filename}")
-def download_generated_artifact(artifact_id: str, filename: str) -> FileResponse:
+def download_generated_artifact(
+    artifact_id: str,
+    filename: str,
+    download: bool = Query(default=False),
+) -> FileResponse:
     artifact_path = _resolve_download_artifact(artifact_id, filename)
     is_docx = artifact_path.suffix.lower() == ".docx"
     media_type = (
@@ -404,7 +430,7 @@ def download_generated_artifact(artifact_id: str, filename: str) -> FileResponse
         artifact_path,
         media_type=media_type,
         filename=filename,
-        content_disposition_type="attachment" if is_docx else "inline",
+        content_disposition_type="attachment" if is_docx or download else "inline",
     )
 
 
@@ -487,19 +513,38 @@ def _store_target_format(
     suffix: str,
     contents: bytes,
 ) -> TargetFormatMetadata:
+    source_reference_type = (
+        SourceReferenceType.DOCX if suffix == ".docx" else SourceReferenceType.PDF_REFERENCE
+    )
+    matched_blueprint = match_target_format_blueprint(
+        contents,
+        source_reference_type=source_reference_type,
+    )
     if suffix == ".docx":
         stored_filename = "target_format_template.docx"
         role = "docx_template"
-        note = (
-            "DOCX target format stored. The MVP currently renders with the controlled built-in renderer; "
-            "this file is retained as the recruiter target format source for demo alignment."
+        default_note = (
+            "DOCX target format stored. This upload does not match a registered MVP blueprint, so generation "
+            "uses the selected controlled template."
         )
     else:
         stored_filename = "target_format_reference.pdf"
         role = "pdf_reference"
-        note = (
+        default_note = (
             "PDF target format stored as a visual reference only. The MVP does not reverse-engineer PDF templates."
         )
+
+    if matched_blueprint is not None:
+        note = (
+            f"Target format matched registered blueprint {matched_blueprint.template_id} version "
+            f"{matched_blueprint.version}. Generation uses its manually encoded controlled DOCX renderer."
+        )
+        generation_strategy = "registered_target_format_blueprint"
+        format_support = "manual_blueprint"
+    else:
+        note = default_note
+        generation_strategy = "controlled_docx_renderer"
+        format_support = "reference_only"
 
     stored_path = artifact_dir / stored_filename
     stored_path.write_bytes(contents)
@@ -510,11 +555,14 @@ def _store_target_format(
         stored_filename=stored_filename,
         input_type=suffix.removeprefix("."),
         role=role,
-        generation_strategy="controlled_docx_renderer",
+        generation_strategy=generation_strategy,
         accepted_for_generation=True,
-        used_as_template_source=False,
+        used_as_template_source=suffix == ".docx" and matched_blueprint is not None,
         download_url=_artifact_url(artifact_id, stored_filename),
         note=note,
+        matched_template_id=matched_blueprint.template_id if matched_blueprint else None,
+        blueprint_version=matched_blueprint.version if matched_blueprint else None,
+        format_support=format_support,
     )
 
 
@@ -542,6 +590,16 @@ def _validate_target_format_reference(
             status_code=400,
             detail="The target format reference has not been uploaded for this artifact.",
         )
+
+    metadata_path = artifact_dir / "target_format.json"
+    if not metadata_path.exists() or not metadata_path.is_file():
+        raise HTTPException(status_code=400, detail="Target format metadata is missing for this artifact.")
+    try:
+        stored_metadata = TargetFormatMetadata.model_validate_json(metadata_path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail="Target format metadata is invalid.") from exc
+    if stored_metadata != target_format:
+        raise HTTPException(status_code=400, detail="Target format metadata does not match the uploaded artifact.")
 
 
 def _write_profile_debug_artifacts(
@@ -576,11 +634,33 @@ def _write_debug_artifacts(
     original_text: str | None,
     target_format: TargetFormatMetadata | None = None,
 ) -> dict[str, str]:
-    debug_artifacts = _write_profile_debug_artifacts(
-        artifact_dir=artifact_dir,
-        profile=profile,
-        original_text=original_text,
+    debug_artifacts: dict[str, str] = {}
+
+    raw_text_path = artifact_dir / "raw_extracted_text.txt"
+    if raw_text_path.exists():
+        debug_artifacts["raw_extracted_text"] = str(raw_text_path)
+    elif original_text is not None:
+        raw_text_path.write_text(original_text, encoding="utf-8")
+        debug_artifacts["raw_extracted_text"] = str(raw_text_path)
+
+    original_profile_path = artifact_dir / "candidate_profile.json"
+    if original_profile_path.exists():
+        debug_artifacts["candidate_profile"] = str(original_profile_path)
+
+    original_missing_fields_path = artifact_dir / "missing_fields.json"
+    if original_missing_fields_path.exists():
+        debug_artifacts["missing_fields"] = str(original_missing_fields_path)
+
+    export_snapshot_path = artifact_dir / "export_snapshot.json"
+    _write_json(export_snapshot_path, profile.model_dump(mode="json"))
+    debug_artifacts["export_snapshot"] = str(export_snapshot_path)
+
+    export_missing_fields_path = artifact_dir / "export_missing_fields.json"
+    _write_json(
+        export_missing_fields_path,
+        [field.model_dump(mode="json") for field in profile.missing_fields],
     )
+    debug_artifacts["export_missing_fields"] = str(export_missing_fields_path)
 
     render_context_path = artifact_dir / "client_render_context.json"
     _write_json(render_context_path, render_context.model_dump(mode="json"))
@@ -607,8 +687,9 @@ def _resolve_download_artifact(artifact_id: str, filename: str) -> Path:
     return artifact_path
 
 
-def _artifact_url(artifact_id: str, filename: str) -> str:
-    return f"/api/artifacts/{artifact_id}/{filename}"
+def _artifact_url(artifact_id: str, filename: str, *, download: bool = False) -> str:
+    url = f"/api/artifacts/{artifact_id}/{filename}"
+    return f"{url}?download=1" if download else url
 
 
 def _artifact_metadata_url(artifact_id: str) -> str:

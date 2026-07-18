@@ -9,6 +9,8 @@ Purpose:
 - Keep agents focused on the MVP demo path.
 - Prevent feature drift into dashboards, accounts, billing, OCR, or automatic PDF reverse engineering.
 
+For the post-MVP reconstruction loop, see `docs/PDF_TEMPLATE_RECONSTRUCTION.md`.
+
 ## Status Legend
 
 - `[x]` Done enough for MVP continuation.
@@ -38,6 +40,31 @@ CandidateProfile JSON
 ```
 
 Do not restart the project from extraction unless a change directly improves the end-to-end demo.
+
+## Before MVP Versus After MVP
+
+Before MVP means everything required for the first end-to-end recruiter demo:
+
+```text
+candidate resume
+-> validated original CandidateProfile
+-> frontend-owned editable draft with same-browser recovery
+-> disclosure/blind-profile review
+-> temporary export snapshot
+-> one manually approved target blueprint
+-> DOCX/PDF preview and download
+```
+
+After MVP means capabilities that improve scale, durability, automation, or multi-template support but are not required to prove the core workflow:
+
+- backend-saved drafts, revision history, cross-device reopening, and collaboration;
+- automatic reconstruction of a previously unseen target PDF;
+- iterative render/compare/optimize template onboarding;
+- LLM-assisted blueprint improvement and formal template approval;
+- multiple reusable customer templates;
+- OCR, accounts, cloud storage, billing, ATS/CRM integrations, and automatic client sending.
+
+The boundary is about delivery order, not architecture. Post-MVP PDF reconstruction must still produce the same validated `TargetFormatBlueprint` used by the controlled renderer.
 
 ## Stage 0: Product Contract And Guardrails
 
@@ -120,6 +147,37 @@ MVP decision:
 
 - Build one controlled DOCX renderer first.
 - Let target PDF samples inform future styling, but do not block generation on parsing them.
+- Introduce a versioned `TargetFormatBlueprint`/`TemplateDefinition` contract between target-format onboarding and the renderer.
+- For the MVP, create this blueprint manually from one sanitized recruiter target design.
+- Do not represent arbitrary target uploads as exact automatically supported templates.
+
+### Stage 2A: Manual Target Format Blueprint
+
+Goal:
+
+```text
+One sanitized target PDF or DOCX
+-> manual layout analysis
+-> versioned TargetFormatBlueprint
+-> registered controlled DOCX template
+```
+
+Checklist:
+
+- [x] Add a strict `TargetFormatBlueprint` or equivalent template-definition model.
+- [x] Define a stable template identifier and version for the first supported target design.
+- [x] Encode page geometry, typography, branding, section order, spacing, and field mappings.
+- [x] Define page-break and overflow behavior for variable candidate content.
+- [x] Recreate a PDF visual reference as a controlled DOCX template/renderer when the source design is PDF-only.
+- [x] Keep source reference files sanitized and free of real candidate information before committing them.
+- [x] Register the blueprint so the frontend selects a supported template identifier.
+- [x] Add renderer tests proving the selected blueprint controls DOCX content and styling.
+- [x] Export the same blueprint-rendered DOCX to PDF.
+
+Future rule:
+
+- Automatic PDF reverse engineering may later produce the same validated `TargetFormatBlueprint`.
+- It must replace only manual template onboarding and must not introduce a direct `PDF -> final PDF` path.
 
 ## Stage 3: Client-Facing Render Context
 
@@ -276,6 +334,26 @@ Checklist:
   - `GET /api/artifacts`
 - [x] Ensure local generated outputs do not expose secrets or committed real candidate data.
 - [x] Add API tests using synthetic data only.
+- [x] Accept the current recruiter-edited profile as an export snapshot without overwriting the original extracted profile.
+- [x] Generate DOCX and PDF from the same validated request snapshot and selected template version.
+- [x] Preserve `candidate_profile.json`, `missing_fields.json`, and `raw_extracted_text.txt` when generation reuses a processed artifact.
+- [x] Save reviewed generation inputs separately as `export_snapshot.json` and `export_missing_fields.json`.
+- [x] Add an API regression covering process, target upload, timeline edits, generation, downloads, and original-artifact immutability.
+
+MVP persistence rule:
+
+- `/api/generate` may receive edited data temporarily for validation and rendering.
+- This does not require saving that edited profile as the new backend source profile.
+- Generated artifacts and debug metadata may still be retained under the local artifact policy.
+- Backend-saved resume drafts and draft revision endpoints are post-MVP work.
+
+Backend verification status:
+
+- [x] Focused generation/renderer tests pass.
+- [x] Full backend test suite passes after export-snapshot separation.
+- [x] Short, typical, and long synthetic profiles render to A4 DOCX/PDF through `scripts/run_backend_template_smoke.py`.
+- [x] Visual inspection confirms black typography with no clipping or overlap in the three smoke fixtures.
+- [~] Product-owner visual approval of the manually encoded target format remains required before declaring the template accepted.
 
 ## Stage 7: Frontend Review And Export
 
@@ -294,26 +372,33 @@ Checklist:
 
 - [~] Upload/review prototype exists.
 - [x] Document current frontend/backend alignment gaps after the frontend pull from `main`.
-- [ ] Candidate upload UI should honestly reflect supported candidate inputs.
-- [ ] Wire PDF candidate upload when backend supports it.
-- [ ] Keep target format upload, but label PDF samples as reference if not fully parsed.
-- [ ] Show original resume PDF preview from `/api/process`.
-- [ ] Show generated/reformatted PDF preview from `/api/generate`, preferably on the right side of the review/export page.
-- [ ] Add editable fields for core `CandidateProfile` data.
+- [x] Candidate upload UI should honestly reflect supported candidate inputs.
+- [x] Wire PDF candidate upload when backend supports it.
+- [x] Keep target format upload, but label PDF samples as reference if not fully parsed.
+- [x] Show original resume PDF preview from `/api/process`.
+- [x] Show generated/reformatted PDF preview from `/api/generate`, preferably on the right side of the review/export page.
+- [x] Add editable fields for core `CandidateProfile` data.
 - [ ] Add missing-field panel.
 - [ ] Add client disclosure controls.
-- [ ] Rename or define `Anonymize` as `Blind profile`.
-- [ ] Replace "Lossless guarantee" language with "Original preserved. Recruiter approved."
+- [x] Rename or define `Anonymize` as `Blind profile`.
+- [x] Replace "Lossless guarantee" language with "Original preserved. Recruiter approved."
 - [ ] Add follow-up message preview and copy action.
-- [ ] Wire export button to `/api/generate`.
-- [ ] Show DOCX/PDF download actions.
-- [ ] Keep original extracted text visible beside editable structured data.
+- [x] Wire export button to `/api/generate`.
+- [x] Show DOCX/PDF download actions.
+- [x] Keep original extracted text visible beside editable structured data.
+- [x] Keep edits separate from the original profile while the review screen is open.
+- [ ] Add browser-local draft recovery keyed by `artifact_id` and a draft schema version.
+- [ ] Add `Reset to original` or `Clear draft` behavior.
+- [ ] Show clear local-draft/generation states without implying that the draft is saved to the backend.
+- [~] Support nested experience and education editing; core values and dates are editable, while add/remove/reorder behavior remains to be decided.
+- [x] Send the latest frontend draft to `/api/generate` as the export snapshot.
+- [x] Ensure DOCX/PDF download actions use the generated result from that snapshot.
 
 Review/edit discussion still needed:
 
-- Decide minimum editable fields for first demo.
-- Decide how much nested editing to support for work experience and education.
-- Decide whether first version uses simple textareas or row-based add/remove editors.
+- Decide whether same-browser recovery uses `localStorage` or IndexedDB; keep the first implementation small and provide a clear-delete path for sensitive data.
+- Decide whether add/remove/reorder controls for experience and education are necessary before the first demo or immediately after it.
+- Decide whether Download triggers generation directly or the UI keeps a separate Preview/Generate step. Both must use the latest draft.
 
 ## Stage 8: First Successful Demo
 
@@ -323,12 +408,17 @@ The first successful demo is complete when a user can:
 - [ ] See the original resume as a PDF preview.
 - [ ] See extracted candidate fields.
 - [ ] Correct fields manually.
+- [ ] Refresh and recover the current draft in the same browser.
+- [ ] Reset the draft to the preserved original profile.
+- [ ] Edit experience and education timeline dates.
 - [ ] See missing information.
 - [ ] Choose disclosure behavior for missing or sensitive fields.
 - [ ] Enable blind profile mode.
 - [ ] Generate a branded DOCX.
 - [ ] See the reformatted resume as a generated PDF preview.
 - [ ] Download a PDF version.
+- [ ] Confirm both downloaded files contain the latest interface edits.
+- [ ] Confirm preview/download does not overwrite the original `CandidateProfile`.
 - [ ] Copy a drafted follow-up message.
 - [ ] Inspect saved debug artifacts:
   - extracted raw text
@@ -342,14 +432,52 @@ Do not add new product areas until this demo works end-to-end with synthetic dat
 ## Stage 9: Post-MVP / Later
 
 - [later] Scanned PDF OCR.
+- [later] Explicit backend `Save draft` capability.
+- [later] Reopen saved drafts, draft revision history, cross-device access, and collaboration.
 - [later] Automatic PDF sample style extraction.
-- [later] Multiple templates.
+- [later] Iterative PDF template reconstruction:
+  - deterministic extraction of fonts, geometry, coordinates, colors, images, and repeated structures;
+  - initial validated `TargetFormatBlueprint` creation;
+  - synthetic short, typical, and long candidate fixtures;
+  - controlled rendering and PDF comparison;
+  - deterministic similarity measurements;
+  - LLM-proposed, schema-validated blueprint changes;
+  - bounded optimization, regression checks, and rollback;
+  - human approval and versioned publication.
+- [later] Multiple approved customer templates.
 - [later] Multi-user authentication.
 - [later] Billing.
 - [later] ATS/CRM integrations.
 - [later] Cloud storage.
 - [later] Complex dashboards.
 - [later] Automatic client sending.
+
+### Stage 9A: Backend-Saved Drafts
+
+Goal:
+
+```text
+frontend draft
+-> explicit save
+-> separately persisted draft/revisions
+-> reopen without changing the immutable original profile
+```
+
+This stage is required only when browser-local recovery is insufficient. It must not silently turn every interface edit into a replacement for the extracted source profile.
+
+### Stage 9B: PDF Template Reconstruction
+
+Goal:
+
+```text
+previously unseen target PDF
+-> draft blueprint
+-> iterative render/compare/improve loop
+-> generalization tests
+-> human-approved versioned template
+```
+
+The expensive loop runs once per new target design. Normal resume production selects the approved template and never reruns reconstruction. See `docs/PDF_TEMPLATE_RECONSTRUCTION.md` for the design contract and acceptance criteria.
 
 ## Agent Operating Rules
 

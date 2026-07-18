@@ -1,11 +1,14 @@
+import json
 from pathlib import Path
 
 import pytest
+from docx import Document
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
 from app import main
 from app.extraction.candidate_schema import CandidateProfile, WorkExperience
+from app.generation.target_format_blueprint import get_target_format_blueprint
 from app.main import app
 
 client = TestClient(app)
@@ -54,14 +57,16 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
     body = response.json()
     artifact_dir = tmp_path / body["artifact_id"]
     assert (artifact_dir / "raw_extracted_text.txt").read_text(encoding="utf-8") == "Jane Candidate\nSkills: Python, SQL"
-    assert (artifact_dir / "candidate_profile.json").exists()
-    assert (artifact_dir / "missing_fields.json").exists()
+    assert not (artifact_dir / "candidate_profile.json").exists()
+    assert not (artifact_dir / "missing_fields.json").exists()
+    assert (artifact_dir / "export_snapshot.json").exists()
+    assert (artifact_dir / "export_missing_fields.json").exists()
     assert (artifact_dir / "client_render_context.json").exists()
     assert (artifact_dir / "candidate_profile.docx").exists()
     assert (artifact_dir / "candidate_profile.pdf").exists()
-    assert body["docx_download_url"] == f"/api/artifacts/{body['artifact_id']}/candidate_profile.docx"
-    assert body["pdf_download_url"] == f"/api/artifacts/{body['artifact_id']}/candidate_profile.pdf"
-    assert body["pdf_preview_url"] == body["pdf_download_url"]
+    assert body["docx_download_url"] == f"/api/artifacts/{body['artifact_id']}/candidate_profile.docx?download=1"
+    assert body["pdf_download_url"] == f"/api/artifacts/{body['artifact_id']}/candidate_profile.pdf?download=1"
+    assert body["pdf_preview_url"] == f"/api/artifacts/{body['artifact_id']}/candidate_profile.pdf"
     assert body["artifact_metadata_url"] == f"/api/artifacts/{body['artifact_id']}/metadata"
     assert "Salary expectation" in body["followup_message"]
     assert {field["field_name"] for field in body["missing_fields"]} >= {
@@ -78,7 +83,9 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
     assert download_response.headers["content-disposition"].startswith("attachment;")
     assert pdf_response.status_code == 200
     assert pdf_response.headers["content-type"] == "application/pdf"
-    assert pdf_response.headers["content-disposition"].startswith("inline;")
+    assert pdf_response.headers["content-disposition"].startswith("attachment;")
+    preview_response = client.get(body["pdf_preview_url"])
+    assert preview_response.headers["content-disposition"].startswith("inline;")
     assert metadata_response.status_code == 200
     metadata = metadata_response.json()
     assert metadata["status"] == "generated"
@@ -87,6 +94,105 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
     assert metadata["docx_download_url"] == body["docx_download_url"]
     assert metadata["pdf_preview_url"] == body["pdf_preview_url"]
     assert metadata["needs_review_count"] == len(body["missing_fields"])
+
+
+def test_process_then_generate_preserves_original_profile_and_exports_timeline_edits(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(main, "export_docx_to_pdf", _fake_pdf_export)
+    resume_path = tmp_path / "timeline-resume.docx"
+    resume = Document()
+    resume.add_paragraph("Jane Candidate")
+    resume.add_paragraph("jane@example.com")
+    resume.add_paragraph("Location: Boston")
+    resume.add_paragraph("Summary")
+    resume.add_paragraph("Backend engineer focused on reliable systems.")
+    resume.add_paragraph("Skills")
+    resume.add_paragraph("Python, SQL")
+    resume.add_paragraph("Experience")
+    resume.add_paragraph("Senior Engineer at DataWorks (2020 - 2024)")
+    resume.add_paragraph("Built analytics pipelines.")
+    resume.add_paragraph("Education")
+    resume.add_paragraph("BSc Computer Science - Example University (2019)")
+    resume.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        process_response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    resume_path.name,
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert process_response.status_code == 200
+    process_body = process_response.json()
+    artifact_id = process_body["artifact_id"]
+    artifact_dir = tmp_path / artifact_id
+    original_profile_bytes = (artifact_dir / "candidate_profile.json").read_bytes()
+    original_missing_fields_bytes = (artifact_dir / "missing_fields.json").read_bytes()
+    original_text_bytes = (artifact_dir / "raw_extracted_text.txt").read_bytes()
+
+    target_response = client.post(
+        "/api/target-format",
+        data={"artifact_id": artifact_id},
+        files={"file": ("target-reference.pdf", b"%PDF-1.4\n", "application/pdf")},
+    )
+    assert target_response.status_code == 200
+    target_format = target_response.json()["target_format"]
+
+    edited_profile = process_body["profile"]
+    edited_profile["work_experience"][0]["start_date"] = "January 2021"
+    edited_profile["work_experience"][0]["end_date"] = "Present"
+    edited_profile["work_experience"][0]["title"] = "Principal Engineer"
+
+    generate_response = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": artifact_id,
+            "profile": edited_profile,
+            "template_name": "client_10554236_v1",
+            "original_text": "this must not replace the preserved extraction",
+            "target_format": target_format,
+        },
+    )
+
+    assert generate_response.status_code == 200
+    assert (artifact_dir / "candidate_profile.json").read_bytes() == original_profile_bytes
+    assert (artifact_dir / "missing_fields.json").read_bytes() == original_missing_fields_bytes
+    assert (artifact_dir / "raw_extracted_text.txt").read_bytes() == original_text_bytes
+
+    export_snapshot = json.loads((artifact_dir / "export_snapshot.json").read_text(encoding="utf-8"))
+    exported_experience = export_snapshot["work_experience"][0]
+    assert exported_experience["start_date"] == "January 2021"
+    assert exported_experience["end_date"] == "Present"
+    assert exported_experience["title"] == "Principal Engineer"
+    assert (artifact_dir / "export_missing_fields.json").exists()
+
+    generated = Document(artifact_dir / "candidate_profile.docx")
+    generated_text = "\n".join(paragraph.text for paragraph in generated.paragraphs)
+    assert "Principal Engineer" in generated_text
+    assert "January 2021 to Present" in generated_text
+    assert (artifact_dir / "candidate_profile.pdf").exists()
+
+    docx_download = client.get(generate_response.json()["docx_download_url"])
+    pdf_download = client.get(generate_response.json()["pdf_download_url"])
+    assert docx_download.status_code == 200
+    assert docx_download.headers["content-disposition"].startswith("attachment;")
+    assert pdf_download.status_code == 200
+    assert pdf_download.headers["content-disposition"].startswith("attachment;")
+
+    metadata = client.get(generate_response.json()["artifact_metadata_url"]).json()
+    assert metadata["debug_artifacts"]["candidate_profile"] == str(
+        artifact_dir / "candidate_profile.json"
+    )
+    assert metadata["debug_artifacts"]["export_snapshot"] == str(artifact_dir / "export_snapshot.json")
 
 
 def test_download_generated_artifact_rejects_unknown_or_unsafe_paths(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -210,6 +316,48 @@ def test_target_format_upload_accepts_docx_templates_and_pdf_references(
     assert metadata["status"] == "target_format_uploaded"
     assert metadata["target_format_role"] == "pdf_reference"
     assert metadata["target_format_filename"] == "target-reference.pdf"
+
+
+def test_registered_pdf_reference_selects_manual_blueprint(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(main, "export_docx_to_pdf", _fake_pdf_export)
+    blueprint = get_target_format_blueprint("client_10554236_v1")
+    monkeypatch.setattr(main, "match_target_format_blueprint", lambda *_args, **_kwargs: blueprint)
+    artifact_id = "artifact_registered_blueprint"
+    target_response = client.post(
+        "/api/target-format",
+        data={"artifact_id": artifact_id},
+        files={"file": ("known-reference.pdf", b"%PDF-1.4\n", "application/pdf")},
+    )
+
+    assert target_response.status_code == 200
+    target_format = target_response.json()["target_format"]
+    assert target_format["matched_template_id"] == "client_10554236_v1"
+    assert target_format["blueprint_version"] == 1
+    assert target_format["format_support"] == "manual_blueprint"
+    assert target_format["generation_strategy"] == "registered_target_format_blueprint"
+
+    profile = CandidateProfile(
+        full_name="Jane Candidate",
+        professional_summary="Accountant focused on reporting.",
+        skills=["Reporting", "Reconciliations"],
+    )
+    generate_response = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": artifact_id,
+            "profile": profile.model_dump(mode="json"),
+            "target_format": target_format,
+        },
+    )
+
+    assert generate_response.status_code == 200
+    assert generate_response.json()["template_id"] == "client_10554236_v1"
+    generated = Document(tmp_path / artifact_id / "candidate_profile.docx")
+    assert generated.styles["Normal"].font.name == "Times New Roman"
 
 
 def test_artifact_metadata_list_returns_recent_jobs(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
