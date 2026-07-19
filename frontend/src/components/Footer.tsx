@@ -5,6 +5,8 @@ import "./Footer.css"
 type FooterProps = {
   onHome?: () => void
   onPricing?: () => void
+  onTerms?: () => void
+  onPrivacy?: () => void
 }
 
 function XIcon() {
@@ -48,7 +50,7 @@ function ChevronDownIcon() {
   )
 }
 
-export function Footer({ onHome, onPricing }: FooterProps) {
+export function Footer({ onHome, onPricing, onTerms, onPrivacy }: FooterProps) {
   const { t, i18n } = useTranslation()
   const lng = i18n.resolvedLanguage ?? i18n.language
   const lngLabel = lng === "ko" ? "한국어" : "English"
@@ -102,8 +104,16 @@ export function Footer({ onHome, onPricing }: FooterProps) {
           <div className="footer-col">
             <h3 className="footer-col__heading">{t("footer.legal")}</h3>
             <ul className="footer-col__list">
-              <li><a href="#" className="footer-col__link">{t("footer.terms")}</a></li>
-              <li><a href="#" className="footer-col__link">{t("footer.privacy")}</a></li>
+              <li>
+                <button type="button" className="footer-col__link footer-col__link--btn" onClick={onTerms}>
+                  {t("footer.terms")}
+                </button>
+              </li>
+              <li>
+                <button type="button" className="footer-col__link footer-col__link--btn" onClick={onPrivacy}>
+                  {t("footer.privacy")}
+                </button>
+              </li>
             </ul>
           </div>
         </div>
@@ -126,8 +136,8 @@ export function Footer({ onHome, onPricing }: FooterProps) {
 
           <div className="footer-legal">
             <span className="footer-legal__copy">{t("footer.copyright")}</span>
-            <a href="#" className="footer-legal__link">{t("footer.terms")}</a>
-            <a href="#" className="footer-legal__link">{t("footer.privacy")}</a>
+            <button type="button" className="footer-legal__link" onClick={onTerms}>{t("footer.terms")}</button>
+            <button type="button" className="footer-legal__link" onClick={onPrivacy}>{t("footer.privacy")}</button>
           </div>
         </div>
       </div>

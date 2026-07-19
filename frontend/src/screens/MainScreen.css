@@ -176,6 +176,7 @@
   line-height: 1.02;
   color: var(--color-text-primary);
   margin: 0 0 18px;
+  text-wrap: balance;
 }
 
 .hero-sub {
@@ -183,16 +184,9 @@
   color: var(--color-text-secondary);
   line-height: 1.5;
   margin: 0 0 44px;
-  max-width: 420px;
-}
-
-/* ── Hero headline two intentional lines ─────────────── */
-.hero-headline__line {
-  display: block;
-}
-
-.hero-sub__line {
-  display: block;
+  max-width: 40ch;
+  margin-inline: auto;
+  text-wrap: balance;
 }
 
 .hero-headline__arrow {
@@ -242,6 +236,12 @@
 
 .upload-hint {
   font-size: 14px;
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
+.upload-trust {
+  font-size: 13px;
   color: var(--color-text-muted);
   margin: 0;
 }
@@ -928,7 +928,6 @@
 
   .hero-sub {
     font-size: 16px;
-    max-width: 320px;
   }
 
   .upload-cta {

@@ -12,11 +12,11 @@ i18n
       ko: { translation: ko },
       en: { translation: en },
     },
-    fallbackLng: "en",
+    fallbackLng: "ko",
     supportedLngs: ["ko", "en"],
     load: "languageOnly", // maps "ko-KR" → "ko"
     detection: {
-      order: ["localStorage", "navigator"],
+      order: ["localStorage"],
       caches: ["localStorage"],
       lookupLocalStorage: "reform_lang",
     },

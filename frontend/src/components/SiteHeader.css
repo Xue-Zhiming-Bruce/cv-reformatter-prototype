@@ -69,20 +69,21 @@
 }
 
 .signup-button {
-  background: #16181b;
+  background: var(--color-accent);
   color: #ffffff;
   border: none;
   border-radius: var(--radius-control);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   font-family: inherit;
-  padding: 9px 22px;
+  padding: 8px 16px;
   cursor: pointer;
   transition: background 0.15s ease;
+  white-space: nowrap;
 }
 
 .signup-button:hover {
-  background: #2c2f33;
+  background: #4f46e5;
 }
 
 .lang-toggle {
@@ -123,9 +124,21 @@
 @media (max-width: 860px) {
   .site-header__inner {
     padding: 0 20px;
+    gap: 16px;
   }
 
   .site-nav {
     display: none;
+  }
+}
+
+@media (max-width: 400px) {
+  .login-button {
+    display: none;
+  }
+
+  .signup-button {
+    padding: 7px 12px;
+    font-size: 13px;
   }
 }

@@ -11,16 +11,13 @@
   },
   "hero": {
     "headlineBefore": "Any resume",
-    "headlineAfter": "your format.",
-    "sub": [
-      "Upload a candidate resume and your target format.",
-      "Extract, review, and generate a client-ready CV.",
-      "Original preserved — recruiter approved."
-    ],
+    "headlineAfter": "any format.",
+    "sub": "Upload your resume — get it reformatted into any template, ready to send.",
     "uploadCta": "Upload resume",
     "uploadHint": "or drop it here · PDF, DOCX",
-    "baaBeforeLabel": "Their resume",
-    "baaAfterLabel": "Client-ready CV",
+    "trustLine": "Nothing lost, nothing stored.",
+    "baaBeforeLabel": "BEFORE",
+    "baaAfterLabel": "AFTER",
     "sampleLink": "Try a sample resume →",
     "sampleLoading": "Loading…",
     "dropOverlay": "Drop to upload resume"
@@ -64,26 +61,26 @@
     "heading": "Why Reform",
     "items": [
       {
-        "title": "Original preserved. Recruiter approved.",
-        "body": "Source content is preserved for comparison. Fields come from the original, gaps are flagged for you to fill, and missing facts are never invented."
+        "title": "Nothing invented, nothing lost",
+        "body": "Every field comes from your original resume. Gaps are flagged for you to fill — missing facts are never made up."
       },
       {
-        "title": "Review before it ships",
-        "body": "Side-by-side review shows the original resume preview next to the structured result. Click any field to edit before generation."
+        "title": "Review before you send",
+        "body": "See the original and the result side by side. Click any field to edit before downloading."
       },
       {
         "title": "About 20 seconds",
-        "body": "From upload to formatted output in roughly twenty seconds. No queue, no account required to get started."
+        "body": "From upload to formatted output in roughly twenty seconds. No queue, no account required."
       }
     ]
   },
   "trust": {
     "item1": "1 resume ≈ 20 seconds",
-    "item2": "Original preserved. Recruiter approved.",
-    "item3": "★ Trusted by recruiters worldwide"
+    "item2": "Nothing invented, nothing lost",
+    "item3": "Files deleted after processing"
   },
   "footer": {
-    "brandDesc": "Reformat candidate resumes into recruiter-approved, client-ready CVs.",
+    "brandDesc": "Reformat any resume into any template — fast, accurate, ready to send.",
     "product": "Product",
     "company": "Company",
     "legal": "Legal",
@@ -96,41 +93,64 @@
   },
   "pricing": {
     "heading": "Simple pricing",
-    "sub": "Start free. Upgrade when you need more.",
+    "sub": "Pay for conversions, not seats. Cancel anytime.",
     "perMonth": "/month",
+    "freePeriod": "forever",
+    "customPrice": "Custom",
+    "mostPopularBadge": "Most popular",
+    "trustLine": "Uploaded files are deleted after processing. We never store your resume.",
+    "comingSoon": "Coming soon",
     "freeName": "Free",
-    "proName": "Pro",
-    "badge": "Launch offer",
-    "startFreeBtn": "Start free",
-    "getProBtn": "Get Pro",
-    "freeFootnote": "No credit card required",
-    "proFootnote": "Cancel anytime · no lock-in",
     "freeFeatures": [
-      "5 conversions per month",
-      "Full review & edit screen",
-      "Original PDF preview",
-      "No credit card required"
+      "3 conversions / month",
+      "All templates",
+      "No card required"
     ],
-    "proFeatures": [
-      "Unlimited conversions (fair use)",
+    "freeBtn": "Start free",
+    "personalName": "Personal",
+    "personalFeatures": [
+      "100 conversions / month",
       "Saved target formats",
       "Priority processing",
       "Everything in Free"
     ],
+    "personalBtn": "Choose Personal",
+    "teamName": "Team",
+    "teamFeatures": [
+      "250 conversions / month",
+      "Unlimited team seats",
+      "Blind CV mode (anonymization)",
+      "Shared saved formats"
+    ],
+    "teamBtn": "Choose Team",
+    "enterpriseName": "Enterprise",
+    "enterpriseFeatures": [
+      "ATS integration",
+      "Volume pricing",
+      "Custom template setup"
+    ],
+    "enterpriseBtn": "Contact us",
     "faqHeading": "Frequently asked",
     "faq": [
       {
-        "q": "What if the result has mistakes?",
-        "a": "You review and edit every field on the review screen before generation. Nothing ships until you say so."
+        "q": "What file formats are supported?",
+        "a": "PDF and DOCX."
       },
       {
-        "q": "What happens to uploaded files?",
-        "a": "TODO: Files are processed in memory and not permanently stored on our servers. Update with real data-retention policy before launch.",
-        "isTodo": true
+        "q": "Is my resume stored?",
+        "a": "No. Files are deleted immediately after processing."
+      },
+      {
+        "q": "Do unused conversions roll over?",
+        "a": "No, your count resets monthly."
+      },
+      {
+        "q": "Can my whole team use one account?",
+        "a": "Yes, on the Team plan with unlimited seats."
       },
       {
         "q": "Can I cancel anytime?",
-        "a": "Yes — Pro is billed monthly with no lock-in. Cancel any time from your account settings."
+        "a": "Yes. Cancelling stops future charges immediately."
       }
     ]
   },
@@ -150,19 +170,37 @@
     "ledgerAllPlaced": "All placed ✓",
     "ledgerEdited": "Edited {{count}}",
     "ledgerMissing": "Missing: {{fields}}",
-    "sectionSummary": "Summary",
-    "sectionExperience": "Experience",
+    "sectionContact": "Contact",
+    "sectionSummary": "Professional Summary",
+    "sectionExperience": "Work Experience",
     "sectionEducation": "Education",
     "sectionSkills": "Skills",
     "sectionLanguages": "Languages",
     "sectionCertifications": "Certifications",
-    "sectionAdditional": "Additional",
+    "sectionAdditional": "Additional Details",
     "clickToEdit": "Click to edit",
     "present": "Present",
     "docxRenderError": "Could not render document preview.",
     "uploadedResumeAlt": "Uploaded resume",
     "blindProfileLabel": "Blind profile",
-    "blindProfileHint": "Hides identity from client"
+    "blindProfileHint": "Hides identity from client",
+    "finalPreviewBtn": "Final preview",
+    "finalPreviewGenerating": "Generating preview…",
+    "finalPreviewBack": "Back to editing",
+    "finalPreviewError": "Preview failed — try again",
+    "finalPreviewLabel": "Final preview",
+    "exportBtn": "Export",
+    "exportDocx": "Export DOCX",
+    "exportPdf": "Export PDF",
+    "exportGenerating": "Generating…",
+    "exportConfirm": "{{count}} fields need review — export anyway?",
+    "exportConfirmAction": "Export anyway",
+    "exportCancel": "Cancel",
+    "exportError": "Export failed — try again",
+    "chipExtracted": "Extracted {{count}}",
+    "chipPlaced": "Placed {{count}}",
+    "chipNeedsReview": "Needs review {{count}}",
+    "chipAllReviewed": "All reviewed ✓"
   },
   "auth": {
     "loginTitle": "Welcome back",
@@ -183,6 +221,82 @@
     "hasAccount": "Already have an account?",
     "switchToSignup": "Sign up",
     "switchToLogin": "Log in"
+  },
+  "privacy": {
+    "title": "Privacy Policy",
+    "lastUpdated": "Last updated: July 18, 2026",
+    "sections": [
+      {
+        "heading": "Information we process",
+        "body": "(1) Resume files you upload and the information in them (name, contact details, work history, etc.). (2) Your email address when you create an account. (3) Basic usage records (timestamps, conversion counts). Payments are handled by our payment processor; we never store card numbers."
+      },
+      {
+        "heading": "How we use it",
+        "body": "To provide the resume conversion service, manage accounts, process billing, and improve the service through aggregate statistics."
+      },
+      {
+        "heading": "Retention and deletion",
+        "body": "Uploaded resume files and extracted content are deleted immediately after processing and are not stored on our servers. Account data is deleted without delay when you close your account. Records we are legally required to keep (e.g. billing) are retained for the statutory period."
+      },
+      {
+        "heading": "Service providers",
+        "body": "We use third-party providers for hosting [Vercel / Render — TBD], AI document processing [TBD], and payments [TBD]."
+      },
+      {
+        "heading": "No selling of data",
+        "body": "We do not sell or share your personal information with third parties, except where required by law."
+      },
+      {
+        "heading": "Your rights",
+        "body": "You may request access, correction, deletion, or restriction of your personal data at any time via the contact below."
+      },
+      {
+        "heading": "Contact",
+        "body": "[contact@domain]"
+      },
+      {
+        "heading": "Changes",
+        "body": "We will post any changes to this policy on this page at least 7 days before they take effect."
+      }
+    ]
+  },
+  "terms": {
+    "title": "Terms of Service",
+    "lastUpdated": "Last updated: July 18, 2026",
+    "sections": [
+      {
+        "heading": "The service",
+        "body": "Reform converts resumes you upload into the template you choose."
+      },
+      {
+        "heading": "Your responsibilities",
+        "body": "Only upload documents you have the right to use. If you upload someone else's resume (e.g. as a recruiter), you confirm you are legally permitted to process that information."
+      },
+      {
+        "heading": "Review your output",
+        "body": "Results are generated automatically and may contain errors. You are responsible for reviewing output before using or submitting it. We do not guarantee accuracy or completeness."
+      },
+      {
+        "heading": "Intellectual property",
+        "body": "You own your uploaded documents and the converted output. We own the service itself (software, design, trademarks)."
+      },
+      {
+        "heading": "Prohibited use",
+        "body": "No reverse engineering, bulk automated requests, or processing of others' personal data without authorization."
+      },
+      {
+        "heading": "Fees and cancellation",
+        "body": "Paid plans are billed monthly and can be cancelled anytime; cancellation stops future charges. Fees already paid are non-refundable except where required by law."
+      },
+      {
+        "heading": "Limitation of liability",
+        "body": "To the extent permitted by law, our liability is limited to the amount you paid us in the previous 3 months."
+      },
+      {
+        "heading": "Changes and governing law",
+        "body": "We will announce changes 7 days before they take effect. These terms are governed by the laws of [jurisdiction — TBD]."
+      }
+    ]
   },
   "errors": {
     "unsupported": "Unsupported file — {{detail}}",

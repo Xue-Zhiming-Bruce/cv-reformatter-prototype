@@ -3,15 +3,19 @@ import { MainScreen } from "./screens/MainScreen"
 import { ReviewScreen } from "./screens/ReviewScreen"
 import { AuthScreen } from "./screens/AuthScreen"
 import { PricingScreen } from "./screens/PricingScreen"
-import { FEATURES } from "./constants/features"
+import { LegalScreen } from "./screens/LegalScreen"
 import type { ProcessResponse } from "./types"
 import "./App.css"
+
+type AuthFrom = "idle" | "pricing" | "terms" | "privacy"
 
 type AppState =
   | { status: "idle" }
   | { status: "pricing" }
-  | { status: "login" }
-  | { status: "signup" }
+  | { status: "terms" }
+  | { status: "privacy" }
+  | { status: "login";  from: AuthFrom }
+  | { status: "signup"; from: AuthFrom }
   | { status: "loading"; fileName: string; targetFormatName: string }
   | { status: "error"; message: string }
   | { status: "done"; data: ProcessResponse; fileName: string; targetFormatName: string; resumeFile: File }
@@ -61,12 +65,13 @@ export default function App() {
     }
   }
 
-  if (FEATURES.auth && (state.status === "login" || state.status === "signup")) {
+  if (state.status === "login" || state.status === "signup") {
+    const from = state.from
     return (
       <AuthScreen
         mode={state.status}
-        onSwitchMode={() => setState({ status: state.status === "login" ? "signup" : "login" })}
-        onGoHome={() => setState({ status: "idle" })}
+        onSwitchMode={() => setState({ status: state.status === "login" ? "signup" : "login", from })}
+        onGoHome={() => setState({ status: from })}
       />
     )
   }
@@ -88,8 +93,25 @@ export default function App() {
       <PricingScreen
         onHome={() => setState({ status: "idle" })}
         onPricing={() => setState({ status: "pricing" })}
-        onLogin={() => { if (FEATURES.auth) setState({ status: "login" }) }}
-        onSignup={() => { if (FEATURES.auth) setState({ status: "signup" }) }}
+        onLogin={() => setState({ status: "login", from: "pricing" })}
+        onSignup={() => setState({ status: "signup", from: "pricing" })}
+        onTerms={() => setState({ status: "terms" })}
+        onPrivacy={() => setState({ status: "privacy" })}
+      />
+    )
+  }
+
+  if (state.status === "terms" || state.status === "privacy") {
+    const page = state.status
+    return (
+      <LegalScreen
+        page={page}
+        onHome={() => setState({ status: "idle" })}
+        onPricing={() => setState({ status: "pricing" })}
+        onLogin={() => setState({ status: "login", from: page })}
+        onSignup={() => setState({ status: "signup", from: page })}
+        onTerms={() => setState({ status: "terms" })}
+        onPrivacy={() => setState({ status: "privacy" })}
       />
     )
   }
@@ -100,9 +122,11 @@ export default function App() {
       isLoading={state.status === "loading"}
       error={state.status === "error" ? state.message : null}
       onDismissError={() => setState({ status: "idle" })}
-      onLogin={() => { if (FEATURES.auth) setState({ status: "login" }) }}
-      onSignup={() => { if (FEATURES.auth) setState({ status: "signup" }) }}
+      onLogin={() => setState({ status: "login", from: "idle" })}
+      onSignup={() => setState({ status: "signup", from: "idle" })}
       onPricing={() => setState({ status: "pricing" })}
+      onTerms={() => setState({ status: "terms" })}
+      onPrivacy={() => setState({ status: "privacy" })}
     />
   )
 }
