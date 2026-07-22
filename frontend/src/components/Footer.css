@@ -142,6 +142,11 @@
 }
 
 .footer-legal__link {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 0;
   font-size: 13px;
   color: #6b7280;
   text-decoration: none;

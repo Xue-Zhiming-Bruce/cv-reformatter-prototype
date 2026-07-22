@@ -32,6 +32,8 @@ type MainScreenProps = {
   onLogin: () => void
   onSignup: () => void
   onPricing: () => void
+  onTerms: () => void
+  onPrivacy: () => void
 }
 
 function nl(text: string | string[]) {
@@ -41,7 +43,7 @@ function nl(text: string | string[]) {
   ))
 }
 
-export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogin, onSignup, onPricing }: MainScreenProps) {
+export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogin, onSignup, onPricing, onTerms, onPrivacy }: MainScreenProps) {
   const { t } = useTranslation()
   const [resumeFile, setResumeFile] = useState<File | null>(null)
   const [templateFile, setTemplateFile] = useState<File | null>(null)
@@ -131,12 +133,9 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
       <section className={`hero-primary${resumeFile ? " hero-primary--compact" : ""}`}>
         <div className="hero-primary__inner">
           <h1 className="hero-headline">
-            <span className="hero-headline__line">
-              {t("hero.headlineBefore")} <span className="hero-headline__arrow">→</span>
-            </span>
-            <span className="hero-headline__line">{t("hero.headlineAfter")}</span>
+            {t("hero.headlineBefore")} <span className="hero-headline__arrow">→</span> {t("hero.headlineAfter")}
           </h1>
-          <p className="hero-sub">{nl(t("hero.sub", { returnObjects: true }) as string[])}</p>
+          <p className="hero-sub">{t("hero.sub")}</p>
 
           {!resumeFile ? (
             <div className="upload-zone">
@@ -159,6 +158,7 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
                 {t("hero.uploadCta")}
               </button>
               <p className="upload-hint">{t("hero.uploadHint")}</p>
+              <p className="upload-trust">{t("hero.trustLine")}</p>
 
               {fileTypeError && (
                 <p className="upload-type-error" role="alert">{fileTypeError}</p>
@@ -411,7 +411,7 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
         <span>{t("trust.item3")}</span>
       </div>
 
-      <Footer onHome={() => { setResumeFile(null); setTemplateFile(null) }} onPricing={onPricing} />
+      <Footer onHome={() => { setResumeFile(null); setTemplateFile(null) }} onPricing={onPricing} onTerms={onTerms} onPrivacy={onPrivacy} />
     </div>
   )
 }
