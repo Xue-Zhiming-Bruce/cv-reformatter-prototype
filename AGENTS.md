@@ -74,7 +74,8 @@ Support first:
 * one recruiter/agency DOCX template;
 * recruiter-provided PDF sample resumes as visual/reference formats when needed;
 * optional job-description text;
-* local-only usage.
+* local-only usage;
+* local PostgreSQL for MVP structured persistence.
 
 Do not build yet:
 
@@ -86,6 +87,22 @@ Do not build yet:
 * complex dashboards;
 * multiple templates;
 * automatic client sending.
+
+Database and hosting decision
+
+Use PostgreSQL as the MVP database. Run PostgreSQL locally during MVP development and testing; PostgreSQL does not require a cloud deployment. Use SQLAlchemy for application database access, Psycopg as the PostgreSQL driver, and Alembic for version-controlled schema migrations when this persistence layer is implemented.
+
+The existing SQLite artifact index is transitional. Do not expand SQLite as the primary product persistence model. Keep local SQLite support only where it remains useful for isolated tests or temporary migration compatibility.
+
+The local MVP should continue saving required document/debug artifacts on the local filesystem. PostgreSQL stores structured workflow data and validated profile records; it does not replace document storage.
+
+After the local MVP is complete, DigitalOcean is the selected initial service provider:
+
+* DigitalOcean App Platform for the containerized FastAPI backend and frontend hosting;
+* DigitalOcean Managed PostgreSQL for staging and production databases;
+* DigitalOcean Spaces for private resume, DOCX, PDF, extracted-text, and debug artifacts.
+
+Create separate staging and production databases and buckets. Do not deploy real candidate data until authentication, organization-level authorization, private object access, retention/deletion behavior, and backup/restore procedures are implemented and tested.
 
 Template/sample format rule
 
@@ -235,7 +252,10 @@ Suggested stack
 * PyMuPDF for PDF text extraction
 * LibreOffice headless mode for DOCX → PDF conversion
 * LLM-provider abstraction compatible with OpenAI and Anthropic
-* local filesystem and SQLite only if needed
+* PostgreSQL for MVP structured persistence, run locally during MVP development
+* SQLAlchemy, Psycopg, and Alembic for PostgreSQL access and migrations
+* local filesystem for MVP document/debug artifacts
+* DigitalOcean App Platform, Managed PostgreSQL, and Spaces after MVP
 
 Code-quality requirements
 

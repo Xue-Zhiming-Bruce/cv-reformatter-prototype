@@ -67,7 +67,8 @@ Supported first:
 - One recruiter/agency DOCX template.
 - Recruiter-provided PDF sample resume as a visual/reference format when needed.
 - Local-only usage.
-- Local SQLite metadata index for artifact/job status when needed.
+- Local PostgreSQL for structured MVP persistence.
+- Local filesystem storage for required document and debug artifacts.
 
 Unsupported in MVP:
 
@@ -104,26 +105,41 @@ Deferred until after the MVP:
 - Template approval workflows and multiple reusable customer templates.
 - Scanned-PDF OCR, accounts, cloud storage, billing, ATS/CRM integrations, and automatic client sending.
 
-## Local Database Scope
+## MVP Database And Local Storage Scope
 
-The MVP may use a local SQLite database to index artifact/job metadata for the current machine.
+PostgreSQL is the MVP database. During MVP development and testing, run PostgreSQL locally; a cloud database is not required. The existing SQLite artifact index is transitional and should not be expanded as the primary persistence model.
 
-Allowed local database contents:
+The initial PostgreSQL scope should stay narrow and support the existing workflow rather than becoming a searchable talent-pool product. It may contain:
 
 - `artifact_id`
 - workflow status such as `processed`, `target_format_uploaded`, or `generated`
-- local artifact folder path
-- preview/download URLs
+- storage keys or local artifact folder references
+- preview/download references
 - source and target file metadata
 - missing-field labels/counts
 - debug artifact file paths
+- validated, versioned `CandidateProfile` JSON
+- disclosure and blind-profile settings needed to reproduce an approved generation
+- timestamps and schema-version metadata
 
 Guardrails:
 
 - Do not build multi-user accounts, Google sign-in, or user management in the MVP.
 - Do not build a searchable candidate database or dashboard in the MVP.
-- Keep full `CandidateProfile` JSON and raw extracted text in the existing local artifact files, not as the primary SQLite product model.
-- Keep the local database file ignored from git because filenames and artifact paths may contain candidate-identifying information.
+- Continue saving the required `CandidateProfile` JSON, raw extracted text, missing-fields JSON, generated DOCX, and generated PDF as local debug artifacts, even when validated profile versions are also persisted in PostgreSQL.
+- Keep local database credentials, local database volumes, and local artifact paths ignored from git because they may contain candidate-identifying information.
+- Use SQLAlchemy for application database access, Psycopg as the PostgreSQL driver, and Alembic for version-controlled schema migrations when the PostgreSQL persistence layer is implemented.
+- Keep database access behind repository interfaces so local development and future managed hosting do not change core workflow logic.
+
+## Post-MVP Hosting Decision
+
+DigitalOcean is the selected initial service provider after the local MVP is complete:
+
+- DigitalOcean App Platform for the containerized FastAPI backend and frontend hosting.
+- DigitalOcean Managed PostgreSQL for separate staging and production databases.
+- DigitalOcean Spaces for private resume, extracted-text, DOCX, PDF, and debug artifacts.
+
+The MVP remains local-first. Do not introduce DigitalOcean deployment work before the end-to-end synthetic demo is complete. Before storing real candidate data in a hosted environment, add and verify authentication, organization-level authorization, private object access, retention/deletion behavior, monitoring, and database plus object-storage backup/restore procedures.
 
 ## Template And Sample Format Inputs
 
@@ -422,7 +438,7 @@ The MVP must generate:
    - Client-facing render-context JSON.
    - Generated DOCX.
    - Generated PDF.
-   - Local SQLite artifact/job metadata.
+   - Local PostgreSQL structured persistence for artifact/job metadata and validated profile versions.
 
 ## Required Screens
 

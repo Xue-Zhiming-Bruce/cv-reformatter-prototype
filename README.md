@@ -2,6 +2,18 @@
 
 Prototype for a CV reformat SaaS product. This local MVP turns a candidate's DOCX or text-based PDF resume into validated candidate profile JSON, flags missing recruiter-critical information, and saves debug artifacts.
 
+## Database And Hosting Direction
+
+- PostgreSQL is the target MVP database and should run locally during MVP development and testing.
+- The existing SQLite artifact index is transitional and should not be expanded as the primary persistence model.
+- Local document and debug artifacts remain on the local filesystem during the MVP.
+- After the local MVP is complete, the selected initial hosting provider is DigitalOcean:
+  - App Platform for the containerized FastAPI backend and frontend hosting;
+  - Managed PostgreSQL for separate staging and production databases;
+  - Spaces for private resume, extracted-text, DOCX, PDF, and debug artifacts.
+
+DigitalOcean deployment begins only after the end-to-end synthetic demo and local PostgreSQL persistence path work successfully. Real candidate data must not be hosted before authentication, authorization, private object access, retention/deletion behavior, and backup/restore procedures are in place.
+
 This first milestone intentionally implements only:
 
 - DOCX and PDF resume ingestion

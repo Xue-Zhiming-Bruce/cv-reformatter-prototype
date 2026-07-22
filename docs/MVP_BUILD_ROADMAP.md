@@ -41,6 +41,15 @@ CandidateProfile JSON
 
 Do not restart the project from extraction unless a change directly improves the end-to-end demo.
 
+Database and hosting decision:
+
+```text
+Local MVP: local PostgreSQL + local document/debug artifacts
+Post-MVP hosting: DigitalOcean App Platform + Managed PostgreSQL + Spaces
+```
+
+The existing SQLite artifact index is transitional. Complete the end-to-end demo, then replace SQLite as the primary MVP persistence path with PostgreSQL before declaring the MVP complete. Do not begin DigitalOcean deployment until the local synthetic demo and the PostgreSQL persistence path work end to end.
+
 ## Before MVP Versus After MVP
 
 Before MVP means everything required for the first end-to-end recruiter demo:
@@ -108,7 +117,7 @@ Checklist:
   - uploaded PDF resumes are copied as `original_resume_preview.pdf`;
   - uploaded DOCX resumes are converted to `original_resume_preview.pdf` when LibreOffice is available.
 - [x] Add optional real OpenAI extraction smoke test behind `RUN_REAL_LLM_SMOKE=1`.
-- [x] Add local SQLite artifact/job metadata index for API-side process/generate sessions.
+- [x] Add transitional local SQLite artifact/job metadata index for API-side process/generate sessions.
 
 Current rule:
 
@@ -429,8 +438,40 @@ The first successful demo is complete when a user can:
 
 Do not add new product areas until this demo works end-to-end with synthetic data.
 
+## Stage 8A: MVP PostgreSQL Persistence
+
+Goal:
+
+```text
+Validated CandidateProfile and workflow metadata
+-> local PostgreSQL
+-> repeatable schema migrations
+-> unchanged recruiter review and generation workflow
+```
+
+This is an MVP completion requirement, not a hosted-service requirement. PostgreSQL should run locally during development and tests.
+
+Checklist:
+
+- [ ] Add SQLAlchemy 2, Psycopg 3, and Alembic.
+- [ ] Add environment-based `DATABASE_URL` configuration.
+- [ ] Define the minimal PostgreSQL schema for artifact/jobs and versioned validated `CandidateProfile` records.
+- [ ] Keep database access behind repository interfaces rather than coupling API routes directly to a database engine.
+- [ ] Add Alembic migrations that create a clean local, staging, or production schema.
+- [ ] Run PostgreSQL locally for development and production-oriented tests.
+- [ ] Preserve required local debug artifacts alongside PostgreSQL records.
+- [ ] Keep the existing SQLite implementation only for transitional compatibility or focused isolated tests.
+- [ ] Add PostgreSQL-focused tests for transactions, constraints, JSON persistence, and migrations.
+- [ ] Prove the end-to-end synthetic demo against local PostgreSQL.
+
 ## Stage 9: Post-MVP / Later
 
+- [later] Deploy the containerized FastAPI backend to DigitalOcean App Platform.
+- [later] Deploy the frontend through DigitalOcean App Platform or the agreed frontend host.
+- [later] Use separate DigitalOcean Managed PostgreSQL databases for staging and production.
+- [later] Replace local document persistence with private DigitalOcean Spaces storage.
+- [later] Add authentication and organization-level authorization before accepting real candidate data.
+- [later] Add hosted monitoring, retention/deletion controls, and tested database/object-storage recovery.
 - [later] Scanned PDF OCR.
 - [later] Explicit backend `Save draft` capability.
 - [later] Reopen saved drafts, draft revision history, cross-device access, and collaboration.
@@ -448,7 +489,7 @@ Do not add new product areas until this demo works end-to-end with synthetic dat
 - [later] Multi-user authentication.
 - [later] Billing.
 - [later] ATS/CRM integrations.
-- [later] Cloud storage.
+- [later] Cloud storage beyond the selected DigitalOcean Spaces post-MVP path.
 - [later] Complex dashboards.
 - [later] Automatic client sending.
 
