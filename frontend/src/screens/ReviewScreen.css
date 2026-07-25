@@ -570,6 +570,197 @@
   font-weight: 700;
 }
 
+/* ── Email candidate button + popover ───────────────────────── */
+.rv-email-wrap {
+  position: relative;
+}
+
+.rv-email-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  font-family: inherit;
+  line-height: 1.4;
+  background: none;
+  border: 1.5px solid var(--color-border);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.rv-email-btn:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: rgba(99, 91, 255, 0.05);
+}
+
+.rv-email-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 360px;
+  background: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.13);
+  z-index: 50;
+  padding: 16px;
+}
+
+.rv-email-popover__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.rv-email-popover__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.rv-email-popover__close {
+  background: none;
+  border: none;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-family: inherit;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.rv-email-popover__close:hover {
+  background: #f1f3f6;
+  color: var(--color-text-primary);
+}
+
+.rv-email-popover__to {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.rv-email-popover__to-label {
+  font-weight: 700;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.rv-email-popover__to-value {
+  color: var(--color-text-primary);
+  word-break: break-all;
+}
+
+.rv-email-popover__no-addr {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.rv-email-popover__textarea {
+  width: 100%;
+  resize: vertical;
+  font: 12.5px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--color-text-primary);
+  background: #f7f9fb;
+  border: 1.5px solid var(--color-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  outline: none;
+  box-sizing: border-box;
+  margin-bottom: 10px;
+  display: block;
+}
+
+.rv-email-popover__textarea:focus {
+  border-color: var(--color-accent);
+  background: #ffffff;
+}
+
+.rv-email-popover__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 120px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.rv-email-popover__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.rv-email-popover__copy-btn {
+  flex: 1;
+  padding: 7px 12px;
+  background: none;
+  border: 1.5px solid var(--color-border);
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.rv-email-popover__copy-btn:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: rgba(99, 91, 255, 0.04);
+}
+
+.rv-email-popover__copy-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.rv-email-popover__copy-btn--copied {
+  border-color: #16a34a;
+  color: #16a34a;
+}
+
+.rv-email-popover__open-btn {
+  flex: 1;
+  padding: 7px 12px;
+  background: var(--color-accent);
+  color: #ffffff;
+  border: none;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+}
+
+.rv-email-popover__open-btn:hover:not(.rv-email-popover__open-btn--disabled) {
+  background: #4f46e5;
+}
+
+.rv-email-popover__open-btn--disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
 /* ── Final preview button ───────────────────────────────────── */
 .rv-preview-btn {
   display: inline-flex;

@@ -26,7 +26,7 @@ from app.ingestion.docx_reader import read_docx
 from app.ingestion.file_validator import CorruptedFileError, UnsupportedFileTypeError
 from app.ingestion.pdf_reader import CorruptedPdfError, EmptyPdfTextError, UnsupportedPdfTypeError, read_pdf_text
 from app.storage.local_db import DEFAULT_DATABASE_PATH, LocalArtifactStore, LocalDatabaseError
-from app.validation.followup_message_generator import generate_followup_message
+from app.generation.followup_message_generator import generate_followup_message
 from app.validation.missing_fields import apply_missing_field_detection
 
 load_dotenv()
@@ -107,6 +107,15 @@ class GenerateResponse(BaseModel):
     followup_message: str
     missing_fields: list[MissingField]
     debug_artifacts: dict[str, str]
+
+
+class FollowupRequest(BaseModel):
+    profile: CandidateProfile
+    language: str = "English"
+
+
+class FollowupResponse(BaseModel):
+    followup_message: str
 
 
 class ArtifactMetadataResponse(BaseModel):
@@ -363,9 +372,17 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         pdf_download_url=pdf_url,
         pdf_preview_url=pdf_url,
         artifact_metadata_url=_artifact_metadata_url(artifact_id),
-        followup_message=generate_followup_message(reviewed_profile),
+        followup_message=_draft_followup(reviewed_profile),
         missing_fields=reviewed_profile.missing_fields,
         debug_artifacts=debug_artifacts,
+    )
+
+
+@app.post("/api/followup", response_model=FollowupResponse)
+def get_followup_message(request: FollowupRequest) -> FollowupResponse:
+    profile = apply_missing_field_detection(request.profile)
+    return FollowupResponse(
+        followup_message=_draft_followup(profile, stage="followup", language=request.language)
     )
 
 
@@ -542,6 +559,14 @@ def _validate_target_format_reference(
             status_code=400,
             detail="The target format reference has not been uploaded for this artifact.",
         )
+
+
+def _draft_followup(profile: CandidateProfile, *, stage: str = "message", language: str = "English") -> str:
+    try:
+        llm_client = build_llm_client(stage=stage)
+    except LLMConfigurationError:
+        llm_client = None
+    return generate_followup_message(profile, llm_client=llm_client, language=language)
 
 
 def _write_profile_debug_artifacts(

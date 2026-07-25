@@ -126,7 +126,7 @@ function pdfViewerUrl(url: string): string {
 }
 
 export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onBack }: ReviewScreenProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [blindProfile, setBlindProfile] = useState(false)
   const [exportState, setExportState] = useState<"idle" | "confirm" | "generating" | "error">("idle")
@@ -139,6 +139,11 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
   const [previewMode, setPreviewMode] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [previewState, setPreviewState] = useState<"idle" | "generating" | "error">("idle")
+  const [emailPopoverOpen, setEmailPopoverOpen] = useState(false)
+  const [emailDraft, setEmailDraft] = useState("")
+  const [emailState, setEmailState] = useState<"idle" | "loading" | "ready">("idle")
+  const [copied, setCopied] = useState(false)
+  const emailAreaRef = useRef<HTMLDivElement>(null)
   const { profile, ledger } = data
 
   const missingNames = useMemo(
@@ -159,6 +164,17 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
     document.addEventListener("mousedown", handleClickOutside)
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [dropdownOpen])
+
+  useEffect(() => {
+    if (!emailPopoverOpen) return
+    function handleClickOutside(e: MouseEvent) {
+      if (emailAreaRef.current && !emailAreaRef.current.contains(e.target as Node)) {
+        setEmailPopoverOpen(false)
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside)
+    return () => document.removeEventListener("mousedown", handleClickOutside)
+  }, [emailPopoverOpen])
 
   const isPdf = /\.pdf$/i.test(resumeFile.name) || resumeFile.type === "application/pdf"
   const originalPreviewUrl = data.original_pdf_preview_url ?? (isPdf ? objectUrl : null)
@@ -189,8 +205,6 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
     const el = rightPaneBodyRef.current?.querySelector(`[data-review-field="${fieldName}"]`)
     el?.scrollIntoView({ behavior: "smooth", block: "center" })
   }
-
-  const editCount = Object.keys(edits).length
 
   const remainingMissing = profile.missing_fields.filter((f) => {
     const edited = edits[f.field_name]
@@ -295,6 +309,40 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
       setPreviewState("error")
       setTimeout(() => setPreviewState("idle"), 3500)
     }
+  }
+
+  async function handleEmailBtnClick() {
+    if (emailPopoverOpen) {
+      setEmailPopoverOpen(false)
+      return
+    }
+    setEmailPopoverOpen(true)
+    setEmailState("loading")
+    try {
+      const res = await fetch("/api/followup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile: applyEditsToProfile(profile),
+          language: i18n.language === "ko" ? "Korean" : "English",
+        }),
+      })
+      if (!res.ok) throw new Error("failed")
+      const result = await res.json()
+      setEmailDraft(result.followup_message)
+      setEmailState("ready")
+    } catch {
+      setEmailPopoverOpen(false)
+      setEmailState("idle")
+    }
+  }
+
+  async function handleCopyEmail() {
+    try {
+      await navigator.clipboard.writeText(emailDraft)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch { /* clipboard blocked — silent */ }
   }
 
   function ef(path: string, value: string | null, opts: { multiline?: boolean; className?: string } = {}) {
@@ -466,13 +514,61 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
                 {t("review.chipPlaced", { count: ledger.placed })}
               </span>
               {remainingMissing > 0 ? (
-                <button
-                  type="button"
-                  className="rv-chip rv-chip--warning"
-                  onClick={handleReviewChipClick}
-                >
-                  {t("review.chipNeedsReview", { count: remainingMissing })}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="rv-chip rv-chip--warning"
+                    onClick={handleReviewChipClick}
+                  >
+                    {t("review.chipNeedsReview", { count: remainingMissing })}
+                  </button>
+                  <div className="rv-email-wrap" ref={emailAreaRef}>
+                    <button type="button" className="rv-email-btn" onClick={handleEmailBtnClick}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <rect x="2" y="4" width="20" height="16" rx="2"/>
+                        <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
+                      </svg>
+                      {t("review.emailDraftBtn")}
+                    </button>
+                    {emailPopoverOpen && (
+                      <div className="rv-email-popover">
+                        <div className="rv-email-popover__header">
+                          <span className="rv-email-popover__title">{t("review.emailPopoverTitle")}</span>
+                          <button type="button" className="rv-email-popover__close" onClick={() => setEmailPopoverOpen(false)}>×</button>
+                        </div>
+                        {(edits["email"] ?? profile.email) && (
+                          <div className="rv-email-popover__to">
+                            <span className="rv-email-popover__to-label">{t("review.emailTo")}</span>
+                            <span className="rv-email-popover__to-value">{edits["email"] ?? profile.email}</span>
+                          </div>
+                        )}
+                        {emailState === "loading" ? (
+                          <div className="rv-email-popover__loading">
+                            <span className="rv-spinner" aria-hidden="true" />
+                            {t("review.emailLoading")}
+                          </div>
+                        ) : (
+                          <textarea
+                            className="rv-email-popover__textarea"
+                            value={emailDraft}
+                            onChange={(e) => setEmailDraft(e.target.value)}
+                            rows={8}
+                          />
+                        )}
+                        <div className="rv-email-popover__actions">
+                          <button
+                            type="button"
+                            className={`rv-email-popover__copy-btn${copied ? " rv-email-popover__copy-btn--copied" : ""}`}
+                            disabled={emailState !== "ready"}
+                            onClick={handleCopyEmail}
+                          >
+                            {copied ? t("review.emailCopied") : t("review.emailCopy")}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
               ) : (
                 <span className="rv-chip rv-chip--all-reviewed">
                   {t("review.chipAllReviewed")}

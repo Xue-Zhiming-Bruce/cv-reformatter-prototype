@@ -200,7 +200,16 @@
     "chipExtracted": "추출됨 {{count}}",
     "chipPlaced": "배치됨 {{count}}",
     "chipNeedsReview": "검토 필요 {{count}}",
-    "chipAllReviewed": "모두 확인됨 ✓"
+    "chipAllReviewed": "모두 확인됨 ✓",
+    "emailDraftBtn": "이메일 초안",
+    "emailCandidateBtn": "지원자에게 메일",
+    "emailPopoverTitle": "부족한 정보 요청",
+    "emailTo": "받는 사람",
+    "emailNoAddress": "이메일 주소 없음 — 복사해서 보내세요",
+    "emailCopy": "복사",
+    "emailCopied": "복사됨",
+    "emailOpen": "메일 앱으로 열기",
+    "emailLoading": "작성 중…"
   },
   "auth": {
     "loginTitle": "다시 오셨군요",
