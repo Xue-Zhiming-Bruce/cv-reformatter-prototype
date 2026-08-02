@@ -4,9 +4,23 @@ import { ReviewScreen } from "./screens/ReviewScreen"
 import { AuthScreen } from "./screens/AuthScreen"
 import { PricingScreen } from "./screens/PricingScreen"
 import { LegalScreen } from "./screens/LegalScreen"
+import { useAuth } from "./context/AuthContext"
 import type { ProcessResponse, TargetFormatMetadata, TargetFormatUploadResponse } from "./types"
 import "./App.css"
 
+// ── Anonymous conversion gate ──────────────────────────────
+const ANON_KEY = "reform_anon_conversions"
+const FREE_LIMIT = 3
+
+function getAnonCount(): number {
+  return parseInt(localStorage.getItem(ANON_KEY) ?? "0", 10)
+}
+
+function bumpAnonCount(): void {
+  localStorage.setItem(ANON_KEY, String(getAnonCount() + 1))
+}
+
+// ── App state ──────────────────────────────────────────────
 type AuthFrom = "idle" | "pricing" | "terms" | "privacy"
 
 type AppState =
@@ -29,8 +43,15 @@ type AppState =
 
 export default function App() {
   const [state, setState] = useState<AppState>({ status: "idle" })
+  const { user } = useAuth()
 
   async function handleConvert(resumeFile: File, targetFile: File) {
+    // Gate anonymous users after FREE_LIMIT conversions
+    if (!user && getAnonCount() >= FREE_LIMIT) {
+      setState({ status: "signup", from: "idle" })
+      return
+    }
+
     setState({ status: "loading", fileName: resumeFile.name, targetFormatName: targetFile.name })
 
     const formData = new FormData()
@@ -40,30 +61,31 @@ export default function App() {
       const res = await fetch("/api/process", { method: "POST", body: formData })
 
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        const detail: string = body.detail ?? "Unknown error"
-        if (res.status === 400) {
-          setState({ status: "error", message: `Unsupported file — ${detail}` })
-        } else {
-          setState({ status: "error", message: `Server error — please try again. (${detail})` })
-        }
+        const body = await res.json().catch(() => ({})) as { detail?: string }
+        const detail = body.detail ?? "Unknown error"
+        setState({
+          status: "error",
+          message: res.status === 400
+            ? `Unsupported file — ${detail}`
+            : `Server error — please try again. (${detail})`,
+        })
         return
       }
 
-      const data: ProcessResponse = await res.json()
+      const data = await res.json() as ProcessResponse
       const targetFormData = new FormData()
       targetFormData.append("file", targetFile)
       targetFormData.append("artifact_id", data.artifact_id)
       const targetRes = await fetch("/api/target-format", { method: "POST", body: targetFormData })
 
       if (!targetRes.ok) {
-        const body = await targetRes.json().catch(() => ({}))
-        const detail: string = body.detail ?? "Unknown error"
-        setState({ status: "error", message: `Target format error — ${detail}` })
+        const body = await targetRes.json().catch(() => ({})) as { detail?: string }
+        setState({ status: "error", message: `Target format error — ${body.detail ?? "Unknown error"}` })
         return
       }
 
-      const targetData: TargetFormatUploadResponse = await targetRes.json()
+      const targetData = await targetRes.json() as TargetFormatUploadResponse
+      if (!user) bumpAnonCount()
       setState({
         status: "done",
         data,
@@ -73,10 +95,7 @@ export default function App() {
         resumeFile,
       })
     } catch {
-      setState({
-        status: "error",
-        message: "Could not reach the server — check your connection and try again.",
-      })
+      setState({ status: "error", message: "Could not reach the server — check your connection and try again." })
     }
   }
 
@@ -87,6 +106,7 @@ export default function App() {
         mode={state.status}
         onSwitchMode={() => setState({ status: state.status === "login" ? "signup" : "login", from })}
         onGoHome={() => setState({ status: from })}
+        onSuccess={() => setState({ status: from })}
       />
     )
   }

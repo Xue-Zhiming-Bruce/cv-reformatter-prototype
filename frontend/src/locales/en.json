@@ -232,7 +232,14 @@
     "noAccount": "Don't have an account?",
     "hasAccount": "Already have an account?",
     "switchToSignup": "Sign up",
-    "switchToLogin": "Log in"
+    "switchToLogin": "Log in",
+    "logout": "Log out",
+    "errorEmailTaken": "Email already registered.",
+    "errorInvalidCredentials": "Invalid email or password.",
+    "errorPasswordTooShort": "Password must be at least 8 characters.",
+    "errorGeneric": "Something went wrong — please try again.",
+    "gateTitle": "3 free conversions used",
+    "gateBody": "Create a free account to keep going."
   },
   "privacy": {
     "title": "Privacy Policy",

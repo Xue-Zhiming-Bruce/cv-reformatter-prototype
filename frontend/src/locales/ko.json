@@ -232,7 +232,14 @@
     "noAccount": "계정이 없으신가요?",
     "hasAccount": "이미 계정이 있으신가요?",
     "switchToSignup": "회원가입",
-    "switchToLogin": "로그인"
+    "switchToLogin": "로그인",
+    "logout": "로그아웃",
+    "errorEmailTaken": "이미 등록된 이메일입니다.",
+    "errorInvalidCredentials": "이메일 또는 비밀번호가 올바르지 않습니다.",
+    "errorPasswordTooShort": "비밀번호는 8자 이상이어야 합니다.",
+    "errorGeneric": "문제가 발생했습니다. 다시 시도해주세요.",
+    "gateTitle": "무료 변환 3회 사용 완료",
+    "gateBody": "계속하려면 무료 계정을 만드세요."
   },
   "privacy": {
     "title": "개인정보처리방침",

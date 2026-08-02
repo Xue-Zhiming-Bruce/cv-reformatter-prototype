@@ -1,16 +1,48 @@
+import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import { LogoIcon, GoogleIcon } from "../components/icons"
+import { LogoIcon } from "../components/icons"
+import { useAuth } from "../context/AuthContext"
 import "./AuthScreen.css"
 
 type AuthScreenProps = {
   mode: "login" | "signup"
   onSwitchMode: () => void
   onGoHome: () => void
+  onSuccess: () => void
 }
 
-export function AuthScreen({ mode, onSwitchMode, onGoHome }: AuthScreenProps) {
+export function AuthScreen({ mode, onSwitchMode, onGoHome, onSuccess }: AuthScreenProps) {
   const { t } = useTranslation()
+  const { signup, login } = useAuth()
   const isLogin = mode === "login"
+
+  const [email, setEmail] = useState("")
+  const [password, setPassword] = useState("")
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!isLogin && password.length < 8) {
+      setError(t("auth.errorPasswordTooShort"))
+      return
+    }
+    setError(null)
+    setSubmitting(true)
+    try {
+      if (isLogin) {
+        await login(email, password)
+      } else {
+        await signup(email, password)
+      }
+      onSuccess()
+    } catch (err: unknown) {
+      const raw = err instanceof Error ? err.message : ""
+      setError(_mapError(raw, t))
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   return (
     <div className="page-wrapper">
@@ -34,20 +66,7 @@ export function AuthScreen({ mode, onSwitchMode, onGoHome }: AuthScreenProps) {
             </p>
           </div>
 
-          <form className="auth-form" onSubmit={(e) => e.preventDefault()}>
-            {!isLogin && (
-              <div className="field">
-                <label className="field__label" htmlFor="auth-name">{t("auth.nameLabel")}</label>
-                <input
-                  id="auth-name"
-                  className="field__input"
-                  type="text"
-                  placeholder={t("auth.namePlaceholder")}
-                  autoComplete="name"
-                />
-              </div>
-            )}
-
+          <form className="auth-form" onSubmit={handleSubmit}>
             <div className="field">
               <label className="field__label" htmlFor="auth-email">{t("auth.emailLabel")}</label>
               <input
@@ -56,6 +75,9 @@ export function AuthScreen({ mode, onSwitchMode, onGoHome }: AuthScreenProps) {
                 type="email"
                 placeholder={t("auth.emailPlaceholder")}
                 autoComplete="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                required
               />
             </div>
 
@@ -67,22 +89,18 @@ export function AuthScreen({ mode, onSwitchMode, onGoHome }: AuthScreenProps) {
                 type="password"
                 placeholder="••••••••"
                 autoComplete={isLogin ? "current-password" : "new-password"}
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                required
               />
             </div>
 
-            <button type="submit" className="auth-submit">
-              {isLogin ? t("auth.loginBtn") : t("auth.signupBtn")}
+            {error && <p className="auth-error" role="alert">{error}</p>}
+
+            <button type="submit" className="auth-submit" disabled={submitting}>
+              {submitting ? "…" : (isLogin ? t("auth.loginBtn") : t("auth.signupBtn"))}
             </button>
           </form>
-
-          <div className="auth-divider">
-            <span className="auth-divider__text">{t("auth.orDivider")}</span>
-          </div>
-
-          <button type="button" className="google-button">
-            <GoogleIcon size={18} />
-            {isLogin ? t("auth.googleLogin") : t("auth.googleSignup")}
-          </button>
 
           <p className="auth-switch">
             {isLogin ? t("auth.noAccount") : t("auth.hasAccount")}{" "}
@@ -94,4 +112,10 @@ export function AuthScreen({ mode, onSwitchMode, onGoHome }: AuthScreenProps) {
       </main>
     </div>
   )
+}
+
+function _mapError(msg: string, t: (k: string) => string): string {
+  if (msg.includes("Email already registered")) return t("auth.errorEmailTaken")
+  if (msg.includes("Invalid email or password")) return t("auth.errorInvalidCredentials")
+  return msg || t("auth.errorGeneric")
 }

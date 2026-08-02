@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next"
 import { LogoIcon } from "./icons"
+import { useAuth } from "../context/AuthContext"
 import "./SiteHeader.css"
 
 type SiteHeaderProps = {
@@ -12,6 +13,7 @@ type SiteHeaderProps = {
 
 export function SiteHeader({ activePage, onHome, onPricing, onLogin, onSignup }: SiteHeaderProps) {
   const { t, i18n } = useTranslation()
+  const { user, logout } = useAuth()
   const lng = i18n.resolvedLanguage ?? i18n.language
 
   function toggleLang() {
@@ -51,8 +53,19 @@ export function SiteHeader({ activePage, onHome, onPricing, onLogin, onSignup }:
               {t("lang.en")}
             </span>
           </button>
-          <button type="button" className="login-button" onClick={onLogin}>{t("header.login")}</button>
-          <button type="button" className="signup-button" onClick={onSignup}>{t("header.signup")}</button>
+          {user ? (
+            <>
+              <span className="header-user-email" title={user.email}>{user.email}</span>
+              <button type="button" className="logout-button" onClick={() => { void logout() }}>
+                {t("auth.logout")}
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="login-button" onClick={onLogin}>{t("header.login")}</button>
+              <button type="button" className="signup-button" onClick={onSignup}>{t("header.signup")}</button>
+            </>
+          )}
         </div>
       </div>
     </header>

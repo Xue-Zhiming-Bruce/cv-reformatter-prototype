@@ -31,6 +31,7 @@ from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME, build_client_r
 from app.ingestion.docx_reader import read_docx
 from app.ingestion.file_validator import CorruptedFileError, UnsupportedFileTypeError
 from app.ingestion.pdf_reader import CorruptedPdfError, EmptyPdfTextError, UnsupportedPdfTypeError, read_pdf_text
+from app.auth.routes import router as auth_router
 from app.storage.local_db import DEFAULT_DATABASE_PATH, LocalArtifactStore, LocalDatabaseError
 from app.validation.followup_message_generator import generate_followup_message
 from app.validation.missing_fields import apply_missing_field_detection
@@ -38,6 +39,7 @@ from app.validation.missing_fields import apply_missing_field_detection
 load_dotenv()
 
 app = FastAPI(title="CV Reformatter MVP")
+app.include_router(auth_router)
 
 GENERATED_OUTPUTS_DIR = Path("data/generated_outputs")
 LOCAL_DATABASE_PATH = Path(os.getenv("LOCAL_DATABASE_PATH", str(DEFAULT_DATABASE_PATH)))
@@ -54,6 +56,7 @@ app.add_middleware(
     allow_origins=["http://localhost:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
 

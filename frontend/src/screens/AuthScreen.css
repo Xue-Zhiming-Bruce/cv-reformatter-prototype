@@ -81,6 +81,17 @@
   box-shadow: 0 0 0 3px var(--color-accent-green-bg);
 }
 
+/* ── Error message ─────────────────────────────────────── */
+.auth-error {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #fff0f0;
+  border: 1px solid #ffd0d0;
+  color: #c0392b;
+  font-size: 14px;
+}
+
 /* ── Primary submit button ─────────────────────────────── */
 .auth-submit {
   width: 100%;

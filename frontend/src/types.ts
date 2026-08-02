@@ -1,3 +1,8 @@
+export interface UserOut {
+  id: number
+  email: string
+}
+
 export interface Language {
   name: string
   proficiency: string | null
