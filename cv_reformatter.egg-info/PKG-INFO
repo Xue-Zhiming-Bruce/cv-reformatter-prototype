@@ -4,14 +4,17 @@ Version: 0.1.0
 Summary: Local MVP for recruiter-branded candidate profile extraction.
 Requires-Python: >=3.12
 Description-Content-Type: text/markdown
+Requires-Dist: alembic>=1.13
 Requires-Dist: anthropic>=0.52.0
 Requires-Dist: fastapi>=0.111.0
 Requires-Dist: openai>=1.82.0
+Requires-Dist: psycopg[binary]>=3.1
 Requires-Dist: pydantic>=2.7.0
 Requires-Dist: pypdf>=6.0.0
 Requires-Dist: python-docx>=1.1.2
 Requires-Dist: python-dotenv>=1.0.1
 Requires-Dist: python-multipart>=0.0.9
+Requires-Dist: sqlalchemy>=2.0
 Requires-Dist: uvicorn>=0.30.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8.2.0; extra == "dev"
@@ -22,6 +25,18 @@ Requires-Dist: streamlit>=1.35.0; extra == "ui"
 # CV Reformatter MVP
 
 Prototype for a CV reformat SaaS product. This local MVP turns a candidate's DOCX or text-based PDF resume into validated candidate profile JSON, flags missing recruiter-critical information, and saves debug artifacts.
+
+## Database And Hosting Direction
+
+- PostgreSQL is the target MVP database and should run locally during MVP development and testing.
+- The existing SQLite artifact index is transitional and should not be expanded as the primary persistence model.
+- Local document and debug artifacts remain on the local filesystem during the MVP.
+- After the local MVP is complete, the selected initial hosting provider is DigitalOcean:
+  - App Platform for the containerized FastAPI backend and frontend hosting;
+  - Managed PostgreSQL for separate staging and production databases;
+  - Spaces for private resume, extracted-text, DOCX, PDF, and debug artifacts.
+
+DigitalOcean deployment begins only after the end-to-end synthetic demo and local PostgreSQL persistence path work successfully. Real candidate data must not be hosted before authentication, authorization, private object access, retention/deletion behavior, and backup/restore procedures are in place.
 
 This first milestone intentionally implements only:
 
