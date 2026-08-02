@@ -1,10 +1,13 @@
 import json
+import logging
 import os
 import shutil
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +22,7 @@ from app.extraction.llm_extractor import (
     build_llm_client,
     extract_candidate_profile,
 )
+from app.generation.byo_docx_renderer import docx_has_placeholders, render_byo_docx
 from app.generation.docx_renderer import DocxRenderingError, render_docx
 from app.generation.pdf_exporter import PdfExportError, export_docx_to_pdf
 from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME, build_client_render_context
@@ -68,6 +72,7 @@ class TargetFormatMetadata(BaseModel):
     used_as_template_source: bool
     download_url: str
     note: str
+    matched_template_id: str | None = None
 
 
 class ProcessResponse(BaseModel):
@@ -336,11 +341,28 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         target_format=target_format,
     )
 
-    try:
-        render_docx(render_context, docx_path)
-        exported_pdf_path = export_docx_to_pdf(docx_path, output_dir=artifact_dir)
-    except (DocxRenderingError, PdfExportError, FileNotFoundError) as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    # BYO template branch: use recruiter's uploaded .docx if it has Jinja2 placeholders.
+    _used_byo = False
+    if (
+        target_format is not None
+        and target_format.role == "docx_template"
+        and target_format.matched_template_id is None
+    ):
+        _tpl_path = artifact_dir / "target_format_template.docx"
+        if _tpl_path.exists() and docx_has_placeholders(_tpl_path):
+            try:
+                render_byo_docx(_tpl_path, reviewed_profile, docx_path, blind=request.blind_profile)
+                exported_pdf_path = export_docx_to_pdf(docx_path, output_dir=artifact_dir)
+                _used_byo = True
+            except Exception as _exc:
+                _log.warning("BYO DOCX renderer failed, falling back to controlled renderer: %s", _exc)
+
+    if not _used_byo:
+        try:
+            render_docx(render_context, docx_path)
+            exported_pdf_path = export_docx_to_pdf(docx_path, output_dir=artifact_dir)
+        except (DocxRenderingError, PdfExportError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     if exported_pdf_path != pdf_path and exported_pdf_path.exists():
         exported_pdf_path.replace(pdf_path)
