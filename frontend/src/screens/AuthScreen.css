@@ -81,6 +81,40 @@
   box-shadow: 0 0 0 3px var(--color-accent-green-bg);
 }
 
+/* ── Consent checkbox ──────────────────────────────────── */
+.auth-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.auth-consent__checkbox {
+  margin-top: 3px;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  accent-color: var(--color-accent-green);
+  cursor: pointer;
+}
+
+.auth-consent__text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+
+.auth-consent__link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--color-accent-green);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* ── Error message ─────────────────────────────────────── */
 .auth-error {
   margin: 0;

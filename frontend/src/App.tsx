@@ -107,6 +107,8 @@ export default function App() {
         onSwitchMode={() => setState({ status: state.status === "login" ? "signup" : "login", from })}
         onGoHome={() => setState({ status: from })}
         onSuccess={() => setState({ status: from })}
+        onTerms={() => setState({ status: "terms" })}
+        onPrivacy={() => setState({ status: "privacy" })}
       />
     )
   }

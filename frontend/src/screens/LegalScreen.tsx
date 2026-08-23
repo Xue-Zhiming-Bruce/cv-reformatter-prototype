@@ -15,19 +15,20 @@ type LegalScreenProps = {
 
 export function LegalScreen({ page, onHome, onPricing, onLogin, onSignup, onTerms, onPrivacy }: LegalScreenProps) {
   const { t } = useTranslation()
-  const sections = t(`${page}.sections`, { returnObjects: true }) as Array<{ heading: string; body: string }>
+  const sections = t(`${page}.sections`, { returnObjects: true }) as Array<{ heading: string }>
+  const placeholderBody = t("legal.toBeCompleted")
 
   return (
     <div className="legal-page">
       <SiteHeader onHome={onHome} onPricing={onPricing} onLogin={onLogin} onSignup={onSignup} />
       <main className="legal-main">
         <div className="legal-doc">
+          <p className="legal-draft-banner" role="alert">{t("legal.draftBanner")}</p>
           <h1 className="legal-title">{t(`${page}.title`)}</h1>
-          <p className="legal-date">{t(`${page}.lastUpdated`)}</p>
           {sections.map((s, i) => (
             <section key={i} className="legal-section">
               <h2 className="legal-h2">{s.heading}</h2>
-              <p className="legal-body">{s.body}</p>
+              <p className="legal-body">{placeholderBody}</p>
             </section>
           ))}
         </div>

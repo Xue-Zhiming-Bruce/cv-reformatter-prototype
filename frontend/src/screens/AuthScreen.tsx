@@ -9,20 +9,30 @@ type AuthScreenProps = {
   onSwitchMode: () => void
   onGoHome: () => void
   onSuccess: () => void
+  onTerms: () => void
+  onPrivacy: () => void
 }
 
-export function AuthScreen({ mode, onSwitchMode, onGoHome, onSuccess }: AuthScreenProps) {
+export function AuthScreen({ mode, onSwitchMode, onGoHome, onSuccess, onTerms, onPrivacy }: AuthScreenProps) {
   const { t } = useTranslation()
   const { signup, login } = useAuth()
   const isLogin = mode === "login"
 
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [agreedToLegal, setAgreedToLegal] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
+  const consentTemplate = t("auth.consentText", { terms: "%%TERMS%%", privacy: "%%PRIVACY%%" })
+  const [consentBeforeTerms, consentAfterTerms] = consentTemplate.split("%%TERMS%%")
+  const [consentBetween, consentAfterPrivacy] = consentAfterTerms.split("%%PRIVACY%%")
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (!isLogin && !agreedToLegal) {
+      return
+    }
     if (!isLogin && password.length < 8) {
       setError(t("auth.errorPasswordTooShort"))
       return
@@ -95,9 +105,31 @@ export function AuthScreen({ mode, onSwitchMode, onGoHome, onSuccess }: AuthScre
               />
             </div>
 
+            {!isLogin && (
+              <label className="auth-consent">
+                <input
+                  type="checkbox"
+                  className="auth-consent__checkbox"
+                  checked={agreedToLegal}
+                  onChange={e => setAgreedToLegal(e.target.checked)}
+                />
+                <span className="auth-consent__text">
+                  {consentBeforeTerms}
+                  <button type="button" className="auth-consent__link" onClick={onTerms}>
+                    {t("auth.consentTermsLabel")}
+                  </button>
+                  {consentBetween}
+                  <button type="button" className="auth-consent__link" onClick={onPrivacy}>
+                    {t("auth.consentPrivacyLabel")}
+                  </button>
+                  {consentAfterPrivacy}
+                </span>
+              </label>
+            )}
+
             {error && <p className="auth-error" role="alert">{error}</p>}
 
-            <button type="submit" className="auth-submit" disabled={submitting}>
+            <button type="submit" className="auth-submit" disabled={submitting || (!isLogin && !agreedToLegal)}>
               {submitting ? "…" : (isLogin ? t("auth.loginBtn") : t("auth.signupBtn"))}
             </button>
           </form>

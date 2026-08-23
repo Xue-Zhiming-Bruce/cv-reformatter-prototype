@@ -20,7 +20,9 @@
     "baaAfterLabel": "AFTER",
     "sampleLink": "Try a sample resume →",
     "sampleLoading": "Loading…",
-    "dropOverlay": "Drop to upload resume"
+    "dropOverlay": "Drop to upload resume",
+    "uploadLegalNotice": "By uploading, you confirm you have the right to process this candidate's data. See our {{privacy}}.",
+    "uploadLegalNoticePrivacyLabel": "Privacy Policy"
   },
   "converter": {
     "badgeChange": "Change",
@@ -239,82 +241,38 @@
     "errorPasswordTooShort": "Password must be at least 8 characters.",
     "errorGeneric": "Something went wrong — please try again.",
     "gateTitle": "3 free conversions used",
-    "gateBody": "Create a free account to keep going."
+    "gateBody": "Create a free account to keep going.",
+    "consentText": "I agree to the {{terms}} and {{privacy}}.",
+    "consentTermsLabel": "Terms of Service",
+    "consentPrivacyLabel": "Privacy Policy"
+  },
+  "legal": {
+    "draftBanner": "DRAFT — placeholder content, not legally reviewed. Do not rely on this.",
+    "toBeCompleted": "[to be completed]"
   },
   "privacy": {
     "title": "Privacy Policy",
-    "lastUpdated": "Last updated: July 18, 2026",
     "sections": [
-      {
-        "heading": "Information we process",
-        "body": "(1) Resume files you upload and the information in them (name, contact details, work history, etc.). (2) Your email address when you create an account. (3) Basic usage records (timestamps, conversion counts). Payments are handled by our payment processor; we never store card numbers."
-      },
-      {
-        "heading": "How we use it",
-        "body": "To provide the resume conversion service, manage accounts, process billing, and improve the service through aggregate statistics."
-      },
-      {
-        "heading": "Retention and deletion",
-        "body": "Uploaded resume files and extracted content are deleted immediately after processing and are not stored on our servers. Account data is deleted without delay when you close your account. Records we are legally required to keep (e.g. billing) are retained for the statutory period."
-      },
-      {
-        "heading": "Service providers",
-        "body": "We use third-party providers for hosting [Vercel / Render — TBD], AI document processing [TBD], and payments [TBD]."
-      },
-      {
-        "heading": "No selling of data",
-        "body": "We do not sell or share your personal information with third parties, except where required by law."
-      },
-      {
-        "heading": "Your rights",
-        "body": "You may request access, correction, deletion, or restriction of your personal data at any time via the contact below."
-      },
-      {
-        "heading": "Contact",
-        "body": "[contact@domain]"
-      },
-      {
-        "heading": "Changes",
-        "body": "We will post any changes to this policy on this page at least 7 days before they take effect."
-      }
+      { "heading": "What we collect" },
+      { "heading": "How we use it" },
+      { "heading": "AI processing & third-party providers" },
+      { "heading": "Data retention" },
+      { "heading": "International transfers" },
+      { "heading": "Your rights" },
+      { "heading": "Contact" }
     ]
   },
   "terms": {
     "title": "Terms of Service",
-    "lastUpdated": "Last updated: July 18, 2026",
     "sections": [
-      {
-        "heading": "The service",
-        "body": "Reform converts resumes you upload into the template you choose."
-      },
-      {
-        "heading": "Your responsibilities",
-        "body": "Only upload documents you have the right to use. If you upload someone else's resume (e.g. as a recruiter), you confirm you are legally permitted to process that information."
-      },
-      {
-        "heading": "Review your output",
-        "body": "Results are generated automatically and may contain errors. You are responsible for reviewing output before using or submitting it. We do not guarantee accuracy or completeness."
-      },
-      {
-        "heading": "Intellectual property",
-        "body": "You own your uploaded documents and the converted output. We own the service itself (software, design, trademarks)."
-      },
-      {
-        "heading": "Prohibited use",
-        "body": "No reverse engineering, bulk automated requests, or processing of others' personal data without authorization."
-      },
-      {
-        "heading": "Fees and cancellation",
-        "body": "Paid plans are billed monthly and can be cancelled anytime; cancellation stops future charges. Fees already paid are non-refundable except where required by law."
-      },
-      {
-        "heading": "Limitation of liability",
-        "body": "To the extent permitted by law, our liability is limited to the amount you paid us in the previous 3 months."
-      },
-      {
-        "heading": "Changes and governing law",
-        "body": "We will announce changes 7 days before they take effect. These terms are governed by the laws of [jurisdiction — TBD]."
-      }
+      { "heading": "The service" },
+      { "heading": "Your responsibilities" },
+      { "heading": "AI-generated output & accuracy" },
+      { "heading": "Fees & cancellation" },
+      { "heading": "Intellectual property" },
+      { "heading": "Limitation of liability" },
+      { "heading": "Governing law" },
+      { "heading": "Contact" }
     ]
   },
   "errors": {

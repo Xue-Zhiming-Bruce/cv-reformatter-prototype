@@ -68,6 +68,9 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
     setResumeFile(file)
   }
 
+  const uploadLegalNoticeTemplate = t("hero.uploadLegalNotice", { privacy: "%%PRIVACY%%" })
+  const [uploadNoticeBefore, uploadNoticeAfter] = uploadLegalNoticeTemplate.split("%%PRIVACY%%")
+
   const howSteps = t("how.steps", { returnObjects: true }) as Array<{ title: string; body: string }>
   const whyItems = t("why.items", { returnObjects: true }) as Array<{ title: string; body: string }>
 
@@ -159,6 +162,13 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
               </button>
               <p className="upload-hint">{t("hero.uploadHint")}</p>
               <p className="upload-trust">{t("hero.trustLine")}</p>
+              <p className="upload-legal-notice">
+                {uploadNoticeBefore}
+                <button type="button" className="upload-legal-notice__link" onClick={onPrivacy}>
+                  {t("hero.uploadLegalNoticePrivacyLabel")}
+                </button>
+                {uploadNoticeAfter}
+              </p>
 
               {fileTypeError && (
                 <p className="upload-type-error" role="alert">{fileTypeError}</p>
