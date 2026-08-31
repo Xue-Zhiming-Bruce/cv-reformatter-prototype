@@ -1,11 +1,23 @@
 # Local Test Datasets
 
 This directory is for local-only resume datasets used to smoke test ingestion,
-extraction, rendering, and export behavior.
+extraction, target-layout analysis, rendering, and export behavior.
 
-These files may contain real candidate data, so dataset contents are ignored by
-git. Commit only this README and synthetic fixtures. Do not commit extracted
-resume text, generated candidate profiles, generated outputs, or source archives.
+## Dataset provenance and authorization
+
+On August 12, 2026, the product owner confirmed that **all resume and target
+documents currently stored under `tests/local_datasets/` are fake example
+resumes downloaded from public internet sources**. They are not real candidate
+submissions. The current corpus is authorized for local evaluation and for the
+explicitly requested live Adobe, Azure, OpenAI, and similar target-layout API
+experiments. Agents should not ask for this authorization again for the current
+corpus.
+
+This attestation applies only to files present in the current local corpus.
+Newly added datasets must record their provenance and authorization before live
+provider use. Public availability also does not establish redistribution or
+licensing rights, so dataset contents, source archives, extracted text, and
+generated derivatives remain local and ignored by git.
 
 Expected local layout:
 

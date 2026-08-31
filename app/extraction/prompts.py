@@ -1,3 +1,5 @@
+from typing import Any
+
 from app.extraction.candidate_schema import CandidateProfile
 
 
@@ -8,8 +10,13 @@ Missing recruiter follow-up fields should remain null; downstream validation wil
 """
 
 
-def build_candidate_extraction_prompt(resume_text: str, job_description: str | None = None) -> str:
-    schema = CandidateProfile.model_json_schema()
+def build_candidate_extraction_prompt(
+    resume_text: str,
+    job_description: str | None = None,
+    *,
+    response_schema: dict[str, Any] | None = None,
+) -> str:
+    schema = response_schema or CandidateProfile.model_json_schema()
     job_section = f"\nOptional job description:\n{job_description}\n" if job_description else ""
     return (
         "Convert this resume into CandidateProfile JSON.\n"

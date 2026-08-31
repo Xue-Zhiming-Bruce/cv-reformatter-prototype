@@ -12,7 +12,7 @@ except ModuleNotFoundError:
 from app.ingestion.docx_reader import read_docx
 from app.ingestion.pdf_reader import read_pdf_text
 from app.extraction.llm_extractor import MockLLMClient, build_llm_client, extract_candidate_profile
-from app.validation.followup_message_generator import generate_followup_message
+from app.generation.followup_message_generator import generate_followup_message
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

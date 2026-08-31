@@ -1,0 +1,49 @@
+{
+  "full_name": "Jordan Example",
+  "email": "jordan.example@example.test",
+  "phone": "+65 6000 0000",
+  "location": "Singapore",
+  "linkedin_url": "https://www.linkedin.com/in/jordan-example",
+  "portfolio_url": "https://github.com/jordan-example/portfolio",
+  "professional_summary": "Backend engineer focused on reliable APIs and data platforms.",
+  "skills": ["Python", "FastAPI", "PostgreSQL", "Docker"],
+  "languages": [
+    {"name": "English", "proficiency": "Fluent"},
+    {"name": "Vietnamese", "proficiency": "Conversational"}
+  ],
+  "work_experience": [
+    {
+      "company": "Synthetic Systems",
+      "title": "Senior Backend Engineer",
+      "location": "Singapore",
+      "start_date": "January 2022",
+      "end_date": "Present",
+      "description": [
+        "Built reliable internal APIs for recruiter workflows.",
+        "Reduced batch-processing failures through idempotent jobs."
+      ]
+    }
+  ],
+  "education": [
+    {
+      "institution": "Example University",
+      "degree": "Bachelor of Science",
+      "field_of_study": "Computer Science",
+      "start_date": null,
+      "end_date": "2021"
+    }
+  ],
+  "certifications": [
+    {
+      "name": "Synthetic Cloud Practitioner",
+      "issuer": "Example Institute",
+      "date": "2023"
+    }
+  ],
+  "salary_expectation": null,
+  "notice_period": "30 days",
+  "work_authorization": "Singapore citizen",
+  "interview_availability": null,
+  "missing_fields": [],
+  "client_display_rules": {}
+}
