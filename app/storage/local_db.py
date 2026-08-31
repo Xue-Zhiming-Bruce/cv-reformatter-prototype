@@ -42,7 +42,7 @@ class LocalArtifactStore:
                         target_format_download_url TEXT,
                         template_name TEXT,
                         blind_profile INTEGER,
-                        docx_download_url TEXT,
+                        html_surface_url TEXT,
                         pdf_download_url TEXT,
                         pdf_preview_url TEXT,
                         needs_review_count INTEGER,
@@ -51,6 +51,13 @@ class LocalArtifactStore:
                     )
                     """
                 )
+                columns = {
+                    row[1] for row in connection.execute("PRAGMA table_info(artifact_jobs)")
+                }
+                if "html_surface_url" not in columns:
+                    connection.execute(
+                        "ALTER TABLE artifact_jobs ADD COLUMN html_surface_url TEXT"
+                    )
         except sqlite3.Error as exc:
             raise LocalDatabaseError(f"Local database schema could not be initialized: {exc}") from exc
 
@@ -110,7 +117,7 @@ class LocalArtifactStore:
         artifact_dir: str | Path,
         template_name: str,
         blind_profile: bool,
-        docx_download_url: str,
+        html_surface_url: str,
         pdf_download_url: str,
         pdf_preview_url: str,
         missing_fields: list[MissingField],
@@ -123,13 +130,39 @@ class LocalArtifactStore:
             updates={
                 "template_name": template_name,
                 "blind_profile": int(blind_profile),
-                "docx_download_url": docx_download_url,
+                "html_surface_url": html_surface_url,
                 "pdf_download_url": pdf_download_url,
                 "pdf_preview_url": pdf_preview_url,
                 "needs_review_count": len(missing_fields),
                 "missing_field_labels_json": _missing_field_labels_json(missing_fields),
             },
             debug_artifacts=debug_artifacts,
+        )
+
+    def record_design_reference(
+        self,
+        *,
+        artifact_id: str,
+        artifact_dir: str | Path,
+        design_id: str,
+        design_state: str,
+        debug_artifacts: Mapping[str, str],
+    ) -> None:
+        """Record a design artifact reference without adding SQLite columns.
+
+        Design lifecycle state lives on the filesystem under the artifact
+        store boundary; this index entry is metadata only.
+        """
+        self._upsert_artifact(
+            artifact_id=artifact_id,
+            artifact_dir=artifact_dir,
+            status="design_created",
+            updates={},
+            debug_artifacts={
+                **debug_artifacts,
+                "design_id": design_id,
+                "design_state": design_state,
+            },
         )
 
     def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:

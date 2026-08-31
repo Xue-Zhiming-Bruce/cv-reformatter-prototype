@@ -1,0 +1,1056 @@
+{
+  "schema_version": "commercial_api/corpus/1",
+  "corpus_version": "1.1",
+  "description": "Versioned synthetic corpus for commercial-provider evaluation lanes. All inputs are synthetic; no real candidate data. PDF cases are generated deterministically by the referenced builder functions and pinned by expected_sha256 to detect drift. Version 1.1 adds the design lane (template designer evaluation).",
+  "cases": [
+    {
+      "case_id": "synthetic_candidate_profile",
+      "source_format": "text",
+      "lanes": [
+        "extraction"
+      ],
+      "input": "synthetic_resume.txt",
+      "expected_sha256": "955577f75f1937a74a44a4fa890bcef23515211d38178b6ebd07b6671ff4ae03",
+      "expected_profile": "expected_candidate_profile.json",
+      "expected_capabilities": [
+        "structured profile",
+        "missing-field detection"
+      ],
+      "expected_content": [],
+      "expected_layout": {},
+      "negative_conditions": [
+        "salary_expectation must remain null",
+        "interview_availability must remain null",
+        "no invented employers, dates, or achievements"
+      ],
+      "layout_class": null,
+      "thresholds": {
+        "field_accuracy_min": 1.0,
+        "null_safety_min": 1.0,
+        "missing_field_accuracy_min": 1.0
+      },
+      "requires_manual_review": false
+    },
+    {
+      "case_id": "styled_two_column",
+      "source_format": "pdf",
+      "lanes": [
+        "layout"
+      ],
+      "builder": "build_styled_target_pdf",
+      "expected_sha256": "fce10c4978e329c866453f0b7f5f8886fa27ca717ba14fd22099199ecb43dffa",
+      "expected_capabilities": [
+        "text extraction",
+        "page geometry",
+        "column detection",
+        "style records"
+      ],
+      "expected_content": [
+        "Alex Example",
+        "Platform Engineer",
+        "PROFILE",
+        "EXPERIENCE",
+        "EDUCATION",
+        "CONTACT",
+        "SKILLS",
+        "LANGUAGES"
+      ],
+      "expected_layout": {
+        "page_count": 1,
+        "columns": 2,
+        "minimum_text_blocks": 12,
+        "minimum_distinct_font_sizes": 3
+      },
+      "negative_conditions": [],
+      "layout_class": "two_column_sidebar",
+      "thresholds": {
+        "required_text_recall_min": 1.0,
+        "page_count_accuracy": 1.0,
+        "column_accuracy": 1.0
+      },
+      "requires_manual_review": false
+    },
+    {
+      "case_id": "plain_one_column",
+      "source_format": "pdf",
+      "lanes": [
+        "layout"
+      ],
+      "builder": "build_plain_target_pdf",
+      "expected_sha256": "f8028885c026dd89cddaf7390018dde023de7aee54a1a889ba022fab76a8464d",
+      "expected_capabilities": [
+        "text extraction",
+        "page geometry",
+        "column detection"
+      ],
+      "expected_content": [
+        "ACCOUNTANT",
+        "Professional Summary",
+        "Core Qualifications",
+        "Experience",
+        "Education"
+      ],
+      "expected_layout": {
+        "page_count": 1,
+        "columns": 1,
+        "minimum_text_blocks": 8,
+        "minimum_distinct_font_sizes": 1
+      },
+      "negative_conditions": [],
+      "layout_class": "one_column",
+      "thresholds": {
+        "required_text_recall_min": 1.0,
+        "page_count_accuracy": 1.0,
+        "column_accuracy": 1.0
+      },
+      "requires_manual_review": false
+    },
+    {
+      "case_id": "flow_one_column",
+      "source_format": "pdf",
+      "lanes": [
+        "layout"
+      ],
+      "builder": "build_flow_target_pdf",
+      "expected_sha256": "ee55961cf68b036d9ef80e0c593860311bba9b25ba81109c6aa52f6386f31b60",
+      "expected_capabilities": [
+        "text extraction",
+        "page geometry"
+      ],
+      "expected_content": [
+        "SYSTEM ADMINISTRATOR",
+        "Summary",
+        "Highlights",
+        "Education",
+        "Experience",
+        "Additional Information"
+      ],
+      "expected_layout": {
+        "page_count": 1,
+        "columns": 1,
+        "minimum_text_blocks": 8,
+        "minimum_distinct_font_sizes": 1
+      },
+      "negative_conditions": [],
+      "layout_class": "one_column",
+      "thresholds": {
+        "required_text_recall_min": 1.0,
+        "page_count_accuracy": 1.0,
+        "column_accuracy": 1.0
+      },
+      "requires_manual_review": false
+    },
+    {
+      "case_id": "right_aligned_metadata",
+      "source_format": "pdf",
+      "lanes": [
+        "layout"
+      ],
+      "builder": "build_right_aligned_metadata_target_pdf",
+      "expected_sha256": "edfe1ce72325bc0c824daefad23acd01b839566b68c4fbfc2d64e3da0ec41905",
+      "expected_capabilities": [
+        "text extraction",
+        "page geometry",
+        "column detection"
+      ],
+      "expected_content": [
+        "Alex Example",
+        "SUMMARY",
+        "EXPERIENCE",
+        "SKILLS",
+        "EDUCATION"
+      ],
+      "expected_layout": {
+        "page_count": 1,
+        "columns": 1,
+        "minimum_text_blocks": 10,
+        "minimum_distinct_font_sizes": 2
+      },
+      "negative_conditions": [],
+      "layout_class": "one_column",
+      "thresholds": {
+        "required_text_recall_min": 1.0,
+        "page_count_accuracy": 1.0,
+        "column_accuracy": 1.0
+      },
+      "requires_manual_review": false
+    },
+    {
+      "case_id": "controlled_docx_to_pdf",
+      "source_format": "docx",
+      "lanes": [
+        "rendering"
+      ],
+      "builder": "build_controlled_docx",
+      "expected_sha256": null,
+      "expected_capabilities": [
+        "pdf export",
+        "content preservation"
+      ],
+      "expected_content": [],
+      "expected_layout": {},
+      "negative_conditions": [],
+      "privacy_exclusions": [
+        "Alex Example",
+        "Platform Engineer",
+        "alex@example.test",
+        "Example City",
+        "Senior Engineer | Example Systems"
+      ],
+      "layout_class": "two_column_sidebar",
+      "thresholds": {
+        "content_recall_min": 0.8,
+        "page_count_min": 1
+      },
+      "requires_manual_review": true
+    },
+    {
+      "case_id": "design_plain_one_column",
+      "source_format": "pdf",
+      "lanes": [
+        "design"
+      ],
+      "builder": "build_design_plain_target_pdf",
+      "expected_sha256": "93dd2b71bd9883d81a63619421ee46cc956743d373f7a7b3bbb6e794513ac357",
+      "expected_capabilities": [
+        "semantic section mapping",
+        "layout class selection"
+      ],
+      "expected_content": [],
+      "expected_layout": {
+        "candidate_sections": [
+          {
+            "role": "contact",
+            "section_label": "Contact",
+            "item_count": 1
+          },
+          {
+            "role": "summary",
+            "section_label": "Professional Summary",
+            "item_count": 1
+          },
+          {
+            "role": "skills",
+            "section_label": "Skills",
+            "item_count": 3
+          },
+          {
+            "role": "languages",
+            "section_label": "Languages",
+            "item_count": 1
+          },
+          {
+            "role": "work_experience",
+            "section_label": "Work Experience",
+            "item_count": 2
+          },
+          {
+            "role": "education",
+            "section_label": "Education",
+            "item_count": 1
+          },
+          {
+            "role": "certifications",
+            "section_label": "Certifications",
+            "item_count": 1
+          }
+        ],
+        "expected_mappings": {
+          "summary": {
+            "target_label": "Professional Summary",
+            "action": "map"
+          },
+          "skills": {
+            "target_label": "Core Qualifications",
+            "action": "map"
+          },
+          "work_experience": {
+            "target_label": "Experience",
+            "action": "map"
+          },
+          "education": {
+            "target_label": "Education",
+            "action": "map"
+          }
+        },
+        "preserved_sections": [
+          "contact",
+          "languages",
+          "certifications"
+        ],
+        "expected_support_state": "ready",
+        "review_escalation": false,
+        "layout_class": "one_column"
+      },
+      "negative_conditions": [
+        "no target candidate facts in the proposal",
+        "no invented geometry",
+        "unmatched candidate sections preserved"
+      ],
+      "layout_class": "one_column",
+      "thresholds": {
+        "mapping_accuracy_min": 1.0,
+        "unsupported_preservation_min": 1.0
+      },
+      "requires_manual_review": false
+    },
+    {
+      "case_id": "design_styled_two_column",
+      "source_format": "pdf",
+      "lanes": [
+        "design"
+      ],
+      "builder": "build_styled_target_pdf",
+      "expected_sha256": "fce10c4978e329c866453f0b7f5f8886fa27ca717ba14fd22099199ecb43dffa",
+      "expected_capabilities": [
+        "sidebar layout",
+        "semantic section mapping"
+      ],
+      "expected_content": [],
+      "expected_layout": {
+        "candidate_sections": [
+          {
+            "role": "contact",
+            "section_label": "Contact",
+            "item_count": 1
+          },
+          {
+            "role": "summary",
+            "section_label": "Professional Summary",
+            "item_count": 1
+          },
+          {
+            "role": "skills",
+            "section_label": "Skills",
+            "item_count": 3
+          },
+          {
+            "role": "languages",
+            "section_label": "Languages",
+            "item_count": 1
+          },
+          {
+            "role": "work_experience",
+            "section_label": "Work Experience",
+            "item_count": 2
+          },
+          {
+            "role": "education",
+            "section_label": "Education",
+            "item_count": 1
+          },
+          {
+            "role": "certifications",
+            "section_label": "Certifications",
+            "item_count": 1
+          }
+        ],
+        "expected_mappings": {
+          "summary": {
+            "target_label": "PROFILE",
+            "action": "map"
+          },
+          "work_experience": {
+            "target_label": "EXPERIENCE",
+            "action": "map"
+          },
+          "education": {
+            "target_label": "EDUCATION",
+            "action": "map"
+          },
+          "contact": {
+            "target_label": "CONTACT",
+            "action": "map"
+          },
+          "skills": {
+            "target_label": "SKILLS",
+            "action": "map"
+          },
+          "languages": {
+            "target_label": "LANGUAGES",
+            "action": "map"
+          }
+        },
+        "preserved_sections": [
+          "certifications"
+        ],
+        "expected_support_state": "ready",
+        "review_escalation": false,
+        "layout_class": "sidebar"
+      },
+      "negative_conditions": [
+        "no target candidate facts in the proposal"
+      ],
+      "layout_class": "two_column_sidebar",
+      "thresholds": {
+        "mapping_accuracy_min": 1.0
+      },
+      "requires_manual_review": false
+    },
+    {
+      "case_id": "design_ambiguous_labels",
+      "source_format": "pdf",
+      "lanes": [
+        "design"
+      ],
+      "builder": "build_ambiguous_target_pdf",
+      "expected_sha256": "f055ccd31f758d7caae689a93faf0f12b2b90c2883a81ca257f1f70c7f3f5d13",
+      "expected_capabilities": [
+        "ambiguous label escalation"
+      ],
+      "expected_content": [],
+      "expected_layout": {
+        "candidate_sections": [
+          {
+            "role": "contact",
+            "section_label": "Contact",
+            "item_count": 1
+          },
+          {
+            "role": "summary",
+            "section_label": "Professional Summary",
+            "item_count": 1
+          },
+          {
+            "role": "skills",
+            "section_label": "Skills",
+            "item_count": 3
+          },
+          {
+            "role": "languages",
+            "section_label": "Languages",
+            "item_count": 1
+          },
+          {
+            "role": "work_experience",
+            "section_label": "Work Experience",
+            "item_count": 2
+          },
+          {
+            "role": "education",
+            "section_label": "Education",
+            "item_count": 1
+          },
+          {
+            "role": "certifications",
+            "section_label": "Certifications",
+            "item_count": 1
+          }
+        ],
+        "expected_mappings": {
+          "summary": {
+            "target_label": "SUMMARY & HIGHLIGHTS",
+            "action": "needs_review"
+          },
+          "skills": {
+            "target_label": "SUMMARY & HIGHLIGHTS",
+            "action": "needs_review"
+          },
+          "work_experience": {
+            "target_label": "WORK EXPERIENCE",
+            "action": "map"
+          },
+          "education": {
+            "target_label": "EDUCATION",
+            "action": "map"
+          }
+        },
+        "preserved_sections": [
+          "contact",
+          "languages",
+          "certifications"
+        ],
+        "expected_support_state": "ready_with_review",
+        "review_escalation": true,
+        "layout_class": "one_column"
+      },
+      "negative_conditions": [
+        "ambiguous labels escalate to review, never guessed"
+      ],
+      "layout_class": "one_column",
+      "thresholds": {
+        "review_escalation_min": 1.0
+      },
+      "requires_manual_review": true
+    },
+    {
+      "case_id": "design_unknown_target_slot",
+      "source_format": "pdf",
+      "lanes": [
+        "design"
+      ],
+      "builder": "build_unknown_slot_target_pdf",
+      "expected_sha256": "aa09d8c53fc884edb58692aafb89e66ad117e8978fd1cf5b9672a860d84cb1b8",
+      "expected_capabilities": [
+        "unknown slot flagging"
+      ],
+      "expected_content": [],
+      "expected_layout": {
+        "candidate_sections": [
+          {
+            "role": "contact",
+            "section_label": "Contact",
+            "item_count": 1
+          },
+          {
+            "role": "summary",
+            "section_label": "Professional Summary",
+            "item_count": 1
+          },
+          {
+            "role": "skills",
+            "section_label": "Skills",
+            "item_count": 3
+          },
+          {
+            "role": "languages",
+            "section_label": "Languages",
+            "item_count": 1
+          },
+          {
+            "role": "work_experience",
+            "section_label": "Work Experience",
+            "item_count": 2
+          },
+          {
+            "role": "education",
+            "section_label": "Education",
+            "item_count": 1
+          },
+          {
+            "role": "certifications",
+            "section_label": "Certifications",
+            "item_count": 1
+          }
+        ],
+        "expected_mappings": {
+          "work_experience": {
+            "target_label": "EXPERIENCE",
+            "action": "map"
+          },
+          "skills": {
+            "target_label": "SKILLS",
+            "action": "map"
+          }
+        },
+        "preserved_sections": [
+          "contact",
+          "summary",
+          "languages",
+          "education",
+          "certifications"
+        ],
+        "expected_support_state": "ready_with_review",
+        "review_escalation": true,
+        "unknown_slot_label": "PUBLICATIONS",
+        "layout_class": "one_column"
+      },
+      "negative_conditions": [
+        "unknown target slot flagged, never guessed"
+      ],
+      "layout_class": "one_column",
+      "thresholds": {
+        "review_escalation_min": 1.0
+      },
+      "requires_manual_review": true
+    },
+    {
+      "case_id": "design_additional_section",
+      "source_format": "pdf",
+      "lanes": [
+        "design"
+      ],
+      "builder": "build_design_plain_target_pdf",
+      "expected_sha256": "93dd2b71bd9883d81a63619421ee46cc956743d373f7a7b3bbb6e794513ac357",
+      "expected_capabilities": [
+        "additional section preservation"
+      ],
+      "expected_content": [],
+      "expected_layout": {
+        "candidate_sections": [
+          {
+            "role": "contact",
+            "section_label": "Contact",
+            "item_count": 1
+          },
+          {
+            "role": "summary",
+            "section_label": "Professional Summary",
+            "item_count": 1
+          },
+          {
+            "role": "skills",
+            "section_label": "Skills",
+            "item_count": 3
+          },
+          {
+            "role": "work_experience",
+            "section_label": "Work Experience",
+            "item_count": 2
+          },
+          {
+            "role": "education",
+            "section_label": "Education",
+            "item_count": 1
+          },
+          {
+            "role": "interests",
+            "section_label": "Interests",
+            "item_count": 1
+          }
+        ],
+        "expected_mappings": {
+          "summary": {
+            "target_label": "Professional Summary",
+            "action": "map"
+          },
+          "skills": {
+            "target_label": "Core Qualifications",
+            "action": "map"
+          },
+          "work_experience": {
+            "target_label": "Experience",
+            "action": "map"
+          },
+          "education": {
+            "target_label": "Education",
+            "action": "map"
+          }
+        },
+        "preserved_sections": [
+          "contact",
+          "interests"
+        ],
+        "expected_support_state": "ready",
+        "review_escalation": false,
+        "layout_class": "one_column"
+      },
+      "negative_conditions": [
+        "candidate additional section preserved, never dropped"
+      ],
+      "layout_class": "one_column",
+      "thresholds": {
+        "unsupported_preservation_min": 1.0
+      },
+      "requires_manual_review": false
+    },
+    {
+      "case_id": "design_missing_target_data",
+      "source_format": "pdf",
+      "lanes": [
+        "design"
+      ],
+      "builder": "build_styled_target_pdf",
+      "expected_sha256": "fce10c4978e329c866453f0b7f5f8886fa27ca717ba14fd22099199ecb43dffa",
+      "expected_capabilities": [
+        "empty slot hiding"
+      ],
+      "expected_content": [],
+      "expected_layout": {
+        "candidate_sections": [
+          {
+            "role": "contact",
+            "section_label": "Contact",
+            "item_count": 1
+          },
+          {
+            "role": "summary",
+            "section_label": "Professional Summary",
+            "item_count": 1
+          },
+          {
+            "role": "skills",
+            "section_label": "Skills",
+            "item_count": 3
+          },
+          {
+            "role": "work_experience",
+            "section_label": "Work Experience",
+            "item_count": 2
+          },
+          {
+            "role": "education",
+            "section_label": "Education",
+            "item_count": 1
+          },
+          {
+            "role": "certifications",
+            "section_label": "Certifications",
+            "item_count": 1
+          }
+        ],
+        "expected_mappings": {
+          "summary": {
+            "target_label": "PROFILE",
+            "action": "map"
+          },
+          "work_experience": {
+            "target_label": "EXPERIENCE",
+            "action": "map"
+          },
+          "education": {
+            "target_label": "EDUCATION",
+            "action": "map"
+          },
+          "contact": {
+            "target_label": "CONTACT",
+            "action": "map"
+          },
+          "skills": {
+            "target_label": "SKILLS",
+            "action": "map"
+          },
+          "languages": {
+            "target_label": "LANGUAGES",
+            "action": "hide_empty"
+          }
+        },
+        "preserved_sections": [],
+        "expected_support_state": "ready",
+        "review_escalation": false,
+        "layout_class": "sidebar"
+      },
+      "negative_conditions": [
+        "missing target data never fabricated"
+      ],
+      "layout_class": "two_column_sidebar",
+      "thresholds": {
+        "mapping_accuracy_min": 1.0
+      },
+      "requires_manual_review": false
+    },
+    {
+      "case_id": "design_unsupported_graphical",
+      "source_format": "pdf",
+      "lanes": [
+        "design"
+      ],
+      "builder": "build_graphical_target_pdf",
+      "expected_sha256": "950fad998f23f547a72c3414a112836913936071b99574abde90d72465b42068",
+      "expected_capabilities": [
+        "unsupported target declaration"
+      ],
+      "expected_content": [],
+      "expected_layout": {
+        "candidate_sections": [
+          {
+            "role": "contact",
+            "section_label": "Contact",
+            "item_count": 1
+          },
+          {
+            "role": "summary",
+            "section_label": "Professional Summary",
+            "item_count": 1
+          },
+          {
+            "role": "skills",
+            "section_label": "Skills",
+            "item_count": 3
+          },
+          {
+            "role": "languages",
+            "section_label": "Languages",
+            "item_count": 1
+          },
+          {
+            "role": "work_experience",
+            "section_label": "Work Experience",
+            "item_count": 2
+          },
+          {
+            "role": "education",
+            "section_label": "Education",
+            "item_count": 1
+          },
+          {
+            "role": "certifications",
+            "section_label": "Certifications",
+            "item_count": 1
+          }
+        ],
+        "expected_mappings": {},
+        "preserved_sections": [],
+        "expected_support_state": "unsupported",
+        "review_escalation": false,
+        "layout_class": "unsupported"
+      },
+      "negative_conditions": [
+        "graphical target declared unsupported explicitly"
+      ],
+      "layout_class": "unsupported",
+      "thresholds": {
+        "compiler_acceptance_min": 1.0
+      },
+      "requires_manual_review": true
+    },
+    {
+      "case_id": "design_contamination_probe",
+      "source_format": "pdf",
+      "lanes": [
+        "design"
+      ],
+      "builder": "build_styled_target_pdf",
+      "expected_sha256": "fce10c4978e329c866453f0b7f5f8886fa27ca717ba14fd22099199ecb43dffa",
+      "expected_capabilities": [
+        "target-fact contamination prevention"
+      ],
+      "expected_content": [],
+      "expected_layout": {
+        "candidate_sections": [
+          {
+            "role": "contact",
+            "section_label": "Contact",
+            "item_count": 1
+          },
+          {
+            "role": "summary",
+            "section_label": "Professional Summary",
+            "item_count": 1
+          },
+          {
+            "role": "skills",
+            "section_label": "Skills",
+            "item_count": 3
+          },
+          {
+            "role": "languages",
+            "section_label": "Languages",
+            "item_count": 1
+          },
+          {
+            "role": "work_experience",
+            "section_label": "Work Experience",
+            "item_count": 2
+          },
+          {
+            "role": "education",
+            "section_label": "Education",
+            "item_count": 1
+          },
+          {
+            "role": "certifications",
+            "section_label": "Certifications",
+            "item_count": 1
+          }
+        ],
+        "expected_mappings": {
+          "summary": {
+            "target_label": "PROFILE",
+            "action": "map"
+          },
+          "work_experience": {
+            "target_label": "EXPERIENCE",
+            "action": "map"
+          },
+          "education": {
+            "target_label": "EDUCATION",
+            "action": "map"
+          },
+          "contact": {
+            "target_label": "CONTACT",
+            "action": "map"
+          },
+          "skills": {
+            "target_label": "SKILLS",
+            "action": "map"
+          },
+          "languages": {
+            "target_label": "LANGUAGES",
+            "action": "map"
+          }
+        },
+        "preserved_sections": [
+          "certifications"
+        ],
+        "expected_support_state": "ready",
+        "review_escalation": false,
+        "layout_class": "sidebar"
+      },
+      "negative_conditions": [
+        "target-sample candidate facts must never appear in the proposal"
+      ],
+      "privacy_exclusions": [
+        "Alex Example",
+        "Platform Engineer",
+        "alex@example.test",
+        "Built resilient APIs and data pipelines."
+      ],
+      "layout_class": "two_column_sidebar",
+      "thresholds": {
+        "fact_contamination_min": 1.0,
+        "mapping_accuracy_min": 1.0
+      },
+      "requires_manual_review": false
+    },
+    {
+      "case_id": "design_invalid_reference_probe",
+      "source_format": "pdf",
+      "lanes": [
+        "design"
+      ],
+      "builder": "build_design_plain_target_pdf",
+      "expected_sha256": "93dd2b71bd9883d81a63619421ee46cc956743d373f7a7b3bbb6e794513ac357",
+      "expected_capabilities": [
+        "invalid reference prevention"
+      ],
+      "expected_content": [],
+      "expected_layout": {
+        "candidate_sections": [
+          {
+            "role": "contact",
+            "section_label": "Contact",
+            "item_count": 1
+          },
+          {
+            "role": "summary",
+            "section_label": "Professional Summary",
+            "item_count": 1
+          },
+          {
+            "role": "skills",
+            "section_label": "Skills",
+            "item_count": 3
+          },
+          {
+            "role": "languages",
+            "section_label": "Languages",
+            "item_count": 1
+          },
+          {
+            "role": "work_experience",
+            "section_label": "Work Experience",
+            "item_count": 2
+          },
+          {
+            "role": "education",
+            "section_label": "Education",
+            "item_count": 1
+          },
+          {
+            "role": "certifications",
+            "section_label": "Certifications",
+            "item_count": 1
+          }
+        ],
+        "expected_mappings": {
+          "summary": {
+            "target_label": "Professional Summary",
+            "action": "map"
+          },
+          "skills": {
+            "target_label": "Core Qualifications",
+            "action": "map"
+          },
+          "work_experience": {
+            "target_label": "Experience",
+            "action": "map"
+          },
+          "education": {
+            "target_label": "Education",
+            "action": "map"
+          }
+        },
+        "preserved_sections": [
+          "contact",
+          "languages",
+          "certifications"
+        ],
+        "expected_support_state": "ready",
+        "review_escalation": false,
+        "layout_class": "one_column"
+      },
+      "negative_conditions": [
+        "every region and style reference must exist in evidence"
+      ],
+      "layout_class": "one_column",
+      "thresholds": {
+        "invalid_reference_rate_min": 1.0
+      },
+      "requires_manual_review": false
+    },
+    {
+      "case_id": "design_low_confidence_mapping",
+      "source_format": "pdf",
+      "lanes": [
+        "design"
+      ],
+      "builder": "build_low_confidence_target_pdf",
+      "expected_sha256": "979302549583f75497e199be17d9415f244c5be916bd25870b0198f5a7aef8c2",
+      "expected_capabilities": [
+        "low-confidence review escalation"
+      ],
+      "expected_content": [],
+      "expected_layout": {
+        "candidate_sections": [
+          {
+            "role": "contact",
+            "section_label": "Contact",
+            "item_count": 1
+          },
+          {
+            "role": "summary",
+            "section_label": "Professional Summary",
+            "item_count": 1
+          },
+          {
+            "role": "skills",
+            "section_label": "Skills",
+            "item_count": 3
+          },
+          {
+            "role": "languages",
+            "section_label": "Languages",
+            "item_count": 1
+          },
+          {
+            "role": "work_experience",
+            "section_label": "Work Experience",
+            "item_count": 2
+          },
+          {
+            "role": "education",
+            "section_label": "Education",
+            "item_count": 1
+          },
+          {
+            "role": "certifications",
+            "section_label": "Certifications",
+            "item_count": 1
+          }
+        ],
+        "expected_mappings": {
+          "work_experience": {
+            "target_label": "EXPERIENCE & EMPLOYMENT HISTORY",
+            "action": "needs_review"
+          },
+          "skills": {
+            "target_label": "SKILLS",
+            "action": "map"
+          },
+          "education": {
+            "target_label": "EDUCATION",
+            "action": "map"
+          }
+        },
+        "preserved_sections": [
+          "contact",
+          "summary",
+          "languages",
+          "certifications"
+        ],
+        "expected_support_state": "ready_with_review",
+        "review_escalation": true,
+        "layout_class": "one_column"
+      },
+      "negative_conditions": [
+        "low-confidence mappings require review"
+      ],
+      "layout_class": "one_column",
+      "thresholds": {
+        "review_escalation_min": 1.0
+      },
+      "requires_manual_review": true
+    }
+  ]
+}

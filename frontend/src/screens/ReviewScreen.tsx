@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { LogoIcon, PencilIcon } from "../components/icons"
-import type { CandidateProfile, GenerateResponse, ProcessResponse, TargetFormatMetadata } from "../types"
+import type { ProcessResponse } from "../types"
 import "./ReviewScreen.css"
 
 // TODO: When API returns per-field confidence scores, set this to true.
@@ -14,7 +14,6 @@ type ReviewScreenProps = {
   resumeFile: File
   resumeFileName: string
   formatName: string
-  targetFormat: TargetFormatMetadata
   onBack: () => void
 }
 
@@ -27,20 +26,9 @@ type EditableFieldProps = {
   isHighlighted?: boolean
   multiline?: boolean
   className?: string
-  emptyLabel?: string
 }
 
-function EditableField({
-  value,
-  path,
-  edits,
-  onEdit,
-  isMissing,
-  isHighlighted,
-  multiline,
-  className,
-  emptyLabel,
-}: EditableFieldProps) {
+function EditableField({ value, path, edits, onEdit, isMissing, isHighlighted, multiline, className }: EditableFieldProps) {
   const { t } = useTranslation()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState("")
@@ -99,7 +87,7 @@ function EditableField({
     )
   }
 
-  if (isEmpty && (isMissing || emptyLabel)) {
+  if (isEmpty && isMissing) {
     return (
       <button
         type="button"
@@ -107,7 +95,7 @@ function EditableField({
         onClick={startEdit}
         data-review-field={path}
       >
-        <span className="empty-slot__badge">{emptyLabel ?? t("review.emptySlot")}</span>
+        <span className="empty-slot__badge">{t("review.emptySlot")}</span>
       </button>
     )
   }
@@ -129,45 +117,16 @@ function EditableField({
   )
 }
 
+function joinDefined(values: Array<string | null | undefined>, separator = " – "): string {
+  return values.filter((v): v is string => Boolean(v?.trim())).join(separator)
+}
+
 function pdfViewerUrl(url: string): string {
   return `${url}${url.includes("#") ? "&" : "#"}toolbar=0&navpanes=0&view=FitH`
 }
 
-function applyEditsToProfile(profile: CandidateProfile, edits: Record<string, string>): CandidateProfile {
-  const edited = structuredClone(profile)
-
-  for (const [path, value] of Object.entries(edits)) {
-    if (path === "skills") {
-      edited.skills = value.split(/[,\n]/).map((item) => item.trim()).filter(Boolean)
-      if (edited.client_display_rules.skills === "pending_confirmation") {
-        delete edited.client_display_rules.skills
-      }
-      continue
-    }
-    if (path === "current_title") {
-      if (edited.work_experience[0]) edited.work_experience[0].title = value || null
-      continue
-    }
-
-    const parts = path.split(".")
-    let cursor: unknown = edited
-    for (const part of parts.slice(0, -1)) {
-      if (cursor === null || typeof cursor !== "object") break
-      cursor = (cursor as Record<string, unknown>)[part]
-    }
-    if (cursor !== null && typeof cursor === "object") {
-      ;(cursor as Record<string, unknown>)[parts.at(-1)!] = value || null
-    }
-    if (edited.client_display_rules[parts[0]] === "pending_confirmation") {
-      delete edited.client_display_rules[parts[0]]
-    }
-  }
-
-  return edited
-}
-
-export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, targetFormat, onBack }: ReviewScreenProps) {
-  const { t } = useTranslation()
+export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onBack }: ReviewScreenProps) {
+  const { t, i18n } = useTranslation()
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [blindProfile, setBlindProfile] = useState(false)
   const [exportState, setExportState] = useState<"idle" | "confirm" | "generating" | "error">("idle")
@@ -180,8 +139,12 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   const [previewMode, setPreviewMode] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [previewState, setPreviewState] = useState<"idle" | "generating" | "error">("idle")
+  const [emailPopoverOpen, setEmailPopoverOpen] = useState(false)
+  const [emailDraft, setEmailDraft] = useState("")
+  const [emailState, setEmailState] = useState<"idle" | "loading" | "ready">("idle")
+  const [copied, setCopied] = useState(false)
+  const emailAreaRef = useRef<HTMLDivElement>(null)
   const { profile, ledger } = data
-  const isClassicBlueprint = targetFormat.matched_template_id === "client_10554236_v1"
 
   const missingNames = useMemo(
     () => new Set(profile.missing_fields.map((f) => f.field_name)),
@@ -202,6 +165,17 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [dropdownOpen])
 
+  useEffect(() => {
+    if (!emailPopoverOpen) return
+    function handleClickOutside(e: MouseEvent) {
+      if (emailAreaRef.current && !emailAreaRef.current.contains(e.target as Node)) {
+        setEmailPopoverOpen(false)
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside)
+    return () => document.removeEventListener("mousedown", handleClickOutside)
+  }, [emailPopoverOpen])
+
   const isPdf = /\.pdf$/i.test(resumeFile.name) || resumeFile.type === "application/pdf"
   const originalPreviewUrl = data.original_pdf_preview_url ?? (isPdf ? objectUrl : null)
   const originalPdfViewerUrl = originalPreviewUrl ? pdfViewerUrl(originalPreviewUrl) : null
@@ -216,8 +190,6 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
       else next[path] = value
       return next
     })
-    setPreviewUrl(null)
-    setPreviewMode(false)
   }
 
   function handleReviewChipClick() {
@@ -239,6 +211,31 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
     return !edited || !edited.trim()
   }).length
 
+  function applyEditsToProfile(p: typeof profile): typeof profile {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const copy = JSON.parse(JSON.stringify(p)) as any
+    for (const [path, value] of Object.entries(edits)) {
+      if (path === "skills") {
+        copy.skills = value.split(",").map((s: string) => s.trim()).filter(Boolean)
+        continue
+      }
+      const parts = path.split(".")
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let node: any = copy
+      for (let i = 0; i < parts.length - 1; i++) {
+        const key = parts[i]
+        node = node[isNaN(Number(key)) ? key : Number(key)]
+      }
+      const last = parts[parts.length - 1]
+      node[isNaN(Number(last)) ? last : Number(last)] = value
+      // Clear PENDING_CONFIRMATION so the backend uses the filled value instead of "To be confirmed"
+      if (copy.client_display_rules[parts[0]] === "pending_confirmation") {
+        delete copy.client_display_rules[parts[0]]
+      }
+    }
+    return copy as typeof profile
+  }
+
   async function doGenerate(format: "docx" | "pdf") {
     setDropdownOpen(false)
     setExportState("generating")
@@ -248,11 +245,10 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          profile: applyEditsToProfile(profile, edits),
+          profile: applyEditsToProfile(profile),
           blind_profile: blindProfile,
           artifact_id: data.artifact_id,
           original_text: data.original_text,
-          target_format: targetFormat,
         }),
       })
       if (!res.ok) {
@@ -260,7 +256,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         setTimeout(() => setExportState("idle"), 3500)
         return
       }
-      const result: GenerateResponse = await res.json()
+      const result = await res.json()
       const url: string = format === "docx" ? result.docx_download_url : result.pdf_download_url
       const a = document.createElement("a")
       a.href = url
@@ -294,11 +290,10 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          profile: applyEditsToProfile(profile, edits),
+          profile: applyEditsToProfile(profile),
           blind_profile: blindProfile,
           artifact_id: data.artifact_id,
           original_text: data.original_text,
-          target_format: targetFormat,
         }),
       })
       if (!res.ok) {
@@ -306,7 +301,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         setTimeout(() => setPreviewState("idle"), 3500)
         return
       }
-      const result: GenerateResponse = await res.json()
+      const result = await res.json()
       setPreviewUrl(result.pdf_preview_url)
       setPreviewMode(true)
       setPreviewState("idle")
@@ -316,11 +311,41 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
     }
   }
 
-  function ef(
-    path: string,
-    value: string | null,
-    opts: { multiline?: boolean; className?: string; emptyLabel?: string } = {},
-  ) {
+  async function handleEmailBtnClick() {
+    if (emailPopoverOpen) {
+      setEmailPopoverOpen(false)
+      return
+    }
+    setEmailPopoverOpen(true)
+    setEmailState("loading")
+    try {
+      const res = await fetch("/api/followup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile: applyEditsToProfile(profile),
+          language: i18n.language === "ko" ? "Korean" : "English",
+        }),
+      })
+      if (!res.ok) throw new Error("failed")
+      const result = await res.json()
+      setEmailDraft(result.followup_message)
+      setEmailState("ready")
+    } catch {
+      setEmailPopoverOpen(false)
+      setEmailState("idle")
+    }
+  }
+
+  async function handleCopyEmail() {
+    try {
+      await navigator.clipboard.writeText(emailDraft)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch { /* clipboard blocked — silent */ }
+  }
+
+  function ef(path: string, value: string | null, opts: { multiline?: boolean; className?: string } = {}) {
     return (
       <EditableField
         value={value}
@@ -331,10 +356,10 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         isHighlighted={path === highlightedField}
         multiline={opts.multiline}
         className={opts.className}
-        emptyLabel={opts.emptyLabel}
       />
     )
   }
+
 
   return (
     <div className="review-page">
@@ -489,13 +514,61 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
                 {t("review.chipPlaced", { count: ledger.placed })}
               </span>
               {remainingMissing > 0 ? (
-                <button
-                  type="button"
-                  className="rv-chip rv-chip--warning"
-                  onClick={handleReviewChipClick}
-                >
-                  {t("review.chipNeedsReview", { count: remainingMissing })}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="rv-chip rv-chip--warning"
+                    onClick={handleReviewChipClick}
+                  >
+                    {t("review.chipNeedsReview", { count: remainingMissing })}
+                  </button>
+                  <div className="rv-email-wrap" ref={emailAreaRef}>
+                    <button type="button" className="rv-email-btn" onClick={handleEmailBtnClick}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <rect x="2" y="4" width="20" height="16" rx="2"/>
+                        <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
+                      </svg>
+                      {t("review.emailDraftBtn")}
+                    </button>
+                    {emailPopoverOpen && (
+                      <div className="rv-email-popover">
+                        <div className="rv-email-popover__header">
+                          <span className="rv-email-popover__title">{t("review.emailPopoverTitle")}</span>
+                          <button type="button" className="rv-email-popover__close" onClick={() => setEmailPopoverOpen(false)}>×</button>
+                        </div>
+                        {(edits["email"] ?? profile.email) && (
+                          <div className="rv-email-popover__to">
+                            <span className="rv-email-popover__to-label">{t("review.emailTo")}</span>
+                            <span className="rv-email-popover__to-value">{edits["email"] ?? profile.email}</span>
+                          </div>
+                        )}
+                        {emailState === "loading" ? (
+                          <div className="rv-email-popover__loading">
+                            <span className="rv-spinner" aria-hidden="true" />
+                            {t("review.emailLoading")}
+                          </div>
+                        ) : (
+                          <textarea
+                            className="rv-email-popover__textarea"
+                            value={emailDraft}
+                            onChange={(e) => setEmailDraft(e.target.value)}
+                            rows={8}
+                          />
+                        )}
+                        <div className="rv-email-popover__actions">
+                          <button
+                            type="button"
+                            className={`rv-email-popover__copy-btn${copied ? " rv-email-popover__copy-btn--copied" : ""}`}
+                            disabled={emailState !== "ready"}
+                            onClick={handleCopyEmail}
+                          >
+                            {copied ? t("review.emailCopied") : t("review.emailCopy")}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
               ) : (
                 <span className="rv-chip rv-chip--all-reviewed">
                   {t("review.chipAllReviewed")}
@@ -509,9 +582,9 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
                 <p className="pane-fallback">{t("review.pdfFallback")}</p>
               </object>
             ) : (
-            <div className={`rdoc${isClassicBlueprint ? " rdoc--classic-10554236" : ""}`}>
+            <div className="rdoc">
               {/* Document title — static template chrome, matches DOCX level-0 heading */}
-              {!isClassicBlueprint && <div className="rdoc-doc-title">Candidate Profile</div>}
+              <div className="rdoc-doc-title">Candidate Profile</div>
 
               {/* Header — name + title subheading */}
               <div className={`rdoc-header${blindProfile ? " rdoc-header--blind" : ""}`}>
@@ -562,7 +635,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
 
               {/* Summary */}
               {(profile.professional_summary || missingNames.has("professional_summary")) && (
-                <div className="rdoc-section rdoc-section--summary">
+                <div className="rdoc-section">
                   <div className="rdoc-section__head">{t("review.sectionSummary")}</div>
                   <div className="rdoc-summary">
                     {ef("professional_summary", profile.professional_summary, { multiline: true })}
@@ -572,27 +645,17 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
 
               {/* Skills */}
               {(profile.skills.length > 0 || missingNames.has("skills")) && (
-                <div className="rdoc-section rdoc-section--skills">
-                  <div className="rdoc-section__head">
-                    {isClassicBlueprint ? t("review.sectionHighlights") : t("review.sectionSkills")}
+                <div className="rdoc-section">
+                  <div className="rdoc-section__head">{t("review.sectionSkills")}</div>
+                  <div className="rdoc-skills">
+                    {ef("skills", profile.skills.join(", ") || null, { multiline: false })}
                   </div>
-                  {isClassicBlueprint ? (
-                    <ul className="rdoc-classic-highlights">
-                      {profile.skills.map((skill, i) => (
-                        <li key={i}>{ef(`skills.${i}`, skill)}</li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <div className="rdoc-skills">
-                      {ef("skills", profile.skills.join(", ") || null, { multiline: false })}
-                    </div>
-                  )}
                 </div>
               )}
 
               {/* Languages */}
               {profile.languages.length > 0 && (
-                <div className="rdoc-section rdoc-section--languages">
+                <div className="rdoc-section">
                   <div className="rdoc-section__head">{t("review.sectionLanguages")}</div>
                   <div className="rdoc-skills">
                     {profile.languages.map((lang, i) => (
@@ -614,7 +677,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
 
               {/* Experience */}
               {profile.work_experience.length > 0 && (
-                <div className="rdoc-section rdoc-section--experience">
+                <div className="rdoc-section">
                   <div className="rdoc-section__head">{t("review.sectionExperience")}</div>
                   {profile.work_experience.map((entry, i) => (
                     <div key={i} className="rdoc-entry">
@@ -630,13 +693,10 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
                           {ef(`work_experience.${i}.title`, entry.title)}
                         </span>
                         <span className="rdoc-entry__dates">
-                          {ef(`work_experience.${i}.start_date`, entry.start_date, {
-                            emptyLabel: t("review.addStartDate"),
-                          })}
-                          <span className="rdoc-date-separator">{isClassicBlueprint ? " to " : " – "}</span>
-                          {ef(`work_experience.${i}.end_date`, entry.end_date, {
-                            emptyLabel: t("review.present"),
-                          })}
+                          {joinDefined([
+                            edits[`work_experience.${i}.start_date`] ?? entry.start_date,
+                            edits[`work_experience.${i}.end_date`] ?? entry.end_date ?? t("review.present"),
+                          ])}
                         </span>
                       </div>
                       {(edits[`work_experience.${i}.location`] ?? entry.location) && (
@@ -657,7 +717,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
 
               {/* Education */}
               {profile.education.length > 0 && (
-                <div className="rdoc-section rdoc-section--education">
+                <div className="rdoc-section">
                   <div className="rdoc-section__head">{t("review.sectionEducation")}</div>
                   {profile.education.map((entry, i) => (
                     <div key={i} className="rdoc-entry">
@@ -679,13 +739,10 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
                           </>
                         )}
                         <span className="rdoc-entry__dates">
-                          {ef(`education.${i}.start_date`, entry.start_date, {
-                            emptyLabel: t("review.addStartDate"),
-                          })}
-                          <span className="rdoc-date-separator">{isClassicBlueprint ? " to " : " – "}</span>
-                          {ef(`education.${i}.end_date`, entry.end_date, {
-                            emptyLabel: t("review.addEndDate"),
-                          })}
+                          {joinDefined([
+                            edits[`education.${i}.start_date`] ?? entry.start_date,
+                            edits[`education.${i}.end_date`] ?? entry.end_date,
+                          ])}
                         </span>
                       </div>
                     </div>
@@ -695,7 +752,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
 
               {/* Certifications */}
               {profile.certifications.length > 0 && (
-                <div className="rdoc-section rdoc-section--certifications">
+                <div className="rdoc-section">
                   <div className="rdoc-section__head">{t("review.sectionCertifications")}</div>
                   {profile.certifications.map((cert, i) => (
                     <div key={i} className="rdoc-entry">
@@ -721,7 +778,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
               )}
 
               {/* Additional Details — always rendered, all 4 fields with labels */}
-              <div className="rdoc-section rdoc-section--additional">
+              <div className="rdoc-section">
                 <div className="rdoc-section__head">{t("review.sectionAdditional")}</div>
                 <div className="rdoc-additional">
                   <div className="rdoc-detail-row">
@@ -749,6 +806,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
           </div>
         </div>
       </div>
+
     </div>
   )
 }

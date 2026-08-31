@@ -1,0 +1,37 @@
+Jordan Example
+jordan.example@example.test
++65 6000 0000
+Location: Singapore
+LinkedIn: https://www.linkedin.com/in/jordan-example
+Portfolio: https://github.com/jordan-example/portfolio
+
+PROFESSIONAL SUMMARY
+Backend engineer focused on reliable APIs and data platforms.
+
+SKILLS
+Python, FastAPI, PostgreSQL, Docker
+
+LANGUAGES
+English - Fluent
+Vietnamese - Conversational
+
+WORK EXPERIENCE
+Company: Synthetic Systems
+Title: Senior Backend Engineer
+Location: Singapore
+Start date: January 2022
+End date: Present
+- Built reliable internal APIs for recruiter workflows.
+- Reduced batch-processing failures through idempotent jobs.
+
+EDUCATION
+Institution: Example University
+Degree: Bachelor of Science
+Field of study: Computer Science
+End date: 2021
+
+CERTIFICATIONS
+Synthetic Cloud Practitioner | Example Institute | 2023
+
+Notice period: 30 days
+Work authorization: Singapore citizen
