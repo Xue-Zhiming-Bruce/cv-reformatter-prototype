@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 import httpx
 
 from app.extraction.candidate_document_analyzer import (
@@ -690,33 +690,38 @@ async def upload_target_format(
             suffix=suffix,
             contents=contents,
         )
+        _analysis_warning: str | None = None
         try:
             analyzed_style_spec = analyze_target_docx(
                 artifact_dir / target_format.stored_filename,
                 artifact_dir,
             )
-        except (TargetDocxAnalysisError, FileNotFoundError) as exc:
-            (artifact_dir / target_format.stored_filename).unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        target_format = target_format.model_copy(
-            update={
-                "used_as_template_source": True,
-                "analysis_status": "analyzed",
-                "style_spec_url": _artifact_url(
-                    resolved_artifact_id,
-                    LAYOUT_SPEC_FILENAME,
-                ),
-                "analysis_artifact_urls": {
-                    "layout_spec": _artifact_url(
+        except (TargetDocxAnalysisError, FileNotFoundError, ValidationError, ValueError) as exc:
+            _analysis_warning = str(exc)
+        if analyzed_style_spec is not None:
+            target_format = target_format.model_copy(
+                update={
+                    "used_as_template_source": True,
+                    "analysis_status": "analyzed",
+                    "style_spec_url": _artifact_url(
                         resolved_artifact_id,
                         LAYOUT_SPEC_FILENAME,
-                    )
-                },
-                "analysis_warnings": list(analyzed_style_spec.warnings),
-                "structure_contract": analyzed_style_spec.structure_contract,
-                "unsupported_features": list(analyzed_style_spec.unsupported_features),
-            }
-        )
+                    ),
+                    "analysis_artifact_urls": {
+                        "layout_spec": _artifact_url(
+                            resolved_artifact_id,
+                            LAYOUT_SPEC_FILENAME,
+                        )
+                    },
+                    "analysis_warnings": list(analyzed_style_spec.warnings),
+                    "structure_contract": analyzed_style_spec.structure_contract,
+                    "unsupported_features": list(analyzed_style_spec.unsupported_features),
+                }
+            )
+        elif _analysis_warning:
+            target_format = target_format.model_copy(
+                update={"analysis_status": "skipped", "analysis_warnings": [_analysis_warning]}
+            )
 
     metadata_path = artifact_dir / "target_format.json"
     _write_json(metadata_path, target_format.model_dump(mode="json"))
