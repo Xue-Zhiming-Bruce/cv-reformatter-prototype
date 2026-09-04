@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pypdf import PdfReader
-from pypdf.errors import PdfReadError
+import pdfplumber
+from pdfplumber.utils.exceptions import PdfminerException
 
 
 class UnsupportedPdfTypeError(ValueError):
@@ -23,9 +23,9 @@ def read_pdf_text(path: str | Path) -> str:
     file_path = _validate_pdf_file(path)
 
     try:
-        reader = PdfReader(file_path)
-        page_text = [page.extract_text() or "" for page in reader.pages]
-    except PdfReadError as exc:
+        with pdfplumber.open(file_path) as pdf:
+            page_text = [page.extract_text() or "" for page in pdf.pages]
+    except (PdfminerException, ValueError) as exc:
         raise CorruptedPdfError("The PDF file appears to be corrupted or invalid.") from exc
     except OSError as exc:
         raise CorruptedPdfError(f"The PDF file could not be read: {file_path}") from exc

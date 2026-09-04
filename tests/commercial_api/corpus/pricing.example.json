@@ -1,0 +1,45 @@
+{
+  "_comment": "Copy to pricing.json and fill rates only if you want estimated costs. Values here are placeholders, never production prices. Cost is optional and never affects gates.",
+  "pricing": {
+    "openai_extraction": {
+      "per_1k_input": 0.0,
+      "per_1k_output": 0.0,
+      "fixed_per_transaction": 0.0
+    },
+    "azure_layout": {
+      "per_1k_input": 0.0,
+      "per_1k_output": 0.0,
+      "fixed_per_transaction": 0.0
+    },
+    "adobe_layout": {
+      "per_1k_input": 0.0,
+      "per_1k_output": 0.0,
+      "fixed_per_transaction": 0.0
+    },
+    "adobe_render": {
+      "per_1k_input": 0.0,
+      "per_1k_output": 0.0,
+      "fixed_per_transaction": 0.0
+    },
+    "apryse_layout": {
+      "per_1k_input": 0.0,
+      "per_1k_output": 0.0,
+      "fixed_per_transaction": 0.0
+    },
+    "apryse_render": {
+      "per_1k_input": 0.0,
+      "per_1k_output": 0.0,
+      "fixed_per_transaction": 0.0
+    },
+    "aspose_render": {
+      "per_1k_input": 0.0,
+      "per_1k_output": 0.0,
+      "fixed_per_transaction": 0.0
+    },
+    "claude_designer": {
+      "per_1k_input": 0.0,
+      "per_1k_output": 0.0,
+      "fixed_per_transaction": 0.0
+    }
+  }
+}

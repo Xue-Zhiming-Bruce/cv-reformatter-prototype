@@ -9,12 +9,18 @@ __pycache__/
 .ruff_cache/
 .DS_Store
 *.egg-info/
+tmp/
+
+# Deprecated ad-hoc renderer output. New generated artifacts belong under
+# data/generated_outputs/ or a versioned tests/** run directory.
+output/
 
 # Local candidate data and generated artifacts may contain personal data.
 data/input_samples/*
 data/output_samples/*
 data/generated_outputs/*
 data/local/*
+data/design_cache/*
 !data/input_samples/.gitkeep
 !data/output_samples/.gitkeep
 !data/generated_outputs/.gitkeep
@@ -30,3 +36,7 @@ tests/local_datasets/*
 # Generated local test run reports.
 tests/test_results/*
 !tests/test_results/.gitkeep
+
+# Retained legacy commercial-provider secrets, licenses, and comparison evidence.
+tests/commercial_bakeoff/outputs/*
+tests/commercial_bakeoff/licenses/*

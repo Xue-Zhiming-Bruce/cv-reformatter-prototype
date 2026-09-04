@@ -214,7 +214,16 @@
     "chipExtracted": "Extracted {{count}}",
     "chipPlaced": "Placed {{count}}",
     "chipNeedsReview": "Needs review {{count}}",
-    "chipAllReviewed": "All reviewed ✓"
+    "chipAllReviewed": "All reviewed ✓",
+    "emailDraftBtn": "Draft email",
+    "emailCandidateBtn": "Email candidate",
+    "emailPopoverTitle": "Request missing details",
+    "emailTo": "To",
+    "emailNoAddress": "No email on file — copy the text instead",
+    "emailCopy": "Copy",
+    "emailCopied": "Copied",
+    "emailOpen": "Open in email app",
+    "emailLoading": "Drafting…"
   },
   "auth": {
     "loginTitle": "Welcome back",

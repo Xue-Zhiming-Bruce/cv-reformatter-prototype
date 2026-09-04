@@ -1,6 +1,14 @@
+import re
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.extraction.candidate_schema import CandidateProfile, DisplayRule
+from app.extraction.candidate_schema import (
+    CandidateProfile,
+    DisplayRule,
+    SectionType,
+    SourceSectionDisposition,
+)
 
 
 DEFAULT_TEMPLATE_NAME = "apex_standard"
@@ -32,18 +40,45 @@ class RenderDetail(RenderModel):
     value: str
 
 
+class RenderSkillGroup(RenderModel):
+    label: str
+    skills: list[str] = Field(min_length=1)
+
+
+class RenderContactItem(RenderModel):
+    field: Literal["email", "phone", "location", "linkedin_url", "portfolio_url"]
+    label: str
+    value: str
+
+
+class RenderAdditionalEntry(RenderModel):
+    title: str | None = None
+    links: list[str] = Field(default_factory=list)
+    description: list[str] = Field(default_factory=list)
+
+
+class RenderAdditionalSection(RenderModel):
+    heading: str
+    section_type: SectionType | None = None
+    entries: list[RenderAdditionalEntry] = Field(default_factory=list)
+    source_block_id: str
+
+
 class ClientFacingRenderContext(RenderModel):
     template_name: str = DEFAULT_TEMPLATE_NAME
     candidate_heading: str
     candidate_subheading: str | None = None
     contact_lines: list[str] = Field(default_factory=list)
+    contact_items: list[RenderContactItem] = Field(default_factory=list)
     professional_summary: str | None = None
     skills: list[str] = Field(default_factory=list)
+    skill_groups: list[RenderSkillGroup] = Field(default_factory=list)
     languages: list[str] = Field(default_factory=list)
     work_experience: list[RenderWorkExperience] = Field(default_factory=list)
     education: list[RenderEducation] = Field(default_factory=list)
     certifications: list[str] = Field(default_factory=list)
     additional_details: list[RenderDetail] = Field(default_factory=list)
+    additional_sections: list[RenderAdditionalSection] = Field(default_factory=list)
     blind_profile: bool = False
 
 
@@ -62,18 +97,54 @@ def build_client_render_context(
         ]
     )
 
+    skill_groups = [
+        RenderSkillGroup(label=group.label, skills=group.skills)
+        for group in profile.skill_groups
+    ]
+    grouped_skills = {
+        skill.casefold() for group in skill_groups for skill in group.skills
+    }
+
+    contact_items = _build_contact_items(profile, blind_profile=blind_profile)
     return ClientFacingRenderContext(
         template_name=template_name,
         candidate_heading=heading,
         candidate_subheading=subheading,
-        contact_lines=_build_contact_lines(profile, blind_profile=blind_profile),
+        contact_lines=[f"{item.label}: {item.value}" for item in contact_items],
+        contact_items=contact_items,
         professional_summary=_display_or_none(profile.professional_summary),
-        skills=[skill for skill in profile.skills if skill.strip()],
+        skills=[
+            skill
+            for skill in profile.skills
+            if skill.strip() and skill.casefold() not in grouped_skills
+        ],
+        skill_groups=skill_groups,
         languages=_build_language_lines(profile),
         work_experience=_build_work_experience(profile),
         education=_build_education(profile),
         certifications=_build_certifications(profile),
         additional_details=_build_additional_details(profile),
+        additional_sections=[
+            RenderAdditionalSection(
+                heading=section.source_heading,
+                section_type=section.section_type,
+                entries=[
+                    RenderAdditionalEntry(
+                        title=entry.title,
+                        links=[link for link in entry.links if link.strip()],
+                        description=[
+                            _display_list_item(item)
+                            for item in entry.description
+                            if item.strip()
+                        ],
+                    )
+                    for entry in section.entries
+                ],
+                source_block_id=section.source_block_id,
+            )
+            for section in profile.additional_sections
+            if section.disposition == SourceSectionDisposition.SHOW
+        ],
         blind_profile=blind_profile,
     )
 
@@ -82,23 +153,47 @@ def map_profile_to_template_context(profile: CandidateProfile) -> dict[str, obje
     return build_client_render_context(profile).model_dump(mode="json")
 
 
-def _build_contact_lines(profile: CandidateProfile, *, blind_profile: bool) -> list[str]:
-    contact_lines: list[str] = []
+def _build_contact_items(
+    profile: CandidateProfile,
+    *,
+    blind_profile: bool,
+) -> list[RenderContactItem]:
+    items: list[RenderContactItem] = []
     location = _field_display(profile, "location", profile.location)
     if location:
-        contact_lines.append(f"Location: {location}")
+        items.append(RenderContactItem(field="location", label="Location", value=location))
 
     if not blind_profile:
-        _append_labelled(contact_lines, "Email", _field_display(profile, "email", profile.email))
-        _append_labelled(contact_lines, "Phone", _field_display(profile, "phone", profile.phone))
-        _append_labelled(contact_lines, "LinkedIn", _field_display(profile, "linkedin_url", profile.linkedin_url))
-        _append_labelled(contact_lines, "Portfolio", _field_display(profile, "portfolio_url", profile.portfolio_url))
-        return contact_lines
+        for field, label, value in (
+            ("email", "Email", _field_display(profile, "email", profile.email)),
+            ("phone", "Phone", _field_display(profile, "phone", profile.phone)),
+            (
+                "linkedin_url",
+                "LinkedIn",
+                _field_display(profile, "linkedin_url", profile.linkedin_url),
+            ),
+            (
+                "portfolio_url",
+                "Portfolio",
+                _field_display(profile, "portfolio_url", profile.portfolio_url),
+            ),
+        ):
+            if value:
+                items.append(RenderContactItem(field=field, label=label, value=value))
+        return items
 
     portfolio_rule = profile.client_display_rules.get("portfolio_url")
     if portfolio_rule == DisplayRule.SHOW:
-        _append_labelled(contact_lines, "Portfolio", _field_display(profile, "portfolio_url", profile.portfolio_url))
-    return contact_lines
+        value = _field_display(profile, "portfolio_url", profile.portfolio_url)
+        if value:
+            items.append(
+                RenderContactItem(
+                    field="portfolio_url",
+                    label="Portfolio",
+                    value=value,
+                )
+            )
+    return items
 
 
 def _build_language_lines(profile: CandidateProfile) -> list[str]:
@@ -119,7 +214,11 @@ def _build_work_experience(profile: CandidateProfile) -> list[RenderWorkExperien
                 title=_display_or_none(experience.title),
                 location=_display_or_none(experience.location),
                 date_range=_join_display_values([experience.start_date, experience.end_date], separator=" - "),
-                description=[item for item in experience.description if item.strip()],
+                description=[
+                    _display_list_item(item)
+                    for item in experience.description
+                    if item.strip()
+                ],
             )
         )
     return entries
@@ -128,11 +227,15 @@ def _build_work_experience(profile: CandidateProfile) -> list[RenderWorkExperien
 def _build_education(profile: CandidateProfile) -> list[RenderEducation]:
     entries: list[RenderEducation] = []
     for education in profile.education:
+        degree = _display_or_none(education.degree)
+        field_of_study = _display_or_none(education.field_of_study)
+        if degree and field_of_study and field_of_study.casefold() in degree.casefold():
+            field_of_study = None
         entries.append(
             RenderEducation(
                 institution=_display_or_none(education.institution),
-                degree=_display_or_none(education.degree),
-                field_of_study=_display_or_none(education.field_of_study),
+                degree=degree,
+                field_of_study=field_of_study,
                 date_range=_join_display_values([education.start_date, education.end_date], separator=" - "),
             )
         )
@@ -157,6 +260,10 @@ def _build_additional_details(profile: CandidateProfile) -> list[RenderDetail]:
     ]
     details: list[RenderDetail] = []
     for label, field_name, value in fields:
+        # Missing-information workflow state is internal. It is not candidate
+        # content and must not become a client-facing placeholder row.
+        if _display_or_none(value) is None:
+            continue
         display_value = _field_display(profile, field_name, value)
         if display_value:
             details.append(RenderDetail(label=label, value=display_value))
@@ -181,10 +288,8 @@ def _display_or_none(value: object) -> str | None:
     return text or None
 
 
-def _append_labelled(lines: list[str], label: str, value: object) -> None:
-    display_value = _display_or_none(value)
-    if display_value:
-        lines.append(f"{label}: {display_value}")
+def _display_list_item(value: str) -> str:
+    return re.sub(r"^(?:[-*•▪◦]|\d+[.)])\s*", "", value.strip()).strip()
 
 
 def _join_display_values(values: list[object], *, separator: str = " | ") -> str | None:
