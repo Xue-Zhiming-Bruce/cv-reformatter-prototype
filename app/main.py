@@ -607,41 +607,29 @@ async def upload_target_format(
     artifact_dir = _prepare_artifact_dir(resolved_artifact_id, allow_existing=True)
     contents = await file.read()
     analyzed_style_spec: LayoutTemplateSpec | None = None
+    _analysis_warning: str | None = None
     if suffix == ".pdf":
+        _normalized = None
+        _evidence = None
+        _adobe_raw = None
         try:
             with tempfile.TemporaryDirectory() as temporary_dir:
                 temporary_pdf = Path(temporary_dir) / "target.pdf"
                 temporary_pdf.write_bytes(contents)
-                normalized, adobe_raw, _adobe_zip = run_adobe_layout(temporary_pdf)
-                # ADR 0002 amendment: Adobe outputs no text fill colors;
-                # color is measured locally from the same PDF (provenance
-                # local_pdf) before compilation. Blocks that stay colorless
-                # still fail the bridge closed.
-                normalized = enrich_colors_from_local_pdf(normalized, temporary_pdf)
-                normalized = enrich_badges_from_local_pdf(normalized, temporary_pdf)
-                normalized = enrich_rules_from_local_pdf(normalized, temporary_pdf)
-            evidence, measured_style_spec = build_design_evidence_from_normalized(
-                normalized,
+                _normalized, _adobe_raw, _adobe_zip = run_adobe_layout(temporary_pdf)
+                _normalized = enrich_colors_from_local_pdf(_normalized, temporary_pdf)
+                _normalized = enrich_badges_from_local_pdf(_normalized, temporary_pdf)
+                _normalized = enrich_rules_from_local_pdf(_normalized, temporary_pdf)
+            _evidence, measured_style_spec = build_design_evidence_from_normalized(
+                _normalized,
                 target_checksum=target_checksum_from_bytes(contents),
             )
             analyzed_style_spec = compile_measured_layout_template_spec(
-                evidence, measured_style_spec
+                _evidence, measured_style_spec
             )
-        except AdobeConfigurationError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail="Analysis service paused: Adobe PDF analysis is not configured.",
-            ) from exc
-        except (AdobeAdapterError, httpx.HTTPError, OSError) as exc:
-            raise HTTPException(
-                status_code=503,
-                detail="Analysis service unavailable due to a provider or network issue.",
-            ) from exc
-        except (CompileBridgeEvidenceError, DesignCompilerError, ValueError) as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"This target could not be measured: {exc}",
-            ) from exc
+        except (AdobeConfigurationError, AdobeAdapterError, httpx.HTTPError, OSError,
+                CompileBridgeEvidenceError, DesignCompilerError, ValueError) as exc:
+            _analysis_warning = str(exc)
 
         target_format = _store_target_format(
             artifact_id=resolved_artifact_id,
@@ -650,38 +638,31 @@ async def upload_target_format(
             suffix=suffix,
             contents=contents,
         )
-        _write_json(
-            artifact_dir / NORMALIZED_LAYOUT_FILENAME,
-            normalized.model_dump(mode="json"),
-        )
-        _write_json(
-            artifact_dir / TARGET_EVIDENCE_FILENAME,
-            evidence.model_dump(mode="json"),
-        )
-        _write_json(
-            artifact_dir / LAYOUT_SPEC_FILENAME,
-            analyzed_style_spec.model_dump(mode="json"),
-        )
-        _write_json(artifact_dir / ADOBE_RAW_FILENAME, adobe_raw)
-        target_format = target_format.model_copy(
-            update={
-                "used_as_template_source": True,
-                "analysis_status": "analyzed",
-                "style_spec_url": _artifact_url(
-                    resolved_artifact_id,
-                    LAYOUT_SPEC_FILENAME,
-                ),
-                "analysis_artifact_urls": {
-                    "normalized_layout": _artifact_url(resolved_artifact_id, NORMALIZED_LAYOUT_FILENAME),
-                    "target_evidence": _artifact_url(resolved_artifact_id, TARGET_EVIDENCE_FILENAME),
-                    "layout_spec": _artifact_url(resolved_artifact_id, LAYOUT_SPEC_FILENAME),
-                    "adobe_raw": _artifact_url(resolved_artifact_id, ADOBE_RAW_FILENAME),
-                },
-                "analysis_warnings": list(normalized.warnings),
-                "structure_contract": analyzed_style_spec.structure_contract,
-                "unsupported_features": list(analyzed_style_spec.unsupported_features),
-            }
-        )
+        if analyzed_style_spec is not None and _normalized is not None and _evidence is not None:
+            _write_json(artifact_dir / NORMALIZED_LAYOUT_FILENAME, _normalized.model_dump(mode="json"))
+            _write_json(artifact_dir / TARGET_EVIDENCE_FILENAME, _evidence.model_dump(mode="json"))
+            _write_json(artifact_dir / LAYOUT_SPEC_FILENAME, analyzed_style_spec.model_dump(mode="json"))
+            _write_json(artifact_dir / ADOBE_RAW_FILENAME, _adobe_raw)
+            target_format = target_format.model_copy(
+                update={
+                    "used_as_template_source": True,
+                    "analysis_status": "analyzed",
+                    "style_spec_url": _artifact_url(resolved_artifact_id, LAYOUT_SPEC_FILENAME),
+                    "analysis_artifact_urls": {
+                        "normalized_layout": _artifact_url(resolved_artifact_id, NORMALIZED_LAYOUT_FILENAME),
+                        "target_evidence": _artifact_url(resolved_artifact_id, TARGET_EVIDENCE_FILENAME),
+                        "layout_spec": _artifact_url(resolved_artifact_id, LAYOUT_SPEC_FILENAME),
+                        "adobe_raw": _artifact_url(resolved_artifact_id, ADOBE_RAW_FILENAME),
+                    },
+                    "analysis_warnings": list(_normalized.warnings),
+                    "structure_contract": analyzed_style_spec.structure_contract,
+                    "unsupported_features": list(analyzed_style_spec.unsupported_features),
+                }
+            )
+        elif _analysis_warning:
+            target_format = target_format.model_copy(
+                update={"analysis_status": "skipped", "analysis_warnings": [_analysis_warning]}
+            )
     else:
         target_format = _store_target_format(
             artifact_id=resolved_artifact_id,
