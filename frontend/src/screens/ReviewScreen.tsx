@@ -236,19 +236,35 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
     return copy as typeof profile
   }
 
+  async function approveProfile(): Promise<string | null> {
+    const approveRes = await fetch(`/api/artifacts/${data.artifact_id}/profiles/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: applyEditsToProfile(profile) }),
+    })
+    if (!approveRes.ok) return null
+    const approveData = await approveRes.json() as { profile_version_id: string }
+    return approveData.profile_version_id
+  }
+
   async function doGenerate(format: "docx" | "pdf") {
     setDropdownOpen(false)
     setExportState("generating")
     setPendingFormat(null)
     try {
+      const profileVersionId = await approveProfile()
+      if (!profileVersionId) {
+        setExportState("error")
+        setTimeout(() => setExportState("idle"), 3500)
+        return
+      }
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          profile: applyEditsToProfile(profile),
+          approved_profile_version_id: profileVersionId,
           blind_profile: blindProfile,
           artifact_id: data.artifact_id,
-          original_text: data.original_text,
         }),
       })
       if (!res.ok) {
@@ -286,14 +302,19 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
     setPreviewState("generating")
     setPreviewMode(false)
     try {
+      const profileVersionId = await approveProfile()
+      if (!profileVersionId) {
+        setPreviewState("error")
+        setTimeout(() => setPreviewState("idle"), 3500)
+        return
+      }
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          profile: applyEditsToProfile(profile),
+          approved_profile_version_id: profileVersionId,
           blind_profile: blindProfile,
           artifact_id: data.artifact_id,
-          original_text: data.original_text,
         }),
       })
       if (!res.ok) {
