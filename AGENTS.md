@@ -203,3 +203,26 @@ After implementation:
 3. Update the active roadmap only when progress or status materially changed.
 4. Update the product contract or an ADR only when the corresponding decision
    was explicitly approved.
+
+## Experiment Asset Versioning（2026-09-10 owner direction）
+
+All experiment source, tests, and governance documents under
+`tests/experiments/` are version-controlled. Concretely:
+
+- `tests/experiments/*.py`, `*.md` (proposal, handoff, ledger, reports)
+  are tracked in git; `tests/experiments/runs/` stays ignored
+  (generated artifacts), except key auditable reports which are
+  force-added individually;
+- the orchestrator/agent commits after every accepted milestone:
+  a green run, a closed gap, a doc revision, a source rebuild —
+  message format `c1: <what closed/changed> (run <id>)`;
+- runs evidence is summarized into tracked reports (acceptance
+  tables, failure reports); bulky binaries stay untracked but their
+  paths are recorded in the tracked reports;
+- font assets under `tests/experiments/assets/fonts/` are OFL and
+  tracked with their license text files;
+- agents must never write outside files explicitly named in their
+  work order, and must verify module/file identity before writing
+  (2026-09-11 file-overwrite incident: a_pipeline.py source was
+  lost and recovered only via bytecode + session logs — this
+  section exists so that never recurs).
