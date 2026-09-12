@@ -144,17 +144,22 @@ ul {{ margin: 0; padding-left: 18pt; line-height: {body_lh}pt; }}
     separator = spec.header.contact_separator or " | "
     if " " not in separator and separator:
         separator = f" {separator} "
-    contact = separator.join(_contact_values(context, spec))
+    contact_pairs = _contact_value_items(context, spec)
     parts = [
         "<!doctype html><html><head><meta charset=\"utf-8\">",
         "<meta name=\"generator\" content=\"CV Reformatter product HTML renderer\">",
         f"<style>{css}</style></head><body><main class=\"page\">",
-        f"<header class=\"header\"><h1 class=\"candidate-name\">{escape(context.candidate_heading)}</h1>",
+        f'<header class="header"><h1 class="candidate-name" data-field="full_name">{escape(context.candidate_heading)}</h1>',
     ]
     if spec.header.show_candidate_subheading and context.candidate_subheading:
-        parts.append(f"<p>{escape(context.candidate_subheading)}</p>")
-    if contact:
-        contact_p = f'<p class="{header_class}">{escape(contact)}</p>'
+        parts.append(f'<p data-field="current_title">{escape(context.candidate_subheading)}</p>')
+    if contact_pairs:
+        sep_html = escape(separator)
+        contact_html = sep_html.join(
+            f'<span data-field="{escape(field, quote=True)}">{escape(value)}</span>'
+            for field, value in contact_pairs
+        )
+        contact_p = f'<p class="{header_class}">{contact_html}</p>'
         if spec.decoration.header_rule and spec.decoration.header_rule_length_pt is not None:
             contact_p = f'<div class="header-rule-length">{contact_p}</div>'
         parts.append(contact_p)
@@ -208,7 +213,7 @@ def _section_body(
     source = section.source
     if source == "summary":
         return (
-            '<p class="summary-text">'
+            '<p class="summary-text" data-field="professional_summary">'
             f'{escape(context.professional_summary)}</p>'
             if context.professional_summary else ""
         )
@@ -277,12 +282,14 @@ def _section_body(
             if section.split_entry_rows:
                 rows = (
                     f'<p class="entry-row entry-primary" data-entry-row="primary" '
-                    f'style="{_text_css(title_style, include_family=False)}"><span>{escape(item.title or "")}</span>'
-                    f'<span style="{_text_css(metadata_style, include_family=False)}">'
+                    f'style="{_text_css(title_style, include_family=False)}">'
+                    f'<span data-field="work_experience.{index}.title">{escape(item.title or "")}</span>'
+                    f'<span data-field="work_experience.{index}.date_range" style="{_text_css(metadata_style, include_family=False)}">'
                     f'{escape(item.date_range or "")}</span></p>'
                     f'<p class="entry-row entry-secondary" data-entry-row="secondary" '
                     f'data-color="{secondary_style.color_hex}" style="{_text_css(secondary_style, include_family=False)}">'
-                    f'<span>{escape(item.company or "")}</span><span style="{_text_css(metadata_style, include_family=False)}">'
+                    f'<span data-field="work_experience.{index}.company">{escape(item.company or "")}</span>'
+                    f'<span data-field="work_experience.{index}.location" style="{_text_css(metadata_style, include_family=False)}">'
                     f'&#160;{escape(item.location or "")}</span></p>'
                 )
             else:
@@ -290,11 +297,11 @@ def _section_body(
                     f'<p class="entry-row entry-primary" data-entry-row="single" '
                     f'style="{_text_css(title_style, include_family=False)}"><span>'
                     f'{escape(" | ".join(filter(None, [item.title, item.company, item.location])))}</span>'
-                    f'<span>{escape(item.date_range or "")}</span></p>'
+                    f'<span data-field="work_experience.{index}.date_range">{escape(item.date_range or "")}</span></p>'
                 )
             entries.append(
                 f'<article class="entry work-entry" data-entry-index="{index}"{style}>{rows}'
-                f'{_bullets(item.description, "entry-description")}</article>'
+                f'{_bullets(item.description, "entry-description", f"work_experience.{index}.description")}</article>'
             )
         return "".join(entries)
     if source == "education":
@@ -302,7 +309,7 @@ def _section_body(
         primary_separator = _surrounded_separator(section.education_primary_separator)
         secondary_separator = _trailing_separator(section.education_secondary_separator)
         rows: list[str] = []
-        for item in context.education:
+        for edu_index, item in enumerate(context.education):
             study = secondary_separator.join(
                 filter(None, [item.degree, item.field_of_study])
             )
@@ -311,7 +318,7 @@ def _section_body(
             )
             rows.append(
                 f'<p class="education-entry" data-primary-separator="{escape(primary_separator, quote=True)}">'
-                f'<span class="education-institution" data-bold="true" style="{_text_css(institution_style, include_family=False)}">'
+                f'<span class="education-institution" data-bold="true" data-field="education.{edu_index}.institution" style="{_text_css(institution_style, include_family=False)}">'
                 f'{escape(item.institution or "")}</span>'
                 f'{escape(primary_separator + remainder) if remainder else ""}</p>'
             )
@@ -461,22 +468,21 @@ def _list(items: list[str], badge: BadgeStyle | None) -> str:
     return "".join(rows)
 
 
-def _bullets(items: list[str], class_name: str | None = None) -> str:
+def _bullets(items: list[str], class_name: str | None = None, data_field: str | None = None) -> str:
     class_attr = f' class="{class_name}"' if class_name else ""
-    return f"<ul{class_attr}>{''.join(f'<li>{escape(item)}</li>' for item in items)}</ul>" if items else ""
+    df_attr = f' data-field="{escape(data_field, quote=True)}"' if data_field else ""
+    return f"<ul{class_attr}{df_attr}>{''.join(f'<li>{escape(item)}</li>' for item in items)}</ul>" if items else ""
 
 
-def _contact_values(
+def _contact_value_items(
     context: ClientFacingRenderContext,
     spec: LayoutTemplateSpec,
     fields: list[str] | None = None,
-) -> list[str]:
+) -> list[tuple[str, str]]:
     requested = fields or spec.header.contact_fields or [item.field for item in context.contact_items]
     by_field = {item.field: item.value for item in context.contact_items}
     if by_field:
-        return [by_field[field] for field in requested if field in by_field]
-    # Fallback: parse contact_lines when contact_items is empty (e.g. synthetic
-    # layout-proof context supplies formatted lines but no structured items).
+        return [(field, by_field[field]) for field in requested if field in by_field]
     field_label_map = {"email": "Email", "phone": "Phone", "location": "Location",
                       "linkedin_url": "LinkedIn", "portfolio_url": "Portfolio"}
     parsed: dict[str, str] = {}
@@ -486,7 +492,15 @@ def _contact_values(
             for fld, lbl in field_label_map.items():
                 if label.strip().casefold() == lbl.casefold():
                     parsed[fld] = value.strip()
-    return [parsed[field] for field in requested if field in parsed]
+    return [(field, parsed[field]) for field in requested if field in parsed]
+
+
+def _contact_values(
+    context: ClientFacingRenderContext,
+    spec: LayoutTemplateSpec,
+    fields: list[str] | None = None,
+) -> list[str]:
+    return [v for _, v in _contact_value_items(context, spec, fields)]
 
 
 def _contact_items(

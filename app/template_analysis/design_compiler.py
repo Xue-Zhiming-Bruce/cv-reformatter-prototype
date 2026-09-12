@@ -107,37 +107,88 @@ def compile_layout_template_spec(
     return LayoutTemplateSpec.model_validate(payload)
 
 
+_DEFAULT_SECTION_ORDER: list[str] = [
+    "summary", "work_experience", "education", "skills",
+    "languages", "certifications", "additional_details",
+]
+
+
 def compile_measured_layout_template_spec(
     evidence: TargetLayoutEvidence,
     style_spec: TemplateStyleSpec,
 ) -> LayoutTemplateSpec:
-    """Compile the artifact-root template directly from measured structure."""
-    if evidence.header_structure is None or not evidence.section_structure:
-        raise DesignCompilerError(
-            "target evidence lacks measured header or section structure"
+    """Compile the artifact-root template directly from measured structure.
+
+    When section structure is not detected, falls back to limited_capability:
+    the measured visual style (fonts, colours, spacing) is applied but section
+    structure uses standard defaults. Structure contract is set to
+    ``limited_capability`` so callers can distinguish the two cases.
+    """
+    if evidence.header_structure is not None and evidence.section_structure:
+        proposal = DesignProposal(
+            proposal_id=f"measured-{evidence.target_checksum[:16]}",
+            layout_class=evidence.layout_class_hint,
+            confidence=1.0,
+            reason_codes=["measured_structure"],
+            warnings=["Artifact-root template compiled from measured target structure."],
         )
-    proposal = DesignProposal(
-        proposal_id=f"measured-{evidence.target_checksum[:16]}",
-        layout_class=evidence.layout_class_hint,
-        confidence=1.0,
-        reason_codes=["measured_structure"],
-        warnings=["Artifact-root template compiled from measured target structure."],
+        request = DesignRequest(
+            target_evidence_version=evidence.evidence_version,
+            target_checksum=evidence.target_checksum,
+            target_format=evidence.target_format,
+            layout_class_hint=evidence.layout_class_hint,
+            supported_style_roles=[role.role_id for role in evidence.style_roles],
+            measured_regions=evidence.regions,
+            measured_style_roles=evidence.style_roles,
+            evidence_warnings=evidence.warnings,
+            evidence_unsupported_features=evidence.unsupported_features,
+        )
+        compiled = compile_layout_template_spec(request, proposal, evidence, style_spec)
+        return compiled.model_copy(update={"structure_contract": "measured"})
+
+    # Visual data is available but structural detection failed: produce a
+    # limited_capability spec with default sections and measured visual style.
+    header = _compile_header(evidence)
+    # When header_structure is missing, _compile_header returns HeaderLayoutStyle()
+    # with contact_fields=None. The renderer then uses contact_items (empty for
+    # synthetic proofs) and renders nothing, causing a count mismatch against the
+    # validation's contact-fallback expectation. Explicitly set standard fields so
+    # the renderer can render contact lines and pass structural validation.
+    if not header.contact_fields:
+        header = HeaderLayoutStyle(
+            **{**header.model_dump(), "contact_fields": ["email", "phone", "location", "linkedin_url", "portfolio_url"]}
+        )
+    default_sections: list[SectionLayoutSpec] = []
+    for source in _DEFAULT_SECTION_ORDER:
+        default_sections.append(
+            SectionLayoutSpec(
+                section_id=f"default-{source}",
+                source=source,  # type: ignore[arg-type]
+                label=_default_label(source, style_spec),
+                layout=_default_layout(source, style_spec),
+                placement="full_width",
+                optional=True,
+            )
+        )
+    payload = style_spec.model_dump(exclude={"schema_version"})
+    payload.update(
+        {
+            "schema_version": "2.0",
+            "template_name": f"visual-only-{evidence.target_checksum[:16]}",
+            "template_version": "limited",
+            "structure_contract": "limited_capability",
+            "columns": evidence.columns.model_copy(deep=True, update={"count": 1}).model_dump(),
+            "sections": [s.model_dump() for s in default_sections],
+            "header": header.model_dump(),
+            "unsupported_features": ["section_structure_undetected"],
+            "warnings": [
+                *style_spec.warnings,
+                "Section structure was not detected from the target PDF; "
+                "standard section layout is used with measured visual style.",
+            ],
+        }
     )
-    request = DesignRequest(
-        target_evidence_version=evidence.evidence_version,
-        target_checksum=evidence.target_checksum,
-        target_format=evidence.target_format,
-        layout_class_hint=evidence.layout_class_hint,
-        supported_style_roles=[role.role_id for role in evidence.style_roles],
-        measured_regions=evidence.regions,
-        measured_style_roles=evidence.style_roles,
-        evidence_warnings=evidence.warnings,
-        evidence_unsupported_features=evidence.unsupported_features,
-    )
-    compiled = compile_layout_template_spec(
-        request, proposal, evidence, style_spec
-    )
-    return compiled.model_copy(update={"structure_contract": "measured"})
+    return LayoutTemplateSpec.model_validate(payload)
 
 
 def proposal_checksum(proposal: DesignProposal) -> str:

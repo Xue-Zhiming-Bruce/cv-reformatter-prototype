@@ -1192,7 +1192,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
             ) from exc
         if style_spec.structure_contract == "legacy" or (
             target_format.role == "pdf_reference"
-            and style_spec.structure_contract != "measured"
+            and style_spec.structure_contract not in {"measured", "limited_capability"}
         ):
             raise HTTPException(
                 status_code=409,
