@@ -83,8 +83,8 @@ rejection side by side without implying the observation was falsified.
 Saved under `tests/test_results/pytest/` (git-ignored):
 
 - `pytest tests/experiments/test_d_pipeline.py -m "not local_dataset"`
-  — 26 passed (includes the new reviewer-schema, reconciliation, and D0-R
-  regression tests; no Chrome/network).
+  — 30 passed (includes the reviewer-schema, reconciliation, D0-R regression,
+  and the focused three-outcome resolution tests; no Chrome/network).
 - `pytest tests/experiments/test_d_pipeline.py -m "local_dataset"` —
   1 passed, 1 skipped (real-Chrome fixture end-to-end; the
   `D_PIPELINE_BASE_RUN`-gated local-artifact test skips in a clean checkout).
@@ -126,3 +126,35 @@ Saved under `tests/test_results/pytest/` (git-ignored):
   empty default review, and by the example run
   `tests/experiments/runs/d1_0_fixture_example/` (real Chrome renders,
   offline agents, one D0-R-shaped finding) — not by a live vision run.
+
+## 9. Corrective pass (same day, owner review feedback)
+
+1. **Deterministic hypothesis resolution split explicitly.** `resolve_finding`
+   no longer collapses every failed combined check into `confirmed`:
+   - `unresolved` — canonical node unresolvable, `HeadingRuleFact` missing,
+     target design missing, or the required heading-to-rule gap not measured;
+   - `rejected` — sufficient measurements exist, the rule is below the
+     heading, and the gap is within the §10 tolerance;
+   - `confirmed` — sufficient measurements exist AND placement or gap
+     measurably contradicts the target (a measured `above` placement alone
+     suffices; a `below` placement without a measured gap stays `unresolved`).
+   Deterministic confirmation without sufficient measurement evidence is no
+   longer possible. Focused tests cover all three outcomes
+   (`test_resolution_unresolved_when_measurement_evidence_missing`,
+   `test_resolution_rejected_requires_sufficient_measurements`,
+   `test_resolution_confirmed_requires_contradicting_measurements`).
+2. **Epistemic wording.** The owner Markdown now says observations are
+   "reviewer-reported visual observations, preserved verbatim; they are not
+   asserted to be true" instead of "retained visual facts".
+3. **Unresolved claimed locations preserved.** A non-canonical claimed
+   `node_id` is displayed explicitly as ``claimed node `X` (unresolved)`` in
+   the owner table instead of `region: None`; follow-up stays
+   `inspect_region` (`test_owner_report_preserves_unresolved_claimed_location`).
+4. **Run identity.** The manifest records `pipeline_phase: "d1_0"` and the
+   generated run report title now reads "Pipeline D1-0 run (review contract
+   d1-review/1)". The shared D0 runner itself is unchanged.
+
+Verification after the correction: focused resolution tests 4 passed; all
+offline `test_d_pipeline` tests 30 passed; local synthetic Chrome test 1
+passed (1 gated skip); test-structure contract tests 6 passed;
+`git diff --check` clean.

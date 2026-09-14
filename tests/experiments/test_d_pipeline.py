@@ -240,6 +240,95 @@ def test_reviewer_location_resolver_maps_canonical_node_only(tmp_path) -> None:
     assert d._resolve_location_node(store, invented.location) is None
 
 
+# --- deterministic hypothesis resolution (three explicit outcomes) --------------
+
+
+def _measured_fact(**overrides: Any) -> d.HeadingRuleFact:
+    base: dict[str, Any] = {
+        "node_id": "section.skills.heading",
+        "heading_verbatim": "Skills",
+        "page": 1,
+        "placement": "below",
+        "gap_heading_to_rule_pt": 1.742,
+        "gap_rule_to_content_pt": 10.463,
+    }
+    base.update(overrides)
+    return d.HeadingRuleFact(**base)
+
+
+def _design() -> d.TargetRuleDesign:
+    return d.TargetRuleDesign(
+        placement="below", gap_heading_to_rule_pt=1.742, gap_rule_to_content_pt=10.463
+    )
+
+
+def test_resolution_unresolved_when_measurement_evidence_missing(tmp_path) -> None:
+    """A canonical node with missing fact, missing target design, or missing
+    required gap stays UNRESOLVED — it must never be reported as confirmed."""
+    finding = _finding()
+    store = _offline_store(tmp_path)
+    # no HeadingRuleFact for the node
+    entry = d.resolve_finding(store, "review.finding.1", finding)
+    assert entry.resolution.hypothesis_status == "unresolved"
+    assert entry.resolution.follow_up == "inspect_region"
+    assert "no measured heading-rule fact" in entry.resolution.reason
+    # fact present, target design missing
+    store.active_facts = [_measured_fact()]
+    entry = d.resolve_finding(store, "review.finding.2", finding)
+    assert entry.resolution.hypothesis_status == "unresolved"
+    assert "target design measurement is unavailable" in entry.resolution.reason
+    # fact + design present, required gap not measured
+    store.target_design = _design()
+    store.active_facts = [_measured_fact(gap_heading_to_rule_pt=None)]
+    entry = d.resolve_finding(store, "review.finding.3", finding)
+    assert entry.resolution.hypothesis_status == "unresolved"
+    assert "gap was not measured" in entry.resolution.reason
+
+
+def test_resolution_rejected_requires_sufficient_measurements(tmp_path) -> None:
+    """Rejected only when measurements exist, the rule is below the heading,
+    and the measured gap is within tolerance."""
+    store = _offline_store(tmp_path)
+    store.active_facts = [_measured_fact()]
+    store.target_design = _design()
+    entry = d.resolve_finding(store, "review.finding.1", _finding())
+    assert entry.resolution.hypothesis_status == "rejected"
+    assert entry.resolution.observation_status == "recorded"
+    assert entry.resolution.follow_up == "inspect_region"
+
+
+def test_resolution_confirmed_requires_contradicting_measurements(tmp_path) -> None:
+    """Confirmed only when sufficient measurements exist AND placement or gap
+    measurably contradicts the target design."""
+    store = _offline_store(tmp_path)
+    store.target_design = _design()
+    # placement contradiction (rule above the heading)
+    store.active_facts = [
+        _measured_fact(placement="above", gap_heading_to_rule_pt=None, gap_rule_above_pt=4.078)
+    ]
+    entry = d.resolve_finding(store, "review.finding.1", _finding())
+    assert entry.resolution.hypothesis_status == "confirmed"
+    # gap contradiction (below but outside tolerance)
+    store.active_facts = [_measured_fact(gap_heading_to_rule_pt=9.9)]
+    entry = d.resolve_finding(store, "review.finding.2", _finding())
+    assert entry.resolution.hypothesis_status == "confirmed"
+    assert "Sufficient measurements exist" in entry.resolution.reason
+
+
+def test_owner_report_preserves_unresolved_claimed_location(tmp_path) -> None:
+    """A non-canonical claimed node_id must be displayed explicitly in the
+    owner report — never rendered as `region: None` — with follow_up kept."""
+    finding = _finding(location={"page": 1, "node_id": "generated:section_rules"})
+    entry = d.resolve_finding(_offline_store(tmp_path), "review.finding.1", finding)
+    assert entry.resolution.follow_up == "inspect_region"
+    md_dir = tmp_path / "md"
+    md_dir.mkdir()
+    d._write_owner_review(md_dir, 1, [entry], "")
+    md = (md_dir / "review_owner_attempt_1.md").read_text(encoding="utf-8")
+    assert "claimed node `generated:section_rules` (unresolved)" in md
+    assert "region: None" not in md
+
+
 # --- full state machine, offline routing (monkeypatched deterministic layer) -----
 
 
@@ -619,6 +708,7 @@ def test_d0_r_regression_observation_survives_rejected_hypothesis(
     assert manifest["active_layout_version_id"] == "layout_v1"
     assert manifest["pending_candidate_id"] == "layout_v2_candidate"
     assert manifest["review_contract"] == d.REVIEW_CONTRACT_VERSION
+    assert manifest["pipeline_phase"] == "d1_0"
 
     resolved = json.loads((run_dir / "review_attempt_1.json").read_text())
     assert resolved["review_contract"] == d.REVIEW_CONTRACT_VERSION
@@ -641,6 +731,8 @@ def test_d0_r_regression_observation_survives_rejected_hypothesis(
     assert observation in md
     assert "**rejected**" in md
     assert "inspect_region" in md
+    assert "reviewer-reported visual observations" in md  # epistemic wording
+    assert "retained visual facts" not in md
     assert "never deletes, suppresses, or" in md  # observation not marked false
     for column in (
         "Location",
@@ -661,6 +753,9 @@ def test_d0_r_regression_observation_survives_rejected_hypothesis(
     assert raw_trace["output_artifact"]
     trace_raw = json.loads((run_dir / raw_trace["output_artifact"]).read_text())
     assert trace_raw["findings"][0]["observation"] == observation
+
+    report_text = (run_dir / "REPORT.md").read_text(encoding="utf-8")
+    assert report_text.startswith("# Pipeline D1-0 run")
 
 
 def test_reviewer_infrastructure_failure_blocks_progress(offline_state_machine, tmp_path) -> None:

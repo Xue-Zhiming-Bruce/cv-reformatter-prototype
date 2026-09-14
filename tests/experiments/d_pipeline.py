@@ -1347,6 +1347,7 @@ class EvidenceStore:
         self.next_finding_seq = 1  # shell-assigned run-scoped finding ids
         self.manifest: dict[str, Any] = {
             "experiment": "d_pipeline_d0",
+            "pipeline_phase": "d1_0",
             "base_run_dir": str(base_run_dir),
             "base_html_sha256": _sha256_file(base_run_dir / "filled.html"),
             "versions": [],
@@ -1852,18 +1853,55 @@ def resolve_finding(
         )
     fact = store.facts_for(node)
     design = store.target_design
-    measured = (
-        fact is not None
-        and fact.placement == "below"
-        and fact.gap_heading_to_rule_pt is not None
-        and design is not None
-        and abs(fact.gap_heading_to_rule_pt - design.gap_heading_to_rule_pt)
-        <= GAP_TOLERANCE_PT
-    )
     evidence_ids = list(fact.evidence_ids) if fact else []
     evidence_ids.append(f"measure.{node}.heading_rule_gap")
-    if measured:
-        assert fact is not None and design is not None
+
+    def _unresolved(missing: str) -> ResolvedFinding:
+        return ResolvedFinding(
+            finding_id=finding_id,
+            finding=finding,
+            resolved_node_id=node,
+            resolution=FindingResolution(
+                finding_id=finding_id,
+                hypothesis_status="unresolved",
+                reason=(
+                    f"The claim cannot be checked: {missing}. The observation "
+                    "is retained for later region inspection."
+                ),
+                evidence_ids=evidence_ids,
+                follow_up="inspect_region",
+            ),
+        )
+
+    if fact is None:
+        return _unresolved("no measured heading-rule fact exists for this node")
+    if design is None:
+        return _unresolved("the target design measurement is unavailable")
+    if fact.placement != "below":
+        # placement alone is a sufficient measurement that contradicts the
+        # target's rule-below design; no gap is needed to decide.
+        return ResolvedFinding(
+            finding_id=finding_id,
+            finding=finding,
+            resolved_node_id=node,
+            resolution=FindingResolution(
+                finding_id=finding_id,
+                hypothesis_status="confirmed",
+                reason=(
+                    f"Sufficient measurements exist and contradict the target "
+                    f"for {node}: the section rule placement is "
+                    f"{fact.placement!r} but the target design is "
+                    f"{design.placement!r}; the repaired-defect claim stands. "
+                    "The observation is retained."
+                ),
+                evidence_ids=evidence_ids,
+                follow_up="owner_review",
+            ),
+        )
+    gap = fact.gap_heading_to_rule_pt
+    if gap is None:
+        return _unresolved("the heading-to-rule gap was not measured")
+    if abs(gap - design.gap_heading_to_rule_pt) <= GAP_TOLERANCE_PT:
         return ResolvedFinding(
             finding_id=finding_id,
             finding=finding,
@@ -1873,7 +1911,7 @@ def resolve_finding(
                 hypothesis_status="rejected",
                 reason=(
                     f"Measured geometry refutes the hypothesis: the {node} section "
-                    f"rule sits below the heading ({fact.gap_heading_to_rule_pt:.3f}pt "
+                    f"rule sits below the heading ({gap:.3f}pt "
                     f"vs target {design.gap_heading_to_rule_pt:.3f}pt, tolerance "
                     f"{GAP_TOLERANCE_PT}pt). The visible lines may belong to another "
                     "owner (e.g. the header); the observation itself remains recorded."
@@ -1890,8 +1928,11 @@ def resolve_finding(
             finding_id=finding_id,
             hypothesis_status="confirmed",
             reason=(
-                f"Measured geometry for {node} still contradicts the target "
-                "design; the repaired-defect claim stands. The observation is retained."
+                f"Sufficient measurements exist and contradict the target for "
+                f"{node}: the section rule gap is {gap:.3f}pt vs target "
+                f"{design.gap_heading_to_rule_pt:.3f}pt (tolerance "
+                f"{GAP_TOLERANCE_PT}pt); the repaired-defect claim stands. "
+                "The observation is retained."
             ),
             evidence_ids=evidence_ids,
             follow_up="owner_review",
@@ -2012,7 +2053,8 @@ def _write_owner_review(
         f"# Visual review — attempt {attempt} ({out_dir.name})",
         "",
         f"Review contract: `{REVIEW_CONTRACT_VERSION}`. Observations below are "
-        "retained visual facts. The deterministic resolution judges only the "
+        "reviewer-reported visual observations, preserved verbatim; they are "
+        "not asserted to be true. The deterministic resolution judges only the "
         "reviewer's structural hypothesis — it never deletes, suppresses, or "
         "marks the observation itself as false. The reviewer is advisory; "
         "visual acceptance stays with the owner.",
@@ -2023,11 +2065,12 @@ def _write_owner_review(
     for entry in resolved:
         finding = entry.finding
         location = f"page {finding.location.page}; "
-        location += (
-            f"node `{entry.resolved_node_id}`"
-            if entry.resolved_node_id
-            else f"region: {finding.location.unresolved_region}"
-        )
+        if entry.resolved_node_id:
+            location += f"node `{entry.resolved_node_id}`"
+        elif finding.location.node_id:
+            location += f"claimed node `{finding.location.node_id}` (unresolved)"
+        else:
+            location += f"region: {finding.location.unresolved_region}"
         if finding.location.bbox is not None:
             location += "; bbox [" + ", ".join(f"{v:.1f}" for v in finding.location.bbox) + "]"
         hypothesis = (
@@ -2093,7 +2136,7 @@ def _finish(
     if report is not None:
         checks = "\n".join(f"- {'PASS' if c.passed else 'FAIL'} `{c.name}`" for c in report.checks)
     (out_dir / "REPORT.md").write_text(
-        f"""# Pipeline D0 run — {out_dir.name}
+        f"""# Pipeline D1-0 run (review contract {REVIEW_CONTRACT_VERSION}) — {out_dir.name}
 
 - Terminal state: **{terminal}**
 - Active layout version: `{store.manifest['active_layout_version_id']}`
