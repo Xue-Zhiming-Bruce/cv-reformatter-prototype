@@ -29,6 +29,13 @@ dependencies = [
 dev = [
     "pytest>=8.2.0",
 ]
+# Experiment-only (tests/experiments/d_pipeline.py). Never a product runtime
+# dependency. pydantic-ai-slim 2.43 requires the OpenAI SDK >= 3, which
+# supersedes the base `openai>=2.44.0` pin when this extra is installed.
+experiments = [
+    "pydantic-ai-slim[openai]>=2.43.0,<3.0",
+    "openai>=3.13.0,<4.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -58,6 +58,7 @@ usage, scoring, manifests, and reporting stay under `tests/commercial_api/`.
 | Explicit live smoke tests | pytest tests under `tests/live/` with `live_provider` marker and opt-in | synthetic or authorized input | `tests/test_results/pytest/` terminal log |
 | Commercial provider comparison | `python -m tests.commercial_api.cli` | committed synthetic corpus or authorized local Resume A-F targets | `tests/test_results/commercial_api/<run_id>/` |
 | Resume transformation matrix | `scripts/run_abc_live_matrix.py` (API-driven; supersedes the retired `run_block_aware_matrix.py` offline runner) | authorized `tests/local_datasets/resume_matrix/` inputs | versioned matrix run defined by `TEST_RESULT_FORMAT.md`; run reports under `data/generated_outputs/abc_live_matrix/` |
+| Pipeline D0 agent-repair experiment (owner-authorized `tests/experiments/` path) | `python -m tests.experiments.d_pipeline (--fixture-out DIR | --base-run DIR) [--live]` | deterministic synthetic fixture built at runtime from committed builder source (`build_synthetic_fixture`); no corpus | `tests/experiments/runs/d_pipeline_d0_<ts>/`; stops at `awaiting_owner_review` — promotion/rejection is an explicit owner CLI decision (`--decide`); live runs use the declared `experiments` dependency extra and the 5-request run budget |
 
 There may be only one current workflow for each responsibility. Retained
 historical result directories may be consumed by an explicit compatibility

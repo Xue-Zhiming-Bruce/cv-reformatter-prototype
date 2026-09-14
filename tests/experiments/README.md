@@ -44,20 +44,44 @@ repair fingerprint.
 ## D-pipeline experiment (D0)
 
 `d_pipeline.py` is the bounded agent-directed repair experiment
-(`D_PIPELINE_PROPOSAL.md` §11; report in `D0_EXPERIMENT_REPORT.md`): a
-deterministic outer state machine with a PydanticAI main agent at explicit
-checkpoints and three fixed specialist roles, repairing one known C1 matrix
-defect (`section_heading_rule_placement_mismatch`, committed E→D evidence)
-via a single typed `SetHeadingRule` edit. PydanticAI is an experiment-only
-dependency (`pydantic-ai-slim[openai]`); it is not in `pyproject.toml`.
-
-Run one pair (offline scripted agents, real Chrome renders, no API):
+(`D_PIPELINE_PROPOSAL.md` §11; corrective report in
+`D0_EXPERIMENT_REPORT.md`): a deterministic outer state machine with a
+PydanticAI main agent at explicit checkpoints and three fixed specialist
+roles, repairing one known rule-placement defect via a single typed
+`SetHeadingRule` edit. Machine-gated candidates are held INACTIVE at
+`awaiting_owner_review`; only the deterministic owner CLI promotes:
 
 ```bash
-.venv/bin/python -m tests.experiments.d_pipeline \
-  --base-run tests/experiments/runs/c1_matrix_ED_B_20260911T044203Z
+.venv/bin/python -m tests.experiments.d_pipeline --decide RUN_DIR --decision accept|reject
 ```
 
-Live agents add `--live`. Tests: `tests/experiments/test_d_pipeline.py`
-(default lane is self-contained; `local_dataset`-marked tests need the
-committed E→D run artifacts and local Chrome).
+Dependency (experiment-only, never a product runtime dependency):
+
+```bash
+.venv/bin/pip install -e ".[experiments]"
+```
+
+This installs `pydantic-ai-slim[openai]>=2.43,<3` and therefore upgrades the
+OpenAI SDK from the base `openai>=2.44` pin to `openai>=3.13` (recorded
+side effect; the full offline suite passes with it).
+
+Run (clean checkout, no credentials, real Chrome renders):
+
+```bash
+.venv/bin/python -m tests.experiments.d_pipeline --fixture-out /tmp/d0-fixture
+```
+
+`--base-run` accepts an existing C1 run dir (e.g. the workspace-local
+`tests/experiments/runs/c1_matrix_ED_B_20260911T044203Z`, which is git-ignored
+local evidence, not committed). `--live` adds live DeepSeek-compatible agents
+within the 5-request run budget.
+
+Tests (`tests/experiments/test_d_pipeline.py`):
+
+- default lane (self-contained; no Chrome, no network, no credentials):
+  `pytest tests/experiments/test_d_pipeline.py -m "not local_dataset"`;
+- `local_dataset` lane (needs local headless Chrome; builds the synthetic
+  fixture at runtime, no ignored artifacts, no provider):
+  `pytest tests/experiments/test_d_pipeline.py -m local_dataset`;
+  one extra test re-measures workspace-local E→D artifacts and runs only
+  when `D_PIPELINE_BASE_RUN` is set.
