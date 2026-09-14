@@ -1,6 +1,6 @@
 # Pipeline D: Agentic Document Workflow Proposal
 
-Status: `Proposed`
+Status: `Proposed — D0 accepted; D1 reviewer-contract design ready for implementation`
 
 Date: September 14, 2026
 
@@ -318,24 +318,91 @@ HTML or CSS.
 
 ### 6.4 Visual Reviewer
 
-The visual reviewer is a defect detector, not an acceptance authority. It
-compares the target and candidate render and returns localized hypotheses:
+The visual reviewer is an observation source, not an acceptance authority and
+not a geometry oracle. It compares the target and candidate render and must
+separate what it visibly observes from what it thinks caused the difference.
+Its output must not collapse observation, structural attribution, and verdict
+into one `problem` string.
+
+The reviewer returns an observation-first record:
 
 ```json
 {
-  "node_id": "section.experience.heading",
-  "problem": "heading_rule_position_mismatch",
+  "finding_id": "review.finding.7",
+  "observation": "Two horizontal lines are visible above the EXPERIENCE heading in the generated page.",
+  "location": {
+    "page": 1,
+    "bbox": [46, 220, 548, 246],
+    "node_id": "section.experience.heading",
+    "unresolved_region": null
+  },
+  "comparison": {
+    "target": "No equivalent double line is visible in the same heading region.",
+    "generated": "Two full-width lines appear immediately above EXPERIENCE."
+  },
+  "hypothesis": {
+    "kind": "repaired_defect_persists",
+    "suspected_owner": "section_rule",
+    "explanation": "The lines may belong to the section heading rule."
+  },
   "severity": "medium",
-  "confidence": 0.82,
-  "region": {"page": 1, "bbox": [46, 220, 548, 246]}
+  "confidence": 0.6
 }
 ```
 
-Deterministic measurements confirm or reject measurable findings. The product
-owner remains the final judge of visual quality.
+`observation` and `comparison` describe visible evidence. `hypothesis` is only
+a proposed structural interpretation. A stable `node_id` is preferred, but a
+reviewer that cannot resolve the node must return an explicit region instead
+of inventing an identity.
+
+Deterministic tools resolve the hypothesis in a separate record:
+
+```json
+{
+  "finding_id": "review.finding.7",
+  "observation_status": "recorded",
+  "hypothesis_status": "rejected",
+  "reason": "The measured section rule is below the heading within tolerance; the visible lines may belong to the header.",
+  "evidence_ids": ["measure.section.experience.rule", "render.region.p1.220.246"],
+  "follow_up": "inspect_region"
+}
+```
+
+Allowed `hypothesis_status` values are `confirmed`, `rejected`, `unresolved`,
+and `not_tested`. Rejecting a hypothesis must never delete or label the raw
+observation as false. The observation may still identify a different defect,
+as when a line is real but belongs to the header rather than the section.
+
+The owner-facing review artifact and eventual interface must show, side by
+side:
+
+```text
+visible observation
+target-versus-generated comparison
+reviewer hypothesis and confidence
+deterministic resolution and evidence
+recommended follow-up
+```
+
+Deterministic measurements confirm or reject only measurable hypotheses. The
+product owner remains the final judge of visual quality.
 
 The reviewer should be independent of the repair agent's reasoning trace. An
 agent must not approve its own change merely because the rendered file exists.
+
+#### D0-R evidence motivating this contract
+
+The real E→D D0-R run repaired all three measured section-rule placements, but
+the live visual reviewer reported all three as still broken. For EXPERIENCE,
+the page did contain separate header lines above the heading; the reviewer saw
+a real visual feature but assigned it to the wrong structural owner. The D0
+resolver correctly rejected the `section_rule` hypothesis, yet its single
+`falsified` verdict made the useful observation look false as well.
+
+This is positive evidence for keeping the reviewer, but negative evidence for
+using it as a judge. D1 must preserve the observation, reject only the bad
+hypothesis, and permit a later investigator to remap the same observation to a
+different node or defect class.
 
 ## 7. C1 and C2 as Callable Capabilities
 
@@ -468,11 +535,48 @@ sub-agents.
 
 ### D1: connect recruiter chat editing
 
-- Add stable node selection in the interface.
-- Translate a recruiter instruction into a typed `EditAction`.
+D1 is split into bounded increments. Do not add new edit actions merely to make
+the first increment look more general.
+
+#### D1-0: observation-first review contract
+
+- Replace the overloaded reviewer `problem`/`verdict` representation with the
+  observation, comparison, hypothesis, and resolution records defined in
+  §6.4.
+- Preserve every raw reviewer observation in the run artifact and trace.
+- Resolve node ownership and measurable hypotheses deterministically where a
+  verifier exists.
+- A rejected hypothesis may trigger `inspect_region`; it must not erase the
+  observation or silently convert the run into a visual pass.
+- Generate an owner-readable review table containing all five fields listed in
+  §6.4, rather than reporting only a verdict.
+- Add a regression case based on the D0-R distinction between a real header
+  line observation and an incorrect `section_rule` attribution.
+- Keep the D0 model/tool budgets, inactive candidate behavior, and explicit
+  owner accept/reject boundary.
+
+D1-0 succeeds when the same visible observation survives an incorrect
+hypothesis and remains available for a later tool call or owner decision. It
+does not need to repair the newly discovered defect.
+
+#### D1-1: recruiter instruction to typed edit
+
+- Add stable node selection in the interface-facing contract.
+- Translate a recruiter instruction plus selected node/region into an existing
+  typed `EditAction`.
 - Produce a candidate preview without changing the accepted version.
 - Support explicit accept/reject and bounded automatic review.
-- Record agent decisions and tool calls in the artifact manifest.
+- Record the instruction, agent decisions, and tool calls in the artifact
+  manifest.
+
+#### D1-2: measured vocabulary expansion
+
+- Add one new `EditAction` only after a real reviewed defect requires it and a
+  deterministic verifier can judge it.
+- Prefer the D0-R double-header-rule observation as the first candidate, but
+  confirm its structural owner before choosing the edit schema.
+- Run the new action on one authorized real Resume A-F transformation before
+  adding another action type.
 
 ### D2: production durability
 
