@@ -119,10 +119,31 @@ measured values remain the reference for the live run below.
    depth); exhaustion still ends at `needs_human_review` with the candidate
    inactive.
 
-## 4. Live run evidence (reused, not regenerated)
+## 4. Live run evidence
 
-The corrective pass made no new live provider calls. Evidence comes from
-the two preserved live runs of the original pass:
+### Corrected live run (generated in the final pass)
+
+`runs/d0_live_final/` — deterministic synthetic fixture, live DeepSeek
+agents, terminal **`awaiting_owner_review`** with the candidate INACTIVE
+(`layout_v2_candidate` pending; `active_layout_version_id` = `layout_v1`).
+
+- Budget: exactly **5/5 model requests** (`main_orchestrator` 2,
+  `evidence_investigator` 1, `layout_repair` 1, `visual_reviewer` 1),
+  2/24 tool calls, 4,558 input / 753 output tokens; no raw-evidence
+  expansions; 1 repair attempt. Persisted in `manifest.json` → `budget`.
+- Trace: 17 entries (`trace.json`) covering every state transition, both
+  delegation tool calls, per-agent model usage, the diagnosis and patch
+  proposal artifacts, validation, and the review.
+- Model behavior: investigator returned the correct defect class with both
+  node ids; repair agent proposed `SetHeadingRule(scope=template_role,
+  placement=below, gap_heading_pt=1.74, gap_content_pt=10.665)` — the
+  measured fixture target values; deterministic gates passed 9/9; visual
+  review reported no blocking findings; the shell held the candidate for
+  the owner (no model promotion exists in the flow).
+
+### Historical runs (reused, not regenerated; original pre-correction flow)
+
+The two preserved live runs of the original pass:
 
 - **`runs/d_pipeline_d0_20260914T114748Z`** (successful repair): terminal
   `accepted` under the OLD flow — i.e., the model's own accept was honored,
@@ -228,11 +249,11 @@ bounded rule-placement repair workflow described above.
 
 ## 10. What remains unverified
 
-1. **Live-agent behavior under the corrected flow** — the 5-request
-   envelope, handoff unwrapping, and DeepSeek thinking-mode settings are
-   exercised offline and by code inspection; no new live run was made (per
-   work order). A single live confirmation run is the natural next step
-   before owner acceptance, if the owner wants it.
+1. **Live-agent behavior against the real E→D artifact under the corrected
+   flow** — verified once live on the synthetic fixture
+   (`runs/d0_live_final/`, §4); not yet re-run live against the
+   workspace-local E→D artifacts. The owner may request that before
+   acceptance.
 2. **Agent routing value vs a deterministic rule table** — inconclusive by
    design (§1); needs a counterfactual experiment.
 3. **Visual quality of the pending candidate** — provisionally supported by
