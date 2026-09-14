@@ -109,6 +109,10 @@ Saved under `tests/test_results/pytest/` (git-ignored):
 The proposal was reordered after D1-0 so one-shot quality is measured and
 improved before recruiter chat editing:
 
+Owner sequencing update (2026-09-15): this work is paused after accepted D1-0.
+Pipeline C2 is the next active experiment; the items below resume only after
+C2 tests the structured state and renderer boundary on real resumes.
+
 - D1-1: freeze the real Resume A-F one-shot baseline, with one explicitly
   selected C1 or C2 authoring lane per run.
 - D1-2: fix repeated evidence/compiler/renderer causes and add a typed action

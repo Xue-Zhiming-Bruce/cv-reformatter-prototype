@@ -1,6 +1,6 @@
 # Pipeline D: Agentic Document Workflow Proposal
 
-Status: `Proposed — D0 accepted; D1 reviewer-contract design ready for implementation`
+Status: `Paused after accepted D1-0; Pipeline C2 evaluation is the next active experiment`
 
 Date: September 14, 2026
 
@@ -404,37 +404,36 @@ using it as a judge. D1 must preserve the observation, reject only the bad
 hypothesis, and permit a later investigator to remap the same observation to a
 different node or defect class.
 
-## 7. C1 and C2 as Alternative Authoring Lanes
+## 7. C1-to-C2 Evolution and Renderer Boundaries
 
 C1 and C2 should not become two autonomous agents, and they are not two stages
-that every document passes through. They are alternative implementations of
-the candidate-generation and mutation layer beneath Pipeline D.
+that every document passes through at runtime. They represent an architectural
+evolution: C1 is the measured HTML-authoring baseline; C2 is the preferred
+target in which provider-neutral JSON becomes the authoritative layout state.
 
 Every run selects exactly one authoring lane before generating its first
 candidate:
 
 ```text
-authoring_lane = c1_html | c2_layout_state
-
-                    Pipeline D control plane
-                              |
-                choose exactly one per run
-                    /                     \
-          C1 HTML authoring          C2 layout-state authoring
-                    \                     /
-                     shared render and gates
+C1: HTML is the authored template and editable state
+                         |
+                         | preserve evidence, fitting, and gate lessons
+                         v
+C2: LayoutTemplateSpec JSON is the authored state
+                         |
+                         +--> HTML RenderPlan --> Chrome --> PDF
+                         +--> DOCX RenderPlan --> OOXML --> DOCX
 ```
 
-The selected lane is recorded in the run manifest and remains fixed for that
-run. The orchestrator receives only the tools implemented by that lane. It may
-not switch from C1 to C2 after a failure, combine mutations from both, or use
-cross-lane translation as a silent fallback.
+C1's HTML compiler and renderer work are not discarded: under C2, HTML remains
+the compiled PDF-renderer surface rather than the stored product template.
 
-Separate evaluation runs may apply C1 and C2 to the same source/target pair so
-the owner can compare their outcomes. That experiment-level comparison does
-not make them simultaneous backends inside one workflow run. A production
-winner remains an evidence-based decision; Pipeline D must not assume that
-both lanes need to survive.
+During migration only, separate evaluation runs may apply C1 and C2 to the same
+source/target pair. The manifest records `authoring_lane` so evidence cannot be
+mixed. This temporary parallel comparison does not imply a permanent two-lane
+product: once C2 reaches the approved C1 parity and capability gates, the owner
+selects the canonical state model. A model must never switch lanes after a
+failure or use cross-lane translation as a silent fallback.
 
 ### 7.1 C1-derived tools
 
@@ -476,6 +475,41 @@ D0, D0-R, and D1-0 exercised only the C1 HTML lane. They validate the bounded
 agent control, repair, review, version, and approval mechanisms around that
 lane; they provide no evidence yet that the C2 lane works or that C1 is the
 production choice.
+
+### 7.3 Cross-format rendering hypothesis for C2
+
+The active product contract still supports same-format lanes only (`PDF → PDF`,
+`DOCX → DOCX`). C2 will experimentally test both cross-format directions
+before any product-contract or ADR change:
+
+```text
+PDF source  -> CandidateProfile + LayoutTemplateSpec -> DOCX
+DOCX source -> CandidateProfile + LayoutTemplateSpec -> PDF
+```
+
+Cross-format support does not require every decoration to survive unchanged.
+It requires complete candidate content, correct reading order, usable native
+structure, and explicit renderer-compatibility evidence. The deterministic
+renderer/compiler—not an agent—classifies each relevant feature as:
+
+```text
+exact                 render faithfully
+adjusted              use an approved content-preserving fallback and disclose it
+unsupported           material content/structure risk; require confirmation or stop
+```
+
+For example, PDF skill pills may become editable inline skill text in DOCX.
+The skill values, order, and grouping remain while rounded backgrounds may be
+omitted. A renderer must not use an ugly or fragile approximation merely to
+claim parity, and it must never drop content silently.
+
+Each cross-format candidate produces a `ConversionCompatibilityReport` that
+records source/output formats, exact features, adjustments, unsupported
+features, content-loss risk, fallback applied, and whether owner confirmation
+is required. `adjusted` results receive a visible non-blocking warning;
+`unsupported` results require an explicit decision or fail closed. The two
+conversion directions remain available for evaluation even when individual
+features degrade.
 
 ## 8. Example Repair Loop
 
@@ -571,6 +605,12 @@ D1 first improves the result produced from one recruiter submission, before
 building chat editing. "One-shot" here means one user submission and no user
 intervention during generation; the backend may still run bounded internal
 analysis, review, and repair steps.
+
+**Owner sequencing decision (2026-09-15): Pipeline D pauses after accepted
+D1-0. D1-1 through D1-4 are deferred until Pipeline C2 establishes whether the
+structured state and renderer boundary work on real resumes.** Pipeline D
+should resume on the selected canonical state model instead of deepening its
+C1-specific integration prematurely.
 
 Each D1 evaluation run must declare one `authoring_lane` as defined in §7.
 Results from a C1 run and a C2 run must be reported separately even when they

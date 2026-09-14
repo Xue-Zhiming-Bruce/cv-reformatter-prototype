@@ -1,6 +1,6 @@
 # B/C-pipeline 演进提案:从"看图手调 CSS"到"结构 + 测量"
 
-> **当前状态（2026-09-11 更新，以此为准；下方历史章节仅按日期追加，顶部不再回写）**
+> **当前状态（2026-09-15 更新，以此为准；下方历史章节仅按日期追加，顶部不再回写）**
 >
 > | 阶段 | 状态 |
 > |---|---|
@@ -8,10 +8,11 @@
 > | B 管线 | 已关闭（假设证伪，零件经 §7.3 移植） |
 > | C1 D→E（header + body） | owner 终审通过，完成（§9/§11） |
 > | C1 E→F 泛化 | **调试中，尚未通过**（十次冻结，缺口 #1–#8 已闭；#9 右缘杠杆失效、#10 种子行宽派生假设待验证，见 run 20260910T161228Z） |
-> | C2 | 未满足启动条件（E→F 通过 + 反向 pair 验证 + Architect 消融后方可评估，见 §12） |
+> | C2 | **下一项 active experiment**：先验证 provider-neutral JSON 状态，再验证 PDF/DOCX renderer（owner 2026-09-15 调整排序，见 §16） |
+> | Pipeline D | D0/D0-R/D1-0 已完成；暂停后续工作，等待 C2 结果（见 `D_PIPELINE_PROPOSAL.md`） |
 >
 > 日期:2026-09-08 初版;2026-09-09 §7–§8;2026-09-10 §9–§12;
-> 2026-09-11 §13–§14。各增补章节的
+> 2026-09-11 §13–§15;2026-09-15 §16。各增补章节的
 > 状态陈述以日期为准，可能与本横幅不一致——以本横幅为最新。
 > 来源:owner 与 Codex 脑爆,agent 评审并补充
 > 适用范围:仅 `tests/experiments/`。主架构 `app/`、`docs/`、`frontend/` 不动。
@@ -864,3 +865,67 @@ c_pipeline 内容整体覆盖 a_pipeline.py,真实源码丢失。原文件改名
     runs/a_pipeline_pyc_forensic_backup_20260911.pyc)。
 - 文件写入纪律执行:重建期间 subagent 仅写 /tmp 证据与 out/ 片段,仓库仅由
   orchestrator 在验收后单点写入 a_pipeline.py 本体。
+
+## 16. 增补（2026-09-15）：暂停 Pipeline D，优先验证 C2
+
+owner 调整实验顺序：Pipeline D 已完成 D0、真实 E→D 的 D0-R，以及
+observation-first reviewer 契约 D1-0。它们证明受约束 agent/tool loop、版本、
+确定性裁决和人工批准边界可以工作，但都运行在 C1 HTML artifact 上，不能证明
+C2 的结构化状态成立。继续把 D 深接到 C1 会放大迁移成本，因此 D1 后续暂停，
+下一项 active experiment 改为 Pipeline C2。
+
+### 16.1 C1 与 C2 的关系
+
+C1 是已测量的 HTML-authoring baseline；C2 是目标架构。二者仅在迁移验证期对
+同一 source/target 做独立对照，不是产品长期按文档动态二选一，也不是一个 run
+依次经过 C1 和 C2。C2 达到 owner 批准的 C1 parity/capability gate 后，由 owner
+选择 canonical state model；模型不得自行选择或失败后静默切换。
+
+```text
+C1: authored HTML
+       |
+       | 保留 evidence、compiler、fitter、gate 的已验证机制
+       v
+C2: LayoutTemplateSpec JSON（权威状态）
+       +--> HTML RenderPlan --> Chrome --> PDF
+       +--> DOCX RenderPlan --> OOXML --> DOCX
+```
+
+HTML 在 C2 下仍然存在，但只作为 PDF renderer 的编译产物，不再承担持久模板和
+编辑状态。
+
+### 16.2 C2 的最小执行顺序
+
+1. **C2-0a，state schema 先行**：从 provider-neutral evidence 直接生成
+   `LayoutTemplateSpec`/layout state，不继承 C1/A seed；用真实 target reconstruction
+   和 short/medium/long probes 验证节点、flow、装饰及 capability gap 表达力。
+2. **C2-0b，PDF renderer parity**：同一 JSON 编译为 HTML/Chrome PDF，与冻结的
+   C1 one-shot baseline 比较；内容、隐私、结构为硬门，owner 审阅视觉结果。
+3. **C2-0c，DOCX renderer/cross-format spike**：同一 JSON 编译为 native OOXML，
+   检查可编辑段落、列表、表格、reading order、分页和批准的装饰降级。
+4. C2 未达到 PDF baseline 前不扩建 agent loop；C2 通过后，Pipeline D 才在该
+   canonical state 上恢复 automatic refinement 和最终 chat editing。
+
+### 16.3 双向格式转换只作为实验假设
+
+当前产品契约的 same-format 行为保持不变。C2 实验新增验证：
+
+```text
+PDF source  -> structured content/layout -> DOCX
+DOCX source -> structured content/layout -> PDF
+```
+
+两条方向均保留，不因个别视觉特征无法跨 renderer 精确复现而整条禁用。每个输出
+必须生成 `ConversionCompatibilityReport`，将相关特征分为：
+
+- `exact`：可靠复现；
+- `adjusted`：内容保持，使用批准的视觉降级并向用户显示非阻塞提示；
+- `unsupported`：存在内容、reading-order 或结构风险，必须显式确认或停止。
+
+例如 PDF skills pill/chip 可在 DOCX 中降级为可编辑 inline text：skill 内容、顺序、
+分组必须保留，圆角背景可以省略。禁止为了宣称视觉一致而生成脆弱或明显难看的
+方框近似，也禁止静默删除内容。
+
+只有 C2 的真实 PDF/DOCX artifacts、确定性 gates、兼容性报告和 owner 视觉验收
+共同通过后，才能提议修改 `PRODUCT_SPEC.md`、`DOCUMENT_PIPELINE.md`、API contract
+与 ADR 0007；本节本身不改变当前产品支持范围。
