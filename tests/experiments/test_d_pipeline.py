@@ -251,6 +251,7 @@ def _measured_fact(**overrides: Any) -> d.HeadingRuleFact:
         "placement": "below",
         "gap_heading_to_rule_pt": 1.742,
         "gap_rule_to_content_pt": 10.463,
+        "evidence_ids": ["render.line.p1.top100.0"],
     }
     base.update(overrides)
     return d.HeadingRuleFact(**base)
@@ -267,22 +268,26 @@ def test_resolution_unresolved_when_measurement_evidence_missing(tmp_path) -> No
     required gap stays UNRESOLVED — it must never be reported as confirmed."""
     finding = _finding()
     store = _offline_store(tmp_path)
-    # no HeadingRuleFact for the node
+    # no HeadingRuleFact for the node: no fabricated measurement evidence id
     entry = d.resolve_finding(store, "review.finding.1", finding)
     assert entry.resolution.hypothesis_status == "unresolved"
     assert entry.resolution.follow_up == "inspect_region"
     assert "no measured heading-rule fact" in entry.resolution.reason
-    # fact present, target design missing
+    assert entry.resolution.evidence_ids == []
+    # fact present, target design missing: only evidence that actually exists
     store.active_facts = [_measured_fact()]
     entry = d.resolve_finding(store, "review.finding.2", finding)
     assert entry.resolution.hypothesis_status == "unresolved"
     assert "target design measurement is unavailable" in entry.resolution.reason
-    # fact + design present, required gap not measured
+    assert entry.resolution.evidence_ids == ["render.line.p1.top100.0"]
+    # fact + design present, required gap not measured: no heading_rule_gap id
     store.target_design = _design()
     store.active_facts = [_measured_fact(gap_heading_to_rule_pt=None)]
     entry = d.resolve_finding(store, "review.finding.3", finding)
     assert entry.resolution.hypothesis_status == "unresolved"
     assert "gap was not measured" in entry.resolution.reason
+    assert entry.resolution.evidence_ids == ["render.line.p1.top100.0"]
+    assert not any("heading_rule_gap" in e for e in entry.resolution.evidence_ids)
 
 
 def test_resolution_rejected_requires_sufficient_measurements(tmp_path) -> None:
@@ -295,6 +300,9 @@ def test_resolution_rejected_requires_sufficient_measurements(tmp_path) -> None:
     assert entry.resolution.hypothesis_status == "rejected"
     assert entry.resolution.observation_status == "recorded"
     assert entry.resolution.follow_up == "inspect_region"
+    # gap comparison cites the gap measurement only because the gap exists
+    assert "measure.section.skills.heading.heading_rule_gap" in entry.resolution.evidence_ids
+    assert "render.line.p1.top100.0" in entry.resolution.evidence_ids
 
 
 def test_resolution_confirmed_requires_contradicting_measurements(tmp_path) -> None:
@@ -308,11 +316,17 @@ def test_resolution_confirmed_requires_contradicting_measurements(tmp_path) -> N
     ]
     entry = d.resolve_finding(store, "review.finding.1", _finding())
     assert entry.resolution.hypothesis_status == "confirmed"
+    # placement-based confirmation cites an accurately named placement id,
+    # not a heading_rule_gap id that was never measured
+    assert "measure.section.skills.heading.rule_placement" in entry.resolution.evidence_ids
+    assert "render.line.p1.top100.0" in entry.resolution.evidence_ids
+    assert not any("heading_rule_gap" in e for e in entry.resolution.evidence_ids)
     # gap contradiction (below but outside tolerance)
     store.active_facts = [_measured_fact(gap_heading_to_rule_pt=9.9)]
     entry = d.resolve_finding(store, "review.finding.2", _finding())
     assert entry.resolution.hypothesis_status == "confirmed"
     assert "Sufficient measurements exist" in entry.resolution.reason
+    assert "measure.section.skills.heading.heading_rule_gap" in entry.resolution.evidence_ids
 
 
 def test_owner_report_preserves_unresolved_claimed_location(tmp_path) -> None:

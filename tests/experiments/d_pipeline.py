@@ -1853,10 +1853,8 @@ def resolve_finding(
         )
     fact = store.facts_for(node)
     design = store.target_design
-    evidence_ids = list(fact.evidence_ids) if fact else []
-    evidence_ids.append(f"measure.{node}.heading_rule_gap")
 
-    def _unresolved(missing: str) -> ResolvedFinding:
+    def _unresolved(missing: str, evidence_ids: list[str]) -> ResolvedFinding:
         return ResolvedFinding(
             finding_id=finding_id,
             finding=finding,
@@ -1873,10 +1871,13 @@ def resolve_finding(
             ),
         )
 
+    # evidence provenance: cite only measurements that actually exist — no
+    # fabricated measurement IDs on unresolved results.
     if fact is None:
-        return _unresolved("no measured heading-rule fact exists for this node")
+        return _unresolved("no measured heading-rule fact exists for this node", [])
+    evidence_ids = list(fact.evidence_ids)
     if design is None:
-        return _unresolved("the target design measurement is unavailable")
+        return _unresolved("the target design measurement is unavailable", evidence_ids)
     if fact.placement != "below":
         # placement alone is a sufficient measurement that contradicts the
         # target's rule-below design; no gap is needed to decide.
@@ -1894,13 +1895,14 @@ def resolve_finding(
                     f"{design.placement!r}; the repaired-defect claim stands. "
                     "The observation is retained."
                 ),
-                evidence_ids=evidence_ids,
+                evidence_ids=evidence_ids + [f"measure.{node}.rule_placement"],
                 follow_up="owner_review",
             ),
         )
     gap = fact.gap_heading_to_rule_pt
     if gap is None:
-        return _unresolved("the heading-to-rule gap was not measured")
+        return _unresolved("the heading-to-rule gap was not measured", evidence_ids)
+    evidence_ids.append(f"measure.{node}.heading_rule_gap")
     if abs(gap - design.gap_heading_to_rule_pt) <= GAP_TOLERANCE_PT:
         return ResolvedFinding(
             finding_id=finding_id,

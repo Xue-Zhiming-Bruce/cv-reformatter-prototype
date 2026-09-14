@@ -153,8 +153,17 @@ Saved under `tests/test_results/pytest/` (git-ignored):
 4. **Run identity.** The manifest records `pipeline_phase: "d1_0"` and the
    generated run report title now reads "Pipeline D1-0 run (review contract
    d1-review/1)". The shared D0 runner itself is unchanged.
+5. **Evidence-provenance correction.** Resolution records now cite only
+   measurement evidence that actually exists: a missing `HeadingRuleFact`
+   yields `evidence_ids: []`; a missing target design or missing gap keeps
+   only the existing fact evidence (no `heading_rule_gap` id); a
+   placement-based confirmation cites an accurately named
+   `measure.<node>.rule_placement` id; `measure.<node>.heading_rule_gap` is
+   cited only when the gap value exists (gap-based rejected/confirmed).
+   Focused assertions cover missing fact, missing gap, placement
+   confirmation, and gap comparison.
 
-Verification after the correction: focused resolution tests 4 passed; all
+Verification after the correction: focused resolution tests 3 passed; all
 offline `test_d_pipeline` tests 30 passed; local synthetic Chrome test 1
 passed (1 gated skip); test-structure contract tests 6 passed;
 `git diff --check` clean.
