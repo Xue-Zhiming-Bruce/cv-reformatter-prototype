@@ -104,16 +104,24 @@ Saved under `tests/test_results/pytest/` (git-ignored):
 - No natural-language keyword parsing was added; resolution uses only typed
   fields and measured facts.
 
-## 7. Unimplemented D1-1/D1-2 work
+## 7. Unimplemented D1 work
 
-- D1-1: stable node selection in the interface-facing contract; recruiter
-  instruction → typed EditAction translation; candidate preview/accept flow
-  with instruction+decision recording.
-- D1-2: new measured-vocabulary EditAction (e.g. the D0-R double-header-rule
-  family) after its structural owner is confirmed and a deterministic
-  verifier exists; authorized real Resume A-F run before further actions.
+The proposal was reordered after D1-0 so one-shot quality is measured and
+improved before recruiter chat editing:
+
+- D1-1: freeze the real Resume A-F one-shot baseline, with one explicitly
+  selected C1 or C2 authoring lane per run.
+- D1-2: fix repeated evidence/compiler/renderer causes and add a typed action
+  only for a verified long-tail defect.
+- D1-3: connect confirmed reviewer observations to a bounded internal
+  investigation and repair loop, measured against the D1-1 baseline.
+- D1-4: stable node selection plus recruiter instruction → typed EditAction,
+  candidate preview, and explicit accept/reject.
 - `inspect_region` follow-up is currently a recorded recommendation only; no
   region-inspection tool call is triggered automatically.
+
+D0, D0-R, and D1-0 used the C1 HTML lane. They do not validate C2 or select a
+production authoring lane.
 
 ## 8. Remaining unverified claims
 

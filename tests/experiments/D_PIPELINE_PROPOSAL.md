@@ -404,10 +404,37 @@ using it as a judge. D1 must preserve the observation, reject only the bad
 hypothesis, and permit a later investigator to remap the same observation to a
 different node or defect class.
 
-## 7. C1 and C2 as Callable Capabilities
+## 7. C1 and C2 as Alternative Authoring Lanes
 
-C1 and C2 should not become two autonomous agents. Their useful mechanisms
-become tools behind the same artifact and validation contracts.
+C1 and C2 should not become two autonomous agents, and they are not two stages
+that every document passes through. They are alternative implementations of
+the candidate-generation and mutation layer beneath Pipeline D.
+
+Every run selects exactly one authoring lane before generating its first
+candidate:
+
+```text
+authoring_lane = c1_html | c2_layout_state
+
+                    Pipeline D control plane
+                              |
+                choose exactly one per run
+                    /                     \
+          C1 HTML authoring          C2 layout-state authoring
+                    \                     /
+                     shared render and gates
+```
+
+The selected lane is recorded in the run manifest and remains fixed for that
+run. The orchestrator receives only the tools implemented by that lane. It may
+not switch from C1 to C2 after a failure, combine mutations from both, or use
+cross-lane translation as a silent fallback.
+
+Separate evaluation runs may apply C1 and C2 to the same source/target pair so
+the owner can compare their outcomes. That experiment-level comparison does
+not make them simultaneous backends inside one workflow run. A production
+winner remains an evidence-based decision; Pipeline D must not assume that
+both lanes need to survive.
 
 ### 7.1 C1-derived tools
 
@@ -444,6 +471,11 @@ If a C1 candidate cannot be translated into the shared structured layout state
 without another unreliable interpretation step, it remains experimental. The
 production workflow must not preserve C1 merely to preserve sunk engineering
 work.
+
+D0, D0-R, and D1-0 exercised only the C1 HTML lane. They validate the bounded
+agent control, repair, review, version, and approval mechanisms around that
+lane; they provide no evidence yet that the C2 lane works or that C1 is the
+production choice.
 
 ## 8. Example Repair Loop
 
@@ -533,10 +565,16 @@ sub-agents.
 - Repair one known C1/C2 matrix defect with deterministic ground truth.
 - Keep all state in versioned experiment artifacts.
 
-### D1: connect recruiter chat editing
+### D1: improve the unattended first draft
 
-D1 is split into bounded increments. Do not add new edit actions merely to make
-the first increment look more general.
+D1 first improves the result produced from one recruiter submission, before
+building chat editing. "One-shot" here means one user submission and no user
+intervention during generation; the backend may still run bounded internal
+analysis, review, and repair steps.
+
+Each D1 evaluation run must declare one `authoring_lane` as defined in §7.
+Results from a C1 run and a C2 run must be reported separately even when they
+use the same source/target pair.
 
 #### D1-0: observation-first review contract
 
@@ -559,7 +597,46 @@ D1-0 succeeds when the same visible observation survives an incorrect
 hypothesis and remains available for a later tool call or owner decision. It
 does not need to repair the newly discovered defect.
 
-#### D1-1: recruiter instruction to typed edit
+Status: completed and accepted on the C1 HTML lane. This establishes reviewer
+evidence handling, not general one-shot quality.
+
+#### D1-1: measure the real one-shot baseline
+
+- Run the selected authoring lane on the authorized Resume A-F matrix without
+  recruiter instructions or manual artifact repair.
+- Preserve content and privacy as hard gates; do not trade either for visual
+  fidelity.
+- Classify remaining defects by frequency, severity, deterministic
+  measurability, owning layer, and whether the current layout vocabulary can
+  express the needed behavior.
+- Produce owner-reviewable target/generated PDFs and comparison images. The
+  owner, not the VLM reviewer or a composite score, labels each output as
+  usable, minor-repair, or major-repair.
+- Do not compare C1 and C2 inside one run. If both are evaluated, run the same
+  case once per lane with separate manifests and artifacts.
+
+#### D1-2: fix systematic one-shot causes
+
+- Fix repeated defects in evidence normalization, template compilation, or
+  rendering at their shared deterministic owner instead of teaching an agent
+  to repair the same mistake document by document.
+- Add a new `EditAction` only for a verified long-tail defect that cannot be
+  eliminated reliably in the compiler or renderer.
+- Re-run the same real matrix after each bounded change and compare with the
+  frozen D1-1 baseline.
+
+#### D1-3: bounded automatic refinement
+
+- Feed confirmed reviewer observations into the investigator after the first
+  candidate render.
+- Route systematic failures back to their owning component and supported
+  long-tail failures to a typed repair action.
+- Re-render and re-run independent gates within fixed request, tool, repair,
+  and time budgets; unsupported or unresolved findings stop for owner review.
+- Measure whether this internal loop improves the owner-rated first draft over
+  the no-refinement D1-1 baseline.
+
+#### D1-4: recruiter chat editing
 
 - Add stable node selection in the interface-facing contract.
 - Translate a recruiter instruction plus selected node/region into an existing
@@ -569,14 +646,9 @@ does not need to repair the newly discovered defect.
 - Record the instruction, agent decisions, and tool calls in the artifact
   manifest.
 
-#### D1-2: measured vocabulary expansion
-
-- Add one new `EditAction` only after a real reviewed defect requires it and a
-  deterministic verifier can judge it.
-- Prefer the D0-R double-header-rule observation as the first candidate, but
-  confirm its structural owner before choosing the edit schema.
-- Run the new action on one authorized real Resume A-F transformation before
-  adding another action type.
+Chat editing is the last-mile fallback after the one-shot baseline and bounded
+automatic refinement have been measured. It must not become a substitute for
+fixing repeated compiler or renderer defects.
 
 ### D2: production durability
 
@@ -599,6 +671,8 @@ The experiment should answer, rather than assume:
   structured model call;
 - whether C1 HTML candidates contribute useful evidence to C2 or merely add a
   lossy translation step;
+- whether C1 or C2 produces the stronger owner-rated one-shot baseline under
+  the same corpus and gates;
 - how often the layout vocabulary reports a genuine capability gap;
 - whether the visual reviewer detects enough confirmed defects to justify its
   latency and cost;
