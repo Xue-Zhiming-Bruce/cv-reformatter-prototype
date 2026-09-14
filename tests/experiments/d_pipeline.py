@@ -1,4 +1,14 @@
-"""Pipeline D0 — bounded agent-directed layout repair experiment.
+"""Pipeline D0/D1-0 — bounded agent-directed layout repair experiment.
+
+D1-0 (observation-first review contract, proposal §6.4/§12): the visual
+reviewer returns observation-first records — a literal `observation`, a typed
+`location`, a `target`-vs-`generated` comparison, and a separate `hypothesis`.
+The deterministic shell assigns stable run-scoped finding ids, resolves each
+hypothesis in a separate resolution record (`observation_status` stays
+`recorded`; `hypothesis_status` is confirmed/rejected/unresolved/not_tested),
+and writes an owner-readable review table (`review_owner_attempt_*.md`). A
+rejected hypothesis never erases, suppresses, or marks the observation itself
+as false.
 
 Owner-authorized experiment under `tests/experiments/` (see
 D_PIPELINE_PROPOSAL.md §11 "Minimal Experimental Slice" and §12 "D0: prove
@@ -180,39 +190,85 @@ class DefectDiagnosis(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
 
 
-class ReviewerFinding(BaseModel):
-    """One visual-reviewer finding. `node_id` must be a canonical stable node
-    id from the run's node inventory; if the reviewer cannot map its region,
-    it must say so via `unresolved_region` instead of inventing an id.
-    `finding_kind` is a REQUIRED typed classification: a finding about the
-    repaired defect must be declared as such — there is no default, so an
-    omitted or invalid classification fails schema validation instead of
-    silently becoming not_measurable."""
+REVIEW_CONTRACT_VERSION = "d1-review/1"  # proposal §6.4 observation-first contract
 
-    problem: str
-    severity: Literal["low", "medium", "high"]
-    confidence: float = Field(ge=0.0, le=1.0)
-    finding_kind: Literal["repaired_defect_persists", "other"]
+
+class FindingLocation(BaseModel):
+    """Where the observation appears: page, optional bbox (pt), and either a
+    canonical node_id from the run's node inventory or an explicit
+    unresolved_region — never an invented identity (proposal §6.4)."""
+
+    page: int = Field(ge=1)
+    bbox: tuple[float, float, float, float] | None = None
     node_id: str | None = None
-    role: Literal["section_heading", "other"] | None = None
-    heading_verbatim: str | None = None
     unresolved_region: str | None = None
 
     @model_validator(mode="after")
-    def _region_identified(self) -> "ReviewerFinding":
-        identified = (
-            self.node_id is not None
-            or self.unresolved_region is not None
-            or (self.role == "section_heading" and bool(self.heading_verbatim))
-        )
-        if not identified:
+    def _identified(self) -> "FindingLocation":
+        if self.node_id is None and self.unresolved_region is None:
             raise ValueError(
-                "finding needs a canonical node_id, an explicit unresolved_region, "
-                "or role='section_heading' with heading_verbatim"
+                "location needs a canonical node_id or an explicit unresolved_region"
             )
         if self.node_id is not None and self.unresolved_region is not None:
             raise ValueError("give node_id OR unresolved_region, not both")
         return self
+
+
+class FindingComparison(BaseModel):
+    """What the target and generated renders each show in that location."""
+
+    target: str
+    generated: str
+
+
+class FindingHypothesis(BaseModel):
+    """The reviewer's proposed structural interpretation — kept separate from
+    the observation and never merged back into it. `kind` is a REQUIRED typed
+    classification with no default, so an omitted or invalid classification
+    fails schema validation instead of silently becoming not_tested."""
+
+    kind: Literal["repaired_defect_persists", "other"]
+    suspected_owner: str | None = None
+    explanation: str
+
+
+class ReviewerFinding(BaseModel):
+    """Observation-first visual-reviewer finding (proposal §6.4, D1-0).
+
+    `observation` is a literal visible fact without causal interpretation;
+    causal claims live only in `hypothesis`. The shell — never the model —
+    assigns the stable run-scoped `finding_id` on the resolution record."""
+
+    observation: str
+    location: FindingLocation
+    comparison: FindingComparison
+    hypothesis: FindingHypothesis
+    severity: Literal["low", "medium", "high"]
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class FindingResolution(BaseModel):
+    """Deterministic resolution of one finding's hypothesis, persisted
+    separately from the observation. `observation_status` is always
+    `recorded`: rejecting a hypothesis must never delete, suppress, or mark
+    the observation itself as false (proposal §6.4; D0-R evidence)."""
+
+    finding_id: str
+    observation_status: Literal["recorded"] = "recorded"
+    hypothesis_status: Literal["confirmed", "rejected", "unresolved", "not_tested"]
+    reason: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    follow_up: Literal["none", "inspect_region", "owner_review"] = "none"
+
+
+class ResolvedFinding(BaseModel):
+    """Raw reviewer finding (retained verbatim) plus its shell-assigned id,
+    node resolution, and separate deterministic resolution."""
+
+    finding_id: str
+    finding: ReviewerFinding
+    resolved_node_id: str | None = None
+    resolution: FindingResolution
 
 
 class ReviewFindings(BaseModel):
@@ -1105,18 +1161,23 @@ class SpecialistAgents:
             model_settings=model_settings,
             instructions=(
                 "You are an independent read-only visual reviewer (defect "
-                "detector, not an acceptance authority). Inspect the side-by-side "
-                "image (left=target, right=generated). Report localized findings "
-                "under this exact rule set: every finding MUST carry a canonical "
-                "node_id from the provided node inventory (format "
-                "'section.<name>.heading'); if you cannot map your observation to "
-                "one, set unresolved_region instead — never invent an id. For "
-                "role='section_heading' findings you may add heading_verbatim. "
-                "Every finding MUST set finding_kind: 'repaired_defect_persists' "
-                "when it asserts the repaired rule-placement defect is still "
-                "present, otherwise 'other'. Do "
-                "not demand target-sample facts as corrections; candidate wording "
-                "is verbatim source content."
+                "detector, not an acceptance authority and not a geometry "
+                "oracle). Inspect the side-by-side image (left=target, "
+                "right=generated). Report one record per localized finding, "
+                "separating what you see from what you think caused it: "
+                "'observation' = literal visible fact with NO causal "
+                "interpretation; 'location' = page, optional bbox in pt, and "
+                "EITHER a canonical node_id from the provided node inventory "
+                "(format 'section.<name>.heading') OR an explicit "
+                "unresolved_region string when you cannot map the region — "
+                "never invent an id; 'comparison' = what target and generated "
+                "each show there; 'hypothesis' = your typed structural "
+                "interpretation, with kind 'repaired_defect_persists' ONLY "
+                "when you assert the repaired rule-placement defect is still "
+                "present, otherwise 'other', plus suspected_owner and "
+                "explanation. Every finding also carries severity and "
+                "confidence. Do not demand target-sample facts as "
+                "corrections; candidate wording is verbatim source content."
             ),
         )
 
@@ -1283,6 +1344,7 @@ class EvidenceStore:
         self.current_phase = "evidence"
         self.diagnosis: DefectDiagnosis | None = None
         self.proposals: list[SetHeadingRuleEdit] = []
+        self.next_finding_seq = 1  # shell-assigned run-scoped finding ids
         self.manifest: dict[str, Any] = {
             "experiment": "d_pipeline_d0",
             "base_run_dir": str(base_run_dir),
@@ -1736,16 +1798,105 @@ def _validate_patch_policy(store: EvidenceStore, edit: SetHeadingRuleEdit) -> st
     return None
 
 
-def _resolve_finding_node(store: EvidenceStore, finding: ReviewerFinding) -> str | None:
-    """Deterministic resolver: canonical node id, else role+verbatim mapping."""
-    if finding.node_id and store.node_by_id(finding.node_id):
-        return finding.node_id
-    if finding.role == "section_heading" and finding.heading_verbatim:
-        want = finding.heading_verbatim.strip().lower()
-        for node in store.nodes:
-            if node["heading_verbatim"].strip().lower() == want:
-                return node["node_id"]
+def _resolve_location_node(store: EvidenceStore, location: FindingLocation) -> str | None:
+    """Deterministic resolver: a canonical node id only. An unresolved_region
+    is kept as an explicit region and never promoted to an identity."""
+    if location.node_id is not None and store.node_by_id(location.node_id):
+        return location.node_id
     return None
+
+
+def resolve_finding(
+    store: EvidenceStore, finding_id: str, finding: ReviewerFinding
+) -> ResolvedFinding:
+    """Resolve one finding's hypothesis deterministically (proposal §6.4).
+
+    The observation is always retained (`observation_status='recorded'`);
+    only the hypothesis is judged. Measurable `repaired_defect_persists`
+    hypotheses are confirmed or rejected against the measured candidate facts
+    and the target design (§10 tolerance). `other` hypotheses have no
+    deterministic verifier and stay `not_tested` (advisory). A rejected
+    hypothesis never erases or downgrades the observation, which may still
+    identify a real defect owned by another structure (D0-R evidence)."""
+    node = _resolve_location_node(store, finding.location)
+    if finding.hypothesis.kind != "repaired_defect_persists":
+        return ResolvedFinding(
+            finding_id=finding_id,
+            finding=finding,
+            resolved_node_id=node,
+            resolution=FindingResolution(
+                finding_id=finding_id,
+                hypothesis_status="not_tested",
+                reason=(
+                    "No deterministic verifier exists for this hypothesis; "
+                    "recorded as advisory evidence for the owner."
+                ),
+                follow_up="owner_review",
+            ),
+        )
+    if node is None:
+        return ResolvedFinding(
+            finding_id=finding_id,
+            finding=finding,
+            resolved_node_id=None,
+            resolution=FindingResolution(
+                finding_id=finding_id,
+                hypothesis_status="unresolved",
+                reason=(
+                    "The claim cannot be checked: the location has no canonical "
+                    "node. The observation is retained for later region "
+                    "inspection and ownership remapping."
+                ),
+                follow_up="inspect_region",
+            ),
+        )
+    fact = store.facts_for(node)
+    design = store.target_design
+    measured = (
+        fact is not None
+        and fact.placement == "below"
+        and fact.gap_heading_to_rule_pt is not None
+        and design is not None
+        and abs(fact.gap_heading_to_rule_pt - design.gap_heading_to_rule_pt)
+        <= GAP_TOLERANCE_PT
+    )
+    evidence_ids = list(fact.evidence_ids) if fact else []
+    evidence_ids.append(f"measure.{node}.heading_rule_gap")
+    if measured:
+        assert fact is not None and design is not None
+        return ResolvedFinding(
+            finding_id=finding_id,
+            finding=finding,
+            resolved_node_id=node,
+            resolution=FindingResolution(
+                finding_id=finding_id,
+                hypothesis_status="rejected",
+                reason=(
+                    f"Measured geometry refutes the hypothesis: the {node} section "
+                    f"rule sits below the heading ({fact.gap_heading_to_rule_pt:.3f}pt "
+                    f"vs target {design.gap_heading_to_rule_pt:.3f}pt, tolerance "
+                    f"{GAP_TOLERANCE_PT}pt). The visible lines may belong to another "
+                    "owner (e.g. the header); the observation itself remains recorded."
+                ),
+                evidence_ids=evidence_ids,
+                follow_up="inspect_region",
+            ),
+        )
+    return ResolvedFinding(
+        finding_id=finding_id,
+        finding=finding,
+        resolved_node_id=node,
+        resolution=FindingResolution(
+            finding_id=finding_id,
+            hypothesis_status="confirmed",
+            reason=(
+                f"Measured geometry for {node} still contradicts the target "
+                "design; the repaired-defect claim stands. The observation is retained."
+            ),
+            evidence_ids=evidence_ids,
+            follow_up="owner_review",
+        ),
+    )
 
 
 def _run_visual_reviewer(
@@ -1761,9 +1912,12 @@ def _run_visual_reviewer(
     """Independent reviewer on the side-by-side image. Returns
     (status, note) with status in {"ok", "conflict", "failed"}.
 
-    The reviewer is advisory; it can never accept. But a finding claiming the
-    repaired defect persists that cannot be deterministically falsified, or a
-    reviewer/infrastructure failure, blocks automatic progress."""
+    The reviewer is advisory; it can never accept. D1-0 contract: the raw
+    reviewer output is preserved (`review_raw_attempt_N.json` + trace) and
+    each finding gets a shell-assigned run-scoped id plus a separate
+    deterministic resolution record (`review_attempt_N.json`). A confirmed or
+    unresolved repaired-defect hypothesis blocks automatic progress; a
+    rejected hypothesis does not — the observation stays recorded either way."""
     try:
         target_pages = _render_pages(target_pdf, out_dir, f"review_target_{attempt}")
         cand_pages = _render_pages(first_pdf, out_dir, f"review_candidate_{attempt}")
@@ -1793,53 +1947,123 @@ def _run_visual_reviewer(
     except Exception as error:  # reviewer is advisory; failure must not auto-promote
         return "failed", f"reviewer unavailable: {error}"
 
-    annotated = []
-    status = "ok"
-    for finding in findings.findings:
-        resolved_node = _resolve_finding_node(store, finding)
-        verdict = "not_measurable"
-        if finding.finding_kind == "repaired_defect_persists":
-            if resolved_node is None:
-                # an unresolved claim that the repaired defect persists cannot
-                # be falsified → conflict (never silently downgraded)
-                verdict = "unresolved"
-            else:
-                fact = store.facts_for(resolved_node)
-                if (
-                    fact is not None
-                    and fact.placement == "below"
-                    and fact.gap_heading_to_rule_pt is not None
-                    and store.target_design is not None
-                    and abs(fact.gap_heading_to_rule_pt - store.target_design.gap_heading_to_rule_pt)
-                    <= GAP_TOLERANCE_PT
-                ):
-                    verdict = "falsified"  # deterministic measurement refutes the claim
-                else:
-                    verdict = "verified"
-        if verdict in ("verified", "unresolved"):
-            status = "conflict"
-        entry = finding.model_dump(mode="json")
-        entry.update({"resolved_node_id": resolved_node, "verdict": verdict})
-        annotated.append(entry)
-        if trace is not None:
-            trace.add(agent="shell", phase="final", action="review_verdict", output=entry)
+    raw = findings.model_dump(mode="json")
+    (out_dir / f"review_raw_attempt_{attempt}.json").write_text(
+        json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     if trace is not None:
         trace.add(
             agent="visual_reviewer",
             phase="final",
             action="review",
-            output=findings.model_dump(mode="json"),
+            output=raw,
             persist_output=True,
         )
+    resolved: list[ResolvedFinding] = []
+    status = "ok"
+    for finding in findings.findings:
+        finding_id = f"review.finding.{store.next_finding_seq}"
+        store.next_finding_seq += 1
+        entry = resolve_finding(store, finding_id, finding)
+        if entry.resolution.hypothesis_status in ("confirmed", "unresolved"):
+            status = "conflict"
+        resolved.append(entry)
+        if trace is not None:
+            trace.add(
+                agent="shell",
+                phase="final",
+                action="review_resolution",
+                output=entry.model_dump(mode="json"),
+            )
     (out_dir / f"review_attempt_{attempt}.json").write_text(
         json.dumps(
-            {"findings": annotated, "overall_note": findings.overall_note},
+            {
+                "review_contract": REVIEW_CONTRACT_VERSION,
+                "findings": [entry.model_dump(mode="json") for entry in resolved],
+                "overall_note": findings.overall_note,
+            },
             ensure_ascii=False,
             indent=2,
         ),
         encoding="utf-8",
     )
-    return status, "; ".join(f"{e['resolved_node_id'] or e['unresolved_region']}:{e['verdict']}" for e in annotated) or findings.overall_note
+    _write_owner_review(out_dir, attempt, resolved, findings.overall_note)
+    note = "; ".join(
+        f"{entry.resolved_node_id or entry.finding.location.unresolved_region}:"
+        f"{entry.resolution.hypothesis_status}"
+        for entry in resolved
+    ) or findings.overall_note
+    return status, note
+
+
+def _md_cell(text: str) -> str:
+    return " ".join(str(text).split()).replace("|", "\\|")
+
+
+def _write_owner_review(
+    out_dir: Path, attempt: int, resolved: list[ResolvedFinding], overall_note: str
+) -> None:
+    """Owner-readable review artifact (proposal §6.4): observation, location,
+    target-vs-generated comparison, reviewer hypothesis and confidence,
+    deterministic resolution, and recommended follow-up side by side — never
+    reduced to a pass/fail verdict. A rejected hypothesis never marks the
+    observation itself as false."""
+    lines = [
+        f"# Visual review — attempt {attempt} ({out_dir.name})",
+        "",
+        f"Review contract: `{REVIEW_CONTRACT_VERSION}`. Observations below are "
+        "retained visual facts. The deterministic resolution judges only the "
+        "reviewer's structural hypothesis — it never deletes, suppresses, or "
+        "marks the observation itself as false. The reviewer is advisory; "
+        "visual acceptance stays with the owner.",
+        "",
+        "| Location | Observation | Target vs generated | Reviewer hypothesis (confidence) | Deterministic resolution | Recommended follow-up |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for entry in resolved:
+        finding = entry.finding
+        location = f"page {finding.location.page}; "
+        location += (
+            f"node `{entry.resolved_node_id}`"
+            if entry.resolved_node_id
+            else f"region: {finding.location.unresolved_region}"
+        )
+        if finding.location.bbox is not None:
+            location += "; bbox [" + ", ".join(f"{v:.1f}" for v in finding.location.bbox) + "]"
+        hypothesis = (
+            f"{finding.hypothesis.kind} (owner: "
+            f"{finding.hypothesis.suspected_owner or 'n/a'}; confidence "
+            f"{finding.confidence:.2f}; severity {finding.severity}): "
+            f"{finding.hypothesis.explanation}"
+        )
+        resolution = (
+            f"observation {entry.resolution.observation_status}; hypothesis "
+            f"**{entry.resolution.hypothesis_status}** — {entry.resolution.reason}"
+        )
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _md_cell(location),
+                    _md_cell(finding.observation),
+                    _md_cell(
+                        f"target: {finding.comparison.target} / "
+                        f"generated: {finding.comparison.generated}"
+                    ),
+                    _md_cell(hypothesis),
+                    _md_cell(resolution),
+                    _md_cell(entry.resolution.follow_up),
+                ]
+            )
+            + " |"
+        )
+    if not resolved:
+        lines.append("| — | _No findings recorded for this attempt._ | — | — | — | — |")
+    if overall_note:
+        lines += ["", f"Reviewer overall note: {overall_note}"]
+    (out_dir / f"review_owner_attempt_{attempt}.md").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
 
 
 def _final_artifacts(out_dir: Path, target_pdf: Path, first_pdf: Path) -> None:
@@ -1860,6 +2084,7 @@ def _finish(
     store.manifest["terminal_state"] = terminal
     store.manifest["trace"] = "trace.json"
     store.manifest["budget"] = budget.to_json()
+    store.manifest["review_contract"] = REVIEW_CONTRACT_VERSION
     (out_dir / "manifest.json").write_text(
         json.dumps(store.manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -1886,6 +2111,14 @@ def _finish(
 ## Deterministic validation
 
 {checks or "- (no candidate reached validation)"}
+
+## Visual review
+
+Observation-first review records (contract `{REVIEW_CONTRACT_VERSION}`):
+resolved records in `review_attempt_*.json`, raw reviewer output in
+`review_raw_attempt_*.json`, owner-readable tables in
+`review_owner_attempt_*.md`. Observations are retained even when their
+hypothesis is rejected; visual acceptance stays with the owner.
 
 ## Owner decision
 

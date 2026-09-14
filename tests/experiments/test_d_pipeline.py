@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 from lxml import html as lxml_html
@@ -50,6 +51,15 @@ SMALL_HTML = """<html><body>
 <div class="section" data-section="education" data-source-block="block:L0056">
   <h2 class="section-heading section-heading--purple" data-source-line="L0056">Education</h2>
   <p>Lehigh University</p>
+</div>
+</body></html>"""
+
+
+EXPERIENCE_HTML = """<html><body>
+<header class="c1-header">J. Doe</header><hr class="hr">
+<div class="section" data-section="experience">
+  <h2 class="section-heading" data-source-line="L0001">Experience</h2>
+  <p>Senior Engineer, Acme Corp</p>
 </div>
 </body></html>"""
 
@@ -157,67 +167,77 @@ def test_policy_rejects_unknown_node(tmp_path) -> None:
     assert failure is not None and "unknown node" in failure
 
 
-# --- strict reviewer schema -----------------------------------------------------
+# --- strict reviewer schema (D1-0 observation-first contract) -------------------
 
 
-def test_reviewer_finding_requires_region_and_classification() -> None:
-    with pytest.raises(ValidationError):
-        ReviewerFinding(problem="x", severity="low", confidence=0.5)
-    with pytest.raises(ValidationError):
-        ReviewerFinding(problem="x", severity="urgent", confidence=0.5, node_id="section.skills.heading")
-    finding = ReviewerFinding(
-        problem="x", severity="low", confidence=0.5, finding_kind="other", unresolved_region="bottom"
-    )
-    assert finding.node_id is None
+def _finding(**overrides: Any) -> ReviewerFinding:
+    base: dict[str, Any] = {
+        "observation": "Two horizontal lines are visible above the heading.",
+        "location": {"page": 1, "node_id": "section.skills.heading"},
+        "comparison": {"target": "no equivalent lines", "generated": "two lines"},
+        "hypothesis": {
+            "kind": "repaired_defect_persists",
+            "suspected_owner": "section_rule",
+            "explanation": "The lines may belong to the section heading rule.",
+        },
+        "severity": "medium",
+        "confidence": 0.6,
+    }
+    base.update(overrides)
+    return ReviewerFinding(**base)
 
 
-def test_reviewer_finding_classification_is_required_and_typed() -> None:
-    """An absent finding_kind must fail schema validation — it can never
-    silently downgrade a repaired-defect claim to not_measurable."""
+def test_reviewer_finding_is_observation_first() -> None:
+    """D1-0: observation, location, comparison, and hypothesis are separate
+    typed fields; causal interpretation cannot hide inside the observation
+    schema and the location must be explicit."""
+    finding = _finding()
+    assert finding.observation == "Two horizontal lines are visible above the heading."
+    assert finding.location.page == 1
+    assert finding.hypothesis.kind == "repaired_defect_persists"
+    # missing location identity
     with pytest.raises(ValidationError):
-        ReviewerFinding(
-            problem="the section rule still sits above the heading",
-            severity="high",
-            confidence=0.9,
-            node_id="section.skills.heading",
-        )
+        _finding(location={"page": 1})
+    # node_id and unresolved_region are mutually exclusive
     with pytest.raises(ValidationError):
-        ReviewerFinding(
-            problem="the section rule still sits above the heading",
-            severity="high",
-            confidence=0.9,
-            finding_kind="still_broken",
-            node_id="section.skills.heading",
-        )
-    ok = ReviewerFinding(
-        problem="rule color differs from target",
+        _finding(location={"page": 1, "node_id": "n", "unresolved_region": "r"})
+    # bbox is optional but typed
+    boxed = _finding(location={"page": 1, "node_id": "n", "bbox": [46.0, 220.0, 548.0, 246.0]})
+    assert boxed.location.bbox == (46.0, 220.0, 548.0, 246.0)
+    with pytest.raises(ValidationError):
+        _finding(location={"page": 1, "node_id": "n", "bbox": [1.0, 2.0]})
+
+
+def test_reviewer_finding_typed_fields_are_enforced() -> None:
+    """severity/confidence bounds and the REQUIRED typed hypothesis kind have
+    no defaults — invalid values fail schema validation instead of silently
+    downgrading a repaired-defect claim to not_tested."""
+    with pytest.raises(ValidationError):
+        _finding(severity="urgent")
+    with pytest.raises(ValidationError):
+        _finding(confidence=1.5)
+    with pytest.raises(ValidationError):
+        _finding(hypothesis={"kind": "still_broken", "explanation": "x"})
+    with pytest.raises(ValidationError):
+        _finding(hypothesis={"suspected_owner": "section_rule", "explanation": "x"})
+    other = _finding(
+        observation="rule color differs from target",
+        location={"page": 1, "unresolved_region": "under headings"},
+        hypothesis={"kind": "other", "explanation": "maybe color"},
         severity="low",
         confidence=0.6,
-        finding_kind="other",
-        unresolved_region="under headings",
     )
-    assert ok.finding_kind == "other"
+    assert other.hypothesis.kind == "other"
 
 
-def test_reviewer_node_resolver_maps_role_and_verbatim(tmp_path) -> None:
+def test_reviewer_location_resolver_maps_canonical_node_only(tmp_path) -> None:
+    """The deterministic resolver accepts only canonical node ids; an invented
+    identity resolves to None and the finding stays an explicit region."""
     store = _offline_store(tmp_path)
-    canonical = ReviewerFinding(
-        problem="p", severity="low", confidence=0.5, finding_kind="other", node_id="section.skills.heading"
-    )
-    assert d._resolve_finding_node(store, canonical) == "section.skills.heading"
-    by_role = ReviewerFinding(
-        problem="p",
-        severity="low",
-        confidence=0.5,
-        finding_kind="other",
-        role="section_heading",
-        heading_verbatim="Education",
-    )
-    assert d._resolve_finding_node(store, by_role) == "section.education.heading"
-    invented = ReviewerFinding(
-        problem="p", severity="low", confidence=0.5, finding_kind="other", node_id="generated:section_rules"
-    )
-    assert d._resolve_finding_node(store, invented) is None
+    canonical = _finding()
+    assert d._resolve_location_node(store, canonical.location) == "section.skills.heading"
+    invented = _finding(location={"page": 1, "node_id": "generated:section_rules"})
+    assert d._resolve_location_node(store, invented.location) is None
 
 
 # --- full state machine, offline routing (monkeypatched deterministic layer) -----
@@ -247,17 +267,31 @@ def _route_facts(pdf: Path, node_id: str, heading_verbatim: str) -> d.HeadingRul
 @pytest.fixture()
 def offline_state_machine(monkeypatch, tmp_path):
     """Full state machine with the Chrome/measurement layer scripted."""
-    base = tmp_path / "base"
+    return _script_offline_layer(monkeypatch, tmp_path, "base", SMALL_HTML)
+
+
+def _script_offline_layer(monkeypatch, tmp_path: Path, name: str, html: str) -> Path:
+    """Build a scripted base run and monkeypatch the Chrome/measurement layer:
+    the v1 render shows rules above, every post-edit render shows the
+    repaired below-placement with in-tolerance gaps."""
+    base = tmp_path / name
     base.mkdir()
-    (base / "filled.html").write_text(SMALL_HTML, encoding="utf-8")
+    (base / "filled.html").write_text(html, encoding="utf-8")
     (base / "format_summary.json").write_text("{}", encoding="utf-8")
     (base / "body_scaffold.json").write_text(
-        json.dumps({"headings": [{"verbatim": "Skills"}, {"verbatim": "Education"}]}),
+        json.dumps(
+            {
+                "headings": [
+                    {"verbatim": node["heading_verbatim"]}
+                    for node in discover_section_nodes(html)
+                ]
+            }
+        ),
         encoding="utf-8",
     )
     (base / "target.pdf").write_bytes(b"")
 
-    dummy_png = tmp_path / "dummy.png"
+    dummy_png = tmp_path / f"{name}-dummy.png"
     dummy_png.write_bytes(b"png")
 
     def fake_export(html_path: Path, output_path: Path, environment: dict) -> Path:
@@ -483,13 +517,14 @@ def test_unsupported_defect_is_a_capability_gap_with_no_mutation(offline_state_m
 
 def test_reviewer_unresolved_conflicting_claim_blocks_progress(offline_state_machine, tmp_path) -> None:
     """A reviewer claim that the repaired defect persists which CANNOT be
-    deterministically falsified must end in needs_human_review."""
-    finding = ReviewerFinding(
-        problem="rule placement defect still present, rule sits above the heading",
+    deterministically checked must end in needs_human_review — but the raw
+    observation itself stays recorded."""
+    observation = "rule placement defect still present, rule sits above the heading"
+    finding = _finding(
+        observation=observation,
+        location={"page": 1, "unresolved_region": "lower half of the page"},
         severity="high",
         confidence=0.9,
-        finding_kind="repaired_defect_persists",
-        unresolved_region="lower half of the page",
     )
     out = tmp_path / "run"
     run_dir, terminal = run_d0(
@@ -500,20 +535,23 @@ def test_reviewer_unresolved_conflicting_claim_blocks_progress(offline_state_mac
     assert manifest["active_layout_version_id"] == "layout_v1"
     assert manifest["pending_candidate_id"] is None
     review = json.loads((run_dir / "review_attempt_1.json").read_text())
-    assert review["findings"][0]["verdict"] == "unresolved"
+    entry = review["findings"][0]
+    assert entry["resolution"]["hypothesis_status"] == "unresolved"
+    assert entry["resolution"]["observation_status"] == "recorded"
+    assert entry["finding"]["observation"] == observation
+    assert (run_dir / "review_raw_attempt_1.json").exists()
 
 
-def test_reviewer_falsifiable_persistent_claim_is_refuted_by_measurement(
+def test_reviewer_falsifiable_persistent_claim_is_rejected_by_measurement(
     offline_state_machine, tmp_path
 ) -> None:
     """A canonical-node claim that the defect persists IS deterministically
-    falsified by the measured candidate facts, so the run proceeds."""
-    finding = ReviewerFinding(
-        problem="the section rule still sits above the heading",
+    rejected by the measured candidate facts; the observation is retained and
+    the run proceeds to owner review."""
+    finding = _finding(
+        observation="the section rule still sits above the heading",
         severity="high",
         confidence=0.8,
-        finding_kind="repaired_defect_persists",
-        node_id="section.skills.heading",
     )
     out = tmp_path / "run"
     run_dir, terminal = run_d0(
@@ -521,8 +559,108 @@ def test_reviewer_falsifiable_persistent_claim_is_refuted_by_measurement(
     )
     assert terminal == "awaiting_owner_review"
     review = json.loads((run_dir / "review_attempt_1.json").read_text())
-    assert review["findings"][0]["verdict"] == "falsified"
-    assert review["findings"][0]["resolved_node_id"] == "section.skills.heading"
+    entry = review["findings"][0]
+    assert entry["resolution"]["hypothesis_status"] == "rejected"
+    assert entry["resolution"]["observation_status"] == "recorded"
+    assert entry["resolution"]["follow_up"] == "inspect_region"
+    assert entry["resolved_node_id"] == "section.skills.heading"
+    assert entry["finding"]["observation"] == "the section rule still sits above the heading"
+
+
+def test_d0_r_regression_observation_survives_rejected_hypothesis(
+    monkeypatch, tmp_path
+) -> None:
+    """D0-R regression (D1-0 work order): the reviewer observes horizontal
+    lines above the EXPERIENCE heading and hypothesizes the section rule
+    repair failed; deterministic geometry proves the actual section rule is
+    below the heading within tolerance, so the hypothesis is REJECTED while
+    the observation itself remains recorded and the run proceeds to owner
+    review. The output must not imply the visible observation was falsified."""
+    base = _script_offline_layer(monkeypatch, tmp_path, "base-ed", EXPERIENCE_HTML)
+    observation = (
+        "Two horizontal lines are visible above the Experience heading "
+        "in the generated page."
+    )
+    finding = _finding(
+        observation=observation,
+        location={"page": 1, "node_id": "section.experience.heading"},
+        comparison={
+            "target": "No equivalent double line is visible in the same heading region.",
+            "generated": "Two full-width lines appear immediately above Experience.",
+        },
+        hypothesis={
+            "kind": "repaired_defect_persists",
+            "suspected_owner": "section_rule",
+            "explanation": "The lines may belong to the section heading rule; the repair may have failed.",
+        },
+        severity="medium",
+        confidence=0.6,
+    )
+    out = tmp_path / "run"
+    # scripted agents must target the experience node of this base run
+    diagnosis = d.DefectDiagnosis(
+        defect_class=d.DEFECT_CLASS,
+        node_ids=["section.experience.heading"],
+        claim="section rules placed above headings; target places them below",
+        measurable=True,
+    )
+    proposal = _edit(scope="node").model_copy(update={"target_node_id": "section.experience.heading"})
+    run_dir, terminal = run_d0(
+        base,
+        out,
+        live=False,
+        offline_agents=ScriptedAgents(
+            diagnosis=diagnosis, proposal=proposal, review_findings=[finding]
+        ),
+    )
+    assert terminal == "awaiting_owner_review"
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    # candidate stays INACTIVE at the explicit owner boundary
+    assert manifest["active_layout_version_id"] == "layout_v1"
+    assert manifest["pending_candidate_id"] == "layout_v2_candidate"
+    assert manifest["review_contract"] == d.REVIEW_CONTRACT_VERSION
+
+    resolved = json.loads((run_dir / "review_attempt_1.json").read_text())
+    assert resolved["review_contract"] == d.REVIEW_CONTRACT_VERSION
+    entry = resolved["findings"][0]
+    assert entry["finding_id"] == "review.finding.1"
+    assert entry["finding"]["observation"] == observation  # verbatim, never rewritten
+    assert entry["resolved_node_id"] == "section.experience.heading"
+    resolution = entry["resolution"]
+    assert resolution["observation_status"] == "recorded"
+    assert resolution["hypothesis_status"] == "rejected"
+    assert resolution["follow_up"] == "inspect_region"
+    assert "below the heading" in resolution["reason"]
+    assert "remains recorded" in resolution["reason"]
+    assert resolution["evidence_ids"]
+
+    raw = json.loads((run_dir / "review_raw_attempt_1.json").read_text())
+    assert raw["findings"][0]["observation"] == observation
+
+    md = (run_dir / "review_owner_attempt_1.md").read_text(encoding="utf-8")
+    assert observation in md
+    assert "**rejected**" in md
+    assert "inspect_region" in md
+    assert "never deletes, suppresses, or" in md  # observation not marked false
+    for column in (
+        "Location",
+        "Observation",
+        "Target vs generated",
+        "Reviewer hypothesis (confidence)",
+        "Deterministic resolution",
+        "Recommended follow-up",
+    ):
+        assert column in md
+
+    trace = json.loads((run_dir / "trace.json").read_text())
+    actions = [e["action"] for e in trace]
+    assert "review" in actions  # raw reviewer output in the trace
+    assert "review_resolution" in actions  # resolved record in the trace
+    raw_trace = next(e for e in trace if e["action"] == "review")
+    assert raw_trace["agent"] == "visual_reviewer"
+    assert raw_trace["output_artifact"]
+    trace_raw = json.loads((run_dir / raw_trace["output_artifact"]).read_text())
+    assert trace_raw["findings"][0]["observation"] == observation
 
 
 def test_reviewer_infrastructure_failure_blocks_progress(offline_state_machine, tmp_path) -> None:
