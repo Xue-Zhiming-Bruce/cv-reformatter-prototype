@@ -109,6 +109,15 @@ measured values remain the reference for the live run below.
    `docs/testing/TEST_STRUCTURE.md` (runner, fixture source, offline/live
    behavior, output directory, owner-review requirement). No new result
    schema or output root.
+10. **Final-pass corrections.** `ReviewerFinding.finding_kind` is a required
+   typed classification (`repaired_defect_persists` | `other`, no default):
+   an omitted or invalid classification fails schema validation instead of
+   silently downgrading a repaired-defect claim to not_measurable.
+   `RunBudget` is a hard pre-execution cap — model/tool/raw-evidence actions
+   are rejected before incrementing, so persisted executed counts never
+   exceed the configured limits (PydanticAI UsageLimits kept as defense in
+   depth); exhaustion still ends at `needs_human_review` with the candidate
+   inactive.
 
 ## 4. Live run evidence (reused, not regenerated)
 
@@ -208,7 +217,16 @@ For a fresh owner-review run:
 .venv/bin/python -m tests.experiments.d_pipeline --decide <run_dir> --decision accept|reject
 ```
 
-## 9. What remains unverified
+## 9. Scope: what is explicitly deferred beyond D0
+
+D0 does **not** implement a general typed PipelineDState contract, a general
+EvidenceRequest mechanism, or a raw-Adobe-evidence inspection capability.
+The evidence tools are read-only functions over this run's measured facts,
+and the state machine is specific to the bounded rule-placement workflow.
+Building those generalizations is deferred; this experiment tests only the
+bounded rule-placement repair workflow described above.
+
+## 10. What remains unverified
 
 1. **Live-agent behavior under the corrected flow** — the 5-request
    envelope, handoff unwrapping, and DeepSeek thinking-mode settings are

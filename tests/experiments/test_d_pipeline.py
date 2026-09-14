@@ -160,31 +160,62 @@ def test_policy_rejects_unknown_node(tmp_path) -> None:
 # --- strict reviewer schema -----------------------------------------------------
 
 
-def test_reviewer_finding_requires_region() -> None:
+def test_reviewer_finding_requires_region_and_classification() -> None:
     with pytest.raises(ValidationError):
         ReviewerFinding(problem="x", severity="low", confidence=0.5)
     with pytest.raises(ValidationError):
         ReviewerFinding(problem="x", severity="urgent", confidence=0.5, node_id="section.skills.heading")
-    finding = ReviewerFinding(problem="x", severity="low", confidence=0.5, unresolved_region="bottom")
+    finding = ReviewerFinding(
+        problem="x", severity="low", confidence=0.5, finding_kind="other", unresolved_region="bottom"
+    )
     assert finding.node_id is None
+
+
+def test_reviewer_finding_classification_is_required_and_typed() -> None:
+    """An absent finding_kind must fail schema validation — it can never
+    silently downgrade a repaired-defect claim to not_measurable."""
+    with pytest.raises(ValidationError):
+        ReviewerFinding(
+            problem="the section rule still sits above the heading",
+            severity="high",
+            confidence=0.9,
+            node_id="section.skills.heading",
+        )
+    with pytest.raises(ValidationError):
+        ReviewerFinding(
+            problem="the section rule still sits above the heading",
+            severity="high",
+            confidence=0.9,
+            finding_kind="still_broken",
+            node_id="section.skills.heading",
+        )
+    ok = ReviewerFinding(
+        problem="rule color differs from target",
+        severity="low",
+        confidence=0.6,
+        finding_kind="other",
+        unresolved_region="under headings",
+    )
+    assert ok.finding_kind == "other"
 
 
 def test_reviewer_node_resolver_maps_role_and_verbatim(tmp_path) -> None:
     store = _offline_store(tmp_path)
     canonical = ReviewerFinding(
-        problem="p", severity="low", confidence=0.5, node_id="section.skills.heading"
+        problem="p", severity="low", confidence=0.5, finding_kind="other", node_id="section.skills.heading"
     )
     assert d._resolve_finding_node(store, canonical) == "section.skills.heading"
     by_role = ReviewerFinding(
         problem="p",
         severity="low",
         confidence=0.5,
+        finding_kind="other",
         role="section_heading",
         heading_verbatim="Education",
     )
     assert d._resolve_finding_node(store, by_role) == "section.education.heading"
     invented = ReviewerFinding(
-        problem="p", severity="low", confidence=0.5, node_id="generated:section_rules"
+        problem="p", severity="low", confidence=0.5, finding_kind="other", node_id="generated:section_rules"
     )
     assert d._resolve_finding_node(store, invented) is None
 
@@ -396,7 +427,8 @@ def test_model_budget_exhaustion_produces_needs_human_review(offline_state_machi
     )
     assert terminal == "needs_human_review"
     manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["budget"]["model_request_count"] > manifest["budget"]["max_model_requests"]
+    # hard pre-execution cap: executed counts never exceed the configured limit
+    assert manifest["budget"]["model_request_count"] == manifest["budget"]["max_model_requests"]
     assert manifest["budget"]["calls_by_agent"]["evidence_investigator"] == 1
     assert manifest["active_layout_version_id"] == "layout_v1"
     notes = [s["note"] for s in manifest["state_history"]]
@@ -410,7 +442,7 @@ def test_tool_budget_exhaustion_produces_needs_human_review(offline_state_machin
     )
     assert terminal == "needs_human_review"
     manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["budget"]["tool_call_count"] > manifest["budget"]["max_tool_calls"]
+    assert manifest["budget"]["tool_call_count"] == manifest["budget"]["max_tool_calls"]
     assert manifest["active_layout_version_id"] == "layout_v1"
 
 
@@ -456,8 +488,8 @@ def test_reviewer_unresolved_conflicting_claim_blocks_progress(offline_state_mac
         problem="rule placement defect still present, rule sits above the heading",
         severity="high",
         confidence=0.9,
+        finding_kind="repaired_defect_persists",
         unresolved_region="lower half of the page",
-        claims_repaired_defect_persists=True,
     )
     out = tmp_path / "run"
     run_dir, terminal = run_d0(
@@ -480,8 +512,8 @@ def test_reviewer_falsifiable_persistent_claim_is_refuted_by_measurement(
         problem="the section rule still sits above the heading",
         severity="high",
         confidence=0.8,
+        finding_kind="repaired_defect_persists",
         node_id="section.skills.heading",
-        claims_repaired_defect_persists=True,
     )
     out = tmp_path / "run"
     run_dir, terminal = run_d0(

@@ -183,16 +183,20 @@ class DefectDiagnosis(BaseModel):
 class ReviewerFinding(BaseModel):
     """One visual-reviewer finding. `node_id` must be a canonical stable node
     id from the run's node inventory; if the reviewer cannot map its region,
-    it must say so via `unresolved_region` instead of inventing an id."""
+    it must say so via `unresolved_region` instead of inventing an id.
+    `finding_kind` is a REQUIRED typed classification: a finding about the
+    repaired defect must be declared as such — there is no default, so an
+    omitted or invalid classification fails schema validation instead of
+    silently becoming not_measurable."""
 
     problem: str
     severity: Literal["low", "medium", "high"]
     confidence: float = Field(ge=0.0, le=1.0)
+    finding_kind: Literal["repaired_defect_persists", "other"]
     node_id: str | None = None
     role: Literal["section_heading", "other"] | None = None
     heading_verbatim: str | None = None
     unresolved_region: str | None = None
-    claims_repaired_defect_persists: bool = False
 
     @model_validator(mode="after")
     def _region_identified(self) -> "ReviewerFinding":
@@ -295,6 +299,13 @@ class RunBudget:
         return self.max_model_requests - self.model_requests
 
     def spend_model(self, agent: str, requests: int = 1, usage: Any = None) -> None:
+        """Hard pre-execution cap: reject BEFORE incrementing when the action
+        would exceed the limit, so persisted executed counts never do."""
+        if self.model_requests + requests > self.max_model_requests:
+            raise BudgetExhausted(
+                f"global model budget exhausted: {self.model_requests}+{requests} "
+                f"would exceed {self.max_model_requests}"
+            )
         self.model_requests += requests
         self.calls_by_agent[agent] += requests
         self.usage["requests"] += requests
@@ -302,25 +313,22 @@ class RunBudget:
             self.usage["input_tokens"] += int(getattr(usage, "input_tokens", 0) or 0)
             self.usage["output_tokens"] += int(getattr(usage, "output_tokens", 0) or 0)
             self.usage["tool_calls"] += int(getattr(usage, "tool_calls", 0) or 0)
-        if self.model_requests > self.max_model_requests:
-            raise BudgetExhausted(
-                f"global model budget exhausted: {self.model_requests} > {self.max_model_requests}"
-            )
 
     def spend_tool(self, tool: str) -> None:
+        """Hard pre-execution cap, as spend_model."""
+        if self.tool_calls + 1 > self.max_tool_calls:
+            raise BudgetExhausted(
+                f"global tool budget exhausted: {self.tool_calls}+1 would exceed {self.max_tool_calls}"
+            )
         self.tool_calls += 1
         self.calls_by_tool[tool] += 1
-        if self.tool_calls > self.max_tool_calls:
-            raise BudgetExhausted(
-                f"global tool budget exhausted: {self.tool_calls} > {self.max_tool_calls}"
-            )
 
     def spend_raw_evidence_expansion(self) -> None:
-        self.raw_evidence_expansion_count += 1
-        if self.raw_evidence_expansion_count > MAX_RAW_EVIDENCE_EXPANSIONS_PER_ATTEMPT * max(
-            1, self.repair_attempt_count
-        ):
+        """Hard pre-execution cap on raw-evidence expansions (≤1 per attempt)."""
+        allowed = MAX_RAW_EVIDENCE_EXPANSIONS_PER_ATTEMPT * max(1, self.repair_attempt_count)
+        if self.raw_evidence_expansion_count + 1 > allowed:
             raise BudgetExhausted("raw-evidence expansion budget exceeded")
+        self.raw_evidence_expansion_count += 1
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -963,6 +971,8 @@ def build_orchestrator_tools(
     async def delegate_evidence_investigation(ctx: RunContext[Any], question: str) -> str:
         """Delegate a bounded read-only diagnosis to the evidence investigator."""
         budget.spend_tool("delegate_evidence_investigation")
+        if budget.remaining_model_requests() < 1:
+            raise BudgetExhausted("no model budget left for the evidence investigator")
         trace.add(
             agent="main_orchestrator",
             phase=store.current_phase,
@@ -995,6 +1005,8 @@ def build_orchestrator_tools(
     async def delegate_repair_proposal(ctx: RunContext[Any], instruction: str) -> str:
         """Delegate a bounded SetHeadingRule repair proposal to the layout repair agent."""
         budget.spend_tool("delegate_repair_proposal")
+        if budget.remaining_model_requests() < 1:
+            raise BudgetExhausted("no model budget left for the layout repair agent")
         trace.add(
             agent="main_orchestrator",
             phase=store.current_phase,
@@ -1100,8 +1112,9 @@ class SpecialistAgents:
                 "'section.<name>.heading'); if you cannot map your observation to "
                 "one, set unresolved_region instead — never invent an id. For "
                 "role='section_heading' findings you may add heading_verbatim. "
-                "When a finding asserts that the repaired rule-placement defect "
-                "is still present, set claims_repaired_defect_persists=true. Do "
+                "Every finding MUST set finding_kind: 'repaired_defect_persists' "
+                "when it asserts the repaired rule-placement defect is still "
+                "present, otherwise 'other'. Do "
                 "not demand target-sample facts as corrections; candidate wording "
                 "is verbatim source content."
             ),
@@ -1785,7 +1798,7 @@ def _run_visual_reviewer(
     for finding in findings.findings:
         resolved_node = _resolve_finding_node(store, finding)
         verdict = "not_measurable"
-        if finding.claims_repaired_defect_persists:
+        if finding.finding_kind == "repaired_defect_persists":
             if resolved_node is None:
                 # an unresolved claim that the repaired defect persists cannot
                 # be falsified → conflict (never silently downgraded)
