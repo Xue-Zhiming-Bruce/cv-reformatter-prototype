@@ -45,9 +45,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import zipfile
 from datetime import UTC, datetime
+from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -61,7 +63,7 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 from pydantic import Field
 
-from tests.experiments.a_pipeline import RUNS, _analyze_target, _render_pages, build_format_summary
+from tests.experiments.a_pipeline import RUNS, _analyze_target, _median, _render_pages, build_format_summary
 from tests.experiments.c2_pipeline import (
     C2LayoutState,
     C2_0B_PAIRS,
@@ -74,6 +76,9 @@ from tests.experiments.c2_pipeline import (
 )
 from tests.experiments.c2_renderer import (
     _norm,
+    _rendered_heading_positions,
+    _rendered_rule_extents,
+    _rule_in_section_region,
     blank_page_gate,
     compile_render_plan,
 )
@@ -96,6 +101,30 @@ SPACING_QUANTUM = 20.0
 UNMEASURED_COLOR_HEX = "000000"
 ENTRY_LEFT_COLUMN_FRACTION = 0.70
 
+# ---------------------------------------------------------------------------
+# Rendered-geometry measurement and bounded fitting (owner work order)
+# ---------------------------------------------------------------------------
+# Comparison unit: points. Word units are converted only at the compiler
+# boundary (1 pt = 20 twips, 1 pt = 12,700 EMU, half-point font sizes,
+# eighth-point border widths). Tolerances documented BEFORE evaluating
+# results — the smallest defensible values (mirroring the C2-0b Chrome
+# vector-quantization tolerance where the same quantization applies):
+TOLERANCE_PT = {
+    "page_geometry": 0.5,
+    "rule_x_extent": 1.0,
+    "rule_stroke": 0.5,
+    "local_position": 1.5,
+    "local_gap": 1.5,
+    "font_size": 0.5,
+    "column_right_edge": 1.5,
+}
+MAX_FITTING_ITERATIONS = 3
+# A trailing page is classified sparse when its content extends less than this
+# fraction of the writable height below the top margin (documented before
+# evaluation; the frozen C1 D->E second page measures ~0.44, so appended
+# overflow sections never trip it).
+SPARSE_TRAILING_PAGE_FRACTION = 0.30
+
 
 # ---------------------------------------------------------------------------
 # Source presentation markers vs candidate content (work order Part 2.3)
@@ -108,6 +137,100 @@ ENTRY_LEFT_COLUMN_FRACTION = 0.70
 # evidence they are presentation — so they are always preserved as content.
 BULLET_GLYPH_MARKERS = ("•", "◦", "·", "▪")
 DASH_MARKERS = ("-", "–", "—")
+
+
+# ---------------------------------------------------------------------------
+# Truthful typography: requested vs written vs rendered fonts (work order Part 3)
+# ---------------------------------------------------------------------------
+
+_FONT_SEARCH_DIRS = (
+    Path("/System/Library/Fonts"),
+    Path("/System/Library/Fonts/Supplemental"),
+    Path("/Library/Fonts"),
+    Path.home() / "Library/Fonts",
+    Path("/usr/share/fonts"),
+    Path("/usr/local/share/fonts"),
+)
+# Documented family alias tried before the portable fallback ("Charter BT"
+# measures the installed "Charter" family).
+FAMILY_ALIASES = {"charter bt": "charter"}
+
+
+@lru_cache(maxsize=1)
+def installed_font_families() -> frozenset[str]:
+    """Lowercase stems of locally installed font files (no network access)."""
+    families: set[str] = set()
+    for directory in _FONT_SEARCH_DIRS:
+        if not directory.is_dir():
+            continue
+        for path in directory.rglob("*"):
+            if path.suffix.casefold() in {".ttf", ".otf", ".ttc"}:
+                families.add(path.stem.casefold())
+    return frozenset(families)
+
+
+def _font_is_installed(family: str) -> bool:
+    key = family.casefold().replace(" ", "")
+    installed = installed_font_families()
+    if key in installed:
+        return True
+    alias = FAMILY_ALIASES.get(key)
+    if alias and alias in installed:
+        return True
+    first = key.split("_")[0] if "_" in key else None
+    return bool(first) and first in installed
+
+
+def resolve_written_fonts(state: C2LayoutState) -> dict[str, dict[str, Any]]:
+    """The documented portable font policy, per measured style token.
+
+    Inspects installed fonts first (no network). An installed measured family
+    is written verbatim; an unavailable one is written as the portable
+    sans-serif substitute ("Arial" — available on the pinned owner-review
+    renderer and metric-compatible with Liberation Sans elsewhere) and
+    classified ``substituted``. The requested measured family is always
+    recorded separately, so substituted typography can never pass as exact.
+    """
+    resolved: dict[str, dict[str, Any]] = {}
+    for token in state.styles:
+        requested = token.font_family
+        substituted = not _font_is_installed(requested)
+        resolved[token.style_id] = {
+            "requested": requested,
+            "written": "Arial" if substituted else requested,
+            "substituted": substituted,
+            "detail": (
+                f"requested {requested!r} is not installed in the pinned preview "
+                "environment; documented portable sans fallback 'Arial' written"
+                if substituted
+                else f"{requested!r} installed"
+            ),
+        }
+    return resolved
+
+
+def _half_point_round(size_pt: float) -> float:
+    """OOXML stores font sizes in half-points; round to the NEAREST half
+    point at the compiler boundary (Word quantization, documented)."""
+    return round(float(size_pt) * 2.0) / 2.0
+
+
+def normalize_font_family(fontname: str | None) -> str | None:
+    """Rendered PDF font name -> comparable family name.
+
+    Strips the embedded-subset prefix (``CAAAAA+``), the style suffix
+    (``-Bold``), and PostScript-only decorations (``MT``), lowercased and
+    space-free, so a rendered name can be compared with the written family
+    deterministically."""
+    if not fontname:
+        return None
+    name = fontname.split("+")[-1]
+    base = name.split("-")[0]
+    folded = base.casefold().replace(" ", "")
+    for suffix in ("mt", "ps"):
+        if folded.endswith(suffix):
+            folded = folded[: -len(suffix)]
+    return folded
 
 
 def strip_presentation_marker(text: str, native_bullet: bool) -> str:
@@ -126,6 +249,57 @@ def strip_presentation_marker(text: str, native_bullet: bool) -> str:
         ):
             return text[len(marker):].lstrip()
     return text
+
+
+# ---------------------------------------------------------------------------
+# Bounded deterministic fitting (work order Part 5)
+# ---------------------------------------------------------------------------
+
+
+class BulletTiers(StateModel):
+    """Target-measured absolute bullet anchors (page x, points) supplied by the
+    fitter when the state declares no bullet tiers."""
+
+    marker_x0_pt: float
+    text_x0_pt: float
+
+
+class SectionFit(StateModel):
+    """Per-section fitting corrections (documented translation rules only).
+
+    Section rhythm is a per-section declared measurement, so every spacing/
+    indent/rule control is section-scoped: a failing gap moves ONLY its own
+    section's control (a shared control would triple-apply each section's
+    delta and oscillate)."""
+
+    node_id: str
+    entry_right_edge_pt: float = 0.0  # right-column width correction
+    entry_table_indent_pt: float = 0.0  # table indent correction
+    item_left_indent_pt: float | None = None  # absolute item indent (items sections)
+    bullet_marker_correction_pt: float = 0.0
+    bullet_text_correction_pt: float = 0.0
+    inter_entry_pt: float = 0.0
+    heading_space_before_pt: float = 0.0
+    heading_space_after_pt: float = 0.0
+    heading_border_space_pt: float = 0.0
+    rule_left_indent_pt: float = 0.0
+    rule_right_indent_pt: float = 0.0
+    bullet_tiers: BulletTiers | None = None
+
+
+class FitAdjustments(StateModel):
+    """Bounded deterministic DOCX fitting corrections.
+
+    Every value comes from a measured target/state value minus the measured
+    rendered delta, applied through a documented renderer-neutral/DOCX
+    translation rule; zero corrections leave the declared compiler behavior
+    untouched. The fitter never invents controls outside this model.
+    """
+
+    sections: dict[str, SectionFit] = Field(default_factory=dict)
+
+    def section(self, node_id: str) -> SectionFit:
+        return self.sections.setdefault(node_id, SectionFit(node_id=node_id))
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +363,7 @@ class ConversionCompatibilityReport(StateModel):
     adjusted: list[AdjustedFeature] = Field(default_factory=list)
     unsupported: list[UnsupportedFeature] = Field(default_factory=list)
     pagination: PaginationCompatibility | None = None
+    typography: dict[str, Any] | None = None
     content_loss_risk: bool = False
     fallback_applied: list[str] = Field(default_factory=list)
     owner_confirmation_required: bool = False
@@ -199,17 +374,20 @@ class ConversionCompatibilityReport(StateModel):
 # ---------------------------------------------------------------------------
 
 
-def _apply_token(run: Any, token: StyleToken | None) -> None:
+def _apply_token(run: Any, token: StyleToken | None, written_font: str | None = None) -> None:
     """Apply one measured style token to a run as direct formatting.
 
     Documented rules: an unmeasured color renders black (a built-in Word
-    style color such as Heading-1 blue is never inherited), and an
-    unmeasured tier (None token) leaves the run at the paragraph's own
-    controlled defaults."""
+    style color such as Heading-1 blue is never inherited), an unmeasured
+    tier (None token) leaves the run at the paragraph's own controlled
+    defaults, and the run carries the WRITTEN font family (the documented
+    portable fallback when the measured family is not installed) — never a
+    bare family name the pinned renderer would substitute unpredictably."""
     if token is None:
         return
-    run.font.name = token.font_family
-    run.font.size = Pt(round(float(token.font_size_pt), 3))
+    if written_font:
+        run.font.name = written_font
+    run.font.size = Pt(_half_point_round(token.font_size_pt))
     if token.bold:
         run.font.bold = True
     if token.italic:
@@ -261,12 +439,15 @@ def _control_paragraph(
     and indents) must never leak: spacing defaults to 0, line spacing comes
     from the measured token, and widow/orphan control is on."""
     paragraph_format = paragraph.paragraph_format
-    paragraph_format.space_before = Pt(round(float(space_before_pt or 0.0), 3))
-    paragraph_format.space_after = Pt(round(float(space_after_pt or 0.0), 3))
-    if token is not None and token.line_height_pt and token.font_size_pt:
-        paragraph_format.line_spacing = round(
-            float(token.line_height_pt) / float(token.font_size_pt), 3
-        )
+    # Word's spacing measures are unsigned twips at this boundary; the fitter
+    # clamps at zero (a measured gap cannot go below 0pt).
+    paragraph_format.space_before = Pt(round(max(float(space_before_pt or 0.0), 0.0), 3))
+    paragraph_format.space_after = Pt(round(max(float(space_after_pt or 0.0), 0.0), 3))
+    if token is not None and token.line_height_pt:
+        # Measured line height as an EXACT line height (Word lineRule exact;
+        # the renderer honors the measured points directly instead of
+        # rescaling a multiple by its own substituted font metrics).
+        paragraph_format.line_spacing = Pt(round(float(token.line_height_pt), 3))
     else:
         paragraph_format.line_spacing = 1.0
     paragraph_format.widow_control = True
@@ -300,8 +481,14 @@ def _no_table_borders(table: Any) -> None:
 
 def _fixed_table_layout(table: Any, column_widths_pt: list[float], indent_pt: float) -> None:
     """Fixed layout with deliberate measured column widths and zero cell
-    margins, so the rendered columns match the measured geometry."""
-    tbl_pr = table._tbl.tblPr  # noqa: SLF001
+    margins, so the rendered columns match the measured geometry.
+
+    The tblGrid carries the explicit widths: with fixed layout the pinned
+    renderer lays the table out from the grid (a bare tcW-only table is
+    expanded to the writable page width, which measured wrong in the first
+    corrective preview)."""
+    tbl = table._tbl  # noqa: SLF001
+    tbl_pr = tbl.tblPr
     layout = OxmlElement("w:tblLayout")
     layout.set(qn("w:type"), "fixed")
     tbl_pr.append(layout)
@@ -317,6 +504,19 @@ def _fixed_table_layout(table: Any, column_widths_pt: list[float], indent_pt: fl
         element.set(qn("w:type"), "dxa")
         margins.append(element)
     tbl_pr.append(margins)
+    width = OxmlElement("w:tblW")
+    width.set(qn("w:w"), str(int(round(sum(column_widths_pt) * 20))))
+    width.set(qn("w:type"), "dxa")
+    tbl_pr.append(width)
+    old_grid = tbl.find(qn("w:tblGrid"))
+    if old_grid is not None:
+        tbl.remove(old_grid)
+    grid = OxmlElement("w:tblGrid")
+    for column_width in column_widths_pt:
+        column = OxmlElement("w:gridCol")
+        column.set(qn("w:w"), str(int(round(column_width * 20))))
+        grid.append(column)
+    tbl_pr.addnext(grid)
     for index, width in enumerate(column_widths_pt):
         for cell in table.columns[index].cells:
             cell.width = Pt(round(float(width), 3))
@@ -362,6 +562,7 @@ def _write_text_paragraph(
     text: str,
     token: StyleToken | None,
     *,
+    written_font: str | None = None,
     alignment: str | None = None,
     space_before_pt: float | None = None,
     space_after_pt: float | None = None,
@@ -374,7 +575,7 @@ def _write_text_paragraph(
     paragraph = document.add_paragraph(style=style)
     run = paragraph.add_run(text)
     if token is not None:
-        _apply_token(run, token)
+        _apply_token(run, token, written_font)
     _control_paragraph(
         paragraph,
         token,
@@ -397,18 +598,24 @@ def _write_heading(
     style_token: StyleToken | None,
     rule: dict[str, Any] | None,
     heading_gaps: tuple[float | None, float | None],
+    written_font: str | None = None,
+    adjustments: FitAdjustments | None = None,
+    section_plan: Any = None,
 ) -> Any:
     """Native Word heading paragraph (outline-level editable) with every
     visual property explicitly controlled from the measured state; the
     measured rule renders as a paragraph border with the measured x-extent
     consumed as indents."""
     del label_case  # the state label already carries the measured casing
+    adjustments = adjustments or FitAdjustments()
+    fit = adjustments.section(section_plan.node_id if section_plan is not None else "")
     paragraph = document.add_paragraph(style="Heading 1")
     run = paragraph.add_run(label)
     if style_token is not None:
-        _apply_token(run, style_token)
+        _apply_token(run, style_token, written_font)
     gap_above, gap_below = heading_gaps
     left_indent = right_indent = 0.0
+    border_space = 0.0
     if rule is not None:
         page = state.page
         if rule.get("x0_pt") is not None:
@@ -418,20 +625,34 @@ def _write_heading(
                 float(page.width_pt) - float(page.margin_right_pt) - float(rule["x1_pt"]), 3
             )
         if rule.get("placement") == "below_heading":
+            # gap_above = heading text -> rule; gap_below = rule -> content.
+            border_space = float(rule.get("gap_above_pt") or 0.0)
+            space_after = float(rule.get("gap_below_pt") or gap_below or 0.0)
+        else:
+            # gap_above = content above -> rule; gap_below = rule -> heading.
+            border_space = float(rule.get("gap_below_pt") or 0.0)
+            space_after = float(gap_below or 0.0)
+        border_space = max(0.0, border_space + fit.heading_border_space_pt)
+        if rule.get("placement") == "below_heading":
             _paragraph_border(
-                paragraph, "bottom", float(rule["stroke_pt"]), rule["color_hex"], rule.get("gap_above_pt")
+                paragraph, "bottom", float(rule["stroke_pt"]), rule["color_hex"], border_space
             )
         else:
             _paragraph_border(
-                paragraph, "top", float(rule["stroke_pt"]), rule["color_hex"], rule.get("gap_below_pt")
+                paragraph, "top", float(rule["stroke_pt"]), rule["color_hex"], border_space
             )
+        space_after += fit.heading_space_after_pt
+    else:
+        space_after = float(gap_below or 0.0) + fit.heading_space_after_pt
+    left_indent = round(left_indent + fit.rule_left_indent_pt, 3)
+    right_indent = round(right_indent + fit.rule_right_indent_pt, 3)
     # Headings never orphan: keep with the first content line. Explicit
     # spacing (0 when unmeasured) blocks the built-in Heading 1 defaults.
     _control_paragraph(
         paragraph,
         style_token,
-        space_before_pt=gap_above,
-        space_after_pt=(rule.get("gap_below_pt") if rule and rule.get("placement") == "below_heading" else gap_below),
+        space_before_pt=(gap_above or 0.0) + fit.heading_space_before_pt,
+        space_after_pt=space_after,
         alignment="left",
         keep_with_next=True,
         left_indent_pt=left_indent,
@@ -448,14 +669,19 @@ def _write_entry_table(
     title_token: StyleToken | None,
     detail_token: StyleToken | None,
     meta_token: StyleToken | None,
+    written_fonts: dict[str, str] | None = None,
     space_before_pt: float | None = None,
-) -> None:
+    adjustments: FitAdjustments | None = None,
+) -> list[Any]:
     """One entry's left/right topology as a borderless fixed-layout two-column
     Word table: left column = company/role/degree/detail lines, right column =
     location/dates metadata (right-aligned), preserving the measured target
     topology with fully editable native content. The measured inter-entry
-    rhythm renders as space-before on the entry's first paragraph (tables
-    carry no flow spacing of their own)."""
+    rhythm renders as space AFTER the entry's last paragraph (returned so the
+    caller can set it) — a per-cell space-before would push only the left
+    column down and break the row's internal baseline alignment."""
+    adjustments = adjustments or FitAdjustments()
+    written_fonts = written_fonts or {}
     entry_node = _entry_columns_of(state).get(section_plan.node_id)
     page = state.page
     base_x0 = section_plan.base_x0_pt if section_plan.base_x0_pt is not None else float(page.margin_left_pt)
@@ -470,14 +696,18 @@ def _write_entry_table(
         else float(page.width_pt) - float(page.margin_left_pt) - float(page.margin_right_pt)
     )
     left_width = round(text_width * ENTRY_LEFT_COLUMN_FRACTION, 3)
-    column_widths = [left_width, round(text_width - left_width, 3)]
+    fit = adjustments.section(section_plan.node_id)
+    right_width = max(12.0, text_width - left_width + fit.entry_right_edge_pt)
+    column_widths = [left_width, round(right_width, 3)]
     table = document.add_table(rows=1, cols=2)
     _no_table_borders(table)
     _fixed_table_layout(
-        table, column_widths, indent_pt=round(float(base_x0) - float(page.margin_left_pt), 3)
+        table, column_widths,
+        indent_pt=round(float(base_x0) - float(page.margin_left_pt) + fit.entry_table_indent_pt, 3),
     )
     _rows_cannot_split(table)
     left_cell, right_cell = table.rows[0].cells
+    paragraphs: list[Any] = []
     # Empty cell paragraphs (python-docx seeds one per cell) are reused so no
     # stray empty paragraph enters the reading order.
     first_left = True
@@ -485,13 +715,15 @@ def _write_entry_table(
         paragraph = left_cell.paragraphs[0] if first_left else left_cell.add_paragraph()
         first_left = False
         run = paragraph.add_run(line.text)
-        _apply_token(run, title_token if line_index == 0 else detail_token)
+        token = title_token if line_index == 0 else detail_token
+        _apply_token(run, token, written_fonts.get(token.style_id) if token else None)
         _control_paragraph(
             paragraph,
-            title_token if line_index == 0 else detail_token,
+            token,
             space_before_pt=space_before_pt if line_index == 0 else None,
             keep_with_next=bool(entry.bullet_items or entry.text_lines) or None,
         )
+        paragraphs.append(paragraph)
     if first_left:  # no title lines: drop the seeded empty paragraph text
         left_cell.paragraphs[0].paragraph_format.space_after = Pt(0)
     first_right = True
@@ -499,17 +731,25 @@ def _write_entry_table(
         paragraph = right_cell.paragraphs[0] if first_right else right_cell.add_paragraph()
         first_right = False
         run = paragraph.add_run(line.text)
-        _apply_token(run, meta_token)
+        _apply_token(run, meta_token, written_fonts.get(meta_token.style_id) if meta_token else None)
         _control_paragraph(paragraph, meta_token, alignment="right")
+        paragraphs.append(paragraph)
     if first_right:
         right_cell.paragraphs[0].paragraph_format.space_after = Pt(0)
+    return paragraphs
 
 
-def build_document(state: C2LayoutState, plan: Any) -> Document:
+def build_document(
+    state: C2LayoutState, plan: Any, adjustments: FitAdjustments | None = None
+) -> Document:
     """Compile the render plan into a native DOCX. Deterministic; the state is
-    read-only input; no HTML route; fail closed on a failed plan."""
+    read-only input; no HTML route; fail closed on a failed plan. Optional
+    bounded fitting corrections (see ``FitAdjustments``) shift declared
+    spacing/indent/width values onto the target-measured geometry."""
     if plan.failures:
         raise RuntimeError(f"refusing to render a failed plan: {plan.failures[:3]}")
+    adjustments = adjustments or FitAdjustments()
+    written_fonts = {style_id: value["written"] for style_id, value in resolve_written_fonts(state).items()}
     document = Document()
     # Documented renderer rule: built-in Normal spacing/line defaults can
     # never leak (every paragraph also carries explicit control).
@@ -529,6 +769,19 @@ def build_document(state: C2LayoutState, plan: Any) -> Document:
     section.right_margin = Pt(round(float(page.margin_right_pt), 3))
 
     rules_by_id = {rule.rule_id: rule.model_dump() for rule in state.rules}
+    # Documented renderer rule (like unmeasured-color->black): a candidate-only
+    # overflow heading has no measured gap of its own, so it consumes the
+    # state's MEASURED section rhythm — the median heading gap of the mapped
+    # sections — instead of cramming at 0pt. Measured state value, no per-pair
+    # constant.
+    measured_heading_gaps = [
+        float(section.heading_gap_above_pt)
+        for section in [*plan.sections, *plan.appended_sections]
+        if not section.empty and section.heading_gap_above_pt is not None
+    ]
+    appended_heading_gap = (
+        _median(measured_heading_gaps) if measured_heading_gaps else None
+    )
 
     # Header region: one paragraph per measured row, fields in measured order.
     for row in plan.header_rows:
@@ -538,10 +791,14 @@ def build_document(state: C2LayoutState, plan: Any) -> Document:
         paragraph = document.add_paragraph()
         for index, field in enumerate(row.fields):
             if index:
-                paragraph.add_run(f" {row.separator} " if row.separator else "   ")
+                separator_run = paragraph.add_run(f" {row.separator} " if row.separator else "   ")
+                # Separator runs carry the row token too: an unformatted run
+                # renders at the built-in default size and breaks the row.
+                if token is not None:
+                    _apply_token(separator_run, token, written_fonts.get(row.style_id))
             run = paragraph.add_run(field.text)
             if token is not None:
-                _apply_token(run, token)
+                _apply_token(run, token, written_fonts.get(row.style_id))
         _control_paragraph(
             paragraph, token,
             space_before_pt=row.gap_above_pt,
@@ -555,7 +812,7 @@ def build_document(state: C2LayoutState, plan: Any) -> Document:
                 paragraph.add_run("   ")
             run = paragraph.add_run(field.text)
             if token is not None:
-                _apply_token(run, token)
+                _apply_token(run, token, written_fonts.get(plan.header_overflow.style_id))
         _control_paragraph(
             paragraph, token, space_before_pt=plan.header_overflow.gap_above_pt
         )
@@ -563,6 +820,14 @@ def build_document(state: C2LayoutState, plan: Any) -> Document:
     def emit_section(section_plan: Any) -> None:
         if section_plan.empty:
             return
+        if (
+            section_plan.candidate_only
+            and section_plan.heading_gap_above_pt is None
+            and appended_heading_gap is not None
+        ):
+            section_plan = section_plan.model_copy(
+                update={"heading_gap_above_pt": appended_heading_gap}
+            )
         rule = rules_by_id.get(section_plan.rule_id) if section_plan.rule_id else None
         heading_token = _style_of(state, section_plan.style_id)
         _write_heading(
@@ -573,48 +838,91 @@ def build_document(state: C2LayoutState, plan: Any) -> Document:
             heading_token,
             rule,
             (section_plan.heading_gap_above_pt, section_plan.heading_gap_below_pt),
+            written_font=written_fonts.get(section_plan.style_id) if section_plan.style_id else None,
+            adjustments=adjustments,
+            section_plan=section_plan,
         )
         content_token = _style_of(state, section_plan.content_style_id) or _style_of(state, "style.body")
+        content_written = (
+            written_fonts.get(section_plan.content_style_id)
+            if section_plan.content_style_id
+            else written_fonts.get("style.body")
+        )
         if section_plan.content_kind == "paragraph":
             for line in section_plan.paragraph_lines:
-                _write_text_paragraph(document, line.text, content_token)
+                _write_text_paragraph(document, line.text, content_token, written_font=content_written)
         elif section_plan.content_kind == "entries":
             title_token = _style_of(state, section_plan.title_style_id)
             detail_token = _style_of(state, section_plan.detail_style_id) or title_token
             meta_token = _style_of(state, section_plan.meta_style_id) or detail_token
+            last_paragraph: Any = None
             for entry_index, entry in enumerate(section_plan.entries):
-                space_before = (
+                inter_entry_gap = (
                     section_plan.inter_entry_gap_above_pt if entry_index else None
                 )
+                entry_paragraphs: list[Any] = []
                 if entry.meta_lines:
                     # Left/right topology: borderless two-column table; the
-                    # measured inter-entry rhythm rides on the entry's first
-                    # paragraph (tables carry no flow spacing of their own).
-                    _write_entry_table(
+                    # measured inter-entry rhythm renders as space AFTER the
+                    # entry's last paragraph (a space-before inside the first
+                    # cell would push only the left column down).
+                    entry_paragraphs = _write_entry_table(
                         document, state, section_plan, entry,
                         title_token, detail_token, meta_token,
-                        space_before_pt=space_before,
+                        written_fonts=written_fonts,
+                        adjustments=adjustments,
                     )
                 else:
-                    # No metadata: plain stacked paragraphs (nothing to split).
+                    # No metadata: plain stacked paragraphs (nothing to split),
+                    # still indented onto the measured entry-column x0 so the
+                    # rendered left column matches the target topology.
+                    entry_fit = adjustments.section(section_plan.node_id)
+                    entry_left_indent = round(
+                        float(section_plan.base_x0_pt) - float(state.page.margin_left_pt)
+                        + entry_fit.entry_table_indent_pt,
+                        3,
+                    ) if section_plan.base_x0_pt is not None else None
                     for line_index, line in enumerate(entry.title_lines):
-                        _write_text_paragraph(
-                            document, line.text,
-                            title_token if line_index == 0 else detail_token,
-                            space_before_pt=space_before if line_index == 0 else None,
-                            keep_with_next=bool(entry.bullet_items or entry.text_lines),
+                        entry_paragraphs.append(
+                            _write_text_paragraph(
+                                document, line.text,
+                                title_token if line_index == 0 else detail_token,
+                                written_font=written_fonts.get(
+                                    (section_plan.title_style_id if line_index == 0 else section_plan.detail_style_id)
+                                    or section_plan.title_style_id
+                                ) if (section_plan.title_style_id or section_plan.detail_style_id) else None,
+                                left_indent_pt=entry_left_indent,
+                                keep_with_next=bool(entry.bullet_items or entry.text_lines),
+                            )
                         )
-                if entry.bullet_items:
-                    for item in entry.bullet_items:
-                        _write_native_bullet(document, state, section_plan, item.text, content_token)
+                if inter_entry_gap is not None and last_paragraph is not None:
+                    last_paragraph.paragraph_format.space_after = Pt(
+                        round(float(inter_entry_gap) + adjustments.section(section_plan.node_id).inter_entry_pt, 3)
+                    )
+                for item in entry.bullet_items:
+                    entry_paragraphs.append(
+                        _write_native_bullet(
+                            document, state, section_plan, item.text, content_token,
+                            written_font=content_written, adjustments=adjustments,
+                        )
+                    )
                 for line in entry.text_lines:
-                    _write_text_paragraph(document, line.text, content_token)
+                    entry_paragraphs.append(
+                        _write_text_paragraph(document, line.text, content_token, written_font=content_written)
+                    )
+                last_paragraph = entry_paragraphs[-1] if entry_paragraphs else last_paragraph
         else:  # item_list / inline_items
             for item in section_plan.items:
                 if section_plan.bullet_marker == "bullet":
-                    _write_native_bullet(document, state, section_plan, item.text, content_token)
+                    _write_native_bullet(
+                        document, state, section_plan, item.text, content_token,
+                        written_font=content_written, adjustments=adjustments,
+                    )
                 else:
-                    _write_text_paragraph(document, item.text, content_token)
+                    _write_text_paragraph(
+                        document, item.text, content_token, written_font=content_written,
+                        left_indent_pt=adjustments.section(section_plan.node_id).item_left_indent_pt,
+                    )
 
     for section_plan in plan.sections:
         emit_section(section_plan)
@@ -629,41 +937,57 @@ def _write_native_bullet(
     section_plan: Any,
     text: str,
     token: StyleToken | None,
-) -> None:
+    written_font: str | None = None,
+    adjustments: FitAdjustments | None = None,
+) -> Any:
     """A real Word list paragraph with measured hanging-indent geometry.
 
     A confirmed leading presentation marker (bullet glyph or dash) is
     converted into the native bullet; arrows and all other content stay
     verbatim (see ``strip_presentation_marker``). Measured absolute bullet
     tiers become paragraph indents relative to the page margin."""
+    adjustments = adjustments or FitAdjustments()
     rendered = strip_presentation_marker(text, native_bullet=True)
     paragraph = document.add_paragraph(style="List Bullet")
     run = paragraph.add_run(rendered)
     if token is not None:
-        _apply_token(run, token)
-    left_indent, first_line = _bullet_indents(state, section_plan)
+        _apply_token(run, token, written_font)
+    left_indent, first_line = _bullet_indents(state, section_plan, adjustments)
     _control_paragraph(
         paragraph, token,
         left_indent_pt=left_indent,
         first_line_indent_pt=first_line,
         keep_with_next=False,
     )
+    return paragraph
 
 
-def _bullet_indents(state: C2LayoutState, section_plan: Any) -> tuple[float | None, float | None]:
+def _bullet_indents(
+    state: C2LayoutState, section_plan: Any, adjustments: FitAdjustments | None = None
+) -> tuple[float | None, float | None]:
     """Measured absolute bullet tiers -> paragraph indents (relative to the
-    page margin). Returns (left_indent_pt, first_line_indent_pt)."""
+    page margin); fitter corrections shift them onto the target-measured
+    anchors when the state declares no tiers. Returns
+    (left_indent_pt, first_line_indent_pt)."""
+    adjustments = adjustments or FitAdjustments()
+    fit = adjustments.section(section_plan.node_id)
     if (
         section_plan.bullet_text_x0_pt is None
         or section_plan.base_x0_pt is None
     ):
-        return None, None
+        if fit.bullet_tiers is None:
+            return None, None
+        left = round(float(fit.bullet_tiers.text_x0_pt) - float(state.page.margin_left_pt), 3)
+        first_line = round(float(fit.bullet_tiers.marker_x0_pt) - float(fit.bullet_tiers.text_x0_pt), 3)
+        return left, first_line
     left = round(
-        float(section_plan.bullet_text_x0_pt) - float(state.page.margin_left_pt), 3
+        float(section_plan.bullet_text_x0_pt) - float(state.page.margin_left_pt)
+        + fit.bullet_text_correction_pt, 3
     )
     first_line = (
         round(
-            float(section_plan.bullet_dot_x0_pt) - float(section_plan.bullet_text_x0_pt), 3
+            float(section_plan.bullet_dot_x0_pt) - float(section_plan.bullet_text_x0_pt)
+            + fit.bullet_marker_correction_pt, 3
         )
         if section_plan.bullet_dot_x0_pt is not None
         else None
@@ -794,7 +1118,9 @@ def inspect_docx(path: Path) -> dict[str, Any]:
 def expected_paragraphs(plan: Any) -> list[dict[str, Any]]:
     """The plan's deterministic reading order as the exact expected paragraph
     sequence, each entry carrying the candidate leaves it must render and the
-    RENDERED text (confirmed presentation markers become native bullets)."""
+    RENDERED text (confirmed presentation markers become native bullets).
+    Measurement metadata (``section_node_id``/``style_id``/``tier``) rides on
+    every entry for the rendered-geometry mapping."""
     paragraphs: list[dict[str, Any]] = []
     for row in plan.header_rows:
         if row.fields:
@@ -805,6 +1131,11 @@ def expected_paragraphs(plan: Any) -> list[dict[str, Any]]:
                     "leaf_ids": [field.leaf_id for field in row.fields],
                     "marker_conversions": {},
                     "native_bullet": False,
+                    "section_node_id": None,
+                    "entry_index": None,
+                    "style_id": row.style_id,
+                    "tier": "header",
+                    "alignment": row.alignment,
                 }
             )
     if plan.header_overflow is not None and plan.header_overflow.fields:
@@ -815,6 +1146,11 @@ def expected_paragraphs(plan: Any) -> list[dict[str, Any]]:
                 "leaf_ids": [field.leaf_id for field in plan.header_overflow.fields],
                 "marker_conversions": {},
                 "native_bullet": False,
+                "section_node_id": None,
+                "entry_index": None,
+                "style_id": plan.header_overflow.style_id,
+                "tier": "header",
+                "alignment": "left",
             }
         )
     for section_plan in [*plan.sections, *plan.appended_sections]:
@@ -827,6 +1163,11 @@ def expected_paragraphs(plan: Any) -> list[dict[str, Any]]:
                 "leaf_ids": [],
                 "marker_conversions": {},
                 "native_bullet": False,
+                "section_node_id": section_plan.node_id,
+                "entry_index": None,
+                "style_id": section_plan.style_id,
+                "tier": "heading",
+                "alignment": "left",
             }
         )
         for line in section_plan.paragraph_lines:
@@ -837,14 +1178,19 @@ def expected_paragraphs(plan: Any) -> list[dict[str, Any]]:
                     "leaf_ids": [line.leaf_id],
                     "marker_conversions": {},
                     "native_bullet": False,
+                    "section_node_id": section_plan.node_id,
+                    "entry_index": None,
+                    "style_id": section_plan.content_style_id or "style.body",
+                    "tier": "content",
+                    "alignment": "left",
                 }
             )
-        for entry in section_plan.entries:
+        for entry_index, entry in enumerate(section_plan.entries):
             title_measured = bool(section_plan.title_style_id)
             meta_measured = bool(
                 section_plan.meta_style_id or section_plan.detail_style_id or section_plan.title_style_id
             )
-            for line in entry.title_lines:
+            for line_index, line in enumerate(entry.title_lines):
                 paragraphs.append(
                     {
                         "kind": "entry_title",
@@ -853,6 +1199,14 @@ def expected_paragraphs(plan: Any) -> list[dict[str, Any]]:
                         "marker_conversions": {},
                         "native_bullet": False,
                         "measured_token": title_measured,
+                        "section_node_id": section_plan.node_id,
+                        "entry_index": entry_index,
+                        "style_id": (
+                            section_plan.title_style_id if line_index == 0
+                            else section_plan.detail_style_id or section_plan.title_style_id
+                        ),
+                        "tier": "title" if line_index == 0 else "detail",
+                        "alignment": "left",
                     }
                 )
             for line in entry.meta_lines:
@@ -864,6 +1218,11 @@ def expected_paragraphs(plan: Any) -> list[dict[str, Any]]:
                         "marker_conversions": {},
                         "native_bullet": False,
                         "measured_token": meta_measured,
+                        "section_node_id": section_plan.node_id,
+                        "entry_index": entry_index,
+                        "style_id": section_plan.meta_style_id or section_plan.detail_style_id or section_plan.title_style_id,
+                        "tier": "meta",
+                        "alignment": "right",
                     }
                 )
             for line in entry.bullet_items:
@@ -875,6 +1234,11 @@ def expected_paragraphs(plan: Any) -> list[dict[str, Any]]:
                         "leaf_ids": [line.leaf_id],
                         "marker_conversions": {line.leaf_id: line.text != rendered},
                         "native_bullet": True,
+                        "section_node_id": section_plan.node_id,
+                        "entry_index": entry_index,
+                        "style_id": section_plan.content_style_id or "style.body",
+                        "tier": "bullet",
+                        "alignment": "left",
                     }
                 )
             for line in entry.text_lines:
@@ -885,6 +1249,11 @@ def expected_paragraphs(plan: Any) -> list[dict[str, Any]]:
                         "leaf_ids": [line.leaf_id],
                         "marker_conversions": {},
                         "native_bullet": False,
+                        "section_node_id": section_plan.node_id,
+                        "entry_index": entry_index,
+                        "style_id": section_plan.content_style_id or "style.body",
+                        "tier": "content",
+                        "alignment": "left",
                     }
                 )
         for line in section_plan.items:
@@ -897,9 +1266,82 @@ def expected_paragraphs(plan: Any) -> list[dict[str, Any]]:
                     "leaf_ids": [line.leaf_id],
                     "marker_conversions": {line.leaf_id: line.text != rendered},
                     "native_bullet": native_bullet,
+                    "section_node_id": section_plan.node_id,
+                    "entry_index": None,
+                    "style_id": section_plan.content_style_id or "style.body",
+                    "tier": "item",
+                    "alignment": "left",
                 }
             )
     return paragraphs
+
+
+def expected_visual_rows(plan: Any) -> list[dict[str, Any]]:
+    """The plan's reading order as expected VISUAL rows.
+
+    A table entry renders title_lines[i] (left column) and meta_lines[i]
+    (right column) on ONE visual baseline, so the rendered-geometry mapping
+    consumes them as a single row carrying both tiers. Bullets, text lines,
+    headings, and header rows map one row each, in document order."""
+    rows: list[dict[str, Any]] = []
+    plan_sections = [*plan.sections, *plan.appended_sections]
+    paired_meta_leaf_ids: set[str] = set()
+    for paragraph in expected_paragraphs(plan):
+        if paragraph["section_node_id"] is None:  # header rows / overflow
+            rows.append(paragraph)
+    for section_plan in plan_sections:
+        if section_plan.empty:
+            continue
+        for paragraph in expected_paragraphs(plan):
+            if paragraph["section_node_id"] != section_plan.node_id:
+                continue
+            if paragraph["kind"] == "entry_meta":
+                # Meta lines ride on their title's visual row when paired.
+                if not (set(paragraph["leaf_ids"]) & paired_meta_leaf_ids):
+                    rows.append(paragraph)
+                continue
+            if paragraph["kind"] != "entry_title":
+                rows.append(paragraph)
+            elif not _pair_with_meta(section_plan, paragraph, rows, paired_meta_leaf_ids):
+                rows.append(paragraph)
+    return rows
+
+
+def _pair_with_meta(
+    section_plan: Any,
+    title_paragraph: dict[str, Any],
+    rows: list[dict[str, Any]],
+    paired_meta_leaf_ids: set[str],
+) -> bool:
+    """Fold one title line and its same-index meta line into a single visual
+    row appended to ``rows`` (False when the entry has no meta on that row)."""
+    entry = section_plan.entries[title_paragraph["entry_index"]]
+    title_index = next(
+        (
+            index
+            for index, line in enumerate(entry.title_lines)
+            if line.text == title_paragraph["text"]
+        ),
+        None,
+    )
+    if title_index is None or title_index >= len(entry.meta_lines):
+        return False
+    meta_line = entry.meta_lines[title_index]
+    paired_meta_leaf_ids.add(meta_line.leaf_id)
+    rows.append(
+        {
+            **title_paragraph,
+            "kind": "entry_row",
+            "text": f"{title_paragraph['text']} {meta_line.text}",
+            "meta_text": meta_line.text,
+            "meta_style_id": (
+                section_plan.meta_style_id or section_plan.detail_style_id or section_plan.title_style_id
+            ),
+            "meta_leaf_ids": [meta_line.leaf_id],
+            "leaf_ids": [*title_paragraph["leaf_ids"], meta_line.leaf_id],
+        }
+    )
+    return True
 
 
 def expected_reading_order(plan: Any) -> list[str]:
@@ -1030,6 +1472,1080 @@ def _leaf_text(plan: Any, leaf_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Rendered DOCX geometry: measure -> map -> compare (work order Parts 1-2)
+# ---------------------------------------------------------------------------
+
+# Source/confirmed presentation markers (see ``strip_presentation_marker``)
+# plus the glyphs LibreOffice actually renders for Word List Bullet numbering
+# (the Symbol-font private-use bullet U+F0B7). The rendered set is for
+# measurement and mapping only — it never rewrites candidate content.
+_MARKER_GLYPHS = frozenset((*BULLET_GLYPH_MARKERS, *DASH_MARKERS))
+_RENDERED_MARKER_GLYPHS = frozenset((*_MARKER_GLYPHS, "\uf0b7"))
+
+
+def _strip_leading_marker_glyphs(text: str) -> str:
+    stripped = text.lstrip()
+    while stripped and stripped[0] in _RENDERED_MARKER_GLYPHS:
+        stripped = stripped[1:].lstrip()
+    return stripped
+
+
+def _rendered_lines(pdf_path: Path) -> list[dict[str, Any]]:
+    """Every rendered visual line of a PDF, in document order (page, top).
+
+    Reuses the repository's pdfplumber workflow (no second PDF-analysis
+    stack): ``extract_text_lines`` provides each line's text (with word
+    spacing) AND its char-level geometry, so bullet markers, per-run sizes,
+    and right edges can be measured in points."""
+    import pdfplumber
+
+    lines: list[dict[str, Any]] = []
+    with pdfplumber.open(pdf_path) as document:
+        for page_index, page in enumerate(document.pages, 1):
+            extracted = page.extract_text_lines() or []
+            for extracted_line in sorted(extracted, key=lambda line: (round(line["top"], 1), line["x0"])):
+                chars = [
+                    {
+                        "text": char["text"],
+                        "x0": float(char["x0"]),
+                        "x1": float(char["x1"]),
+                        "bottom": float(char["bottom"]),
+                        "size": float(char["size"]),
+                        "font": str(char["fontname"]),
+                    }
+                    for char in sorted(extracted_line["chars"], key=lambda char: char["x0"])
+                ]
+                lines.append(
+                    {
+                        "page": page_index,
+                        "top": round(float(extracted_line["top"]), 3),
+                        "bottom": round(max(char["bottom"] for char in chars), 3),
+                        "x0": round(min(char["x0"] for char in chars), 3),
+                        "x1": round(max(char["x1"] for char in chars), 3),
+                        "size": round(chars[0]["size"], 3),
+                        "font": chars[0]["font"],
+                        "text": extracted_line["text"].strip(),
+                        "chars": chars,
+                    }
+                )
+    return lines
+
+
+def _line_record(page_index: int, top: float, cluster: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "page": page_index,
+        "top": round(top, 3),
+        "bottom": round(max(char["bottom"] for char in cluster), 3),
+        "x0": round(min(char["x0"] for char in cluster), 3),
+        "x1": round(max(char["x1"] for char in cluster), 3),
+        "size": round(cluster[0]["size"], 3),
+        "font": cluster[0]["font"],
+        "text": "".join(char["text"] for char in cluster).strip(),
+        "chars": cluster,
+    }
+
+
+def _text_key(value: str) -> str:
+    """Wrap-tolerant text key for line mapping: the pinned renderer may break
+    a paragraph mid-word (e.g. 'a t|ry-before'), so the normalized comparison
+    key drops whitespace entirely (case- and separator-insensitive). The
+    content-accounting gate still verifies the leaf text exactly, including
+    its inner spaces; this key only decides WHICH lines carry a row."""
+    return re.sub(r"\s+", "", _norm(value))
+
+
+def map_rendered_to_expected(plan: Any, lines: list[dict[str, Any]]) -> dict[str, Any]:
+    """Deterministic node mapping (work order Part 2): match the rendered PDF's
+    visual lines back to the plan's expected visual rows — candidate leaf text,
+    document order, and (for bullets) the leading native marker; NO LLM/VLM
+    participates. Long paragraphs consume consecutive wrapped lines until the
+    normalized text matches; a line that stops being a prefix of the expected
+    text fails the mapping (an unmappable required row never disappears)."""
+    rows = expected_visual_rows(plan)
+    pointer = 0
+    mapped: list[dict[str, Any]] = []
+    unmapped: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        expected = _text_key(row["text"])
+        if not expected:
+            continue
+        start = pointer
+        consumed: list[dict[str, Any]] = []
+        accumulated: list[str] = []
+        while pointer < len(lines):
+            text = lines[pointer]["text"]
+            if row.get("native_bullet"):
+                text = _strip_leading_marker_glyphs(text)
+            accumulated.append(text)
+            pointer += 1
+            normalized = _text_key(" ".join(accumulated))
+            if normalized == expected:
+                consumed = lines[start:pointer]
+                break
+            if not expected.startswith(normalized):
+                break
+        if consumed:
+            mapped.append({**row, "expected_index": index, "lines": consumed})
+        else:
+            pointer = start
+            unmapped.append(
+                {
+                    "expected_index": index,
+                    "kind": row["kind"],
+                    "expected_text": row["text"],
+                    "section_node_id": row.get("section_node_id"),
+                    "detail": "no rendered line sequence matched this required row",
+                }
+            )
+    leftover = [line for line in lines[pointer:] if _norm(line["text"])]
+    return {
+        "passed": not unmapped and not leftover,
+        "mapped": mapped,
+        "unmapped": unmapped,
+        "unexpected_lines": [
+            {"page": line["page"], "top": line["top"], "text": line["text"][:80]}
+            for line in leftover
+        ],
+    }
+
+
+def measure_rendered_geometry(pdf_path: Path, plan: Any, state: C2LayoutState) -> dict[str, Any]:
+    """Measured RENDERED geometry of the pinned renderer's preview PDF, in
+    points (work order Part 1). Nothing here is inferred from source code:
+    every value is measured from the PDF the owner-review renderer produced."""
+    import pdfplumber
+
+    lines = _rendered_lines(pdf_path)
+    mapping = map_rendered_to_expected(plan, lines)
+    rules = _rendered_rule_extents(pdf_path)
+    with pdfplumber.open(pdf_path) as document:
+        pages = [
+            {"page": index, "width_pt": round(float(page.width), 3), "height_pt": round(float(page.height), 3)}
+            for index, page in enumerate(document.pages, 1)
+        ]
+    page = state.page
+    writable = float(page.height_pt) - float(page.margin_top_pt) - float(page.margin_bottom_pt)
+    sparse_trailing = None
+    if len(pages) > 1:
+        last_page = pages[-1]["page"]
+        content_bottom = max(
+            (char["bottom"] for line in lines if line["page"] == last_page for char in line["chars"]),
+            default=0.0,
+        )
+        content_bottom = max(
+            content_bottom,
+            max((rule["top_pt"] for rule in rules if rule["page"] == last_page), default=0.0),
+        )
+        extent = content_bottom - float(page.margin_top_pt)
+        ratio = round(extent / writable, 4) if writable > 0 else None
+        sparse_trailing = {
+            "page": last_page,
+            "content_extent_pt": round(extent, 3),
+            "writable_height_pt": round(writable, 3),
+            "fraction": ratio,
+            "sparse": bool(ratio is not None and ratio < SPARSE_TRAILING_PAGE_FRACTION),
+        }
+    return {
+        "measured_from": "docx preview PDF (pinned LibreOffice renderer), pdfplumber, points",
+        "page_count": len(pages),
+        "pages": pages,
+        "line_count": len(lines),
+        "lines": [
+            {key: line[key] for key in ("page", "top", "bottom", "x0", "x1", "size", "font", "text")}
+            for line in lines
+        ],
+        "mapping": mapping,
+        "rules": rules,
+        "sparse_trailing_page": sparse_trailing,
+    }
+
+
+def measure_target_geometry(target_pdf: Path, state: C2LayoutState, plan: Any) -> dict[str, Any]:
+    """Measured TARGET geometry in points (work order loop step 2), per mapped
+    section: heading text box, rule placement/extent, content start x, entry
+    columns, bullet anchors. Node-local invariants only — never absolute page
+    y across unrelated candidate content. Evaluation measurement only; the
+    authoritative state JSON is never mutated."""
+    plan_sections = [*plan.sections, *plan.appended_sections]
+    section_plans = {section.node_id: section for section in plan_sections if not section.empty}
+    labels = [section.label for section in section_plans.values()]
+    positions = _rendered_heading_positions(target_pdf, labels)
+    # Region boundaries come from ALL target headings (mapped and unresolved
+    # alike): an empty section's heading still bounds its neighbour's region.
+    boundary_positions = _rendered_heading_positions(
+        target_pdf,
+        [node.label for node in state.nodes if node.kind == "heading" and node.label],
+    )
+    rules = _rendered_rule_extents(target_pdf)
+    lines = _rendered_lines(target_pdf)
+
+    def line_index_of(found: tuple[int, float]) -> int | None:
+        page, top = found
+        return next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if line["page"] == page and abs(line["top"] - top) <= 1.0
+            ),
+            None,
+        )
+
+    heading_line_index_of_label = {
+        label: line_index_of(found)
+        for label, found in positions.items()
+    }
+    boundary_line_indices = sorted(
+        (
+            (found, index)
+            for label, found in boundary_positions.items()
+            if (index := line_index_of(found)) is not None
+        ),
+        key=lambda item: item[1],
+    )
+    ordered = [
+        (node_id, found, heading_line_index_of_label.get(_norm(section_plan.label)))
+        for node_id, section_plan in section_plans.items()
+        if (found := positions.get(_norm(section_plan.label))) is not None
+        and heading_line_index_of_label.get(_norm(section_plan.label)) is not None
+    ]
+    sections: dict[str, dict[str, Any]] = {}
+    for node_id, heading_position, heading_index in ordered:
+        heading_page, heading_top = heading_position
+        next_index = next(
+            (index for _, index in boundary_line_indices if index > heading_index),
+            len(lines),
+        )
+        region = lines[heading_index + 1 : next_index]
+        marker_lines = [
+            line for line in region
+            if line["chars"] and line["chars"][0]["text"] in _RENDERED_MARKER_GLYPHS
+        ]
+        bullet_anchors = None
+        if marker_lines:
+            text_starts = []
+            for line in marker_lines:
+                skip = 0
+                for char in line["chars"]:
+                    if char["text"] in _RENDERED_MARKER_GLYPHS or char["text"].isspace():
+                        skip += 1
+                    else:
+                        break
+                if skip < len(line["chars"]):
+                    text_starts.append(line["chars"][skip]["x0"])
+            bullet_anchors = {
+                "marker_x0_pt": round(min(line["chars"][0]["x0"] for line in marker_lines), 3),
+                "text_x0_pt": round(min(text_starts), 3) if text_starts else None,
+            }
+        heading_line = lines[heading_index]
+        rule_position = _rule_in_target_region(
+            rules,
+            heading_position,
+            section_plans[node_id].rule_placement,
+        )
+        sections[node_id] = {
+            "label": section_plans[node_id].label,
+            "page": heading_page,
+            "heading_top_pt": round(heading_top, 3),
+            "heading_x0_pt": round(heading_line["x0"], 3),
+            "heading_size_pt": round(heading_line["size"], 3),
+            "rule": (
+                {
+                    "page": rule_position["page"],
+                    "top_pt": rule_position["top_pt"],
+                    "x0_pt": rule_position["x0_pt"],
+                    "x1_pt": rule_position["x1_pt"],
+                    "stroke_pt": rule_position["stroke_pt"],
+                }
+                if rule_position
+                else None
+            ),
+            "content_start_x_pt": round(min((line["x0"] for line in region), default=0.0), 3),
+            "entry_right_edge_pt": (
+                round(max((line["x1"] for line in region), default=0.0), 3)
+                if section_plans[node_id].content_kind == "entries"
+                else None
+            ),
+            "bullets": bullet_anchors,
+            "content_lines": len(region),
+        }
+    return {"measured_from": "target PDF, pdfplumber, points", "sections": sections, "rules": rules}
+
+
+def _rule_in_target_region(rules: list[dict[str, Any]], heading_position: tuple[int, float] | None, placement: str | None) -> dict[str, Any] | None:
+    for rule in rules:
+        if _rule_in_section_region(rule, heading_position, placement):
+            return rule
+    return None
+
+
+def _row(
+    property_name: str,
+    node: str,
+    basis: float | None,
+    basis_source: str,
+    rendered: float | None,
+    tolerance: float,
+    *,
+    control: str | None = None,
+    detail: str = "",
+) -> dict[str, Any]:
+    delta = None if (basis is None or rendered is None) else round(float(rendered) - float(basis), 3)
+    if basis is None or rendered is None:
+        classification = "unmeasurable"
+    elif abs(delta) <= tolerance:
+        classification = "pass"
+    else:
+        classification = "fail"
+    return {
+        "property": property_name,
+        "node": node,
+        "basis": basis,
+        "basis_source": basis_source,
+        "rendered": rendered,
+        "delta": delta,
+        "tolerance_pt": tolerance,
+        "classification": classification,
+        "control": control,
+        "detail": detail,
+    }
+
+
+def _rule_of(state: C2LayoutState, section_plan: Any) -> dict[str, Any] | None:
+    if not section_plan.rule_id:
+        return None
+    return next(
+        (rule.model_dump() for rule in state.rules if rule.rule_id == section_plan.rule_id),
+        None,
+    )
+
+
+def _rightmost_char_size(line: dict[str, Any]) -> float:
+    """The rendered font size of the RIGHTMOST run of a visual line — the
+    metadata tier's size on a two-column entry row (left column chars sit
+    further left)."""
+    return round(line["chars"][-1]["size"], 3)
+
+
+def typography_tables(
+    state: C2LayoutState,
+    plan: Any,
+    rendered: dict[str, Any],
+    written_fonts: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Authored vs rendered typography (work order Part 3).
+
+    ``authored_typography`` records what the written OOXML requests (verified
+    from the written package via the inspection); ``rendered_typography``
+    records what the pinned renderer actually produced (pdfplumber font name,
+    size, weight, line pitch). A substitution can NEVER yield an
+    ``exact`` classification: when the renderer produced a different family,
+    the token is ``adjusted`` and names the requested and rendered font."""
+    state_styles = {style.style_id: style for style in state.styles}
+    authored: list[dict[str, Any]] = []
+    rendered_records: list[dict[str, Any]] = []
+    style_of_tier = {}
+    for row in rendered["mapping"]["mapped"]:
+        style_id = row.get("style_id")
+        if not style_id or style_id not in state_styles or row.get("kind") == "heading":
+            continue
+        style_of_tier.setdefault((style_id, row["tier"]), row)
+    # headings measured through the comparison rows; here: body tiers
+    for (style_id, tier), row in sorted(style_of_tier.items()):
+        token = state_styles[style_id]
+        resolved = written_fonts.get(style_id, {"requested": token.font_family, "written": token.font_family, "substituted": False, "detail": ""})
+        authored.append(
+            {
+                "style_id": style_id,
+                "tier": tier,
+                "requested_font": resolved["requested"],
+                "written_font": resolved["written"],
+                "font_size_pt": _half_point_round(token.font_size_pt),
+                "bold": token.bold,
+                "line_height_pt": token.line_height_pt,
+            }
+        )
+        lines = row.get("lines") or []
+        if not lines:
+            rendered_records.append(
+                {
+                    "style_id": style_id,
+                    "tier": tier,
+                    "requested_font": resolved["requested"],
+                    "written_font": resolved["written"],
+                    "rendered_font": None,
+                    "requested_size_pt": _half_point_round(token.font_size_pt),
+                    "rendered_size_pt": None,
+                    "bold_rendered": None,
+                    "line_height_declared_pt": token.line_height_pt,
+                    "line_pitch_rendered_pt": None,
+                    "classification": "unmeasurable",
+                    "detail": resolved["detail"],
+                }
+            )
+            continue
+        first_line = lines[0]
+        rendered_family = normalize_font_family(first_line["font"])
+        written_family = normalize_font_family(resolved["written"])
+        bold_rendered = "bold" in (first_line["font"] or "").casefold()
+        size_delta = round(first_line["size"] - _half_point_round(token.font_size_pt), 3)
+        pitch = (
+            round(lines[1]["top"] - lines[0]["top"], 3)
+            if len(lines) > 1 and token.line_height_pt else None
+        )
+        size_ok = abs(size_delta) <= TOLERANCE_PT["font_size"]
+        bold_ok = bold_rendered == token.bold
+        family_ok = _families_compatible(written_family, rendered_family)
+        if rendered_family is None:
+            classification = "unmeasurable"
+            detail = "no rendered font evidence"
+        elif resolved["substituted"] or not family_ok:
+            # A substituted family can NEVER pass as exact: requested !=
+            # rendered means adjusted, even when written == rendered (the
+            # documented portable fallback did exactly what it was told).
+            classification = "adjusted"
+            detail = (
+                f"requested {resolved['requested']!r} not installed; documented "
+                f"portable fallback {resolved['written']!r} written and rendered "
+                f"{rendered_family!r}"
+            )
+        elif not (size_ok and bold_ok):
+            classification = "fail"
+            detail = f"size_delta={size_delta}, bold requested={token.bold} rendered={bold_rendered}"
+        else:
+            classification = "exact"
+            detail = resolved["detail"] if resolved["substituted"] else ""
+        rendered_records.append(
+            {
+                "style_id": style_id,
+                "tier": tier,
+                "requested_font": resolved["requested"],
+                "written_font": resolved["written"],
+                "rendered_font": normalize_font_family(first_line["font"]),
+                "requested_size_pt": _half_point_round(token.font_size_pt),
+                "rendered_size_pt": round(first_line["size"], 3),
+                "bold_requested": token.bold,
+                "bold_rendered": bold_rendered,
+                "line_height_declared_pt": token.line_height_pt,
+                "line_pitch_rendered_pt": pitch,
+                "classification": classification,
+                "detail": detail,
+            }
+        )
+    adjusted = any(record["classification"] == "adjusted" for record in rendered_records)
+    failed = any(record["classification"] == "fail" for record in rendered_records)
+    return {
+        "authored_typography": authored,
+        "rendered_typography": rendered_records,
+        "classification": (
+            "unmeasurable" if not rendered_records and authored
+            else "fail" if failed
+            else "adjusted" if adjusted
+            else "exact"
+        ),
+        "detail": (
+            "exact: rendered family/size/weight match the written OOXML"
+            if adjusted
+            else "exact" if not adjusted and not failed
+            else ""
+        ),
+    }
+
+
+def _families_compatible(written: str | None, rendered: str | None) -> bool:
+    """Written vs rendered family equality (normalized, subset prefixes and
+    PostScript decorations removed)."""
+    return bool(written) and bool(rendered) and written == rendered
+
+
+def apply_measured_deltas(adjustments: FitAdjustments, comparison: dict[str, Any]) -> FitAdjustments:
+    """One bounded deterministic fitting step (work order Part 5).
+
+    For every FAILED property with a documented compiler control, the control
+    moves by minus the measured delta (the smallest correction that would
+    have closed the gap), through the documented translation rules:
+
+    - x positions -> paragraph/table/bullet indent corrections;
+    - y gaps -> paragraph spacing / border-space corrections;
+    - entry right edge -> right table column width correction.
+
+    Failed properties without a control (renderer quantization, missing
+    measurement) are never guessed at and keep the run honest."""
+    updates = adjustments.model_copy(deep=True)
+    # Each control consumes its delta ONCE per iteration: two properties that
+    # share one control (e.g. heading_x and rule_x0 both move the rule's left
+    # indent) measure the same renderer displacement, so applying both deltas
+    # would double-correct and oscillate.
+    applied: set[tuple[str, str]] = set()
+    for row in comparison["rows"]:
+        if row["classification"] != "fail" or row.get("control") is None:
+            continue
+        if row["delta"] is None:
+            continue
+        key = (row["node"], row["control"])
+        if key in applied:
+            continue
+        applied.add(key)
+        correction = -float(row["delta"])
+        control = row["control"]
+        node = row["node"]
+        if control == "item_left_indent_pt":
+            fit = updates.section(node)
+            fit.item_left_indent_pt = round((fit.item_left_indent_pt or 0.0) + correction, 3)
+        elif control in {
+            "entry_right_edge_pt", "entry_table_indent_pt", "bullet_marker_correction_pt",
+            "bullet_text_correction_pt", "inter_entry_pt", "heading_space_before_pt",
+            "heading_space_after_pt", "heading_border_space_pt", "rule_left_indent_pt",
+            "rule_right_indent_pt",
+        }:
+            fit = updates.section(node)
+            setattr(fit, control, round(getattr(fit, control) + correction, 3))
+        else:
+            raise ValueError(f"unknown fitting control {control!r}")
+    return updates
+
+
+def fit_docx(
+    state: C2LayoutState,
+    plan: Any,
+    target_pdf: Path,
+    docx_path: Path,
+    run_dir: Path,
+) -> dict[str, Any]:
+    """The bounded deterministic fitting loop (work order Part 5):
+
+    compile -> render (pinned LibreOffice preview) -> measure rendered
+    geometry -> node-level comparison -> documented compiler adjustment.
+    At most ``MAX_FITTING_ITERATIONS`` render->measure->adjust iterations;
+    the fitter stops honestly when the remaining deltas have no control."""
+    target_geo = measure_target_geometry(target_pdf, state, plan)
+    adjustments = FitAdjustments()
+    log: list[dict[str, Any]] = []
+    comparison: dict[str, Any] = {}
+    iterations = 0
+    for iterations in range(1, MAX_FITTING_ITERATIONS + 1):
+        document = build_document(state, plan, adjustments=adjustments)
+        docx_path.write_bytes(deterministic_docx_bytes(document))
+        preview = _preview_pdf(docx_path, run_dir)
+        if not (preview and preview.get("available")):
+            comparison = {
+                "schema_version": "c2-docx-geometry-comparison/1",
+                "passed": False,
+                "gate_passed": False,
+                "counts": {"total": 0, "passed": 0, "failed": 0, "unmeasurable": 0},
+                "adjustable": False,
+                "rows": [],
+                "error": f"preview unavailable: {preview.get('reason') if preview else 'none'}",
+            }
+        else:
+            rendered = measure_rendered_geometry(Path(preview["pdf"]), plan, state)
+            comparison = compare_geometry(state, plan, target_geo, rendered)
+            comparison["preview_pdf"] = preview["pdf"]
+            comparison["preview_page_count"] = rendered["page_count"]
+        log.append(
+            {
+                "iteration": iterations,
+                "corrections": json.loads(adjustments.model_dump_json()),
+                "counts": comparison.get("counts"),
+                "gate_passed": comparison.get("gate_passed"),
+            }
+        )
+        if comparison.get("gate_passed") or not comparison.get("adjustable"):
+            break
+        adjustments = apply_measured_deltas(adjustments, comparison)
+    return {
+        "adjustments": adjustments,
+        "comparison": comparison,
+        "log": log,
+        "iterations": iterations,
+        "converged": bool(comparison.get("gate_passed")),
+        "target_sections": target_geo.get("sections", {}),
+    }
+
+
+def compare_geometry(
+    state: C2LayoutState,
+    plan: Any,
+    target_geo: dict[str, Any],
+    rendered: dict[str, Any],
+) -> dict[str, Any]:
+    """Node-level geometry comparison in points (work order Parts 1/2/4).
+
+    Comparisons are node-local: relative x positions, relative y gaps, font
+    sizes, and topology invariants — never absolute page y across unrelated
+    candidate content. Basis: the measured target geometry where the property
+    is measurable there, otherwise the declared state value; a property with
+    neither basis is classified ``unmeasurable`` (a capability gap, never a
+    silent pass). Documented tolerances (TOLERANCE_PT) are never tuned after
+    seeing failures."""
+def bullet_rows_expected(plan: Any, section_plan: Any) -> bool:
+    """Whether this section's plan actually renders native Word bullets."""
+    return bool(
+        section_plan.bullet_marker == "bullet"
+        and (
+            any(entry.bullet_items for entry in section_plan.entries)
+            or bool(section_plan.items)
+        )
+    )
+
+
+def _previous_content_bottom(mapping: dict[str, Any], node_id: str) -> float | None:
+    """Bottom of the last rendered content row BEFORE this section's heading
+    (document order; header rows and previous sections count — the gap is
+    measured node-locally between neighbours, never as absolute page y)."""
+    bottom: float | None = None
+    for row in mapping["mapped"]:
+        if row.get("section_node_id") == node_id and row["kind"] == "heading":
+            break
+        if row.get("lines"):
+            bottom = max(
+                bottom if bottom is not None else 0.0,
+                max(line["bottom"] for line in row["lines"]),
+            )
+    return bottom
+
+
+def _has_following_content_on_page(mapping: dict[str, Any], heading_row: dict[str, Any]) -> bool:
+    """A heading orphans when it is the LAST meaningful row on its page while
+    later document content exists (kept-with-next failed)."""
+    heading_page = heading_row["lines"][0]["page"]
+    heading_position = (heading_page, heading_row["lines"][0]["top"])
+    for row in mapping["mapped"]:
+        if row is heading_row:
+            continue
+        for line in row["lines"]:
+            if line["page"] == heading_page and (line["page"], line["top"]) > heading_position:
+                return True
+    return False
+
+
+def compare_geometry(
+    state: C2LayoutState,
+    plan: Any,
+    target_geo: dict[str, Any],
+    rendered: dict[str, Any],
+) -> dict[str, Any]:
+    """Node-level geometry comparison in points (work order Parts 1/2/4).
+
+    Comparisons are node-local: relative x positions, relative y gaps, font
+    sizes, and topology invariants — never absolute page y across unrelated
+    candidate content. Basis: the measured target geometry where the property
+    is measurable there, otherwise the declared state value; a property with
+    neither basis is classified ``unmeasurable`` (a capability gap, never a
+    silent pass). Documented tolerances (TOLERANCE_PT) are never tuned after
+    seeing failures."""
+    rows: list[dict[str, Any]] = []
+    mapping = rendered["mapping"]
+    mapped_by_section: dict[str, list[dict[str, Any]]] = {}
+    for row in mapping["mapped"]:
+        if row.get("section_node_id"):
+            mapped_by_section.setdefault(row["section_node_id"], []).append(row)
+    target_sections = target_geo.get("sections", {})
+    plan_sections = {
+        section.node_id: section
+        for section in [*plan.sections, *plan.appended_sections]
+        if not section.empty
+    }
+    for node_id, section_plan in plan_sections.items():
+        target_section = target_sections.get(node_id)
+        section_rows = mapped_by_section.get(node_id, [])
+        heading_rows = [row for row in section_rows if row["kind"] == "heading"]
+        content_rows = [row for row in section_rows if row["kind"] != "heading"]
+        entry_node = next(
+            (
+                node for node in state.nodes
+                if node.kind == "entry_row" and node.parent_id == node_id
+            ),
+            None,
+        )
+        state_rule = _rule_of(state, section_plan)
+        target_rule = (target_section or {}).get("rule")
+        heading_line = heading_rows[0]["lines"][0] if heading_rows and heading_rows[0]["lines"] else None
+        heading_position = (
+            (heading_line["page"], heading_line["top"]) if heading_line else None
+        )
+        # -- heading ---------------------------------------------------------
+        rows.append(_row(
+            "heading_x", node_id,
+            (target_section or {}).get("heading_x0_pt"), "measured_target",
+            round(heading_line["x0"], 3) if heading_line else None,
+            TOLERANCE_PT["local_position"],
+            control="rule_left_indent_pt" if state_rule else None,
+        ))
+        heading_token = _style_of(state, section_plan.style_id)
+        rows.append(_row(
+            "heading_font_size", node_id,
+            (target_section or {}).get("heading_size_pt"), "measured_target",
+            round(heading_line["size"], 3) if heading_line else None,
+            TOLERANCE_PT["font_size"],
+            detail=f"declared state size {heading_token.font_size_pt if heading_token else None}",
+        ))
+        # -- rule placement, extent, stroke -----------------------------------
+        matched_rule = None
+        if state_rule is not None:
+            for rule in rendered["rules"]:
+                within_x = (
+                    abs(rule["x0_pt"] - state_rule["x0_pt"]) <= TOLERANCE_PT["rule_x_extent"]
+                    and abs(rule["x1_pt"] - state_rule["x1_pt"]) <= TOLERANCE_PT["rule_x_extent"]
+                )
+                if within_x and _rule_in_section_region(
+                    rule, heading_position, section_plan.rule_placement
+                ):
+                    matched_rule = rule
+                    break
+            if matched_rule is None:
+                rows.append({
+                    "property": "rule_rendered_in_heading_region",
+                    "node": node_id,
+                    "basis": state_rule["x0_pt"],
+                    "basis_source": "declared_state",
+                    "rendered": None,
+                    "delta": None,
+                    "tolerance_pt": TOLERANCE_PT["rule_x_extent"],
+                    "classification": "fail",
+                    "control": None,
+                    "detail": "no rendered rule matched the heading page/region/x-extent",
+                })
+            else:
+                rows.append(_row(
+                    "rule_x0", node_id, target_rule["x0_pt"] if target_rule else None,
+                    "measured_target", matched_rule["x0_pt"],
+                    TOLERANCE_PT["rule_x_extent"], control="rule_left_indent_pt",
+                ))
+                rows.append(_row(
+                    "rule_x1", node_id, target_rule["x1_pt"] if target_rule else None,
+                    "measured_target", matched_rule["x1_pt"],
+                    TOLERANCE_PT["rule_x_extent"], control="rule_right_indent_pt",
+                ))
+                rows.append(_row(
+                    "rule_stroke", node_id, target_rule["stroke_pt"] if target_rule else None,
+                    "measured_target", matched_rule["stroke_pt"],
+                    TOLERANCE_PT["rule_stroke"], detail="LibreOffice hairline quantization",
+                ))
+                if section_plan.rule_placement == "below_heading":
+                    rendered_rule_gap = (
+                        round(matched_rule["top_pt"] - heading_line["bottom"], 3)
+                        if heading_line else None
+                    )
+                    rule_gap_basis = state_rule.get("gap_above_pt")
+                else:
+                    rendered_rule_gap = (
+                        round(heading_line["top"] - matched_rule["top_pt"], 3)
+                        if heading_line else None
+                    )
+                    rule_gap_basis = state_rule.get("gap_below_pt")
+                rows.append(_row(
+                    "heading_to_rule_gap", node_id, rule_gap_basis, "declared_state",
+                    rendered_rule_gap, TOLERANCE_PT["local_gap"],
+                    control="heading_border_space_pt",
+                ))
+        # -- heading -> content gap -------------------------------------------
+        first_content = next((row for row in content_rows if row["lines"]), None)
+        content_top = first_content["lines"][0]["top"] if first_content else None
+        if state_rule is not None and state_rule["placement"] == "below_heading" and matched_rule is not None:
+            rendered_content_gap = (
+                round(content_top - matched_rule["top_pt"], 3) if content_top is not None else None
+            )
+            gap_basis = state_rule.get("gap_below_pt")
+        else:
+            rendered_content_gap = (
+                round(content_top - heading_line["bottom"], 3)
+                if content_top is not None and heading_line else None
+            )
+            gap_basis = section_plan.heading_gap_below_pt
+        rows.append(_row(
+            "heading_to_content_gap", node_id, gap_basis, "declared_state",
+            rendered_content_gap, TOLERANCE_PT["local_gap"], control="heading_space_after_pt",
+        ))
+        # -- heading gap above (section rhythm) --------------------------------
+        previous_bottom = _previous_content_bottom(mapping, node_id)
+        rows.append(_row(
+            "heading_gap_above", node_id, section_plan.heading_gap_above_pt, "declared_state",
+            (
+                round(heading_line["top"] - previous_bottom, 3)
+                if heading_line and previous_bottom is not None else None
+            ),
+            TOLERANCE_PT["local_gap"],
+            control="heading_space_before_pt",
+            detail="candidate-only sections carry no measured section gap" if section_plan.candidate_only else "",
+        ))
+        # -- content start x ----------------------------------------------------
+        # A bulleted ITEM LIST's content edge IS its declared bullet marker
+        # (the target's own non-bullet lines are content the plan does not
+        # reproduce); an entries section's content edge is its measured
+        # target title column.
+        bullet_shape = bool(bullet_rows_expected(plan, section_plan))
+        item_list_bullet_shape = (
+            bullet_shape and section_plan.content_kind in {"item_list", "inline_items"}
+        )
+        content_start_basis = (
+            section_plan.bullet_dot_x0_pt
+            if item_list_bullet_shape and section_plan.bullet_dot_x0_pt is not None
+            else (target_section or {}).get("content_start_x_pt")
+        )
+        rows.append(_row(
+            "content_start_x", node_id,
+            content_start_basis,
+            "declared_state" if item_list_bullet_shape and section_plan.bullet_dot_x0_pt is not None else "measured_target",
+            round(first_content["lines"][0]["x0"], 3) if first_content else None,
+            TOLERANCE_PT["local_position"],
+            control=("item_left_indent_pt" if section_plan.content_kind in {"item_list", "inline_items"}
+                     else "entry_table_indent_pt" if section_plan.content_kind == "entries"
+                     else None),
+        ))
+        # -- entries: columns, tiers, topology -----------------------------------
+        if section_plan.content_kind == "entries":
+            title_rows = [row for row in content_rows if row["kind"] in {"entry_title", "entry_row"}]
+            if title_rows and title_rows[0]["lines"]:
+                first_title = title_rows[0]["lines"][0]
+                rows.append(_row(
+                    "entry_left_column_x", node_id,
+                    (target_section or {}).get("content_start_x_pt"), "measured_target",
+                    round(first_title["x0"], 3), TOLERANCE_PT["local_position"],
+                    control="entry_table_indent_pt",
+                ))
+                meta_rows = [row for row in content_rows if row["kind"] == "entry_row"]
+                rendered_right = (
+                    round(max(line["x1"] for row in meta_rows for line in row["lines"]), 3)
+                    if meta_rows else None
+                )
+                rows.append(_row(
+                    "entry_right_edge", node_id,
+                    (target_section or {}).get("entry_right_edge_pt"), "measured_target",
+                    rendered_right, TOLERANCE_PT["column_right_edge"],
+                    control="entry_right_edge_pt",
+                ))
+                if (target_section or {}).get("entry_right_edge_pt") is not None and rendered_right is None:
+                    rows[-1]["classification"] = "not_applicable"
+                    rows[-1]["detail"] = (
+                        "candidate entry carries no metadata (content reflow; "
+                        "nothing to right-align) — the target's right column "
+                        "has no counterpart in this candidate's entry"
+                    )
+                if meta_rows and meta_rows[0]["lines"]:
+                    rows.append(_row(
+                        "entry_row_alignment", node_id,
+                        0.0, "rendered_invariant",
+                        round(
+                            abs(
+                                title_rows[0]["lines"][0]["top"]
+                                - meta_rows[0]["lines"][0]["top"]
+                            ), 3
+                        ),
+                        TOLERANCE_PT["local_gap"],
+                        detail="title and metadata must share one visual baseline",
+                    ))
+            title_token = _style_of(state, section_plan.title_style_id)
+            rows.append(_row(
+                "title_font_size", node_id,
+                title_token.font_size_pt if title_token else None, "declared_state",
+                (
+                    round(title_rows[0]["lines"][0]["size"], 3)
+                    if title_rows and title_rows[0]["lines"] else None
+                ),
+                TOLERANCE_PT["font_size"],
+                detail="state declares no measured tier" if title_token is None else "",
+            ))
+            meta_style_id = (
+                section_plan.meta_style_id or section_plan.detail_style_id or section_plan.title_style_id
+            )
+            meta_token = _style_of(state, meta_style_id)
+            meta_rows = [row for row in content_rows if row["kind"] == "entry_row"]
+            rendered_meta_size = None
+            if meta_rows and meta_rows[0]["lines"]:
+                rightmost_line = max(
+                    (line for row in meta_rows for line in row["lines"]),
+                    key=lambda line: line["x1"],
+                )
+                rendered_meta_size = _rightmost_char_size(rightmost_line)
+            rows.append(_row(
+                "meta_font_size", node_id,
+                meta_token.font_size_pt if meta_token else None, "declared_state",
+                rendered_meta_size, TOLERANCE_PT["font_size"],
+                detail="state declares no measured tier" if meta_token is None else "",
+            ))
+            if meta_token is not None and rendered_meta_size is None and not meta_rows:
+                rows[-1]["classification"] = "not_applicable"
+                rows[-1]["detail"] = (
+                    "candidate entries carry no metadata lines (content reflow; "
+                    "no meta tier rendered to measure)"
+                )
+        # -- bullets --------------------------------------------------------------
+        bullet_rows = [
+            row for row in content_rows
+            if row["kind"] == "bullet" or (row["kind"] == "item" and row.get("native_bullet"))
+        ]
+        if bullet_rows:
+            target_bullets = (target_section or {}).get("bullets")
+            marker_basis = (
+                target_bullets["marker_x0_pt"] if target_bullets
+                else section_plan.bullet_dot_x0_pt
+            )
+            text_basis = (
+                target_bullets["text_x0_pt"]
+                if target_bullets and target_bullets.get("text_x0_pt") is not None
+                else section_plan.bullet_text_x0_pt
+            )
+            rendered_markers: list[float] = []
+            rendered_texts: list[float] = []
+            duplicate_flags: list[bool] = []
+            for row in bullet_rows:
+                chars = row["lines"][0]["chars"]
+                rendered_markers.append(round(chars[0]["x0"], 3))
+                skip = 0
+                for char in chars:
+                    if char["text"] in _RENDERED_MARKER_GLYPHS or char["text"].isspace():
+                        skip += 1
+                    else:
+                        break
+                rendered_texts.append(round(chars[skip]["x0"], 3))
+                duplicate_flags.append(skip > 1)
+            rows.append(_row(
+                "bullet_marker_x", node_id, marker_basis,
+                "measured_target" if target_bullets else "declared_state",
+                round(sum(rendered_markers) / len(rendered_markers), 3),
+                TOLERANCE_PT["local_position"], control="bullet_marker_correction_pt",
+            ))
+            rows.append(_row(
+                "bullet_text_x", node_id, text_basis,
+                "measured_target" if target_bullets else "declared_state",
+                round(sum(rendered_texts) / len(rendered_texts), 3),
+                TOLERANCE_PT["local_position"], control="bullet_text_correction_pt",
+            ))
+            rows.append(_row(
+                "bullet_hanging_indent", node_id,
+                (
+                    round(text_basis - marker_basis, 3)
+                    if text_basis is not None and marker_basis is not None else None
+                ),
+                "measured_target" if target_bullets else "declared_state",
+                round(
+                    sum(rendered_texts) / len(rendered_texts)
+                    - sum(rendered_markers) / len(rendered_markers), 3
+                ),
+                TOLERANCE_PT["local_gap"],
+            ))
+            rows.append({
+                "property": "duplicated_presentation_markers",
+                "node": node_id,
+                "basis": 0,
+                "basis_source": "rendered_invariant",
+                "rendered": sum(1 for flag in duplicate_flags if flag),
+                "delta": None,
+                "tolerance_pt": 0,
+                "classification": "pass" if not any(duplicate_flags) else "fail",
+                "control": None,
+                "detail": "a converted source marker must never sit next to the native bullet",
+            })
+        # -- inter-entry rhythm ---------------------------------------------------
+        entry_groups = sorted(
+            {
+                row.get("entry_index")
+                for row in content_rows
+                if row.get("entry_index") is not None
+                and row["kind"] in {"entry_title", "entry_row", "bullet", "textline"}
+            }
+        )
+        if (
+            entry_node is not None
+            and entry_node.inter_entry_gap_above_pt is not None
+            and len(entry_groups) >= 2
+        ):
+            rendered_gaps: list[float] = []
+            for entry_index in entry_groups[1:]:
+                current_top = min(
+                    line["top"]
+                    for row in content_rows
+                    if row.get("entry_index") == entry_index and row["kind"] in {"entry_title", "entry_row"}
+                    for line in row["lines"]
+                )
+                previous_bottom = max(
+                    line["bottom"]
+                    for row in content_rows
+                    if row.get("entry_index") == entry_index - 1
+                    for line in row["lines"]
+                )
+                rendered_gaps.append(round(current_top - previous_bottom, 3))
+            rows.append(_row(
+                "inter_entry_gap", node_id, entry_node.inter_entry_gap_above_pt, "declared_state",
+                round(sum(rendered_gaps) / len(rendered_gaps), 3) if rendered_gaps else None,
+                TOLERANCE_PT["local_gap"], control="inter_entry_pt",
+            ))
+        if section_plan.candidate_only:
+            # Candidate-only overflow sections have no target counterpart:
+            # properties with no declared basis are excluded from parity
+            # (owner overflow policy), not "unmeasurable failures".
+            for row in rows:
+                if row["node"] == node_id and row["basis"] is None:
+                    row["classification"] = "not_applicable"
+                    row["detail"] = (
+                        (row["detail"] + "; " if row["detail"] else "")
+                        + "candidate-only overflow: no target counterpart "
+                        "(owner overflow policy; excluded from parity)"
+                    )
+    # -- page flow ---------------------------------------------------------------
+    sparse = rendered.get("sparse_trailing_page")
+    rows.append({
+        "property": "sparse_trailing_page",
+        "node": "page-flow",
+        "basis": 0,
+        "basis_source": "rendered_invariant",
+        "rendered": (sparse or {}).get("fraction"),
+        "delta": None,
+        "tolerance_pt": 0,
+        "classification": (
+            "pass" if rendered["page_count"] < 2
+            else ("fail" if sparse["sparse"] else "pass") if sparse
+            else "unmeasurable"
+        ),
+        "control": None,
+        "detail": (sparse or {}).get("content_extent_pt") or "",
+    })
+    orphans = [
+        {"node": row.get("section_node_id"), "page": row["lines"][0]["page"]}
+        for row in mapping["mapped"]
+        if row["kind"] == "heading" and row["lines"]
+        and not _has_following_content_on_page(mapping, row)
+    ]
+    rows.append({
+        "property": "orphaned_headings",
+        "node": "page-flow",
+        "basis": 0,
+        "basis_source": "rendered_invariant",
+        "rendered": len(orphans),
+        "delta": None,
+        "tolerance_pt": 0,
+        "classification": "pass" if not orphans else "fail",
+        "control": None,
+        "detail": orphans or "",
+    })
+    failed = sum(1 for row in rows if row["classification"] == "fail")
+    unmeasurable = sum(1 for row in rows if row["classification"] == "unmeasurable")
+    not_applicable = sum(1 for row in rows if row["classification"] == "not_applicable")
+    adjustable = any(
+        row.get("control") is not None
+        for row in rows if row["classification"] == "fail"
+    )
+    return {
+        "schema_version": "c2-docx-geometry-comparison/1",
+        "passed": failed == 0 and unmeasurable == 0 and not mapping["unmapped"] and not mapping["unexpected_lines"],
+        "gate_passed": failed == 0 and unmeasurable == 0 and not mapping["unmapped"] and not mapping["unexpected_lines"],
+        "counts": {
+            "total": len(rows),
+            "passed": sum(1 for row in rows if row["classification"] == "pass"),
+            "failed": failed,
+            "unmeasurable": unmeasurable,
+            "not_applicable": not_applicable,
+        },
+        "adjustable": adjustable,
+        "mapping_unmapped": len(mapping["unmapped"]),
+        "mapping_unexpected_lines": len(mapping["unexpected_lines"]),
+        "unmapped": mapping["unmapped"],
+        "unexpected_lines": mapping["unexpected_lines"],
+        "rows": rows,
+    }
+
+
+# ---------------------------------------------------------------------------
 # ConversionCompatibilityReport (deterministic, output-verified)
 # ---------------------------------------------------------------------------
 
@@ -1040,6 +2556,7 @@ def conversion_compatibility_report(
     inspection: dict[str, Any],
     accounting: dict[str, Any],
     pagination: dict[str, Any] | None = None,
+    typography: dict[str, Any] | None = None,
 ) -> ConversionCompatibilityReport:
     """Classify every relevant feature deterministically from the measured
     state and VERIFY each applicable exact claim against the written OOXML
@@ -1151,7 +2668,8 @@ def conversion_compatibility_report(
         1 for paragraph in nonempty_expected if not paragraph.get("measured_token", True)
     )
     claim(
-        "measured typography tokens (family/size/weight/color/line height) -> direct run formatting",
+        "authored typography: measured tokens (family/size/weight/color/line height) -> direct run formatting "
+        "(rendered fidelity is verified separately, never claimed from authored properties)",
         typography_verified,
         f"measured-token paragraphs={len(nonempty_expected) - unmeasured}, "
         f"unmeasured-tier paragraphs={unmeasured}, "
@@ -1375,11 +2893,39 @@ def conversion_compatibility_report(
     fallback.append(
         "unmeasured run color renders black (built-in Word style colors are never inherited)"
     )
+    if typography is not None:
+        # Truthful typography (work order Part 3): authored vs rendered are
+        # separate results; a font substitution is 'adjusted', never exact,
+        # and an all-green exact-typography claim is impossible while the
+        # renderer substitutes the measured family.
+        typography_classification = typography.get("classification")
+        if typography_classification == "adjusted":
+            substituted_tokens = [
+                record
+                for record in typography.get("rendered_typography", [])
+                if record.get("classification") == "adjusted"
+            ]
+            adjusted.append(
+                AdjustedFeature(
+                    feature="typography font substitution (documented portable fallback)",
+                    detail=(
+                        "the pinned preview renderer does not have the measured "
+                        "families; the written portable fallback renders as a "
+                        "close substitute — requested vs rendered fonts: "
+                        + "; ".join(
+                            f"{record.get('requested_font')} -> {record.get('rendered_font')}"
+                            for record in substituted_tokens[:4]
+                        )
+                    ),
+                    evidence=["docx_geometry_comparison.json rendered_typography"],
+                )
+            )
     return ConversionCompatibilityReport(
         exact=exact,
         adjusted=adjusted,
         unsupported=unsupported,
         pagination=pagination_record,
+        typography=typography,
         content_loss_risk=False,
         fallback_applied=fallback,
         owner_confirmation_required=bool(unsupported),
@@ -1455,11 +3001,36 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
         result["hard_gates_passed"] = False
         return result
 
-    # 4. deterministic DOCX (two compiles; normalized package metadata)
-    document = build_document(state, plan)
-    docx_bytes = deterministic_docx_bytes(document)
-    again_bytes = deterministic_docx_bytes(build_document(state, plan))
+    # 4. bounded deterministic fitting loop (work order Part 5): compile ->
+    #    pinned-renderer preview -> measured rendered geometry -> node-level
+    #    comparison -> documented compiler adjustment (max 3 iterations).
     docx_path = run_dir / "c2_output.docx"
+    fitting = fit_docx(state, plan, target, docx_path, run_dir)
+    (run_dir / "docx_fitting_log.json").write_text(
+        json.dumps(
+            {
+                "max_iterations": MAX_FITTING_ITERATIONS,
+                "iterations": fitting["iterations"],
+                "converged": fitting["converged"],
+                "final_corrections": json.loads(fitting["adjustments"].model_dump_json()),
+                "iterations_log": fitting["log"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "docx_geometry_comparison.json").write_text(
+        json.dumps(fitting["comparison"], ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    # 5. deterministic DOCX (two compiles of the FINAL fitted document;
+    #    normalized package metadata)
+    document = build_document(state, plan, adjustments=fitting["adjustments"])
+    docx_bytes = deterministic_docx_bytes(document)
+    again_bytes = deterministic_docx_bytes(build_document(state, plan, adjustments=fitting["adjustments"]))
     docx_path.write_bytes(docx_bytes)
     determinism = {
         "passed": docx_bytes == again_bytes,
@@ -1470,7 +3041,7 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
         json.dumps(determinism, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
-    # 5. inspection from the written package (never inferred from source)
+    # 6. inspection from the written package (never inferred from source)
     inspection = inspect_docx(docx_path)
     inspection["reading_order_gate"] = reading_order_gate(plan, inspection)
     (run_dir / "ooxml_inspection.json").write_text(
@@ -1478,22 +3049,54 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
         encoding="utf-8",
     )
 
-    # 6. exact candidate-content accounting
+    # 7. exact candidate-content accounting
     accounting = content_accounting(plan, inspection)
     (run_dir / "content_accounting.json").write_text(
         json.dumps(accounting, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
-    # 7. rendered visual preview BEFORE the hard gates (evaluation evidence
-    #    only — but preview success and blank pages participate in the gates).
-    preview = _preview_pdf(docx_path, run_dir)
+    # 8. the FINAL preview already exists (produced by the last fitting
+    #    iteration, BEFORE the hard gates). Re-verify the blank-page gate and
+    #    page raster evidence against the final preview.
+    preview_path = run_dir / "c2_output.pdf"
+    if fitting["comparison"].get("preview_pdf") and Path(fitting["comparison"]["preview_pdf"]).exists():
+        preview = {
+            "available": True,
+            "pdf": fitting["comparison"]["preview_pdf"],
+            "page_count": fitting["comparison"].get("preview_page_count"),
+            "blank_page_gate": blank_page_gate(Path(fitting["comparison"]["preview_pdf"])),
+            "page_previews": sorted(
+                path.name for path in run_dir.glob("c2_0c_preview_page_*.png")
+            ),
+        }
+    else:
+        preview = {"available": False, "reason": fitting["comparison"].get("error", "preview unavailable")}
     (run_dir / "preview_validation.json").write_text(
         json.dumps(preview, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
-    # 8. pagination evidence: target / frozen C1 / DOCX preview page counts.
+    # 9. rendered geometry evidence (Part 1): measured preview geometry per run.
+    if preview.get("available"):
+        rendered_geometry = measure_rendered_geometry(Path(preview["pdf"]), plan, state)
+    else:
+        rendered_geometry = {"error": preview.get("reason"), "measured": False}
+    (run_dir / "docx_rendered_geometry.json").write_text(
+        json.dumps(rendered_geometry, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    # 10. typography evidence: authored (written OOXML) vs rendered (pinned
+    #     renderer) — never collapsed into one claim.
+    written_fonts = resolve_written_fonts(state)
+    typography = (
+        typography_tables(state, plan, rendered_geometry, written_fonts)
+        if preview.get("available")
+        else {"classification": "unmeasurable", "detail": "no preview available"}
+    )
+
+    # 11. pagination evidence: target / frozen C1 / DOCX preview page counts.
     pagination = {
         "target_page_count": int(state.page.page_count),
         "frozen_c1_page_count": _pdf_page_count(frozen_dir / "generated.pdf"),
@@ -1508,14 +3111,18 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
     _render_pages(frozen_dir / "target.pdf", run_dir, "target")
     (run_dir / "c1_page_1.png").write_bytes((frozen_dir / "generated_page_1.png").read_bytes())
 
-    # 9. deterministic compatibility report (output-verified exact claims)
-    report = conversion_compatibility_report(state, plan, inspection, accounting, pagination)
+    # 12. deterministic compatibility report (output-verified exact claims)
+    report = conversion_compatibility_report(
+        state, plan, inspection, accounting, pagination, typography=typography
+    )
     (run_dir / "conversion_compatibility_report.json").write_text(
         json.dumps(json.loads(report.model_dump_json()), indent=2, ensure_ascii=False, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
-    # 10. hard gates (fail closed: unsupported requires explicit confirmation)
+    # 13. hard gates (fail closed: unsupported requires explicit confirmation).
+    # The rendered-geometry gate is separate and based on the PREVIEW PDF
+    # measurements, not source-code intent.
     preview_ok = bool(preview and preview.get("available") and preview["blank_page_gate"]["passed"])
     hard_gates = {
         "package_opens_and_structurally_valid": bool(inspection["valid_package"]),
@@ -1534,6 +3141,7 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
             and report.owner_confirmation_required == bool(report.unsupported)
         ),
         "preview_and_blank_pages": preview_ok,
+        "rendered_geometry_matches_declared_contract": bool(fitting["comparison"].get("gate_passed")),
         "unsupported_features_confirmed": (not report.unsupported) or confirm_unsupported,
     }
     hard_gates_passed = all(hard_gates.values())
@@ -1544,6 +3152,11 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
                 "gates": hard_gates,
                 "owner_confirmation_required": report.owner_confirmation_required,
                 "pagination": pagination,
+                "fitting": {
+                    "iterations": fitting["iterations"],
+                    "converged": fitting["converged"],
+                },
+                "typography_classification": typography.get("classification"),
             },
             indent=2,
             sort_keys=True,
@@ -1552,7 +3165,11 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
         encoding="utf-8",
     )
 
-    write_review_index(run_dir, pair, spec, hard_gates, report, accounting, inspection, determinism, preview, pagination)
+    write_review_index(
+        run_dir, pair, spec, hard_gates, report, accounting, inspection, determinism,
+        preview, pagination, comparison=fitting["comparison"],
+        fitting={"iterations": fitting["iterations"], "converged": fitting["converged"]},
+    )
     result.update({"hard_gates_passed": hard_gates_passed, "hard_gates": hard_gates})
     return result
 
@@ -1603,6 +3220,8 @@ def write_review_index(
     determinism: dict[str, Any],
     preview: dict[str, Any] | None,
     pagination: dict[str, Any],
+    comparison: dict[str, Any] | None = None,
+    fitting: dict[str, Any] | None = None,
 ) -> None:
     def _rows(items: list[Any]) -> str:
         return "".join(f"<li>{_esc(item)}</li>" for item in items)
@@ -1622,6 +3241,56 @@ def write_review_index(
         f"<td>{_esc(item.evidence)}</td></tr>"
         for item in report.exact
     )
+    counts = (comparison or {}).get("counts", {})
+    geometry_counts_html = (
+        f"<p>Rendered geometry (preview-PDF measured, points): "
+        f"<strong>{counts.get('passed', 0)}</strong> passed / "
+        f"<strong>{counts.get('failed', 0)}</strong> failed / "
+        f"<strong>{counts.get('unmeasurable', 0)}</strong> unmeasurable "
+        f"properties. Typography: <strong>{_esc((report.typography or {}).get('classification', 'unmeasurable'))}</strong> "
+        "(authored OOXML and rendered output are separate results — a font "
+        "substitution is classified <em>adjusted</em>, never exact).</p>"
+    )
+    geometry_rows_html = ""
+    if comparison:
+        geometry_rows_html = "".join(
+            "<tr>"
+            f"<td>{_esc(row['property'])}</td><td>{_esc(row['node'])}</td>"
+            f"<td>{_esc(row['basis'])}</td><td>{_esc(row['rendered'])}</td>"
+            f"<td>{_esc(row['delta'])}</td><td>{_esc(row['tolerance_pt'])}</td>"
+            f"<td><strong>{_esc(row['classification'].upper())}</strong></td>"
+            f"<td>{_esc(row.get('detail') or '')}</td></tr>"
+            for row in comparison["rows"]
+        )
+    typography_rows_html = "".join(
+        "<tr>"
+        f"<td>{_esc(record.get('style_id'))}</td><td>{_esc(record.get('tier'))}</td>"
+        f"<td>{_esc(record.get('requested_font'))}</td><td>{_esc(record.get('written_font'))}</td>"
+        f"<td>{_esc(record.get('rendered_font'))}</td>"
+        f"<td>{_esc(record.get('requested_size_pt'))} / {_esc(record.get('rendered_size_pt'))}</td>"
+        f"<td><strong>{_esc(record.get('classification'))}</strong></td>"
+        f"<td>{_esc(record.get('detail'))}</td></tr>"
+        for record in (report.typography or {}).get("rendered_typography", [])
+    )
+    remaining_html = "".join(
+        f"<li><strong>{_esc(row['property'])}</strong> ({_esc(row['node'])}): "
+        f"{_esc(row['detail'])}</li>"
+        for row in (comparison or {}).get("rows", [])
+        if row["classification"] in {"fail", "unmeasurable"}
+    ) or "<li>none recorded</li>"
+    fitting_html = ""
+    if fitting is not None:
+        fitting_html = (
+            f"<h2>Bounded fitting (deterministic; max {MAX_FITTING_ITERATIONS} render→measure→adjust)</h2>"
+            f"<p>iterations used: <strong>{fitting['iterations']}</strong>; "
+            f"converged within declared tolerances: <strong>{fitting['converged']}</strong>"
+            + (
+                "<br>remaining deltas (unmeasurable/failed properties listed below)"
+                if not fitting["converged"]
+                else ""
+            )
+            + "</p>"
+        )
     preview_html = ""
     if preview and preview.get("available"):
         links = "".join(
@@ -1637,27 +3306,43 @@ def write_review_index(
     pagination_html = ""
     if report.pagination is not None:
         pagination_html = (
-            f"<h2>Pagination</h2><p>DOCX preview "
-            f"<strong>{report.pagination.docx_preview_page_count}</strong> pages vs target "
+            f"<h2>Page counts (target / frozen C1 / DOCX preview)</h2><p>DOCX preview "
+            f"<strong>{report.pagination.docx_preview_page_count}</strong> vs target "
             f"<strong>{report.pagination.target_page_count}</strong> vs frozen C1 "
             f"<strong>{report.pagination.frozen_c1_page_count}</strong> — classified "
             f"<strong>{_esc(report.pagination.classification)}</strong></p>"
         )
     html = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>C2-0c owner review — {pair}</title>
-<style>body{{font-family:-apple-system,sans-serif;margin:2rem;max-width:70rem}}
+<style>body{{font-family:-apple-system,sans-serif;margin:2rem;max-width:80rem}}
 td,th{{border:1px solid #ccc;padding:.3rem .6rem;text-align:left;vertical-align:top}}
 img{{border:1px solid #ddd}}</style></head><body>
 <h1>C2-0c owner review — pair {pair} ({spec['role']})</h1>
-<p>Same C2LayoutState JSON + same candidate content as C2-0b, compiled into a
-native editable DOCX. Experiment spike — <strong>not</strong> a production DOCX
-system and no product-level PDF↔DOCX conversion claim. The owner makes the
-final visual judgment.</p>
+<h2>Owner status</h2>
+<p><strong>NOT ACCEPTED — awaiting owner visual review.</strong> The DOCX lane
+now proves rendered geometry (measured from this preview PDF, in points), not
+only authored OOXML properties. Experiment spike — <strong>not</strong> a
+production DOCX system and no product-level PDF↔DOCX conversion claim. The
+owner makes the final visual judgment; automated measurement supports it and
+never declares visual acceptance.</p>
+<h2>Summary</h2>
+{pagination_html}
+<p>Typography result: <strong>{_esc((report.typography or {}).get('classification', 'unmeasurable'))}</strong>
+(requested vs rendered fonts table below; a substituted family can never pass
+as exact).</p>
+{geometry_counts_html}
+<p>Remaining visual gaps: see the failed/unmeasurable rows below.</p>
+{fitting_html}
 <h2>Hard gates</h2><table>{gate_rows}</table>
 <p>Owner confirmation required for unsupported features:
 <strong>{'YES' if report.owner_confirmation_required else 'no'}</strong></p>
-{pagination_html}
-<h2>Compatibility — exact claims (output-verified)</h2>
+<h2>Node-level geometry comparison (target vs rendered, points)</h2>
+<table><tr><th>property</th><th>node</th><th>basis</th><th>rendered</th><th>delta</th><th>tol pt</th><th>result</th><th>detail</th></tr>{geometry_rows_html}</table>
+<h2>Typography — requested vs rendered fonts</h2>
+<table><tr><th>style</th><th>tier</th><th>requested</th><th>written (OOXML)</th><th>rendered</th><th>size pt (req/ren)</th><th>result</th><th>detail</th></tr>{typography_rows_html}</table>
+<h2>Remaining visual gaps (failed / unmeasurable)</h2>
+<ul>{remaining_html}</ul>
+<h2>Compatibility — exact claims (output-verified, authored level)</h2>
 <table><tr><th>claim</th><th>verified</th><th>evidence</th></tr>{exact_rows}</table>
 <h2>Adjusted (content preserved; visible non-blocking degradation)</h2>
 <ul>{_feature_rows(report.adjusted) or '<li>none</li>'}</ul>
@@ -1682,6 +3367,9 @@ explicitly omitted (never rendered); accounting gate passed:
 <li><a href="docx_render_plan.json">docx_render_plan.json</a></li>
 <li><a href="c2_layout_state.json">c2_layout_state.json</a></li>
 <li><a href="candidate_render_context.json">candidate_render_context.json</a></li>
+<li><a href="docx_rendered_geometry.json">docx_rendered_geometry.json</a></li>
+<li><a href="docx_geometry_comparison.json">docx_geometry_comparison.json</a></li>
+<li><a href="docx_fitting_log.json">docx_fitting_log.json</a></li>
 <li><a href="ooxml_inspection.json">ooxml_inspection.json</a></li>
 <li><a href="content_accounting.json">content_accounting.json</a></li>
 <li><a href="conversion_compatibility_report.json">conversion_compatibility_report.json</a></li>

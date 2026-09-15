@@ -1,6 +1,6 @@
 # Pipeline C2-0c Report: Minimal DOCX / Cross-Format Spike
 
-Status: `Owner visual review REJECTED C2-0c; one bounded corrective pass executed; awaiting owner re-review — NOT production work`
+Status: `Owner visual review REJECTED C2-0c; two bounded corrective passes executed; awaiting owner re-review — NOT production work`
 
 ## Owner Verdict (visual review, 2026-09-15)
 
@@ -16,9 +16,10 @@ source marker (`–` / `→`); the result did not clearly look like the selected
 target template. C2-0b remains accepted only as an experimental PDF
 architecture milestone; this rejection does not change that.
 
-One bounded visual corrective pass was executed (same day, no Pipeline D,
-no C2-0d, no production integration, no frontend work, no live calls); the
-corrective result is recorded in §0a and still awaits owner re-review.
+Two bounded corrective passes were executed (same day, no Pipeline D, no
+C2-0d, no production integration, no frontend work, no live calls): the
+visual corrective pass is recorded in §0a and the rendered-geometry
+measurement-and-fitting pass is recorded in §0b; both await owner re-review.
 
 Date: 2026-09-15
 Branch: `experiment/pipeline-c2` (worktree `/private/tmp/cv-converter-c2`,
@@ -95,6 +96,104 @@ Visual review note: LibreOffice substitutes the measured font families
 (Roboto / Lato / Charter BT are not installed locally), so the preview
 shows a substitute face; sizes, weights, topology, rules, and pagination
 are the reviewable properties. The DOCX itself names the measured fonts.
+
+## 0b. Rendered-Geometry Measurement And Fitting Pass (owner work order, 2026-09-15)
+
+The owner's verdict on the corrective pass: the topology improved, but C2-0c
+remains NOT accepted — the DOCX lane verified authored OOXML properties, not
+where Word/LibreOffice actually rendered them, and the E→F preview still
+substituted a serif face while the compatibility report called typography
+exact. This pass closes exactly that gap, with the loop the work order
+prescribes:
+
+```text
+target PDF -> measured target geometry (points) -> existing C2LayoutState JSON
+-> existing deterministic DOCX compiler -> DOCX -> pinned LibreOffice renderer
+-> preview PDF -> measured rendered geometry (points) -> node-level comparison
+-> bounded deterministic compiler adjustment -> re-render and re-measure
+```
+
+The JSON state stays authoritative; DOCX and preview remain compiled
+evaluation artifacts. No new schema family, runner, provider adapter, agent,
+reviewer framework, or dependency. No LLM/VLM participates anywhere in the
+mapping.
+
+**Part 1 — rendered DOCX geometry evidence.** The preview PDF is measured in
+points with the repository's existing pdfplumber workflow (`_rendered_lines`
+reuses pdfplumber `extract_text_lines` char geometry; rendered rules reuse
+`c2_renderer._rendered_rule_extents`, now also carrying `stroke_pt`;
+rendered heading positions reuse `_rendered_heading_positions`). Every run
+writes `docx_rendered_geometry.json` (page width/height/count, per-line
+text/font/size/x-extent, rules, bullet anchors, sparse-trailing-page
+classification, and the deterministic line→node mapping) and
+`docx_geometry_comparison.json`. Word units convert only at the compiler
+boundary (1 pt = 20 twips, 1 pt = 12,700 EMU, half-point font sizes,
+eighth-point border widths).
+
+**Part 2 — semantic node comparison, not pixels.** Rendered lines are mapped
+back to plan nodes deterministically (candidate leaf text, document order,
+wrap-tolerant whitespace-insensitive key, confirmed native bullet glyphs; the
+ownership ledger remains the accounting source). Tolerances were documented
+BEFORE evaluating results and were never tuned afterwards: page geometry
+±0.5 pt; rule x extent ±1.0 pt; rule stroke ±0.5 pt (documented LibreOffice
+hairline quantization, mirroring the C2-0b Chrome 1.0 pt rule tolerance);
+local x/y positions and gaps ±1.5 pt; font size ±0.5 pt; column right edge
+±1.5 pt. A trailing page is classified sparse below 30% of the writable
+content height (documented before evaluation; the frozen C1 D→E second page
+measures ~44%). Comparisons are node-local: relative x positions, relative
+gaps, font sizes, and topology invariants — never absolute page y across
+unrelated candidate content.
+
+**Part 3 — truthful typography.** `ConversionCompatibilityReport.typography`
+now carries two separate results: `authored_typography` (what the written
+OOXML requests, per token) and `rendered_typography` (what the pinned
+renderer produced: family, size, weight, declared line height vs rendered
+pitch). A substituted family can NEVER yield an exact classification:
+requested Roboto/Lato are not installed, so the documented portable
+sans-serif fallback (Arial — installed in the pinned owner-review
+environment) is written into the DOCX and the typography is classified
+`adjusted`, naming requested → written → rendered. No all-green
+exact-typography claim is possible while a substitution stands. No font was
+downloaded; installed fonts were inspected (macOS Charter exists, so target
+D's "Charter BT" resolves to the installed Charter family and is honestly
+classified adjusted); no derived font binaries were committed.
+
+**Part 4 — rendered-geometry hard gate.** `rendered_geometry_matches_declared_contract`
+is a separate hard gate based on the preview-PDF measurements (never
+source-code intent). It fails when an applicable required property is
+unmapped, unmeasurable, beyond tolerance, or when an unreported font
+substitution, lost two-column topology, duplicated presentation marker, or
+avoidable blank/sparse trailing page exists. Every measured property is
+listed per row with basis, rendered value, delta, tolerance, and result;
+`candidate_only` properties with no target counterpart are explicitly
+`not_applicable` (owner overflow policy), never silently passed.
+
+**Part 5 — bounded deterministic fitting (max 3 render → measure → adjust
+iterations).** Adjustments live in a typed `FitAdjustments` model; every
+value comes from a measured target/state value minus the measured rendered
+delta through a documented translation rule (per-section paragraph spacing,
+border space, rule indents, bullet indents, table indent, right-column
+width, inter-entry space; each control consumes its delta ONCE per
+iteration — two properties sharing a control measure the same displacement).
+Root-cause compiler fixes found while fitting (general, not pair-specific):
+explicit `w:tblGrid`/`w:tblW` (a bare tcW table was expanded to the writable
+width by LibreOffice), nearest-half-point font-size quantization at the
+OOXML boundary, token-formatted separator runs, inter-entry rhythm rendered
+as space AFTER the entry's last paragraph (a per-cell space-before pushed
+only the left column down and broke row baselines), meta-less entries
+indented onto the measured entry column, and exact measured line heights
+(`w:line` exact). Appended candidate-only headings consume the state's
+median measured heading gap (documented renderer rule) instead of 0pt.
+
+Results (canonical runs §4b): E→F converged in 2 iterations — 40/40 rendered
+geometry properties pass, 0 failed, 0 unmeasurable, hard gate true, all hard
+gates true; typography honestly `adjusted` (Roboto → Arial). D→E: 40 pass /
+1 honest fail (borderline trailing page, fraction 0.2883 vs the documented
+0.30 threshold — remaining delta recorded, not tuned away; fitter stopped
+after 3 iterations) / 22 not-applicable; still fail-closed on unsupported
+images/vector graphics + contact icons. E→D: 24 pass / 2 unmeasurable (the
+known entry-typography capability gap) / 9 not-applicable; still fail-closed;
+NOT made a parity case. C2-0c remains NOT accepted until owner visual review.
 
 ## 0. Explicit Non-Claims (read first)
 
@@ -220,16 +319,19 @@ plan, and WRITTEN-package inspection — never statically:
 `adjusted` never drops content; `unsupported` blocks release readiness
 (hard gate false) until the owner explicitly confirms.
 
-## 4. Canonical Runs (corrective pass; E→F primary; D→E generalization; E→D gap-only)
+## 4. Canonical Runs (rendered-geometry pass; E→F primary; D→E generalization; E→D gap-only)
 
 Same cached provider-neutral evidence and frozen C1 source inventories as
-C2-0b; no live call. Corrective runs under `tests/experiments/runs/`:
+C2-0b; no live call. Rendered-geometry canonical runs under
+`tests/experiments/runs/` (the §0a corrective runs
+`c2_0c_*_20260915T1110*Z` remain the pre-geometry evidence of the owner
+rejection and are superseded by these):
 
-| Pair | Role | Run | Hard gates | Pages (DOCX/target/C1) | Compatibility outcome |
-|---|---|---|---|---|---|
-| E→F | primary visual acceptance case | `c2_0c_E_to_F_20260915T111038Z` | all true | 1 / 1 / 1 (`exact`) | 11 exact claims all output-verified / 1 adjusted / 0 unsupported; no confirmation required |
-| D→E | generalization + native lists | `c2_0c_D_to_E_20260915T111040Z` | `unsupported_features_confirmed: false` | 2 / 1 / 2 (`adjusted`; = frozen C1) | 2 adjusted + pagination / 2 unsupported (images/vector graphics, contact icons) → owner confirmation required; 12 real Word list paragraphs; 2 confirmed source markers (`–`) converted |
-| E→D | gap-only / fail-closed control | `c2_0c_E_to_D_20260915T111042Z` | `unsupported_features_confirmed: false` | 1 / 1 / 1 (`exact`) | 2 adjusted / 4 unsupported (unresolved sections ×5, tables, detached rules, entry tiers) → owner confirmation required |
+| Pair | Role | Run | Hard gates | Pages (DOCX/target/C1) | Rendered geometry (points) | Compatibility outcome |
+|---|---|---|---|---|---|---|
+| E→F | primary visual acceptance case | `c2_0c_E_to_F_20260915T135455Z` | all true | 1 / 1 / 1 (`exact`) | 40/40 pass, 0 fail, 0 unmeasurable; 2 fitting iterations, converged | 11 exact claims output-verified / 2 adjusted (two-column tables, documented font fallback) / 0 unsupported; typography `adjusted` (Roboto → Arial) |
+| D→E | generalization + native lists | `c2_0c_D_to_E_20260915T135502Z` | false (`unsupported_features_confirmed`, geometry) | 2 / 1 / 2 (`adjusted`; = frozen C1) | 40 pass / 1 fail (borderline trailing page, fraction 0.2883 < documented 0.30 threshold; remaining delta recorded) / 22 not-applicable; 3 iterations, stopped honestly | 4 adjusted / 2 unsupported (images/vector graphics, contact icons) → owner confirmation required |
+| E→D | gap-only / fail-closed control | `c2_0c_E_to_D_20260915T135509Z` | false (`unsupported_features_confirmed`, geometry) | 1 / 1 / 1 (`exact`) | 24 pass / 2 unmeasurable (known entry-typography capability gap) / 9 not-applicable; 3 iterations | 4 adjusted / 4 unsupported (unresolved sections ×5, tables, detached rules, entry tiers) → owner confirmation required |
 
 Every run directory contains: `c2_layout_state.json` (exact input state),
 `candidate_render_context.json`, `context_coverage.json`,
@@ -239,13 +341,18 @@ cells, native headings, list paragraphs, table records with column widths and
 border/cantSplit evidence, border count, explicit-spacing coverage, section
 geometry — inspected from the written package, never inferred),
 `content_accounting.json` (with per-leaf presentation-marker conversion
-records), `conversion_compatibility_report.json` (output-verified exact
-claims + pagination classification), `preview_validation.json` (LibreOffice
-preview + per-page blank-page gate), `docx_determinism.json`,
-`hard_gates.json` (including the pagination record), `review.html` (review
-index with target / frozen-C1 / DOCX-preview page images), `adobe_raw.json`,
-`enriched_evidence.json`, `target_page_1.png`, `c1_page_1.png`, and the
-LibreOffice preview (`c2_output.pdf` + `c2_0c_preview_page_N.png`).
+records), `docx_rendered_geometry.json` (preview-PDF measurements in points),
+`docx_geometry_comparison.json` (per-property basis/rendered/delta/tolerance
+rows + mapping + counts), `docx_fitting_log.json` (per-iteration corrections
+and deltas), `conversion_compatibility_report.json` (output-verified exact
+claims + pagination + authored/rendered typography), `preview_validation.json`
+(LibreOffice preview + per-page blank-page gate), `docx_determinism.json`,
+`hard_gates.json` (including the pagination record and the rendered-geometry
+gate), `review.html` (owner-review index leading with status, page counts,
+typography verdict, geometry pass/fail/unmeasurable counts, and remaining
+gaps), `adobe_raw.json`, `enriched_evidence.json`, `target_page_1.png`,
+`c1_page_1.png`, and the LibreOffice preview (`c2_output.pdf` +
+`c2_0c_preview_page_N.png`).
 
 ## 5. Verification Coverage (corrective pass)
 
@@ -293,19 +400,20 @@ LibreOffice preview (`c2_output.pdf` + `c2_0c_preview_page_N.png`).
   hold for the full-coverage synthetic candidate; canonical runs carry the
   real candidate content of each pair.
 
-## 6. Commands Run
+## 6. Commands Run (rendered-geometry pass)
 
 ```bash
-# Canonical runs (cached evidence; no live call; LibreOffice previews)
-.venv/bin/python -m tests.experiments.c2_docx_renderer --pair E_F
-.venv/bin/python -m tests.experiments.c2_docx_renderer --pair D_E
-.venv/bin/python -m tests.experiments.c2_docx_renderer --pair E_D
+# Canonical runs (cached evidence; no live call; LibreOffice previews;
+# bounded fitting loop, max 3 iterations)
+.venv/bin/python -m tests.experiments.c2_docx_renderer --pair E_F   # converged, 2 iterations
+.venv/bin/python -m tests.experiments.c2_docx_renderer --pair D_E   # stopped honestly, 3 iterations
+.venv/bin/python -m tests.experiments.c2_docx_renderer --pair E_D   # stopped honestly, 3 iterations
 
 # Focused offline tests
-pytest tests/experiments/test_c2_docx_renderer.py -m "not local_dataset"   # 16 passed
+pytest tests/experiments/test_c2_docx_renderer.py -m "not local_dataset"   # 26 passed
 pytest tests/experiments/test_c2_docx_renderer.py \
     tests/experiments/test_c2_renderer.py tests/experiments/test_c2_pipeline.py \
-    -m "not local_dataset"                                                 # 72 passed
+    -m "not local_dataset"
 
 # Local-corpus lane (real pairs end to end + previews)
 pytest tests/experiments/test_c2_docx_renderer.py \
@@ -314,12 +422,12 @@ pytest tests/experiments/test_c2_docx_renderer.py \
 
 # Broader offline suite
 pytest tests/experiments/ tests/unit tests/integration -m "not live_provider"
-# 614 passed / 5 failed — the 5 are the PRE-EXISTING tests/unit/test_mock_api.py
+# 624 passed / 5 failed — the 5 are the PRE-EXISTING tests/unit/test_mock_api.py
 # failures documented in C2_0A_REPORT.md §7 (unrelated to C2 work).
 ```
 
 Pytest logs (canonical ignored directory):
-`tests/test_results/pytest/pytest_*_c2_0c_corrective_*.txt`.
+`tests/test_results/pytest/pytest_*_c2_0c_geometry_*.txt`.
 
 ## 7. Part-1 Closure Also In This Change (C2-0b gate integrity)
 
@@ -349,16 +457,22 @@ corrected); the owner verdict is recorded as **accepted as an experimental
 architecture milestone; not production-approved**; no visual parity or C2
 superiority is claimed anywhere.
 
-## 8. Remaining Gaps And Limitations (explicit, post-corrective)
+## 8. Remaining Gaps And Limitations (explicit, post rendered-geometry pass)
 
 1. **Column split is a documented renderer rule** — the evidence measures the
    entry-column x0 and the right edge only, so the two-column table splits at
-   70% of the measured entry text width; metadata is right-aligned so the
-   rendered topology matches, but the split point is not measured.
-2. **Preview font substitution** — LibreOffice does not have Roboto / Lato /
-   Charter BT installed, so previews render a substitute face; sizes,
-   weights, topology, rules, colors, and pagination are the reviewable
-   properties. The DOCX itself names the measured fonts.
+   70% of the measured entry text width (the fitter then trims the right
+   column onto the measured right edge); metadata is right-aligned so the
+   rendered topology and right edge match, but the split point is not
+   measured.
+2. **Preview font substitution is honest and classified, not solved** — the
+   pinned environment has no Roboto / Lato (macOS Charter covers "Charter
+   BT"); the documented portable sans fallback (Arial) is written and the
+   typography is classified `adjusted`, naming requested → written →
+   rendered. Embedding an authorized TTF/OTF into the DOCX remains
+   unexercised (no authorized embeddable TTF/OTF path exists in the
+   experiment assets — the OFL woff2 assets are HTML-only; converting them
+   would create derived binaries requiring explicit authorization).
 3. **Arrows preserved next to native bullets (D→E key skills)** — per the
    confirmed-marker rule, `→`/`⌣` source glyphs stay as content while the
    line carries a native Word bullet; the owner may rule these are
@@ -368,47 +482,60 @@ superiority is claimed anywhere.
    no cached evidence here).
 5. **Header rows render as single paragraphs with separator runs** —
    per-field header geometry is not measured in the state (C2-0a limitation).
-6. **Inter-entry rhythm renders as space-before inside the first table
-   cell** — Word tables carry no flow spacing of their own; the visual gap
-   matches but is implemented inside the row.
-7. **E→D remains gap-only**: its five unresolved sections render no content
+6. **E→D remains gap-only**: its five unresolved sections render no content
    in the DOCX (identical to C2-0b), and Resume D participates in no parity
    or capability conclusion.
+7. **D→E trailing-page density** — the fitted preview's second page carries
+   the appended overflow content at 28.83% of the writable height, under the
+   documented 0.30 sparse threshold; the delta is recorded honestly in the
+   comparison rows and the fitter stopped after three iterations rather than
+   tuning the threshold. Frozen C1's second page measures ~44%; the owner
+   judges whether the fitted density is acceptable.
 8. **No page-break/continuation policy** — the state carries no measured
    flow constraints for DOCX pagination; content flows naturally.
 9. All C2-0a state capability gaps propagate into each run's compatibility
    classifications; no new capability was invented.
 10. **This pass is NOT accepted** — the owner re-review decides; the
-    corrective result must visibly belong to the target template family to
+    fitted result must visibly belong to the target template family to
     proceed, and no product-level PDF↔DOCX conversion is claimed either way.
 
 ## 9. Owner-Review Entry Points
 
-- `tests/experiments/runs/c2_0c_E_to_F_20260915T111038Z/review.html` →
-  `c2_output.docx` + preview `c2_output.pdf` + target/C1 page images
-- `tests/experiments/runs/c2_0c_D_to_E_20260915T111040Z/review.html`
-- `tests/experiments/runs/c2_0c_E_to_D_20260915T111042Z/review.html`
-- Compatibility contracts:
+- `tests/experiments/runs/c2_0c_E_to_F_20260915T135455Z/review.html` →
+  `c2_output.docx` + preview `c2_output.pdf` + target/C1 page images +
+  `docx_geometry_comparison.json` (per-property table)
+- `tests/experiments/runs/c2_0c_D_to_E_20260915T135502Z/review.html`
+- `tests/experiments/runs/c2_0c_E_to_D_20260915T135509Z/review.html`
+- Compatibility contracts (with authored vs rendered typography):
   `conversion_compatibility_report.json` in each run directory.
 
 ## 10. Files Changed (authorized list only)
 
 - `tests/experiments/c2_renderer.py` — Part-1 rule-geometry gate fix; the
   corrective pass adds page + vertical position to rendered-rule evidence and
-  the documented section-region association.
+  the documented section-region association; the rendered-geometry pass adds
+  an additive `stroke_pt` field to the shared `_rendered_rule_extents`
+  measurement (existing consumers unaffected).
 - `tests/experiments/test_c2_renderer.py` — Part-1 regressions; corrective
   vertical-region regressions (wrong-y and wrong-page rules fail).
-- `tests/experiments/c2_docx_renderer.py` — corrective pass: entry topology
+- `tests/experiments/c2_docx_renderer.py` — corrective pass (entry topology
   tables, controlled paragraph formatting, marker handling, output-verified
   exact claims, pagination classification, preview gate, table-aware
-  inspection.
-- `tests/experiments/test_c2_docx_renderer.py` — corrective test module.
+  inspection) plus the rendered-geometry pass: target/rendered point
+  measurement, deterministic node mapping, node-local comparison with
+  documented tolerances, typed `FitAdjustments` fitting (max 3 iterations),
+  authored vs rendered typography, and the
+  `rendered_geometry_matches_declared_contract` hard gate.
+- `tests/experiments/test_c2_docx_renderer.py` — corrective + rendered-
+  geometry regressions (26 offline tests; local-dataset lane).
 - `tests/experiments/C2_0B_REPORT.md` — verdict + wording corrections +
   corrective-pass records.
 - `tests/experiments/C2_0C_REPORT.md` — this report.
 - `tests/experiments/PIPELINE_EVOLUTION_PROPOSAL.md` — banner + §16.5
-  verdict record + §16.6 C2-0c rejection and corrective-pass record.
-- `docs/testing/TEST_STRUCTURE.md` — C2-0c canonical artifact registration.
+  verdict record + §16.6 C2-0c rejection and corrective-pass record + §16.7
+  rendered-geometry measurement-and-fitting record.
+- `docs/testing/TEST_STRUCTURE.md` — C2-0c canonical artifact registration
+  (rendered-geometry artifacts added).
 
 No other files changed; `app/`, `frontend/`, product/API contracts, and
 ADRs untouched; nothing pushed or merged.

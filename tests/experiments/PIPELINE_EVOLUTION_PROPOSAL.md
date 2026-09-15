@@ -8,7 +8,7 @@
 > | B 管线 | 已关闭（假设证伪，零件经 §7.3 移植） |
 > | C1 D→E（header + body） | owner 终审通过，完成（§9/§11） |
 > | C1 E→F 泛化 | **调试中，尚未通过**（十次冻结，缺口 #1–#8 已闭；#9 右缘杠杆失效、#10 种子行宽派生假设待验证，见 run 20260910T161228Z） |
-> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑；C2-0b 经三轮纠偏后由 owner 终审裁决：**接受为实验性 PDF 架构里程碑；非生产批准，非视觉 parity 主张**（rule-geometry 门禁完整性已闭合，含 page/垂直区域关联）；**C2-0c 被 owner 视觉评审否决**（机械可编辑 ≠ 模板保真：双栏条目拓扑丢失、内建样式间距失控、双 marker、E→F 变两页、D→E 三页稀疏）→ 一次有界视觉纠偏已执行（无边框双栏表恢复拓扑、逐段显式格式控制、确认型 marker 转换、E→F 回到一页、D→E 回到 C1 页数、exact 声明逐条输出验证、preview/空白页入硬门禁、分页显式分类），**待 owner 复审**（见 §16.5/§16.6 与 `C2_0B_REPORT.md`/`C2_0C_REPORT.md`） |
+> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑；C2-0b 经三轮纠偏后由 owner 终审裁决：**接受为实验性 PDF 架构里程碑；非生产批准，非视觉 parity 主张**（rule-geometry 门禁完整性已闭合，含 page/垂直区域关联）；**C2-0c 被 owner 视觉评审否决**（机械可编辑 ≠ 模板保真：双栏条目拓扑丢失、内建样式间距失控、双 marker、E→F 变两页、D→E 三页稀疏）→ 一次有界视觉纠偏已执行（无边框双栏表恢复拓扑、逐段显式格式控制、确认型 marker 转换、E→F 回到一页、D→E 回到 C1 页数、exact 声明逐条输出验证、preview/空白页入硬门禁、分页显式分类），**待 owner 复审**；随后按 owner 工单执行**渲染几何实测与有界拟合 pass**（E→F 40/40 点级几何全部通过、2 次拟合收敛、hard gate 全真；typography 拆分 authored/rendered 两种结果，替换字体诚实判 adjusted；D→E 1 个剩余 delta 诚实记录、E→D 保持 fail-closed gap-only），**仍待 owner 视觉复审**（见 §16.5/§16.6/§16.7 与 `C2_0B_REPORT.md`/`C2_0C_REPORT.md`） |
 > | Pipeline D | D0/D0-R/D1-0 已完成；暂停后续工作，等待 C2 结果（见 `D_PIPELINE_PROPOSAL.md`） |
 >
 > 日期:2026-09-08 初版;2026-09-09 §7–§8;2026-09-10 §9–§12;
@@ -1083,3 +1083,76 @@ live 调用）**：
 **C2-0c 纠偏后仍未接受：停止，待 owner 视觉复审。** 非 production DOCX
 系统，无任何产品级 PDF↔DOCX 转换主张。Pipeline D、生产集成、前端、chat
 编辑均未启动。
+
+### 16.7 C2-0c rendered-geometry measurement and fitting pass (2026-09-15, owner work order)
+
+After the §16.6 corrective pass, the owner ruled C2-0c still NOT accepted:
+the DOCX lane verified authored OOXML properties but did not prove where
+Word/LibreOffice actually rendered them, and the preview's substituted serif
+face coexisted with an "exact typography" claim. The owner ordered one
+bounded rendered-geometry measurement and fitting pass (no Pipeline D, no
+C2-0d, no production integration, no frontend, no live calls), implementing:
+
+```text
+target PDF -> measured target geometry (points) -> existing C2LayoutState JSON
+-> existing deterministic DOCX compiler -> DOCX -> pinned local renderer
+-> rendered PDF -> measured rendered geometry (points) -> node-level
+geometry comparison -> bounded deterministic compiler adjustment
+-> re-render and re-measure (max 3 iterations)
+```
+
+What was implemented (`tests/experiments/c2_docx_renderer.py` + its test
+module; no new schema family, runner, provider adapter, agent, reviewer
+framework, or dependency):
+
+1. **Rendered DOCX geometry evidence** — `docx_rendered_geometry.json` and
+   `docx_geometry_comparison.json` per canonical run, measured in points
+   with the repository's existing pdfplumber workflow (rendered rules reuse
+   `c2_renderer._rendered_rule_extents` + `_rendered_heading_positions` with
+   an additive `stroke_pt` field). Word units convert only at the compiler
+   boundary (twips/EMU/half-points/eighth-points).
+2. **Semantic node mapping, no pixels, no LLM** — rendered lines map to plan
+   nodes by candidate leaf text, document order, and the leading native
+   marker; wrap-tolerant whitespace-insensitive keys handle the renderer's
+   mid-word breaks; an unmappable required row FAILS (never disappears).
+3. **Node-local comparison with pre-documented tolerances** — page geometry
+   ±0.5 pt, rule x extent ±1.0 pt, rule stroke ±0.5 pt, local positions/gaps
+   ±1.5 pt, font size ±0.5 pt, column right edge ±1.5 pt; trailing page
+   sparse below 30% of writable height; relative node-local geometry only,
+   never absolute page y across unrelated content; unmeasurable properties
+   are capability gaps, never silent passes; candidate-only nodes without a
+   target counterpart are explicitly `not_applicable` (owner overflow
+   policy).
+4. **Truthful typography** — the report carries `authored_typography` and
+   `rendered_typography` as separate results; a substituted family (Roboto /
+   Lato → documented portable sans fallback Arial) is classified `adjusted`
+   and names requested → written → rendered; no all-green exact-typography
+   claim is possible. Installed fonts inspected first (macOS Charter covers
+   "Charter BT"); no network downloads; no derived font binaries.
+5. **`rendered_geometry_matches_declared_contract` hard gate** — based on
+   preview-PDF measurements; separate from content, privacy, reading-order,
+   package-validity, deterministic-output, compatibility-report, preview,
+   and unsupported-feature gates; every property listed with its delta.
+6. **Bounded deterministic fitting (max 3 iterations)** — typed
+   `FitAdjustments` (per-section paragraph spacing, border space, rule/bullet
+   indents, table indent, right-column width, inter-entry space); every
+   correction = measured target/state value − measured rendered delta via a
+   documented translation rule; each control consumes its delta once per
+   iteration. Root-cause compiler fixes (general, not pair-specific):
+   explicit `w:tblGrid`/`w:tblW`, nearest-half-point font sizes, token-
+   formatted separator runs, inter-entry rhythm as space-after on the
+   entry's last paragraph, meta-less entries indented onto the measured
+   entry column, exact measured line heights, appended headings consuming
+   the state's median measured heading gap.
+
+Results (canonical runs `c2_0c_*_20260915T1354/55*Z`): **E→F converged in 2
+iterations** — 40/40 rendered geometry properties pass (0 fail, 0
+unmeasurable), all hard gates true, 1/1/1 pages; typography honestly
+`adjusted` (Roboto → Arial). **D→E**: 40 pass / 1 honest fail (borderline
+trailing page fraction 0.2883 vs the pre-documented 0.30 threshold —
+remaining delta recorded, threshold NOT tuned) / 22 not-applicable; still
+fail-closed on unsupported features. **E→D**: 24 pass / 2 unmeasurable (the
+known entry-typography capability gap) / 9 not-applicable; fail-closed;
+never made a parity case. **C2-0c remains NOT accepted — owner visual
+review decides.** No Pipeline D, C2-0d, production integration, frontend, or
+live calls; `layout-state/1` not promoted; product contracts untouched.

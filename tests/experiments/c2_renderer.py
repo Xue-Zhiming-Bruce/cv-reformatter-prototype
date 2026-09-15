@@ -1370,6 +1370,9 @@ def _rendered_rule_extents(pdf: Path | None) -> list[dict[str, Any]]:
                             "top_pt": round(float(obj["top"]), 3),
                             "x0_pt": round(float(obj["x0"]), 3),
                             "x1_pt": round(float(obj["x1"]), 3),
+                            "stroke_pt": round(
+                                float(obj.get("linewidth") or 0.0) or max(height, 0.0), 3
+                            ),
                         }
                     )
     return rendered
