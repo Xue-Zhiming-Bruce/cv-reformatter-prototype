@@ -31,11 +31,13 @@ from tests.experiments.c2_docx_renderer import (
     _style_of,
     build_document,
     compare_geometry,
+    compare_colors,
     content_accounting,
     conversion_compatibility_report,
     deterministic_docx_bytes,
     expected_reading_order,
     expected_visual_rows,
+    compare_colors,
     fit_docx,
     installed_font_families,
     inspect_docx,
@@ -47,7 +49,11 @@ from tests.experiments.c2_docx_renderer import (
     typography_tables,
 )
 from tests.experiments.c2_renderer import LeafText, compile_render_plan
-from tests.experiments.test_c2_pipeline import BULLET_TIERS, compile_synthetic
+from tests.experiments.test_c2_pipeline import (
+    BULLET_TIERS,
+    FULL_COVERAGE_LABELS,
+    compile_synthetic,
+)
 from tests.experiments.test_c2_renderer import rich_candidate
 
 
@@ -449,6 +455,7 @@ REQUIRED_ARTIFACTS = (
     "ooxml_inspection.json", "conversion_compatibility_report.json",
     "preview_validation.json", "docx_determinism.json", "hard_gates.json",
     "docx_rendered_geometry.json", "docx_geometry_comparison.json",
+    "docx_color_comparison.json",
     "docx_fitting_log.json",
     "review.html", "target_page_1.png", "c1_page_1.png",
 )
@@ -500,6 +507,18 @@ def test_canonical_pairs_end_to_end(pair: str) -> None:
         and comparison["mapping_unmapped"] == 0
     )
     assert gates["gates"]["rendered_geometry_matches_declared_contract"] is comparison["gate_passed"]
+    # C2-0cC: rendered colors are measured from the preview PDF and hard-gated
+    # SEPARATELY (a color-only pass never implies overall conversion success).
+    colors = json.loads((run_dir / "docx_color_comparison.json").read_text())
+    assert colors["schema_version"] == "c2-docx-color-comparison/1"
+    assert colors["gate_passed"] is (
+        colors["counts"]["failed"] == 0 and colors["counts"]["unmeasurable"] == 0
+    )
+    assert gates["gates"]["rendered_colors_match_declared_contract"] is colors["gate_passed"]
+    for row in colors["rows"]:
+        if row["expected_color"] is not None:
+            # An unmeasured fallback is never recorded as a measured pass.
+            assert row["classification"] != "adjusted"
     fitting = json.loads((run_dir / "docx_fitting_log.json").read_text())
     assert 1 <= fitting["iterations"] <= fitting["max_iterations"] == 3
     assert len(fitting["iterations_log"]) == fitting["iterations"]
@@ -541,6 +560,7 @@ def test_canonical_pairs_end_to_end(pair: str) -> None:
             assert after["classification"] == "pass", after
         assert gates["passed"] is True
         assert gates["gates"]["rendered_geometry_matches_declared_contract"] is True
+        assert gates["gates"]["rendered_colors_match_declared_contract"] is True
         assert report["pagination"]["docx_preview_page_count"] == 1
         assert (run_dir / "c2_output_before.pdf").exists()
     else:
@@ -1220,3 +1240,316 @@ def test_unrelated_section_geometry_is_unchanged_by_the_edit() -> None:
     grouped = _leaf_rows(comparison_after)
     assert all(row["classification"] == "pass" for rows in grouped.values() for row in rows)
     assert comparison_after["gate_passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# C2-0cC: node-level color fidelity + rendered-color gate + styled runs
+# ---------------------------------------------------------------------------
+
+
+def _colored_state(colors: list[str | None], header_colors: dict[str, str] | None = None):
+    """A synthetic state whose heading scaffolds (and optionally header rows)
+    carry measured colors — the Resume-D shape without any pair-specific code."""
+    from tests.experiments.c2_pipeline import state_from_scaffolds
+    from tests.experiments.test_c2_pipeline import BODY, HEADER, SUMMARY, TARGET_SHA
+
+    body = BODY.model_copy(update={
+        "headings": [
+            heading.model_copy(update={"color_hex": color})
+            for heading, color in zip(BODY.headings, colors)
+        ]
+    })
+    header = HEADER
+    if header_colors:
+        header = [
+            row.model_copy(update={"color_hex": header_colors.get(row.role)})
+            for row in HEADER
+        ]
+    return state_from_scaffolds(TARGET_SHA, header, body, BULLET_TIERS, json.loads(json.dumps(SUMMARY)))
+
+
+def test_measured_header_and_tagline_colors_survive_evidence_to_state() -> None:
+    state = _colored_state(
+        colors=[None] * len(FULL_COVERAGE_LABELS),
+        header_colors={"name": "#0E6E55", "location": "#0E6E55", "contact": "#000000"},
+    )
+    styles = {style.style_id: style for style in state.styles}
+    # The measured name/extension-row colors survive into their own tokens;
+    # the contact row keeps its measured black.
+    assert styles["style.name"].color_hex == "#0E6E55"
+    assert styles["style.location"].color_hex == "#0E6E55"
+    assert styles["style.contact"].color_hex == "#000000"
+
+
+def test_differently_colored_headings_get_distinct_tokens_and_reuse() -> None:
+    colors = ["#1F1D8E", "#1F1D8E", "#8D1E8C", "#8D1E8C", "#8D1E8C", "#1F1D8E", "#8D1E8C"]
+    state = _colored_state(colors)
+    styles = [style for style in state.styles if style.style_id.startswith("style.heading")]
+    assert {style.style_id: style.color_hex for style in styles} == {
+        "style.heading": "#1F1D8E",
+        "style.heading.2": "#8D1E8C",
+    }
+    heading_nodes = [node for node in state.nodes if node.kind == "heading"]
+    referenced = {node.style_id for node in heading_nodes}
+    assert referenced == {"style.heading", "style.heading.2"}
+    # Each node references the token matching ITS measured color.
+    for node, color in zip(heading_nodes, colors):
+        token = next(style for style in styles if style.style_id == node.style_id)
+        assert token.color_hex == color
+
+
+def test_missing_measured_color_stays_explicit_with_black_fallback() -> None:
+    state = _colored_state(colors=[None] * len(FULL_COVERAGE_LABELS))
+    styles = [style for style in state.styles if style.style_id.startswith("style.heading")]
+    assert len(styles) == 1 and styles[0].color_hex is None
+    _, plan = _state_and_plan()
+    # The DOCX fallback writes the documented black, never an invented color.
+    document = build_document(state, plan)
+    heading_colors = [
+        color
+        for paragraph in document.paragraphs
+        if (paragraph.style.name or "").startswith("Heading")
+        for run in paragraph.runs
+        for color in [run.font.color.rgb]
+    ]
+    assert heading_colors and all(str(color) == "000000" for color in heading_colors)
+
+
+def test_docx_writes_native_w_color_run_values(tmp_path: Path) -> None:
+    state = _colored_state(
+        colors=["#B50013"] + [None] * (len(FULL_COVERAGE_LABELS) - 1),
+        header_colors={"name": "#0E6E55"},
+    )
+    _, plan = _state_and_plan()
+    document = build_document(state, plan)
+    path = tmp_path / "c.docx"
+    path.write_bytes(deterministic_docx_bytes(document))
+    inspection = inspect_docx(path)
+    colored = [
+        record for record in inspection["paragraphs"]
+        if any(color and color.upper() in ("0E6E55", "B50013") for color in record["run_colors"])
+    ]
+    assert colored, inspection["paragraphs"][:3]
+    assert any("0E6E55" in (record["run_colors"] or []) for record in inspection["paragraphs"])
+
+
+def test_html_emits_the_same_measured_color_intent() -> None:
+    from tests.experiments.c2_renderer import render_html
+
+    state = _colored_state(
+        colors=["#B50013"] + [None] * (len(FULL_COVERAGE_LABELS) - 1),
+        header_colors={"name": "#0E6E55"},
+    )
+    _, plan = _state_and_plan()
+    html = render_html(state, plan)
+    assert "color: #B50013;" in html
+    assert "color: #0E6E55;" in html
+
+
+def _char(text: str, color: str | None) -> dict:
+    return {"text": text, "color": color}
+
+
+def _color_rendered(rows: list[dict], rules: list[dict] | None = None) -> dict:
+    return {"mapping": {"mapped": rows}, "rules": list(rules or [])}
+
+
+def _heading_row(node: str, style_id: str, color: str | None) -> dict:
+    return {
+        "kind": "heading", "section_node_id": node, "style_id": style_id,
+        "leaf_ids": [], "native_bullet": False, "meta_text": None,
+        "lines": [{"page": 1, "top": 50.0, "chars": [_char(char, color) for char in "HEADING"]}],
+    }
+
+
+def test_rendered_color_measured_from_pdf_and_compared() -> None:
+    from tests.experiments.c2_pipeline import state_from_scaffolds
+    from tests.experiments.test_c2_pipeline import BULLET_TIERS, BODY, HEADER, SUMMARY, TARGET_SHA
+    from tests.experiments.c2_renderer import _pdf_color_hex
+
+    # pdfplumber color normalization is deterministic (gray/RGB/CMYK).
+    assert _pdf_color_hex(None) is None
+    assert _pdf_color_hex(0.0) == "#000000"
+    assert _pdf_color_hex([1.0, 1.0, 1.0]) == "#FFFFFF"
+    assert _pdf_color_hex([0.5, 0.5, 0.5]) == "#808080"
+    cmyk = _pdf_color_hex([0.0, 0.5, 0.5, 0.2])
+    assert cmyk and cmyk.startswith("#")
+
+    state = _colored_state(colors=["#B50013"] + [None] * (len(FULL_COVERAGE_LABELS) - 1))
+    rendered = _color_rendered(
+        rows=[_heading_row("section.01", "style.heading", "#B50013")],
+        rules=[],
+    )
+    comparison = compare_colors(state, _plan_with_rules(), rendered)
+    heading_rows = [row for row in comparison["rows"] if row["property"] == "heading_color"]
+    assert heading_rows[0]["classification"] == "pass"
+    assert heading_rows[0]["expected_color"] == "#B50013"
+    assert heading_rows[0]["authored_color"] == "#B50013"
+    assert heading_rows[0]["rendered_color"] == "#B50013"
+
+
+def _plan_with_rules() -> object:
+    """A minimal stand-in plan exposing only what compare_colors consumes."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(sections=[], appended_sections=[])
+
+
+def test_all_black_rendered_heading_fails_against_colored_target() -> None:
+    state = _colored_state(colors=["#B50013"] + [None] * (len(FULL_COVERAGE_LABELS) - 1))
+    rendered = _color_rendered(
+        rows=[_heading_row("section.01", "style.heading", "#000000")],
+    )
+    comparison = compare_colors(state, _plan_with_rules(), rendered)
+    row = next(row for row in comparison["rows"] if row["property"] == "heading_color")
+    assert row["classification"] == "fail"
+    assert comparison["gate_passed"] is False
+
+
+def test_unmeasured_color_fallback_is_adjusted_never_exact() -> None:
+    state = _colored_state(colors=[None] * len(FULL_COVERAGE_LABELS))
+    rendered = _color_rendered(
+        rows=[_heading_row("section.01", "style.heading", "#000000")],
+    )
+    comparison = compare_colors(state, _plan_with_rules(), rendered)
+    row = next(row for row in comparison["rows"] if row["property"] == "heading_color")
+    assert row["classification"] == "adjusted"
+    assert row["expected_source"] == "unmeasured_fallback"
+    # ... and a non-black render of an unmeasured token is a FAIL.
+    rendered_wrong = _color_rendered(
+        rows=[_heading_row("section.01", "style.heading", "#123456")],
+    )
+    comparison_wrong = compare_colors(state, _plan_with_rules(), rendered_wrong)
+    assert next(
+        row for row in comparison_wrong["rows"] if row["property"] == "heading_color"
+    )["classification"] == "fail"
+
+
+def test_gold_and_green_rule_colors_are_verified_from_rendered_output() -> None:
+    from types import SimpleNamespace
+
+    from tests.experiments.c2_pipeline import RuleDecoration
+
+    state = _colored_state(colors=[None] * len(FULL_COVERAGE_LABELS))
+    state = state.model_copy(update={"rules": [
+        RuleDecoration(
+            rule_id="rule.section.01", x0_pt=36.0, x1_pt=576.0, stroke_pt=0.75,
+            color_hex="#A16F0B", placement="below_heading", evidence_ids=["e.rule.1"],
+        ),
+        RuleDecoration(
+            rule_id="rule.section.02", x0_pt=36.0, x1_pt=576.0, stroke_pt=0.75,
+            color_hex="#0A7903", placement="below_heading", evidence_ids=["e.rule.2"],
+        ),
+    ]})
+    empty_section = SimpleNamespace(
+        node_id="section.01", rule_id="rule.section.01", rule_placement="below_heading",
+        empty=False, styled_lines=[],
+    )
+    green_section = SimpleNamespace(
+        node_id="section.02", rule_id="rule.section.02", rule_placement="below_heading",
+        empty=False, styled_lines=[],
+    )
+    plan = SimpleNamespace(sections=[empty_section, green_section], appended_sections=[])
+    rendered = _color_rendered(
+        rows=[
+            _heading_row("section.01", "style.heading", "#000000"),
+            _heading_row("section.02", "style.heading", "#000000"),
+        ],
+        rules=[
+            {"x0_pt": 36.0, "x1_pt": 576.0, "top_pt": 100.0, "page": 1, "color_hex": "#A16F0B"},
+            {"x0_pt": 36.0, "x1_pt": 576.0, "top_pt": 200.0, "page": 1, "color_hex": "#0A7903"},
+        ],
+    )
+    # The heading positions put each rule in its own section's vertical region
+    # (below_heading: rule sits 0..60pt below its heading on the same page).
+    rendered["mapping"]["mapped"][0]["lines"][0]["page"] = 1
+    rendered["mapping"]["mapped"][0]["lines"][0]["top"] = 60.0
+    rendered["mapping"]["mapped"][1]["lines"][0]["page"] = 1
+    rendered["mapping"]["mapped"][1]["lines"][0]["top"] = 160.0
+    comparison = compare_colors(state, plan, rendered)
+    rule_rows = [row for row in comparison["rows"] if row["property"] == "rule_color"]
+    assert {row["expected_color"]: row["rendered_color"] for row in rule_rows} == {
+        "#A16F0B": "#A16F0B", "#0A7903": "#0A7903",
+    }
+    # A gold rule where a green one is required fails (wrong-color rule).
+    rendered_wrong = _color_rendered(
+        rows=rendered["mapping"]["mapped"],
+        rules=[
+            {"x0_pt": 36.0, "x1_pt": 576.0, "top_pt": 100.0, "page": 1, "color_hex": "#A16F0B"},
+            {"x0_pt": 36.0, "x1_pt": 576.0, "top_pt": 200.0, "page": 1, "color_hex": "#A16F0B"},
+        ],
+    )
+    comparison_wrong = compare_colors(state, plan, rendered_wrong)
+    assert any(
+        row["classification"] == "fail" for row in comparison_wrong["rows"] if row["property"] == "rule_color"
+    )
+    assert comparison_wrong["gate_passed"] is False
+
+
+def _styled_line_plan():
+    """The full-coverage plan with the summary paragraph rendered as ordered
+    styled runs (the C2-0cC capability proof: candidate-owned text split into
+    ordered runs bound to template-owned measured style tokens)."""
+    from tests.experiments.c2_renderer import StyledLine, StyledRun
+
+    state, plan = _state_and_plan()
+    section = next(s for s in plan.sections if s.node_id == "section.01")
+    patched = section.model_copy(update={
+        "paragraph_lines": [],
+        "styled_lines": [StyledLine(
+            leaf_id="summary.p1",
+            runs=[
+                StyledRun(style_id="style.heading", leaf_id="summary.p1", text="SUMMARY"),
+                StyledRun(style_id="style.body", leaf_id="summary.p1", text=" — candidate paragraph."),
+            ],
+        )],
+    })
+    sections = [
+        patched if s.node_id == "section.01" else s for s in plan.sections
+    ]
+    return state, plan.model_copy(update={"sections": sections})
+
+
+def test_ordered_styled_runs_preserve_text_order_color_bold_editability(tmp_path: Path) -> None:
+    from tests.experiments.c2_renderer import render_html
+
+    state, plan = _styled_line_plan()
+    document = build_document(state, plan)
+    path = tmp_path / "styled.docx"
+    path.write_bytes(deterministic_docx_bytes(document))
+    inspection = inspect_docx(path)
+    styled = next(
+        record for record in inspection["paragraphs"]
+        if record["text"] == "SUMMARY — candidate paragraph."
+    )
+    # Native editable runs (python-docx sees real runs), text and order exact.
+    assert styled["text"] == "SUMMARY — candidate paragraph."
+    assert styled["run_colors"] and len(styled["run_colors"]) == 2
+    # Ordered runs carry DIFFERENT presentation: the heading-token run is bold.
+    html = render_html(state, plan)
+    assert 'data-node-id="section.01.content.summary.p1"' in html
+    assert html.index("SUMMARY") < html.index("candidate paragraph.")
+    assert "font-weight: 700;" in html
+
+
+def test_styled_runs_copy_no_target_candidate_facts() -> None:
+    state, plan = _styled_line_plan()
+    for section in [*plan.sections, *plan.appended_sections]:
+        for line in section.styled_lines:
+            for run in line.runs:
+                assert "TARGETFACT" not in run.text and "TARGETNAME" not in run.text
+                # Runs reference candidate-owned leaves; style ids are template tokens.
+                assert run.leaf_id == line.leaf_id
+                assert run.style_id in {style.style_id for style in state.styles}
+
+
+def test_styled_run_accounting_and_reading_order_unchanged(tmp_path: Path) -> None:
+    state, plan = _styled_line_plan()
+    document = build_document(state, plan)
+    path = tmp_path / "styled.docx"
+    path.write_bytes(deterministic_docx_bytes(document))
+    inspection = inspect_docx(path)
+    inspection["reading_order_gate"] = reading_order_gate(plan, inspection)
+    accounting = content_accounting(plan, inspection)
+    assert accounting["passed"] is True, (accounting["missing"], accounting["duplicated"])
+    assert inspection["reading_order_gate"]["passed"] is True

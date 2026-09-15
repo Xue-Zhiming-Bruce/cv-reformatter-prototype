@@ -49,6 +49,7 @@ import re
 import shutil
 import subprocess
 import zipfile
+from collections import Counter
 from datetime import UTC, datetime
 from functools import lru_cache
 from io import BytesIO
@@ -77,6 +78,7 @@ from tests.experiments.c2_pipeline import (
 )
 from tests.experiments.c2_renderer import (
     _norm,
+    _pdf_color_hex,
     _rendered_heading_positions,
     _rendered_rule_extents,
     _rule_in_section_region,
@@ -855,6 +857,18 @@ def build_document(
         if section_plan.content_kind == "paragraph":
             for line in section_plan.paragraph_lines:
                 _write_text_paragraph(document, line.text, content_token, written_font=content_written)
+            for styled_line in section_plan.styled_lines:
+                # C2-0cC capability proof: one paragraph as ORDERED native
+                # editable runs, each carrying its template-owned token's
+                # measured formatting (w:color etc.). Text is candidate-owned
+                # and rendered verbatim; ordered concatenation equals the
+                # leaf text (accounting gate verifies it).
+                paragraph = document.add_paragraph()
+                for run in styled_line.runs:
+                    run_token = _style_of(state, run.style_id) if run.style_id else None
+                    run_object = paragraph.add_run(run.text)
+                    _apply_token(run_object, run_token, written_fonts.get(run.style_id) if run.style_id else None)
+                _control_paragraph(paragraph, content_token)
         elif section_plan.content_kind == "entries":
             title_token = _style_of(state, section_plan.title_style_id)
             detail_token = _style_of(state, section_plan.detail_style_id) or title_token
@@ -1085,6 +1099,16 @@ def inspect_docx(path: Path) -> dict[str, Any]:
                 "explicit_font_runs": sum(
                     1 for run in paragraph.runs if run.font.name is not None
                 ),
+                # Native w:color run values as written (C2-0cC): the authored
+                # color evidence per paragraph, inspected from the package.
+                "run_colors": [
+                    (
+                        str(run.font.color.rgb)
+                        if run.font.color is not None and run.font.color.rgb is not None
+                        else None
+                    )
+                    for run in paragraph.runs
+                ],
             }
         )
     # Mark table paragraphs (evidence that table content is inspected).
@@ -1203,6 +1227,24 @@ def expected_paragraphs(plan: Any) -> list[dict[str, Any]]:
                     "kind": "paragraph",
                     "text": line.text,
                     "leaf_ids": [line.leaf_id],
+                    "marker_conversions": {},
+                    "native_bullet": False,
+                    "section_node_id": section_plan.node_id,
+                    "entry_index": None,
+                    "style_id": section_plan.content_style_id or "style.body",
+                    "tier": "content",
+                    "alignment": "left",
+                }
+            )
+        for styled_line in section_plan.styled_lines:
+            # One paragraph rendered as ordered styled runs (C2-0cC); the
+            # paragraph's text is the ordered run concatenation (the leaf's
+            # verbatim text) — accounting verifies it exactly.
+            paragraphs.append(
+                {
+                    "kind": "styled_line",
+                    "text": styled_line.text,
+                    "leaf_ids": [styled_line.leaf_id],
                     "marker_conversions": {},
                     "native_bullet": False,
                     "section_node_id": section_plan.node_id,
@@ -1491,6 +1533,9 @@ def _leaf_text(plan: Any, leaf_id: str) -> str:
         for line in [*section.paragraph_lines, *section.items]:
             if line.leaf_id == leaf_id:
                 return line.text
+        for styled_line in section.styled_lines:
+            if styled_line.leaf_id == leaf_id:
+                return styled_line.text
         for entry in section.entries:
             for line in [*entry.title_lines, *entry.meta_lines, *entry.bullet_items, *entry.text_lines]:
                 if line.leaf_id == leaf_id:
@@ -1539,6 +1584,7 @@ def _rendered_lines(pdf_path: Path) -> list[dict[str, Any]]:
                         "bottom": float(char["bottom"]),
                         "size": float(char["size"]),
                         "font": str(char["fontname"]),
+                        "color": _pdf_color_hex(char.get("non_stroking_color")),
                     }
                     for char in sorted(extracted_line["chars"], key=lambda char: char["x0"])
                 ]
@@ -2692,6 +2738,233 @@ def compare_geometry(
 
 
 # ---------------------------------------------------------------------------
+# Rendered-color verification (C2-0cC Part C)
+# ---------------------------------------------------------------------------
+
+# Per-RGB-channel tolerance in 8-bit units, documented BEFORE any canonical
+# run and never tuned afterwards: the pinned renderer quantizes colors to
+# 8-bit sRGB; a small rounding margin absorbs quantization only — black vs a
+# measured chromatic color differs by far more than this.
+COLOR_CHANNEL_TOLERANCE = 8
+
+
+def _colors_match(expected: str | None, rendered: str | None) -> bool:
+    if expected is None or rendered is None:
+        return False
+    try:
+        expected_channels = [int(expected[index:index + 2], 16) for index in (1, 3, 5)]
+        rendered_channels = [int(rendered[index:index + 2], 16) for index in (1, 3, 5)]
+    except (ValueError, IndexError):
+        return False
+    return all(
+        abs(e - r) <= COLOR_CHANNEL_TOLERANCE
+        for e, r in zip(expected_channels, rendered_channels)
+    )
+
+
+def _majority_char_color(chars: list[dict[str, Any]], *, native_bullet: bool = False) -> str | None:
+    """Majority rendered text color of one visual row's characters (8-bit hex).
+
+    Whitespace never votes; a native bullet's renderer-drawn marker glyph
+    never votes (it is decoration, not text). Ties break lexicographically
+    (deterministic). All-unmeasured chars return None (unmeasurable)."""
+    counts: Counter[str] = Counter()
+    for char in chars:
+        if char["text"].isspace():
+            continue
+        if native_bullet and char["text"] in _RENDERED_MARKER_GLYPHS:
+            continue
+        if char.get("color"):
+            counts[char["color"]] += 1
+    if not counts:
+        return None
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+
+def _color_row(
+    node: str,
+    property_name: str,
+    token: Any,
+    rendered_color: str | None,
+    *,
+    detail: str = "",
+) -> dict[str, Any]:
+    """One node-level color comparison row.
+
+    expected: the measured state token color (source measured_state, evidence
+    IDs recorded) — or None (explicit unmeasured). authored: the OOXML/CSS
+    color the compiler writes (measured value, or the documented black
+    fallback). Classification: measured match => pass; unmeasured fallback
+    rendering black => adjusted (never exact); no rendered color =>
+    unmeasurable; a rendered mismatch => fail."""
+    expected = token.color_hex if token is not None else None
+    authored = (token.color_hex if token is not None and token.color_hex else UNMEASURED_COLOR_HEX)
+    fallback_black = f"#{UNMEASURED_COLOR_HEX}"
+    if expected is None:
+        classification = "adjusted" if rendered_color == fallback_black else (
+            "unmeasurable" if rendered_color is None else "fail"
+        )
+        fallback = "unmeasured color; documented black fallback (never exact)"
+    elif rendered_color is None:
+        classification = "unmeasurable"
+        fallback = "no measurable rendered color"
+    elif _colors_match(expected, rendered_color):
+        classification = "pass"
+        fallback = ""
+    else:
+        classification = "fail"
+        fallback = "rendered color differs beyond the documented channel tolerance"
+    return {
+        "property": property_name,
+        "node": node,
+        "expected_color": expected,
+        "expected_source": "measured_state" if expected else "unmeasured_fallback",
+        "evidence_ids": list(token.evidence_ids)[:3] if token is not None else [],
+        "authored_color": authored,
+        "rendered_color": rendered_color,
+        "classification": classification,
+        "detail": detail or fallback,
+    }
+
+
+def _run_char_slices(
+    chars: list[dict[str, Any]], run_texts: list[str]
+) -> list[list[dict[str, Any]]] | None:
+    """Split one rendered visual row's characters into ordered run slices.
+
+    Whitespace-insensitive walk: each run consumes its non-space characters
+    in order (ordered run concatenation equals the row text). None when the
+    row cannot be split deterministically."""
+    slices: list[list[dict[str, Any]]] = []
+    pointer = 0
+    for run_text in run_texts:
+        wanted = sum(1 for char in run_text if not char.isspace())
+        if wanted == 0:
+            slices.append([])
+            continue
+        taken: list[dict[str, Any]] = []
+        while pointer < len(chars) and len(taken) < wanted:
+            if not chars[pointer]["text"].isspace():
+                taken.append(chars[pointer])
+            pointer += 1
+        if len(taken) < wanted:
+            return None
+        slices.append(taken)
+    # Trailing chars (renderer-added whitespace) belong to no run.
+    return slices
+
+
+def compare_colors(state: C2LayoutState, plan: Any, rendered: dict[str, Any]) -> dict[str, Any]:
+    """Rendered-color verification (C2-0cC Part C) — measured from the pinned
+    renderer's preview PDF (pdfplumber non-stroking character color and rule
+    stroke color, normalized to hex RGB), NEVER from OOXML/CSS intent.
+
+    Node-level rows: every mapped visual row's text color vs its measured
+    state token; every required rule's rendered stroke color vs the state
+    rule color; every styled-run fragment vs its run token. An all-black
+    render can never pass against a multicolor target merely because the
+    geometry is correct. Adjusted (unmeasured fallback) rows never count as
+    exact and never fail the gate; fail/unmeasurable rows do."""
+    rows: list[dict[str, Any]] = []
+    styles = {style.style_id: style for style in state.styles}
+    heading_positions = {
+        row["section_node_id"]: (row["lines"][0]["page"], row["lines"][0]["top"])
+        for row in rendered["mapping"]["mapped"]
+        if row["kind"] == "heading" and row.get("section_node_id") and row["lines"]
+    }
+    for row in rendered["mapping"]["mapped"]:
+        chars = [char for line in row["lines"] for char in line["chars"]]
+        node = row.get("section_node_id") or "header"
+        leaf_detail = f"leaf {(row.get('leaf_ids') or [''])[0]}" if row.get("leaf_ids") else ""
+        if row["kind"] == "entry_row" and row.get("meta_text"):
+            split = len(row["meta_text"])
+            rows.append(_color_row(
+                node, "entry_title_color", styles.get(row.get("style_id")),
+                _majority_char_color(chars[:-split]), detail=leaf_detail,
+            ))
+            rows.append(_color_row(
+                node, "entry_meta_color", styles.get(row.get("meta_style_id")),
+                _majority_char_color(chars[-split:]), detail=leaf_detail,
+            ))
+            continue
+        rows.append(_color_row(
+            node, f"{row['kind']}_color", styles.get(row.get("style_id")),
+            _majority_char_color(chars, native_bullet=bool(row.get("native_bullet"))),
+            detail=leaf_detail,
+        ))
+    # Rules: every NON-EMPTY section's state rule must render with its
+    # measured color (geometry/position/stroke verification stays in
+    # compare_geometry — this verifies COLOR only).
+    plan_sections = [
+        section for section in [*plan.sections, *plan.appended_sections]
+        if not section.empty and section.rule_id
+    ]
+    for section in plan_sections:
+        state_rule = next(
+            (rule for rule in state.rules if rule.rule_id == section.rule_id), None
+        )
+        if state_rule is None:
+            continue
+        # Rule COLOR is verified on the same page/vertical region association
+        # compare_geometry uses (all D rules share one x-extent — extent
+        # matching alone would compare the wrong section's rule).
+        heading_position = heading_positions.get(section.node_id)
+        rendered_rule = next(
+            (
+                rule for rule in rendered["rules"]
+                if abs(rule["x0_pt"] - state_rule.x0_pt) <= TOLERANCE_PT["rule_x_extent"]
+                and abs(rule["x1_pt"] - state_rule.x1_pt) <= TOLERANCE_PT["rule_x_extent"]
+                and _rule_in_section_region(rule, heading_position, section.rule_placement)
+            ),
+            None,
+        )
+        rows.append(_color_row(
+            section.node_id, "rule_color", state_rule,
+            rendered_rule["color_hex"] if rendered_rule else None,
+            detail=f"rule {state_rule.rule_id}",
+        ))
+    # Styled runs (C2-0cC Part D capability): per-run expected vs rendered.
+    for section in [*plan.sections, *plan.appended_sections]:
+        for styled_line in section.styled_lines:
+            mapped = next(
+                (
+                    row for row in rendered["mapping"]["mapped"]
+                    if styled_line.leaf_id in (row.get("leaf_ids") or [])
+                ),
+                None,
+            )
+            chars = (
+                [char for line in mapped["lines"] for char in line["chars"]]
+                if mapped else []
+            )
+            slices = _run_char_slices(chars, [run.text for run in styled_line.runs]) if mapped else None
+            for run_index, run in enumerate(styled_line.runs):
+                slice_chars = slices[run_index] if slices else []
+                rows.append(_color_row(
+                    section.node_id, "styled_run_color", styles.get(run.style_id),
+                    _majority_char_color(slice_chars) if slice_chars else None,
+                    detail=f"styled run {run_index} of leaf {styled_line.leaf_id}",
+                ))
+    failed = sum(1 for row in rows if row["classification"] == "fail")
+    unmeasurable = sum(1 for row in rows if row["classification"] == "unmeasurable")
+    adjusted = sum(1 for row in rows if row["classification"] == "adjusted")
+    passed = sum(1 for row in rows if row["classification"] == "pass")
+    return {
+        "schema_version": "c2-docx-color-comparison/1",
+        "channel_tolerance": COLOR_CHANNEL_TOLERANCE,
+        "gate_passed": failed == 0 and unmeasurable == 0,
+        "counts": {
+            "total": len(rows),
+            "passed": passed,
+            "failed": failed,
+            "unmeasurable": unmeasurable,
+            "adjusted": adjusted,
+        },
+        "rows": rows,
+    }
+
+
+# ---------------------------------------------------------------------------
 # ConversionCompatibilityReport (deterministic, output-verified)
 # ---------------------------------------------------------------------------
 
@@ -3241,6 +3514,24 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
         encoding="utf-8",
     )
 
+    # 9b. rendered-color verification (C2-0cC Part C): measured from the same
+    # preview PDF (character non-stroking color + rule stroke color), compared
+    # node-locally against the measured state tokens; separate hard gate.
+    if preview.get("available"):
+        color_comparison = compare_colors(state, plan, rendered_geometry)
+    else:
+        color_comparison = {
+            "schema_version": "c2-docx-color-comparison/1",
+            "gate_passed": False,
+            "counts": {"total": 0, "passed": 0, "failed": 0, "unmeasurable": 0, "adjusted": 0},
+            "rows": [],
+            "detail": "no preview available",
+        }
+    (run_dir / "docx_color_comparison.json").write_text(
+        json.dumps(color_comparison, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
     # 10. typography evidence: authored (written OOXML) vs rendered (pinned
     #     renderer) — never collapsed into one claim.
     written_fonts = resolve_written_fonts(state)
@@ -3296,6 +3587,7 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
         ),
         "preview_and_blank_pages": preview_ok,
         "rendered_geometry_matches_declared_contract": bool(fitting["comparison"].get("gate_passed")),
+        "rendered_colors_match_declared_contract": bool(color_comparison.get("gate_passed")),
         "unsupported_features_confirmed": (not report.unsupported) or confirm_unsupported,
     }
     hard_gates_passed = all(hard_gates.values())
@@ -3311,6 +3603,7 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
                     "converged": fitting["converged"],
                 },
                 "typography_classification": typography.get("classification"),
+                "color_comparison": color_comparison.get("counts"),
             },
             indent=2,
             sort_keys=True,
@@ -3328,6 +3621,7 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
             "corrections": json.loads(fitting["adjustments"].model_dump_json()),
         },
         before_comparison=fitting.get("first_comparison"),
+        colors=color_comparison,
     )
     result.update({"hard_gates_passed": hard_gates_passed, "hard_gates": hard_gates})
     return result
@@ -3382,6 +3676,7 @@ def write_review_index(
     comparison: dict[str, Any] | None = None,
     fitting: dict[str, Any] | None = None,
     before_comparison: dict[str, Any] | None = None,
+    colors: dict[str, Any] | None = None,
 ) -> None:
     def _rows(items: list[Any]) -> str:
         return "".join(f"<li>{_esc(item)}</li>" for item in items)
@@ -3511,7 +3806,41 @@ def write_review_index(
             )
             + f"<ul>{before_preview_html}</ul>"
         )
-    fitting_html = ""
+    color_rows_html = ""
+    if colors:
+        def _swatch(color: str | None, fallback_text: str) -> str:
+            value = color or "#FFFFFF"
+            text_color = "#FFFFFF" if color in ("#000000", None) else "#000000"
+            return (
+                f'<td style="background-color:{_esc(value)};color:{_esc(text_color)}">'
+                f'{_esc(color or fallback_text)}</td>'
+            )
+        color_rows_html = "".join(
+            "<tr>"
+            f"<td>{_esc(row['property'])}</td><td>{_esc(row['node'])}</td>"
+            f"<td>{_esc(row.get('detail') or '')}</td>"
+            + _swatch(row['expected_color'], 'unmeasured')
+            + f"<td>{_esc(row['authored_color'])}</td>"
+            + _swatch(row['rendered_color'], 'unmeasurable')
+            + f"<td><strong>{_esc(row['classification'].upper())}</strong></td>"
+            + f"<td>{_esc(row['detail'])}</td></tr>"
+            for row in colors.get("rows", [])
+        )
+        color_counts = colors.get("counts", {})
+        colors_html = (
+            f"<h2>Rendered-color verification (C2-0cC; measured from the preview PDF)</h2>"
+            f"<p><strong>{color_counts.get('passed', 0)}</strong> passed / "
+            f"<strong>{color_counts.get('failed', 0)}</strong> failed / "
+            f"<strong>{color_counts.get('unmeasurable', 0)}</strong> unmeasurable / "
+            f"<strong>{color_counts.get('adjusted', 0)}</strong> adjusted (documented unmeasured fallback — never exact). "
+            f"Channel tolerance: ±{colors.get('channel_tolerance')} per 8-bit RGB channel. "
+            f"Color gate passed: <strong>{colors.get('gate_passed')}</strong>. "
+            "Color fidelity is reported INDEPENDENTLY of the overall conversion status.</p>"
+            f"<table><tr><th>property</th><th>node</th><th>leaf/detail</th><th>expected (measured)</th>"
+            f"<th>authored (OOXML/CSS)</th><th>rendered (PDF)</th><th>result</th><th>detail</th></tr>{color_rows_html}</table>"
+        )
+    else:
+        colors_html = ""
     if fitting is not None:
         fitting_html = (
             f"<h2>Bounded fitting (deterministic; max {MAX_FITTING_ITERATIONS} render→measure→adjust)</h2>"
@@ -3566,6 +3895,7 @@ as exact).</p>
 {geometry_counts_html}
 <p>Remaining visual gaps: see the failed/unmeasurable rows below.</p>
 {repair_html}
+{colors_html}
 {fitting_html}
 <h2>Hard gates</h2><table>{gate_rows}</table>
 <p>Owner confirmation required for unsupported features:
@@ -3603,6 +3933,7 @@ explicitly omitted (never rendered); accounting gate passed:
 <li><a href="candidate_render_context.json">candidate_render_context.json</a></li>
 <li><a href="docx_rendered_geometry.json">docx_rendered_geometry.json</a></li>
 <li><a href="docx_geometry_comparison.json">docx_geometry_comparison.json</a></li>
+<li><a href="docx_color_comparison.json">docx_color_comparison.json</a></li>
 <li><a href="docx_fitting_log.json">docx_fitting_log.json</a></li>
 <li><a href="ooxml_inspection.json">ooxml_inspection.json</a></li>
 <li><a href="content_accounting.json">content_accounting.json</a></li>

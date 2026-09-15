@@ -1207,14 +1207,99 @@ untouched):
 
 Results (canonical runs `c2_0cR_E_to_F_20260915T153327Z`,
 `c2_0cR_D_to_E_20260915T153230Z`, `c2_0cR_E_to_D_20260915T153321Z`; each
-retains the PRE-repair comparison `docx_geometry_comparison_before.json` +
-before render `c2_output_before.*`/`c2_0cr_before_*.png`):
-**E→F before 46 fail (31 section.04 child-leaf rows proving the 40/40 gap)
-→ after 98/98 pass in 2 fitting iterations, 1/1/1 pages, all hard gates
-true.** D→E keeps its single honest sparse-trailing-page failure; E→D gains
+retains the cold-start (zero-adjustment) comparison
+`docx_geometry_comparison_before.json` + cold-start render
+`c2_output_before.*`/`c2_0cr_before_*.png`):
+**E→F cold-start 46 fail (31 section.04 child-leaf rows proving the 40/40
+gap) → final 98/98 pass in 2 fitting iterations, 1/1/1 pages, all hard
+gates true.** Audit correction (§16.9): the delta between the previous
+C2-0c FINAL (commit 7560ddb) and the C2-0cR final is exactly
+`section.04.entry_child_text_indent_pt = 10.699`; the section.02/05
+corrections are baseline compiler adjustments identical in both finals. D→E keeps its single honest sparse-trailing-page failure; E→D gains
 honestly documented unmeasurable child rows (no measurable target anchor)
 and stays fail-closed; neither was tuned. Cleanup: the dead duplicate
 `compare_geometry` definition was removed; the reported duplicate
 `basis_source` dict key was searched for (AST + raw-JSON pair-hook scans)
 and does not exist. **C2-0cR is NOT accepted pending owner visual review**
 — before/after previews are the review artifact; the product owner decides.
+
+### 16.9 C2-0cC color fidelity checkpoint (2026-09-15, owner work order)
+
+Audit correction to §16.8 first: the C2-0cR "before" was mislabeled — the
+retained `docx_geometry_comparison_before.json` is the FIRST fitting
+iteration (a zero-adjustment cold-start compile), not the previous C2-0c
+final. Diffing the C2-0c final (`7560ddb`) and C2-0cR final (`0a21800`)
+fitting logs proves the repair delta is exactly
+`{"target": "section.04", "entry_child_text_indent_pt": 10.699}`; the
+section.02/section.05 values are baseline compiler adjustments identical in
+both finals. Tracked report evidence corrected; no run artifact rewritten.
+
+Owner finding: Resume D's visual identity depends heavily on color, but the
+E→D output rendered almost all text black — target D measurably carries
+dark green #0E6E55, red #B50013, dark blue #1F1D8E, purple #8D1E8C, gold
+rules #A16F0B, green rules #0A7903. Traced flow: the color evidence ALREADY
+EXISTED in the normalized/enriched style groups (local PDF character
+evidence) — the C2 compiler discarded or collapsed it:
+
+- `_header_style_token` dropped the measured `color_hex`;
+- one global `style.heading` token (first heading only, no color) was
+  referenced by EVERY heading node, collapsing differently colored headings
+  into one black token;
+- rule colors were partially preserved (state rules carried measured gold/
+  green; both renderers already consumed them).
+
+Implemented (no new schema family, no dependency, no pair-specific logic,
+no production/frontend changes):
+
+1. **Node-level color fidelity.** `HeaderScaffold`/`BodyHeadingScaffold`
+   carry the measured `color_hex` of the row's own matched style group;
+   `_header_style_token` consumes it; `style_from_scaffolds` builds ONE
+   StyleToken per DISTINCT measured heading presentation (family/size/line/
+   bold/color) — identically styled headings reuse one token, differently
+   colored headings get their own (deterministic ids `style.heading`,
+   `style.heading.2`, …) — and every heading node references its own
+   token. Missing color stays `color_hex: None` (explicit unmeasured;
+   documented black fallback, classified adjusted, never exact). Both the
+   HTML renderer (existing `color:` CSS) and the DOCX renderer (native
+   `w:color` runs) consume the same tokens.
+2. **Rendered-color verification (new hard gate).** The preview PDF's
+   per-character non-stroking color and per-rule stroke color are measured
+   (pdfplumber, normalized deterministically to hex RGB — gray/RGB/CMYK)
+   and compared node-locally against the measured state tokens with a
+   pre-documented tolerance (±8 per 8-bit RGB channel, never tuned).
+   `docx_color_comparison.json` reports per row: node, leaf/detail,
+   expected color + source + evidence IDs, authored OOXML/CSS color,
+   rendered PDF color, classification (pass / adjusted / unmeasurable /
+   fail). `rendered_colors_match_declared_contract` is a SEPARATE hard
+   gate — an all-black render cannot pass a multicolor target because the
+   geometry is correct, and a color-only pass never implies overall
+   conversion success. Rule color verification uses the same page/vertical
+   region association as the geometry gate (all D rules share one
+   x-extent).
+3. **Inline mixed-color capability (Part D).** Additive to the existing
+   plan family: `StyledRun` (ordered fragment bound to candidate-owned
+   `leaf_id` + template-owned `style_id`; whitespace-stripping disabled —
+   fragments legitimately start/end inside text) and `StyledLine`
+   (ordered runs concatenating to the leaf text). HTML emits ordered
+   `<span>` runs; DOCX emits native editable runs in ONE paragraph;
+   accounting/reading order treat the line as one paragraph owning its
+   leaf. The plan compiler NEVER invents styled runs: no deterministic
+   evidence→fragment binding exists yet (target D's SUMMARY line is
+   green+gold+red and its skills-pool lines mix red/black/blue IN one
+   line, but which candidate fragment receives which color is not
+   derivable), so the E→D inline mapping is recorded as an explicit
+   UNRESOLVED capability gap and the capability is proven by an authorized
+   synthetic fixture only.
+
+Canonical run `c2_0cC_E_to_D_20260915T163213Z` (same candidate E, target
+resume_D.pdf, cached evidence, frozen C1 baseline; no live calls): name and
+tagline tokens #0E6E55, contact/bar #000000, SKILLS POOL heading #1F1D8E,
+WORK EXPERIENCE heading #8D1E8C, gold/green rules verified from rendered
+output — rendered preview carries #0E6E55/#1F1D8E/#8D1E8C text; color gate
+TRUE (22 pass / 20 adjusted / 0 fail / 0 unmeasurable) while the pair's
+previous geometry and unsupported-feature failures REMAIN (overall gates
+false — color fidelity is independent of conversion status). Candidate E's
+content and accounting unchanged. **C2-0cC is NOT accepted pending owner
+visual review.** Node-level color fidelity and inline mixed-color fidelity
+are separate capabilities: the first is restored and verified; the second is
+proven as renderer capability with the binding policy explicitly unresolved.

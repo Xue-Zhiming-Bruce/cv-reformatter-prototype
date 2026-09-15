@@ -1,6 +1,6 @@
 # Pipeline C2-0c Report: Minimal DOCX / Cross-Format Spike
 
-Status: `Owner visual review REJECTED C2-0c; three bounded corrective passes executed; awaiting owner re-review — NOT production work`
+Status: `Owner visual review REJECTED C2-0c; four bounded corrective passes executed (C2-0cR repairability, C2-0cC color fidelity); awaiting owner re-review — NOT production work`
 
 ## Owner Verdict (visual review, 2026-09-15)
 
@@ -22,8 +22,10 @@ visual corrective pass is recorded in §0a and the rendered-geometry
 measurement-and-fitting pass is recorded in §0b. A third bounded pass — the
 C2-0cR repairability checkpoint (leaf-level indentation coverage + one
 bounded E→F indentation repair), recorded in §0c — was executed after the
-owner's second verdict below. C2-0c remains NOT accepted pending owner
-visual review.
+owner's second verdict below, and a fourth bounded pass — the C2-0cC color
+fidelity checkpoint (node-level color restoration + rendered-color gate +
+styled-run capability proof), recorded in §0d — after the third. C2-0c
+remains NOT accepted pending owner visual review.
 
 Date: 2026-09-15
 Branch: `experiment/pipeline-c2` (worktree `/private/tmp/cv-converter-c2`,
@@ -258,20 +260,123 @@ E→F still exactly one page, header/skills/education/rules/reading order
 unchanged (proven row-for-row).
 
 Results (canonical C2-0cR runs, same frozen candidate/target/cached
-evidence/C1 baselines; exact paths in §4c): E→F pre-repair comparison
-`docx_geometry_comparison_before.json`: 46 failures — 31 in section.04
-(12 child textlines: marker basis 57.6 measured 46.9; text basis 62.83
-measured 52.54; hanging basis 5.23 measured ~1.0) proving the old 40/40
-was incomplete. One bounded edit → converged iteration 2: **98/98 rows
-pass, 0 fail, 0 unmeasurable**, all hard gates true, 1/1/1 pages,
-accounting exact (40 leaves, zero marker conversions — glyphs remain
-content). D→E retains its single honest failure (the borderline sparse
-trailing page) plus 41 not-applicable; still fail-closed on unsupported
-features. E→D gains honestly-documented unmeasurable child rows (target D
-carries no measurable bullet-text anchor for its plain child lines); still
-fail-closed. Neither was tuned. **C2-0cR is NOT accepted pending owner
-visual review** — the before/after preview comparison is the review
-artifact, not a convergence claim.
+evidence/C1 baselines; exact paths in §4c): E→F cold-start comparison
+`docx_geometry_comparison_before.json` (see the correction below): 46
+failures — 31 in section.04 (12 child textlines: marker basis 57.6 measured
+46.9; text basis 62.83 measured 52.54; hanging basis 5.23 measured ~1.0)
+proving the old 40/40 was incomplete. One bounded edit → converged
+iteration 2: **98/98 rows pass, 0 fail, 0 unmeasurable**, all hard gates
+true, 1/1/1 pages, accounting exact (40 leaves, zero marker conversions —
+glyphs remain content). D→E retains its single honest failure (the
+borderline sparse trailing page) plus 41 not-applicable; still fail-closed
+on unsupported features. E→D gains honestly-documented unmeasurable child
+rows (target D carries no measurable bullet-text anchor for its plain
+child lines); still fail-closed. Neither was tuned. **C2-0cR is NOT
+accepted pending owner visual review** — the before/after preview
+comparison is the review artifact, not a convergence claim.
+
+**Correction (C2-0cC audit, 2026-09-15): what "before" and the repair
+delta actually mean.** The C2-0cR review artifact labeled the FIRST
+fitting iteration (which starts from ZERO adjustments) as the "before"
+state; that is a cold-start compile, not the previous accepted output.
+The correct audit frame is:
+
+- **before** = the previous FINAL fitted C2-0c output (commit `7560ddb`,
+  run `c2_0c_E_to_F_20260915T135455Z`);
+- **after** = the final C2-0cR output (commit `0a21800`, run
+  `c2_0cR_E_to_F_20260915T153327Z`);
+- **the repair delta between those two finals is exactly**
+  `{"target": "section.04", "entry_child_text_indent_pt": 10.699}` —
+  verified by diffing the two runs' `docx_fitting_log.json` final
+  corrections (the other sections merely gained the new control at its
+  zero default);
+- the section.02 / section.05 corrections visible in the C2-0cR artifact
+  (`item_left_indent_pt 10.7`, heading spacing, `entry_right_edge_pt`,
+  `inter_entry_pt`) are the BASELINE compiler adjustments that the C2-0c
+  fitter already applied at `7560ddb` — they are identical in both finals
+  and are NOT part of the repair;
+- the affected stable node list contains ONLY `section.04`;
+- `docx_geometry_comparison_before.json` / `c2_output_before.*` in the
+  C2-0cR run directory remain useful evidence that the EXPANDED leaf-level
+  gate fails on a zero-adjustment compile (the blind-spot demonstration);
+  they are not the previous accepted output. No old run artifact was
+  rewritten; this correction is tracked report evidence.
+
+## 0d. Color Fidelity Checkpoint (C2-0cC, owner work order, 2026-09-15)
+
+Owner finding: Resume D's visual identity depends heavily on color, but the
+E→D output rendered almost all text black. Target D measurably carries dark
+green #0E6E55, red #B50013, dark blue #1F1D8E, purple #8D1E8C, gold rules
+#A16F0B, green rules #0A7903 — and the color evidence ALREADY EXISTED in the
+normalized/enriched style groups (local PDF character evidence). The loss
+was in the C2 compiler: `_header_style_token` dropped the measured
+`color_hex`; one global `style.heading` token (no color) was referenced by
+EVERY heading node; rule colors were the one place partially preserved
+(state rules carried measured gold/green and both renderers consumed them).
+This is an evidence-to-state expressiveness and compiler-consumption gap,
+not a DOCX format limitation.
+
+**Part A (audit correction).** The C2-0cR "before" was mislabeled: the
+retained `docx_geometry_comparison_before.json` is the first fitting
+iteration (a zero-adjustment cold-start compile), not the previous C2-0c
+final. Diffing the two fitting logs proves the C2-0cR repair delta is
+exactly `section.04.entry_child_text_indent_pt = 10.699`; the
+section.02/section.05 values are baseline compiler adjustments identical in
+both finals; the affected stable node list is ONLY `section.04`. See the
+correction in §0c. No run artifact was rewritten.
+
+**Part B (node-level colors restored at the earliest shared boundary).**
+`HeaderScaffold`/`BodyHeadingScaffold` carry the measured `color_hex` of the
+row's own matched style group; `_header_style_token` consumes it; the state
+compiler builds ONE StyleToken per DISTINCT measured heading presentation
+(identically styled headings reuse one token; differently colored headings
+get deterministic distinct tokens `style.heading`, `style.heading.2`, …) and
+every heading node references its own token. Missing color stays explicit
+(`color_hex: None` → documented black fallback, classified adjusted, never
+exact). No target candidate facts are stored — presentation tokens only. No
+pair-specific logic.
+
+**Part C (rendered-color hard gate).** The preview PDF's per-character
+non-stroking color and per-rule stroke color are measured (pdfplumber,
+deterministically normalized to hex RGB incl. gray/CMYK) and compared
+node-locally against the measured state tokens with a pre-documented
+tolerance (±8 per 8-bit RGB channel; documented before the canonical run,
+never tuned). `docx_color_comparison.json` rows carry node, leaf/detail,
+expected color + source + evidence IDs, authored OOXML/CSS color, rendered
+PDF color, classification, and fallback detail.
+`rendered_colors_match_declared_contract` is a SEPARATE hard gate: an
+all-black render cannot pass a multicolor target because its geometry is
+correct, and a color-only pass never implies overall conversion success.
+Rule colors are verified with the same page/vertical region association as
+the geometry gate (all D rules share one x-extent).
+
+**Part D (inline mixed-color capability, honest partial result).** Additive
+to the existing plan family: `StyledRun` (candidate-owned leaf fragment +
+template-owned style id; whitespace stripping disabled because fragment
+boundaries legitimately fall inside text) and `StyledLine` (ordered runs
+concatenating to the leaf text). HTML renders ordered native spans; DOCX
+renders native editable runs in one paragraph; accounting/reading order
+treat the line as one paragraph owning its leaf. The plan compiler NEVER
+invents styled runs: target D's mixed-color lines (green+gold+red SUMMARY
+line; red/black/blue skills-pool lines) carry no deterministic binding from
+candidate fragments to inline colors, so the E→D inline mapping is recorded
+as an explicit UNRESOLVED capability gap and the capability is proven only
+by an authorized synthetic fixture.
+
+Canonical run `c2_0cC_E_to_D_20260915T163213Z` (same candidate E, target
+resume_D.pdf, cached evidence, frozen C1 baseline; no live calls): name and
+tagline tokens #0E6E55, contact/bar #000000, SKILLS POOL heading #1F1D8E,
+WORK EXPERIENCE heading #8D1E8C, gold/green rules verified from rendered
+output — the preview PDF measurably carries #0E6E55/#1F1D8E/#8D1E8C text.
+Color gate TRUE (22 pass / 20 adjusted / 0 fail / 0 unmeasurable) while the
+pair's previous geometry and unsupported-feature failures REMAIN (overall
+gates false). Candidate content and accounting unchanged. Conclusions:
+DOCX and HTML can render native colors; Resume D color evidence already
+existed; the compiler discarded it; node-level color fidelity and inline
+mixed-color fidelity are separate capabilities (first restored and verified,
+second proven with the binding policy explicitly unresolved); color is part
+of template identity, not optional decoration. **C2-0cC is NOT accepted
+pending owner visual review.**
 
 ## 0. Explicit Non-Claims (read first)
 
@@ -426,7 +531,7 @@ rows, the structured edit, affected stable node IDs).
 
 | Pair | Run | Pre-repair (before) | Bounded edit | Post-repair (after) | Pages (DOCX/target/C1) |
 |---|---|---|---|---|---|
-| E→F | `c2_0cR_E_to_F_20260915T153327Z` | 46 fail / 52 pass / 98 total — 31 section.04 child-leaf failures (marker basis 57.6 vs rendered 46.9; text basis 62.83 vs 52.54; hanging 5.23 vs ≈1.0) | `FitAdjustments.sections[section.04].entry_child_text_indent_pt = 10.699pt` (fitted, not hardcoded) | 98/98 pass, 0 fail, 0 unmeasurable; all hard gates true | 1 / 1 / 1 (`exact`) |
+| E→F | `c2_0cR_E_to_F_20260915T153327Z` | cold-start iteration (zero adjustments): 46 fail / 52 pass / 98 total — 31 section.04 child-leaf failures; the repair delta vs the previous C2-0c final is ONLY `section.04.entry_child_text_indent_pt = 10.699` (see §0c correction) | `FitAdjustments.sections[section.04].entry_child_text_indent_pt = 10.699pt` (fitted, not hardcoded) | 98/98 pass, 0 fail, 0 unmeasurable; all hard gates true | 1 / 1 / 1 (`exact`) |
 | D→E | `c2_0cR_D_to_E_20260915T153230Z` | 22 fail (same blind-spot rows) | fitter controls only; NOT tuned | 116 pass / 1 fail (the same borderline sparse trailing page) / 41 not-applicable; still fail-closed on unsupported features | 2 / 1 / 2 (=`frozen C1`) |
 | E→D | `c2_0cR_E_to_D_20260915T153321Z` | 13 fail / 26 unmeasurable | NOT tuned | 52 pass / 0 fail / 26 unmeasurable (the known entry-tier gaps + honestly documented child rows whose target carries no measurable bullet-text anchor); still fail-closed | 1 / 1 / 1 (`exact`) |
 
@@ -623,16 +728,29 @@ superiority is claimed anywhere.
 
 ## 9. Owner-Review Entry Points
 
-C2-0cR repairability checkpoint (review this first):
+C2-0cC color fidelity checkpoint (review this first):
+
+- `tests/experiments/runs/c2_0cC_E_to_D_20260915T163213Z/review.html` →
+  leads with NOT-accepted status, target-D image, previous-vs-new E→D
+  previews, full-page side-by-side images, the color swatch/evidence table
+  (`docx_color_comparison.json`: expected/authored/rendered per node with
+  classification), gold/green rule verification, the styled-run capability
+  result, the explicit unresolved inline-mapping gaps, pagination and
+  geometry status (previously recorded failures remain), and unchanged
+  candidate content/accounting.
+
+C2-0cR repairability checkpoint:
 
 - `tests/experiments/runs/c2_0cR_E_to_F_20260915T153327Z/review.html` →
-  leads with NOT-accepted status, the BEFORE render
+  leads with NOT-accepted status, the cold-start render
   (`c2_0cr_before_page_1.png`, `c2_output_before.docx/.pdf`,
-  `docx_geometry_comparison_before.json`) vs the AFTER render
+  `docx_geometry_comparison_before.json` — a zero-adjustment compile, NOT
+  the previous C2-0c final; see the §0c correction) vs the AFTER render
   (`c2_0c_preview_page_1.png`, `c2_output.docx/.pdf`), the target-F image,
   the before→after leaf-row indentation table, the structured edit
-  (`entry_child_text_indent_pt = 10.699` on stable node `section.04`), and
-  the full 98-row expanded geometry table.
+  (`entry_child_text_indent_pt = 10.699` on stable node `section.04` — the
+  ONLY repair delta vs the C2-0c final), and the full 98-row expanded
+  geometry table.
 - `tests/experiments/runs/c2_0cR_D_to_E_20260915T153230Z/review.html`
 - `tests/experiments/runs/c2_0cR_E_to_D_20260915T153321Z/review.html`
 
@@ -648,13 +766,22 @@ Rendered-geometry pass (superseded by C2-0cR but retained):
 
 ## 10. Files Changed (authorized list only)
 
+- `tests/experiments/c_pipeline.py` — C2-0cC: `HeaderScaffold`/
+  `BodyHeadingScaffold` carry the measured `color_hex` of the row's own
+  matched style group (local PDF character evidence); nothing else changed.
 - `tests/experiments/c2_renderer.py` — Part-1 rule-geometry gate fix; the
   corrective pass adds page + vertical position to rendered-rule evidence and
   the documented section-region association; the rendered-geometry pass adds
   an additive `stroke_pt` field to the shared `_rendered_rule_extents`
-  measurement (existing consumers unaffected).
-- `tests/experiments/test_c2_renderer.py` — Part-1 regressions; corrective
-  vertical-region regressions (wrong-y and wrong-page rules fail).
+  measurement (existing consumers unaffected). C2-0cC: `_pdf_color_hex`
+  deterministic PDF-color normalization, additive rule `color_hex`, additive
+  `StyledRun`/`StyledLine` plan structures (whitespace-stripping disabled for
+  run fragments) consumed by the HTML renderer as ordered native spans.
+- `tests/experiments/c2_pipeline.py` — C2-0cC: `_measured_color_for_evidence`,
+  color-consuming `_header_style_token`, and `_heading_style_token` (one
+  StyleToken per distinct measured heading presentation with deterministic
+  reuse; heading nodes reference their own token).
+- `tests/experiments/c2_renderer.py` — Part-1 rule-geometry gate fix; the
 - `tests/experiments/c2_docx_renderer.py` — corrective pass (entry topology
   tables, controlled paragraph formatting, marker handling, output-verified
   exact claims, pagination classification, preview gate, table-aware
@@ -671,7 +798,15 @@ Rendered-geometry pass (superseded by C2-0cR but retained):
   pre-repair evidence retention (`first_comparison` →
   `docx_geometry_comparison_before.json`, `c2_output_before.*`,
   `c2_0cr_before_*.png`) and the review.html repairability-checkpoint
-  section. The reported duplicate `basis_source` key in a comparison-row
+  section. C2-0cC pass: measured colors survive evidence → state → plan →
+  renderers (header tokens, one StyleToken per distinct measured heading
+  presentation); `_pdf_color_hex` normalization + rule `color_hex` in the
+  shared `_rendered_rule_extents` (additive); additive `StyledRun`/
+  `StyledLine` (whitespace-stripping disabled for run fragments) consumed by
+  HTML (ordered spans) and DOCX (native editable runs); `compare_colors` +
+  `docx_color_comparison.json` + the `rendered_colors_match_declared_contract`
+  hard gate + the review.html color swatch table; inspection records
+  per-paragraph `run_colors`. The reported duplicate `basis_source` key in a comparison-row
   dictionary was searched for (AST duplicate-key scan over the experiment
   modules and tests, plus raw-JSON pair-hook scans of the canonical
   comparison artifacts) and does NOT exist in the current code or
@@ -683,7 +818,17 @@ Rendered-geometry pass (superseded by C2-0cR but retained):
   target anchor, bounded-edit node scoping, content/accounting invariance,
   unrelated-section invariance; canonical lane asserts leaf coverage, the
   E→F before/after evidence, one-page pagination, and D→E/E→D retained
-  fail-closed status).
+  fail-closed status) plus C2-0cC regressions (11 offline tests: header/name
+  and tagline colors survive evidence → state; differently colored headings
+  get distinct tokens while identical ones reuse; missing color stays
+  explicit with only the documented fallback; native `w:color` OOXML values;
+  HTML emits the same color intent; PDF color normalization + node-level
+  rendered-color comparison; all-black render fails a colored expectation;
+  unmeasured fallback is adjusted never exact; gold/green rule colors
+  verified from rendered output incl. wrong-color failure; ordered styled
+  runs preserve text/order/color/bold/editability; styled runs copy no
+  target facts; styled-run accounting/reading order unchanged; canonical
+  lane asserts `docx_color_comparison.json` and the separate color gate).
 - `tests/experiments/C2_0B_REPORT.md` — verdict + wording corrections +
   corrective-pass records.
 - `tests/experiments/C2_0C_REPORT.md` — this report.

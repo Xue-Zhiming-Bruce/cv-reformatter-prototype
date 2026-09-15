@@ -47,7 +47,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from app.ingestion.pdf_reader import read_pdf_text
 from tests.experiments.a_pipeline import (
@@ -102,6 +102,41 @@ PlanStatus = str  # fully_materialized | materialized_with_gaps | failed
 class LeafText(StateModel):
     leaf_id: str
     text: str
+
+
+class StyledRun(StateModel):
+    """One ordered inline run of a styled line (C2-0cC capability proof).
+
+    ``leaf_id`` references CANDIDATE-OWNED text (the run fragment must
+    concatenate, in order, to that leaf's verbatim text); ``style_id``
+    references a template-owned measured StyleToken (presentation only —
+    never target candidate facts). The split decision itself requires
+    target inline presentation evidence bound to candidate fragments; no
+    such deterministic binding exists yet, so the plan compiler never
+    invents styled runs (recorded capability gap) — renderers consume them
+    when a plan carries them.
+
+    Run fragment boundaries legitimately fall INSIDE the leaf text, so the
+    StateModel's whitespace stripping is disabled for this model — a
+    fragment's leading/trailing spaces are part of the verbatim text."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+
+    style_id: str | None = None  # None = unmeasured: documented fallback
+    leaf_id: str
+    text: str
+
+
+class StyledLine(StateModel):
+    """One paragraph rendered as ORDERED styled runs (additive to the
+    existing c2-render-plan/1 family; no new schema family)."""
+
+    leaf_id: str
+    runs: list[StyledRun] = Field(min_length=1)
+
+    @property
+    def text(self) -> str:
+        return "".join(run.text for run in self.runs)
 
 
 class HeaderFieldPlan(StateModel):
@@ -177,6 +212,7 @@ class SectionPlan(StateModel):
     source_heading: str | None = None
     empty: bool = False  # target section with no candidate content: renders nothing
     paragraph_lines: list[LeafText] = Field(default_factory=list)
+    styled_lines: list[StyledLine] = Field(default_factory=list)  # ordered inline runs (C2-0cC)
     entries: list[EntryPlan] = Field(default_factory=list)
     items: list[LeafText] = Field(default_factory=list)
     bullet_marker: str | None = None
@@ -520,7 +556,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                     f"{section.node_id}: inline separator {content.inline_separator!r} joins items"
                 )
         section_plans.append(plan)
-        plan.empty = not (plan.paragraph_lines or plan.entries or plan.items)
+        plan.empty = not (plan.paragraph_lines or plan.styled_lines or plan.entries or plan.items)
         if plan.empty:
             notes.append(
                 f"{section.node_id} ({plan.label!r}): target section has no candidate "
@@ -693,6 +729,34 @@ def _rule_extent_css(plan: SectionPlan, rule: dict[str, Any], page: PageState) -
     if abs(margin_right) >= 0.01:
         declarations.append(f"margin-right: {_pt(margin_right)};")
     return declarations
+
+
+def _styled_line_html(
+    state: Any, section_plan: Any, line: Any, content_class: str
+) -> str:
+    """One paragraph as ORDERED native inline runs (C2-0cC capability).
+
+    Each run is a <span> carrying its template-owned token's measured CSS
+    (color/weight); text is candidate-owned and rendered verbatim. Ordered
+    run concatenation equals the leaf text (accounting verifies it)."""
+    tokens = {token.style_id: token for token in state.styles}
+    spans: list[str] = []
+    for run in line.runs:
+        token = tokens.get(run.style_id) if run.style_id else None
+        declarations: list[str] = []
+        if token is not None:
+            if token.color_hex:
+                declarations.append(f"color: {token.color_hex};")
+            if token.bold:
+                declarations.append("font-weight: 700;")
+            if token.italic:
+                declarations.append("font-style: italic;")
+        style_attr = f' style="{" ".join(declarations)}"' if declarations else ""
+        spans.append(f'<span class="c2-run"{style_attr}>{_esc(run.text)}</span>')
+    return (
+        f'    <p class="{content_class}" data-node-id="{_esc(section_plan.node_id)}.content.{_esc(line.leaf_id)}">'
+        f"{''.join(spans)}</p>"
+    )
 
 
 def _heading_html(plan: SectionPlan, rule: dict[str, Any] | None, page: PageState) -> str:
@@ -891,6 +955,8 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                     f'    <p class="{content_class}" data-node-id="{_esc(section_plan.node_id)}.content.{_esc(line.leaf_id)}">'
                     f"{_esc(line.text)}</p>"
                 )
+            for line in section_plan.styled_lines:
+                parts.append(_styled_line_html(state, section_plan, line, content_class))
         elif section_plan.content_kind == "entries":
             indent = (
                 round(section_plan.base_x0_pt - state.page.margin_left_pt, 3)
@@ -1349,10 +1415,41 @@ RULE_GEOMETRY_TOLERANCE_PT = 1.0
 CSS_EXTENT_TOLERANCE_PT = 0.05
 
 
+def _pdf_color_hex(color: Any) -> str | None:
+    """Normalize a pdfplumber PDF color (stroking/non-stroking) to hex RGB.
+
+    Deterministic: None stays None (unmeasured); a scalar or 1-tuple is gray
+    (replicated); 3-tuple is RGB; 4-tuple is CMYK (standard conversion).
+    Values are 0..1 floats (values above 1 are treated as already 8-bit).
+    Output is uppercase ``#RRGGBB`` (C2-0cC color verification)."""
+    if color is None:
+        return None
+    values = list(color) if isinstance(color, (list, tuple)) else [color]
+    if not values:
+        return None
+    if len(values) == 4:  # CMYK
+        c, m, y, k = (float(v) for v in values)
+        values = [
+            (1 - c) * (1 - k),
+            (1 - m) * (1 - k),
+            (1 - y) * (1 - k),
+        ]
+    elif len(values) == 1:
+        values = [values[0], values[0], values[0]]
+    elif len(values) != 3:
+        return None
+    scaled = [
+        round(float(v) * 255) if float(v) <= 1.0 else round(float(v))
+        for v in values
+    ]
+    return "#%02X%02X%02X" % tuple(max(0, min(255, v)) for v in scaled)
+
+
 def _rendered_rule_extents(pdf: Path | None) -> list[dict[str, Any]]:
     """Rendered horizontal vector objects (rules) with their page and vertical
     position, so a required rule can be associated with the correct page and
-    section vertical region — not only its x-extent."""
+    section vertical region — not only its x-extent. C2-0cC adds the measured
+    stroke color (normalized hex) additively; existing consumers unaffected."""
     if pdf is None:
         return []
     import pdfplumber
@@ -1373,6 +1470,7 @@ def _rendered_rule_extents(pdf: Path | None) -> list[dict[str, Any]]:
                             "stroke_pt": round(
                                 float(obj.get("linewidth") or 0.0) or max(height, 0.0), 3
                             ),
+                            "color_hex": _pdf_color_hex(obj.get("stroking_color")),
                         }
                     )
     return rendered

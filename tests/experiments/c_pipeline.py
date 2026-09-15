@@ -80,6 +80,9 @@ class HeaderScaffold(BaseModel):
     font_size_pt: float | None = None
     line_height_pt: float | None = None
     bold: bool | None = None
+    # Measured color of the row's own matched style group (C2-0cC); None =
+    # unmeasured (explicit; documented fallback, never an inferred color).
+    color_hex: str | None = None
 
 
 class FitParameters(BaseModel):
@@ -109,6 +112,9 @@ class BodyHeadingScaffold(BaseModel):
     line_height_pt: float
     bold: bool
     font_family: str
+    # Measured presentation color of the heading's own style group (local PDF
+    # character evidence; C2-0cC). None = unmeasured (explicit, never inferred).
+    color_hex: str | None = None
     rule_top_pt: float | None = None
     rule_gap_above_pt: float | None = None
     rule_gap_below_pt: float | None = None
@@ -453,6 +459,7 @@ def derive_header_scaffold(
             "font_size_pt": float(best.get("font_size_pt") or median),
             "line_height_pt": float(best.get("line_height_pt") or 0) or None,
             "bold": bold,
+            "color_hex": best.get("color_hex"),
         }
 
     return [
@@ -560,6 +567,7 @@ def derive_body_scaffold(
             line_height_pt=float(style.get("line_height_pt") or (line["bottom"] - line["top"])),
             bold=bool(style.get("bold")),
             font_family=str(style.get("font_family") or "Arial"),
+            color_hex=style.get("color_hex"),
             rule_top_pt=rule["top_pt"] if rule else None,
             rule_gap_above_pt=float(rule["gap_above_pt"]) if rule and rule["gap_above_pt"] is not None else None,
             rule_gap_below_pt=float(rule["gap_below_pt"]) if rule and rule["gap_below_pt"] is not None else None,

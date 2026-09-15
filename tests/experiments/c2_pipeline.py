@@ -614,6 +614,26 @@ def _label_case(label: str) -> Literal["upper", "title", "mixed"]:
     return "mixed"
 
 
+def _measured_color_for_evidence(summary: dict[str, Any], evidence_ids: list[str]) -> str | None:
+    """Measured color of the first evidence element that carries one.
+
+    Evidence IDs reference measured summary elements; each element's style
+    group signature includes its locally measured color (C2-0cC). Returns
+    None when no referenced element has a measured color — an explicit
+    unmeasured, never an inferred color."""
+    groups = summary.get("style_groups", {})
+    elements = {str(el.get("id")): el for el in summary.get("elements", [])}
+    for evidence_id in evidence_ids:
+        element = elements.get(str(evidence_id))
+        if element is None:
+            continue
+        group = groups.get(str(element.get("style_id") or "")) or {}
+        color = group.get("color_hex")
+        if color:
+            return str(color)
+    return None
+
+
 def _header_style_token(
     role: str, scaffold_row: Any, summary: dict[str, Any]
 ) -> StyleToken:
@@ -633,6 +653,13 @@ def _header_style_token(
         font_size_pt=float(scaffold_row.font_size_pt or 10.0),
         line_height_pt=scaffold_row.line_height_pt,
         bold=bool(scaffold_row.bold),
+        # The row's OWN matched style group color (C2-0cC); the evidence-id
+        # lookup is only a fallback for scaffolds built without a matched
+        # group (the shared header evidence-id list cannot disambiguate rows).
+        color_hex=(
+            getattr(scaffold_row, "color_hex", None)
+            or _measured_color_for_evidence(summary, list(scaffold_row.evidence_ids))
+        ),
         evidence_ids=[*scaffold_row.evidence_ids, matching_group],
     )
 
@@ -709,6 +736,49 @@ def _body_style_token(
         character_spacing_pt=body.get("char_spacing_pt"),
         evidence_ids=["style_group:text_volume:max(1,len(text))", *list(body.get("provenance") or [])[:3]],
     )
+
+
+def _heading_style_token(
+    summary: dict[str, Any], heading: Any, styles: list[StyleToken], counter: list[int]
+) -> StyleToken:
+    """One StyleToken per DISTINCT measured heading presentation (C2-0cC).
+
+    The heading's own measured presentation (font family/size/line height/
+    bold from its scaffold row) plus its style group's measured color; a
+    heading whose presentation equals an existing token REUSES that token,
+    so identically styled headings never multiply tokens and differently
+    colored headings are never collapsed into one global black token.
+    No measured color => color_hex None (explicit unmeasured; the renderers'
+    documented black fallback applies and is classified adjusted, never
+    exact)."""
+    token = StyleToken(
+        style_id="style.heading",
+        font_family=heading.font_family,
+        font_size_pt=heading.font_size_pt,
+        line_height_pt=heading.line_height_pt,
+        bold=heading.bold,
+        color_hex=getattr(heading, "color_hex", None),
+        evidence_ids=list(heading.evidence_ids),
+    )
+    for existing in styles:
+        if not existing.style_id.startswith("style.heading"):
+            continue
+        if (
+            existing.font_family == token.font_family
+            and existing.font_size_pt == token.font_size_pt
+            and existing.line_height_pt == token.line_height_pt
+            and existing.bold == token.bold
+            and existing.italic == token.italic
+            and existing.color_hex == token.color_hex
+            and existing.character_spacing_pt == token.character_spacing_pt
+        ):
+            return existing
+    counter[0] += 1
+    token = token.model_copy(
+        update={"style_id": "style.heading" if counter[0] == 1 else f"style.heading.{counter[0]}"}
+    )
+    styles.append(token)
+    return token
 
 
 RULE_TOP_MATCH_TOLERANCE_PT = 2.0
@@ -1132,7 +1202,7 @@ def state_from_scaffolds(
 
     # -- body sections: bindings, content shapes, section-owned structure -----
     headings = sorted(body_scaffold.headings, key=lambda item: (item.page, item.top_pt))
-    heading_style_added = False
+    heading_token_count = [0]  # distinct measured heading presentations (C2-0cC)
     bullet_marker: Literal["bullet", "none"] = (
         "bullet" if "bullet_dot" in bullet_tiers else "none"
     )
@@ -1155,18 +1225,11 @@ def state_from_scaffolds(
         for position in range(len(headings))
     ]
     for index, heading in enumerate(headings, 1):
-        if not heading_style_added:
-            styles.append(
-                StyleToken(
-                    style_id="style.heading",
-                    font_family=heading.font_family,
-                    font_size_pt=heading.font_size_pt,
-                    line_height_pt=heading.line_height_pt,
-                    bold=heading.bold,
-                    evidence_ids=list(heading.evidence_ids),
-                )
-            )
-            heading_style_added = True
+        # C2-0cC: one StyleToken per DISTINCT measured heading presentation
+        # (family/size/line/bold + the heading's own measured group color);
+        # identically styled headings reuse one token, differently colored
+        # headings are never collapsed into one global black token.
+        heading_token = _heading_style_token(summary, heading, styles, heading_token_count)
         section_id = f"section.{index:02d}"
         rule, _rule_evidence = _resolve_above_heading_rule(
             index, heading, summary, page_height, float(page["width_pt"])
@@ -1313,7 +1376,7 @@ def state_from_scaffolds(
                 parent_id=section_id,
                 kind="heading",
                 reading_order=order,
-                style_id="style.heading",
+                style_id=heading_token.style_id,
                 rule_id=rule.rule_id if rule is not None else None,
                 label=label,
                 label_case=_label_case(label),
