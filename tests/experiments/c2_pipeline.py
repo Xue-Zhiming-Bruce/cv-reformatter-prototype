@@ -10,7 +10,9 @@ compiled RenderPlan product only in C2-0b.
     -> provider-neutral TargetLayoutEvidence (cached Adobe + local supplements)
     -> deterministic C2 compiler (reuses C1's measured scaffold derivations)
     -> validated C2LayoutState JSON (layout-state/1, experimental)
-    -> section semantic bindings + real structural probes
+    -> section content shapes + section-owned structure
+    -> probes driven by INDEPENDENT candidate fixtures (never derived from
+       the state) with a leaf-ownership ledger
 
 This is an EXPERIMENTAL contract. The product schema remains
 ``app.template_analysis.schemas.LayoutTemplateSpec`` (``2.0``); the
@@ -74,14 +76,28 @@ SourceRole = Literal[
     "additional_details",
 ]
 
-# Sections that can own measured entry/list structure.
-ENTRY_CAPABLE_SOURCES: frozenset[str] = frozenset(
-    {"work_experience", "education", "certifications", "additional_details"}
+ALL_SOURCES: tuple[SourceRole, ...] = (
+    "summary", "skills", "languages", "work_experience",
+    "education", "certifications", "additional_details",
 )
+
+# Default section-content shape per candidate source (smallest renderer-neutral
+# vocabulary; aligns with the product SectionLayoutSpec.layout vocabulary where
+# it fits: paragraph~full_width, item_list~bullets/stacked, inline_items~inline).
+_DEFAULT_CONTENT_KINDS: dict[SourceRole, str] = {
+    "summary": "paragraph",
+    "work_experience": "entries",
+    "education": "entries",
+    "skills": "item_list",
+    "languages": "item_list",
+    "certifications": "item_list",
+    "additional_details": "item_list",
+}
 
 # Deterministic label vocabulary for semantic binding. Labels are target
 # PRESENTATION used for matching only; they never become a content source.
-# A label matching keywords of >1 source is ambiguous and stays unresolved.
+# A label matching keywords of >1 source is ambiguous and stays unresolved
+# (no bounded semantic resolver in C2-0a — owner decision).
 _SOURCE_KEYWORDS: tuple[tuple[SourceRole, tuple[str, ...]], ...] = (
     ("summary", ("summary", "profile", "objective")),
     ("languages", ("language",)),
@@ -100,7 +116,8 @@ def bind_source(label: str) -> tuple[SourceRole | None, str | None]:
     """Deterministically match a measured label to a candidate source role.
 
     Returns (source, None) on a unique match, or (None, reason) when the
-    binding is unresolved. Never guesses between competing matches.
+    binding is unresolved (no match, or ambiguous between competing matches).
+    Never guesses; the alias table is not expanded to make targets green.
     """
     normalized = re.sub(r"[^a-z ]+", " ", label.casefold())
     normalized = re.sub(r"\s+", " ", normalized).strip()
@@ -223,15 +240,86 @@ class FlowConstraint(StateModel):
 class SectionBinding(StateModel):
     """Which candidate content one template section can consume.
 
-    ``source`` is the candidate data role; ``mapping_action`` is ``map`` when
-    the measured label binds uniquely, ``unresolved`` when evidence alone
-    cannot bind it (recorded as a capability gap — never guessed), and
-    ``preserve_as_additional`` for candidate-only overflow sections.
+    ``sources`` lists the candidate data role(s) this section consumes: one
+    for ordinary sections, more than one ONLY for an explicit composite
+    section (e.g. a measured "EDUCATION & CERTIFICATIONS" label).
+
+    ``mapping_action``:
+    - ``map``: unique evidence-derived binding; ``sources`` non-empty;
+    - ``preserve_as_additional``: candidate-only overflow section; ``sources``
+      non-empty (retains the candidate's own heading);
+    - ``unresolved``: evidence alone cannot bind the section; ``sources``
+      MUST be empty (never a fake resolved source) and a capability gap must
+      exist.
+
+    ``partition_policy``: a candidate source maps to at most one target
+    section by default; multiple target sections consuming the same source
+    require an explicit partition policy (future). Without one, extra
+    bindings stay unresolved — source items are never duplicated.
     """
 
-    source: SourceRole
+    sources: list[SourceRole] = Field(default_factory=list)
     mapping_action: Literal["map", "preserve_as_additional", "unresolved"]
+    composite: bool = False
+    partition_policy: Literal["none", "split_items_by_order"] = "none"
     evidence_ids: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def honesty(self) -> "SectionBinding":
+        if self.mapping_action == "unresolved":
+            if self.sources:
+                raise ValueError(
+                    "unresolved bindings must not carry a (fake) resolved source"
+                )
+        else:
+            if not self.sources:
+                raise ValueError(
+                    f"{self.mapping_action} bindings must declare their source(s)"
+                )
+        if self.composite and len(self.sources) < 2:
+            raise ValueError("composite bindings declare at least two sources")
+        return self
+
+
+class SectionContent(StateModel):
+    """What content structure one section owns, and from which sources.
+
+    Renderer-neutral vocabulary (aligned with product ``SectionLayoutSpec.
+    layout`` where it fits): ``paragraph`` (summary-style flowing text),
+    ``entries`` (repeatable two-column entries), ``item_list`` (bulleted or
+    stacked items), ``inline_items`` (separator-joined items), ``badge_items``
+    (chip/pill items, ADR 0006), ``composite`` (multiple sources via
+    ``sub_contents``), ``unsupported`` (declared, with a capability gap).
+    No HTML/CSS/OOXML concepts.
+    """
+
+    content_kind: Literal[
+        "paragraph", "entries", "item_list", "inline_items",
+        "badge_items", "composite", "unsupported",
+    ]
+    sources: list[SourceRole] = Field(default_factory=list)
+    bullet_marker: Literal["bullet", "none"] | None = None
+    inline_separator: str | None = None
+    sub_contents: list["SectionContent"] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def shape(self) -> "SectionContent":
+        if self.content_kind == "composite":
+            if len(self.sub_contents) < 2:
+                raise ValueError("composite content declares at least two sub-contents")
+            covered = {
+                source for sub in self.sub_contents for source in sub.sources
+            }
+            missing = set(self.sources) - covered
+            if missing:
+                raise ValueError(
+                    f"composite content sub-contents do not cover {sorted(missing)}"
+                )
+        elif self.sub_contents:
+            raise ValueError("only composite content carries sub-contents")
+        if self.inline_separator is not None and self.content_kind != "inline_items":
+            raise ValueError("inline_separator requires inline_items content")
+        return self
 
 
 class LayoutNode(StateModel):
@@ -243,9 +331,10 @@ class LayoutNode(StateModel):
     section label (presentation, per the product layout contract); it is the
     ONLY text in the state — no candidate or target body fact is stored.
 
-    Entry/list structure is SECTION-OWNED: ``entry_row``/``list_row`` nodes
-    always have a section parent, and other entry-capable sections reference
-    the shared archetype through ``entry_ref``/``list_ref``.
+    Structural nodes are SECTION-OWNED and never shared: ``entry_row``/
+    ``list_row`` children belong to exactly one section, and a section may not
+    reference structure whose parent is another section (shared typography
+    goes through style tokens instead).
     """
 
     node_id: str = Field(pattern=r"^(header|section)\.[a-z0-9_.]+$")
@@ -261,6 +350,7 @@ class LayoutNode(StateModel):
     separator: str | None = None
     icon_decorated: bool | None = None
     binding: SectionBinding | None = None
+    content: SectionContent | None = None
     entry_ref: str | None = None
     list_ref: str | None = None
     label: str | None = None
@@ -287,8 +377,40 @@ class LayoutNode(StateModel):
             raise ValueError(f"{self.node_id}: entry rows declare measured columns")
         if self.kind == "list_row" and self.list_marker is None:
             raise ValueError(f"{self.node_id}: list rows declare bullet semantics")
-        if self.kind == "section" and self.binding is None:
-            raise ValueError(f"{self.node_id}: sections declare a semantic binding")
+        if self.kind == "section":
+            if self.binding is None:
+                raise ValueError(f"{self.node_id}: sections declare a semantic binding")
+            if self.binding.mapping_action in {"map", "preserve_as_additional"}:
+                if self.content is None:
+                    raise ValueError(
+                        f"{self.node_id}: mapped sections declare a content shape "
+                        "capable of consuming their source"
+                    )
+                missing = set(self.binding.sources) - set(self.content.sources)
+                if missing:
+                    raise ValueError(
+                        f"{self.node_id}: content does not cover sources {sorted(missing)}"
+                    )
+                if self.binding.mapping_action == "map" and self.content.content_kind in {
+                    "unsupported", "unresolved",
+                }:
+                    raise ValueError(
+                        f"{self.node_id}: mapped sections cannot carry "
+                        f"{self.content.content_kind} content"
+                    )
+            elif self.content is not None:
+                raise ValueError(
+                    f"{self.node_id}: unresolved bindings carry no content shape"
+                )
+            if self.content is not None and self.content.content_kind == "entries":
+                if self.entry_ref is None:
+                    raise ValueError(
+                        f"{self.node_id}: entries content owns an entry structure"
+                    )
+            elif self.entry_ref is not None:
+                raise ValueError(
+                    f"{self.node_id}: entry structure requires entries content"
+                )
         if self.kind == "header_row":
             orders = [field.order for field in self.fields]
             if orders != list(range(len(orders))):
@@ -328,12 +450,6 @@ class C2LayoutState(StateModel):
     (``2.0``) remains the stored product template. This experimental state is
     designed against that contract and its migration path is documented in
     ``C2_0A_REPORT.md`` §11; promotion requires an ADR.
-
-    Carrier of: page/margins, reusable style tokens, a node tree with stable
-    IDs, reading order, semantic section bindings, section-owned row
-    archetypes, decoration references, measured spacing/flow constraints,
-    evidence provenance, and explicit capability gaps. Renderer-specific
-    properties are banned here; they belong to a compiled RenderPlan.
     """
 
     schema_version: Literal["layout-state/1"] = "layout-state/1"
@@ -354,6 +470,9 @@ class C2LayoutState(StateModel):
             raise ValueError("node_id values must be unique")
         index_of = {node_id: index for index, node_id in enumerate(node_ids)}
         kind_of = {node.node_id: node.kind for node in self.nodes}
+        section_of: dict[str, LayoutNode] = {
+            node.node_id: node for node in self.nodes if node.kind == "section"
+        }
         seen_orders: set[int] = set()
         previous_order = -1
         for node in self.nodes:
@@ -410,9 +529,39 @@ class C2LayoutState(StateModel):
                 raise ValueError(
                     f"{node.node_id}: unknown badge refs {sorted(missing_badges)}"
                 )
+            # Section isolation: structural references must point at nodes
+            # OWNED BY THIS SECTION (never another section's children).
             for ref in (node.entry_ref, node.list_ref):
-                if ref is not None and ref not in node_id_set:
+                if ref is None:
+                    continue
+                if ref not in node_id_set:
                     raise ValueError(f"{node.node_id}: unknown archetype ref {ref}")
+                referenced = by_id[ref]
+                if referenced.parent_id != node.node_id:
+                    raise ValueError(
+                        f"{node.node_id}: {ref} is owned by "
+                        f"{referenced.parent_id!r}; sections cannot reference "
+                        "another section's structural nodes"
+                    )
+            # Child content-kind compatibility.
+            if node.kind == "entry_row":
+                parent = section_of.get(node.parent_id or "")
+                if parent is None or parent.content is None or parent.content.content_kind != "entries":
+                    raise ValueError(
+                        f"{node.node_id}: entry structure requires an entries-content section"
+                    )
+            if node.kind == "list_row":
+                parent = section_of.get(node.parent_id or "")
+                if (
+                    parent is None
+                    or parent.content is None
+                    or parent.content.content_kind not in {"entries", "item_list"}
+                    or parent.content.bullet_marker != node.list_marker
+                ):
+                    raise ValueError(
+                        f"{node.node_id}: list structure must match its section's "
+                        "content bullet semantics"
+                    )
         return self
 
 
@@ -459,7 +608,6 @@ def _body_style_token(
     summary: dict[str, Any],
     heading: Any,
     evidence: NormalizedLayoutEvidence | None,
-    text_weights: dict[str, int] | None,
 ) -> StyleToken:
     """Body style via the ACCEPTED text-volume rule (no second policy).
 
@@ -501,12 +649,11 @@ def _body_style_token(
             color_hex=dominant.color_hex,
             evidence_ids=["app.bridge._dominant_body", "style_group:unmatched"],
         )
-    weights: dict[str, int] = dict(text_weights or {})
-    if not weights:
-        for element in summary.get("elements", []):
-            style_id = str(element.get("style_id") or "")
-            weight = max(1, len(str(element.get("text_sample") or "").strip()))
-            weights[style_id] = weights.get(style_id, 0) + weight
+    weights: dict[str, int] = {}
+    for element in summary.get("elements", []):
+        style_id = str(element.get("style_id") or "")
+        weight = max(1, len(str(element.get("text_sample") or "").strip()))
+        weights[style_id] = weights.get(style_id, 0) + weight
     candidates = [
         (key, group)
         for key, group in sorted(summary.get("style_groups", {}).items())
@@ -546,21 +693,25 @@ def _heading_rule(index: int, heading: Any) -> RuleDecoration | None:
     )
 
 
-def _bullet_archetype(tiers: dict[str, float]) -> LayoutNode | None:
-    """Measured list-row semantics (zero-bullet ruling, proposal §10.5)."""
-    marker: Literal["bullet", "none"] = "bullet" if "bullet_dot" in tiers else "none"
+def _list_child(
+    section_id: str, reading_order: int, bullet_marker: Literal["bullet", "none"],
+    bullet_tiers: dict[str, float],
+) -> LayoutNode | None:
+    """Section-owned measured list structure (zero-bullet ruling, §10.5)."""
+    if bullet_marker != "bullet":
+        return None
     return LayoutNode(
-        node_id="section.00.list",  # re-parented to the owning section below
-        parent_id="section.00",
+        node_id=f"{section_id}.list",
+        parent_id=section_id,
         kind="list_row",
-        reading_order=0,
-        list_marker=marker,
-        bullet_dot_x0_pt=tiers.get("bullet_dot"),
-        bullet_text_x0_pt=tiers.get("bullet_text"),
-        slots=["bullet_text"] if marker == "bullet" else [],
+        reading_order=reading_order,
+        list_marker=bullet_marker,
+        bullet_dot_x0_pt=bullet_tiers.get("bullet_dot"),
+        bullet_text_x0_pt=bullet_tiers.get("bullet_text"),
+        slots=["bullet_text"],
         evidence_ids=[
             f"local_pdf.bullet_tiers:{key}:{value:.3f}"
-            for key, value in sorted(tiers.items())
+            for key, value in sorted(bullet_tiers.items())
         ],
     )
 
@@ -574,7 +725,7 @@ def state_from_scaffolds(
     *,
     provider_name: str = "adobe",
     evidence: NormalizedLayoutEvidence | None = None,
-    template_version: str = "c2-0a-2",
+    template_version: str = "c2-0a-3",
 ) -> C2LayoutState:
     """Pure evidence->state mapping (PDF-free; unit-testable offline)."""
     page = summary["pages"][0]
@@ -642,10 +793,13 @@ def state_from_scaffolds(
         order += 1
         previous_top = float(row.top_pt)
 
-    # -- body sections with semantic bindings, in measured reading order ------
+    # -- body sections: bindings, content shapes, section-owned structure -----
     headings = sorted(body_scaffold.headings, key=lambda item: (item.page, item.top_pt))
     heading_style_added = False
-    section_sources: list[SourceRole | None] = []
+    bullet_marker: Literal["bullet", "none"] = (
+        "bullet" if "bullet_dot" in bullet_tiers else "none"
+    )
+    bound_sources: dict[SourceRole, int] = {}
     for index, heading in enumerate(headings, 1):
         if not heading_style_added:
             styles.append(
@@ -664,29 +818,107 @@ def state_from_scaffolds(
         if rule is not None:
             rules.append(rule)
         source, reason = bind_source(heading.verbatim)
-        section_sources.append(source)
+
+        # Binding-cardinality rule: a candidate source maps to at most one
+        # target section by default. Extra same-source sections stay
+        # unresolved unless an explicit partition policy exists (none is
+        # inferred here) — source items are never silently duplicated.
+        cardinality_reason: str | None = None
+        if source is not None:
+            if bound_sources.get(source, 0) >= 1:
+                cardinality_reason = (
+                    f"the source {source!r} already maps to another target "
+                    "section and no partition policy is declared"
+                )
+                source = None
+            else:
+                bound_sources[source] = 1
         if source is None:
+            gap_reason = (
+                f"measured label {heading.verbatim!r} cannot be bound to a "
+                f"candidate source role ({reason or cardinality_reason}); "
+                "presentation is kept, content mapping requires a recruiter/"
+                "owner decision or a future bounded semantic resolver"
+            )
+            if cardinality_reason:
+                gap_reason = (
+                    f"duplicate source mapping: measured label {heading.verbatim!r} "
+                    f"re-consumes a source that already maps elsewhere; no partition "
+                    "policy is declared, so the candidate source is never "
+                    "duplicated into both sections"
+                )
             gaps.append(
                 CapabilityGap(
                     feature=f"unresolved_section_binding:{section_id}",
-                    reason=(
-                        f"measured label {heading.verbatim!r} cannot be bound to a "
-                        f"candidate source role ({reason}); presentation is kept, "
-                        "content mapping requires owner/recruiter decision"
-                    ),
+                    reason=gap_reason,
                     evidence_ids=list(heading.evidence_ids),
                 )
             )
+        content: SectionContent | None = None
+        entry_node_id: str | None = None
+        list_node_id: str | None = None
+        entry_child: LayoutNode | None = None
+        list_child_node: LayoutNode | None = None
+        if source is not None:
+            kind = _DEFAULT_CONTENT_KINDS[source]
+            if kind == "entries" and body_scaffold.entry is None:
+                gaps.append(
+                    CapabilityGap(
+                        feature=f"unmeasured_entry_geometry:{section_id}",
+                        reason=(
+                            f"{heading.verbatim!r} binds to {source!r} whose "
+                            "default content is repeatable entries, but no entry "
+                            "column geometry is measured; the section is declared "
+                            "unsupported rather than invented"
+                        ),
+                        evidence_ids=list(heading.evidence_ids),
+                    )
+                )
+                content = SectionContent(content_kind="unsupported", sources=[source])
+            else:
+                content = SectionContent(
+                    content_kind=kind,
+                    sources=[source],
+                    bullet_marker=bullet_marker if kind in {"entries", "item_list"} else None,
+                )
+                if kind == "entries":
+                    entry = body_scaffold.entry
+                    entry_node_id = f"{section_id}.entry"
+                    entry_child = LayoutNode(
+                        node_id=entry_node_id,
+                        parent_id=section_id,
+                        kind="entry_row",
+                        reading_order=0,  # finalized below
+                        columns=[
+                            Column(
+                                slot="entry_title",
+                                x0_pt=round(float(entry.left_x0_pt), 3),
+                                alignment="left",
+                            ),
+                            Column(
+                                slot="entry_metadata",
+                                x1_pt=round(float(entry.right_x1_pt), 3),
+                                alignment="right" if entry.right_row_top_delta_pt == 0.0 else "left",
+                            ),
+                        ],
+                        evidence_ids=list(entry.evidence_ids) or ["derived.entry_columns"],
+                    )
+                if content.bullet_marker == "bullet":
+                    list_node_id = f"{section_id}.list"
+                    list_child_node = _list_child(section_id, 0, bullet_marker, bullet_tiers)
         nodes.append(
             LayoutNode(
                 node_id=section_id,
                 kind="section",
                 reading_order=order,
                 binding=SectionBinding(
-                    source=source or "additional_details",
+                    sources=[source] if source is not None else [],
                     mapping_action="map" if source is not None else "unresolved",
                     evidence_ids=list(heading.evidence_ids),
                 ),
+                content=content,
+                entry_ref=entry_node_id,
+                list_ref=list_node_id,
                 evidence_ids=list(heading.evidence_ids),
                 flow=FlowConstraint(keep_with_next=True),
             )
@@ -711,83 +943,12 @@ def state_from_scaffolds(
             )
         )
         order += 1
-
-    # -- section-owned row archetypes ----------------------------------------
-    entry = body_scaffold.entry
-    owner_index = next(
-        (
-            position
-            for position, source in enumerate(section_sources, 1)
-            if source in ENTRY_CAPABLE_SOURCES
-        ),
-        None,
-    )
-    if entry is not None and owner_index is not None:
-        owner_id = f"section.{owner_index:02d}"
-        nodes.append(
-            LayoutNode(
-                node_id=f"{owner_id}.entry",
-                parent_id=owner_id,
-                kind="entry_row",
-                reading_order=order,
-                columns=[
-                    Column(
-                        slot="entry_title",
-                        x0_pt=round(float(entry.left_x0_pt), 3),
-                        alignment="left",
-                    ),
-                    Column(
-                        slot="entry_metadata",
-                        x1_pt=round(float(entry.right_x1_pt), 3),
-                        alignment="right" if entry.right_row_top_delta_pt == 0.0 else "left",
-                    ),
-                ],
-                evidence_ids=list(entry.evidence_ids) or ["derived.entry_columns"],
-            )
-        )
-        order += 1
-        archetype = _bullet_archetype(bullet_tiers)
-        if archetype is not None:
-            nodes.append(
-                archetype.model_copy(
-                    update={
-                        "node_id": f"{owner_id}.list",
-                        "parent_id": owner_id,
-                        "reading_order": order,
-                    }
-                )
-            )
-            order += 1
-        entry_node_id, list_node_id = f"{owner_id}.entry", f"{owner_id}.list"
-    elif entry is not None:
-        gaps.append(
-            CapabilityGap(
-                feature="unowned_entry_structure",
-                reason=(
-                    "entry column geometry is measured but no section binds to an "
-                    f"entry-capable source ({sorted(ENTRY_CAPABLE_SOURCES)}); the "
-                    "measured two-column structure is not emitted rather than "
-                    "attached to an unrelated section"
-                ),
-                evidence_ids=list(entry.evidence_ids) or ["derived.entry_columns"],
-            )
-        )
-        entry_node_id, list_node_id = None, None
-    else:
-        entry_node_id, list_node_id = None, None
-    for position, source in enumerate(section_sources, 1):
-        if source not in ENTRY_CAPABLE_SOURCES:
-            continue
-        section_node = nodes[
-            next(i for i, node in enumerate(nodes) if node.node_id == f"section.{position:02d}")
-        ]
-        nodes[nodes.index(section_node)] = section_node.model_copy(
-            update={
-                "entry_ref": entry_node_id,
-                "list_ref": list_node_id if list_node_id else None,
-            }
-        )
-    styles.append(_body_style_token(summary, headings[0], evidence, None))
+        # Section-owned structural children (never shared across sections).
+        for child in (entry_child, list_child_node):
+            if child is not None:
+                nodes.append(child.model_copy(update={"reading_order": order}))
+                order += 1
+    styles.append(_body_style_token(summary, headings[0], evidence))
 
     # -- measured badge clusters (attach per ADR 0006: nearest heading above) --
     page_height = float(page["height_pt"])
@@ -927,7 +1088,7 @@ def compile_layout_state(
     *,
     evidence: NormalizedLayoutEvidence | None = None,
     provider_name: str = "adobe",
-    template_version: str = "c2-0a-2",
+    template_version: str = "c2-0a-3",
 ) -> C2LayoutState:
     """Compile the provider-neutral state directly from measured evidence."""
     margins = summary.get("margins_pt", {}).get("default", {})
@@ -955,186 +1116,435 @@ def compile_layout_state(
 
 
 # ---------------------------------------------------------------------------
-# Real structural probes: short / medium / long candidate content
+# INDEPENDENT candidate fixtures (never derived from the C2 state)
 # ---------------------------------------------------------------------------
 
-
-class ProbeCandidateSection(StateModel):
-    """Structured candidate content for one section (no free text needed)."""
-
-    source: SourceRole
-    entries: int = Field(default=0, ge=0)
-    bullets_per_entry: int = Field(default=0, ge=0)
+CandidateLeafKind = Literal[
+    "header_field", "summary_paragraph", "skill_group", "skill", "language",
+    "work_entry", "work_bullet", "education_entry", "certification_item",
+    "additional_section", "additional_item",
+]
 
 
-class ProbeCandidate(StateModel):
-    """Structured candidate content: header values + sections with items."""
+class CandidateLeaf(StateModel):
+    """One independent candidate content leaf with a stable ID."""
 
-    header_slots: dict[str, int] = Field(default_factory=dict)
-    sections: list[ProbeCandidateSection] = Field(default_factory=list)
+    leaf_id: str = Field(pattern=r"^[a-z0-9_.]+$")
+    kind: CandidateLeafKind
+    source: SourceRole | None = None  # None for header fields only
+    slot: str | None = None  # header fields only
+    parent_leaf_id: str | None = None
+
+    @model_validator(mode="after")
+    def shape(self) -> "CandidateLeaf":
+        if self.kind == "header_field":
+            if self.source is not None or not self.slot:
+                raise ValueError(f"{self.leaf_id}: header fields carry a slot, no source")
+        elif self.source is None:
+            raise ValueError(f"{self.leaf_id}: non-header leaves declare their source")
+        return self
 
 
-def default_probe_profiles() -> dict[str, dict[str, int]]:
-    return {"short": {"entries": 1, "bullets": 1}, "medium": {"entries": 3, "bullets": 2}, "long": {"entries": 5, "bullets": 3}}
+class CandidateDocument(StateModel):
+    """Independent structured candidate content (provider-neutral).
 
-
-def build_probe_candidate(state: C2LayoutState, profile: dict[str, int]) -> ProbeCandidate:
-    """Build structured candidate content by round-tripping the state's own
-    mapped bindings: every mapped template section receives content sized by
-    the profile; unmapped (unresolved) sections receive none.
+    Built WITHOUT inspecting any C2LayoutState: the probe consumes these
+    fixtures as-is, so a template that omits or duplicates structure cannot
+    shape its own test input.
     """
-    header_slots = {
-        slot: 1 for node in state.nodes if node.kind == "header_row" for slot in node.slots
-    }
-    sections = [
-        ProbeCandidateSection(
-            source=node.binding.source,
-            entries=profile["entries"] if node.entry_ref else 0,
-            bullets_per_entry=profile["bullets"] if node.list_ref else 0,
-        )
-        for node in state.nodes
-        if node.kind == "section"
-        and node.binding is not None
-        and node.binding.mapping_action == "map"
+
+    candidate_id: str = Field(pattern=r"^[a-z0-9_-]+$")
+    leaves: list[CandidateLeaf] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def parents_exist(self) -> "CandidateDocument":
+        ids = {leaf.leaf_id for leaf in self.leaves}
+        if len(ids) != len(self.leaves):
+            raise ValueError("candidate leaf ids must be unique")
+        for leaf in self.leaves:
+            if leaf.parent_leaf_id is not None and leaf.parent_leaf_id not in ids:
+                raise ValueError(f"{leaf.leaf_id}: unknown parent leaf")
+        return self
+
+
+def _profile_leaves(size: Literal["short", "medium", "long"]) -> list[CandidateLeaf]:
+    """Fixed independent content. Never reads C2LayoutState."""
+    scale = {"short": (1, 3, 1, 1, 2), "medium": (2, 3, 2, 3, 2), "long": (3, 4, 3, 4, 3)}
+    summary_count, skills_per_group, language_count, work_bullets, add_items = scale[size]
+    work_entries = {"short": 1, "medium": 2, "long": 3}[size]
+    education_entries = {"short": 1, "medium": 2, "long": 3}[size]
+    skill_groups = {"short": 1, "medium": 2, "long": 3}[size]
+    certification_count = {"short": 0, "medium": 1, "long": 2}[size]
+    additional_sections = 1  # non-zero in every profile
+
+    leaves: list[CandidateLeaf] = [
+        CandidateLeaf(leaf_id="header.name", kind="header_field", slot="name"),
+        CandidateLeaf(leaf_id="header.location", kind="header_field", slot="location"),
+        CandidateLeaf(leaf_id="header.phone", kind="header_field", slot="phone"),
+        CandidateLeaf(leaf_id="header.email", kind="header_field", slot="envelope"),
+        CandidateLeaf(leaf_id="header.github", kind="header_field", slot="github"),
+        CandidateLeaf(leaf_id="header.linkedin", kind="header_field", slot="linkedin"),
     ]
-    return ProbeCandidate(header_slots=header_slots, sections=sections)
+    for p in range(1, summary_count + 1):
+        leaves.append(CandidateLeaf(leaf_id=f"summary.p{p}", kind="summary_paragraph", source="summary"))
+    for g in range(1, skill_groups + 1):
+        leaves.append(CandidateLeaf(leaf_id=f"skills.g{g}", kind="skill_group", source="skills"))
+        for i in range(1, skills_per_group + 1):
+            leaves.append(
+                CandidateLeaf(
+                    leaf_id=f"skills.g{g}.i{i}", kind="skill", source="skills",
+                    parent_leaf_id=f"skills.g{g}",
+                )
+            )
+    for l in range(1, language_count + 1):
+        leaves.append(CandidateLeaf(leaf_id=f"languages.l{l}", kind="language", source="languages"))
+    for e in range(1, work_entries + 1):
+        leaves.append(CandidateLeaf(leaf_id=f"work.e{e}", kind="work_entry", source="work_experience"))
+        for b in range(1, work_bullets + 1):
+            leaves.append(
+                CandidateLeaf(
+                    leaf_id=f"work.e{e}.b{b}", kind="work_bullet", source="work_experience",
+                    parent_leaf_id=f"work.e{e}",
+                )
+            )
+    for e in range(1, education_entries + 1):
+        leaves.append(CandidateLeaf(leaf_id=f"education.e{e}", kind="education_entry", source="education"))
+    for c in range(1, certification_count + 1):
+        leaves.append(CandidateLeaf(leaf_id=f"certifications.c{c}", kind="certification_item", source="certifications"))
+    for s in range(1, additional_sections + 1):
+        leaves.append(CandidateLeaf(leaf_id=f"additional.s{s}", kind="additional_section", source="additional_details"))
+        for i in range(1, add_items + 1):
+            leaves.append(
+                CandidateLeaf(
+                    leaf_id=f"additional.s{s}.i{i}", kind="additional_item", source="additional_details",
+                    parent_leaf_id=f"additional.s{s}",
+                )
+            )
+    return leaves
 
 
-def run_flow_probe(state: C2LayoutState, candidate: ProbeCandidate) -> dict[str, Any]:
-    """Instantiate structured candidate content against the state and validate
-    the resulting structure. This is a real materialization: instances are
-    created, then unique-ID, reading-order, parent-child, home, duplicate/drop,
-    and no-absolute-y invariants are CHECKED (and can fail).
+def independent_candidate_fixtures() -> dict[str, CandidateDocument]:
+    """Fixed short/medium/long candidates, constructed with no access to the
+    C2 layout state (a template cannot shape its own test input)."""
+    return {
+        profile: CandidateDocument(
+            candidate_id=f"independent_{profile}", leaves=_profile_leaves(profile)
+        )
+        for profile in ("short", "medium", "long")
+    }
+
+
+# ---------------------------------------------------------------------------
+# Real structural probe with a leaf-ownership ledger
+# ---------------------------------------------------------------------------
+
+# Statuses: fully_materialized (every leaf owned), materialized_with_gaps
+# (all routable leaves owned exactly once; remaining leaves carry explicit
+# unhomed-source gaps), failed (any ownership violation).
+ProbeStatus = Literal["fully_materialized", "materialized_with_gaps", "failed"]
+
+
+def own_leaf(
+    ledger: dict[str, str], failures: list[str], leaf_id: str, destination: str
+) -> bool:
+    """Record one candidate leaf's single materialized destination.
+
+    The leaf-ownership guard: a leaf consumed a second time is a probe
+    failure, never a silent overwrite.
+    """
+    if leaf_id in ledger:
+        failures.append(
+            f"candidate leaf {leaf_id!r} consumed more than once "
+            f"({ledger[leaf_id]!r} and {destination!r})"
+        )
+        return False
+    ledger[leaf_id] = destination
+    return True
+
+
+def run_flow_probe(state: C2LayoutState, candidate: CandidateDocument) -> dict[str, Any]:
+    """Instantiate INDEPENDENT candidate content against the state and validate
+    leaf-by-leaf ownership: every candidate leaf maps to exactly one
+    materialized destination, or an explicit unhomed-source gap is recorded.
+    Structural violations (duplicate consumption, incompatible section,
+    unresolved-binding placement, missing content structure) FAIL the probe.
     """
     failures: list[str] = []
+    unhomed: list[dict[str, str]] = []
     notes: list[str] = []
+    ledger: dict[str, str] = {}  # leaf_id -> destination node id
+
+    by_id = {node.node_id: node for node in state.nodes}
     header_rows = [node for node in state.nodes if node.kind == "header_row"]
     sections = [node for node in state.nodes if node.kind == "section"]
-    by_id = {node.node_id: node for node in state.nodes}
-
     instances: list[dict[str, Any]] = []
+    skill_group_counter = 0
     next_order = max(node.reading_order for node in state.nodes) + 1
 
-    # -- header binding -------------------------------------------------------
-    declared_slot_items = sum(candidate.header_slots.values())
-    instantiated_slot_items = 0
-    for slot, count in sorted(candidate.header_slots.items()):
-        homes = [row for row in header_rows if slot in row.slots]
-        if not homes:
-            failures.append(f"header slot {slot!r} has no home row in the template state")
-            continue
-        for value_index in range(1, count + 1):
-            home = homes[min(value_index - 1, len(homes) - 1)]
-            instances.append(
-                {
-                    "node_id": f"{home.node_id}.{slot}.v{value_index}",
-                    "parent_id": home.node_id,
-                    "kind": "header_value",
-                    "reading_order": next_order,
-                }
-            )
-            next_order += 1
-            instantiated_slot_items += 1
+    def own(leaf_id: str, destination: str) -> bool:
+        return own_leaf(ledger, failures, leaf_id, destination)
 
-    # -- section binding ------------------------------------------------------
-    consumed: set[str] = set()
-    declared_entry_items = 0
-    instantiated_entry_items = 0
-    declared_bullet_items = 0
-    instantiated_bullet_items = 0
-    for candidate_section in candidate.sections:
-        match = next(
-            (
-                section
-                for section in sections
-                if section.binding is not None
-                and section.binding.source == candidate_section.source
-                and section.binding.mapping_action in {"map", "preserve_as_additional"}
-                and section.node_id not in consumed
-            ),
-            None,
-        )
-        if match is None:
-            failures.append(
-                f"candidate section source {candidate_section.source!r} has no "
-                "available template home (missing, already consumed, or unresolved)"
-            )
-            continue
-        consumed.add(match.node_id)
-        section_instance_id = f"{match.node_id}.content"
+    def add_instance(node_id: str, parent_id: str | None, kind: str) -> None:
+        nonlocal next_order
         instances.append(
-            {
-                "node_id": section_instance_id,
-                "parent_id": match.node_id,
-                "kind": "section_content",
-                "reading_order": next_order,
-            }
+            {"node_id": node_id, "parent_id": parent_id, "kind": kind, "reading_order": next_order}
         )
         next_order += 1
-        if candidate_section.entries == 0:
-            continue
-        if match.entry_ref is None:
+
+    def mapped_sections(source: SourceRole) -> list[LayoutNode]:
+        return [
+            section
+            for section in sections
+            if section.binding is not None
+            and section.binding.mapping_action == "map"
+            and source in (section.binding.sources or [])
+        ]
+
+    def content_destination(section: LayoutNode) -> str | None:
+        content = section.content
+        if content is None:
+            return None
+        if content.content_kind == "entries":
+            return section.entry_ref
+        if content.content_kind in {"item_list", "inline_items", "badge_items"}:
+            return section.list_ref or section.node_id
+        if content.content_kind == "paragraph":
+            return section.node_id
+        return None  # unsupported/composite handled by callers
+
+    def route_top_level(
+        leaf: CandidateLeaf, source: SourceRole, expected_kinds: set[str], instance_kind: str
+    ) -> bool:
+        homes = [
+            section for section in mapped_sections(source)
+            if section.content is not None and section.content.content_kind in expected_kinds
+        ]
+        broken = [
+            section for section in mapped_sections(source)
+            if section.content is None or section.content.content_kind == "unsupported"
+        ]
+        if broken:
             failures.append(
-                f"{match.node_id} consumes {candidate_section.entries} entries but "
-                "owns no entry structure (entry_ref is unset)"
+                f"candidate leaf {leaf.leaf_id!r}: mapped section(s) "
+                f"{[s.node_id for s in broken]} declare no supported content structure"
             )
-            continue
-        list_node = by_id.get(match.list_ref) if match.list_ref else None
-        for entry_index in range(1, candidate_section.entries + 1):
-            entry_id = f"{match.node_id}.entry.v{entry_index}"
-            instances.append(
+            return False
+        if not homes:
+            unhomed.append(
                 {
-                    "node_id": entry_id,
-                    "parent_id": match.node_id,
-                    "kind": "entry_instance",
-                    "reading_order": next_order,
+                    "leaf_id": leaf.leaf_id,
+                    "kind": leaf.kind,
+                    "source": source,
+                    "reason": f"no mapped {source!r} section with {'/'.join(sorted(expected_kinds))} content",
                 }
             )
-            next_order += 1
-            instantiated_entry_items += 1
-            for bullet_index in range(1, candidate_section.bullets_per_entry + 1):
-                declared_bullet_items += 1
-                if list_node is None:
-                    failures.append(
-                        f"{match.node_id} consumes bullets but owns no list structure"
-                    )
-                    continue
-                if list_node.list_marker == "bullet":
-                    instances.append(
-                        {
-                            "node_id": f"{entry_id}.bullet.v{bullet_index}",
-                            "parent_id": entry_id,
-                            "kind": "bullet_instance",
-                            "reading_order": next_order,
-                        }
-                    )
-                    next_order += 1
-                    instantiated_bullet_items += 1
-                else:
-                    # Zero-bullet target ruling (§10.5): source bullet glyphs
-                    # stay verbatim body text, so each bullet becomes a text
-                    # line instance inside its entry.
-                    instances.append(
-                        {
-                            "node_id": f"{entry_id}.textline.v{bullet_index}",
-                            "parent_id": entry_id,
-                            "kind": "text_line_instance",
-                            "reading_order": next_order,
-                        }
-                    )
-                    next_order += 1
-                    instantiated_bullet_items += 1
-        declared_entry_items += candidate_section.entries
+            return False
+        destination = content_destination(homes[0])
+        if destination is None:
+            failures.append(
+                f"candidate leaf {leaf.leaf_id!r}: {homes[0].node_id} has no consumable content destination"
+            )
+            return False
+        add_instance(f"{homes[0].node_id}.content.{leaf.leaf_id}", homes[0].node_id, instance_kind)
+        return own(leaf.leaf_id, destination)
 
-    for section in sections:
-        if section.node_id not in consumed:
-            notes.append(
-                f"template section {section.node_id} "
-                f"({section.binding.source if section.binding else '?'}) received no "
-                "candidate content (sections are optional)"
+    # -- header fields --------------------------------------------------------
+    for leaf in (item for item in candidate.leaves if item.kind == "header_field"):
+        homes = [row for row in header_rows if leaf.slot in row.slots]
+        if not homes:
+            unhomed.append(
+                {
+                    "leaf_id": leaf.leaf_id,
+                    "kind": leaf.kind,
+                    "source": "header",
+                    "reason": f"no header row carries slot {leaf.slot!r}",
+                }
+            )
+            continue
+        home = homes[0]
+        add_instance(f"{home.node_id}.{leaf.slot}", home.node_id, "header_value")
+        own(leaf.leaf_id, f"{home.node_id}.{leaf.slot}")
+
+    # -- summary paragraphs ----------------------------------------------------
+    for leaf in (item for item in candidate.leaves if item.kind == "summary_paragraph"):
+        route_top_level(leaf, "summary", {"paragraph"}, "paragraph_instance")
+
+    # -- skills: groups own their items ----------------------------------------
+    skill_items_by_group: dict[str, list[CandidateLeaf]] = {}
+    for leaf in candidate.leaves:
+        if leaf.kind == "skill":
+            skill_items_by_group.setdefault(leaf.parent_leaf_id or "", []).append(leaf)
+    for leaf in (item for item in candidate.leaves if item.kind == "skill_group"):
+        all_homes = mapped_sections("skills")
+        broken = [
+            section for section in all_homes
+            if section.content is None or section.content.content_kind == "unsupported"
+        ]
+        if broken:
+            failures.append(
+                f"candidate leaf {leaf.leaf_id!r}: mapped section(s) "
+                f"{[s.node_id for s in broken]} declare no supported content structure"
+            )
+            continue
+        homes = [
+            section for section in all_homes
+            if section.content is not None
+            and section.content.content_kind in {"item_list", "inline_items", "badge_items"}
+        ]
+        if len(homes) > 1:
+            unpartitioned = [
+                section.node_id for section in homes
+                if section.binding is None or section.binding.partition_policy == "none"
+            ]
+            if unpartitioned:
+                failures.append(
+                    "duplicate consumption without partition policy: candidate "
+                    f"skills content reaches mapped sections {unpartitioned}; "
+                    "one candidate skills collection is never duplicated"
+                )
+                continue
+        if not homes:
+            unhomed.append(
+                {
+                    "leaf_id": leaf.leaf_id, "kind": leaf.kind, "source": "skills",
+                    "reason": "no mapped skills section with item content",
+                }
+            )
+            # Cascade: the group's items share its fate, never silently.
+            for item_leaf in skill_items_by_group.get(leaf.leaf_id, []):
+                unhomed.append(
+                    {
+                        "leaf_id": item_leaf.leaf_id, "kind": item_leaf.kind,
+                        "source": "skills",
+                        "reason": f"parent skill group {leaf.leaf_id!r} has no home",
+                    }
+                )
+            continue
+        # Round-robin across explicitly partitioned sections.
+        section = homes[skill_group_counter % len(homes)]
+        skill_group_counter += 1
+        destination = content_destination(section)
+        list_node = by_id.get(section.list_ref) if section.list_ref else None
+        add_instance(f"{section.node_id}.content.{leaf.leaf_id}", section.node_id, "item_group_instance")
+        own(leaf.leaf_id, destination or section.node_id)
+        for item_leaf in skill_items_by_group.get(leaf.leaf_id, []):
+            if list_node is not None and list_node.list_marker == "bullet":
+                add_instance(
+                    f"{section.node_id}.item.{item_leaf.leaf_id}", section.node_id, "item_instance"
+                )
+            else:
+                add_instance(
+                    f"{section.node_id}.item.{item_leaf.leaf_id}", section.node_id, "inline_item_instance"
+                )
+            own(item_leaf.leaf_id, destination or section.node_id)
+
+    # -- languages --------------------------------------------------------------
+    for leaf in (item for item in candidate.leaves if item.kind == "language"):
+        route_top_level(leaf, "languages", {"item_list", "inline_items"}, "item_instance")
+
+    # -- work experience entries + bullets ---------------------------------------
+    work_section: LayoutNode | None = next(iter(mapped_sections("work_experience")), None)
+    work_usable = (
+        work_section is not None
+        and work_section.content is not None
+        and work_section.content.content_kind == "entries"
+    )
+    if mapped_sections("work_experience") and not work_usable:
+        failures.append(
+            "mapped work_experience section declares no supported entries structure"
+        )
+    entry_instance_ids: dict[str, str] = {}
+    for leaf in (item for item in candidate.leaves if item.kind == "work_entry"):
+        if not work_usable:
+            unhomed.append(
+                {
+                    "leaf_id": leaf.leaf_id, "kind": leaf.kind, "source": "work_experience",
+                    "reason": "no mapped work_experience section with entries content",
+                }
+            )
+            continue
+        instance_id = f"{work_section.node_id}.content.{leaf.leaf_id}"
+        add_instance(instance_id, work_section.node_id, "entry_instance")
+        own(leaf.leaf_id, work_section.entry_ref or work_section.node_id)
+        entry_instance_ids[leaf.leaf_id] = instance_id
+    for leaf in (item for item in candidate.leaves if item.kind == "work_bullet"):
+        parent_instance = entry_instance_ids.get(leaf.parent_leaf_id or "")
+        if parent_instance is None:
+            if work_usable:
+                failures.append(
+                    f"candidate leaf {leaf.leaf_id!r}: parent work entry has no instance"
+                )
+            continue
+        list_node = by_id.get(work_section.list_ref) if work_section.list_ref else None
+        if list_node is not None and list_node.list_marker == "bullet":
+            add_instance(f"{parent_instance}.bullet.{leaf.leaf_id}", parent_instance, "bullet_instance")
+        else:
+            # Zero-bullet target ruling (§10.5): source bullet glyphs stay
+            # verbatim body text inside their entry.
+            add_instance(f"{parent_instance}.textline.{leaf.leaf_id}", parent_instance, "text_line_instance")
+        own(leaf.leaf_id, parent_instance)
+
+    # -- education entries ---------------------------------------------------------
+    for leaf in (item for item in candidate.leaves if item.kind == "education_entry"):
+        homes = [
+            section for section in mapped_sections("education")
+            if section.content is not None and section.content.content_kind == "entries"
+        ]
+        if not homes:
+            unhomed.append(
+                {
+                    "leaf_id": leaf.leaf_id, "kind": leaf.kind, "source": "education",
+                    "reason": "no mapped education section with entries content",
+                }
+            )
+            continue
+        section = homes[0]
+        add_instance(f"{section.node_id}.content.{leaf.leaf_id}", section.node_id, "entry_instance")
+        own(leaf.leaf_id, section.entry_ref or section.node_id)
+
+    # -- certifications ----------------------------------------------------------
+    for leaf in (item for item in candidate.leaves if item.kind == "certification_item"):
+        route_top_level(leaf, "certifications", {"item_list", "inline_items", "badge_items"}, "item_instance")
+
+    # -- additional sections (candidate-only unmatched sections retain headings) --
+    for leaf in (item for item in candidate.leaves if item.kind == "additional_section"):
+        homes = [
+            section for section in mapped_sections("additional_details")
+            if section.content is not None
+            and section.content.content_kind in {"item_list", "inline_items", "entries"}
+        ]
+        if homes:
+            section = homes[0]
+            add_instance(f"{section.node_id}.content.{leaf.leaf_id}", section.node_id, "section_content_instance")
+            own(leaf.leaf_id, content_destination(section) or section.node_id)
+        else:
+            # Owner decision: candidate-only unmatched additional sections
+            # retain their own headings — materialized as candidate-owned
+            # instances, recorded as explicit gaps (never dropped silently).
+            add_instance(f"candidate_only.{leaf.leaf_id}", None, "candidate_only_section")
+            unhomed.append(
+                {
+                    "leaf_id": leaf.leaf_id, "kind": leaf.kind, "source": "additional_details",
+                    "reason": "no mapped additional_details section; retained as candidate-only section with its own heading",
+                }
+            )
+    for leaf in (item for item in candidate.leaves if item.kind == "additional_item"):
+        parent_leaf = next(
+            (item for item in candidate.leaves if item.leaf_id == leaf.parent_leaf_id), None
+        )
+        if parent_leaf is not None and parent_leaf.leaf_id in ledger:
+            parent_dest = ledger[parent_leaf.leaf_id]
+            add_instance(f"item.{leaf.leaf_id}", parent_dest, "item_instance")
+            own(leaf.leaf_id, parent_dest)
+        else:
+            unhomed.append(
+                {
+                    "leaf_id": leaf.leaf_id, "kind": leaf.kind, "source": "additional_details",
+                    "reason": "parent additional section was not consumed",
+                }
             )
 
-    # -- invariant checks (computed, never asserted True) ----------------------
+    # -- invariant checks (computed, never asserted True) -------------------------
     instance_ids = [instance["node_id"] for instance in instances]
     unique_ids = len(set(instance_ids)) == len(instance_ids)
     if not unique_ids:
@@ -1144,43 +1554,59 @@ def run_flow_probe(state: C2LayoutState, candidate: ProbeCandidate) -> dict[str,
     if not reading_order_valid:
         failures.append("instance reading order is not strictly increasing")
     known_ids = set(by_id) | set(instance_ids)
-    parents_valid = all(instance["parent_id"] in known_ids for instance in instances)
+    parents_valid = all(
+        instance["parent_id"] is None or instance["parent_id"] in known_ids
+        for instance in instances
+    )
     if not parents_valid:
         failures.append("instance parent references a nonexistent node")
-    body_y_free = not any(node.top_pt is not None for node in state.nodes if node.kind != "header_row")
+    body_y_free = not any(
+        node.top_pt is not None for node in state.nodes if node.kind != "header_row"
+    )
     if not body_y_free:
         failures.append("body node carries absolute y geometry")
-    uninstantiated_header_items = declared_slot_items - instantiated_slot_items
-    if uninstantiated_header_items > 0:
-        failures.append(
-            f"{uninstantiated_header_items} declared header item(s) were not instantiated"
-        )
-    dropped_entries = declared_entry_items - instantiated_entry_items
-    if dropped_entries > 0:
-        failures.append(f"{dropped_entries} declared candidate entr(ies) were dropped")
-    dropped_bullets = declared_bullet_items - instantiated_bullet_items
-    if dropped_bullets > 0:
-        failures.append(f"{dropped_bullets} declared candidate bullet(s) were dropped")
+    duplicated_leaves = len(candidate.leaves) - len(ledger) - len(unhomed)
+    if duplicated_leaves > 0:
+        failures.append(f"{duplicated_leaves} candidate leaf(s) consumed more than once")
+    for leaf in candidate.leaves:
+        if leaf.leaf_id not in ledger and not any(u["leaf_id"] == leaf.leaf_id for u in unhomed):
+            failures.append(f"candidate leaf {leaf.leaf_id!r} is unconsumed with no recorded gap")
 
+    if failures:
+        status: ProbeStatus = "failed"
+    elif unhomed:
+        status = "materialized_with_gaps"
+    else:
+        status = "fully_materialized"
     return {
-        "passed": not failures,
+        "status": status,
+        "passed": status != "failed",
         "failures": failures,
+        "unhomed": unhomed,
         "notes": notes,
+        "leaf_ownership": {
+            "total_leaves": len(candidate.leaves),
+            "owned_leaves": len(ledger),
+            "unhomed_leaves": len(unhomed),
+            "ownership_exactly_one": all(
+                sum(1 for key in ledger if key == leaf.leaf_id) == 1
+                for leaf in candidate.leaves
+                if leaf.leaf_id in ledger
+            ),
+        },
         "checks": {
             "instance_ids_unique": unique_ids,
             "reading_order_valid": reading_order_valid,
             "parent_references_valid": parents_valid,
             "body_nodes_carry_no_absolute_y": body_y_free,
-            "no_uninstantiated_header_items": uninstantiated_header_items == 0,
-            "no_dropped_entries": dropped_entries == 0,
-            "no_dropped_bullets": dropped_bullets == 0,
+            "no_duplicated_leaf_consumption": duplicated_leaves == 0,
+            "no_unowned_leaves": all(
+                leaf.leaf_id in ledger or any(u["leaf_id"] == leaf.leaf_id for u in unhomed)
+                for leaf in candidate.leaves
+            ),
         },
-        "instantiated": {
-            "header_items": instantiated_slot_items,
-            "sections": len(consumed),
-            "entries": instantiated_entry_items,
-            "bullets_or_textlines": instantiated_bullet_items,
-        },
+        "instantiated": {"instances": len(instances)},
+        "ledger": dict(sorted(ledger.items())),
     }
 
 
@@ -1203,10 +1629,34 @@ def validate_layout_state(state: C2LayoutState) -> list[str]:
     for rule in state.rules:
         if rule.rule_id not in referenced_rules:
             violations.append(f"{rule.rule_id}: decoration never referenced by a node")
+    # Binding-cardinality report check: a candidate source consumed by more
+    # than one mapped section requires an explicit partition policy.
+    mapped_sources: dict[str, list[str]] = {}
+    for node in state.nodes:
+        if node.kind == "section" and node.binding and node.binding.mapping_action == "map":
+            for source in node.binding.sources:
+                mapped_sources.setdefault(source, []).append(node.node_id)
+    for source, owners in sorted(mapped_sources.items()):
+        if len(owners) > 1:
+            partitioned = all(
+                next(
+                    node for node in state.nodes if node.node_id == owner
+                ).binding.partition_policy != "none"
+                for owner in owners
+            )
+            if not partitioned:
+                violations.append(
+                    f"source {source!r} is consumed by {len(owners)} mapped "
+                    f"sections ({owners}) without an explicit partition policy"
+                )
     orders = [node.reading_order for node in state.nodes]
     if orders != sorted(orders):
         violations.append("node list is not in reading order")
-    unresolved = {node.node_id for node in state.nodes if node.binding and node.binding.mapping_action == "unresolved"}
+    unresolved = {
+        node.node_id
+        for node in state.nodes
+        if node.binding and node.binding.mapping_action == "unresolved"
+    }
     gap_features = {
         gap.feature.removeprefix("unresolved_section_binding:") for gap in state.capability_gaps
     }
@@ -1235,10 +1685,9 @@ def compile_target(target_pdf: Path, run_dir: Path) -> dict[str, Any]:
 
     violations = validate_layout_state(state)
     probes = {}
-    for profile_name, profile in default_probe_profiles().items():
-        candidate = build_probe_candidate(state, profile)
+    for profile_name, candidate in independent_candidate_fixtures().items():
         probes[profile_name] = {
-            "candidate": candidate.model_dump(mode="json"),
+            "candidate_id": candidate.candidate_id,
             "result": run_flow_probe(state, candidate),
         }
     provenance = {

@@ -8,7 +8,7 @@
 > | B 管线 | 已关闭（假设证伪，零件经 §7.3 移植） |
 > | C1 D→E（header + body） | owner 终审通过，完成（§9/§11） |
 > | C1 E→F 泛化 | **调试中，尚未通过**（十次冻结，缺口 #1–#8 已闭；#9 右缘杠杆失效、#10 种子行宽派生假设待验证，见 run 20260910T161228Z） |
-> | C2 | **active experiment**：C2-0a 纠正轮已实现并待 owner 评审（见 §16.4 与 `C2_0A_REPORT.md`）；C2-0b 待 owner 裁决后启动 |
+> | C2 | **active experiment**：C2-0a 第二轮纠正完成，待 owner 评审（见 §16.4 与 `C2_0A_REPORT.md`）；C2-0b 待 owner 裁决后启动 |
 > | Pipeline D | D0/D0-R/D1-0 已完成；暂停后续工作，等待 C2 结果（见 `D_PIPELINE_PROPOSAL.md`） |
 >
 > 日期:2026-09-08 初版;2026-09-09 §7–§8;2026-09-10 §9–§12;
@@ -930,15 +930,19 @@ DOCX source -> structured content/layout -> PDF
 共同通过后，才能提议修改 `PRODUCT_SPEC.md`、`DOCUMENT_PIPELINE.md`、API contract
 与 ADR 0007；本节本身不改变当前产品支持范围。
 
-### 16.4 C2-0a 执行结果（2026-09-15，纠正轮完成，待 owner 评审）
+### 16.4 C2-0a 执行结果（2026-09-15，第二轮纠正完成，待 owner 评审）
 
-C2-0a 已实现并完成纠正轮（`tests/experiments/c2_pipeline.py`，实验 schema
+C2-0a 已实现并完成两轮纠正（`tests/experiments/c2_pipeline.py`，实验 schema
 `layout-state/1`，类名 `C2LayoutState` 以区别于产品 `LayoutTemplateSpec` 2.0）：
-真实目标 E/D/F 的缓存 provider-neutral evidence 直接编译为确定性 JSON 状态；
-每个 section 携带语义 source binding（无法绑定的显式 unresolved 入 gap 表，
-歧义标签不猜测）；entry/list 结构归属 section；短/中/长 probes 真实实例化并
-校验候选内容（缺落点/重复/丢失即失败）；D/E 的 table/figure/graphic 实测
-counts 已入 capability 报告（纠正首轮静默遗漏）；header 字段顺序与分隔符
-保留或显式报告未测。全程无 A/C1 seed HTML 依赖。与产品 schema 2.0 的诚实
-边界及迁移评估见 `C2_0A_REPORT.md` §11。未做任何渲染 parity 声明；C2-0b 待
-owner 对报告 §12 裁决后启动。
+真实目标 E/D/F 的缓存 provider-neutral evidence 直接编译为确定性 JSON 状态。
+第二轮纠正：probes 改由独立固定候选 fixtures 驱动（构建时完全不读状态，
+消除循环验证）；每个候选叶子经 ownership ledger 对应恰好一个落点或显式
+unhomed gap；每个 mapped section 声明 renderer-neutral 内容形状
+（paragraph/entries/item_list/inline/badge/composite/unsupported）；结构节点
+严格 section 自有（跨 section 引用被 schema 拒绝）；同源多映射默认改判
+unresolved（无 partition policy 不复制候选内容）；composite 与 unresolved
+绑定诚实表达（unresolved 不携带假 source）。probe 状态三分：
+fully_materialized / materialized_with_gaps / failed——D/E/F 实测均为
+materialized_with_gaps（目标缺 section 的候选源逐叶入表），不再声称全量
+no-loss 物化。与产品 schema 2.0 的诚实边界及迁移评估见 `C2_0A_REPORT.md`
+§11。未做任何渲染 parity 声明；C2-0b 待 owner 对报告 §12 裁决后启动。
