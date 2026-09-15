@@ -1,6 +1,6 @@
 # Pipeline C2-0c Report: Minimal DOCX / Cross-Format Spike
 
-Status: `Owner visual review REJECTED C2-0c; four bounded corrective passes executed (C2-0cR repairability, C2-0cC color fidelity); awaiting owner re-review — NOT production work`
+Status: `Owner visual review REJECTED C2-0c; five bounded corrective passes executed (C2-0cR repairability, C2-0cC color fidelity, C2-0cM composite section mapping); C2-0cC color capability ACCEPTED by the owner as a bounded milestone (overall E→D still NOT accepted); C2-0cM executed per owner work order — awaiting owner re-review — NOT production work`
 
 ## Owner Verdict (visual review, 2026-09-15)
 
@@ -22,10 +22,13 @@ visual corrective pass is recorded in §0a and the rendered-geometry
 measurement-and-fitting pass is recorded in §0b. A third bounded pass — the
 C2-0cR repairability checkpoint (leaf-level indentation coverage + one
 bounded E→F indentation repair), recorded in §0c — was executed after the
-owner's second verdict below, and a fourth bounded pass — the C2-0cC color
+owner's second verdict below, a fourth bounded pass — the C2-0cC color
 fidelity checkpoint (node-level color restoration + rendered-color gate +
-styled-run capability proof), recorded in §0d — after the third. C2-0c
-remains NOT accepted pending owner visual review.
+styled-run capability proof), recorded in §0d — after the third, and a fifth
+bounded pass — the C2-0cM composite section mapping checkpoint
+(deterministic composite-heading decomposition + honest partial-population
+rendering), recorded in §0e — after the owner accepted the C2-0cC color
+milestone. C2-0c remains NOT accepted pending owner visual review.
 
 Date: 2026-09-15
 Branch: `experiment/pipeline-c2` (worktree `/private/tmp/cv-converter-c2`,
@@ -375,8 +378,126 @@ DOCX and HTML can render native colors; Resume D color evidence already
 existed; the compiler discarded it; node-level color fidelity and inline
 mixed-color fidelity are separate capabilities (first restored and verified,
 second proven with the binding policy explicitly unresolved); color is part
-of template identity, not optional decoration. **C2-0cC is NOT accepted
-pending owner visual review.**
+of template identity, not optional decoration.
+
+**Owner verdict (2026-09-15): C2-0cC is ACCEPTED as a bounded color-capability
+milestone.** Recorded acceptance scope: measured colors survive evidence →
+C2 state → render plan; DOCX and HTML can render native colors; the final
+rendered PDF color is measured and verified; name, section headings, and
+colored rules are visibly restored; inline mixed-color rendering is proven
+only with an authorized synthetic fixture; no deterministic real
+candidate-fragment → target-inline-color binding has been proven; overall
+E→D remains fail-closed and is NOT accepted as a complete conversion. The
+next active checkpoint is composite section mapping (§0e).
+
+## 0e. Composite Section Mapping Checkpoint (C2-0cM, owner work order, 2026-09-15)
+
+Owner finding: the immediate E→D problem is not color — it is section/content
+binding. Candidate skills bound to `SKILLS POOL` and work history to `WORK
+EXPERIENCE`, but the target's composite `EDUCATION & CERTIFICATIONS` heading
+stayed unresolved (its normalized label matched BOTH `education` and
+`certifications` source keywords, so the existing ambiguity rule failed it
+closed). Candidate education was therefore appended as a candidate-only
+`Education` section, which received the WRONG destination presentation
+identity (the first heading token) instead of the target section's measured
+purple heading, green rule, and content style. Candidate content was
+preserved; the result did not faithfully use the target section structure.
+
+**Part B (deterministic composite-heading decomposition).**
+`bind_composite()` in `c2_pipeline.py` splits a measured target heading ONLY
+on explicit measured conjunction/separator evidence — `&`, `/`, or the
+standalone word `and` (case-insensitive) — and resolves each component
+through the EXISTING `bind_source` role vocabulary. Every component must
+resolve uniquely with no repeated source; anything else stays unresolved
+with a recorded reason (no LLM, no embedding, no fuzzy model, no
+pair-specific condition, no inferred source outside the product-schema
+vocabulary). The decomposition is a binding-layer rule only: the heading
+node keeps its verbatim label, casing, measured style, rule, and geometry.
+The section stores an explicit composite `SectionBinding`
+(`composite: true`, ordered `sources: ["education", "certifications"]`,
+`mapping_action: "map"`) and a composite `SectionContent` whose ordered
+`sub_contents` follow the SAME single-source rules as ordinary sections
+(an entries sub-content with no measured entry geometry stays unsupported →
+fail-closed downstream). The binding-cardinality rule now claims ALL
+component sources or none: a composite whose component already maps
+elsewhere stays fully unresolved (never a partial subset). `run_flow_probe`
+routes sources through the matching sub-content (`section_consumes` /
+`content_destination(section, source)`), so the C2-0a probe honesty holds
+for composite sections.
+
+**Part C (honest partial-population rendering).** The plan compiler's
+composite fail-closed block is lifted exactly as far as the sub-contents are
+materializable (`paragraph` / `entries` / `item_list` / `inline_items`);
+any other sub kind still fails the plan. `compile_render_plan` materializes
+each ordered sub-content under the ONE measured target heading/rule —
+entries through the existing `_entry_plan`, items through the existing
+`items_for` — with every leaf owned exactly once by the shared ledger. A
+sub-content whose source has no candidate content renders nothing and is
+recorded as an explicit note (`composite renders partially populated;
+nothing invented`); a fully empty composite section is dropped by the
+existing empty-section rule (never an orphan heading). Both renderers
+(HTML, DOCX) branch on `"composite"` reusing the existing entries and
+items emission paths verbatim — no new plan schema, no second renderer
+stack, no renderer-specific template contract.
+
+**Part D (E→D verification).** Target D's `EDUCATION & CERTIFICATIONS` now
+resolves to `{"composite": true, "sources": ["education",
+"certifications"], "mapping_action": "map"}`; candidate E's education entry
+merges into the mapped target section (no candidate-only `Education`
+appendix) and renders INSIDE the target section's presentation: purple
+heading token #8D1E8C, green rule #0A7903, measured section content style,
+heading gaps, and the measured content-start x (fitted
+`entry_table_indent_pt = 10.059`). The certifications sub-content has no
+candidate items and renders nothing (explicit note). Content accounting
+stays exact (40 leaves, exactly once). Canonical run
+`c2_0cM_E_to_D_20260915T181530Z`: geometry 57 pass / 0 fail / 40 honest
+unmeasurable (0 unmapped, 0 unexpected), color gate TRUE, preview 1 page
+(1/1/1), all content/structure/determinism gates true; overall STILL
+fail-closed (`unsupported_features_confirmed` false: the four remaining
+unresolved sections, target tables, detached rules, unmeasured entry
+typography tiers). E→F and D→E re-runs are byte-equivalent in behavior:
+no composite label exists on those targets, no fitting corrections changed
+(E→F final corrections identical to the C2-0cR baseline; E→F still all
+gates true; D→E keeps its single documented borderline sparse-page fail).
+
+**Fitter integrity fix found by the checkpoint (general, not pair-specific).**
+The first C2-0cM compile exposed a measurement-basis bug, not a rendering
+bug: `measure_target_geometry` reported a region's max line x1 as its
+`entry_right_edge_pt` even when NO right-aligned metadata column exists
+there (target D's education region content merely ends at 258.6pt). The
+fitter then translated the state's global measured entry edge (575.28pt)
+into a −316.7pt `entry_right_edge_pt` correction, collapsing the meta
+column to its 12pt floor and scattering the render. `_right_meta_edge_basis`
+now requires a measured right-aligned CLUSTER (≥2 region lines sharing the
+max x1 within a documented 2.0pt tolerance) before a right-edge basis
+exists; without one the property is honestly unmeasurable (same ruling as
+the C2-0cR missing bullet-text anchor) and the fitter never guesses.
+
+**Part E (bounded SKILLS POOL diagnosis — the remaining E→D gap).** The
+composite binding closed the section/content-binding gap; the remaining
+E→D presentation gap is the SKILLS POOL internal layout. Measured target
+evidence (resume_D.pdf, points, cached): the SKILLS POOL body is a
+continuous wrapped category FLOW of three 10.9pt lines at ragged wrap-x
+(22.4 / 44.5 / 49.0 — each line's x0 is the previous line's wrap
+continuation, not a measured indent hierarchy), with category groups
+switching color MID-LINE (line 1: black `Management People, Systems…` →
+red #B50013 `Sales B2B, B2C…`; line 3: red `Finance…` → black `Software…`
+→ blue #1F1D8E `ERP, Data Analysis`). The candidate side is two
+self-contained group lines (`Languages: …`, `Software: …`). Three
+sub-gaps, all bounded and describable: (1) the C2-0cC unresolved
+inline-mapping gap — no deterministic candidate-fragment → inline-color
+binding exists, so the plan compiler never invents styled runs;
+(2) the state's `item_list` vocabulary expresses a skill GROUP as one item
+line and carries no measured per-category sub-structure (category-label
+runs, inline item runs, wrap model), so `category flows inline after the
+previous category on the same wrapped line` is not expressible;
+(3) consequently the rendered section matches the target at section level
+(heading, color, rule, first-line x) but not at internal line level. A
+future bounded checkpoint would need (a) per-category measured
+sub-structure in the state (deterministically derivable from the existing
+color/style groups — no LLM) and (b) an explicit fragment→color binding
+policy. Neither exists today; nothing was invented in this pass.
+**C2-0cM is NOT accepted pending owner visual review.**
 
 ## 0. Explicit Non-Claims (read first)
 
@@ -556,6 +677,18 @@ gaps), `adobe_raw.json`, `enriched_evidence.json`, `target_page_1.png`,
 `c1_page_1.png`, and the LibreOffice preview (`c2_output.pdf` +
 `c2_0c_preview_page_N.png`).
 
+### 4d. Canonical C2-0cM composite-section-mapping runs
+
+Same frozen candidate/target/cached evidence/C1 baselines; no live call.
+`c2_0cM_` runs carry the full artifact set above plus the composite-binding
+state (`section.04` composite in E→D) and the partial-population note.
+
+| Pair | Run | Outcome |
+|---|---|---|
+| E→D | `c2_0cM_E_to_D_20260915T181530Z` | composite `EDUCATION & CERTIFICATIONS` binds education+certifications; candidate education renders under the target heading/rule/content style; certifications sub honest-empty; geometry 57 pass / 0 fail / 40 unmeasurable, color gate TRUE, 1/1/1 pages; STILL fail-closed (4 unresolved sections + tables + detached rules + unmeasured tiers) |
+| E→F | `c2_0cM_E_to_F_20260915T182200Z` | no regression: all hard gates true, 98/98 geometry, 43/43 color; final fitting corrections identical to the C2-0cR baseline |
+| D→E | `c2_0cM_D_to_E_20260915T182215Z` | no regression: the single documented borderline sparse-trailing-page fail remains, still fail-closed on images/vector graphics + contact icons |
+
 ## 5. Verification Coverage (corrective pass)
 
 - **Package validity:** every run's DOCX re-opens with python-docx and
@@ -671,7 +804,7 @@ corrected); the owner verdict is recorded as **accepted as an experimental
 architecture milestone; not production-approved**; no visual parity or C2
 superiority is claimed anywhere.
 
-## 8. Remaining Gaps And Limitations (explicit, post rendered-geometry pass)
+## 8. Remaining Gaps And Limitations (explicit, post C2-0cM composite-mapping pass)
 
 1. **Column split is a documented renderer rule** — the evidence measures the
    entry-column x0 and the right edge only, so the two-column table splits at
@@ -696,9 +829,19 @@ superiority is claimed anywhere.
    no cached evidence here).
 5. **Header rows render as single paragraphs with separator runs** —
    per-field header geometry is not measured in the state (C2-0a limitation).
-6. **E→D remains gap-only**: its five unresolved sections render no content
-   in the DOCX (identical to C2-0b), and Resume D participates in no parity
-   or capability conclusion.
+6. **E→D remains gap-only**: four unresolved sections render no content in
+   the DOCX (HIGHLIGHTS, KEY SKILLS, VOLUNTEER EXPERIENCE, ANOTHER SECTION;
+   the composite EDUCATION & CERTIFICATIONS binding is resolved by C2-0cM),
+   and Resume D participates in no parity or capability conclusion. The
+   SKILLS POOL internal-layout gap is diagnosed in §0e Part E.
+6b. **Composite entry geometry is page-global** — the state measures ONE
+   entry-column scaffold per target, so the composite education sub-content
+   renders on the measured entry column with the fitted content-start
+   correction; the target region's own wrap-only right extent (258.6pt) is
+   correctly NOT used as a column edge (see the `_right_meta_edge_basis`
+   cluster rule), leaving entry_right_edge/meta-x1 rows honestly
+   unmeasurable for that region. A per-region entry-structure measurement
+   is a future state-expressiveness question, not invented here.
 7. **D→E trailing-page density** — the fitted preview's second page carries
    the appended overflow content at 28.83% of the writable height, under the
    documented 0.30 sparse threshold; the delta is recorded honestly in the
@@ -725,10 +868,30 @@ superiority is claimed anywhere.
     (one typed control, one fitting iteration) and non-damage to unrelated
     nodes; whether the repaired preview is visually acceptable is exactly
     the owner's call.
+13. **C2-0cM is NOT accepted** — the composite binding, partial-population
+    rendering, and E→D verification are recorded; the owner re-review of the
+    canonical `c2_0cM_E_to_D_20260915T181530Z` preview decides. The inline
+    mixed-color mapping and the SKILLS POOL internal-layout gap remain
+    explicitly unresolved (§0e Part E).
 
 ## 9. Owner-Review Entry Points
 
-C2-0cC color fidelity checkpoint (review this first):
+C2-0cM composite-section-mapping checkpoint (review this first):
+
+- `tests/experiments/runs/c2_0cM_E_to_D_20260915T181530Z/review.html` →
+  leads with NOT-accepted status, target-D image, full-page side-by-side
+  images, the composite `EDUCATION & CERTIFICATIONS` section rendering
+  candidate education under the target's purple heading + green rule with
+  the measured content-start x, the honest partial-population note for the
+  empty certifications sub-content, the geometry table (57 pass / 0 fail /
+  40 honest unmeasurable incl. the no-cluster entry_right_edge rows),
+  pagination 1/1/1, and the remaining SKILLS POOL diagnosis (§0e Part E).
+- `tests/experiments/runs/c2_0cM_E_to_F_20260915T182200Z/review.html` (no
+  regression; all hard gates true)
+- `tests/experiments/runs/c2_0cM_D_to_E_20260915T182215Z/review.html` (no
+  regression; the documented borderline sparse-page fail remains)
+
+C2-0cC color fidelity checkpoint (ACCEPTED as a bounded milestone):
 
 - `tests/experiments/runs/c2_0cC_E_to_D_20260915T163213Z/review.html` →
   leads with NOT-accepted status, target-D image, previous-vs-new E→D
@@ -811,7 +974,20 @@ Rendered-geometry pass (superseded by C2-0cR but retained):
   modules and tests, plus raw-JSON pair-hook scans of the canonical
   comparison artifacts) and does NOT exist in the current code or
   artifacts; nothing else was cleaned up.
-- `tests/experiments/test_c2_docx_renderer.py` — corrective + rendered-
+- `tests/experiments/test_c2_pipeline.py` — C2-0cM: `bind_composite`
+  decomposition + fail-closed unit tests; composite state binding/content/
+  validator tests; all-or-nothing composite cardinality test;
+  `run_flow_probe` sub-content routing test; the D mapped-sources
+  expectation updated to the new truthful value (education+certifications
+  now bind via the composite).
+- `tests/experiments/test_c2_renderer.py` — C2-0cM: the composite
+  fail-closed test split into (a) unsupported stays fail-closed, (b) a
+  fully materializable composite compiles and renders both sources under
+  one heading, (c) a non-materializable sub-content stays fail-closed.
+- `tests/experiments/test_c2_docx_renderer.py` — C2-0cM: composite section
+  renders partially populated content under ONE measured heading (topology
+  table, accounting exact, explicit empty-sub note) and copies no target
+  facts. Earlier: corrective + rendered-
   geometry regressions (26 offline tests; local-dataset lane) plus C2-0cR
   regressions (7 offline tests: pre-repair child failure, first-row masking,
   separate marker/text/hanging contracts, honest unmeasurable without a

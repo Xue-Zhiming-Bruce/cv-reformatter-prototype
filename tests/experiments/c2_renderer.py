@@ -425,11 +425,25 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         if section.binding and section.binding.mapping_action == "map"
         for role in section.binding.sources
     }
-    if any(section.content and section.content.content_kind in {"composite", "unsupported"} for section in mapped_roles.values()):
-        failures.append(
-            "a mapped target section declares composite/unsupported content; composite has no "
-            "proven sub-structure materialization and C2-0b renders it only fail-closed"
-        )
+    # C2-0cM: composite content MATERIALIZES through its ordered sub-contents
+    # (each sub follows the same single-source rules); only declarations
+    # without a proven materialization stay fail-closed below.
+    for section in sections:
+        if not (section.binding and section.binding.mapping_action == "map" and section.content):
+            continue
+        declared = section.content
+        if declared.content_kind == "unsupported":
+            failures.append(
+                f"{section.node_id}: mapped target section declares unsupported content"
+            )
+        elif declared.content_kind == "composite" and any(
+            sub.content_kind not in {"paragraph", "entries", "item_list", "inline_items"}
+            for sub in declared.sub_contents
+        ):
+            failures.append(
+                f"{section.node_id}: composite sub-content declares a kind without "
+                "a proven materialization and stays fail-closed"
+            )
     for role, section in mapped_roles.items():
         if section.content and section.content.content_kind == "badge_items":
             failures.append(f"{section.node_id}: badge_items content is not renderable in C2-0b")
@@ -476,9 +490,10 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                 )
             continue
         content: SectionContent | None = section.content
-        if content is None or content.content_kind in {"composite", "unsupported", "badge_items"}:
+        if content is None or content.content_kind in {"unsupported", "badge_items"}:
             continue  # already a hard failure above
-        role = section.binding.sources[0]
+        composite = content.content_kind == "composite"
+        role = None if composite else section.binding.sources[0]
         heading_node = heading_of(section.node_id)
         entry_node = by_id.get(section.entry_ref) if section.entry_ref else None
         plan = SectionPlan(
@@ -495,7 +510,21 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             content_kind=content.content_kind,
             source_role=role,
             content_style_id=section.content_style_id,
-            bullet_marker=content.bullet_marker,
+            # Composite sections: the plan-level bullet marker comes from the
+            # (at most one) item-shaped sub-content; entry sub-contents reuse
+            # the same measured marker ruling via _entry_plan.
+            bullet_marker=(
+                next(
+                    (
+                        sub.bullet_marker
+                        for sub in content.sub_contents
+                        if sub.content_kind in {"item_list", "inline_items"}
+                    ),
+                    None,
+                )
+                if composite
+                else content.bullet_marker
+            ),
         )
         if entry_node is not None:
             plan.title_style_id = entry_node.title_style_id
@@ -517,6 +546,80 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                         continue
                     plan.paragraph_lines.append(LeafText(leaf_id=leaf.leaf_id, text=leaf.text))
                     own(leaf.leaf_id, f"{section.node_id}.content.{leaf.leaf_id}")
+        elif composite:
+            # C2-0cM: composite content materializes each ordered sub-content
+            # through the SAME single-source rules, all rendered under the ONE
+            # measured target heading/rule. An empty sub-content is honest
+            # partial population (recorded, never invented); every leaf is
+            # owned exactly once by the shared ledger.
+            if section.entry_ref:
+                entry_node = by_id[section.entry_ref]
+                plan.base_x0_pt = (
+                    entry_node.columns[0].x0_pt
+                    if entry_node.columns
+                    else state.page.margin_left_pt
+                )
+            list_node = by_id.get(section.list_ref) if section.list_ref else None
+            plan.bullet_dot_x0_pt = list_node.bullet_dot_x0_pt if list_node else None
+            plan.bullet_text_x0_pt = list_node.bullet_text_x0_pt if list_node else None
+            for sub in content.sub_contents:
+                sub_role = sub.sources[0]
+                if sub.content_kind == "paragraph":
+                    for leaf in body_leaves:
+                        if leaf.source == sub_role and leaf.kind == "summary_paragraph":
+                            if leaf.text is None:
+                                failures.append(f"candidate leaf {leaf.leaf_id!r} has no text")
+                                continue
+                            plan.paragraph_lines.append(LeafText(leaf_id=leaf.leaf_id, text=leaf.text))
+                            own(leaf.leaf_id, f"{section.node_id}.content.{leaf.leaf_id}")
+                elif sub.content_kind == "entries":
+                    entry_kind = "work_entry" if sub_role == "work_experience" else "education_entry"
+                    entry_leaves = [
+                        leaf
+                        for leaf in body_leaves
+                        if leaf.source == sub_role and leaf.kind == entry_kind and leaf.parent_leaf_id is None
+                    ]
+                    for entry_leaf in entry_leaves:
+                        plan.entries.append(
+                            _entry_plan(
+                                section.node_id, entry_leaf, leaves_by_parent,
+                                plan.bullet_marker, ledger, failures, own,
+                            )
+                        )
+                else:  # item_list / inline_items
+                    sub_items = items_for(sub_role)
+                    own_items(section.node_id, sub_items)
+                    plan.items.extend(sub_items)
+                    if sub.content_kind == "inline_items" and sub.inline_separator:
+                        notes.append(
+                            f"{section.node_id}: inline separator {sub.inline_separator!r} joins items"
+                        )
+            empty_subs = [
+                sub.sources[0]
+                for sub in content.sub_contents
+                if (
+                    (sub.content_kind == "entries" and not any(
+                        leaf.source == sub.sources[0]
+                        and leaf.kind == ("work_entry" if sub.sources[0] == "work_experience" else "education_entry")
+                        and leaf.parent_leaf_id is None
+                        for leaf in body_leaves
+                    ))
+                    or (sub.content_kind in {"item_list", "inline_items"} and not items_for(sub.sources[0]))
+                    or (
+                        sub.content_kind == "paragraph"
+                        and not any(
+                            leaf.source == sub.sources[0] and leaf.kind == "summary_paragraph"
+                            for leaf in body_leaves
+                        )
+                    )
+                )
+            ]
+            if empty_subs:
+                notes.append(
+                    f"{section.node_id}: composite sub-content(s) {empty_subs} have no "
+                    "candidate content; the composite renders partially populated "
+                    "(honest partial population, nothing invented)"
+                )
         elif content.content_kind == "entries":
             list_node = by_id.get(section.list_ref) if section.list_ref else None
             plan.bullet_dot_x0_pt = list_node.bullet_dot_x0_pt if list_node else None
@@ -957,7 +1060,9 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                 )
             for line in section_plan.styled_lines:
                 parts.append(_styled_line_html(state, section_plan, line, content_class))
-        elif section_plan.content_kind == "entries":
+        # C2-0cM: a composite section renders its entries sub-content AND its
+        # item sub-content under the ONE measured target heading.
+        if section_plan.content_kind in {"entries", "composite"}:
             indent = (
                 round(section_plan.base_x0_pt - state.page.margin_left_pt, 3)
                 if section_plan.base_x0_pt is not None
@@ -1022,7 +1127,7 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                         )
                     parts.append("      </div>")
                 parts.append("    </article>")
-        else:  # item_list
+        if section_plan.content_kind in {"item_list", "inline_items", "composite"}:
             if section_plan.items:
                 parts.append(
                     _list_html(
@@ -2198,8 +2303,10 @@ def run_pair(pair: str, out: Path | None = None, c1_runs_root: Path | None = Non
             (frozen_dir / "hard_gates.json").read_text(encoding="utf-8")
         ).get("passed"),
         "parity_scope": (
-            "D-target pairs are gap-only: Resume D's composite and unresolved bindings "
-            "stay unresolved, so no D pair participates in a parity/winner conclusion"
+            "D-target pairs are gap-only: Resume D's remaining SKILLS POOL "
+            "internal-layout and inline-color gaps keep every D pair out of "
+            "parity/winner conclusions (C2-0cM resolves the composite "
+            "EDUCATION & CERTIFICATIONS binding only)"
             if spec["target"] == "D"
             else "full comparison against the frozen C1 baseline"
         ),

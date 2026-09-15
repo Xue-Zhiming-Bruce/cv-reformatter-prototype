@@ -304,6 +304,7 @@ def test_composite_sections_can_represent_multiple_sources() -> None:
         reading_order=0,
         binding=binding,
         content=content,
+        entry_ref="section.01.entry",  # composite entries sub-content owns one
         evidence_ids=["e.1"],
     )
     assert section.binding.composite is True
@@ -314,6 +315,89 @@ def test_composite_sections_can_represent_multiple_sources() -> None:
             sources=["education", "certifications"],
             sub_contents=[SectionContent(content_kind="entries", sources=["education"])],
         )
+
+
+# -- C2-0cM: deterministic composite-heading decomposition ---------------------
+
+
+def test_bind_composite_decomposes_measured_separators() -> None:
+    for label in (
+        "EDUCATION & CERTIFICATIONS",
+        "EDUCATION AND CERTIFICATIONS",
+        "EDUCATION/CERTIFICATIONS",
+        "Education and Certifications",
+    ):
+        sources, reason = c2_module.bind_composite(label)
+        assert sources == ["education", "certifications"], (label, reason)
+        assert reason is None
+
+
+def test_bind_composite_stays_unresolved_without_full_evidence() -> None:
+    # No separator: an ordinary single-section label.
+    assert c2_module.bind_composite("WORK EXPERIENCE") == ([], None)
+    # A component that does not resolve to exactly one source role.
+    sources, reason = c2_module.bind_composite("VOLUNTEER EXPERIENCE & SKILLS")
+    assert sources == [] and "VOLUNTEER EXPERIENCE" in reason
+    # A repeated component never binds a partial subset.
+    sources, reason = c2_module.bind_composite("EDUCATION & EDUCATION")
+    assert sources == [] and "education" in reason
+    # A separator inside a non-vocabulary token (R&D) stays unresolved.
+    sources, reason = c2_module.bind_composite("R&D EXPERIENCE")
+    assert sources == [] and reason
+
+
+def test_composite_heading_binds_ordered_sources_in_state() -> None:
+    state = compile_synthetic(["EDUCATION & CERTIFICATIONS"])
+    section = next(n for n in state.nodes if n.node_id == "section.01")
+    heading = next(n for n in state.nodes if n.node_id == "section.01.heading")
+    assert section.binding.model_dump() == {
+        "sources": ["education", "certifications"],
+        "mapping_action": "map",
+        "composite": True,
+        "partition_policy": "none",
+        "evidence_ids": ["e.heading.1"],
+    }
+    assert section.content.content_kind == "composite"
+    assert [(sub.content_kind, sub.sources) for sub in section.content.sub_contents] == [
+        ("entries", ["education"]),
+        ("item_list", ["certifications"]),
+    ]
+    # The original measured heading text/casing/style/rule are untouched:
+    # decomposition is a binding-layer rule only.
+    assert heading.label == "EDUCATION & CERTIFICATIONS"
+    assert heading.label_case == "upper" and heading.style_id
+    assert section.entry_ref == "section.01.entry"
+    assert validate_layout_state(state) == []
+
+
+def test_composite_component_already_bound_elsewhere_stays_unresolved() -> None:
+    # SKILLS POOL binds skills; a later composite reusing skills claims nothing
+    # (a composite claims ALL of its component sources or none).
+    state = compile_synthetic(["SKILLS POOL", "EDUCATION & SKILLS"])
+    first = next(n for n in state.nodes if n.node_id == "section.01")
+    second = next(n for n in state.nodes if n.node_id == "section.02")
+    assert first.binding.sources == ["skills"] and first.binding.composite is False
+    assert second.binding.mapping_action == "unresolved"
+    assert second.binding.sources == []
+    features = {gap.feature for gap in state.capability_gaps}
+    assert "unresolved_section_binding:section.02" in features
+
+
+def test_flow_probe_routes_composite_sources_through_sub_contents() -> None:
+    state = compile_synthetic(["EDUCATION & CERTIFICATIONS"])
+    candidate = independent_candidate_fixtures()["medium"]
+    result = run_flow_probe(state, candidate)
+    assert result["status"] == "materialized_with_gaps", result["failures"]
+    assert result["passed"] is True and result["failures"] == []
+    ledger = result["ledger"]
+    education_dests = {
+        dest for leaf_id, dest in ledger.items() if leaf_id.startswith("education.")
+    }
+    cert_dests = {
+        dest for leaf_id, dest in ledger.items() if leaf_id.startswith("certification")
+    }
+    assert education_dests == {"section.01.entry"}
+    assert cert_dests and cert_dests <= {"section.01", "section.01.list"}
 
 
 def test_unresolved_bindings_carry_no_fake_source() -> None:
@@ -762,7 +846,10 @@ def test_real_targets_compile_bind_and_probe_truthfully(tmp_path: Path) -> None:
         # as unhomed-source gaps; work/skills/education fully consumed.
         "E": {"mapped": {"work_experience", "skills", "education"}, "tables": 0, "figures": 1},
         "F": {"mapped": {"summary", "skills", "additional_details", "work_experience", "education", "certifications"}, "tables": 0, "figures": 0},
-        "D": {"mapped": {"skills", "work_experience"}, "tables": 2, "figures": 0},
+        # C2-0cM: D's composite EDUCATION & CERTIFICATIONS heading now binds
+        # education + certifications; its remaining gaps are skills-pool
+        # internal layout and inline color, not the composite binding.
+        "D": {"mapped": {"skills", "work_experience", "education", "certifications"}, "tables": 2, "figures": 0},
     }
     for target_letter, expected in expectations.items():
         target = REAL[target_letter]

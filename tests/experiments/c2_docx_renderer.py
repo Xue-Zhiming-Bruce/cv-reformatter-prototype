@@ -869,7 +869,9 @@ def build_document(
                     run_object = paragraph.add_run(run.text)
                     _apply_token(run_object, run_token, written_fonts.get(run.style_id) if run.style_id else None)
                 _control_paragraph(paragraph, content_token)
-        elif section_plan.content_kind == "entries":
+        # C2-0cM: a composite section renders its entries sub-content AND its
+        # item sub-content under the ONE measured target heading/rule.
+        if section_plan.content_kind in {"entries", "composite"}:
             title_token = _style_of(state, section_plan.title_style_id)
             detail_token = _style_of(state, section_plan.detail_style_id) or title_token
             meta_token = _style_of(state, section_plan.meta_style_id) or detail_token
@@ -952,7 +954,7 @@ def build_document(
                         )
                     )
                 last_paragraph = entry_paragraphs[-1] if entry_paragraphs else last_paragraph
-        else:  # item_list / inline_items
+        if section_plan.content_kind in {"item_list", "inline_items", "composite"}:
             for item in section_plan.items:
                 if section_plan.bullet_marker == "bullet":
                     _write_native_bullet(
@@ -1733,6 +1735,24 @@ def measure_rendered_geometry(pdf_path: Path, plan: Any, state: C2LayoutState) -
     }
 
 
+def _right_meta_edge_basis(region: list[dict[str, Any]]) -> float | None:
+    """Measured right-edge basis for a region's entry metadata column.
+
+    A region's max line x1 is a usable RIGHT-COLUMN basis only when a cluster
+    of lines shares that edge (right-aligned dates/locations repeat at the
+    same x1 within the documented 2.0pt cluster tolerance). A single longest
+    line is a content extent, never a column edge — using it as a basis once
+    drove a runaway fit correction that collapsed the meta column (C2-0cM;
+    target D's education region). No cluster -> no basis -> unmeasurable rows,
+    never a fitted guess."""
+    if not region:
+        return None
+    x1s = [line["x1"] for line in region]
+    edge = max(x1s)
+    cluster = sum(1 for value in x1s if edge - value <= 2.0)
+    return round(edge, 3) if cluster >= 2 else None
+
+
 def measure_target_geometry(target_pdf: Path, state: C2LayoutState, plan: Any) -> dict[str, Any]:
     """Measured TARGET geometry in points (work order loop step 2), per mapped
     section: heading text box, rule placement/extent, content start x, entry
@@ -1834,8 +1854,8 @@ def measure_target_geometry(target_pdf: Path, state: C2LayoutState, plan: Any) -
             ),
             "content_start_x_pt": round(min((line["x0"] for line in region), default=0.0), 3),
             "entry_right_edge_pt": (
-                round(max((line["x1"] for line in region), default=0.0), 3)
-                if section_plans[node_id].content_kind == "entries"
+                _right_meta_edge_basis(region)
+                if section_plans[node_id].content_kind in {"entries", "composite"}
                 else None
             ),
             "bullets": bullet_anchors,
@@ -2357,12 +2377,14 @@ def compare_geometry(
             "declared_state" if item_list_bullet_shape and section_plan.bullet_dot_x0_pt is not None else "measured_target",
             round(first_content["lines"][0]["x0"], 3) if first_content else None,
             TOLERANCE_PT["local_position"],
-            control=("item_left_indent_pt" if section_plan.content_kind in {"item_list", "inline_items"}
-                     else "entry_table_indent_pt" if section_plan.content_kind == "entries"
-                     else None),
+            control=(
+                "item_left_indent_pt" if section_plan.content_kind in {"item_list", "inline_items"}
+                else "entry_table_indent_pt" if section_plan.content_kind in {"entries", "composite"}
+                else None
+            ),
         ))
         # -- entries: columns, tiers, topology -----------------------------------
-        if section_plan.content_kind == "entries":
+        if section_plan.content_kind in {"entries", "composite"} and section_plan.entries:
             title_rows = [row for row in content_rows if row["kind"] in {"entry_title", "entry_row"}]
             if title_rows and title_rows[0]["lines"]:
                 first_title = title_rows[0]["lines"][0]
@@ -3146,7 +3168,7 @@ def conversion_compatibility_report(
         )
 
     entry_sections = [
-        section for section in plan.sections if section.content_kind == "entries"
+        section for section in plan.sections if section.content_kind in {"entries", "composite"}
     ]
     entries_with_meta = [
         section for section in entry_sections
@@ -3266,7 +3288,7 @@ def conversion_compatibility_report(
     unmeasured_tiers = [
         section.node_id
         for section in plan.sections
-        if section.content_kind == "entries" and section.title_style_id is None
+        if section.content_kind in {"entries", "composite"} and section.title_style_id is None
     ]
     if unmeasured_tiers:
         unsupported.append(
@@ -3738,8 +3760,14 @@ def write_review_index(
     # the affected stable node IDs.
     repair_html = ""
     if before_comparison:
+        def _row_detail_key(row: dict[str, Any]) -> str:
+            # detail may carry structured payloads (e.g. orphaned-headings
+            # records); stringify for a stable, hashable before/after key.
+            detail = row.get("detail")
+            return detail if isinstance(detail, str) else json.dumps(detail, sort_keys=True)
+
         after_by_key = {
-            (row["property"], row["node"], row.get("detail") or ""): row
+            (row["property"], row["node"], _row_detail_key(row)): row
             for row in (comparison or {}).get("rows", [])
         }
         repair_rows = ""
@@ -3747,7 +3775,7 @@ def write_review_index(
         for row in before_comparison.get("rows", []):
             if row["classification"] not in {"fail", "unmeasurable"}:
                 continue
-            after = after_by_key.get((row["property"], row["node"], row.get("detail") or ""))
+            after = after_by_key.get((row["property"], row["node"], _row_detail_key(row)))
             if after is None or (
                 after["classification"] == row["classification"]
                 and after.get("rendered") == row.get("rendered")

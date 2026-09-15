@@ -43,7 +43,13 @@ from tests.experiments.c2_renderer import (
     render_html,
     structure_gate,
 )
-from tests.experiments.test_c2_pipeline import BODY, BULLET_TIERS, SUMMARY, compile_synthetic
+from tests.experiments.test_c2_pipeline import (
+    BODY,
+    BULLET_TIERS,
+    FULL_COVERAGE_LABELS,
+    SUMMARY,
+    compile_synthetic,
+)
 
 
 @pytest.fixture()
@@ -328,7 +334,7 @@ def test_body_nodes_compile_without_absolute_y_positioning(fake_pdf_text) -> Non
     assert gate["passed"] is False
 
 
-def test_unsupported_and_composite_sections_fail_closed() -> None:
+def test_unsupported_and_nonmaterializable_composite_fail_closed() -> None:
     state, _ = plan_for()
 
     def work_section(mutated: C2LayoutState) -> int:
@@ -348,11 +354,18 @@ def test_unsupported_and_composite_sections_fail_closed() -> None:
     )
     plan = compile_render_plan(broken, rich_candidate(include_unmatched=False))
     assert plan.status == "failed"
-    assert any("composite/unsupported" in failure for failure in plan.failures)
+    assert any("unsupported content" in failure for failure in plan.failures)
     with pytest.raises(RuntimeError, match="refusing to render a failed plan"):
         render_html(broken, plan)
 
-    composite = state.model_copy(deep=True)
+    # C2-0cM: a composite whose sub-contents are all materializable now
+    # compiles and renders BOTH sources under the one measured heading.
+    # (The default state also maps a separate EDUCATION section, which would
+    # double-bind the source; drop it — one candidate source, one destination.)
+    composite = plan_for(
+        [label for label in FULL_COVERAGE_LABELS if label != "EDUCATION"],
+        include_unmatched=False,
+    )[0].model_copy(deep=True)
     from tests.experiments.c2_pipeline import SectionBinding
 
     index = work_section(composite)
@@ -373,8 +386,30 @@ def test_unsupported_and_composite_sections_fail_closed() -> None:
         }
     )
     plan = compile_render_plan(composite, rich_candidate(include_unmatched=False))
+    assert plan.status == "fully_materialized", plan.failures
+    composite_plan = next(s for s in plan.sections if s.content_kind == "composite")
+    assert {entry.entry_leaf_id for entry in composite_plan.entries} >= {
+        "work.e1", "work.e2", "education.e1",
+    }
+    html = render_html(composite, plan)
+    assert "CANDCORP One" in html and "CAND University" in html
+
+    # A composite sub-content without a proven materialization stays fail-closed.
+    unsupported_sub = composite.model_copy(deep=True)
+    unsupported_sub.nodes[index] = unsupported_sub.nodes[index].model_copy(
+        update={
+            "content": SectionContent(
+                content_kind="composite", sources=["work_experience", "education"],
+                sub_contents=[
+                    SectionContent(content_kind="entries", sources=["work_experience"]),
+                    SectionContent(content_kind="unsupported", sources=["education"]),
+                ],
+            ),
+        }
+    )
+    plan = compile_render_plan(unsupported_sub, rich_candidate(include_unmatched=False))
     assert plan.status == "failed"
-    assert any("composite/unsupported" in failure for failure in plan.failures)
+    assert any("fail-closed" in failure for failure in plan.failures)
 
 
 def test_empty_target_sections_render_nothing_but_are_recorded() -> None:

@@ -134,6 +134,40 @@ def bind_source(label: str) -> tuple[SourceRole | None, str | None]:
     return None, "no source-vocabulary match"
 
 
+# Composite headings split ONLY on explicit measured conjunction/separator
+# evidence in the target text (C2-0cM): the ampersand, the slash, or the
+# standalone word "and". No fuzzy model, no semantic inference.
+_COMPOSITE_SPLIT = re.compile(r"(?:\s*&\s*|\s*/\s*|\s+and\s+)", re.IGNORECASE)
+
+
+def bind_composite(label: str) -> tuple[list[SourceRole], str | None]:
+    """Deterministically decompose a composite target heading label.
+
+    ``"EDUCATION & CERTIFICATIONS"`` (and its measured ``and``/``/``/case
+    variants) resolves to the ordered sources ``["education",
+    "certifications"]``. Every component must resolve UNIQUELY through the
+    existing :func:`bind_source` vocabulary, with no repeated source; any
+    other outcome stays unresolved (the reason is returned, never guessed
+    away). Returns ``([], None)`` when the label carries no composite
+    separator at all (an ordinary single-section label).
+    """
+    parts = [part for part in _COMPOSITE_SPLIT.split(label) if part.strip()]
+    if len(parts) < 2:
+        return [], None
+    sources: list[SourceRole] = []
+    for part in parts:
+        resolved, reason = bind_source(part)
+        if resolved is None:
+            return [], (
+                f"composite component {part.strip()!r} does not resolve to a "
+                f"single source role ({reason})"
+            )
+        if resolved in sources:
+            return [], f"composite components repeat the source {resolved!r}"
+        sources.append(resolved)
+    return sources, None
+
+
 # ---------------------------------------------------------------------------
 # Versioned provider-neutral layout state schema (layout-state/1, experimental)
 # ---------------------------------------------------------------------------
@@ -423,10 +457,17 @@ class LayoutNode(StateModel):
                 raise ValueError(
                     f"{self.node_id}: unresolved bindings carry no content shape"
                 )
-            if self.content is not None and self.content.content_kind == "entries":
+            content_needs_entries = self.content is not None and (
+                self.content.content_kind == "entries"
+                or any(
+                    sub.content_kind == "entries" for sub in self.content.sub_contents
+                )
+            )
+            if content_needs_entries:
                 if self.entry_ref is None:
                     raise ValueError(
-                        f"{self.node_id}: entries content owns an entry structure"
+                        f"{self.node_id}: entries (or composite entries sub-) "
+                        "content owns an entry structure"
                     )
             elif self.entry_ref is not None:
                 raise ValueError(
@@ -579,17 +620,37 @@ class C2LayoutState(StateModel):
             # Child content-kind compatibility.
             if node.kind == "entry_row":
                 parent = section_of.get(node.parent_id or "")
-                if parent is None or parent.content is None or parent.content.content_kind != "entries":
+                parent_content = parent.content if parent else None
+                parent_needs_entries = parent_content is not None and (
+                    parent_content.content_kind == "entries"
+                    or any(
+                        sub.content_kind == "entries"
+                        for sub in parent_content.sub_contents
+                    )
+                )
+                if parent_content is None or not parent_needs_entries:
                     raise ValueError(
                         f"{node.node_id}: entry structure requires an entries-content section"
                     )
             if node.kind == "list_row":
                 parent = section_of.get(node.parent_id or "")
+                parent_content = parent.content if parent else None
+                # Composite sections declare their bullet semantics per
+                # sub-content; the list structure matches any bullet-declaring
+                # sub-content (C2-0cM).
+                parent_markers = []
+                if parent_content is not None:
+                    if parent_content.content_kind == "composite":
+                        parent_markers = [
+                            sub.bullet_marker
+                            for sub in parent_content.sub_contents
+                            if sub.bullet_marker is not None
+                        ]
+                    else:
+                        parent_markers = [parent_content.bullet_marker]
                 if (
-                    parent is None
-                    or parent.content is None
-                    or parent.content.content_kind not in {"entries", "item_list"}
-                    or parent.content.bullet_marker != node.list_marker
+                    parent_content is None
+                    or node.list_marker not in parent_markers
                 ):
                     raise ValueError(
                         f"{node.node_id}: list structure must match its section's "
@@ -1100,6 +1161,36 @@ def _entry_tier_values(
     return values
 
 
+def _entry_child_node(
+    section_id: str, entry: Any, tier_values: dict[str, Any]
+) -> LayoutNode:
+    """Section-owned measured entry structure (shared by single-source and
+    composite sections; C2-0cM extracted from the section loop verbatim)."""
+    return LayoutNode(
+        node_id=f"{section_id}.entry",
+        parent_id=section_id,
+        kind="entry_row",
+        reading_order=0,  # finalized by the caller
+        columns=[
+            Column(
+                slot="entry_title",
+                x0_pt=round(float(entry.left_x0_pt), 3),
+                alignment="left",
+            ),
+            Column(
+                slot="entry_metadata",
+                x1_pt=round(float(entry.right_x1_pt), 3),
+                alignment="right" if entry.right_row_top_delta_pt == 0.0 else "left",
+            ),
+        ],
+        title_style_id=tier_values.get("title_style_id"),
+        detail_style_id=tier_values.get("detail_style_id"),
+        meta_style_id=tier_values.get("meta_style_id"),
+        inter_entry_gap_above_pt=tier_values.get("inter_entry_gap_above_pt"),
+        evidence_ids=list(entry.evidence_ids) or ["derived.entry_columns"],
+    )
+
+
 def _list_child(
     section_id: str, reading_order: int, bullet_marker: Literal["bullet", "none"],
     bullet_tiers: dict[str, float],
@@ -1242,10 +1333,22 @@ def state_from_scaffolds(
             rules.append(rule)
         source, reason = bind_source(heading.verbatim)
 
+        # C2-0cM composite decomposition: when the single-label binding is
+        # unresolved AND the measured label carries an explicit separator,
+        # decompose into ordered per-component source roles. The original
+        # heading text/casing/style/rule are untouched (decomposition is a
+        # binding-layer rule only; the heading node keeps its verbatim label).
+        composite_sources: list[SourceRole] = []
+        if source is None:
+            composite_sources, composite_reason = bind_composite(heading.verbatim)
+            if composite_reason:
+                reason = composite_reason
+
         # Binding-cardinality rule: a candidate source maps to at most one
-        # target section by default. Extra same-source sections stay
-        # unresolved unless an explicit partition policy exists (none is
-        # inferred here) — source items are never silently duplicated.
+        # target section by default (a composite claims ALL of its component
+        # sources or none). Extra same-source sections stay unresolved unless
+        # an explicit partition policy exists (none is inferred here) —
+        # source items are never silently duplicated.
         cardinality_reason: str | None = None
         if source is not None:
             if bound_sources.get(source, 0) >= 1:
@@ -1256,7 +1359,22 @@ def state_from_scaffolds(
                 source = None
             else:
                 bound_sources[source] = 1
-        if source is None:
+        elif composite_sources:
+            already_bound = [
+                role for role in composite_sources if bound_sources.get(role, 0) >= 1
+            ]
+            if already_bound:
+                cardinality_reason = (
+                    f"composite component source(s) {already_bound} already map "
+                    "to another target section and no partition policy is "
+                    "declared; the composite claims no partial subset"
+                )
+                composite_sources = []
+            else:
+                for role in composite_sources:
+                    bound_sources[role] = 1
+        mapped_sources = [source] if source is not None else composite_sources
+        if source is None and not composite_sources:
             gap_reason = (
                 f"measured label {heading.verbatim!r} cannot be bound to a "
                 f"candidate source role ({reason or cardinality_reason}); "
@@ -1284,59 +1402,95 @@ def state_from_scaffolds(
         list_child_node: LayoutNode | None = None
         content_style: StyleToken | None = None
         tier_values: dict[str, Any] = {}
-        if source is not None:
+        if mapped_sources:
             content_style = _section_content_style(summary, heading, heading_range_end[index - 1], styles)
-            kind = _DEFAULT_CONTENT_KINDS[source]
-            if kind == "entries" and body_scaffold.entry is None:
-                gaps.append(
-                    CapabilityGap(
-                        feature=f"unmeasured_entry_geometry:{section_id}",
-                        reason=(
-                            f"{heading.verbatim!r} binds to {source!r} whose "
-                            "default content is repeatable entries, but no entry "
-                            "column geometry is measured; the section is declared "
-                            "unsupported rather than invented"
-                        ),
-                        evidence_ids=list(heading.evidence_ids),
+            if len(mapped_sources) == 1:
+                source = mapped_sources[0]
+                kind = _DEFAULT_CONTENT_KINDS[source]
+                if kind == "entries" and body_scaffold.entry is None:
+                    gaps.append(
+                        CapabilityGap(
+                            feature=f"unmeasured_entry_geometry:{section_id}",
+                            reason=(
+                                f"{heading.verbatim!r} binds to {source!r} whose "
+                                "default content is repeatable entries, but no entry "
+                                "column geometry is measured; the section is declared "
+                                "unsupported rather than invented"
+                            ),
+                            evidence_ids=list(heading.evidence_ids),
+                        )
                     )
-                )
-                content = SectionContent(content_kind="unsupported", sources=[source])
+                    content = SectionContent(content_kind="unsupported", sources=[source])
+                else:
+                    content = SectionContent(
+                        content_kind=kind,
+                        sources=[source],
+                        bullet_marker=bullet_marker if kind in {"entries", "item_list"} else None,
+                    )
+                    if kind == "entries":
+                        entry = body_scaffold.entry
+                        entry_node_id = f"{section_id}.entry"
+                        tier_values = _entry_tier_values(
+                            summary, entry, heading, heading_range_end[index - 1], styles
+                        )
+                        entry_child = _entry_child_node(
+                            section_id, entry, tier_values
+                        )
+                    if content.bullet_marker == "bullet":
+                        list_node_id = f"{section_id}.list"
+                        list_child_node = _list_child(section_id, 0, bullet_marker, bullet_tiers)
             else:
+                # C2-0cM composite content: ordered sub-contents, one per
+                # decomposed source, each through the SAME single-source rules
+                # (unsupported sub-content stays fail-closed downstream). The
+                # section owns ONE entry/list structure for its measured
+                # geometry; sub-contents differ only in source + shape.
+                subs: list[SectionContent] = []
+                needs_entry = False
+                needs_list = False
+                for sub_source in mapped_sources:
+                    sub_kind = _DEFAULT_CONTENT_KINDS[sub_source]
+                    if sub_kind == "entries" and body_scaffold.entry is None:
+                        gaps.append(
+                            CapabilityGap(
+                                feature=f"unmeasured_entry_geometry:{section_id}",
+                                reason=(
+                                    f"{heading.verbatim!r} composite component "
+                                    f"{sub_source!r} defaults to repeatable entries, "
+                                    "but no entry column geometry is measured; that "
+                                    "sub-content is declared unsupported rather "
+                                    "than invented"
+                                ),
+                                evidence_ids=list(heading.evidence_ids),
+                            )
+                        )
+                        subs.append(SectionContent(content_kind="unsupported", sources=[sub_source]))
+                        continue
+                    sub_marker = (
+                        bullet_marker if sub_kind in {"entries", "item_list"} else None
+                    )
+                    needs_entry = needs_entry or sub_kind == "entries"
+                    needs_list = needs_list or sub_marker == "bullet"
+                    subs.append(
+                        SectionContent(
+                            content_kind=sub_kind,
+                            sources=[sub_source],
+                            bullet_marker=sub_marker,
+                        )
+                    )
                 content = SectionContent(
-                    content_kind=kind,
-                    sources=[source],
-                    bullet_marker=bullet_marker if kind in {"entries", "item_list"} else None,
+                    content_kind="composite",
+                    sources=list(mapped_sources),
+                    sub_contents=subs,
                 )
-                if kind == "entries":
+                if needs_entry:
                     entry = body_scaffold.entry
                     entry_node_id = f"{section_id}.entry"
                     tier_values = _entry_tier_values(
                         summary, entry, heading, heading_range_end[index - 1], styles
                     )
-                    entry_child = LayoutNode(
-                        node_id=entry_node_id,
-                        parent_id=section_id,
-                        kind="entry_row",
-                        reading_order=0,  # finalized below
-                        columns=[
-                            Column(
-                                slot="entry_title",
-                                x0_pt=round(float(entry.left_x0_pt), 3),
-                                alignment="left",
-                            ),
-                            Column(
-                                slot="entry_metadata",
-                                x1_pt=round(float(entry.right_x1_pt), 3),
-                                alignment="right" if entry.right_row_top_delta_pt == 0.0 else "left",
-                            ),
-                        ],
-                        title_style_id=tier_values.get("title_style_id"),
-                        detail_style_id=tier_values.get("detail_style_id"),
-                        meta_style_id=tier_values.get("meta_style_id"),
-                        inter_entry_gap_above_pt=tier_values.get("inter_entry_gap_above_pt"),
-                        evidence_ids=list(entry.evidence_ids) or ["derived.entry_columns"],
-                    )
-                if content.bullet_marker == "bullet":
+                    entry_child = _entry_child_node(section_id, entry, tier_values)
+                if needs_list:
                     list_node_id = f"{section_id}.list"
                     list_child_node = _list_child(section_id, 0, bullet_marker, bullet_tiers)
         nodes.append(
@@ -1345,8 +1499,9 @@ def state_from_scaffolds(
                 kind="section",
                 reading_order=order,
                 binding=SectionBinding(
-                    sources=[source] if source is not None else [],
-                    mapping_action="map" if source is not None else "unresolved",
+                    sources=list(mapped_sources),
+                    mapping_action="map" if mapped_sources else "unresolved",
+                    composite=len(mapped_sources) > 1,
                     evidence_ids=list(heading.evidence_ids),
                 ),
                 content=content,
@@ -1782,8 +1937,9 @@ FROZEN_C1_RUNS: dict[str, str] = {
 }
 
 # Evaluation pairs: candidate resume -> target resume. Resume D never
-# participates in a parity/winner conclusion while its composite and
-# unresolved target bindings stay unresolved (gap-only role).
+# participates in a parity/winner conclusion while E→D overall remains
+# fail-closed (C2-0cM resolves its composite EDUCATION & CERTIFICATIONS
+# binding; the SKILLS POOL internal-layout and inline-color gaps remain).
 C2_0B_PAIRS: dict[str, dict[str, str]] = {
     "D_E": {"candidate": "D", "target": "E", "role": "primary"},
     "E_F": {"candidate": "E", "target": "F", "role": "generalization"},
@@ -2218,28 +2374,70 @@ def run_flow_probe(state: C2LayoutState, candidate: CandidateDocument) -> dict[s
             and source in (section.binding.sources or [])
         ]
 
-    def content_destination(section: LayoutNode) -> str | None:
+    def content_destination(section: LayoutNode, source: SourceRole | None = None) -> str | None:
         content = section.content
         if content is None:
             return None
+        if content.content_kind == "composite":
+            # C2-0cM: a composite section consumes a source through the
+            # matching ordered sub-content's own shape.
+            if source is None:
+                return None
+            sub = next(
+                (s for s in content.sub_contents if source in s.sources), None
+            )
+            if sub is None or sub.content_kind == "unsupported":
+                return None
+            if sub.content_kind == "entries":
+                return section.entry_ref
+            if sub.content_kind in {"item_list", "inline_items", "badge_items"}:
+                return section.list_ref or section.node_id
+            return section.node_id
         if content.content_kind == "entries":
             return section.entry_ref
         if content.content_kind in {"item_list", "inline_items", "badge_items"}:
             return section.list_ref or section.node_id
         if content.content_kind == "paragraph":
             return section.node_id
-        return None  # unsupported/composite handled by callers
+        return None  # unsupported handled by callers
+
+    def section_consumes(section: LayoutNode, source: SourceRole, kinds: set[str]) -> bool:
+        """Whether the mapped section consumes ``source`` through a content
+        shape in ``kinds`` (its own, or — composite sections — the matching
+        sub-content's; C2-0cM)."""
+        content = section.content
+        if content is None:
+            return False
+        if content.content_kind == "composite":
+            return any(
+                source in sub.sources and sub.content_kind in kinds
+                for sub in content.sub_contents
+            )
+        return content.content_kind in kinds
+
+    def source_sub_unsupported(section: LayoutNode, source: SourceRole) -> bool:
+        content = section.content
+        if content is None:
+            return False
+        if content.content_kind == "unsupported":
+            return True
+        if content.content_kind == "composite":
+            return any(
+                source in sub.sources and sub.content_kind == "unsupported"
+                for sub in content.sub_contents
+            )
+        return False
 
     def route_top_level(
         leaf: CandidateLeaf, source: SourceRole, expected_kinds: set[str], instance_kind: str
     ) -> bool:
         homes = [
             section for section in mapped_sections(source)
-            if section.content is not None and section.content.content_kind in expected_kinds
+            if section_consumes(section, source, expected_kinds)
         ]
         broken = [
             section for section in mapped_sections(source)
-            if section.content is None or section.content.content_kind == "unsupported"
+            if section.content is None or source_sub_unsupported(section, source)
         ]
         if broken:
             failures.append(
@@ -2257,7 +2455,7 @@ def run_flow_probe(state: C2LayoutState, candidate: CandidateDocument) -> dict[s
                 }
             )
             return False
-        destination = content_destination(homes[0])
+        destination = content_destination(homes[0], source)
         if destination is None:
             failures.append(
                 f"candidate leaf {leaf.leaf_id!r}: {homes[0].node_id} has no consumable content destination"
@@ -2296,7 +2494,7 @@ def run_flow_probe(state: C2LayoutState, candidate: CandidateDocument) -> dict[s
         all_homes = mapped_sections("skills")
         broken = [
             section for section in all_homes
-            if section.content is None or section.content.content_kind == "unsupported"
+            if section.content is None or source_sub_unsupported(section, "skills")
         ]
         if broken:
             failures.append(
@@ -2306,8 +2504,7 @@ def run_flow_probe(state: C2LayoutState, candidate: CandidateDocument) -> dict[s
             continue
         homes = [
             section for section in all_homes
-            if section.content is not None
-            and section.content.content_kind in {"item_list", "inline_items", "badge_items"}
+            if section_consumes(section, "skills", {"item_list", "inline_items", "badge_items"})
         ]
         if len(homes) > 1:
             unpartitioned = [
@@ -2341,7 +2538,7 @@ def run_flow_probe(state: C2LayoutState, candidate: CandidateDocument) -> dict[s
         # Round-robin across explicitly partitioned sections.
         section = homes[skill_group_counter % len(homes)]
         skill_group_counter += 1
-        destination = content_destination(section)
+        destination = content_destination(section, "skills")
         list_node = by_id.get(section.list_ref) if section.list_ref else None
         add_instance(f"{section.node_id}.content.{leaf.leaf_id}", section.node_id, "item_group_instance")
         own(leaf.leaf_id, destination or section.node_id)
@@ -2364,8 +2561,7 @@ def run_flow_probe(state: C2LayoutState, candidate: CandidateDocument) -> dict[s
     work_section: LayoutNode | None = next(iter(mapped_sections("work_experience")), None)
     work_usable = (
         work_section is not None
-        and work_section.content is not None
-        and work_section.content.content_kind == "entries"
+        and section_consumes(work_section, "work_experience", {"entries"})
     )
     if mapped_sections("work_experience") and not work_usable:
         failures.append(
@@ -2419,7 +2615,7 @@ def run_flow_probe(state: C2LayoutState, candidate: CandidateDocument) -> dict[s
     for leaf in (item for item in candidate.leaves if item.kind == "education_entry"):
         homes = [
             section for section in mapped_sections("education")
-            if section.content is not None and section.content.content_kind == "entries"
+            if section_consumes(section, "education", {"entries"})
         ]
         if not homes:
             unhomed.append(
@@ -2457,13 +2653,12 @@ def run_flow_probe(state: C2LayoutState, candidate: CandidateDocument) -> dict[s
     for leaf in (item for item in candidate.leaves if item.kind == "additional_section"):
         homes = [
             section for section in mapped_sections("additional_details")
-            if section.content is not None
-            and section.content.content_kind in {"item_list", "inline_items", "entries"}
+            if section_consumes(section, "additional_details", {"item_list", "inline_items", "entries"})
         ]
         if homes:
             section = homes[0]
             add_instance(f"{section.node_id}.content.{leaf.leaf_id}", section.node_id, "section_content_instance")
-            own(leaf.leaf_id, content_destination(section) or section.node_id)
+            own(leaf.leaf_id, content_destination(section, "additional_details") or section.node_id)
         else:
             # Owner decision: candidate-only unmatched additional sections
             # retain their own headings — materialized as candidate-owned

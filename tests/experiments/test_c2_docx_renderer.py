@@ -186,6 +186,47 @@ def test_package_opens_and_carries_native_structures(tmp_path: Path) -> None:
     assert inspection["explicit_spacing_count"] == inspection["paragraph_count"]
 
 
+# -- C2-0cM: composite section mapping ---------------------------------------
+
+def test_composite_section_renders_partially_populated_content(tmp_path: Path) -> None:
+    # The composite EDUCATION & CERTIFICATIONS section renders the candidate's
+    # education entries under the ONE measured target heading; the
+    # certifications sub-content has no candidate items and renders nothing
+    # (honest partial population, nothing invented).
+    state, plan, path, inspection, accounting = _full_pipeline(
+        tmp_path, ["EDUCATION & CERTIFICATIONS"]
+    )
+    composite = next(s for s in plan.sections if s.content_kind == "composite")
+    assert composite.label == "EDUCATION & CERTIFICATIONS"
+    assert len(composite.entries) == 1 and composite.items == []
+    assert any(
+        "composite sub-content(s) ['certifications'] have no candidate content"
+        in note
+        for note in plan.notes
+    )
+    texts = [record["text"] for record in inspection["paragraphs"]]
+    assert texts.count("EDUCATION & CERTIFICATIONS") == 1
+    assert "CAND University" in texts
+    # The education entry carries metadata -> native two-column topology table.
+    assert any(record["columns"] == 2 for record in inspection["tables"])
+    assert accounting["passed"] is True
+
+
+def test_composite_section_copies_no_target_facts(tmp_path: Path) -> None:
+    state, plan = _state_and_plan(["EDUCATION & CERTIFICATIONS"])
+    all_text = " ".join(
+        line.text
+        for section in plan.sections
+        for line in [*section.paragraph_lines, *section.items]
+    ) + " ".join(
+        line.text
+        for section in plan.sections
+        for entry in section.entries
+        for line in [*entry.title_lines, *entry.meta_lines]
+    )
+    assert "TARGETFACT" not in all_text
+
+
 def test_entry_rows_keep_left_right_topology_as_borderless_tables(tmp_path: Path) -> None:
     state, plan, path, inspection, accounting = _full_pipeline(tmp_path)
     entry_sections = [section for section in plan.sections if section.content_kind == "entries"]

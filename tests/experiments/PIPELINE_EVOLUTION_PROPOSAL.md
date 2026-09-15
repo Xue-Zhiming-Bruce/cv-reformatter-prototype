@@ -8,7 +8,7 @@
 > | B 管线 | 已关闭（假设证伪，零件经 §7.3 移植） |
 > | C1 D→E（header + body） | owner 终审通过，完成（§9/§11） |
 > | C1 E→F 泛化 | **调试中，尚未通过**（十次冻结，缺口 #1–#8 已闭；#9 右缘杠杆失效、#10 种子行宽派生假设待验证，见 run 20260910T161228Z） |
-> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑；C2-0b 经三轮纠偏后由 owner 终审裁决：**接受为实验性 PDF 架构里程碑；非生产批准，非视觉 parity 主张**（rule-geometry 门禁完整性已闭合，含 page/垂直区域关联）；**C2-0c 被 owner 视觉评审否决**（机械可编辑 ≠ 模板保真：双栏条目拓扑丢失、内建样式间距失控、双 marker、E→F 变两页、D→E 三页稀疏）→ 一次有界视觉纠偏已执行（无边框双栏表恢复拓扑、逐段显式格式控制、确认型 marker 转换、E→F 回到一页、D→E 回到 C1 页数、exact 声明逐条输出验证、preview/空白页入硬门禁、分页显式分类），**待 owner 复审**；随后按 owner 工单执行**渲染几何实测与有界拟合 pass**（E→F 40/40 点级几何全部通过、2 次拟合收敛、hard gate 全真；typography 拆分 authored/rendered 两种结果，替换字体诚实判 adjusted；D→E 1 个剩余 delta 诚实记录、E→D 保持 fail-closed gap-only），**仍待 owner 视觉复审**（见 §16.5/§16.6/§16.7 与 `C2_0B_REPORT.md`/`C2_0C_REPORT.md`） |
+> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑；C2-0b 经三轮纠偏后由 owner 终审裁决：**接受为实验性 PDF 架构里程碑；非生产批准，非视觉 parity 主张**（rule-geometry 门禁完整性已闭合，含 page/垂直区域关联）；**C2-0c 被 owner 视觉评审否决**（机械可编辑 ≠ 模板保真：双栏条目拓扑丢失、内建样式间距失控、双 marker、E→F 变两页、D→E 三页稀疏）→ 一次有界视觉纠偏已执行（无边框双栏表恢复拓扑、逐段显式格式控制、确认型 marker 转换、E→F 回到一页、D→E 回到 C1 页数、exact 声明逐条输出验证、preview/空白页入硬门禁、分页显式分类），**待 owner 复审**；随后按 owner 工单执行**渲染几何实测与有界拟合 pass**（E→F 40/40 点级几何全部通过、2 次拟合收敛、hard gate 全真；typography 拆分 authored/rendered 两种结果，替换字体诚实判 adjusted；D→E 1 个剩余 delta 诚实记录、E→D 保持 fail-closed gap-only），**仍待 owner 视觉复审**；C2-0cC 颜色能力已被 owner 接受为有界里程碑（整体 E→D 仍未接受）；随后按 owner 工单执行 **C2-0cM 复合章节映射检查点**：`EDUCATION & CERTIFICATIONS` 经确定性复合标题分解绑定为 `[education, certifications]`，候选人教育经历在目标章节呈现（紫标题/绿规则/实测内容起点）内渲染、certifications 子内容诚实留空，E→D 仍 fail-closed（SKILLS POOL 内部布局与行内颜色缺口已入诊断），**待 owner 复审**（见 §16.5/§16.6/§16.7/§16.9/§16.10 与 `C2_0B_REPORT.md`/`C2_0C_REPORT.md`） |
 > | Pipeline D | D0/D0-R/D1-0 已完成；暂停后续工作，等待 C2 结果（见 `D_PIPELINE_PROPOSAL.md`） |
 >
 > 日期:2026-09-08 初版;2026-09-09 §7–§8;2026-09-10 §9–§12;
@@ -1303,3 +1303,71 @@ content and accounting unchanged. **C2-0cC is NOT accepted pending owner
 visual review.** Node-level color fidelity and inline mixed-color fidelity
 are separate capabilities: the first is restored and verified; the second is
 proven as renderer capability with the binding policy explicitly unresolved.
+
+### 16.10 C2-0cM composite section mapping checkpoint (2026-09-15, owner work order)
+
+Owner verdict recorded first: **C2-0cC is ACCEPTED as a bounded
+color-capability milestone** (measured colors survive evidence → C2 state →
+render plan; DOCX and HTML render native colors; rendered PDF color measured
+and verified; name/headings/rules visibly restored; inline mixed-color proven
+only on an authorized synthetic fixture; no real fragment→inline-color
+binding proven; overall E→D still fail-closed and not a complete
+conversion). Next active checkpoint: composite section mapping.
+
+Owner finding: the immediate E→D problem is section/content binding, not
+color. The target's composite `EDUCATION & CERTIFICATIONS` heading stayed
+unresolved (the normalized label matches both `education` and
+`certifications` keywords → the existing ambiguity rule fails closed), so
+candidate education was appended as a candidate-only `Education` section
+with the WRONG destination presentation identity, and the target composite
+section's purple heading + green rule were never used for it.
+
+Implemented (no LLM/embedding/fuzzy model, no pair-specific condition, no
+new schema family/dependency/renderer stack, no production changes):
+
+1. **Deterministic composite-heading decomposition** (`bind_composite`):
+   split ONLY on explicit measured separator evidence (`&`, `/`, standalone
+   `and`, case-insensitive); each component resolves through the EXISTING
+   `bind_source` role vocabulary; every component unique + resolved, else
+   the heading stays unresolved with a recorded reason. Binding-layer only —
+   the heading node keeps its verbatim label, casing, style, rule, geometry.
+2. **Explicit composite binding/content**: `SectionBinding(composite=true,
+   sources=[education, certifications], map)` + `SectionContent(composite)`
+   with ordered sub-contents following the SAME single-source rules
+   (unsupported sub → fail-closed). Cardinality: a composite claims ALL
+   component sources or none. `run_flow_probe` routes through the matching
+   sub-content, keeping the C2-0a probe honest.
+3. **Honest partial-population rendering**: the plan compiler materializes
+   each ordered sub-content under the ONE measured target heading/rule
+   (existing `_entry_plan` / `items_for` paths; leaves owned exactly once);
+   a sub-content with no candidate content renders nothing with an explicit
+   note; a fully empty composite is dropped by the existing empty rule.
+   HTML and DOCX renderers reuse the existing entries/items emission paths
+   via a `composite` branch — no new plan schema.
+4. **Fitter integrity fix (general)**: `measure_target_geometry` now
+   requires a measured right-aligned CLUSTER (≥2 region lines sharing the
+   max x1 within 2.0pt) before reporting `entry_right_edge_pt`; a single
+   longest line is a content extent, never a column edge. The first
+   C2-0cM compile exposed the old basis driving a −316.7pt
+   `entry_right_edge_pt` correction that collapsed the meta column.
+5. **SKILLS POOL diagnosis (bounded, recorded)**: target D's skills body is
+   a wrapped category flow (ragged wrap-x 22.4/44.5/49.0) with MID-LINE
+   color switches (black→red #B50013; red→black→blue #1F1D8E). Remaining
+   sub-gaps: (a) no deterministic fragment→inline-color binding (C2-0cC
+   gap), (b) `item_list` expresses a skill group as one item line with no
+   measured per-category sub-structure, (c) therefore section-level but not
+   line-level fidelity. A future checkpoint needs per-category measured
+   sub-structure (derivable from existing color/style groups, no LLM) plus
+   an explicit binding policy. Nothing invented here.
+
+Canonical runs (same frozen inputs; no live calls): E→D
+`c2_0cM_E_to_D_20260915T181530Z` — composite binding resolved, candidate
+education renders inside the target section presentation (purple heading
+#8D1E8C, green rule #0A7903, measured content-start x), certifications sub
+honest-empty, accounting exact (40 leaves), geometry 57 pass / 0 fail / 40
+honest unmeasurable, color gate TRUE, 1/1/1 pages, STILL fail-closed
+(unsupported_features_confirmed false). E→F `c2_0cM_E_to_F_20260915T182200Z`
+— all hard gates true, 98/98 geometry, corrections identical to the C2-0cR
+baseline. D→E `c2_0cM_D_to_E_20260915T182215Z` — the single documented
+borderline sparse-page fail remains. **C2-0cM is NOT accepted pending owner
+visual review; C2 remains an active experiment, not production work.**
