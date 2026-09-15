@@ -711,32 +711,71 @@ def _body_style_token(
     )
 
 
-def _heading_rule(index: int, heading: Any) -> RuleDecoration | None:
-    if heading.rule_stroke_pt is None:
-        return None
-    return RuleDecoration(
+RULE_TOP_MATCH_TOLERANCE_PT = 2.0
+
+
+def _rule_evidence(
+    rule: dict[str, Any], page_height: float, page_width: float
+) -> dict[str, Any]:
+    """The matched rule's OWN measured geometry (never heading text bounds)."""
+    return {
+        "x0_pt": round(float(rule["bbox"]["x0"]) * page_width, 3),
+        "x1_pt": round(float(rule["bbox"]["x1"]) * page_width, 3),
+        "stroke_pt": float(rule["stroke_width_pt"]),
+        "color_hex": str(rule.get("color_hex") or "#000000"),
+        "top_pt": round(float(rule["bbox"]["top"]) * page_height, 3),
+        "page": int(rule.get("page_number") or 1),
+    }
+
+
+def _resolve_above_heading_rule(
+    index: int, heading: Any, summary: dict[str, Any], page_height: float, page_width: float
+) -> tuple[RuleDecoration | None, dict[str, Any] | None]:
+    """Resolve the heading's attached rule from ``summary["rules"]`` by its
+    measured page/y relationship and store the RULE's real bbox x0/x1.
+
+    ``heading.x0_pt/x1_pt`` are the heading TEXT bounds — copying them was the
+    evidence-boundary bug that rendered short rules. Placement is derived from
+    the measured rule/heading relationship, never assumed. Returns
+    (None, None) when the evidence cannot resolve the scaffold's rule (the
+    rule then stays a detached-rules capability gap — never invented).
+    """
+    if heading.rule_stroke_pt is None or heading.rule_top_pt is None:
+        return None, None
+    rule = next(
+        (
+            candidate
+            for candidate in summary.get("rules", [])
+            if int(candidate.get("page_number") or 1) == int(heading.page)
+            and abs(
+                float((candidate.get("bbox") or {}).get("top", 0)) * page_height
+                - float(heading.rule_top_pt)
+            )
+            <= RULE_TOP_MATCH_TOLERANCE_PT
+        ),
+        None,
+    )
+    if rule is None:
+        return None, None
+    evidence = _rule_evidence(rule, page_height, page_width)
+    placement = (
+        "above_heading"
+        if evidence["top_pt"] < float(heading.top_pt)
+        else "below_heading"
+    )
+    evidence["placement"] = placement
+    decoration = RuleDecoration(
         rule_id=f"rule.section.{index:02d}",
-        x0_pt=round(float(heading.x0_pt), 3),
-        x1_pt=round(float(heading.x1_pt), 3),
-        stroke_pt=float(heading.rule_stroke_pt),
+        x0_pt=evidence["x0_pt"],
+        x1_pt=evidence["x1_pt"],
+        stroke_pt=evidence["stroke_pt"],
         gap_above_pt=heading.rule_gap_above_pt,
         gap_below_pt=heading.rule_gap_below_pt,
-        color_hex=str(heading.rule_color_hex or "#000000"),
-        evidence_ids=list(heading.evidence_ids),
+        color_hex=evidence["color_hex"],
+        placement=placement,
+        evidence_ids=[*list(heading.evidence_ids), str(rule.get("element_id") or "rule")],
     )
-
-
-def _elements_in_top_range(
-    summary: dict[str, Any], page: int, top_start: float, top_end: float
-) -> list[dict[str, Any]]:
-    """Measured evidence elements strictly between two y positions."""
-    return [
-        element
-        for element in summary.get("elements", [])
-        if element.get("bbox_pt")
-        and int(element.get("page") or 1) == page
-        and top_start < float(element["bbox_pt"]["top"]) < top_end
-    ]
+    return decoration, evidence
 
 
 def _below_heading_rule(
@@ -745,7 +784,7 @@ def _below_heading_rule(
     summary: dict[str, Any],
     page_height: float,
     page_width: float,
-) -> RuleDecoration | None:
+) -> tuple[RuleDecoration | None, dict[str, Any] | None]:
     """Measured rule BETWEEN the heading text and the section content (F).
 
     Placement is derived, never assumed: the rule must sit below the heading
@@ -766,22 +805,38 @@ def _below_heading_rule(
         < content_top
     ]
     if not candidates:
-        return None
+        return None, None
     rule = max(
         candidates,
         key=lambda item: float((item.get("bbox") or {}).get("top", 0)) * page_height,
     )
-    return RuleDecoration(
+    evidence = _rule_evidence(rule, page_height, page_width)
+    evidence["placement"] = "below_heading"
+    decoration = RuleDecoration(
         rule_id=f"rule.section.{index:02d}",
-        x0_pt=round(float(rule["bbox"]["x0"]) * page_width, 3),
-        x1_pt=round(float(rule["bbox"]["x1"]) * page_width, 3),
-        stroke_pt=float(rule["stroke_width_pt"]),
+        x0_pt=evidence["x0_pt"],
+        x1_pt=evidence["x1_pt"],
+        stroke_pt=evidence["stroke_pt"],
         gap_above_pt=rule.get("gap_above_pt"),
         gap_below_pt=rule.get("gap_below_pt"),
-        color_hex=str(rule.get("color_hex") or "#000000"),
+        color_hex=evidence["color_hex"],
         placement="below_heading",
         evidence_ids=[str(rule.get("element_id") or f"rule.below.{index}")],
     )
+    return decoration, evidence
+
+
+def _elements_in_top_range(
+    summary: dict[str, Any], page: int, top_start: float, top_end: float
+) -> list[dict[str, Any]]:
+    """Measured evidence elements strictly between two y positions."""
+    return [
+        element
+        for element in summary.get("elements", [])
+        if element.get("bbox_pt")
+        and int(element.get("page") or 1) == page
+        and top_start < float(element["bbox_pt"]["top"]) < top_end
+    ]
 
 
 def _content_to_heading_gap(
@@ -1113,16 +1168,15 @@ def state_from_scaffolds(
             )
             heading_style_added = True
         section_id = f"section.{index:02d}"
-        rule = _heading_rule(index, heading)
-        if rule is not None:
-            rules.append(rule)
-        else:
-            below = _below_heading_rule(
+        rule, _rule_evidence = _resolve_above_heading_rule(
+            index, heading, summary, page_height, float(page["width_pt"])
+        )
+        if rule is None:
+            rule, _rule_evidence = _below_heading_rule(
                 index, heading, summary, page_height, float(page["width_pt"])
             )
-            if below is not None:
-                rules.append(below)
-                rule = below
+        if rule is not None:
+            rules.append(rule)
         source, reason = bind_source(heading.verbatim)
 
         # Binding-cardinality rule: a candidate source maps to at most one

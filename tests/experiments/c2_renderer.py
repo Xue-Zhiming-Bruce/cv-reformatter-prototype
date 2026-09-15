@@ -77,6 +77,8 @@ from tests.experiments.c2_pipeline import (
     StateModel,
     StyleToken,
     UnroutableContent,
+    _below_heading_rule,
+    _resolve_above_heading_rule,
     candidate_document_for_pair,
     compile_layout_state,
     own_leaf,
@@ -859,7 +861,16 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
             if rule
             else None
         )
-        content_class = _class_for(section_plan.content_style_id) or "c2-body-line"
+        # The section's content tier is measured state: its own measured
+        # content style when the evidence provides one, else the accepted
+        # measured style.body token. A non-measured fallback class is never
+        # invented (the bare c2-body-line only stands in when the state lacks
+        # even the body token, which the shape verification then reports).
+        content_class = (
+            _class_for(section_plan.content_style_id)
+            if section_plan.content_style_id
+            else (_class_for("style.body") or "c2-body-line")
+        )
         candidate_only_attr = (
             ' data-c2-candidate-only="true" data-overflow-policy="'
             + OVERFLOW_POLICY
@@ -1279,20 +1290,130 @@ def determinism_gate(
     }
 
 
+class _ElementTreeParser(HTMLParser):
+    """Collect rendered elements with their semantic node identity, class,
+    style, and ancestor chain.
+
+    Element-scoped consumption checks use these records: text inside
+    ``<style>`` is parsed as DATA, never as an element, so a class name that
+    only exists in a CSS rule can never count as renderer consumption.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.elements: list[dict[str, Any]] = []
+        self._stack: list[dict[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        element = {
+            "tag": tag,
+            "class": values.get("class") or "",
+            "style": values.get("style") or "",
+            "node_id": values.get("data-node-id") or "",
+            "ancestor_node_ids": [item["node_id"] for item in self._stack],
+            "ancestor_classes": [item["class"] for item in self._stack],
+        }
+        self.elements.append(element)
+        self._stack.append(
+            {"tag": tag, "class": element["class"], "node_id": element["node_id"]}
+        )
+
+    def handle_endtag(self, tag: str) -> None:
+        while self._stack and self._stack[-1]["tag"] != tag:
+            self._stack.pop()
+        if self._stack:
+            self._stack.pop()
+
+
+def _parse_elements(html: str) -> list[dict[str, Any]]:
+    parser = _ElementTreeParser()
+    parser.feed(html)
+    return parser.elements
+
+
+def _class_matches(element: dict[str, Any], expected: str | None) -> bool:
+    return bool(expected) and expected in (element["class"] or "").split()
+
+
+def _parse_declared_pt(style: str, property_name: str) -> float | None:
+    match = re.search(rf"{property_name}\s*:\s*(-?[\d.]+)pt", style or "")
+    return float(match.group(1)) if match else None
+
+
+# Rendered-output geometry tolerance (documented): Chrome vector output
+# quantizes hairline borders, so a rendered rule must match the measured bbox
+# x-extent within this tolerance to count as consuming it.
+RULE_GEOMETRY_TOLERANCE_PT = 1.0
+# Parsed style-declaration floats carry the renderer's 3-decimal rounding.
+CSS_EXTENT_TOLERANCE_PT = 0.05
+
+
+def _rendered_rule_extents(pdf: Path | None) -> list[tuple[float, float]]:
+    """x-extents of rendered horizontal vector objects (rules) in the PDF."""
+    if pdf is None:
+        return []
+    import pdfplumber
+
+    extents: list[tuple[float, float]] = []
+    with pdfplumber.open(pdf) as document:
+        for page in document.pages:
+            for obj in [*page.rects, *page.lines]:
+                height = float(obj["bottom"]) - float(obj["top"])
+                width = float(obj["x1"]) - float(obj["x0"])
+                if height <= 2.0 and width > 2.0:
+                    extents.append((float(obj["x0"]), float(obj["x1"])))
+    return extents
+
+
+def _entry_elements(
+    elements: list[dict[str, Any]], entry_node_id: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """One entry's rendered title/meta/bullet/body lines, element-scoped."""
+    inside = [
+        element
+        for element in elements
+        if entry_node_id in element["ancestor_node_ids"]
+    ]
+    main_lines = [
+        element for element in inside
+        if element["tag"] == "p" and "c2-entry-main" in element["ancestor_classes"]
+    ]
+    meta_lines = [
+        element for element in inside
+        if element["tag"] == "p" and "c2-entry-meta" in element["ancestor_classes"]
+    ]
+    bullet_lines = [element for element in inside if element["tag"] == "li"]
+    body_lines = [
+        element for element in inside
+        if element["tag"] == "p" and "c2-entry-body" in element["ancestor_classes"]
+    ]
+    return main_lines, meta_lines, bullet_lines, body_lines
+
+
 def content_shape_verification(
     state: C2LayoutState,
     plan: C2RenderPlan,
     body_scaffold: Any,
     bullet_tiers: dict[str, float],
     html: str,
+    summary: dict[str, Any],
+    pdf: Path | None = None,
 ) -> dict[str, Any]:
     """Per-section, per-declared-shape truth check.
 
     Content kinds are hypotheses: each section's declared shape is checked
     against the measured target evidence AND against what the renderer
-    actually consumes. A property the renderer does not consume is reported
-    as a capability gap and keeps this hard gate FALSE — a declared shape is
-    never claimed faithful merely because some geometry exists somewhere.
+    actually consumes. Consumption checks are ELEMENT-SCOPED: a class name
+    found only inside ``<style>`` is not renderer consumption — the class
+    must sit on the correct semantic node (title/detail lines inside the
+    entry main column, the meta row in the entry meta column, the content
+    class on body-tier lines, the measured border geometry on the heading).
+    Rendered rule geometry is compared against the exported PDF within the
+    documented ``RULE_GEOMETRY_TOLERANCE_PT`` (1.0pt; Chrome vector
+    quantization). A property the renderer does not consume is reported as a
+    capability gap and keeps this hard gate FALSE — a declared shape is never
+    claimed faithful merely because some geometry exists somewhere.
     """
     _GAP_REASONS = {
         "rule": "measured rule decoration not rendered in the measured placement/style",
@@ -1308,16 +1429,32 @@ def content_shape_verification(
     entry_node_of = {
         node.node_id: node for node in state.nodes if node.kind == "entry_row"
     }
+    heading_child_of = {
+        node.node_id: node for node in state.nodes if node.kind == "heading"
+    }
+    rules_by_id = {rule.rule_id: rule for rule in state.rules}
+    page = state.page
+    page_width = float(page.width_pt)
+    page_height = float(page.height_pt)
+    elements = _parse_elements(html)
+    rendered_extents = _rendered_rule_extents(pdf)
+    scaffold_headings = sorted(body_scaffold.headings, key=lambda item: (item.page, item.top_pt))
     rows: list[dict[str, Any]] = []
+    section_position = 0
     for node in state.nodes:
-        if node.kind != "section" or node.content is None:
+        if node.kind != "section":
+            continue
+        section_position += 1
+        if node.content is None:
             continue
         content = node.content
         plan_section = plan_sections.get(node.node_id)
         entry_node = entry_node_of.get(node.entry_ref) if node.entry_ref else None
-        rule_node = next(
-            (rule for rule in state.rules if rule.rule_id == node.rule_id), None
-        ) if node.rule_id else None
+        scaffold_heading = (
+            scaffold_headings[section_position - 1]
+            if section_position <= len(scaffold_headings)
+            else None
+        )
 
         properties: list[dict[str, Any]] = []
 
@@ -1357,10 +1494,11 @@ def content_shape_verification(
             )
 
         plan_section_exists = plan_section is not None
+        renders_entries = bool(plan_section and plan_section.entries)
         if content.content_kind == "entries":
             check(
                 "entry_geometry",
-                True,
+                renders_entries,
                 body_scaffold.entry is not None,
                 bool(plan_section_exists and plan_section.base_x0_pt is not None),
             )
@@ -1369,39 +1507,85 @@ def content_shape_verification(
                 "detail": bool(entry_node and entry_node.detail_style_id),
                 "meta": bool(entry_node and entry_node.meta_style_id),
             }
-            consumed_title = bool(
-                plan_section
-                and plan_section.title_style_id
-                and _class_for(plan_section.title_style_id) in html
+            # Element-scoped consumption: the title class sits on each entry's
+            # first main-column line, the detail class on following main lines,
+            # and the meta class on the title row of the meta column.
+            title_class = (
+                _class_for(plan_section.title_style_id)
+                if plan_section and plan_section.title_style_id else None
             )
-            # A tier the evidence does not measure cannot be claimed; the
-            # renderer's title-tier fallback for unmeasured detail lines is a
-            # recorded note, never a fidelity claim.
-            consumed_detail = (
-                not measured_tiers["detail"]
-                or bool(
-                    plan_section
-                    and plan_section.detail_style_id
-                    and _class_for(plan_section.detail_style_id) in html
-                )
+            detail_class = (
+                _class_for(plan_section.detail_style_id)
+                if plan_section and plan_section.detail_style_id
+                else None
+            )
+            meta_class = (
+                _class_for(plan_section.meta_style_id)
+                if plan_section and plan_section.meta_style_id
+                else None
+            )
+            title_ok = True
+            detail_ok = True  # vacuous until a detail line is rendered
+            meta_ok = True  # vacuous until a meta line is rendered
+            if renders_entries:
+                for entry in plan_section.entries:
+                    main_lines, meta_lines, _bullet_lines, _body_lines = _entry_elements(
+                        elements, entry.node_id
+                    )
+                    for index, element in enumerate(main_lines):
+                        expected = title_class if index == 0 else (detail_class or title_class)
+                        if not _class_matches(element, expected):
+                            if index == 0:
+                                title_ok = False
+                            else:
+                                detail_ok = False
+                    if measured_tiers["meta"]:
+                        for index, element in enumerate(meta_lines):
+                            expected = (
+                                meta_class if index == 0 else (detail_class or meta_class)
+                            )
+                            if not _class_matches(element, expected):
+                                meta_ok = False
+            consumed_typography = (
+                bool(title_class)
+                and title_ok
+                and detail_ok
+                and meta_ok
             )
             check(
                 "entry_typography",
-                True,
+                renders_entries,
                 measured_tiers,
-                consumed_title and consumed_detail,
+                consumed_typography,
             )
-            # Inter-entry rhythm is required exactly when the plan renders two
-            # or more entries (a single entry has no rhythm to reproduce).
+            # Inter-entry rhythm: the measured gap must sit as margin-top on
+            # every rendered entry after the first (element-scoped).
             needs_rhythm = bool(plan_section and len(plan_section.entries) >= 2)
             measured_rhythm = bool(
                 entry_node and entry_node.inter_entry_gap_above_pt is not None
             )
-            consumed_rhythm = bool(
-                plan_section
-                and plan_section.inter_entry_gap_above_pt is not None
-                and f"margin-top: {_pt(plan_section.inter_entry_gap_above_pt)}" in html
-            )
+            consumed_rhythm = True  # vacuous until an entry after the first
+            if needs_rhythm:
+                for entry in plan_section.entries[1:]:
+                    article = next(
+                        (
+                            element for element in elements
+                            if element["node_id"] == entry.node_id
+                        ),
+                        None,
+                    )
+                    value = (
+                        _parse_declared_pt(article["style"], "margin-top")
+                        if article
+                        else None
+                    )
+                    expected = plan_section.inter_entry_gap_above_pt
+                    if (
+                        value is None
+                        or expected is None
+                        or abs(value - expected) > CSS_EXTENT_TOLERANCE_PT
+                    ):
+                        consumed_rhythm = False
             check("inter_entry_rhythm", needs_rhythm, measured_rhythm, consumed_rhythm)
         renders_bullets = bool(
             plan_section
@@ -1411,25 +1595,62 @@ def content_shape_verification(
             )
         )
         if renders_bullets:
+            content_class = (
+                _class_for(plan_section.content_style_id)
+                if plan_section and plan_section.content_style_id
+                else None
+            ) or _class_for("style.body")
+            list_node_ids = {f"{node.node_id}.list"}
+            bullet_lis = [
+                element
+                for element in elements
+                if element["tag"] == "li"
+                and any(nid in list_node_ids for nid in element["ancestor_node_ids"])
+            ]
+            bullet_consumed = bool(bullet_lis) and all(
+                _class_matches(li, content_class)
+                and any(
+                    "c2-bullet-dot" in element["class"].split()
+                    and li["node_id"] in element["ancestor_node_ids"]
+                    for element in elements
+                )
+                for li in bullet_lis
+            )
             check(
                 "bullet_design",
                 True,
                 "bullet_dot" in bullet_tiers and "bullet_text" in bullet_tiers,
-                bool(
-                    plan_section
-                    and plan_section.bullet_dot_x0_pt is not None
-                    and plan_section.bullet_text_x0_pt is not None
-                    and "c2-bullet-dot" in html
-                ),
+                bullet_consumed,
             )
         else:
             record_unrequired("bullet_design", "bullet_dot" in bullet_tiers)
-        # Measured section content typography: the section renders from a
-        # measured token (its own content style when measured, else the
-        # accepted style.body rule) and the HTML must consume that class.
+        # Measured section content typography: the section renders body-tier
+        # lines from a measured token (its own content style when measured,
+        # else the accepted style.body rule) and every rendered body-tier line
+        # must carry that class (element-scoped, never a <style>-only hit).
         content_token = (plan_section.content_style_id if plan_section else None) or (
             "style.body" if any(style.style_id == "style.body" for style in state.styles) else None
         )
+        content_class = _class_for(content_token)
+        body_lines = [
+            element
+            for element in elements
+            if element["tag"] in {"p", "li"}
+            and (
+                (
+                    "c2-entry-body" in element["ancestor_classes"]
+                    and element["node_id"].startswith(f"{node.node_id}.content.")
+                )
+                or (
+                    "c2-entry-body" not in element["ancestor_classes"]
+                    and "c2-entry" not in element["ancestor_classes"]
+                    and (
+                        element["node_id"].startswith(f"{node.node_id}.content.")
+                        or element["node_id"].startswith(f"{node.node_id}.item.")
+                    )
+                )
+            )
+        ]
         check(
             "content_typography",
             bool(
@@ -1437,20 +1658,111 @@ def content_shape_verification(
                 and (plan_section.paragraph_lines or plan_section.items or plan_section.entries)
             ),
             bool(content_token),
-            bool(content_token and _class_for(content_token) in html),
+            (not body_lines) or all(
+                _class_matches(element, content_class) for element in body_lines
+            ),
         )
-        if node.rule_id:
-            consumed_rule = bool(
-                plan_section
-                and plan_section.rule_id == node.rule_id
-                and plan_section.rule_placement == rule_node.placement
+        # Rule verification resolves the SECTION'S HEADING CHILD: the rule
+        # reference lives on the heading node, not on the section node. A
+        # section that renders nothing claims no rule fidelity.
+        heading_child = heading_child_of.get(f"{node.node_id}.heading")
+        rule_reference = heading_child.rule_id if heading_child else None
+        rule_renders = bool(
+            rule_reference and plan_section is not None and not plan_section.empty
+        )
+        if rule_renders:
+            state_rule = rules_by_id.get(rule_reference)
+            evidence_rule = None
+            if scaffold_heading is not None:
+                _, evidence_rule = _resolve_above_heading_rule(
+                    section_position, scaffold_heading, summary, page_height, page_width
+                )
+                if evidence_rule is None:
+                    _, evidence_rule = _below_heading_rule(
+                        section_position, scaffold_heading, summary, page_height, page_width
+                    )
+            extent_left = (
+                _parse_declared_pt(heading_element["style"], "margin-left")
+                if (heading_element := next(
+                    (element for element in elements if element["node_id"] == f"{node.node_id}.heading"),
+                    None,
+                )) else None
+            )
+            extent_right = (
+                _parse_declared_pt(heading_element["style"], "margin-right")
+                if heading_element
+                else None
+            )
+            expected_left = (
+                state_rule.x0_pt - page.margin_left_pt if state_rule else None
+            )
+            expected_right = (
+                page.width_pt - page.margin_right_pt - state_rule.x1_pt
+                if state_rule
+                else None
+            )
+            border_present = bool(
+                state_rule
+                and heading_element
                 and (
-                    f"border-top: {_pt(rule_node.stroke_pt)} solid {rule_node.color_hex}" in html
-                    if rule_node.placement == "above_heading"
-                    else f"border-bottom: {_pt(rule_node.stroke_pt)} solid {rule_node.color_hex}" in html
+                    f"border-top: {_pt(state_rule.stroke_pt)} solid {state_rule.color_hex}"
+                    if state_rule.placement == "above_heading"
+                    else f"border-bottom: {_pt(state_rule.stroke_pt)} solid {state_rule.color_hex}"
+                ) in heading_element["style"]
+            )
+            extent_consumed = bool(
+                state_rule
+                and evidence_rule
+                and expected_left is not None
+                and expected_right is not None
+                and (
+                    (extent_left is None and abs(expected_left) <= CSS_EXTENT_TOLERANCE_PT)
+                    or (
+                        extent_left is not None
+                        and abs(extent_left - expected_left) <= CSS_EXTENT_TOLERANCE_PT
+                    )
+                )
+                and (
+                    extent_right is None and abs(expected_right) <= CSS_EXTENT_TOLERANCE_PT
+                    or (
+                        extent_right is not None
+                        and abs(extent_right - expected_right) <= CSS_EXTENT_TOLERANCE_PT
+                    )
                 )
             )
-            check("rule", True, rule_node is not None, consumed_rule)
+            geometry_consumed = (
+                not rendered_extents
+                or any(
+                    abs(extent[0] - evidence_rule["x0_pt"]) <= RULE_GEOMETRY_TOLERANCE_PT
+                    and abs(extent[1] - evidence_rule["x1_pt"]) <= RULE_GEOMETRY_TOLERANCE_PT
+                    for extent in rendered_extents
+                )
+                if evidence_rule
+                else False
+            )
+            consumed_rule = bool(
+                state_rule
+                and evidence_rule
+                and state_rule.placement == evidence_rule["placement"]
+                and abs(state_rule.stroke_pt - evidence_rule["stroke_pt"]) <= CSS_EXTENT_TOLERANCE_PT
+                and state_rule.color_hex == evidence_rule["color_hex"]
+                and border_present
+                and extent_consumed
+                and geometry_consumed
+            )
+            check(
+                "rule",
+                True,
+                {
+                    "placement": evidence_rule["placement"] if evidence_rule else None,
+                    "stroke_pt": evidence_rule["stroke_pt"] if evidence_rule else None,
+                    "color_hex": evidence_rule["color_hex"] if evidence_rule else None,
+                    "x0_pt": evidence_rule["x0_pt"] if evidence_rule else None,
+                    "x1_pt": evidence_rule["x1_pt"] if evidence_rule else None,
+                    "rendered_rule_extents": rendered_extents,
+                },
+                bool(state_rule and border_present and extent_consumed and geometry_consumed),
+            )
         else:
             record_unrequired("rule", None)
         consistent = all(row["capability_gap"] is None for row in properties)
@@ -1602,7 +1914,9 @@ def run_pair(pair: str, out: Path | None = None, c1_runs_root: Path | None = Non
         float(body_scaffold.entry.left_x0_pt) if body_scaffold.entry else state.page.margin_left_pt
     )
     bullet_tiers = derive_body_tier_targets(target, tier_base)
-    shape_verification = content_shape_verification(state, plan, body_scaffold, bullet_tiers, html)
+    shape_verification = content_shape_verification(
+        state, plan, body_scaffold, bullet_tiers, html, summary, pdf
+    )
     (run_dir / "content_shape_verification.json").write_text(
         json.dumps(shape_verification, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

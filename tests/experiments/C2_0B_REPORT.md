@@ -1,6 +1,6 @@
 # Pipeline C2-0b Report: Deterministic HTML RenderPlan Renderer And Chrome PDF
 
-Status: `Corrective pass complete per owner verdict 2026-09-15; NOT accepted; awaiting second owner visual review`
+Status: `Second corrective pass complete; NOT accepted; awaiting final owner visual review`
 
 Date: 2026-09-15
 Branch: `experiment/pipeline-c2` (worktree base `db8c171`; Pipeline D worktree
@@ -50,6 +50,74 @@ inter-entry rhythm consumed from the state, F 10pt-vs-9pt body tier resolved
 from evidence/state). D→E and E→F pass every hard gate truthfully; E→D
 remains gap-only with the shape gate honestly FALSE. No parity/winner
 conclusion is drawn; Resume D pairs are excluded from parity conclusions.**
+
+## 1a. Second Corrective Pass (owner review 2, 2026-09-15)
+
+The second owner review found ONE visible blocker and TWO gate-integrity bugs.
+This pass fixes exactly those; nothing else changed; C2-0c (DOCX), Pipeline D,
+production integration, frontend work, and live calls remain untouched.
+
+### 1a.1 Above-heading rule geometry at the evidence boundary
+
+- `_heading_rule()` copied `heading.x0_pt/x1_pt`, which are the heading TEXT
+  bounds — so Resume E's rules rendered short (36→106.5pt instead of the
+  measured full-column 36→576pt). Fixed: `_resolve_above_heading_rule()` now
+  resolves the ACTUAL matched rule from `summary["rules"]` by its measured
+  page/y relationship and stores the rule's OWN measured bbox x0/x1 in the
+  state (`RuleDecoration.x0_pt/x1_pt`). Placement is derived from the measured
+  rule/heading y relationship (never assumed); the below-heading scan (F) is
+  unchanged and still uses the rule's own bbox.
+- No previous accidental full-width CSS behavior was restored and no
+  pair-specific constant was added: the renderer consumes the measured bbox
+  (`_rule_extent_css`), which for Resume E IS the measured full-column extent
+  (margin-left/right ≈ 0) and for D/E text-bound rules would shrink honestly.
+- Verified in the exported PDF: Resume E's C2 rules now span 36.0→576.0,
+  identical to the target's measured extents (within the 1.0pt tolerance).
+
+### 1a.2 Rule verification fixed (was silently unrequired)
+
+- `content_shape_verification()` read `node.rule_id` from the SECTION node,
+  while the rule reference lives on the section's HEADING child — so every
+  rule check recorded "not required" and the gate never verified rules.
+  Fixed: the heading child is resolved per section and its referenced rule is
+  verified. Requiredness follows what the section actually renders (a section
+  that renders nothing claims no rule fidelity).
+- The rule check now verifies: placement (measured, derived from the rule/
+  heading y relationship), stroke and color (state == evidence), the measured
+  x0/x1 EXTENT consumption (the heading's margin-left/margin-right must
+  reproduce the measured bbox, parsed from the rendered elements), and the
+  RENDERED OUTPUT GEOMETRY: horizontal vector objects in the exported PDF
+  must span the measured x-extent within the documented
+  `RULE_GEOMETRY_TOLERANCE_PT` (1.0pt; Chrome vector quantization). All are
+  recorded per section in `content_shape_verification.json`.
+- Regressions: the resolver unit test (the state rule must carry the rule's
+  real bbox, not the heading text bounds) and the rendered-geometry test
+  (a rendered short rule FAILS the gate — the exact pre-fix D→E behavior).
+
+### 1a.3 Typography-consumption checks are element-scoped
+
+- The previous checks treated a class name found ANYWHERE in the HTML
+  (including inside `<style>`) as consumption. Fixed: an element-tree parser
+  collects rendered elements with their semantic node identity, class, style,
+  and ancestor chain; text inside `<style>` is DATA and can never count as
+  consumption.
+- The checks now require, per entry: the title class on the first main-column
+  line, the detail class on subsequent title lines, the META class on the
+  meta column's title row (the meta tier is now part of the consumed result),
+  and the content class on every rendered body-tier line; rhythm is checked
+  as the measured margin-top on every rendered entry after the first.
+- Regression: stripping the classes from the rendered ELEMENTS (the `<style>`
+  definitions remain) must FAIL the gate.
+
+### 1a.4 Canonical runs regenerated (same frozen baselines)
+
+Same three canonical pairs, same frozen C1 runs, same cached evidence:
+
+- D→E (primary): `c2_0b_D_to_E_20260915T081304Z` — all hard gates true.
+- E→F (generalization): `c2_0b_E_to_F_20260915T081311Z` — all hard gates true.
+- E→D (gap-only): `c2_0b_E_to_D_20260915T081318Z` — shape gate honestly FALSE
+  with the same named capability gaps (D evidence carries no measured entry
+  typography tiers); every other gate true.
 
 ## 2. Corrective Changes Per Owner Requirement
 
@@ -256,9 +324,9 @@ are always explicit hard failures.
 
 | Pair | Canonical run directory |
 |---|---|
-| D→E | `tests/experiments/runs/c2_0b_D_to_E_20260915T074140Z/` |
-| E→F | `tests/experiments/runs/c2_0b_E_to_F_20260915T074148Z/` |
-| E→D | `tests/experiments/runs/c2_0b_E_to_D_20260915T074156Z/` |
+| D→E | `tests/experiments/runs/c2_0b_D_to_E_20260915T081304Z/` |
+| E→F | `tests/experiments/runs/c2_0b_E_to_F_20260915T081311Z/` |
+| E→D | `tests/experiments/runs/c2_0b_E_to_D_20260915T081318Z/` |
 
 Each run contains (at least): `c2_layout_state.json`,
 `candidate_render_context.json`, `c2_render_plan.json`, `c2_output.html`,
@@ -273,9 +341,9 @@ plus `target_page_1.png`, `c1_page_1.png`, `c2_page_N.png`,
 
 Direct review entry points (owner):
 
-- `c2_0b_D_to_E_20260915T074140Z/review.html` → `c2_output.pdf`
-- `c2_0b_E_to_F_20260915T074148Z/review.html` → `c2_output.pdf`
-- `c2_0b_E_to_D_20260915T074156Z/review.html` → `c2_output.pdf`
+- `c2_0b_D_to_E_20260915T081304Z/review.html` → `c2_output.pdf`
+- `c2_0b_E_to_F_20260915T081311Z/review.html` → `c2_output.pdf`
+- `c2_0b_E_to_D_20260915T081318Z/review.html` → `c2_output.pdf`
 
 ## 8. Commands Run
 
@@ -286,9 +354,9 @@ Direct review entry points (owner):
 .venv/bin/python -m tests.experiments.c2_renderer --pair E_D
 
 # Focused offline tests
-pytest tests/experiments/test_c2_renderer.py -m "not local_dataset"   # 20 passed
+pytest tests/experiments/test_c2_renderer.py -m "not local_dataset"   # 23 passed
 pytest tests/experiments/test_c2_pipeline.py -m "not local_dataset"   # 29 passed
-pytest tests/experiments/ -m "not local_dataset and not live_provider"  # 205 passed
+pytest tests/experiments/ -m "not local_dataset and not live_provider"  # 208 passed
 
 # Local-corpus lane (real Chrome export through the frozen pairs)
 pytest tests/experiments/test_c2_pipeline.py tests/experiments/test_c2_renderer.py \
@@ -296,7 +364,7 @@ pytest tests/experiments/test_c2_pipeline.py tests/experiments/test_c2_renderer.
 
 # Broader offline suite (experiments + unit + integration)
 pytest tests/experiments/ tests/unit tests/integration -m "not live_provider"
-# 588 passed / 5 failed — the 5 are the PRE-EXISTING tests/unit/test_mock_api.py
+# 591 passed / 5 failed — the 5 are the PRE-EXISTING tests/unit/test_mock_api.py
 # failures already documented in C2_0A_REPORT.md §7 (test_mock_api.py is
 # byte-identical at pristine db8c171 and unrelated to C2 work).
 ```
@@ -307,6 +375,10 @@ Pytest logs (canonical ignored directory):
 - `tests/test_results/pytest/pytest_*_c2_0b_corrective_local_dataset.txt` (6 passed)
 - `tests/test_results/pytest/pytest_*_c2_0b_corrective_full_offline.txt`
   (588 passed / 5 pre-existing failures)
+- `tests/test_results/pytest/pytest_*_c2_0b_final_offline.txt` (208 passed)
+- `tests/test_results/pytest/pytest_*_c2_0b_final_local_dataset.txt` (6 passed)
+- `tests/test_results/pytest/pytest_*_c2_0b_final_full_offline.txt`
+  (591 passed / 5 pre-existing failures)
 
 ## 9. Hard-Gate Results (honest)
 
@@ -416,7 +488,7 @@ section order). Headlines:
   (validator); a routed overflow field that is missing from HTML/PDF fails
   the content and accounting gates.
 
-## 13. Files Changed (corrective pass; authorized list)
+## 13. Files Changed (corrective passes; authorized list)
 
 - `tests/experiments/c2_pipeline.py` — explicit unroutable dispositions
   (`render`/`omit` + overflow slot); measured below-heading rule detection and
@@ -432,8 +504,9 @@ section order). Headlines:
   `content_accounting.json`; updated review index.
 - `tests/experiments/test_c2_renderer.py` — overflow routing, omission
   disposition, unresolved-unroutable failure, render-without-slot authoring
-  failure, blank-page gate pass/fail/visual-object regressions, updated
-  shape-verification test, updated end-to-end gate assertions.
+  failure, blank-page gate pass/fail/visual-object regressions, rule-resolver
+  and rendered-rule-geometry regressions, element-scoped typography-consumption
+  test, updated end-to-end gate assertions.
 - `tests/experiments/PIPELINE_EVOLUTION_PROPOSAL.md` — banner + §16.5
   corrective-pass record.
 - `docs/testing/TEST_STRUCTURE.md` — C2-0b artifact list extended.
@@ -442,25 +515,30 @@ section order). Headlines:
 No other files changed; `app/`, `frontend/`, product/API contracts, and ADRs
 untouched. Worktree-local (ignored) symlinks were used so the cached evidence
 and frozen C1 artifact directories resolve: `runs/target_cache`,
-`tests/local_datasets/resume_matrix`, `.venv`, and the three frozen C1 run
-directories plus `c1_matrix_FE2_20260910T200958Z` (needed by a pre-existing C1
-regression test).
+`tests/local_datasets/resume_matrix`, and the three frozen C1 run directories
+plus `c1_matrix_FE2_20260910T200958Z` (needed by a pre-existing C1 regression
+test). The worktree-local `.venv` symlink (test interpreter) was removed after
+testing so `git status --short` is genuinely empty.
 
-## 14. Owner-Review Checklist (second review)
+## 14. Owner-Review Checklist (final review)
 
 1. Open each run's `review.html`; then the PDFs: C2 `c2_output.pdf` against
    the target PDF and the frozen C1 `generated.pdf` for the same pair.
 2. Inspect `diff_target_vs_c2_page_1.png` and `diff_c1_vs_c2_page_1.png` for
    unexplained difference clusters.
-3. Judge the corrective blockers: F's below-heading section rules, the entry
-   title/meta/detail tiers and inter-entry rhythm on D→E/E→F, the F 10.0pt
-   tier resolution, and the candidate-only header-overflow row (D title/
-   tagline, E location).
+3. Judge the first corrective pass's blockers: F's below-heading section
+   rules, the entry title/meta/detail tiers and inter-entry rhythm on
+   D→E/E→F, the F 10.0pt tier resolution, and the candidate-only
+   header-overflow row (D title/tagline, E location).
+4. Judge the second corrective pass's fixes: Resume E's rules spanning the
+   measured full-column width (36→576pt, visually confirmed), the rule
+   geometry verification in the rendered output, and the element-scoped
+   typography consumption (including the meta tier).
 4. Confirm the omission record (redacted web-copy contact line) is acceptable
    as an explicit reviewed omission.
-5. Judge §11's remaining visual gaps (E→D shape gate honestly false; E→D
+6. Judge §11's remaining visual gaps (E→D shape gate honestly false; E→D
    unresolved bindings; contact icons; header field geometry; label policy).
-6. Record the verdict. Per the work order: agents do not mark C2-0b accepted;
+7. Record the verdict. Per the work order: agents do not mark C2-0b accepted;
    C2-0c (DOCX) and Pipeline D remain stopped.
 
 ## 15. Explicit Non-Claims
@@ -474,5 +552,5 @@ regression test).
   frozen source inventory), not an extraction-capability claim.
 - E→D is gap-only evidence; Resume D participates in no parity conclusion,
   and its shape gate is honestly false rather than placeholder-true.
-- C2-0b is NOT accepted by this report; the work stops here for the second
+- C2-0b is NOT accepted by this report; the work stops here for the FINAL
   owner visual review.

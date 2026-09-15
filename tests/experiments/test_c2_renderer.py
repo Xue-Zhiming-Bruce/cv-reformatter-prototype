@@ -43,7 +43,7 @@ from tests.experiments.c2_renderer import (
     render_html,
     structure_gate,
 )
-from tests.experiments.test_c2_pipeline import BODY, BULLET_TIERS, compile_synthetic
+from tests.experiments.test_c2_pipeline import BODY, BULLET_TIERS, SUMMARY, compile_synthetic
 
 
 @pytest.fixture()
@@ -389,7 +389,73 @@ def test_empty_target_sections_render_nothing_but_are_recorded() -> None:
     assert any("no candidate content" in note for note in plan.notes)
 
 
-def test_content_shapes_are_verified_against_measured_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+def _shape_scaffold(labels: list[str] | None = None) -> Any:
+    from tests.experiments.c_pipeline import BodyEntryScaffold, BodyScaffold
+    from tests.experiments.test_c2_pipeline import _heading
+
+    return BodyScaffold(
+        headings=[
+            _heading(label, 140.0 + 120.0 * index, f"e.heading.{index + 1}")
+            for index, label in enumerate(labels or ["WORK EXPERIENCE"])
+        ],
+        entry=BodyEntryScaffold(
+            left_x0_pt=46.9, right_x1_pt=576.0, right_row_top_delta_pt=0.0,
+            evidence_ids=["e.entry"],
+        ),
+        contact_icons_present=False, contact_separator="|",
+    )
+
+
+def _shape_summary() -> dict:
+    """Synthetic summary carrying an above-heading rule (whose measured bbox
+    differs from the heading text bounds) and measured entry-block elements."""
+    summary = json.loads(json.dumps(SUMMARY))
+    summary["rules"] = [
+        {
+            "page_number": 1,
+            "bbox": {"x0": 72.0 / 612.0, "top": 133.0 / 792.0, "x1": 400.0 / 612.0},
+            "stroke_width_pt": 0.75,
+            "color_hex": "#111827",
+            "gap_above_pt": 6.0,
+            "gap_below_pt": 4.0,
+            "element_id": "syn.rule.1",
+        }
+    ]
+    summary["elements"] = [
+        *summary["elements"],
+        # Measured entry block one: title (bold tier), meta row, detail, bullet.
+        {"page": 1, "entry_path": "work/e1", "style_id": "style_1", "bbox_pt": {"x0": 46.9, "top": 200.0, "bottom": 215.2}, "text_sample": "CANDCORP One"},
+        {"page": 1, "entry_path": "work/e1", "style_id": "style_2", "bbox_pt": {"x0": 500.0, "top": 200.0, "bottom": 215.0}, "text_sample": "Candtown, CA"},
+        {"page": 1, "entry_path": "work/e1", "style_id": "style_2", "bbox_pt": {"x0": 46.9, "top": 217.2, "bottom": 232.2}, "text_sample": "CANDROLE Engineer"},
+        {"page": 1, "entry_path": "work/e1", "style_id": "style_2", "bbox_pt": {"x0": 70.0, "top": 240.0, "bottom": 255.0}, "text_sample": "• Did candidate work indeed"},
+        # Measured entry block two: the rhythm gap is measured between blocks.
+        {"page": 1, "entry_path": "work/e2", "style_id": "style_1", "bbox_pt": {"x0": 46.9, "top": 260.0, "bottom": 275.2}, "text_sample": "CANDCORP Two"},
+        {"page": 1, "entry_path": "work/e2", "style_id": "style_2", "bbox_pt": {"x0": 500.0, "top": 260.0, "bottom": 275.0}, "text_sample": "2015 – 2020"},
+    ]
+    return summary
+
+
+def _shape_pair() -> tuple[C2LayoutState, C2RenderPlan, str, dict, Any]:
+    state = compile_synthetic(rules=_shape_summary()["rules"], elements=_shape_summary()["elements"])
+    candidate = rich_candidate(include_unmatched=False)
+    plan = compile_render_plan(state, candidate)
+    html = render_html(state, plan)
+    return state, plan, html, _shape_summary(), _shape_scaffold()
+
+
+def _rule_line_pdf(path: Path, x0: float, x1: float) -> Path:
+    """A real one-page PDF with one horizontal rule at the given x-extent."""
+    from reportlab.pdfgen import canvas
+
+    document = canvas.Canvas(str(path))
+    document.setLineWidth(0.4)
+    document.line(x0, 300, x1, 300)
+    document.showPage()
+    document.save()
+    return path
+
+
+def test_content_shapes_are_verified_against_measured_evidence() -> None:
     from tests.experiments.c_pipeline import BodyEntryScaffold, BodyScaffold
     from tests.experiments.test_c2_pipeline import _heading
 
@@ -405,7 +471,9 @@ def test_content_shapes_are_verified_against_measured_evidence(monkeypatch: pyte
     # Entry typography/inter-entry rhythm/content style values the state does
     # not carry: the shape gate must stay FALSE and name the capability gaps
     # (truthful, never a placeholder-true hard gate).
-    result = content_shape_verification(state, plan, scaffold, dict(BULLET_TIERS), html)
+    result = content_shape_verification(
+        state, plan, scaffold, dict(BULLET_TIERS), html, json.loads(json.dumps(SUMMARY))
+    )
     assert result["passed"] is False
     gaps = {
         row["capability_gap"]
@@ -413,13 +481,113 @@ def test_content_shapes_are_verified_against_measured_evidence(monkeypatch: pyte
     }
     assert any(gaps)
     # Bullet design declared but no measured dot: inconsistent.
-    broken = content_shape_verification(state, plan, scaffold, {}, html)
+    broken = content_shape_verification(
+        state, plan, scaffold, {}, html, json.loads(json.dumps(SUMMARY))
+    )
     assert broken["passed"] is False
     assert any(
         row["capability_gap"]
         for row in broken["rows"]
         for row in row["properties"]
     )
+
+
+def test_rule_verification_resolves_the_measured_rule_bbox() -> None:
+    """Evidence-boundary regression: the state rule stores the matched rule's
+    OWN measured bbox (never the heading text bounds)."""
+    from tests.experiments.c2_pipeline import _resolve_above_heading_rule
+    from tests.experiments.test_c2_pipeline import _heading
+
+    heading = _heading("WORK EXPERIENCE", 140.0, "e.heading")  # text x1 = 171
+    summary = _shape_summary()
+    rule, evidence = _resolve_above_heading_rule(1, heading, summary, 792.0, 612.0)
+    assert rule is not None and evidence is not None
+    # The rule's real measured x-extent, NOT the heading text bounds.
+    assert (rule.x0_pt, rule.x1_pt) == (72.0, 400.0)
+    assert (evidence["x0_pt"], evidence["x1_pt"]) == (72.0, 400.0)
+    assert rule.placement == "above_heading"
+
+
+def test_rule_geometry_is_verified_in_the_rendered_output(tmp_path: Path) -> None:
+    """Regression for the short-rule D→E output: a rendered rule whose x-extent
+    does not match the measured bbox must FAIL the shape gate."""
+    state = compile_synthetic(
+        ["WORK EXPERIENCE"], rules=_shape_summary()["rules"], elements=_shape_summary()["elements"]
+    )
+    candidate = rich_candidate(include_unmatched=False)
+    plan = compile_render_plan(state, candidate)
+    html = render_html(state, plan)
+    summary = _shape_summary()
+    scaffold = _shape_scaffold()
+
+    # The measured rule (72→400) rendered at the measured extent: gate passes.
+    measured_pdf = _rule_line_pdf(tmp_path / "measured.pdf", 72.0, 400.0)
+    result = content_shape_verification(
+        state, plan, scaffold, dict(BULLET_TIERS), html, summary, measured_pdf
+    )
+    rule_rows = [
+        row
+        for entry in result["rows"]
+        for row in entry["properties"]
+        if row["property"] == "rule"
+    ]
+    assert len(rule_rows) == 1
+    assert rule_rows[0]["required_by_declared_shape"] is True
+    assert rule_rows[0]["capability_gap"] is None, rule_rows[0]
+    assert result["passed"] is True
+
+    # The short-rule geometry (the pre-fix D→E output): the rendered rule does
+    # NOT span the measured bbox — the gate must FAIL.
+    short_pdf = _rule_line_pdf(tmp_path / "short.pdf", 36.0, 106.7)
+    broken = content_shape_verification(
+        state, plan, scaffold, dict(BULLET_TIERS), html, summary, short_pdf
+    )
+    broken_rules = [
+        row
+        for entry in broken["rows"]
+        for row in entry["properties"]
+        if row["property"] == "rule"
+    ]
+    assert broken["passed"] is False
+    assert any(row["capability_gap"] for row in broken_rules)
+    # And the failed check records the rendered extents it found.
+    assert broken_rules[0]["measured"]["rendered_rule_extents"]
+
+
+def test_typography_consumption_is_element_scoped() -> None:
+    """A class name that only exists inside <style> is NOT renderer
+    consumption: title/detail/meta/content classes must sit on the correct
+    semantic nodes, and the meta tier is part of the consumed result."""
+    state = compile_synthetic(
+        ["WORK EXPERIENCE"], rules=_shape_summary()["rules"], elements=_shape_summary()["elements"]
+    )
+    candidate = rich_candidate(include_unmatched=False)
+    plan = compile_render_plan(state, candidate)
+    html = render_html(state, plan)
+    summary = _shape_summary()
+    scaffold = _shape_scaffold()
+    result = content_shape_verification(
+        state, plan, scaffold, dict(BULLET_TIERS), html, summary
+    )
+    assert result["passed"] is True, result
+    by_property = {
+        row["property"]: row
+        for entry in result["rows"]
+        for row in entry["properties"]
+    }
+    # Every tier is required and consumed on its correct semantic nodes.
+    for name in ("entry_typography", "inter_entry_rhythm", "content_typography"):
+        assert by_property[name]["required_by_declared_shape"] is True, name
+        assert by_property[name]["capability_gap"] is None, (name, by_property[name])
+    tiers = by_property["entry_typography"]["measured"]
+    assert tiers == {"title": True, "detail": True, "meta": True}
+    # Element-scoped proof: strip the classes from the rendered ELEMENTS (the
+    # <style> definitions remain) and the gate must fail.
+    stripped = re.sub(r'class="c2-style-[a-z0-9_]+"', "", html)
+    stripped_result = content_shape_verification(
+        state, plan, scaffold, dict(BULLET_TIERS), stripped, summary
+    )
+    assert stripped_result["passed"] is False
 
 
 # ---------------------------------------------------------------------------
