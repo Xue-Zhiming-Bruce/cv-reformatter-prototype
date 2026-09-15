@@ -1,21 +1,28 @@
 # Pipeline C2-0b Report: Deterministic HTML RenderPlan Renderer And Chrome PDF
 
-Status: `Implementation and automated gates complete, awaiting owner visual review`
+Status: `Corrective pass complete per owner verdict 2026-09-15; NOT accepted; awaiting second owner visual review`
 
 Date: 2026-09-15
-Branch: `experiment/pipeline-c2` (worktree base `f9b6ab8`; Pipeline D worktree
-untouched). Scope: `tests/experiments/c2_pipeline.py` (Phase 0 fix + candidate
-render contexts), new `tests/experiments/c2_renderer.py`,
-`tests/experiments/test_c2_renderer.py`, `tests/experiments/test_c2_pipeline.py`
-(one Phase 0 regression), the two experiment reports, the proposal, and the
-TEST_STRUCTURE runner row. `app/`, `frontend/`, the product contract, API
-contract, and ADRs are untouched.
+Branch: `experiment/pipeline-c2` (worktree base `db8c171`; Pipeline D worktree
+untouched). Scope of the corrective pass: `tests/experiments/c2_pipeline.py`
+(unroutable dispositions; measured rule placement; per-section content styles;
+entry typography tiers + inter-entry rhythm), `tests/experiments/c2_renderer.py`
+(header-overflow plan node, omission disposition, per-page blank-page gate,
+truthful per-section/per-shape verification, accounting gate),
+`tests/experiments/test_c2_renderer.py` (new offline + local-dataset
+regressions), `tests/experiments/PIPELINE_EVOLUTION_PROPOSAL.md` (banner +
+§16.5), `docs/testing/TEST_STRUCTURE.md` (artifact list), and this report.
+`app/`, `frontend/`, the product contract, API contract, and ADRs are
+untouched. No new runner, schema family, provider adapter, agent abstraction,
+or dependency was added; no DOCX (C2-0c), Pipeline D, production integration,
+frontend work, or live provider call was started.
 
-Owner decisions applied (C2-0b work order, 2026-09-15): C2-0a accepted as an
-experimental schema milestone with documented capability gaps; `layout-state/1`
-is NOT promoted into the product contract; labels are template presentation;
-candidate-only unmatched sections append after all target sections with their
-source headings; candidate facts are never discarded.
+Owner verdict applied (C2-0b first review, 2026-09-15): the JSON → RenderPlan →
+HTML → Chrome PDF boundary is proven, but C2-0b was NOT accepted because
+several green gates were not truthful and the primary visual vocabulary was
+incomplete. This corrective pass implements the six required corrections; the
+report is updated honestly; C2-0b is still NOT marked accepted and the work
+stops again here for owner visual review.
 
 ## 1. Objective And Result
 
@@ -30,13 +37,128 @@ C2LayoutState JSON + independent candidate content
 -> owner review
 ```
 
-**Result: all three evaluation pairs compile fully materialized render plans
-(every candidate leaf exactly once), export through the existing Chrome path,
-and pass every hard gate. Automated evidence is complete; visual acceptance
-belongs to the owner and is NOT granted here.** No parity/winner conclusion is
-drawn; Resume D pairs are gap-only and excluded from any parity conclusion.
+**Corrective result: candidate-content accounting is now truthful (routed
+overflow content is owned and verified; the redacted web-copy line is an
+explicit reviewed omission as a SEPARATE disposition); the blank-page gate
+inspects every exported page independently and fails on any page without
+meaningful text or approved visual content; `content_shapes_match_evidence`
+is validated per section and per declared content shape and stays FALSE
+wherever the renderer does not consume the measured state (E→D); the minimum
+visible fidelity blockers named by the owner are closed (F section rules in
+the measured below-heading placement, entry title/meta/detail typography and
+inter-entry rhythm consumed from the state, F 10pt-vs-9pt body tier resolved
+from evidence/state). D→E and E→F pass every hard gate truthfully; E→D
+remains gap-only with the shape gate honestly FALSE. No parity/winner
+conclusion is drawn; Resume D pairs are excluded from parity conclusions.**
 
-## 2. Exact Source/Target Pairs And Frozen C1 Baselines
+## 2. Corrective Changes Per Owner Requirement
+
+### 2.1 Truthful candidate-content accounting (requirement 1)
+
+- Render-disposition `UnroutableContent` records are no longer excluded from
+  the exactly-once/content-loss hard gate: the plan routes each one through an
+  EXPLICIT candidate-only `header_overflow` plan node (`node_id=header_overflow`,
+  declared on the plan, never hidden renderer logic), renders it after the
+  measured header rows, owns each field in the leaf ledger
+  (`unroutable.<slot>` → `header_overflow.<slot>`), and verifies it exactly
+  like every other leaf (exactly one HTML element identity carrying the value
+  + present in the PDF text).
+  - D's title `Senior Business Person` → slot `title`; D's tagline
+    `Business | Hobbies | Awesomeness` → slot `tagline`.
+  - E's location `Seattle, Washington` → slot `location`.
+  - No new candidate facts are inferred: every overflow field is a verbatim
+    source value with its own reviewed reason.
+- The redacted web-copy contact line is represented as an explicit reviewed
+  omission: disposition `omit` is a SEPARATE disposition from rendering; the
+  value is never rendered, never counted as covered, and the accounting lists
+  it under `explicitly_omitted` with its reason. Nothing may describe an
+  omitted value as rendered or covered.
+- New hard gate `candidate_content_accounting`: a run FAILS when a substantive
+  source value is neither rendered exactly once nor explicitly omitted under
+  the approved disposition, and when a render-disposition unroutable was never
+  routed (`unresolved_unroutable`). Offline tests cover all three outcomes:
+  routed+verified (passes), omitted (passes, never rendered), unrouted
+  (FAILS), and a render disposition without a slot fails at authoring.
+
+### 2.2 Blank-page gate fix (requirement 2)
+
+- `blank_page_gate` opens the exported PDF with pdfplumber and inspects EVERY
+  page independently: a page fails when it has no meaningful text (no
+  alphanumeric text) AND no approved visual content (no rects/lines/images/
+  curves — e.g. measured rules). The result is written to
+  `blank_page_validation.json` with per-page records
+  (`page`, `meaningful_text`, `visual_objects`, `has_content`).
+- The hard gate `no_blank_page` is now the per-page result (previously it was
+  a re-labeling of the determinism + pdf-present checks and could not fail on
+  an extra blank page).
+- Regression tests (offline, real PDFs built with reportlab — no Chrome):
+  a single content page passes; a two-page PDF whose second page is blank
+  FAILS with `blank_pages == [2]`; a text-less page carrying a rule passes.
+
+### 2.3 Truthful `content_shapes_match_evidence` (requirement 3)
+
+The previous global checks ("some entry geometry exists", "some bullet tier
+exists") were insufficient. Verification is now PER SECTION and PER DECLARED
+CONTENT SHAPE, and every check requires that the renderer actually CONSUMES
+the corresponding measured state (checked in the exported HTML):
+
+| Property (per section) | Required when | Measured from | Consumed check |
+|---|---|---|---|
+| `entry_geometry` | section declares `entries` | measured entry column scaffold | plan carries the measured base x0 |
+| `entry_typography` | section declares `entries` | measured title/meta/detail tiers on the section's own entry elements | the tier classes appear in the HTML; an UNMEASURED detail tier is a recorded note (title-tier fallback), never a fidelity claim |
+| `inter_entry_rhythm` | the plan renders ≥2 entries in that section | measured inter-entry gap | `margin-top: <measured gap>` appears on entries 2+ |
+| `bullet_design` | the plan actually renders bullet items / bullet-marker items | measured bullet dot/text x-tiers | plan carries both tiers and the measured hanging-indent geometry appears |
+| `content_typography` | the section renders content | the section's own measured content style, else the accepted `style.body` rule | the corresponding style class appears in the HTML |
+| `rule` | the section carries a rule | measured rule geometry + placement | the measured stroke/color border in the measured placement appears |
+
+- A property the evidence does not measure or the renderer does not consume is
+  reported as a NAMED capability gap and the hard gate stays FALSE — no
+  placeholder-true gate. This is why E→D's gate is honestly false: Resume D's
+  target evidence carries no measurable entry typography tiers (D stores its
+  dates in a table; its entry rows have no measured title/meta/detail styles),
+  so §4 entry fidelity cannot be claimed for that pair. D→E and E→F have every
+  declared shape measured and consumed, so their gate is genuinely true.
+
+### 2.4 Minimum visible fidelity blockers closed (requirement 4)
+
+- **Resume F section rules render in the measured placement/style.** F's six
+  measured rules sit BETWEEN the heading text and the section content
+  (below-heading placement) — previously the derivation only looked above the
+  heading, so F rendered with zero rules and a "6 detached rules" gap. The
+  state now records the measured placement (`RuleDecoration.placement`,
+  `below_heading`) with the rule's own measured x-extent, stroke, color, and
+  measured gaps; the renderer consumes them (`border-bottom` +
+  `padding-bottom: heading→rule gap` + `margin-bottom: rule→content gap` +
+  margin-left/right shrinking the heading box to the measured rule x-extent).
+  E's above-heading rules are unchanged (placement is measured, never
+  assumed). F's state now attaches all 6 rules; the `detached_rules` state gap
+  disappears for F.
+- **Work and education entries consume explicit title/meta/body typography
+  and inter-entry rhythm from the layout state.** The compiler derives, per
+  section, from that section's OWN measured elements: the entry-title tier
+  (first line of each measured entry block), the entry-detail tier (following
+  left-column lines), the entry-meta tier (right-column style sharing the
+  title row), and the measured inter-entry gap (minimum measured gap between
+  consecutive entry blocks). The renderer consumes them: entry title lines get
+  the title tier, detail lines the detail tier, the right column mirrors the
+  row tiers, and entries after the first carry the measured rhythm. D→E work
+  entries rhythm: 2.804pt (measured from the target); E→F: 8.080pt / 2.062pt.
+- **The F 10pt-versus-9pt body-tier mismatch is resolved from evidence/state,
+  not with pair-specific CSS.** Two evidence-derived mechanisms, identical for
+  every target: (a) per-section measured content styles (the dominant measured
+  text style of the section's own content — F's SUMMARY now renders at its
+  measured 9.963pt tier instead of the 8.966 body fallback); (b) the measured
+  entry typography tiers above (F entries now render titles/meta/details at
+  the measured 9.963pt tier and bullets at 8.966pt). The E→F typography delta
+  is now clean: every target size (24.8/14.3/10.0/9.0pt) exactly matches, no
+  generated size absent from the target, ~16% of C2 glyphs at the 10.0pt tier
+  (previously absent entirely).
+- **Flowing semantic HTML preserved.** No body absolute-y positioning (gate
+  still tests it), no target background, no seed HTML, no target candidate
+  facts; header/overflow/entries remain flowing content with measured
+  margins/gaps only.
+
+## 3. Exact Source/Target Pairs And Frozen C1 Baselines (unchanged)
 
 The frozen C1 comparison runs live in the main repository checkout
 (`tests/experiments/runs/`; untracked artifact directories, recorded by path
@@ -49,84 +171,94 @@ and SHA-256 in each run's `comparison_manifest.json`):
 | E→D | gap-only | Resume E | Resume D | `c1_matrix_ED_B_20260911T044203Z` (Option-B contract run) | `ad282be5f02f37ed29d92a770a78024f4aa7f2978bf9eefd8fceb34d41b39208` |
 
 Target PDFs: `tests/local_datasets/resume_matrix/resume_{D,E,F}.pdf`
-(owner-attested fake resumes, 2026-08-24 maintainer clearance). C2 compiles
-the state from the SAME cached provider-neutral evidence as C2-0a
-(`tests/experiments/runs/target_cache/`); no live provider call anywhere.
+(owner-attested fake resumes, 2026-08-24 maintainer clearance). The corrective
+pass regenerates the SAME three canonical comparisons from the SAME cached
+provider-neutral evidence (`tests/experiments/runs/target_cache/`) and the
+SAME frozen C1 baselines; no live provider call anywhere.
 
-E→D honesty: it runs without resolving any of D's ambiguous bindings —
-SKILLS POOL and WORK EXPERIENCE consume content through their mapped
-bindings; HIGHLIGHTS, KEY SKILLS, EDUCATION & CERTIFICATIONS, VOLUNTEER
-EXPERIENCE, and ANOTHER SECTION stay unresolved (rendered as nothing,
-recorded leaf-by-leaf in `capability_gaps.json`); candidate E's Education
-appends as a candidate-only section with its source heading. D is excluded
-from parity conclusions while its composite/unresolved bindings remain.
-
-## 3. Candidate Content
+## 4. Candidate Content (unchanged, now with truthful dispositions)
 
 Candidate render contexts transcribe the frozen C1 runs' verbatim
-`source_text.txt` lines (the same candidate content as the frozen C1
-comparisons) into structured leaves. Structure (entries, bullets, metadata
-columns, section grouping) is deterministic-by-authorship — reviewed once,
-frozen in `candidate_resume_D()`/`candidate_resume_E()`, and NOT an LLM
-extraction claim: C2-0b tests rendering, not extraction.
+`source_text.txt` lines into structured leaves. Structure is
+deterministic-by-authorship — reviewed once, frozen in
+`candidate_resume_D()`/`candidate_resume_E()`, NOT an LLM extraction claim:
+C2-0b tests rendering, not extraction. Every context is verified against the
+frozen source inventory by `render_context_coverage` (all three contexts:
+`total_coverage: true`, nothing invented).
 
-Every context is verified against the frozen source inventory by
-`render_context_coverage` (recorded as `context_coverage.json`): every
-non-empty alnum-carrying source line consumed exactly once, ordered, nothing
-invented (dash/whitespace-insensitive comparison, the same hyphen rule as
-C1's PDF-side gate). All three contexts: `total_coverage: true`.
+Unroutable records now carry explicit dispositions:
 
-## 4. Architecture Actually Implemented
+| Pair | Unroutable value | Disposition |
+|---|---|---|
+| D→E | `Senior Business Person` (title) | rendered via the candidate-only header-overflow node (owned + verified) |
+| D→E | `Business | Hobbies | Awesomeness` (tagline) | rendered via the candidate-only header-overflow node (owned + verified) |
+| D→E | ` [redacted - web copy] — # [redacted - web copy] —` | EXPLICITLY OMITTED (approved reviewed-omission disposition; never rendered, never covered) |
+| E→F / E→D | `Seattle, Washington` (location) | rendered via the candidate-only header-overflow node (owned + verified) |
+
+## 5. Architecture (corrective additions marked)
 
 ```text
 C2LayoutState (layout-state/1, authoritative editable JSON; read-only input)
-+ CandidateDocument render context (verbatim leaf text, sections, unroutable)
++ CandidateDocument render context (verbatim leaf text, sections, unroutable
+  WITH explicit render/omit dispositions)
 -> compile_render_plan() -> C2RenderPlan (c2-render-plan/1, typed)
      header rows: candidate fields assigned to measured slots (order kept)
-     mapped sections: state reading order, state labels, state content kinds
+     header_overflow: EXPLICIT candidate-only node for unroutable
+       title/tagline/location values (corrective addition)
+     explicit_omissions: separately-dispositioned omitted values
+       (corrective addition)
+     mapped sections: state reading order, state labels, state content kinds,
+       measured per-section content style, measured rule placement,
+       measured entry title/detail/meta tiers + inter-entry rhythm
+       (corrective additions)
      candidate-only sections: appended per owner overflow policy
        (OVERFLOW_POLICY = "append_after_template_with_source_heading",
         declared on the plan, never hidden renderer logic)
-     leaf ledger: leaf_id -> destination node id (ownership ledger reuse)
+     leaf ledger: leaf_id -> destination node id (ownership ledger reuse,
+       now including routed header-overflow leaves)
 -> render_html() -> deterministic semantic HTML
-     stable data-node-id identities for every state node and instance
-     CSS classes derived from measured style tokens (no inline invention)
-     measured rule geometry, bullet hanging indent, header row gaps
+     measured rule placement consumed: above_heading (border-top) AND
+       below_heading (border-bottom + measured gaps) + measured x-extent
+     entry typography tiers + measured inter-entry rhythm consumed
+     measured per-section content style classes
      flowing body layout; no absolute/fixed positioning anywhere
 -> _inject_local_fonts() + pinned Chrome export (double render)
--> content / privacy / structure / determinism / shape-verification gates
+-> content / accounting / privacy / structure / determinism / per-page
+   blankness / shape-verification gates
 -> review.html + comparison manifest + previews + difference images
 ```
 
-Renderer prohibitions honored: the state is never mutated; no new semantic
+Renderer prohibitions unchanged: the state is never mutated; no new semantic
 mappings are inferred; no C1 seed HTML is read or emitted (tested); target
 candidate facts cannot enter the output (tested); no target page image; no
 CSS/HTML stored in the state; no silent fallback — unsupported/composite
-content, missing or duplicated leaves, and a non-failing-but-empty header slot
-are always explicit (empty target sections and unfilled header rows render
-nothing and are recorded, never orphan headings).
+content, missing or duplicated leaves, an unroutable render record without a
+routed destination, and an omission described as anything other than omitted
+are always explicit hard failures.
 
-## 5. Reused Utilities (no second stack)
+## 6. Reused Utilities (no second stack)
 
 - Chrome export: `a_pipeline._export_pinned_html_to_pdf`,
   `c_pipeline.pinned_export_environment` (`--virtual-time-budget` pinned).
 - Fonts: `a_pipeline._inject_local_fonts` (local OFL woff2 assets).
-- Measurement: `read_pdf_text`, `pdfplumber` via `a_pipeline._html_text`,
-  `_typography_delta`, `_line_stability` (c_pipeline), `_render_pages`,
-  `_sha256`, `_comparison_diff`, `_side_by_side`.
+- Measurement: `read_pdf_text`, `pdfplumber` (per-page inspection in the
+  blank-page gate) via `a_pipeline._html_text`, `_typography_delta`,
+  `_line_stability` (c_pipeline), `_render_pages`, `_sha256`,
+  `_comparison_diff`, `_side_by_side`.
 - Ownership ledger: `c2_pipeline.own_leaf` (same guard as C2-0a probes).
-- Content-shape verification re-derives `derive_header_scaffold` /
-  `derive_body_scaffold` / `derive_body_tier_targets` and checks every
-  declared section kind against measured evidence
-  (`content_shape_verification.json`): all sections consistent on E/F/D.
+- Per-section measurement reuses the C1 scaffold derivations
+  (`derive_header_scaffold` / `derive_body_scaffold` /
+  `derive_body_tier_targets`) plus new C2-local derivations over the SAME
+  summary elements (no second evidence stack, no new PDF parsing beyond what
+  c_pipeline already does).
 
-## 6. Canonical Runs And Artifacts
+## 7. Canonical Runs And Artifacts
 
 | Pair | Canonical run directory |
 |---|---|
-| D→E | `tests/experiments/runs/c2_0b_D_to_E_20260915T064122Z/` |
-| E→F | `tests/experiments/runs/c2_0b_E_to_F_20260915T064128Z/` |
-| E→D | `tests/experiments/runs/c2_0b_E_to_D_20260915T064133Z/` |
+| D→E | `tests/experiments/runs/c2_0b_D_to_E_20260915T074140Z/` |
+| E→F | `tests/experiments/runs/c2_0b_E_to_F_20260915T074148Z/` |
+| E→D | `tests/experiments/runs/c2_0b_E_to_D_20260915T074156Z/` |
 
 Each run contains (at least): `c2_layout_state.json`,
 `candidate_render_context.json`, `c2_render_plan.json`, `c2_output.html`,
@@ -134,17 +266,18 @@ Each run contains (at least): `c2_layout_state.json`,
 `privacy_validation.json`, `render_determinism.json`, `capability_gaps.json`,
 `leaf_ownership.json`, `comparison_manifest.json`, `review.html` (human
 review index), `context_coverage.json`, `content_shape_verification.json`,
-`hard_gates.json`, plus `target_page_1.png`, `c1_page_1.png`, `c2_page_N.png`,
+`content_accounting.json`, `blank_page_validation.json`, `hard_gates.json`,
+plus `target_page_1.png`, `c1_page_1.png`, `c2_page_N.png`,
 `diff_target_vs_c2_page_1.png`, `diff_c1_vs_c2_page_1.png`,
 `side_by_side_target_vs_c2_page_1.png`, `side_by_side_c1_vs_c2_page_1.png`.
 
 Direct review entry points (owner):
 
-- `c2_0b_D_to_E_20260915T064122Z/review.html` → `c2_output.pdf`
-- `c2_0b_E_to_F_20260915T064128Z/review.html` → `c2_output.pdf`
-- `c2_0b_E_to_D_20260915T064133Z/review.html` → `c2_output.pdf`
+- `c2_0b_D_to_E_20260915T074140Z/review.html` → `c2_output.pdf`
+- `c2_0b_E_to_F_20260915T074148Z/review.html` → `c2_output.pdf`
+- `c2_0b_E_to_D_20260915T074156Z/review.html` → `c2_output.pdf`
 
-## 7. Commands Run
+## 8. Commands Run
 
 ```bash
 # Canonical runs (cached evidence; no live call; double pinned Chrome export)
@@ -153,9 +286,9 @@ Direct review entry points (owner):
 .venv/bin/python -m tests.experiments.c2_renderer --pair E_D
 
 # Focused offline tests
-pytest tests/experiments/test_c2_renderer.py -m "not local_dataset"   # 13 passed
+pytest tests/experiments/test_c2_renderer.py -m "not local_dataset"   # 20 passed
 pytest tests/experiments/test_c2_pipeline.py -m "not local_dataset"   # 29 passed
-pytest tests/experiments/ -m "not local_dataset and not live_provider"  # 198 passed
+pytest tests/experiments/ -m "not local_dataset and not live_provider"  # 205 passed
 
 # Local-corpus lane (real Chrome export through the frozen pairs)
 pytest tests/experiments/test_c2_pipeline.py tests/experiments/test_c2_renderer.py \
@@ -163,33 +296,48 @@ pytest tests/experiments/test_c2_pipeline.py tests/experiments/test_c2_renderer.
 
 # Broader offline suite (experiments + unit + integration)
 pytest tests/experiments/ tests/unit tests/integration -m "not live_provider"
-# 581 passed / 5 failed — the 5 are the PRE-EXISTING tests/unit/test_mock_api.py
-# failures already documented in C2_0A_REPORT.md §7 (fail identically at
-# pristine f9b6ab8; unrelated to C2 work).
+# 588 passed / 5 failed — the 5 are the PRE-EXISTING tests/unit/test_mock_api.py
+# failures already documented in C2_0A_REPORT.md §7 (test_mock_api.py is
+# byte-identical at pristine db8c171 and unrelated to C2 work).
 ```
 
-Pytest log: `tests/test_results/pytest/pytest_20260915T064212Z_c2_0b_full_offline.txt`.
+Pytest logs (canonical ignored directory):
 
-## 8. Hard-Gate Results (all three pairs PASS)
+- `tests/test_results/pytest/pytest_*_c2_0b_corrective_offline.txt` (205 passed)
+- `tests/test_results/pytest/pytest_*_c2_0b_corrective_local_dataset.txt` (6 passed)
+- `tests/test_results/pytest/pytest_*_c2_0b_corrective_full_offline.txt`
+  (588 passed / 5 pre-existing failures)
+
+## 9. Hard-Gate Results (honest)
+
+D→E and E→F pass every hard gate. E→D is gap-only: every accounting/privacy/
+structure/determinism/blank-page/clipping gate is true, and
+`content_shapes_match_evidence` is honestly FALSE with named capability gaps.
 
 | Gate | D→E | E→F | E→D |
 |---|---|---|---|
-| Every candidate leaf exactly once (HTML identity + value) | ✅ 56/56 | ✅ 39/39 | ✅ 39/39 |
+| Every candidate leaf exactly once (HTML identity + value) | ✅ | ✅ | ✅ |
+| Candidate content accounting (rendered exactly once OR explicitly omitted; no unhomed/unresolved) | ✅ | ✅ | ✅ |
 | No target candidate facts in HTML or PDF | ✅ | ✅ | ✅ |
 | Section order and ownership match the C2 state | ✅ | ✅ | ✅ |
 | No invalid parent/reference | ✅ | ✅ | ✅ |
 | No body absolute-y positioning | ✅ | ✅ | ✅ |
 | Deterministic render (2 exports; page raster hashes equal; per-line Δ 0.0pt) | ✅ | ✅ | ✅ |
-| No blank page | ✅ | ✅ | ✅ |
-| No clipped or missing content (PDF text ⊇ every leaf) | ✅ | ✅ | ✅ |
+| No blank page (every page inspected independently) | ✅ | ✅ | ✅ |
+| No clipped or missing content (PDF text ⊇ every rendered leaf) | ✅ | ✅ | ✅ |
 | No target-background image | ✅ | ✅ | ✅ |
 | All fallbacks and capability gaps explicit | ✅ | ✅ | ✅ |
-| Content shapes match measured evidence | ✅ | ✅ | ✅ |
+| Content shapes match measured evidence (per section, per shape) | ✅ | ✅ | ❌ named gaps (D evidence) |
 
-Leaf accounting per pair (owned + unroutable = total; zero unhomed, zero
-duplicated): D→E 56 owned + 3 unroutable; E→F 39 + 1; E→D 39 + 1.
+Leaf accounting per pair (owned leaves = candidate leaves; unroutables either
+routed through `header_overflow` and owned, or explicitly omitted; zero unhomed,
+zero unresolved, zero duplicated):
 
-## 9. Measurable Differences Vs Target And Frozen C1
+- D→E: 56 owned leaves + 2 routed header-overflow values (title, tagline) +
+  1 explicit omission (redacted web-copy line) = 59 substantive values.
+- E→F: 39 owned + 1 routed (location); E→D: same.
+
+## 10. Measurable Differences Vs Target And Frozen C1 (post-corrective)
 
 Recorded per run in `comparison_manifest.json` (page counts, typography delta,
 section order). Headlines:
@@ -197,44 +345,62 @@ section order). Headlines:
 1. **Page counts** — target 1 page; D→E: C1 2 / C2 2 (C2 page 2 much sparser:
    only appended sections); E→F: C1 1 / C2 1; E→D: C1 1 / C2 1.
 2. **Typography** — D→E: every target tier (10.9/14.3/17.2pt) reproduced
-   exactly (no mismatch rows, no extra sizes). E→F: 24.8/14.3/9.0pt present;
-   the target's 10.0pt body tier is absent — the state's text-volume rule
-   selected the 9.0pt group for the body (state-level fidelity gap, not a
-   renderer hack; 98.3% of C2 glyphs at 9.0pt).
-3. **Section labels/order** — C2 renders TARGET labels in target order and
-   appends candidate-only sections (D→E order: Experience, Skills, Education,
-   HIGHLIGHTS, VOLUNTEER EXPERIENCE, ANOTHER SECTION). C1's E→F rendered
-   CANDIDATE headings in candidate order (Skills, Experience, Education);
-   D→E C2 additionally merges candidate KEY SKILLS items under the single
-   target Skills section (C1 rendered a separate KEY SKILLS section), and
-   candidate headings of matched roles are not rendered.
-4. **Entry rhythm** — layout-state/1 carries no measured entry gap or
-   entry-title/metadata typography tiers (C2-0a gap), so C2 entries stack
-   body-style lines without C1's company/role tier styling or inter-entry
-   gaps; work entries read as continuous line blocks.
-5. **Header** — C2 renders contact fields as text joined by the measured
-   separator; measured contact icons are declared but no icon font is
-   rendered (explicit gap). Unfilled target header slots (D→E
-   location/phone/envelope; E→D tagline) render nothing, recorded.
-6. **Unroutable content** — D→E: the redacted web-copy contact line, candidate
-   title, and tagline (C1 rendered title/tagline in a derived extension row;
-   layout-state/1 has no extension-row concept). E→F/E→D: candidate location
-   "Seattle, Washington" (no target location row; same C1 extension-row
-   difference). Nothing is silently dropped; all records carry reasons.
+   exactly, no extra sizes. E→F: the target's 10.0pt tier is now PRESENT
+   (~16% of C2 glyphs, previously absent entirely); all four target sizes
+   (24.8/14.3/10.0/9.0) exactly match; no generated size not in target —
+   the F body-tier mismatch is closed from evidence (per-section measured
+   content styles + entry tiers), not with pair-specific CSS.
+3. **Section rules** — F renders all six measured rules in the measured
+   below-heading placement with measured stroke/color/x-extent and measured
+   gaps (previously zero rules rendered and the state carried a detached-rules
+   gap). E renders its measured above-heading rules as before.
+4. **Entry typography and rhythm** — work/education entries consume the
+   measured title/detail/meta tiers and inter-entry gaps from the state
+   (D→E rhythm 2.804pt; E→F 8.080pt projects / 2.062pt experience). The
+   "continuous line block" flatness reported in the first review is closed
+   for E/F targets.
+5. **Section labels/order** — unchanged from the first pass: C2 renders
+   TARGET labels in target order and appends candidate-only sections (D→E
+   order: Experience, Skills, Education, HIGHLIGHTS, VOLUNTEER EXPERIENCE,
+   ANOTHER SECTION); C1's E→F rendered CANDIDATE headings in candidate order;
+   D→E C2 merges candidate KEY SKILLS items under the single target Skills
+   section; candidate headings of matched roles are not rendered. These are
+   owner-decided policies carried over, not new in this pass.
+6. **Content dispositions** — D→E: title/tagline render in the candidate-only
+   header-overflow row (previously unroutable); the redacted web-copy contact
+   line is explicitly omitted under the approved disposition (never rendered,
+   never covered). E→F/E→D: candidate location renders in the overflow row.
+   Unfilled target header slots still render nothing and are recorded.
 
-## 10. Capability Gaps Carried Into C2-0b (explicit)
+## 11. Remaining Visual Gaps (explicit, listed for owner review)
 
-1. Header extension rows (title/tagline/location overflow) — unroutable, per
-   pair recorded.
-2. Contact icons (`icon_decorated` measured true) — not rendered.
-3. Entry-tier typography and inter-entry gaps — not in the state (C2-0a gap
-   #4/§10); visible as flatter entry blocks.
-4. F body-tier selection (10.0pt vs 9.0pt) — state-level body-style rule.
-5. All C2-0a state capability gaps propagate verbatim into each run's
-   `capability_gaps.json` (E: images/vector graphics; D: 5 unresolved section
-   bindings + tables + detached rules; F: detached rules).
+1. **E→D entry typography and rhythm (shape gate FALSE)** — Resume D's target
+   evidence carries no measurable entry title/meta/detail tiers or
+   inter-entry gap, so for the E→D pair the renderer cannot consume measured
+   entry typography; entries render at the measured body tier. Named in
+   `content_shape_verification.json` for section.05 (WORK EXPERIENCE); D
+   participates in no parity conclusion.
+2. **E→D unresolved bindings unchanged** — HIGHLIGHTS, KEY SKILLS,
+   EDUCATION & CERTIFICATIONS, VOLUNTEER EXPERIENCE, ANOTHER SECTION stay
+   unresolved (no content rendered, recorded leaf-by-leaf); D's tables +
+   4 detached (header/standalone) rules remain measured-but-unrenderable
+   capability gaps.
+3. **Contact icons** (`icon_decorated` measured true) — still not rendered
+   (no icon font in the C2-0b renderer); explicit capability gap.
+4. **Header field geometry** — per-field contact geometry is not measured
+   (only the row extent is); fields render joined by the measured separator.
+5. **C1-vs-C2 section-label/heading policy difference on E→F** — unchanged
+   from the first pass (C2 renders target labels; C1 rendered candidate
+   headings); owner judgment requested.
+6. **Appended candidate-only sections** use the state's measured heading
+   token and body/content style, with no measured sub-tiers of their own
+   (they are overflow presentation per the owner policy).
+7. All C2-0a state capability gaps propagate verbatim into each run's
+   `capability_gaps.json` (E: images/vector graphics; D: 5 unresolved
+   section bindings + tables + 4 detached rules; F: none remaining —
+   F's rules now attach).
 
-## 11. Known Unsupported Behavior (fail-closed, tested)
+## 12. Known Unsupported Behavior (fail-closed, tested)
 
 - Composite sections have no proven sub-structure materialization: a mapped
   composite/unsupported/badge_items section fails the plan and no HTML/PDF is
@@ -246,51 +412,67 @@ section order). Headlines:
 - Bullet design requires measured dot/text x-tiers; without them the renderer
   falls back to verbatim text lines only where the state declares
   `bullet_marker: "none"` (zero-bullet ruling, proposal §10.5).
+- A render-disposition unroutable without a slot fails at authoring
+  (validator); a routed overflow field that is missing from HTML/PDF fails
+  the content and accounting gates.
 
-## 12. Files Changed (authorized list)
+## 13. Files Changed (corrective pass; authorized list)
 
-- `tests/experiments/c2_pipeline.py` — Phase 0 bookkeeping fix (work bullets
-  inherit the parent entry's unhomed status); candidate render-context model
-  (text leaves, sections, unroutable records, coverage verifier); frozen C1
-  run registry and pair table.
-- `tests/experiments/c2_renderer.py` — NEW: plan compiler, HTML renderer,
-  gates, canonical pair runner, review index.
-- `tests/experiments/test_c2_renderer.py` — NEW: 16 tests (13 offline + 3
-  local_dataset).
-- `tests/experiments/test_c2_pipeline.py` — Phase 0 regression test.
-- `tests/experiments/C2_0A_REPORT.md` — status + bookkeeping closure note.
-- `tests/experiments/C2_0B_REPORT.md` — NEW (this file).
+- `tests/experiments/c2_pipeline.py` — explicit unroutable dispositions
+  (`render`/`omit` + overflow slot); measured below-heading rule detection and
+  `RuleDecoration.placement`; measured content→heading gaps; per-section
+  measured content styles; measured entry title/detail/meta tiers and
+  inter-entry rhythm; validation of the new measured fields.
+- `tests/experiments/c2_renderer.py` — explicit `header_overflow` plan node +
+  `explicit_omissions` dispositions; overflow row rendering; per-section
+  typography/rhythm/content-style consumption; measured rule placement +
+  x-extent consumption; per-page `blank_page_gate` +
+  `blank_page_validation.json`; truthful per-section/per-shape
+  `content_shape_verification`; `candidate_content_accounting` hard gate +
+  `content_accounting.json`; updated review index.
+- `tests/experiments/test_c2_renderer.py` — overflow routing, omission
+  disposition, unresolved-unroutable failure, render-without-slot authoring
+  failure, blank-page gate pass/fail/visual-object regressions, updated
+  shape-verification test, updated end-to-end gate assertions.
 - `tests/experiments/PIPELINE_EVOLUTION_PROPOSAL.md` — banner + §16.5
-  factual progress.
-- `docs/testing/TEST_STRUCTURE.md` — C2 row extended to cover C2-0b.
+  corrective-pass record.
+- `docs/testing/TEST_STRUCTURE.md` — C2-0b artifact list extended.
+- `tests/experiments/C2_0B_REPORT.md` — this file.
 
 No other files changed; `app/`, `frontend/`, product/API contracts, and ADRs
 untouched. Worktree-local (ignored) symlinks were used so the cached evidence
 and frozen C1 artifact directories resolve: `runs/target_cache`,
-`tests/local_datasets/resume_matrix`, and the three frozen C1 run directories
-plus `c1_matrix_FE2_20260910T200958Z` (needed by a pre-existing C1 regression
-test).
+`tests/local_datasets/resume_matrix`, `.venv`, and the three frozen C1 run
+directories plus `c1_matrix_FE2_20260910T200958Z` (needed by a pre-existing C1
+regression test).
 
-## 13. Owner-Review Checklist
+## 14. Owner-Review Checklist (second review)
 
 1. Open each run's `review.html`; then the PDFs: C2 `c2_output.pdf` against
    the target PDF and the frozen C1 `generated.pdf` for the same pair.
 2. Inspect `diff_target_vs_c2_page_1.png` and `diff_c1_vs_c2_page_1.png` for
    unexplained difference clusters.
-3. Judge the documented measurable differences (§9) — especially the D→E
-   entry rhythm, the C1-vs-C2 section-label/heading policy difference on E→F,
-   and the F body-tier 9.0 vs 10.0 question.
-4. Confirm the unroutable-content records (§9.6) are acceptable for this
-   milestone or direct the next state extension.
-5. Record the verdict. Per the work order: agents do not mark C2-0b accepted;
+3. Judge the corrective blockers: F's below-heading section rules, the entry
+   title/meta/detail tiers and inter-entry rhythm on D→E/E→F, the F 10.0pt
+   tier resolution, and the candidate-only header-overflow row (D title/
+   tagline, E location).
+4. Confirm the omission record (redacted web-copy contact line) is acceptable
+   as an explicit reviewed omission.
+5. Judge §11's remaining visual gaps (E→D shape gate honestly false; E→D
+   unresolved bindings; contact icons; header field geometry; label policy).
+6. Record the verdict. Per the work order: agents do not mark C2-0b accepted;
    C2-0c (DOCX) and Pipeline D remain stopped.
 
-## 14. Explicit Non-Claims
+## 15. Explicit Non-Claims
 
 - No visual parity, superiority, or acceptance is claimed — automated gates
-  and metrics are supporting evidence only.
+  and metrics are supporting evidence only; the owner is the final judge of
+  generated-file quality.
 - No promotion of `layout-state/1` toward the product contract; LayoutTemplate
   Spec 2.0 remains the product schema.
 - Candidate segmentation is authored-by-inspection (verified against the
   frozen source inventory), not an extraction-capability claim.
-- E→D is gap-only evidence; Resume D participates in no parity conclusion.
+- E→D is gap-only evidence; Resume D participates in no parity conclusion,
+  and its shape gate is honestly false rather than placeholder-true.
+- C2-0b is NOT accepted by this report; the work stops here for the second
+  owner visual review.

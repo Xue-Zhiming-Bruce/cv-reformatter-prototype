@@ -8,7 +8,7 @@
 > | B 管线 | 已关闭（假设证伪，零件经 §7.3 移植） |
 > | C1 D→E（header + body） | owner 终审通过，完成（§9/§11） |
 > | C1 E→F 泛化 | **调试中，尚未通过**（十次冻结，缺口 #1–#8 已闭；#9 右缘杠杆失效、#10 种子行宽派生假设待验证，见 run 20260910T161228Z） |
-> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑（带既记录能力缺口，不晋级产品契约）；C2-0b 渲染实现与自动门禁完成，**待 owner 视觉评审**（见 §16.5 与 `C2_0B_REPORT.md`） |
+> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑（带既记录能力缺口，不晋级产品契约）；C2-0b 渲染实现与自动门禁完成，owner 评审裁决已下达：C2-0b 边界成立但若干绿色门禁不真实 + 主视觉词汇不完整 → 纠偏 pass 已执行（内容处置真实化、逐页空白页门禁、分节分形态证据验证、F 节线/条目排版与节奏/F 正文体级缺口闭合），**再次待 owner 视觉评审**（见 §16.5 与 `C2_0B_REPORT.md`） |
 > | Pipeline D | D0/D0-R/D1-0 已完成；暂停后续工作，等待 C2 结果（见 `D_PIPELINE_PROPOSAL.md`） |
 >
 > 日期:2026-09-08 初版;2026-09-09 §7–§8;2026-09-10 §9–§12;
@@ -969,3 +969,32 @@ C2-0b 已实现（`tests/experiments/c2_renderer.py`）：`C2LayoutState` JSON +
   无绝对 y、双渲染确定性、无空白页、无裁切、无目标背景图、能力缺口显式）。
 - 自动证据不构成接受：视觉评审待 owner（`C2_0B_REPORT.md` §13 检查单）。
   C2-0c（DOCX）、Pipeline D、chat 编辑均未启动。
+
+**Owner 评审裁决（2026-09-15，C2-0b 第一次评审）：边界成立，但不接受。** JSON →
+RenderPlan → HTML → Chrome PDF 边界已证明；问题在于若干绿色门禁不真实，且主视觉
+词汇不完整。纠偏 pass（同日，未启动 C2-0c/DOCX/Pipeline D/生产/前端/live 调用）已执行：
+
+1. **候选内容核算真实化**：unroutable 内容不再被排除在 exactly-once/丢内容硬门禁
+   外。D 的 title/tagline 与 E 的 location 通过显式 candidate-only
+   `header_overflow` 计划节点渲染并被逐叶验证；被遮蔽的 web-copy 占位行表示为
+   显式 reviewed omission（独立处置，绝不能被描述为已渲染/已覆盖）。核算硬门禁
+   `candidate_content_accounting`：任何实质源值既未恰一次渲染、也未在已批准处置
+   下显式省略 → run 失败。
+2. **空白页门禁修复**：逐页独立检查（text + 规则/图形对象）；任一页无有意义内容
+   即失败，并有回归测试证明“多出一页空白页”会失败（reportlab 构造的空白第二页）。
+3. **`content_shapes_match_evidence` 真实化**：原全局“存在些几何/存在些 bullet 级”
+   检查不足；改为逐节、逐声明形态验证（entry 几何、entry title/meta/detail 排版级、
+   节目间节奏、bullet 设计、节内容排版、rule 放置/样式），且要求渲染器实际消费
+   对应测量状态；未实现/未测量的属性报告为能力缺口并保持硬门禁为 false（E→D
+   因 D 证据无条目排版级而保持 false，绝不占位性恒真）。
+4. **最小可见保真缺口闭合**：F 节线按测量放置/样式渲染（测量 below-heading 放置，
+   `RuleDecoration.placement` 为测量字段）；work/education 条目从 layout state 消费
+   显式 title/meta/detail 排版级与节目间节奏（`inter_entry_gap_above_pt`）；F 的
+   10pt-vs-9pt 正文体级由证据/状态解析（逐节测量内容样式 + 条目级，非 pair 专属
+   CSS）；保持流式语义 HTML（无 body 绝对 y、无目标背景、无 seed HTML、无目标
+   候选事实）。
+5. 同一对冻结 C1 基线 + 缓存目标证据重新生成三个 canonical 对比（D→E 主、E→F
+   泛化、E→D gap-only）。D→E/E→F 硬门禁全真绿；E→D 的 shape 门禁诚实保持 false
+   （D 证据无条目排版级测量，能力缺口已列出）。
+
+详见 `C2_0B_REPORT.md`。仍未接受：**再次停止，待 owner 视觉评审**。

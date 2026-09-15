@@ -28,11 +28,14 @@ from tests.experiments.c2_pipeline import (
     CandidateLeaf,
     CandidateSection,
     SectionContent,
+    UnroutableContent,
     state_bytes,
 )
 from tests.experiments.c2_renderer import (
     OVERFLOW_POLICY,
     C2RenderPlan,
+    blank_page_gate,
+    candidate_accounting_gate,
     compile_render_plan,
     content_gate,
     content_shape_verification,
@@ -215,6 +218,8 @@ def test_every_candidate_leaf_has_exactly_one_html_destination(fake_pdf_text) ->
 
 def _all_leaf_texts(plan: C2RenderPlan) -> list[str]:
     texts: list[str] = []
+    if plan.header_overflow is not None:
+        texts.extend(field.text for field in plan.header_overflow.fields)
     for row in plan.header_rows:
         texts.extend(field.text for field in row.fields)
     for section in [*plan.sections, *plan.appended_sections]:
@@ -384,11 +389,12 @@ def test_empty_target_sections_render_nothing_but_are_recorded() -> None:
     assert any("no candidate content" in note for note in plan.notes)
 
 
-def test_content_shapes_are_verified_against_measured_evidence() -> None:
+def test_content_shapes_are_verified_against_measured_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     from tests.experiments.c_pipeline import BodyEntryScaffold, BodyScaffold
     from tests.experiments.test_c2_pipeline import _heading
 
-    state, _ = plan_for()
+    state, plan = plan_for()
+    html = render_html(state, plan)
     scaffold = BodyScaffold(
         headings=[_heading("WORK EXPERIENCE", 140.0, "e.heading")], entry=BodyEntryScaffold(
             left_x0_pt=46.9, right_x1_pt=576.0, right_row_top_delta_pt=0.0,
@@ -396,12 +402,168 @@ def test_content_shapes_are_verified_against_measured_evidence() -> None:
         ),
         contact_icons_present=False, contact_separator="|",
     )
-    result = content_shape_verification(state, scaffold, dict(BULLET_TIERS))
-    assert result["passed"] is True
+    # Entry typography/inter-entry rhythm/content style values the state does
+    # not carry: the shape gate must stay FALSE and name the capability gaps
+    # (truthful, never a placeholder-true hard gate).
+    result = content_shape_verification(state, plan, scaffold, dict(BULLET_TIERS), html)
+    assert result["passed"] is False
+    gaps = {
+        row["capability_gap"]
+        for row in (property_row for entry in result["rows"] for property_row in entry["properties"])
+    }
+    assert any(gaps)
     # Bullet design declared but no measured dot: inconsistent.
-    broken = content_shape_verification(state, scaffold, {})
+    broken = content_shape_verification(state, plan, scaffold, {}, html)
     assert broken["passed"] is False
-    assert any(not row["consistent"] for row in broken["rows"])
+    assert any(
+        row["capability_gap"]
+        for row in broken["rows"]
+        for row in row["properties"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Candidate-content accounting (owner corrective pass)
+# ---------------------------------------------------------------------------
+
+
+def candidate_with_unroutable(disposition: str, slot: str | None = None) -> CandidateDocument:
+    candidate = rich_candidate(include_unmatched=False)
+    leaves = [leaf for leaf in candidate.leaves if leaf.leaf_id != "header.location"]
+    unroutable = UnroutableContent(
+        text="CANDCITY, ST",
+        reason="no measured header row carries a location",
+        before_leaf_id="header.phone",
+        disposition=disposition,  # type: ignore[arg-type]
+        slot=slot,
+    )
+    return candidate.model_copy(update={"leaves": leaves, "unroutable": [unroutable]})
+
+
+def test_unroutable_render_content_routes_through_the_header_overflow_node(fake_pdf_text) -> None:
+    # Truthful accounting: render-disposition unroutables are NOT excluded
+    # from the exactly-once/content-loss gate — they route through an explicit
+    # candidate-only header-overflow plan node and are owned and verified.
+    state = compile_synthetic()
+    candidate = candidate_with_unroutable("render", slot="location")
+    plan = compile_render_plan(state, candidate)
+    assert plan.header_overflow is not None
+    assert plan.leaf_ledger["unroutable.location"] == "header_overflow.location"
+    assert plan.status == "fully_materialized"
+    html = render_html(state, plan)
+    assert "CANDCITY, ST" in html
+    assert 'data-c2-candidate-only="true"' in html
+    fake_pdf_text("\n".join([*_all_leaf_texts(plan)]))
+    gate = content_gate(plan, html, Path("unused.pdf"))
+    assert gate["passed"], gate["missing_pdf"]
+    assert gate["leaf_records"]["unroutable.location"]["rendered_with_value"] is True
+    accounting = candidate_accounting_gate(plan, gate)
+    assert accounting["passed"] is True
+    assert accounting["routed_header_overflow"] == ["unroutable.location"]
+
+
+def test_explicit_omission_is_a_separate_disposition_never_rendered(fake_pdf_text) -> None:
+    state = compile_synthetic()
+    candidate = candidate_with_unroutable("omit")
+    plan = compile_render_plan(state, candidate)
+    assert plan.header_overflow is None
+    assert "unroutable.location" not in plan.leaf_ledger
+    assert [omission.text for omission in plan.explicit_omissions] == ["CANDCITY, ST"]
+    html = render_html(state, plan)
+    assert "CANDCITY" not in html  # omitted content is not rendered
+    fake_pdf_text("\n".join(_all_leaf_texts(plan)))
+    gate = content_gate(plan, html, Path("unused.pdf"))
+    assert gate["passed"] is True
+    accounting = candidate_accounting_gate(plan, gate)
+    assert accounting["passed"] is True
+    assert accounting["explicitly_omitted"][0]["text"] == "CANDCITY, ST"
+
+
+def test_a_value_neither_rendered_nor_omitted_fails_the_accounting_gate() -> None:
+    state = compile_synthetic()
+    candidate = candidate_with_unroutable("omit")
+    plan = compile_render_plan(state, candidate)
+    # Simulate a run where a render-disposition unroutable was never routed:
+    # the accounting gate must fail the run (no silent content loss).
+    flipped = plan.model_copy(deep=True)
+    flipped.explicit_omissions = []
+    flipped.unroutable = [
+        UnroutableContent(
+            text="CANDCITY, ST",
+            reason="no measured header row carries a location",
+            before_leaf_id="header.phone",
+            disposition="render",
+            slot="location",
+        )
+    ]
+    accounting = candidate_accounting_gate(flipped, {"passed": True})
+    assert accounting["passed"] is False
+    assert accounting["unresolved_unroutable"] == ["CANDCITY, ST"]
+
+
+def test_a_render_disposition_without_a_slot_fails_at_authoring() -> None:
+    with pytest.raises(Exception, match="overflow slot"):
+        UnroutableContent(
+            text="CANDCITY, ST",
+            reason="no measured header row carries a location",
+            before_leaf_id="header.phone",
+            disposition="render",
+            slot=None,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Blank-page gate (owner corrective pass: every page inspected independently)
+# ---------------------------------------------------------------------------
+
+
+def _reportlab_pdf(path: Path, pages: list[str | None]) -> Path:
+    """A real multi-page PDF; a None page is left completely blank."""
+    from reportlab.pdfgen import canvas
+
+    document = canvas.Canvas(str(path))
+    for text in pages:
+        if text is not None:
+            document.drawString(72, 720, text)
+        document.showPage()
+    document.save()
+    return path
+
+
+def test_blank_page_gate_passes_on_a_single_content_page(tmp_path: Path) -> None:
+    pdf = _reportlab_pdf(tmp_path / "one_page.pdf", ["Real page one content"])
+    result = blank_page_gate(pdf)
+    assert result["passed"] is True
+    assert result["pages_inspected"] == 1
+    assert result["pages"][0]["meaningful_text"] is True
+
+
+def test_blank_page_gate_fails_on_an_extra_blank_page(tmp_path: Path) -> None:
+    # Regression: an exported document whose second page is empty must FAIL.
+    pdf = _reportlab_pdf(
+        tmp_path / "two_pages.pdf", ["Page one content", None]
+    )
+    result = blank_page_gate(pdf)
+    assert result["passed"] is False
+    assert result["blank_pages"] == [2]
+    assert result["pages"][1]["meaningful_text"] is False
+
+
+def test_blank_page_gate_accepts_a_rule_only_page(tmp_path: Path) -> None:
+    # A page with no text but an approved visual object (a rule) is not blank.
+    from reportlab.pdfgen import canvas
+
+    path = tmp_path / "rule_only.pdf"
+    document = canvas.Canvas(str(path))
+    document.drawString(72, 720, "Page one content")
+    document.showPage()
+    document.setLineWidth(0.5)
+    document.line(72, 400, 500, 400)
+    document.showPage()
+    document.save()
+    result = blank_page_gate(path)
+    assert result["passed"] is True
+    assert result["pages"][1]["visual_objects"] > 0
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +577,8 @@ REQUIRED_ARTIFACTS = (
     "capability_gaps.json", "leaf_ownership.json", "comparison_manifest.json",
     "review.html", "target_page_1.png", "c1_page_1.png", "c2_page_1.png",
     "diff_target_vs_c2_page_1.png", "diff_c1_vs_c2_page_1.png",
-    "context_coverage.json", "hard_gates.json",
+    "context_coverage.json", "content_accounting.json", "blank_page_validation.json",
+    "hard_gates.json",
 )
 
 
@@ -431,7 +594,6 @@ def test_frozen_c1_pair_runs_end_to_end(pair: str) -> None:
     if not target.exists():
         pytest.skip("local resume_matrix corpus not present")
     result = renderer_module.run_pair(pair)
-    assert result["hard_gates_passed"] is True, result.get("hard_gates")
     run_dir = Path(result["run_dir"])
     for artifact in REQUIRED_ARTIFACTS:
         assert (run_dir / artifact).exists(), artifact
@@ -440,8 +602,28 @@ def test_frozen_c1_pair_runs_end_to_end(pair: str) -> None:
     ownership = json.loads((run_dir / "leaf_ownership.json").read_text())
     assert ownership["status"] == "fully_materialized"
     assert ownership["ownership_exactly_one"] is True
+    accounting = json.loads((run_dir / "content_accounting.json").read_text())
+    assert accounting["passed"] is True
+    assert accounting["unhomed"] == [] and accounting["unresolved_unroutable"] == []
+    blank = json.loads((run_dir / "blank_page_validation.json").read_text())
+    assert blank["passed"] is True and blank["blank_pages"] == []
     manifest = json.loads((run_dir / "comparison_manifest.json").read_text())
     assert manifest["frozen_c1_baseline"]["run_id"]
-    assert manifest["hard_gates_passed"] is True
+    gates = json.loads((run_dir / "hard_gates.json").read_text())["gates"]
     if spec["target"] == "D":
-        assert "gap-only" in manifest["parity_scope"]
+        # Gap-only pair: D's target evidence carries no measured entry
+        # typography tiers, so the shape gate stays FALSE with named
+        # capability gaps — never a placeholder-true hard gate.
+        assert gates["content_shapes_match_evidence"] is False
+        shape = json.loads((run_dir / "content_shape_verification.json").read_text())
+        gaps = {
+            row["capability_gap"]
+            for entry in shape["rows"]
+            for row in entry["properties"]
+            if row["capability_gap"]
+        }
+        assert gaps
+        assert manifest["parity_scope"].startswith("D-target pairs are gap-only")
+    else:
+        assert manifest["hard_gates_passed"] is True
+        assert all(gates.values())

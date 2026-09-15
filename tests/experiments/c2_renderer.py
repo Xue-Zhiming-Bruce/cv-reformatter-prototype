@@ -108,6 +108,39 @@ class HeaderFieldPlan(StateModel):
     text: str
 
 
+class OverflowField(StateModel):
+    slot: str
+    leaf_id: str
+    text: str
+
+
+class HeaderOverflowPlan(StateModel):
+    """Explicit candidate-only header-overflow node (owner corrective pass).
+
+    Candidate title/tagline/location values with no measured target header
+    slot are NOT excluded from accounting: they route through this declared
+    plan node, render after the measured header rows, and are owned and
+    verified exactly like every other leaf. The node carries no invented
+    candidate fact — every field is a verbatim source value.
+    """
+
+    node_id: str = "header_overflow"
+    style_id: str | None = None
+    gap_above_pt: float | None = None  # continues the measured header rhythm
+    fields: list[OverflowField] = Field(default_factory=list)
+
+
+class OmittedContent(StateModel):
+    """An explicitly reviewed omission — a separate disposition from rendering.
+
+    Omitted content is never described as rendered or covered; the run's
+    accounting lists it as ``explicitly_omitted`` only.
+    """
+
+    text: str
+    reason: str
+
+
 class HeaderRowPlan(StateModel):
     node_id: str
     style_id: str | None = None
@@ -135,6 +168,7 @@ class SectionPlan(StateModel):
     label_case: str | None = None
     style_id: str | None = None
     rule_id: str | None = None
+    rule_placement: str | None = None
     content_kind: str
     source_role: str | None = None
     candidate_only: bool = False
@@ -149,6 +183,13 @@ class SectionPlan(StateModel):
     base_x0_pt: float | None = None
     heading_gap_above_pt: float | None = None  # content above -> rule (or heading)
     heading_gap_below_pt: float | None = None  # heading -> content
+    # Measured typography the renderer MUST consume (capability-gapped when
+    # absent; never claimed without consumption).
+    content_style_id: str | None = None
+    title_style_id: str | None = None
+    detail_style_id: str | None = None
+    meta_style_id: str | None = None
+    inter_entry_gap_above_pt: float | None = None
 
 
 class C2RenderPlan(StateModel):
@@ -156,10 +197,12 @@ class C2RenderPlan(StateModel):
     overflow_policy: str = OVERFLOW_POLICY
     page: PageState
     header_rows: list[HeaderRowPlan] = Field(default_factory=list)
+    header_overflow: HeaderOverflowPlan | None = None
     sections: list[SectionPlan] = Field(default_factory=list)  # mapped target sections, state order
     appended_sections: list[SectionPlan] = Field(default_factory=list)
     leaf_ledger: dict[str, str] = Field(default_factory=dict)
     unroutable: list[UnroutableContent] = Field(default_factory=list)
+    explicit_omissions: list[OmittedContent] = Field(default_factory=list)
     merged_candidate_headings: list[dict[str, str]] = Field(default_factory=list)
     skipped_unresolved_sections: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
@@ -233,6 +276,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             leaves_by_parent.setdefault(leaf.parent_leaf_id, []).append(leaf)
 
     by_id = {node.node_id: node for node in state.nodes}
+    rules_dict = {rule.rule_id: rule for rule in state.rules}
     header_rows = [node for node in state.nodes if node.kind == "header_row"]
     sections = [node for node in state.nodes if node.kind == "section"]
     style_of = {node.node_id: node.style_id for node in state.nodes}
@@ -296,6 +340,46 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                 "any target header row (author it as unroutable instead of guessing)"
             )
 
+    # -- explicit candidate-content dispositions (owner corrective pass) -------
+    # Render-disposition unroutables route through the explicit candidate-only
+    # header-overflow node and are owned/verified like every other leaf;
+    # omit-disposition records are explicitly omitted (never rendered, never
+    # described as covered). A record without a truthful disposition fails.
+    overflow_fields: list[OverflowField] = []
+    explicit_omissions: list[OmittedContent] = []
+    for record in candidate.unroutable:
+        if record.disposition == "render":
+            overflow_fields.append(
+                OverflowField(slot=record.slot or "", leaf_id=f"unroutable.{record.slot}", text=record.text)
+            )
+            notes.append(
+                f"unroutable {record.slot!r} routes through the candidate-only "
+                "header-overflow node (explicit plan node, not hidden logic)"
+            )
+        else:  # omit
+            explicit_omissions.append(OmittedContent(text=record.text, reason=record.reason))
+            notes.append(
+                f"unroutable {record.text[:40]!r}: EXPLICITLY OMITTED under the approved "
+                "reviewed-omission disposition (not rendered, not covered)"
+            )
+    header_overflow = (
+        HeaderOverflowPlan(
+            style_id=next(
+                (row.style_id for row in header_plans[::-1] if row.style_id), None
+            ),
+            gap_above_pt=next(
+                (row.gap_above_pt for row in header_plans[::-1] if row.gap_above_pt is not None),
+                None,
+            ),
+            fields=overflow_fields,
+        )
+        if overflow_fields
+        else None
+    )
+    if header_overflow is not None:
+        for field in overflow_fields:
+            own(field.leaf_id, f"{header_overflow.node_id}.{field.slot}")
+
     # -- mapped target sections -----------------------------------------------
     mapped_roles = {
         role: section
@@ -358,16 +442,28 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             continue  # already a hard failure above
         role = section.binding.sources[0]
         heading_node = heading_of(section.node_id)
+        entry_node = by_id.get(section.entry_ref) if section.entry_ref else None
         plan = SectionPlan(
             node_id=section.node_id,
             label=heading_node.label if heading_node else section.node_id,
             label_case=heading_node.label_case if heading_node else None,
             style_id=heading_node.style_id if heading_node else None,
             rule_id=heading_node.rule_id if heading_node else None,
+            rule_placement=(
+                rules_dict[heading_node.rule_id].placement
+                if heading_node and heading_node.rule_id and heading_node.rule_id in rules_dict
+                else None
+            ),
             content_kind=content.content_kind,
             source_role=role,
+            content_style_id=section.content_style_id,
             bullet_marker=content.bullet_marker,
         )
+        if entry_node is not None:
+            plan.title_style_id = entry_node.title_style_id
+            plan.detail_style_id = entry_node.detail_style_id
+            plan.meta_style_id = entry_node.meta_style_id
+            plan.inter_entry_gap_above_pt = entry_node.inter_entry_gap_above_pt
         if heading_node is not None:
             plan.heading_gap_above_pt = (
                 heading_node.spacing.gap_above_pt if heading_node.spacing else None
@@ -526,10 +622,12 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
     return C2RenderPlan(
         page=state.page,
         header_rows=header_plans,
+        header_overflow=header_overflow,
         sections=section_plans,
         appended_sections=appended_plans,
         leaf_ledger=dict(sorted(ledger.items())),
         unroutable=list(candidate.unroutable),
+        explicit_omissions=explicit_omissions,
         merged_candidate_headings=merged_headings,
         skipped_unresolved_sections=[
             heading_of(section.node_id).label
@@ -579,17 +677,44 @@ def _class_for(style_id: str | None) -> str:
     return f"c2-{style_id.replace('.', '-')}" if style_id else ""
 
 
-def _heading_html(plan: SectionPlan, rule: dict[str, Any] | None) -> str:
+def _rule_extent_css(plan: SectionPlan, rule: dict[str, Any], page: PageState) -> list[str]:
+    """Consume the measured rule x-extent (shrink the heading box to it)."""
+    x0 = rule.get("x0_pt")
+    x1 = rule.get("x1_pt")
+    if x0 is None or x1 is None:
+        return []
+    margin_left = round(float(x0) - page.margin_left_pt, 3)
+    margin_right = round(page.width_pt - page.margin_right_pt - float(x1), 3)
+    declarations: list[str] = []
+    if abs(margin_left) >= 0.01:
+        declarations.append(f"margin-left: {_pt(margin_left)};")
+    if abs(margin_right) >= 0.01:
+        declarations.append(f"margin-right: {_pt(margin_right)};")
+    return declarations
+
+
+def _heading_html(plan: SectionPlan, rule: dict[str, Any] | None, page: PageState) -> str:
     style_class = _class_for(plan.style_id)
     declarations: list[str] = []
-    if plan.rule_id and rule:
-        if plan.heading_gap_above_pt is not None:
-            declarations.append(f"margin-top: {_pt(plan.heading_gap_above_pt)};")
-        declarations.append(f"border-top: {_pt(rule['stroke_pt'])} solid {rule['color_hex']};")
-        if rule.get("gap_below_pt") is not None:
-            declarations.append(f"padding-top: {_pt(rule['gap_below_pt'])};")
-    elif plan.heading_gap_above_pt is not None:
+    if plan.heading_gap_above_pt is not None:
         declarations.append(f"margin-top: {_pt(plan.heading_gap_above_pt)};")
+    if plan.rule_id and rule:
+        declarations.extend(_rule_extent_css(plan, rule, page))
+        if rule.get("placement") == "below_heading":
+            # Measured below-heading rule (F): text, then border, then content.
+            declarations.append(
+                f"border-bottom: {_pt(rule['stroke_pt'])} solid {rule['color_hex']};"
+            )
+            if rule.get("gap_above_pt") is not None:
+                declarations.append(f"padding-bottom: {_pt(rule['gap_above_pt'])};")
+            if rule.get("gap_below_pt") is not None:
+                declarations.append(f"margin-bottom: {_pt(rule['gap_below_pt'])};")
+        else:
+            declarations.append(
+                f"border-top: {_pt(rule['stroke_pt'])} solid {rule['color_hex']};"
+            )
+            if rule.get("gap_below_pt") is not None:
+                declarations.append(f"padding-top: {_pt(rule['gap_below_pt'])};")
     if plan.heading_gap_below_pt is not None:
         declarations.append(f"margin-bottom: {_pt(plan.heading_gap_below_pt)};")
     style_attr = f" style=\"{' '.join(declarations)}\"" if declarations else ""
@@ -605,6 +730,7 @@ def _list_html(
     node_id: str,
     instance_id: str | None,
     item_prefix: str,
+    line_class: str,
 ) -> str:
     """Bullet list with the measured hanging-indent geometry, or plain lines."""
     if plan.bullet_marker == "bullet" and plan.bullet_dot_x0_pt is not None and plan.bullet_text_x0_pt is not None:
@@ -612,7 +738,7 @@ def _list_html(
         padding = round(plan.bullet_text_x0_pt - base, 3)
         hang = round(plan.bullet_text_x0_pt - plan.bullet_dot_x0_pt, 3)
         lines = [
-            f'      <li data-node-id="{_esc(item_prefix)}.{_esc(item.leaf_id)}" '
+            f'      <li class="{line_class}" data-node-id="{_esc(item_prefix)}.{_esc(item.leaf_id)}" '
             f'style="padding-left: {_pt(padding)};">'
             f'<span class="c2-bullet-dot" style="display:inline-block;width: {_pt(hang)};'
             f'margin-left: -{_pt(hang)};">•</span>{_esc(item.text)}</li>'
@@ -625,7 +751,7 @@ def _list_html(
         )
     # Zero-bullet design: verbatim text lines (source bullet glyphs stay text).
     return "".join(
-        f'    <p class="c2-body-line" data-node-id="{_esc(item_prefix)}.{_esc(item.leaf_id)}">'
+        f'    <p class="{line_class}" data-node-id="{_esc(item_prefix)}.{_esc(item.leaf_id)}">'
         f"{_esc(item.text)}</p>\n"
         for item in items
     )
@@ -695,6 +821,25 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
             f'  <div class="{_class_for(row.style_id)}" data-node-id="{_esc(row.node_id)}" '
             f' style="{" ".join(declarations)}">{separator.join(spans)}</div>'
         )
+    if plan.header_overflow is not None:
+        # Explicit candidate-only header-overflow node (declared on the plan;
+        # every field is a verbatim source value, owned and verified).
+        overflow = plan.header_overflow
+        declarations = []
+        if overflow.gap_above_pt is not None:
+            declarations.append(f"margin-top: {_pt(overflow.gap_above_pt)};")
+        separator = "   "
+        spans = [
+            f'<span data-node-id="{_esc(overflow.node_id)}.{_esc(field.slot)}" '
+            f'data-leaf-id="{_esc(field.leaf_id)}" data-c2-candidate-only="true">'
+            f"{_esc(field.text)}</span>"
+            for field in overflow.fields
+        ]
+        parts.append(
+            f'  <div class="{_class_for(overflow.style_id)}" data-node-id="{_esc(overflow.node_id)}" '
+            f'data-c2-candidate-only="true" style="{" ".join(declarations)}">'
+            f"{separator.join(spans)}</div>"
+        )
     parts.append("</header>")
 
     parts.append('<main data-c2-region="body">')
@@ -705,11 +850,16 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
             {
                 "stroke_pt": rule.stroke_pt,
                 "color_hex": rule.color_hex,
+                "gap_above_pt": rule.gap_above_pt,
                 "gap_below_pt": rule.gap_below_pt,
+                "x0_pt": rule.x0_pt,
+                "x1_pt": rule.x1_pt,
+                "placement": rule.placement,
             }
             if rule
             else None
         )
+        content_class = _class_for(section_plan.content_style_id) or "c2-body-line"
         candidate_only_attr = (
             ' data-c2-candidate-only="true" data-overflow-policy="'
             + OVERFLOW_POLICY
@@ -723,11 +873,11 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
             if not (section_plan.candidate_only and section_plan.source_heading is None):
                 # Headingless appended sections embed their heading in the content
                 # line itself (e.g. D's "SUMMARY — ..."); never invent an h2 label.
-                parts.append(_heading_html(section_plan, rule_payload))
+                parts.append(_heading_html(section_plan, rule_payload, page))
         if section_plan.content_kind == "paragraph":
             for line in section_plan.paragraph_lines:
                 parts.append(
-                    f'    <p data-node-id="{_esc(section_plan.node_id)}.content.{_esc(line.leaf_id)}">'
+                    f'    <p class="{content_class}" data-node-id="{_esc(section_plan.node_id)}.content.{_esc(line.leaf_id)}">'
                     f"{_esc(line.text)}</p>"
                 )
         elif section_plan.content_kind == "entries":
@@ -736,29 +886,45 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                 if section_plan.base_x0_pt is not None
                 else None
             )
-            for entry in section_plan.entries:
-                margin = f' style="margin-left: {_pt(indent)};"' if indent else ""
+            title_class = _class_for(section_plan.title_style_id)
+            detail_class = _class_for(section_plan.detail_style_id)
+            meta_class = _class_for(section_plan.meta_style_id)
+            for entry_index, entry in enumerate(section_plan.entries):
+                declarations = []
+                if indent:
+                    declarations.append(f"margin-left: {_pt(indent)};")
+                if entry_index and section_plan.inter_entry_gap_above_pt is not None:
+                    # Measured inter-entry rhythm from the layout state.
+                    declarations.append(f"margin-top: {_pt(section_plan.inter_entry_gap_above_pt)};")
+                entry_style = f' style="{" ".join(declarations)}"' if declarations else ""
                 parts.append(
-                    f'    <article class="c2-entry" data-node-id="{_esc(entry.node_id)}"{margin}>'
+                    f'    <article class="c2-entry" data-node-id="{_esc(entry.node_id)}"{entry_style}>'
                 )
                 parts.append('      <div class="c2-entry-head">')
                 parts.append('      <div class="c2-entry-main">')
-                for line in entry.title_lines:
+                for line_index, line in enumerate(entry.title_lines):
+                    # Entry typography tiers are measured state: the entry leaf's
+                    # own first line is the title tier, further lines are the
+                    # detail tier.
+                    line_class = title_class if line_index == 0 else (detail_class or title_class)
                     if line.leaf_id == entry.entry_leaf_id:
                         # The entry leaf's own title line is covered by the
                         # article identity; no second element identity.
-                        parts.append(f"        <p>{_esc(line.text)}</p>")
+                        parts.append(f'        <p class="{line_class}">{_esc(line.text)}</p>')
                     else:
                         parts.append(
-                            f'        <p data-node-id="{_esc(entry.node_id)}.title.{_esc(line.leaf_id)}">'
+                            f'        <p class="{line_class}" data-node-id="{_esc(entry.node_id)}.title.{_esc(line.leaf_id)}">'
                             f"{_esc(line.text)}</p>"
                         )
                 parts.append("      </div>")
                 if entry.meta_lines:
                     parts.append('      <div class="c2-entry-meta">')
-                    for line in entry.meta_lines:
+                    for line_index, line in enumerate(entry.meta_lines):
+                        # The right column mirrors the row tiers: the title row
+                        # uses the meta tier, further rows the detail tier.
+                        line_class = (meta_class or detail_class or title_class) if line_index == 0 else (detail_class or meta_class or title_class)
                         parts.append(
-                            f'        <p data-node-id="{_esc(entry.node_id)}.meta.{_esc(line.leaf_id)}">'
+                            f'        <p class="{line_class}" data-node-id="{_esc(entry.node_id)}.meta.{_esc(line.leaf_id)}">'
                             f"{_esc(line.text)}</p>"
                         )
                     parts.append("      </div>")
@@ -769,12 +935,12 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                         parts.append(
                             _list_html(
                                 section_plan, entry.bullet_items, f"{section_plan.node_id}.list",
-                                entry.node_id, f"{entry.node_id}.bullet",
+                                entry.node_id, f"{entry.node_id}.bullet", content_class,
                             )
                         )
                     for line in entry.text_lines:
                         parts.append(
-                            f'        <p data-node-id="{_esc(entry.node_id)}.textline.{_esc(line.leaf_id)}">'
+                            f'        <p class="{content_class}" data-node-id="{_esc(entry.node_id)}.textline.{_esc(line.leaf_id)}">'
                             f"{_esc(line.text)}</p>"
                         )
                     parts.append("      </div>")
@@ -785,6 +951,7 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                     _list_html(
                         section_plan, section_plan.items,
                         f"{section_plan.node_id}.list", None, f"{section_plan.node_id}.item",
+                        content_class,
                     )
                 )
         if not section_plan.empty:
@@ -905,6 +1072,10 @@ def content_gate(plan: C2RenderPlan, html: str, pdf: Path) -> dict[str, Any]:
 
 
 def _leaf_text(plan: C2RenderPlan, leaf_id: str) -> str:
+    if plan.header_overflow is not None:
+        for field in plan.header_overflow.fields:
+            if field.leaf_id == leaf_id:
+                return field.text
     for row in plan.header_rows:
         for field in row.fields:
             if field.leaf_id == leaf_id:
@@ -1009,6 +1180,84 @@ def structure_gate(
     }
 
 
+def blank_page_gate(pdf: Path) -> dict[str, Any]:
+    """Every exported page is inspected independently (owner corrective pass).
+
+    A page fails when it carries NO meaningful text (no alphanumeric text) and
+    no approved visual content (no rules, fills, images, or vector objects).
+    A run with any blank page fails this gate — including an extra trailing
+    blank page Chrome may emit.
+    """
+    import pdfplumber
+
+    pages: list[dict[str, Any]] = []
+    blank_pages: list[int] = []
+    with pdfplumber.open(pdf) as document:
+        for index, page in enumerate(document.pages, 1):
+            text = page.extract_text() or ""
+            meaningful_text = any(character.isalnum() for character in text)
+            visual_objects = len(page.rects) + len(page.lines) + len(page.images) + len(page.curves)
+            has_content = meaningful_text or visual_objects > 0
+            pages.append(
+                {
+                    "page": index,
+                    "meaningful_text": meaningful_text,
+                    "visual_objects": visual_objects,
+                    "has_content": has_content,
+                }
+            )
+            if not has_content:
+                blank_pages.append(index)
+    return {
+        "passed": not blank_pages,
+        "pages_inspected": len(pages),
+        "pages": pages,
+        "blank_pages": blank_pages,
+    }
+
+
+def candidate_accounting_gate(
+    plan: C2RenderPlan, content: dict[str, Any]
+) -> dict[str, Any]:
+    """Truthful candidate-content accounting (owner corrective pass).
+
+    Every substantive source value must be either rendered exactly once (an
+    owned leaf, including unroutables routed through the header-overflow
+    node) or explicitly omitted under the approved reviewed-omission
+    disposition. Omitted content is a separate disposition and is never
+    counted as rendered or covered. Unhomed leaves and unroutables without a
+    truthful disposition fail the run.
+    """
+    rendered_leaf_ids = set(plan.leaf_ledger)
+    overflow_ids = {
+        field.leaf_id for field in plan.header_overflow.fields
+    } if plan.header_overflow else set()
+    routed_unroutable = sorted(overflow_ids & rendered_leaf_ids)
+    unresolved_unroutable = [
+        record.text
+        for record in plan.unroutable
+        if record.disposition == "render" and f"unroutable.{record.slot}" not in rendered_leaf_ids
+    ]
+    accounting = {
+        "rendered_leaves": len(rendered_leaf_ids),
+        "explicitly_omitted": [
+            {"text": omission.text, "reason": omission.reason}
+            for omission in plan.explicit_omissions
+        ],
+        "routed_header_overflow": [
+            field.leaf_id for field in (plan.header_overflow.fields if plan.header_overflow else [])
+        ],
+        "unhomed": plan.unhomed,
+        "unresolved_unroutable": unresolved_unroutable,
+    }
+    passed = (
+        not plan.unhomed
+        and not unresolved_unroutable
+        and content["passed"]
+    )
+    return {"passed": passed, **accounting}
+
+
 def determinism_gate(
     html_path: Path, environment: dict[str, Any], output_dir: Path
 ) -> dict[str, Any]:
@@ -1031,42 +1280,185 @@ def determinism_gate(
 
 
 def content_shape_verification(
-    state: C2LayoutState, body_scaffold: Any, bullet_tiers: dict[str, float]
+    state: C2LayoutState,
+    plan: C2RenderPlan,
+    body_scaffold: Any,
+    bullet_tiers: dict[str, float],
+    html: str,
 ) -> dict[str, Any]:
-    """Content kinds are hypotheses: compare each E/F declared shape against
-    the measured target evidence the scaffold derives from."""
+    """Per-section, per-declared-shape truth check.
+
+    Content kinds are hypotheses: each section's declared shape is checked
+    against the measured target evidence AND against what the renderer
+    actually consumes. A property the renderer does not consume is reported
+    as a capability gap and keeps this hard gate FALSE — a declared shape is
+    never claimed faithful merely because some geometry exists somewhere.
+    """
+    _GAP_REASONS = {
+        "rule": "measured rule decoration not rendered in the measured placement/style",
+        "entry_geometry": "measured entry column geometry not consumed by the renderer",
+        "entry_typography": "measured entry title/meta/detail typography tiers not consumed by the renderer",
+        "inter_entry_rhythm": "measured inter-entry gap not consumed by the renderer",
+        "bullet_design": "measured bullet tier geometry not consumed by the renderer",
+        "content_typography": "measured section content typography not consumed by the renderer",
+    }
+    plan_sections = {
+        section.node_id: section for section in [*plan.sections, *plan.appended_sections]
+    }
+    entry_node_of = {
+        node.node_id: node for node in state.nodes if node.kind == "entry_row"
+    }
     rows: list[dict[str, Any]] = []
-    section_index = 0
     for node in state.nodes:
-        if node.kind != "section":
+        if node.kind != "section" or node.content is None:
             continue
-        section_index += 1
         content = node.content
-        if content is None:
-            continue
-        measured = {
-            "entry_geometry_measured": body_scaffold.entry is not None,
-            "bullet_design_measured": "bullet_dot" in bullet_tiers,
-        }
-        declared = {
-            "content_kind": content.content_kind,
-            "bullet_marker": content.bullet_marker,
-        }
-        consistent = True
-        if content.content_kind == "entries" and body_scaffold.entry is None:
-            consistent = False
-        if (
-            content.bullet_marker == "bullet"
-            and "bullet_dot" not in bullet_tiers
-        ):
-            consistent = False
-        if content.content_kind in {"paragraph", "item_list"} and content.bullet_marker == "bullet" and "bullet_dot" not in bullet_tiers:
-            consistent = False
+        plan_section = plan_sections.get(node.node_id)
+        entry_node = entry_node_of.get(node.entry_ref) if node.entry_ref else None
+        rule_node = next(
+            (rule for rule in state.rules if rule.rule_id == node.rule_id), None
+        ) if node.rule_id else None
+
+        properties: list[dict[str, Any]] = []
+
+        def check(
+            property_name: str,
+            required: bool,
+            measured: Any,
+            consumed: Any,
+        ) -> None:
+            capability_gap = (
+                None
+                if not required or (bool(measured) and bool(consumed))
+                else _GAP_REASONS.get(
+                    property_name,
+                    f"declared {property_name} lacks measured/consumed state",
+                )
+            )
+            properties.append(
+                {
+                    "property": property_name,
+                    "required_by_declared_shape": required,
+                    "measured": measured,
+                    "renderer_consumes": bool(consumed),
+                    "capability_gap": capability_gap,
+                }
+            )
+
+        def record_unrequired(property_name: str, measured: Any) -> None:
+            properties.append(
+                {
+                    "property": property_name,
+                    "required_by_declared_shape": False,
+                    "measured": measured,
+                    "renderer_consumes": False,
+                    "capability_gap": None,
+                }
+            )
+
+        plan_section_exists = plan_section is not None
+        if content.content_kind == "entries":
+            check(
+                "entry_geometry",
+                True,
+                body_scaffold.entry is not None,
+                bool(plan_section_exists and plan_section.base_x0_pt is not None),
+            )
+            measured_tiers = {
+                "title": bool(entry_node and entry_node.title_style_id),
+                "detail": bool(entry_node and entry_node.detail_style_id),
+                "meta": bool(entry_node and entry_node.meta_style_id),
+            }
+            consumed_title = bool(
+                plan_section
+                and plan_section.title_style_id
+                and _class_for(plan_section.title_style_id) in html
+            )
+            # A tier the evidence does not measure cannot be claimed; the
+            # renderer's title-tier fallback for unmeasured detail lines is a
+            # recorded note, never a fidelity claim.
+            consumed_detail = (
+                not measured_tiers["detail"]
+                or bool(
+                    plan_section
+                    and plan_section.detail_style_id
+                    and _class_for(plan_section.detail_style_id) in html
+                )
+            )
+            check(
+                "entry_typography",
+                True,
+                measured_tiers,
+                consumed_title and consumed_detail,
+            )
+            # Inter-entry rhythm is required exactly when the plan renders two
+            # or more entries (a single entry has no rhythm to reproduce).
+            needs_rhythm = bool(plan_section and len(plan_section.entries) >= 2)
+            measured_rhythm = bool(
+                entry_node and entry_node.inter_entry_gap_above_pt is not None
+            )
+            consumed_rhythm = bool(
+                plan_section
+                and plan_section.inter_entry_gap_above_pt is not None
+                and f"margin-top: {_pt(plan_section.inter_entry_gap_above_pt)}" in html
+            )
+            check("inter_entry_rhythm", needs_rhythm, measured_rhythm, consumed_rhythm)
+        renders_bullets = bool(
+            plan_section
+            and (
+                any(entry.bullet_items for entry in plan_section.entries)
+                or (plan_section.items and plan_section.bullet_marker == "bullet")
+            )
+        )
+        if renders_bullets:
+            check(
+                "bullet_design",
+                True,
+                "bullet_dot" in bullet_tiers and "bullet_text" in bullet_tiers,
+                bool(
+                    plan_section
+                    and plan_section.bullet_dot_x0_pt is not None
+                    and plan_section.bullet_text_x0_pt is not None
+                    and "c2-bullet-dot" in html
+                ),
+            )
+        else:
+            record_unrequired("bullet_design", "bullet_dot" in bullet_tiers)
+        # Measured section content typography: the section renders from a
+        # measured token (its own content style when measured, else the
+        # accepted style.body rule) and the HTML must consume that class.
+        content_token = (plan_section.content_style_id if plan_section else None) or (
+            "style.body" if any(style.style_id == "style.body" for style in state.styles) else None
+        )
+        check(
+            "content_typography",
+            bool(
+                plan_section
+                and (plan_section.paragraph_lines or plan_section.items or plan_section.entries)
+            ),
+            bool(content_token),
+            bool(content_token and _class_for(content_token) in html),
+        )
+        if node.rule_id:
+            consumed_rule = bool(
+                plan_section
+                and plan_section.rule_id == node.rule_id
+                and plan_section.rule_placement == rule_node.placement
+                and (
+                    f"border-top: {_pt(rule_node.stroke_pt)} solid {rule_node.color_hex}" in html
+                    if rule_node.placement == "above_heading"
+                    else f"border-bottom: {_pt(rule_node.stroke_pt)} solid {rule_node.color_hex}" in html
+                )
+            )
+            check("rule", True, rule_node is not None, consumed_rule)
+        else:
+            record_unrequired("rule", None)
+        consistent = all(row["capability_gap"] is None for row in properties)
         rows.append(
             {
                 "section": node.node_id,
-                "declared": declared,
-                "measured": measured,
+                "declared": {"content_kind": content.content_kind, "bullet_marker": content.bullet_marker},
+                "properties": properties,
                 "consistent": consistent,
             }
         )
@@ -1210,23 +1602,36 @@ def run_pair(pair: str, out: Path | None = None, c1_runs_root: Path | None = Non
         float(body_scaffold.entry.left_x0_pt) if body_scaffold.entry else state.page.margin_left_pt
     )
     bullet_tiers = derive_body_tier_targets(target, tier_base)
-    shape_verification = content_shape_verification(state, body_scaffold, bullet_tiers)
+    shape_verification = content_shape_verification(state, plan, body_scaffold, bullet_tiers, html)
     (run_dir / "content_shape_verification.json").write_text(
         json.dumps(shape_verification, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    # 6b. per-page blankness (owner corrective pass: every page inspected)
+    blank = blank_page_gate(pdf)
+    (run_dir / "blank_page_validation.json").write_text(
+        json.dumps(blank, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    # 6c. truthful candidate-content accounting (owner corrective pass)
+    accounting = candidate_accounting_gate(plan, content)
+    (run_dir / "content_accounting.json").write_text(
+        json.dumps(accounting, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
     # 7. hard gates
     hard_gates = {
         "every_leaf_exactly_once": ownership["ownership_exactly_one"] and not plan.unhomed,
+        "candidate_content_accounting": accounting["passed"],
         "no_target_candidate_facts": privacy["passed"],
         "section_order_matches_state": structure["section_order_matches_state"],
         "no_invalid_parent_reference": not structure["invalid_node_references"],
         "no_body_absolute_y_positioning": not structure["body_absolute_or_fixed_positioning"],
         "deterministic_render": determinism["passed"],
-        "no_blank_page": determinism["passed"] and all(
-            record["pdf_present"] for record in content["leaf_records"].values()
-        ),
+        "no_blank_page": blank["passed"],
         "no_clipped_or_missing_content": content["passed"],
         "no_target_background_image": not structure["target_images_or_backgrounds"],
         "fallbacks_and_gaps_explicit": True,
@@ -1290,7 +1695,7 @@ def run_pair(pair: str, out: Path | None = None, c1_runs_root: Path | None = Non
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
-    write_review_index(run_dir, manifest, hard_gates, ownership, content, structure, determinism)
+    write_review_index(run_dir, manifest, hard_gates, ownership, content, structure, determinism, accounting)
     result.update(
         {
             "hard_gates_passed": hard_gates_passed,
@@ -1309,7 +1714,9 @@ def write_review_index(
     content: dict[str, Any],
     structure: dict[str, Any],
     determinism: dict[str, Any],
+    accounting: dict[str, Any] | None = None,
 ) -> None:
+    accounting = accounting or {"explicitly_omitted": [], "passed": None}
     gate_rows = "".join(
         f"<tr><td>{_esc(name)}</td><td>{'PASS' if passed else 'FAIL'}</td></tr>"
         for name, passed in hard_gates.items()
@@ -1328,6 +1735,8 @@ def write_review_index(
         ("Layout state", "c2_layout_state.json"),
         ("Candidate render context", "candidate_render_context.json"),
         ("Leaf ownership", "leaf_ownership.json"),
+        ("Content accounting", "content_accounting.json"),
+        ("Blank-page validation", "blank_page_validation.json"),
         ("Capability gaps", "capability_gaps.json"),
         ("Comparison manifest", "comparison_manifest.json"),
     ]
@@ -1342,10 +1751,11 @@ td,th{{border:1px solid #ccc;padding:.3rem .6rem;text-align:left}}
 Automated evidence only — <strong>the owner makes the visual judgment</strong>; no parity or
 winner conclusion is drawn here.</p>
 <h2>Hard gates</h2><table>{gate_rows}</table>
-<h2>Ownership</h2>
-<p>{ownership['owned_leaves']}/{ownership['total_leaves']} leaves owned exactly once;
-{ownership['unroutable_leaves']} explicitly unroutable; {ownership['unhomed_leaves']} unhomed.
-Content gate passed: {content['passed']}. Determinism: {determinism['passed']}
+<h2>Ownership and accounting</h2>
+<p>{ownership['owned_leaves']}/{ownership['total_leaves']} candidate leaves owned exactly once;
+{len(accounting['explicitly_omitted'])} explicitly omitted (approved reviewed-omission disposition,
+not rendered); {ownership['unhomed_leaves']} unhomed; accounting gate passed:
+{accounting['passed']}. Content gate passed: {content['passed']}. Determinism: {determinism['passed']}
 ({determinism['page_count']} pages, raster hashes equal: {determinism['page_raster_hashes_equal']}).</p>
 <h2>Page counts (target / C1 / C2)</h2>
 <p>{manifest['page_counts']['target']} / {manifest['page_counts']['c1']} / {manifest['page_counts']['c2']}</p>
