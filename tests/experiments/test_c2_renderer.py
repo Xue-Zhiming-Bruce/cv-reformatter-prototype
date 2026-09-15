@@ -554,7 +554,7 @@ def test_rule_geometry_is_verified_in_the_rendered_output(tmp_path: Path) -> Non
     assert broken_rules[0]["measured"]["rendered_rule_extents"]
 
 
-def test_typography_consumption_is_element_scoped() -> None:
+def test_typography_consumption_is_element_scoped(tmp_path: Path) -> None:
     """A class name that only exists inside <style> is NOT renderer
     consumption: title/detail/meta/content classes must sit on the correct
     semantic nodes, and the meta tier is part of the consumed result."""
@@ -566,8 +566,11 @@ def test_typography_consumption_is_element_scoped() -> None:
     html = render_html(state, plan)
     summary = _shape_summary()
     scaffold = _shape_scaffold()
+    # The section carries a required rule, so the gate also consumes its
+    # rendered vector object from the exported PDF (measured extent 72→400).
+    measured_pdf = _rule_line_pdf(tmp_path / "typography.pdf", 72.0, 400.0)
     result = content_shape_verification(
-        state, plan, scaffold, dict(BULLET_TIERS), html, summary
+        state, plan, scaffold, dict(BULLET_TIERS), html, summary, measured_pdf
     )
     assert result["passed"] is True, result
     by_property = {
@@ -732,6 +735,136 @@ def test_blank_page_gate_accepts_a_rule_only_page(tmp_path: Path) -> None:
     result = blank_page_gate(path)
     assert result["passed"] is True
     assert result["pages"][1]["visual_objects"] > 0
+
+
+def _two_rule_summary() -> dict:
+    """Two same-extent rules (72→400), one per section heading (y 133 / 193,
+    matching compile_synthetic's 60pt heading spacing)."""
+    summary = _shape_summary()
+    second = json.loads(json.dumps(summary["rules"][0]))
+    second["bbox"]["top"] = 193.0 / 792.0
+    second["element_id"] = "syn.rule.2"
+    summary["rules"] = [summary["rules"][0], second]
+    return summary
+
+
+def _two_rule_scaffold() -> Any:
+    """Scaffold matching compile_synthetic's 60pt heading spacing (the rule
+    y positions in _two_rule_summary must resolve against these headings)."""
+    from tests.experiments.c_pipeline import BodyEntryScaffold, BodyScaffold
+    from tests.experiments.test_c2_pipeline import _heading
+
+    return BodyScaffold(
+        headings=[
+            _heading(label, 140.0 + 60.0 * index, f"e.heading.{index + 1}")
+            for index, label in enumerate(["WORK EXPERIENCE", "EDUCATION"])
+        ],
+        entry=BodyEntryScaffold(
+            left_x0_pt=46.9, right_x1_pt=576.0, right_row_top_delta_pt=0.0,
+            evidence_ids=["e.entry"],
+        ),
+        contact_icons_present=False, contact_separator="|",
+    )
+
+
+def _rule_rows(result: dict, section: str) -> list[dict]:
+    return [
+        row
+        for entry in result["rows"] if entry["section"] == section
+        for row in entry["properties"]
+        if row["property"] == "rule"
+    ]
+
+
+def test_a_required_rule_needs_a_rendered_vector_object(tmp_path: Path) -> None:
+    """A required rule with NO matching rendered vector object must FAIL the
+    gate — an empty rendered-extent list can never pass (pre-fix loophole)."""
+    state = compile_synthetic(
+        ["WORK EXPERIENCE"], rules=_shape_summary()["rules"], elements=_shape_summary()["elements"]
+    )
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    html = render_html(state, plan)
+    from reportlab.pdfgen import canvas
+
+    text_only_pdf = tmp_path / "no_rules.pdf"
+    document = canvas.Canvas(str(text_only_pdf))
+    document.drawString(72, 400, "body text only, no rule")
+    document.showPage()
+    document.save()
+    result = content_shape_verification(
+        state, plan, _shape_scaffold(), dict(BULLET_TIERS), html,
+        _shape_summary(), text_only_pdf,
+    )
+    rule_row = _rule_rows(result, "section.01")[0]
+    assert rule_row["required_by_declared_shape"] is True
+    assert rule_row["capability_gap"] is not None
+    assert result["passed"] is False
+    # And passing no PDF at all must equally fail a required rule.
+    no_pdf = content_shape_verification(
+        state, plan, _shape_scaffold(), dict(BULLET_TIERS), html, _shape_summary()
+    )
+    assert no_pdf["passed"] is False
+
+
+def test_one_rendered_rule_cannot_satisfy_two_required_section_rules(tmp_path: Path) -> None:
+    """Two same-extent section rules require TWO rendered vector objects:
+    one rendered rule is consumed by the first check; the second section's
+    rule then has no un-consumed match and FAILS (insufficient count)."""
+    summary = _two_rule_summary()
+    state = compile_synthetic(
+        ["WORK EXPERIENCE", "EDUCATION"], rules=summary["rules"], elements=summary["elements"]
+    )
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    html = render_html(state, plan)
+    # Only ONE rendered rule object at the shared extent.
+    one_rule_pdf = _rule_line_pdf(tmp_path / "one_rule.pdf", 72.0, 400.0)
+    result = content_shape_verification(
+        state, plan, _two_rule_scaffold(), dict(BULLET_TIERS), html, summary, one_rule_pdf
+    )
+    first = _rule_rows(result, "section.01")[0]
+    second = _rule_rows(result, "section.02")[0]
+    assert first["capability_gap"] is None
+    assert first["measured"]["matched_rendered_extent_index"] == 0
+    assert second["capability_gap"] is not None
+    assert second["measured"]["matched_rendered_extent_index"] is None
+    assert result["passed"] is False
+    # Control: with BOTH rules rendered, each check consumes its own object.
+    from reportlab.pdfgen import canvas
+
+    both_pdf = tmp_path / "two_rules.pdf"
+    document = canvas.Canvas(str(both_pdf))
+    document.setLineWidth(0.4)
+    document.line(72.0, 300, 400.0, 300)
+    document.line(72.0, 250, 400.0, 250)
+    document.showPage()
+    document.save()
+    ok = content_shape_verification(
+        state, plan, _two_rule_scaffold(), dict(BULLET_TIERS), html, summary, both_pdf
+    )
+    assert _rule_rows(ok, "section.01")[0]["capability_gap"] is None
+    assert _rule_rows(ok, "section.02")[0]["capability_gap"] is None
+
+
+def test_a_contentless_section_records_its_rule_as_not_required() -> None:
+    """A mapped section with no candidate content renders nothing and records
+    its rule as NOT required (never as rendered or as a capability gap)."""
+    summary = _two_rule_summary()
+    state = compile_synthetic(
+        ["WORK EXPERIENCE", "CERTIFICATIONS"], rules=summary["rules"],
+        elements=summary["elements"],
+    )
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    certifications = next(
+        section for section in plan.sections if section.source_role == "certifications"
+    )
+    assert certifications.empty is True
+    html = render_html(state, plan)
+    result = content_shape_verification(
+        state, plan, _two_rule_scaffold(), dict(BULLET_TIERS), html, summary
+    )
+    row = _rule_rows(result, "section.02")[0]
+    assert row["required_by_declared_shape"] is False
+    assert row["capability_gap"] is None
 
 
 # ---------------------------------------------------------------------------

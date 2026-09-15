@@ -8,7 +8,7 @@
 > | B 管线 | 已关闭（假设证伪，零件经 §7.3 移植） |
 > | C1 D→E（header + body） | owner 终审通过，完成（§9/§11） |
 > | C1 E→F 泛化 | **调试中，尚未通过**（十次冻结，缺口 #1–#8 已闭；#9 右缘杠杆失效、#10 种子行宽派生假设待验证，见 run 20260910T161228Z） |
-> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑（带既记录能力缺口，不晋级产品契约）；C2-0b 渲染实现与自动门禁完成，owner 评审裁决已下达：C2-0b 边界成立但若干绿色门禁不真实 + 主视觉词汇不完整 → 纠偏 pass 已执行（内容处置真实化、逐页空白页门禁、分节分形态证据验证、F 节线/条目排版与节奏/F 正文体级缺口闭合），**再次待 owner 视觉评审**（见 §16.5 与 `C2_0B_REPORT.md`） |
+> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑（带既记录能力缺口，不晋级产品契约）；C2-0b 经三轮纠偏后由 owner 终审记录裁决：**接受为实验性架构里程碑；非生产批准，非视觉 parity 主张**，`layout-state/1` 不晋级产品契约；第三轮纠偏闭合 rule-geometry 门禁完整性缺口（必选 rule 须消费导出 PDF 中实际匹配且未被消费的矢量对象，一个渲染 rule 不得满足多个必选节线检查）；C2-0c DOCX/cross-format spike 已按 §16.2/§16.3 实现并完成 canonical 运行（E→F 主案例全绿；E→D/D→E 诚实 fail-closed：unsupported 特征须 owner 显式确认），待 owner 评审（见 §16.5/§16.6 与 `C2_0B_REPORT.md`/`C2_0C_REPORT.md`） |
 > | Pipeline D | D0/D0-R/D1-0 已完成；暂停后续工作，等待 C2 结果（见 `D_PIPELINE_PROPOSAL.md`） |
 >
 > 日期:2026-09-08 初版;2026-09-09 §7–§8;2026-09-10 §9–§12;
@@ -997,4 +997,54 @@ RenderPlan → HTML → Chrome PDF 边界已证明；问题在于若干绿色门
    泛化、E→D gap-only）。D→E/E→F 硬门禁全真绿；E→D 的 shape 门禁诚实保持 false
    （D 证据无条目排版级测量，能力缺口已列出）。
 
-详见 `C2_0B_REPORT.md`。仍未接受：**再次停止，待 owner 视觉评审**。
+**Owner 终审裁决（2026-09-15，第三轮纠偏后）：接受为实验性架构里程碑；非生产
+批准。** 窄义仅指：C2 JSON → 确定性 RenderPlan → 语义 HTML → Chrome PDF 边界
+已被充分证明，实验可以继续；这不是生产批准，不是视觉 parity 主张，不将
+`layout-state/1` 晋级产品契约；Resume D 保持 gap-only 证据。详见
+`C2_0B_REPORT.md` 报告头与 §14。
+
+### 16.6 第三轮纠偏（rule-geometry 门禁完整性）与 C2-0c 执行结果（2026-09-15）
+
+**第三轮纠偏（C2-0b 收尾）**：终审发现 `content_shape_verification()` 的渲染
+rule 几何检查含 `not rendered_extents or any(...)` —— 无任何渲染矢量对象时必选
+rule 仍可误绿，且一个全局匹配 extent 可同时满足多个必选节线检查。修复（最小
+根因修复，无新验证框架）：必选 rule 必须在导出 PDF 中找到实际匹配的水平矢量
+对象（逐节记录 `matched_rendered_extent_index`）；匹配到的 extent 被唯一消费，
+一个渲染 rule 永不满足两个必选节线检查（数量不足即失败）；无内容节仍记 rule
+为 not required；缺失/过短/错位/数量不足全部失败；已有正确 D→E 与 E→F 产物
+继续通过（canonical 重生成 `c2_0b_*_20260915T085727Z`）。报告措辞勘误：E→F
+state 附着六条实测节线，但候选输出只渲染三个非空映射节的 rule（“渲染全部六条”
+说法已更正）；owner 裁决原文记录为“接受为实验性架构里程碑；非生产批准”；全文
+无视觉 parity / C2 优越性主张。新增聚焦回归：无渲染矢量对象的必选 rule 失败、
+单条渲染 rule 不可满足两条同 extent 节线（双条控制组通过）、无内容节 rule 记为
+not required。
+
+**C2-0c（DOCX/cross-format spike，§16.2-3/§16.3）已实现**
+（`tests/experiments/c2_docx_renderer.py`）：同一 `C2LayoutState` JSON + 同一
+独立候选内容 → 共享的渲染器中立确定性 render plan（`c2-render-plan/1`，无第二
+schema 族）→ 原生可编辑 OOXML DOCX（python-docx + 有界 OOXML 辅助，零新依赖，
+不经 HTML，无 agent/adapter/通用渲染框架）。权威状态仍是 JSON；DOCX 只是编译
+产物。
+
+- 原生结构：Word Heading 1 标题段、真实 Word List Bullet 列表段（零 bullet
+  设计按 §10.5 保持逐字文本）、实测节线为原生段落边框（`w:pBdr`，实测线宽/
+  颜色/x-extent 以段落缩进消费，非脆弱形状）、实测页面几何进 Word section
+  属性、实测排版 token 直接 run 格式化、实测字距走原生 `w:spacing`；
+- 确定性：包元数据归一化后两次编译逐字节一致；
+- 核算：逐叶恰好一次（正文叶整段、header 字段在其行段内），显式 omission
+  永不出现，段落序列等于 plan 阅读顺序（全部从写盘后的包重新检查，非源码推断）；
+- `ConversionCompatibilityReport`（`c2-conversion-compatibility/1`）：exact /
+  adjusted（内容保留 + 可见非阻塞降级：双栏条目行栈式化、候选-only 溢出节、
+  圆角 chip→可编辑行内文本〔仅在 state 携带 badge 时分类〕）/ unsupported
+  （unresolved 绑定、tables、detached rules、图片/矢量、contact icons、未实测
+  条目排版级）确定性分类；unsupported 必须 owner 显式确认，绝不静默丢内容；
+- canonical 运行（E→F 主案例 / E→D gap-bearing / D→E 原生列表）：E→F 全绿
+  （10 exact / 1 adjusted / 0 unsupported）；E→D 与 D→E 诚实 fail-closed
+  （unsupported 特征 → `unsupported_features_confirmed: false`，等 owner
+  显式确认）；LibreOffice 预览 PDF + 页图仅为评审证据，逐页空白门禁通过。
+
+运行目录：`runs/c2_0c_E_to_F_20260915T093732Z`、
+`runs/c2_0c_E_to_D_20260915T093734Z`、`runs/c2_0c_D_to_E_20260915T093736Z`。
+详见 `C2_0C_REPORT.md`。**C2-0c 为实验 spike：非生产 DOCX 系统，无任何
+产品级 PDF↔DOCX 转换主张；停止待 owner 评审。Pipeline D、生产集成、前端、
+chat 编辑均未启动。**

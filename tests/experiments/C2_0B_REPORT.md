@@ -1,17 +1,26 @@
 # Pipeline C2-0b Report: Deterministic HTML RenderPlan Renderer And Chrome PDF
 
-Status: `Second corrective pass complete; NOT accepted; awaiting final owner visual review`
+Status: `Accepted as an experimental architecture milestone; not production-approved`
+
+Owner verdict (final review, 2026-09-15): **accepted as an experimental
+architecture milestone; not production-approved.** The accepted meaning is
+narrow: the C2 JSON → deterministic RenderPlan → semantic HTML → Chrome PDF
+boundary is sufficiently proven to continue experimentation. This is NOT
+production approval, NOT a visual-parity claim, and does NOT promote
+`layout-state/1` into the product contract. Resume D remains gap-only
+evidence.
 
 Date: 2026-09-15
 Branch: `experiment/pipeline-c2` (worktree base `db8c171`; Pipeline D worktree
-untouched). Scope of the corrective pass: `tests/experiments/c2_pipeline.py`
+untouched). Scope of the corrective passes: `tests/experiments/c2_pipeline.py`
 (unroutable dispositions; measured rule placement; per-section content styles;
 entry typography tiers + inter-entry rhythm), `tests/experiments/c2_renderer.py`
 (header-overflow plan node, omission disposition, per-page blank-page gate,
-truthful per-section/per-shape verification, accounting gate),
-`tests/experiments/test_c2_renderer.py` (new offline + local-dataset
-regressions), `tests/experiments/PIPELINE_EVOLUTION_PROPOSAL.md` (banner +
-§16.5), `docs/testing/TEST_STRUCTURE.md` (artifact list), and this report.
+truthful per-section/per-shape verification, accounting gate, rule-geometry
+unique-consumption integrity), `tests/experiments/test_c2_renderer.py` (new
+offline + local-dataset regressions),
+`tests/experiments/PIPELINE_EVOLUTION_PROPOSAL.md` (banner + §16.5),
+`docs/testing/TEST_STRUCTURE.md` (artifact list), and this report.
 `app/`, `frontend/`, the product contract, API contract, and ADRs are
 untouched. No new runner, schema family, provider adapter, agent abstraction,
 or dependency was added; no DOCX (C2-0c), Pipeline D, production integration,
@@ -20,9 +29,10 @@ frontend work, or live provider call was started.
 Owner verdict applied (C2-0b first review, 2026-09-15): the JSON → RenderPlan →
 HTML → Chrome PDF boundary is proven, but C2-0b was NOT accepted because
 several green gates were not truthful and the primary visual vocabulary was
-incomplete. This corrective pass implements the six required corrections; the
-report is updated honestly; C2-0b is still NOT marked accepted and the work
-stops again here for owner visual review.
+incomplete. That corrective pass implemented the six required corrections.
+The FINAL owner review (same day, after the second and third corrective
+passes) recorded the verdict in the report header: accepted as an
+experimental architecture milestone; not production-approved.
 
 ## 1. Objective And Result
 
@@ -111,13 +121,41 @@ production integration, frontend work, and live calls remain untouched.
 
 ### 1a.4 Canonical runs regenerated (same frozen baselines)
 
-Same three canonical pairs, same frozen C1 runs, same cached evidence:
+Same three canonical pairs, same frozen C1 runs, same cached evidence
+(regenerated below in §1b after the gate-integrity fix):
 
 - D→E (primary): `c2_0b_D_to_E_20260915T081304Z` — all hard gates true.
 - E→F (generalization): `c2_0b_E_to_F_20260915T081311Z` — all hard gates true.
 - E→D (gap-only): `c2_0b_E_to_D_20260915T081318Z` — shape gate honestly FALSE
   with the same named capability gaps (D evidence carries no measured entry
   typography tiers); every other gate true.
+
+### 1b. Third corrective pass (rule-geometry gate integrity, 2026-09-15)
+
+Final review found one gate-integrity loophole in
+`content_shape_verification()`: the rendered-rule geometry check contained
+`not rendered_extents or any(...)`, so a required rule could PASS with NO
+rendered vector object at all, and one globally matching extent could satisfy
+MULTIPLE required section-rule checks. Fixed at the root:
+
+- a required rule now needs an actual matching horizontal vector object in
+  the exported PDF (`matched_rendered_extent_index` recorded per section);
+- each matched extent is marked CONSUMED, so one rendered rule can never
+  silently satisfy two required section rules (insufficient count fails);
+- a section that renders no content still records its rule as NOT required;
+- missing, short, misplaced, and insufficient-count rules all fail;
+- no new verification framework was introduced.
+
+Canonical runs regenerated from the same frozen baselines (final):
+
+- D→E (primary): `c2_0b_D_to_E_20260915T085727Z` — all hard gates true; the
+  three required rules consume rendered extents #0/#1/#2 respectively.
+- E→F (generalization): `c2_0b_E_to_F_20260915T085727Z` — all hard gates
+  true; the three non-empty mapped sections' rules consume extents #0/#1/#2;
+  the three empty sections record their rules as NOT required.
+- E→D (gap-only): `c2_0b_E_to_D_20260915T085727Z` — shape gate honestly FALSE
+  (entry typography gaps, unchanged); its two required rules each consume
+  their own rendered extent.
 
 ## 2. Corrective Changes Per Owner Requirement
 
@@ -324,9 +362,9 @@ are always explicit hard failures.
 
 | Pair | Canonical run directory |
 |---|---|
-| D→E | `tests/experiments/runs/c2_0b_D_to_E_20260915T081304Z/` |
-| E→F | `tests/experiments/runs/c2_0b_E_to_F_20260915T081311Z/` |
-| E→D | `tests/experiments/runs/c2_0b_E_to_D_20260915T081318Z/` |
+| D→E | `tests/experiments/runs/c2_0b_D_to_E_20260915T085727Z/` |
+| E→F | `tests/experiments/runs/c2_0b_E_to_F_20260915T085727Z/` |
+| E→D | `tests/experiments/runs/c2_0b_E_to_D_20260915T085727Z/` |
 
 Each run contains (at least): `c2_layout_state.json`,
 `candidate_render_context.json`, `c2_render_plan.json`, `c2_output.html`,
@@ -341,9 +379,9 @@ plus `target_page_1.png`, `c1_page_1.png`, `c2_page_N.png`,
 
 Direct review entry points (owner):
 
-- `c2_0b_D_to_E_20260915T081304Z/review.html` → `c2_output.pdf`
-- `c2_0b_E_to_F_20260915T081311Z/review.html` → `c2_output.pdf`
-- `c2_0b_E_to_D_20260915T081318Z/review.html` → `c2_output.pdf`
+- `c2_0b_D_to_E_20260915T085727Z/review.html` → `c2_output.pdf`
+- `c2_0b_E_to_F_20260915T085727Z/review.html` → `c2_output.pdf`
+- `c2_0b_E_to_D_20260915T085727Z/review.html` → `c2_output.pdf`
 
 ## 8. Commands Run
 
@@ -422,10 +460,13 @@ section order). Headlines:
    (24.8/14.3/10.0/9.0) exactly match; no generated size not in target —
    the F body-tier mismatch is closed from evidence (per-section measured
    content styles + entry tiers), not with pair-specific CSS.
-3. **Section rules** — F renders all six measured rules in the measured
+3. **Section rules** — the E→F layout state attaches all six measured target
+   rules, but the candidate output renders only the three NON-EMPTY mapped
+   sections, so exactly three section rules render in the measured
    below-heading placement with measured stroke/color/x-extent and measured
-   gaps (previously zero rules rendered and the state carried a detached-rules
-   gap). E renders its measured above-heading rules as before.
+   gaps; the three empty sections (SUMMARY, PROJECTS, CERTIFICATIONS) render
+   nothing and record their rules as not required. E renders its measured
+   above-heading rules as before.
 4. **Entry typography and rhythm** — work/education entries consume the
    measured title/detail/meta tiers and inter-entry gaps from the state
    (D→E rhythm 2.804pt; E→F 8.080pt projects / 2.062pt experience). The
@@ -470,7 +511,8 @@ section order). Headlines:
 7. All C2-0a state capability gaps propagate verbatim into each run's
    `capability_gaps.json` (E: images/vector graphics; D: 5 unresolved
    section bindings + tables + 4 detached rules; F: none remaining —
-   F's rules now attach).
+   F's six rules now attach to the state; only the non-empty sections'
+   rules render, see §10-3).
 
 ## 12. Known Unsupported Behavior (fail-closed, tested)
 
@@ -520,7 +562,13 @@ plus `c1_matrix_FE2_20260910T200958Z` (needed by a pre-existing C1 regression
 test). The worktree-local `.venv` symlink (test interpreter) was removed after
 testing so `git status --short` is genuinely empty.
 
-## 14. Owner-Review Checklist (final review)
+## 14. Owner-Review Checklist (final review — verdict recorded)
+
+The owner performed the final visual review on 2026-09-15 and recorded the
+verdict: **accepted as an experimental architecture milestone; not
+production-approved** (narrow meaning per the report header; no visual-parity
+claim; `layout-state/1` not promoted; Resume D gap-only). The checklist is
+preserved as the review record:
 
 1. Open each run's `review.html`; then the PDFs: C2 `c2_output.pdf` against
    the target PDF and the frozen C1 `generated.pdf` for the same pair.
@@ -540,17 +588,21 @@ testing so `git status --short` is genuinely empty.
    unresolved bindings; contact icons; header field geometry; label policy).
 7. Record the verdict. Per the work order: agents do not mark C2-0b accepted;
    C2-0c (DOCX) and Pipeline D remain stopped.
+   → Recorded 2026-09-15: accepted as an experimental architecture milestone;
+   not production-approved.
 
 ## 15. Explicit Non-Claims
 
-- No visual parity, superiority, or acceptance is claimed — automated gates
-  and metrics are supporting evidence only; the owner is the final judge of
-  generated-file quality.
+- No visual parity, superiority, or acceptance-as-production is claimed —
+  automated gates and metrics are supporting evidence only; the owner is the
+  final judge of generated-file quality. The recorded verdict is acceptance
+  as an EXPERIMENTAL ARCHITECTURE MILESTONE ONLY, explicitly not
+  production-approved and not a visual-parity claim.
 - No promotion of `layout-state/1` toward the product contract; LayoutTemplate
   Spec 2.0 remains the product schema.
 - Candidate segmentation is authored-by-inspection (verified against the
   frozen source inventory), not an extraction-capability claim.
 - E→D is gap-only evidence; Resume D participates in no parity conclusion,
   and its shape gate is honestly false rather than placeholder-true.
-- C2-0b is NOT accepted by this report; the work stops here for the FINAL
-  owner visual review.
+- C2-0b is accepted only as an experimental architecture milestone; the work
+  continues to C2-0c (DOCX) under the same experimental boundaries.

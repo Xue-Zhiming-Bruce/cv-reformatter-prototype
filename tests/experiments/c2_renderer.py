@@ -1438,6 +1438,11 @@ def content_shape_verification(
     page_height = float(page.height_pt)
     elements = _parse_elements(html)
     rendered_extents = _rendered_rule_extents(pdf)
+    # Each required section rule must consume its OWN rendered vector object:
+    # a matched extent is marked consumed so one rendered rule can never
+    # silently satisfy two required section rules, and an empty rendered
+    # extent list can never pass a required rule check.
+    consumed_rule_extents: set[int] = set()
     scaffold_headings = sorted(body_scaffold.headings, key=lambda item: (item.page, item.top_pt))
     rows: list[dict[str, Any]] = []
     section_position = 0
@@ -1730,16 +1735,23 @@ def content_shape_verification(
                     )
                 )
             )
-            geometry_consumed = (
-                not rendered_extents
-                or any(
-                    abs(extent[0] - evidence_rule["x0_pt"]) <= RULE_GEOMETRY_TOLERANCE_PT
-                    and abs(extent[1] - evidence_rule["x1_pt"]) <= RULE_GEOMETRY_TOLERANCE_PT
-                    for extent in rendered_extents
+            matched_extent_index = (
+                next(
+                    (
+                        index
+                        for index, extent in enumerate(rendered_extents)
+                        if index not in consumed_rule_extents
+                        and abs(extent[0] - evidence_rule["x0_pt"]) <= RULE_GEOMETRY_TOLERANCE_PT
+                        and abs(extent[1] - evidence_rule["x1_pt"]) <= RULE_GEOMETRY_TOLERANCE_PT
+                    ),
+                    None,
                 )
                 if evidence_rule
-                else False
+                else None
             )
+            geometry_consumed = matched_extent_index is not None
+            if matched_extent_index is not None:
+                consumed_rule_extents.add(matched_extent_index)
             consumed_rule = bool(
                 state_rule
                 and evidence_rule
@@ -1760,6 +1772,7 @@ def content_shape_verification(
                     "x0_pt": evidence_rule["x0_pt"] if evidence_rule else None,
                     "x1_pt": evidence_rule["x1_pt"] if evidence_rule else None,
                     "rendered_rule_extents": rendered_extents,
+                    "matched_rendered_extent_index": matched_extent_index,
                 },
                 bool(state_rule and border_present and extent_consumed and geometry_consumed),
             )
