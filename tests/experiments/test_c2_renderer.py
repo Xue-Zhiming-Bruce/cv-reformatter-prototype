@@ -455,6 +455,26 @@ def _rule_line_pdf(path: Path, x0: float, x1: float) -> Path:
     return path
 
 
+def _heading_rule_pdf(path: Path, items: list[dict]) -> Path:
+    """A real PDF with rendered heading text lines and rules at measured
+    positions: each item carries ``label`` and ``heading_top_pt`` plus an
+    optional ``rule`` {x0, x1, top}. Rendered rule objects therefore carry
+    page AND vertical position, like the exported Chrome PDFs."""
+    from reportlab.pdfgen import canvas
+
+    document = canvas.Canvas(str(path))
+    for item in items:
+        document.setFont("Helvetica", 10)
+        document.drawString(72.0, 792.0 - item["heading_top_pt"] - 7.2, item["label"])
+        rule = item.get("rule")
+        if rule:
+            document.setLineWidth(0.4)
+            document.line(rule["x0"], 792.0 - rule["top"], rule["x1"], 792.0 - rule["top"])
+    document.showPage()
+    document.save()
+    return path
+
+
 def test_content_shapes_are_verified_against_measured_evidence() -> None:
     from tests.experiments.c_pipeline import BodyEntryScaffold, BodyScaffold
     from tests.experiments.test_c2_pipeline import _heading
@@ -520,8 +540,13 @@ def test_rule_geometry_is_verified_in_the_rendered_output(tmp_path: Path) -> Non
     summary = _shape_summary()
     scaffold = _shape_scaffold()
 
-    # The measured rule (72→400) rendered at the measured extent: gate passes.
-    measured_pdf = _rule_line_pdf(tmp_path / "measured.pdf", 72.0, 400.0)
+    # The measured rule (72→400, top 133) rendered at the measured extent on
+    # the heading's page and in its vertical region: gate passes.
+    measured_pdf = _heading_rule_pdf(
+        tmp_path / "measured.pdf",
+        [{"label": "WORK EXPERIENCE", "heading_top_pt": 140.0,
+          "rule": {"x0": 72.0, "x1": 400.0, "top": 133.0}}],
+    )
     result = content_shape_verification(
         state, plan, scaffold, dict(BULLET_TIERS), html, summary, measured_pdf
     )
@@ -538,7 +563,11 @@ def test_rule_geometry_is_verified_in_the_rendered_output(tmp_path: Path) -> Non
 
     # The short-rule geometry (the pre-fix D→E output): the rendered rule does
     # NOT span the measured bbox — the gate must FAIL.
-    short_pdf = _rule_line_pdf(tmp_path / "short.pdf", 36.0, 106.7)
+    short_pdf = _heading_rule_pdf(
+        tmp_path / "short.pdf",
+        [{"label": "WORK EXPERIENCE", "heading_top_pt": 140.0,
+          "rule": {"x0": 36.0, "x1": 106.7, "top": 133.0}}],
+    )
     broken = content_shape_verification(
         state, plan, scaffold, dict(BULLET_TIERS), html, summary, short_pdf
     )
@@ -567,8 +596,13 @@ def test_typography_consumption_is_element_scoped(tmp_path: Path) -> None:
     summary = _shape_summary()
     scaffold = _shape_scaffold()
     # The section carries a required rule, so the gate also consumes its
-    # rendered vector object from the exported PDF (measured extent 72→400).
-    measured_pdf = _rule_line_pdf(tmp_path / "typography.pdf", 72.0, 400.0)
+    # rendered vector object from the exported PDF (measured extent 72→400
+    # in the heading's vertical region).
+    measured_pdf = _heading_rule_pdf(
+        tmp_path / "typography.pdf",
+        [{"label": "WORK EXPERIENCE", "heading_top_pt": 140.0,
+          "rule": {"x0": 72.0, "x1": 400.0, "top": 133.0}}],
+    )
     result = content_shape_verification(
         state, plan, scaffold, dict(BULLET_TIERS), html, summary, measured_pdf
     )
@@ -816,8 +850,16 @@ def test_one_rendered_rule_cannot_satisfy_two_required_section_rules(tmp_path: P
     )
     plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
     html = render_html(state, plan)
-    # Only ONE rendered rule object at the shared extent.
-    one_rule_pdf = _rule_line_pdf(tmp_path / "one_rule.pdf", 72.0, 400.0)
+    # Only ONE rendered rule object at the shared extent, on page 1 in the
+    # first section's vertical region.
+    one_rule_pdf = _heading_rule_pdf(
+        tmp_path / "one_rule.pdf",
+        [
+            {"label": "WORK EXPERIENCE", "heading_top_pt": 140.0,
+             "rule": {"x0": 72.0, "x1": 400.0, "top": 133.0}},
+            {"label": "EDUCATION", "heading_top_pt": 200.0},
+        ],
+    )
     result = content_shape_verification(
         state, plan, _two_rule_scaffold(), dict(BULLET_TIERS), html, summary, one_rule_pdf
     )
@@ -828,21 +870,73 @@ def test_one_rendered_rule_cannot_satisfy_two_required_section_rules(tmp_path: P
     assert second["capability_gap"] is not None
     assert second["measured"]["matched_rendered_extent_index"] is None
     assert result["passed"] is False
-    # Control: with BOTH rules rendered, each check consumes its own object.
+    # Control: with BOTH rules rendered (each in its own heading's vertical
+    # region), each check consumes its own object.
     from reportlab.pdfgen import canvas
 
     both_pdf = tmp_path / "two_rules.pdf"
-    document = canvas.Canvas(str(both_pdf))
-    document.setLineWidth(0.4)
-    document.line(72.0, 300, 400.0, 300)
-    document.line(72.0, 250, 400.0, 250)
-    document.showPage()
-    document.save()
+    both_pdf = _heading_rule_pdf(
+        both_pdf,
+        [
+            {"label": "WORK EXPERIENCE", "heading_top_pt": 140.0,
+             "rule": {"x0": 72.0, "x1": 400.0, "top": 133.0}},
+            {"label": "EDUCATION", "heading_top_pt": 200.0,
+             "rule": {"x0": 72.0, "x1": 400.0, "top": 193.0}},
+        ],
+    )
     ok = content_shape_verification(
         state, plan, _two_rule_scaffold(), dict(BULLET_TIERS), html, summary, both_pdf
     )
     assert _rule_rows(ok, "section.01")[0]["capability_gap"] is None
     assert _rule_rows(ok, "section.02")[0]["capability_gap"] is None
+
+
+def test_a_correct_width_rule_at_the_wrong_y_position_fails(tmp_path: Path) -> None:
+    """Vertical-region regression: a rule with the CORRECT x-extent but far
+    from its section's rendered heading (wrong page region) must FAIL — the
+    gate associates each expected rule with its page/section vertical region."""
+    state = compile_synthetic(
+        ["WORK EXPERIENCE"], rules=_shape_summary()["rules"], elements=_shape_summary()["elements"]
+    )
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    html = render_html(state, plan)
+    # Correct width 72→400, but rendered 200pt BELOW the rendered heading
+    # (heading top 140; the above-heading region ends ~2pt below it).
+    misplaced_pdf = _heading_rule_pdf(
+        tmp_path / "misplaced.pdf",
+        [{"label": "WORK EXPERIENCE", "heading_top_pt": 140.0,
+          "rule": {"x0": 72.0, "x1": 400.0, "top": 340.0}}],
+    )
+    result = content_shape_verification(
+        state, plan, _shape_scaffold(), dict(BULLET_TIERS), html,
+        _shape_summary(), misplaced_pdf,
+    )
+    rule_row = _rule_rows(result, "section.01")[0]
+    assert rule_row["capability_gap"] is not None
+    assert rule_row["measured"]["matched_rendered_extent_index"] is None
+    assert result["passed"] is False
+    # And on the wrong PAGE it fails as well.
+    import pdfplumber
+
+    from reportlab.pdfgen import canvas
+
+    wrong_page_pdf = tmp_path / "wrong_page.pdf"
+    document = canvas.Canvas(str(wrong_page_pdf))
+    document.setFont("Helvetica", 10)
+    document.drawString(72.0, 792.0 - 140.0 - 7.2, "WORK EXPERIENCE")
+    document.showPage()
+    document.setLineWidth(0.4)
+    document.line(72.0, 792.0 - 133.0, 400.0, 792.0 - 133.0)
+    document.showPage()
+    document.save()
+    with pdfplumber.open(wrong_page_pdf) as check:
+        assert len(check.pages) == 2
+    wrong_page = content_shape_verification(
+        state, plan, _shape_scaffold(), dict(BULLET_TIERS), html,
+        _shape_summary(), wrong_page_pdf,
+    )
+    assert wrong_page["passed"] is False
+    assert _rule_rows(wrong_page, "section.01")[0]["capability_gap"] is not None
 
 
 def test_a_contentless_section_records_its_rule_as_not_required() -> None:

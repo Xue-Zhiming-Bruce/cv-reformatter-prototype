@@ -8,7 +8,7 @@
 > | B 管线 | 已关闭（假设证伪，零件经 §7.3 移植） |
 > | C1 D→E（header + body） | owner 终审通过，完成（§9/§11） |
 > | C1 E→F 泛化 | **调试中，尚未通过**（十次冻结，缺口 #1–#8 已闭；#9 右缘杠杆失效、#10 种子行宽派生假设待验证，见 run 20260910T161228Z） |
-> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑（带既记录能力缺口，不晋级产品契约）；C2-0b 经三轮纠偏后由 owner 终审记录裁决：**接受为实验性架构里程碑；非生产批准，非视觉 parity 主张**，`layout-state/1` 不晋级产品契约；第三轮纠偏闭合 rule-geometry 门禁完整性缺口（必选 rule 须消费导出 PDF 中实际匹配且未被消费的矢量对象，一个渲染 rule 不得满足多个必选节线检查）；C2-0c DOCX/cross-format spike 已按 §16.2/§16.3 实现并完成 canonical 运行（E→F 主案例全绿；E→D/D→E 诚实 fail-closed：unsupported 特征须 owner 显式确认），待 owner 评审（见 §16.5/§16.6 与 `C2_0B_REPORT.md`/`C2_0C_REPORT.md`） |
+> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑；C2-0b 经三轮纠偏后由 owner 终审裁决：**接受为实验性 PDF 架构里程碑；非生产批准，非视觉 parity 主张**（rule-geometry 门禁完整性已闭合，含 page/垂直区域关联）；**C2-0c 被 owner 视觉评审否决**（机械可编辑 ≠ 模板保真：双栏条目拓扑丢失、内建样式间距失控、双 marker、E→F 变两页、D→E 三页稀疏）→ 一次有界视觉纠偏已执行（无边框双栏表恢复拓扑、逐段显式格式控制、确认型 marker 转换、E→F 回到一页、D→E 回到 C1 页数、exact 声明逐条输出验证、preview/空白页入硬门禁、分页显式分类），**待 owner 复审**（见 §16.5/§16.6 与 `C2_0B_REPORT.md`/`C2_0C_REPORT.md`） |
 > | Pipeline D | D0/D0-R/D1-0 已完成；暂停后续工作，等待 C2 结果（见 `D_PIPELINE_PROPOSAL.md`） |
 >
 > 日期:2026-09-08 初版;2026-09-09 §7–§8;2026-09-10 §9–§12;
@@ -1012,14 +1012,17 @@ rule 仍可误绿，且一个全局匹配 extent 可同时满足多个必选节�
 对象（逐节记录 `matched_rendered_extent_index`）；匹配到的 extent 被唯一消费，
 一个渲染 rule 永不满足两个必选节线检查（数量不足即失败）；无内容节仍记 rule
 为 not required；缺失/过短/错位/数量不足全部失败；已有正确 D→E 与 E→F 产物
-继续通过（canonical 重生成 `c2_0b_*_20260915T085727Z`）。报告措辞勘误：E→F
+继续通过（canonical 重生成 `c2_0b_*_20260915T105641Z`；纠偏补充：渲染 rule
+证据携带 page/垂直位置并与渲染标题的文档化垂直区域关联——错误 y 或错误页的
+同宽 rule 失败，有回归）。报告措辞勘误：E→F
 state 附着六条实测节线，但候选输出只渲染三个非空映射节的 rule（“渲染全部六条”
 说法已更正）；owner 裁决原文记录为“接受为实验性架构里程碑；非生产批准”；全文
 无视觉 parity / C2 优越性主张。新增聚焦回归：无渲染矢量对象的必选 rule 失败、
 单条渲染 rule 不可满足两条同 extent 节线（双条控制组通过）、无内容节 rule 记为
 not required。
 
-**C2-0c（DOCX/cross-format spike，§16.2-3/§16.3）已实现**
+**C2-0c（DOCX/cross-format spike，§16.2-3/§16.3）第一版已实现**（以下为
+被否决版本的记录，保真问题见下方 owner 裁决）
 （`tests/experiments/c2_docx_renderer.py`）：同一 `C2LayoutState` JSON + 同一
 独立候选内容 → 共享的渲染器中立确定性 render plan（`c2-render-plan/1`，无第二
 schema 族）→ 原生可编辑 OOXML DOCX（python-docx + 有界 OOXML 辅助，零新依赖，
@@ -1043,8 +1046,40 @@ schema 族）→ 原生可编辑 OOXML DOCX（python-docx + 有界 OOXML 辅助�
   （unsupported 特征 → `unsupported_features_confirmed: false`，等 owner
   显式确认）；LibreOffice 预览 PDF + 页图仅为评审证据，逐页空白门禁通过。
 
-运行目录：`runs/c2_0c_E_to_F_20260915T093732Z`、
-`runs/c2_0c_E_to_D_20260915T093734Z`、`runs/c2_0c_D_to_E_20260915T093736Z`。
-详见 `C2_0C_REPORT.md`。**C2-0c 为实验 spike：非生产 DOCX 系统，无任何
-产品级 PDF↔DOCX 转换主张；停止待 owner 评审。Pipeline D、生产集成、前端、
-chat 编辑均未启动。**
+运行目录：`runs/c2_0c_E_to_F_20260915T111038Z`、
+`runs/c2_0c_D_to_E_20260915T111040Z`、`runs/c2_0c_E_to_D_20260915T111042Z`
+（纠偏后 canonical；同日早期 run 保留为否决证据）。
+详见 `C2_0C_REPORT.md`。
+
+**Owner 视觉评审裁决（2026-09-15）：C2-0c 否决。** 架构可行性成立（同一 JSON
+state 能机械产出可编辑 DOCX），但 DOCX 模板保真不成立，未达到“80% 一次成型”
+的产品假设：E→F 从一页漂移为两页；D→E 变三页且第三页极稀疏；条目行失去
+左/右拓扑（title/detail/meta 被堆叠成独立段落）；Word 内建 Heading 1 /
+List Bullet / Normal 默认间距与缩进失控；部分列表项出现原生 bullet 与源
+marker（`–`/`→`）双重标记；结果不能明显看出属于所选目标模板。C2-0b 仍仅保持
+实验性 PDF 架构里程碑裁决不变。
+
+**C2-0c 视觉纠偏（同日，有界一次；未启动 Pipeline D / C2-0d / 生产 / 前端 /
+live 调用）**：
+
+1. 条目拓扑以无边框固定双栏 Word 表恢复（左：title/detail，右：右对齐
+   metadata；边框显式 none、行 cantSplit、列宽按实测几何 + 文档化 70% 拆分
+   规则；无 metadata 的条目仍为段落）；检查器按真实文档序遍历表内段落并参与
+   核算（删表内段落即核算失败，有回归）。
+2. 逐段显式格式控制（spacing/line/indent/alignment/widow/keep-with-next；
+   Normal 钉死零间距；未实测颜色渲染黑色）——内建样式默认值无法泄漏。
+3. marker：确认型前导呈现 marker（•/-/–/— + 空白）转换为原生 bullet；箭头
+   及其余 glyph 一律作为内容保留；纯段落永不剥除；不重写实质文本；聚焦测试
+   覆盖四种前缀 + 箭头内容保留用例 + 不剥除用例。
+4. 分页与密度：E→F 回到一页（1/1/1，分类 exact）；D→E 回到 2 页（= 冻结
+   C1；原稀疏第三页消失）；分页记录 target/C1/DOCX 页数并显式分类，页数变化
+   不会从兼容报告消失。
+5. 门禁真实化：exact 声明改为逐条输出验证（无静态清单，无证据即失败）；
+   preview 先于硬门禁生成且 preview 成功 + 逐页空白门禁入硬门禁
+   （跨进程锁串行化 LibreOffice）；C2-0b `_rendered_rule_extents` 补充
+   page/垂直位置并与渲染标题的文档化垂直区域关联（错误 y 或错误页的同宽
+   rule 失败，有回归；canonical 产物复验通过）。
+
+**C2-0c 纠偏后仍未接受：停止，待 owner 视觉复审。** 非 production DOCX
+系统，无任何产品级 PDF↔DOCX 转换主张。Pipeline D、生产集成、前端、chat
+编辑均未启动。

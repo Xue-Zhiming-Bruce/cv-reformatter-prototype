@@ -1349,21 +1349,60 @@ RULE_GEOMETRY_TOLERANCE_PT = 1.0
 CSS_EXTENT_TOLERANCE_PT = 0.05
 
 
-def _rendered_rule_extents(pdf: Path | None) -> list[tuple[float, float]]:
-    """x-extents of rendered horizontal vector objects (rules) in the PDF."""
+def _rendered_rule_extents(pdf: Path | None) -> list[dict[str, Any]]:
+    """Rendered horizontal vector objects (rules) with their page and vertical
+    position, so a required rule can be associated with the correct page and
+    section vertical region — not only its x-extent."""
     if pdf is None:
         return []
     import pdfplumber
 
-    extents: list[tuple[float, float]] = []
+    rendered: list[dict[str, Any]] = []
     with pdfplumber.open(pdf) as document:
-        for page in document.pages:
+        for page_index, page in enumerate(document.pages, 1):
             for obj in [*page.rects, *page.lines]:
                 height = float(obj["bottom"]) - float(obj["top"])
                 width = float(obj["x1"]) - float(obj["x0"])
                 if height <= 2.0 and width > 2.0:
-                    extents.append((float(obj["x0"]), float(obj["x1"])))
-    return extents
+                    rendered.append(
+                        {
+                            "page": page_index,
+                            "top_pt": round(float(obj["top"]), 3),
+                            "x0_pt": round(float(obj["x0"]), 3),
+                            "x1_pt": round(float(obj["x1"]), 3),
+                        }
+                    )
+    return rendered
+
+
+# Vertical region tolerances (documented): a rendered section rule must sit
+# on the same page as its rendered heading and within these distances of it
+# (above the heading text for above_heading placement, below it for
+# below_heading); a correct-width rule anywhere else fails.
+RULE_REGION_ABOVE_PT = 40.0
+RULE_REGION_BELOW_PT = 60.0
+
+
+def _rendered_heading_positions(pdf: Path | None, labels: list[str]) -> dict[str, tuple[int, float]]:
+    """First rendered (page, top_pt) of each section heading label in the
+    exported PDF (line-granularity text match; case/whitespace insensitive)."""
+    if pdf is None:
+        return {}
+    import pdfplumber
+
+    wanted = {_norm(label) for label in labels if label}
+    positions: dict[str, tuple[int, float]] = {}
+    with pdfplumber.open(pdf) as document:
+        for page_index, page in enumerate(document.pages, 1):
+            lines: dict[float, list[str]] = {}
+            for word in page.extract_words():
+                top = round(float(word["top"]), 1)
+                lines.setdefault(top, []).append(word["text"])
+            for top in sorted(lines):
+                line_text = _norm(" ".join(lines[top]))
+                if line_text in wanted and line_text not in positions:
+                    positions[line_text] = (page_index, top)
+    return positions
 
 
 def _entry_elements(
@@ -1389,6 +1428,24 @@ def _entry_elements(
         if element["tag"] == "p" and "c2-entry-body" in element["ancestor_classes"]
     ]
     return main_lines, meta_lines, bullet_lines, body_lines
+
+
+def _rule_in_section_region(
+    extent: dict[str, Any],
+    heading_position: tuple[int, float] | None,
+    placement: str | None,
+) -> bool:
+    """A rendered rule belongs to a section only when it sits on the heading's
+    page and within the documented vertical region on the correct side of the
+    rendered heading text (above for above_heading, below for below_heading)."""
+    if heading_position is None:
+        return False
+    page, heading_top = heading_position
+    if extent["page"] != page:
+        return False
+    if placement == "below_heading":
+        return -2.0 <= extent["top_pt"] - heading_top <= RULE_REGION_BELOW_PT
+    return -2.0 <= heading_top - extent["top_pt"] <= RULE_REGION_ABOVE_PT
 
 
 def content_shape_verification(
@@ -1438,10 +1495,31 @@ def content_shape_verification(
     page_height = float(page.height_pt)
     elements = _parse_elements(html)
     rendered_extents = _rendered_rule_extents(pdf)
-    # Each required section rule must consume its OWN rendered vector object:
-    # a matched extent is marked consumed so one rendered rule can never
-    # silently satisfy two required section rules, and an empty rendered
-    # extent list can never pass a required rule check.
+    label_of_section = {
+        node.node_id: (
+            plan_sections[node.node_id].label
+            if node.node_id in plan_sections and plan_sections[node.node_id].label
+            else next(
+                (
+                    child.label
+                    for child in state.nodes
+                    if child.kind == "heading" and child.parent_id == node.node_id
+                ),
+                "",
+            )
+        )
+        for node in state.nodes
+        if node.kind == "section"
+    }
+    rendered_headings = _rendered_heading_positions(
+        pdf, list(label_of_section.values())
+    )
+    # Each required section rule must consume its OWN rendered vector object
+    # on the correct page and in the correct vertical region: a matched
+    # extent is marked consumed so one rendered rule can never silently
+    # satisfy two required section rules, an empty rendered-extent list can
+    # never pass a required rule check, and a correct-width rule at the wrong
+    # page/y-position fails.
     consumed_rule_extents: set[int] = set()
     scaffold_headings = sorted(body_scaffold.headings, key=lambda item: (item.page, item.top_pt))
     rows: list[dict[str, Any]] = []
@@ -1741,8 +1819,13 @@ def content_shape_verification(
                         index
                         for index, extent in enumerate(rendered_extents)
                         if index not in consumed_rule_extents
-                        and abs(extent[0] - evidence_rule["x0_pt"]) <= RULE_GEOMETRY_TOLERANCE_PT
-                        and abs(extent[1] - evidence_rule["x1_pt"]) <= RULE_GEOMETRY_TOLERANCE_PT
+                        and abs(extent["x0_pt"] - evidence_rule["x0_pt"]) <= RULE_GEOMETRY_TOLERANCE_PT
+                        and abs(extent["x1_pt"] - evidence_rule["x1_pt"]) <= RULE_GEOMETRY_TOLERANCE_PT
+                        and _rule_in_section_region(
+                            extent,
+                            rendered_headings.get(_norm(label_of_section[node.node_id])),
+                            state_rule.placement if state_rule else None,
+                        )
                     ),
                     None,
                 )
@@ -1772,6 +1855,9 @@ def content_shape_verification(
                     "x0_pt": evidence_rule["x0_pt"] if evidence_rule else None,
                     "x1_pt": evidence_rule["x1_pt"] if evidence_rule else None,
                     "rendered_rule_extents": rendered_extents,
+                    "rendered_heading_position": rendered_headings.get(
+                        _norm(label_of_section[node.node_id])
+                    ),
                     "matched_rendered_extent_index": matched_extent_index,
                 },
                 bool(state_rule and border_present and extent_consumed and geometry_consumed),

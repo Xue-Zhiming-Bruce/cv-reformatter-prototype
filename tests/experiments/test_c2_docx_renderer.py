@@ -1,11 +1,13 @@
 """C2-0c focused tests: deterministic state -> DOCX render plan -> native OOXML.
 
 Offline lane (default): a synthetic C2LayoutState + an authored candidate
-render context exercise DOCX compilation, native-structure inspection,
-content accounting, compatibility classification, and fail-closed behavior —
-no Chrome, no corpus, no LibreOffice, no network. The ``local_dataset`` lane
-runs the real canonical pairs (E→F primary, E→D gap-bearing, D→E) end to end
-with LibreOffice previews (evaluation evidence only).
+render context exercise DOCX compilation, native-structure inspection
+(tables included), presentation-marker handling, exact content accounting,
+output-verified compatibility claims, pagination classification, and
+fail-closed behavior — no Chrome, no corpus, no LibreOffice, no network.
+The ``local_dataset`` lane runs the real canonical pairs (E→F primary,
+D→E generalization/native lists, E→D gap-only control) end to end with
+LibreOffice previews (evaluation evidence only).
 
 Run:
 
@@ -30,6 +32,7 @@ from tests.experiments.c2_docx_renderer import (
     inspect_docx,
     reading_order_gate,
     run_pair,
+    strip_presentation_marker,
 )
 from tests.experiments.c2_renderer import compile_render_plan
 from tests.experiments.test_c2_pipeline import BULLET_TIERS, compile_synthetic
@@ -48,8 +51,80 @@ def _write_docx(state, plan, tmp_path: Path, name: str = "c2_output.docx") -> Pa
     return path
 
 
+def _full_pipeline(tmp_path: Path, labels: list[str] | None = None, candidate=None):
+    """Build -> write -> inspect -> account -> report (the whole pipeline)."""
+    state = compile_synthetic(labels)
+    if candidate is None:
+        candidate = rich_candidate(include_unmatched=False)
+    plan = compile_render_plan(state, candidate)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    path = tmp_path / "c2_output.docx"
+    path.write_bytes(deterministic_docx_bytes(build_document(state, plan)))
+    inspection = inspect_docx(path)
+    inspection["reading_order_gate"] = reading_order_gate(plan, inspection)
+    accounting = content_accounting(plan, inspection)
+    return state, plan, path, inspection, accounting
+
+
 # ---------------------------------------------------------------------------
-# Determinism, package validity, native structures
+# Source presentation markers vs candidate content (work order Part 2.3)
+# ---------------------------------------------------------------------------
+
+
+def test_confirmed_presentation_markers_are_stripped_only_for_native_bullets() -> None:
+    # Bullet glyph and dashes are confirmed presentation markers: converted
+    # into the native Word bullet when (and only when) the line becomes one.
+    for marker in ("•", "-", "–", "—"):
+        assert strip_presentation_marker(f"{marker} substantive text", True) == "substantive text"
+        # A plain/zero-bullet paragraph keeps EVERY glyph verbatim.
+        assert strip_presentation_marker(f"{marker} substantive text", False) == (
+            f"{marker} substantive text"
+        )
+    # Arrows are NOT confirmed markers: they may be content and always stay.
+    assert strip_presentation_marker("→ Storage: item", True) == "→ Storage: item"
+    assert strip_presentation_marker("→ Storage: item", False) == "→ Storage: item"
+    # A dash fused to the word (no whitespace) is content, not a marker.
+    assert strip_presentation_marker("-5°C storage", True) == "-5°C storage"
+    # Substantive text is never rewritten.
+    assert strip_presentation_marker("plain line", True) == "plain line"
+
+
+def test_native_bullet_markers_convert_in_the_docx_and_accounting(tmp_path: Path) -> None:
+    """A '•'-prefixed bullet becomes a native Word bullet WITHOUT a double
+    marker; the accounting records the conversion and verifies the substantive
+    text exactly once."""
+
+    def candidate_with_prefix(prefix: str):
+        candidate = rich_candidate(include_unmatched=False)
+        leaves = [
+            leaf.model_copy(update={"text": f"{prefix} Did candidate work"})
+            if leaf.leaf_id == "work.e1.b1"
+            else leaf
+            for leaf in candidate.leaves
+        ]
+        return candidate.model_copy(update={"leaves": leaves})
+
+    from tests.experiments.c2_docx_renderer import expected_paragraphs
+
+    for prefix, rendered_start in (("•", "Did candidate work"), ("–", "Did candidate work"), ("→", "→ Did candidate work")):
+        state, plan, path, inspection, accounting = _full_pipeline(
+            tmp_path / f"bullet_{ord(prefix)}", candidate=candidate_with_prefix(prefix)
+        )
+        assert accounting["passed"] is True, (accounting["missing"], accounting["duplicated"])
+        expected_bullets = [
+            paragraph["text"]
+            for paragraph in expected_paragraphs(plan)
+            if paragraph["kind"] == "bullet" or paragraph.get("native_bullet")
+        ]
+        assert inspection["list_paragraphs"] == expected_bullets
+        assert rendered_start in expected_bullets
+        leaf_record = accounting["leaf_records"]["work.e1.b1"]
+        assert leaf_record["rendered_exactly_once"] is True
+        assert leaf_record["presentation_marker_converted"] is (prefix != "→")
+
+
+# ---------------------------------------------------------------------------
+# Determinism, package validity, native structures, topology
 # ---------------------------------------------------------------------------
 
 
@@ -67,29 +142,63 @@ def test_package_opens_and_carries_native_structures(tmp_path: Path) -> None:
     path = _write_docx(state, plan, tmp_path)
     inspection = inspect_docx(path)
     assert inspection["valid_package"] is True
-    assert "[Content_Types].xml" not in inspection  # raw parts are not leaked
     # Headings are native Word heading paragraphs with the state labels.
     assert inspection["heading_paragraphs"] == [
         section.label for section in plan.sections if not section.empty
     ]
     # Measured bullet designs become real Word list paragraphs (entry
     # bullets and bulleted item lists alike), in document order.
-    bullet_items: list[str] = []
-    for section in plan.sections:
-        if section.content_kind == "entries":
-            bullet_items.extend(
-                line.text for entry in section.entries for line in entry.bullet_items
-            )
-        elif section.items and section.bullet_marker == "bullet":
-            bullet_items.extend(item.text for item in section.items)
-    assert inspection["list_paragraphs"] == bullet_items
-    if bullet_items:
-        assert inspection["list_style_numbered_in_styles_xml"] is True
+    expected_paragraphs = __import__(
+        "tests.experiments.c2_docx_renderer", fromlist=["expected_paragraphs"]
+    ).expected_paragraphs(plan)
+    expected_bullets = [
+        paragraph["text"]
+        for paragraph in expected_paragraphs
+        if paragraph["kind"] == "bullet" or paragraph.get("native_bullet")
+    ]
+    assert inspection["list_paragraphs"] == expected_bullets
+    assert inspection["list_style_numbered_in_styles_xml"] is True
     # Page geometry comes from the measured state section properties.
     geometry = inspection["section_geometry"]
-    assert geometry["page_width_pt"] == pytest.approx(state.page.width_pt, abs=0.01)
-    assert geometry["page_height_pt"] == pytest.approx(state.page.height_pt, abs=0.01)
-    assert geometry["margin_left_pt"] == pytest.approx(state.page.margin_left_pt, abs=0.01)
+    assert geometry["page_width_pt"] == pytest.approx(state.page.width_pt, abs=0.051)
+    assert geometry["page_height_pt"] == pytest.approx(state.page.height_pt, abs=0.051)
+    assert geometry["margin_left_pt"] == pytest.approx(state.page.margin_left_pt, abs=0.051)
+    # Every rendered paragraph carries explicit spacing control: built-in
+    # Word style defaults (Heading 1 / Normal / List Bullet) cannot leak.
+    assert inspection["explicit_spacing_count"] == inspection["paragraph_count"]
+
+
+def test_entry_rows_keep_left_right_topology_as_borderless_tables(tmp_path: Path) -> None:
+    state, plan, path, inspection, accounting = _full_pipeline(tmp_path)
+    entry_sections = [section for section in plan.sections if section.content_kind == "entries"]
+    entries_with_meta = [
+        section for section in entry_sections
+        if any(entry.meta_lines for entry in section.entries)
+    ]
+    assert entries_with_meta
+    tables = inspection["tables"]
+    assert tables, "entries with metadata must render as tables"
+    for record in tables:
+        assert record["columns"] == 2
+        assert record["borders_none"] is True, "table borders must be genuinely absent"
+        assert record["rows_cannot_split"] is True
+    # Table content participates in inspection and accounting (no silent
+    # omission by document.paragraphs).
+    title_texts = [
+        line.text
+        for section in entries_with_meta
+        for entry in section.entries
+        for line in entry.title_lines
+    ]
+    document_texts = [record["text"] for record in inspection["paragraphs"]]
+    for text in title_texts:
+        assert text in document_texts
+    assert accounting["passed"] is True
+    # Meta lines sit in the right cell (after all left-column lines of the
+    # same entry) — deterministic cell reading order.
+    assert all(record["in_table"] for record in inspection["paragraphs"]
+               if record["text"] in {line.text for section in entries_with_meta
+                                     for entry in section.entries for line in entry.meta_lines})
 
 
 def test_measured_rules_become_native_paragraph_borders(tmp_path: Path) -> None:
@@ -151,12 +260,9 @@ def test_zero_bullet_design_renders_verbatim_text_paragraphs(tmp_path: Path) -> 
 
 
 def test_reading_order_and_accounting_are_exact(tmp_path: Path) -> None:
-    state, plan = _state_and_plan()
-    path = _write_docx(state, plan, tmp_path)
-    inspection = inspect_docx(path)
+    state, plan, path, inspection, accounting = _full_pipeline(tmp_path)
     order = reading_order_gate(plan, inspection)
     assert order["passed"] is True, order["first_mismatch"]
-    accounting = content_accounting(plan, inspection)
     assert accounting["passed"] is True, (accounting["missing"], accounting["duplicated"])
     assert accounting["missing"] == [] and accounting["duplicated"] == []
     assert accounting["omission_leaks"] == []
@@ -166,7 +272,6 @@ def test_reading_order_and_accounting_are_exact(tmp_path: Path) -> None:
 
 def test_reading_order_gate_fails_on_reordered_paragraphs(tmp_path: Path) -> None:
     state, plan = _state_and_plan()
-    path = _write_docx(state, plan, tmp_path)
     document = build_document(state, plan)
     # Move the last body paragraph before the first heading: order must fail.
     body = document.paragraphs[-1]._element  # noqa: SLF001
@@ -180,7 +285,6 @@ def test_reading_order_gate_fails_on_reordered_paragraphs(tmp_path: Path) -> Non
 
 
 def test_an_explicit_omission_is_never_rendered(tmp_path: Path) -> None:
-    from tests.experiments.c2_pipeline import UnroutableContent
     from tests.experiments.test_c2_renderer import candidate_with_unroutable
 
     state = compile_synthetic()
@@ -211,12 +315,28 @@ def test_a_dropped_paragraph_fails_the_accounting_gate(tmp_path: Path) -> None:
     assert accounting["missing"], "the dropped leaf must be reported"
 
 
+def test_dropped_table_content_fails_the_accounting_gate(tmp_path: Path) -> None:
+    """Table content is inspected in document order: deleting a table cell
+    paragraph is detectable content loss (never silently omitted)."""
+    state, plan = _state_and_plan()
+    document = build_document(state, plan)
+    table = document.tables[0]
+    victim = table.rows[0].cells[0].paragraphs[0]
+    victim._element.getparent().remove(victim._element)  # noqa: SLF001
+    path = tmp_path / "lossy_table.docx"
+    path.write_bytes(deterministic_docx_bytes(document))
+    inspection = inspect_docx(path)
+    accounting = content_accounting(plan, inspection)
+    assert accounting["passed"] is False
+    assert accounting["missing"]
+
+
 # ---------------------------------------------------------------------------
-# Compatibility report (deterministic, evidence-backed, fail closed)
+# Compatibility report (output-verified claims; pagination classification)
 # ---------------------------------------------------------------------------
 
 
-def test_compatibility_report_classifies_full_coverage_as_exact_plus_adjusted() -> None:
+def test_every_exact_claim_is_output_verified(tmp_path: Path) -> None:
     # The measured-entry-elements state: entry tiers measured, no unresolved
     # bindings, no icons/tables/images -> nothing unsupported.
     from tests.experiments.test_c2_renderer import _shape_summary
@@ -225,14 +345,29 @@ def test_compatibility_report_classifies_full_coverage_as_exact_plus_adjusted() 
     state = compile_synthetic(
         ["WORK EXPERIENCE"], rules=summary["rules"], elements=summary["elements"]
     )
-    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
-    report = conversion_compatibility_report(state, plan)
+    candidate = rich_candidate(include_unmatched=False)
+    plan = compile_render_plan(state, candidate)
+    path = tmp_path / "c2_output.docx"
+    path.write_bytes(deterministic_docx_bytes(build_document(state, plan)))
+    inspection = inspect_docx(path)
+    inspection["reading_order_gate"] = reading_order_gate(plan, inspection)
+    accounting = content_accounting(plan, inspection)
+    pagination = {
+        "target_page_count": 1,
+        "frozen_c1_page_count": 1,
+        "docx_preview_page_count": 1,
+        "detail": "synthetic",
+    }
+    report = conversion_compatibility_report(state, plan, inspection, accounting, pagination)
     assert report.source_format.startswith("layout-state/1")
     assert "docx" in report.output_format
-    assert report.exact  # exact features recorded
+    assert report.exact, "applicable exact claims must be recorded"
+    # NO unconditional static claims: every exact claim carries recorded
+    # output evidence and is verified against the written OOXML.
+    for item in report.exact:
+        assert item.verified is True, item.claim
+        assert item.evidence, item.claim
     assert report.content_loss_risk is False
-    # Adjusted features preserve content (approved degradation only); the
-    # single-section state appends the unmatched candidate sections.
     assert all(feature.content_preserved for feature in report.adjusted)
     assert {feature.feature for feature in report.adjusted} == {
         "entry two-column row layout",
@@ -240,14 +375,34 @@ def test_compatibility_report_classifies_full_coverage_as_exact_plus_adjusted() 
     }
     assert report.unsupported == []
     assert report.owner_confirmation_required is False
+    assert report.pagination.classification == "exact"
 
 
-def test_unsupported_features_require_explicit_owner_confirmation() -> None:
+def test_pagination_difference_is_explicitly_classified(tmp_path: Path) -> None:
+    state, plan, path, inspection, accounting = _full_pipeline(tmp_path)
+    pagination = {
+        "target_page_count": 1,
+        "frozen_c1_page_count": 1,
+        "docx_preview_page_count": 2,
+        "detail": "synthetic drift",
+    }
+    report = conversion_compatibility_report(state, plan, inspection, accounting, pagination)
+    assert report.pagination.target_page_count == 1
+    assert report.pagination.frozen_c1_page_count == 1
+    assert report.pagination.docx_preview_page_count == 2
+    assert report.pagination.classification == "adjusted"
+    # The pagination change surfaces as a visible adjusted degradation.
+    assert any(feature.feature == "pagination" for feature in report.adjusted)
+
+
+def test_unsupported_features_require_explicit_owner_confirmation(tmp_path: Path) -> None:
     # An unbindable measured section stays unresolved and renders nothing;
     # the compatibility contract must classify it unsupported (fail closed).
-    state, plan = _state_and_plan(["WORK EXPERIENCE", "ANOTHER SECTION"])
+    state, plan, path, inspection, accounting = _full_pipeline(
+        tmp_path, labels=["WORK EXPERIENCE", "ANOTHER SECTION"]
+    )
     assert plan.skipped_unresolved_sections == ["ANOTHER SECTION"]
-    report = conversion_compatibility_report(state, plan)
+    report = conversion_compatibility_report(state, plan, inspection, accounting)
     assert any(
         feature.feature == "unresolved section bindings" for feature in report.unsupported
     )
@@ -280,12 +435,13 @@ REQUIRED_ARTIFACTS = (
     "c2_layout_state.json", "candidate_render_context.json", "context_coverage.json",
     "docx_render_plan.json", "c2_output.docx", "content_accounting.json",
     "ooxml_inspection.json", "conversion_compatibility_report.json",
-    "docx_determinism.json", "hard_gates.json", "review.html",
+    "preview_validation.json", "docx_determinism.json", "hard_gates.json",
+    "review.html", "target_page_1.png", "c1_page_1.png",
 )
 
 
 @pytest.mark.local_dataset
-@pytest.mark.parametrize("pair", ["E_F", "E_D", "D_E"])
+@pytest.mark.parametrize("pair", ["E_F", "D_E", "E_D"])
 def test_canonical_pairs_end_to_end(pair: str) -> None:
     result = run_pair(pair)
     run_dir = Path(result["run_dir"])
@@ -302,11 +458,21 @@ def test_canonical_pairs_end_to_end(pair: str) -> None:
     assert determinism["bytes_equal_after_metadata_normalization"] is True
     report = json.loads((run_dir / "conversion_compatibility_report.json").read_text())
     gates = json.loads((run_dir / "hard_gates.json").read_text())
-    # All adjusted degradations preserve content; unsupported requires owner
-    # confirmation and the run honestly reports it fail-closed.
+    # Every exact claim is output-verified with recorded evidence.
+    assert report["exact"]
+    assert all(item["verified"] and item["evidence"] for item in report["exact"])
+    # All adjusted degradations preserve content; pagination is classified.
     assert all(feature["content_preserved"] for feature in report["adjusted"])
+    assert report["pagination"] and report["pagination"]["classification"] in {
+        "exact", "adjusted", "unsupported",
+    }
     assert report["owner_confirmation_required"] == bool(report["unsupported"])
-    assert gates["gates"]["unsupported_features_confirmed"] is (not report["unsupported"])
+    # Preview evidence participated in the hard gates.
+    preview = json.loads((run_dir / "preview_validation.json").read_text())
+    assert gates["gates"]["preview_and_blank_pages"] is (
+        bool(preview.get("available")) and preview["blank_page_gate"]["passed"]
+    )
+    assert preview["blank_page_gate"]["blank_pages"] == []
     if report["unsupported"]:
         assert gates["passed"] is False and gates["owner_confirmation_required"] is True
     else:

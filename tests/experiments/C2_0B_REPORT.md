@@ -142,20 +142,28 @@ MULTIPLE required section-rule checks. Fixed at the root:
   the exported PDF (`matched_rendered_extent_index` recorded per section);
 - each matched extent is marked CONSUMED, so one rendered rule can never
   silently satisfy two required section rules (insufficient count fails);
+- rendered rules carry PAGE + VERTICAL POSITION, and each expected rule must
+  match within the documented vertical region of its RENDERED heading (on
+  the heading's page; above it for above_heading placement, below it for
+  below_heading placement) — a correct-width rule at the wrong y-position or
+  on the wrong page FAILS (regression-tested), so the report's "misplaced
+  rules fail" claim is now truthful;
 - a section that renders no content still records its rule as NOT required;
 - missing, short, misplaced, and insufficient-count rules all fail;
 - no new verification framework was introduced.
 
-Canonical runs regenerated from the same frozen baselines (final):
+Canonical runs regenerated from the same frozen baselines (final, after the
+vertical-region association):
 
-- D→E (primary): `c2_0b_D_to_E_20260915T085727Z` — all hard gates true; the
-  three required rules consume rendered extents #0/#1/#2 respectively.
-- E→F (generalization): `c2_0b_E_to_F_20260915T085727Z` — all hard gates
+- D→E (primary): `c2_0b_D_to_E_20260915T105641Z` — all hard gates true; the
+  three required rules consume rendered extents near their rendered headings
+  (#0/#1/#2 respectively).
+- E→F (generalization): `c2_0b_E_to_F_20260915T105641Z` — all hard gates
   true; the three non-empty mapped sections' rules consume extents #0/#1/#2;
   the three empty sections record their rules as NOT required.
-- E→D (gap-only): `c2_0b_E_to_D_20260915T085727Z` — shape gate honestly FALSE
+- E→D (gap-only): `c2_0b_E_to_D_20260915T105641Z` — shape gate honestly FALSE
   (entry typography gaps, unchanged); its two required rules each consume
-  their own rendered extent.
+  their own rendered extent in the correct region.
 
 ## 2. Corrective Changes Per Owner Requirement
 
@@ -362,9 +370,9 @@ are always explicit hard failures.
 
 | Pair | Canonical run directory |
 |---|---|
-| D→E | `tests/experiments/runs/c2_0b_D_to_E_20260915T085727Z/` |
-| E→F | `tests/experiments/runs/c2_0b_E_to_F_20260915T085727Z/` |
-| E→D | `tests/experiments/runs/c2_0b_E_to_D_20260915T085727Z/` |
+| D→E | `tests/experiments/runs/c2_0b_D_to_E_20260915T105641Z/` |
+| E→F | `tests/experiments/runs/c2_0b_E_to_F_20260915T105641Z/` |
+| E→D | `tests/experiments/runs/c2_0b_E_to_D_20260915T105641Z/` |
 
 Each run contains (at least): `c2_layout_state.json`,
 `candidate_render_context.json`, `c2_render_plan.json`, `c2_output.html`,
@@ -379,9 +387,9 @@ plus `target_page_1.png`, `c1_page_1.png`, `c2_page_N.png`,
 
 Direct review entry points (owner):
 
-- `c2_0b_D_to_E_20260915T085727Z/review.html` → `c2_output.pdf`
-- `c2_0b_E_to_F_20260915T085727Z/review.html` → `c2_output.pdf`
-- `c2_0b_E_to_D_20260915T085727Z/review.html` → `c2_output.pdf`
+- `c2_0b_D_to_E_20260915T105641Z/review.html` → `c2_output.pdf`
+- `c2_0b_E_to_F_20260915T105641Z/review.html` → `c2_output.pdf`
+- `c2_0b_E_to_D_20260915T105641Z/review.html` → `c2_output.pdf`
 
 ## 8. Commands Run
 
