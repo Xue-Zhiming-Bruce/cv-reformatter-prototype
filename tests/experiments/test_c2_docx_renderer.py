@@ -25,6 +25,8 @@ import pytest
 
 from tests.experiments.c2_docx_renderer import (
     MAX_FITTING_ITERATIONS,
+    FitAdjustments,
+    SectionFit,
     _strip_leading_marker_glyphs,
     _style_of,
     build_document,
@@ -44,7 +46,7 @@ from tests.experiments.c2_docx_renderer import (
     strip_presentation_marker,
     typography_tables,
 )
-from tests.experiments.c2_renderer import compile_render_plan
+from tests.experiments.c2_renderer import LeafText, compile_render_plan
 from tests.experiments.test_c2_pipeline import BULLET_TIERS, compile_synthetic
 from tests.experiments.test_c2_renderer import rich_candidate
 
@@ -516,6 +518,36 @@ def test_canonical_pairs_end_to_end(pair: str) -> None:
         assert gates["passed"] is False and gates["owner_confirmation_required"] is True
     else:
         assert gates["passed"] is True
+    # C2-0cR: every canonical run carries leaf-level horizontal coverage, and
+    # the repairability checkpoint evidence (pre-repair comparison + render)
+    # is retained when the first fitting iteration failed.
+    assert any(row["property"].startswith("leaf_") for row in comparison["rows"])
+    if pair == "E_F":
+        before = json.loads((run_dir / "docx_geometry_comparison_before.json").read_text())
+        before_child_failures = [
+            row for row in before["rows"]
+            if row["classification"] == "fail"
+            and row["property"] in {"leaf_child_marker_x", "leaf_child_text_x", "leaf_child_hanging_indent"}
+            and row["node"] == "section.04"
+        ]
+        # The pre-repair E→F comparison must expose the Experience child
+        # indentation gap the old 40/40 result could not see.
+        assert before_child_failures, before["counts"]
+        after_by_key = {
+            (row["property"], row.get("detail") or ""): row for row in comparison["rows"]
+        }
+        for row in before_child_failures:
+            after = after_by_key[(row["property"], row.get("detail") or "")]
+            assert after["classification"] == "pass", after
+        assert gates["passed"] is True
+        assert gates["gates"]["rendered_geometry_matches_declared_contract"] is True
+        assert report["pagination"]["docx_preview_page_count"] == 1
+        assert (run_dir / "c2_output_before.pdf").exists()
+    else:
+        # D→E and E→D retain their previous honest fail-closed status; the
+        # expanded coverage did not tune them toward passing.
+        assert gates["passed"] is False
+        assert gates["gates"]["rendered_geometry_matches_declared_contract"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -709,9 +741,15 @@ def _fake_rendered(state, plan, *, overrides=None, page_y_shift=0.0):
                 )
                 lines.append(line("bullet", y, marker_x, text_x + len(bullet.text) * 4.0, content_size, font, f"{marker} {_strip_leading_marker_glyphs(bullet.text)}", chars))
                 y += content_size
+            child_x0 = (
+                float(section_plan.base_x0_pt)
+                if section_plan.base_x0_pt is not None else float(page.margin_left_pt)
+            )
             for text_line in entry.text_lines:
-                lines.append(line("textline", y, float(page.margin_left_pt), float(page.margin_left_pt) + 200.0, content_size, font, text_line.text,
-                                  [{"text": char, "x0": float(page.margin_left_pt) + 0.5 * i, "x1": float(page.margin_left_pt) + 0.5 * i + 0.5,
+                # The declared compiler aligns entry child detail lines with
+                # their entry's content column (C2-0cR root-cause fix).
+                lines.append(line("textline", y, child_x0, child_x0 + 200.0, content_size, font, text_line.text,
+                                  [{"text": char, "x0": child_x0 + 0.5 * i, "x1": child_x0 + 0.5 * i + 0.5,
                                     "bottom": y + content_size, "size": content_size, "font": font}
                                    for i, char in enumerate(text_line.text)]))
                 y += content_size
@@ -962,3 +1000,223 @@ def test_the_fitter_stops_after_the_documented_iteration_budget(monkeypatch: pyt
         for iteration in result["log"]
     ]
     assert corrections == [0.0, pytest.approx(-10.0), pytest.approx(-20.0)]
+
+
+# ---------------------------------------------------------------------------
+# C2-0cR: leaf-level indentation coverage + the bounded indentation repair
+# ---------------------------------------------------------------------------
+
+
+def _state_plan_with_entry_textlines():
+    """The measured shape state/plan with two verbatim child detail lines
+    added to the first work entry — the E→F blind-spot shape: source-glyph
+    ("• ...") and plain detail lines that stay verbatim TEXT because the
+    plan declares no native bullet for them. The plan ledger is extended so
+    the added leaves stay owned (accounting remains exact)."""
+    state, plan = _shape_state_and_plan()
+    section = plan.sections[0]
+    entry = section.entries[0]
+    patched = entry.model_copy(update={
+        "text_lines": [
+            LeafText(leaf_id="work.e1.t1", text="• Candidate detail line that must indent with its entry"),
+            LeafText(leaf_id="work.e1.t2", text="Candidate plain detail line"),
+        ],
+    })
+    sections = [
+        section.model_copy(update={"entries": [patched, *section.entries[1:]]}),
+        *plan.sections[1:],
+    ]
+    ledger = dict(plan.leaf_ledger)
+    ledger["work.e1.t1"] = entry.node_id
+    ledger["work.e1.t2"] = entry.node_id
+    return state, plan.model_copy(update={"sections": sections, "leaf_ledger": ledger})
+
+
+def _leaf_rows(comparison: dict, node: str = "section.01") -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for row in comparison["rows"]:
+        if row["node"] == node and row["property"].startswith("leaf_"):
+            grouped.setdefault(row["property"], []).append(row)
+    return grouped
+
+
+def test_pre_repair_geometry_fails_on_the_uncovered_child_textline() -> None:
+    """Regression: a child textline rendered AWAY from its measured target
+    anchor must FAIL the expanded gate — the old section-level rows (which
+    only checked the FIRST content row) reported 40/40 while every Experience
+    detail line sat at the page margin."""
+    state, plan = _state_plan_with_entry_textlines()
+    rendered = _fake_rendered(state, plan)
+    comparison = compare_geometry(state, plan, _fake_target_geo(state, plan), rendered)
+    grouped = _leaf_rows(comparison)
+    assert grouped["leaf_child_marker_x"], "child textline leaves must carry marker coverage"
+    failing = [row for row in grouped["leaf_child_marker_x"] if row["classification"] == "fail"]
+    assert failing, grouped
+    assert all(row["basis_source"] == "measured_target" for row in grouped["leaf_child_marker_x"])
+    assert comparison["gate_passed"] is False
+    assert comparison["adjustable"] is True  # the fitter has a documented control
+
+
+def test_section_first_row_alignment_cannot_mask_child_misalignment() -> None:
+    """content_start_x checks only the section's first content row; the
+    expanded gate must still fail when a LATER child row is misaligned."""
+    state, plan = _state_plan_with_entry_textlines()
+    rendered = _fake_rendered(state, plan)
+    comparison = compare_geometry(state, plan, _fake_target_geo(state, plan), rendered)
+    content_start = next(
+        row for row in comparison["rows"] if row["property"] == "content_start_x" and row["node"] == "section.01"
+    )
+    assert content_start["classification"] == "pass"
+    assert comparison["gate_passed"] is False
+
+
+def test_target_measured_marker_text_and_hanging_are_separate_contracts() -> None:
+    """Marker x, bullet text x, and the hanging indent are measured and
+    compared separately per leaf: shifting only the text start fails the
+    text and hanging rows while the marker row still passes."""
+    state, plan = _state_plan_with_entry_textlines()
+    rendered = _fake_rendered(state, plan)
+    # Put the child line ON its measured anchors first (marker 60.0, text
+    # 64.0), then shift ONLY the text after the leading glyph by +3pt.
+    shifted = 0
+    for mapped in rendered["mapping"]["mapped"]:
+        if mapped["kind"] == "textline" and mapped["text"].startswith("•"):
+            line0 = mapped["lines"][0]
+            chars = line0["chars"]
+            space_width = chars[1]["x1"] - chars[1]["x0"]
+            chars[0]["x0"], chars[0]["x1"] = 60.0, 60.0 + space_width
+            chars[1]["x0"], chars[1]["x1"] = 60.0 + space_width, 64.0
+            for offset, char in enumerate(chars[2:]):
+                char["x0"] = 64.0 + 0.5 * offset + 3.0
+                char["x1"] = 64.0 + 0.5 * offset + 0.5 + 3.0
+            line0["x0"] = 60.0
+            line0["x1"] = round(max(char["x1"] for char in chars), 3)
+            shifted += 1
+            break
+    assert shifted
+    comparison = compare_geometry(state, plan, _fake_target_geo(state, plan), rendered)
+    grouped = _leaf_rows(comparison)
+    marker = grouped["leaf_child_marker_x"][0]
+    text = grouped["leaf_child_text_x"][0]
+    hanging = grouped["leaf_child_hanging_indent"][0]
+    assert marker["classification"] == "pass"
+    assert text["classification"] == "fail"
+    assert hanging["classification"] == "fail"
+    assert {marker["property"], text["property"], hanging["property"]} == {
+        "leaf_child_marker_x", "leaf_child_text_x", "leaf_child_hanging_indent",
+    }
+
+
+def test_child_textline_without_target_anchor_is_honestly_unmeasurable() -> None:
+    """A child leaf whose target carries no measurable bullet-text anchor has
+    no basis: it must fail the gate as unmeasurable (never a silent pass)."""
+    state, plan = _state_plan_with_entry_textlines()
+    target_geo = _fake_target_geo(state, plan)
+    target_geo["sections"]["section.01"]["bullets"] = None
+    rendered = _fake_rendered(state, plan)
+    comparison = compare_geometry(state, plan, target_geo, rendered)
+    grouped = _leaf_rows(comparison)
+    text_rows = grouped["leaf_child_text_x"]
+    assert any(row["classification"] == "unmeasurable" for row in text_rows)
+    assert comparison["gate_passed"] is False
+    # The declared marker basis still applies where the state measures one.
+    assert any(row["classification"] == "pass" for row in grouped["leaf_child_marker_x"])
+
+
+def test_the_bounded_edit_changes_only_the_intended_stable_nodes() -> None:
+    """FitAdjustments.sections[<node>].entry_child_text_indent_pt moves ONLY
+    that node's child detail lines; every other paragraph (text and indent)
+    is byte-identical, and the edited paragraph keeps its text verbatim."""
+    state, plan = _state_plan_with_entry_textlines()
+    before = build_document(state, plan)
+    after = build_document(
+        state, plan,
+        adjustments=FitAdjustments(sections={"section.01": SectionFit(node_id="section.01", entry_child_text_indent_pt=10.7)}),
+    )
+    from docx.shared import Pt
+
+    def paragraph_snapshot(document):
+        return [
+            (paragraph.text, paragraph.paragraph_format.left_indent)
+            for paragraph in document.paragraphs
+        ]
+    before_rows = paragraph_snapshot(before)
+    after_rows = paragraph_snapshot(after)
+    assert [text for text, _ in before_rows] == [text for text, _ in after_rows]
+    changed = [
+        (index, b, a) for index, (b, a) in enumerate(zip(before_rows, after_rows))
+        if b[1] != a[1]
+    ]
+    # Exactly the two child detail lines of section.01's first entry moved
+    # (the source-glyph line and the plain line); every other paragraph is
+    # byte-identical and all texts stay verbatim.
+    assert len(changed) == 2, changed
+    assert all("Candidate detail line" in after_rows[index][0] or "Candidate plain detail line" in after_rows[index][0]
+               for index, _, _ in changed)
+    expected = Pt(46.9 - 36.0 + 10.7)  # declared entry-column alignment + correction
+    assert all(abs(a[1].pt - expected.pt) < 0.01 for _, _, a in changed)
+
+
+def test_candidate_content_and_accounting_unchanged_by_the_edit(tmp_path: Path) -> None:
+    """The bounded edit is presentation-only: reading order, leaf texts, and
+    content accounting are identical with and without the adjustment."""
+    state, plan = _state_plan_with_entry_textlines()
+    plain = build_document(state, plan)
+    edited = build_document(
+        state, plan,
+        adjustments=FitAdjustments(sections={"section.01": SectionFit(node_id="section.01", entry_child_text_indent_pt=10.7)}),
+    )
+    plain_path = tmp_path / "plain.docx"
+    edited_path = tmp_path / "edited.docx"
+    plain_path.write_bytes(deterministic_docx_bytes(plain))
+    edited_path.write_bytes(deterministic_docx_bytes(edited))
+    inspection_plain = inspect_docx(plain_path)
+    inspection_edited = inspect_docx(edited_path)
+    # Semantic text is identical with and without the edit (verbatim glyphs).
+    assert [p["text"] for p in inspection_plain["paragraphs"]] == [
+        p["text"] for p in inspection_edited["paragraphs"]
+    ]
+    accounting_plain = content_accounting(plan, inspection_plain)
+    accounting_edited = content_accounting(plan, inspection_edited)
+    assert accounting_plain["passed"] is True and accounting_edited["passed"] is True
+    assert accounting_plain["leaf_records"] == accounting_edited["leaf_records"]
+    assert accounting_plain["presentation_marker_conversions"] == (
+        accounting_edited["presentation_marker_conversions"]
+    )
+
+
+def test_unrelated_section_geometry_is_unchanged_by_the_edit() -> None:
+    """Applying the bounded edit flips ONLY the intended node's child rows;
+    rows of every unrelated node keep their property/classification/value."""
+    state, plan = _state_plan_with_entry_textlines()
+    before_rendered = _fake_rendered(state, plan)
+    comparison_before = compare_geometry(state, plan, _fake_target_geo(state, plan), before_rendered)
+    # The repaired render: the source-glyph child line moved onto the
+    # measured anchors (marker 60.0pt, text 64.0pt — the shape state's
+    # measured bullet tiers); the plain child line keeps its measured
+    # content-start position.
+    after_rendered = _fake_rendered(state, plan)
+    for mapped in after_rendered["mapping"]["mapped"]:
+        if mapped["kind"] == "textline" and mapped["text"].startswith("•"):
+            line0 = mapped["lines"][0]
+            chars = line0["chars"]
+            space_width = chars[1]["x1"] - chars[1]["x0"]
+            chars[0]["x0"], chars[0]["x1"] = 60.0, 60.0 + space_width
+            chars[1]["x0"], chars[1]["x1"] = 60.0 + space_width, 64.0
+            for offset, char in enumerate(chars[2:]):
+                char["x0"] = 64.0 + 0.5 * offset
+                char["x1"] = 64.0 + 0.5 * offset + 0.5
+            line0["x0"] = 60.0
+            line0["x1"] = round(max(char["x1"] for char in chars), 3)
+    comparison_after = compare_geometry(state, plan, _fake_target_geo(state, plan), after_rendered)
+    key = lambda row: (row["property"], row["node"], row.get("detail") or "")
+    before_by_key = {key(row): row for row in comparison_before["rows"]}
+    for row in comparison_after["rows"]:
+        before = before_by_key.get(key(row))
+        assert before is not None, key(row)
+        if row["node"] != "section.01" or not row["property"].startswith("leaf_child"):
+            assert row["classification"] == before["classification"], key(row)
+            assert row["rendered"] == before["rendered"], key(row)
+    grouped = _leaf_rows(comparison_after)
+    assert all(row["classification"] == "pass" for rows in grouped.values() for row in rows)
+    assert comparison_after["gate_passed"] is True

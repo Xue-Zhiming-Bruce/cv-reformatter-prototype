@@ -1156,3 +1156,65 @@ known entry-typography capability gap) / 9 not-applicable; fail-closed;
 never made a parity case. **C2-0c remains NOT accepted — owner visual
 review decides.** No Pipeline D, C2-0d, production integration, frontend, or
 live calls; `layout-state/1` not promoted; product contracts untouched.
+
+### 16.8 C2-0cR repairability checkpoint (2026-09-15, owner work order)
+
+Owner verdict on §16.7: **C2-0c remains NOT accepted.** The fitted E→F
+preview shows visibly incorrect indentation — Experience bullet/detail
+lines at the page margin (x≈36.1pt) while their entry rows begin at
+x≈46.9pt — so the reported "40/40 geometry pass" was a false sense of
+completeness. Corrected interpretation, now authoritative for C2:
+
+- 40/40 meant only "all previously defined measurements passed"; it did NOT
+  mean visual fidelity passed;
+- E→F exposed an indentation COVERAGE gap: the child lines are mapped as
+  `kind=textline` with plan `bullet_marker=none` (their `• ` glyphs are
+  verbatim source content, never silently converted), so they received no
+  marker/text/hanging-indent checks, and section-level `content_start_x`
+  checked only the FIRST content row;
+- the acceptance target is REPAIRABILITY — a broadly correct recognizable
+  draft leaving only local, describable errors, repairable through one or
+  two bounded edits that do not damage unrelated nodes — not an invented
+  visual percentage.
+
+Implemented (no new schema family, no agent/reviewer framework, no
+pair-specific logic, no dependency; production/frontend/Pipeline D
+untouched):
+
+1. **Leaf-level horizontal coverage (Part A).** `compare_geometry` emits a
+   per-leaf row for every visible content leaf of every non-empty section
+   (entry title, entry detail/meta, bullet marker/text/hanging per leaf,
+   verbatim child textlines, plain items, paragraph lines). Basis: the
+   measured target counterpart where measurable (target F: marker 57.6pt,
+   text 62.83pt, hanging 5.23pt), otherwise an explicit declared-state
+   basis; neither basis ⇒ `unmeasurable` ⇒ gate fails, with a documented
+   reason. Bases are shared with the section-level rows so one control
+   never measures two displacements; tolerances unchanged; node-local x
+   positions only; a leaf can no longer disappear from validation because
+   of its classification.
+2. **One bounded deterministic E→F indentation repair (Part B).** Smallest
+   existing-state-compatible edit: additive typed fit control
+   `FitAdjustments.sections[<node_id>].entry_child_text_indent_pt`
+   (extends the EXISTING `SectionFit`; consumed by the existing
+   `apply_measured_deltas` rule; rendered by the normal deterministic DOCX
+   compiler as a paragraph left indent on the targeted node's child lines).
+   Declared compiler root-cause rule (general): entry child detail lines
+   align with their entry's measured content column. The E→F edit is
+   FITTED, not hardcoded: measured target-F child anchors →
+   `section.04: entry_child_text_indent_pt = 10.699pt`; source glyphs stay
+   verbatim text; CandidateProfile/accounting untouched; one page
+   preserved.
+
+Results (canonical runs `c2_0cR_E_to_F_20260915T153327Z`,
+`c2_0cR_D_to_E_20260915T153230Z`, `c2_0cR_E_to_D_20260915T153321Z`; each
+retains the PRE-repair comparison `docx_geometry_comparison_before.json` +
+before render `c2_output_before.*`/`c2_0cr_before_*.png`):
+**E→F before 46 fail (31 section.04 child-leaf rows proving the 40/40 gap)
+→ after 98/98 pass in 2 fitting iterations, 1/1/1 pages, all hard gates
+true.** D→E keeps its single honest sparse-trailing-page failure; E→D gains
+honestly documented unmeasurable child rows (no measurable target anchor)
+and stays fail-closed; neither was tuned. Cleanup: the dead duplicate
+`compare_geometry` definition was removed; the reported duplicate
+`basis_source` dict key was searched for (AST + raw-JSON pair-hook scans)
+and does not exist. **C2-0cR is NOT accepted pending owner visual review**
+— before/after previews are the review artifact; the product owner decides.

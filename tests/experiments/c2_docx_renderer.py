@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import zipfile
 from datetime import UTC, datetime
@@ -275,6 +276,9 @@ class SectionFit(StateModel):
     node_id: str
     entry_right_edge_pt: float = 0.0  # right-column width correction
     entry_table_indent_pt: float = 0.0  # table indent correction
+    # Entry child detail/bullet lines (verbatim textline leaves): fitter
+    # correction relative to the declared entry-column alignment (C2-0cR).
+    entry_child_text_indent_pt: float = 0.0
     item_left_indent_pt: float | None = None  # absolute item indent (items sections)
     bullet_marker_correction_pt: float = 0.0
     bullet_text_correction_pt: float = 0.0
@@ -907,8 +911,31 @@ def build_document(
                         )
                     )
                 for line in entry.text_lines:
+                    # C2-0cR root-cause fix (general, not pair-specific): entry
+                    # child detail/bullet lines align with their entry's
+                    # content column (the same measured entry-column x0 the
+                    # entry rows render on), not with the page margin. The
+                    # source glyphs (e.g. a leading "•") stay verbatim TEXT —
+                    # never converted into presentation bullets; the fitter's
+                    # entry_child_text_indent_pt control shifts the whole
+                    # paragraph onto a target-measured child anchor when the
+                    # target measures a different child x.
+                    fit = adjustments.section(section_plan.node_id)
+                    child_left_indent = (
+                        round(
+                            float(section_plan.base_x0_pt)
+                            - float(state.page.margin_left_pt)
+                            + fit.entry_child_text_indent_pt,
+                            3,
+                        )
+                        if section_plan.base_x0_pt is not None
+                        else (fit.entry_child_text_indent_pt or None)
+                    )
                     entry_paragraphs.append(
-                        _write_text_paragraph(document, line.text, content_token, written_font=content_written)
+                        _write_text_paragraph(
+                            document, line.text, content_token, written_font=content_written,
+                            left_indent_pt=child_left_indent,
+                        )
                     )
                 last_paragraph = entry_paragraphs[-1] if entry_paragraphs else last_paragraph
         else:  # item_list / inline_items
@@ -1992,7 +2019,8 @@ def apply_measured_deltas(adjustments: FitAdjustments, comparison: dict[str, Any
             fit = updates.section(node)
             fit.item_left_indent_pt = round((fit.item_left_indent_pt or 0.0) + correction, 3)
         elif control in {
-            "entry_right_edge_pt", "entry_table_indent_pt", "bullet_marker_correction_pt",
+            "entry_right_edge_pt", "entry_table_indent_pt", "entry_child_text_indent_pt",
+            "bullet_marker_correction_pt",
             "bullet_text_correction_pt", "inter_entry_pt", "heading_space_before_pt",
             "heading_space_after_pt", "heading_border_space_pt", "rule_left_indent_pt",
             "rule_right_indent_pt",
@@ -2021,6 +2049,7 @@ def fit_docx(
     adjustments = FitAdjustments()
     log: list[dict[str, Any]] = []
     comparison: dict[str, Any] = {}
+    first_comparison: dict[str, Any] | None = None
     iterations = 0
     for iterations in range(1, MAX_FITTING_ITERATIONS + 1):
         document = build_document(state, plan, adjustments=adjustments)
@@ -2041,6 +2070,14 @@ def fit_docx(
             comparison = compare_geometry(state, plan, target_geo, rendered)
             comparison["preview_pdf"] = preview["pdf"]
             comparison["preview_page_count"] = rendered["page_count"]
+        if iterations == 1:
+            first_comparison = comparison
+            if preview and preview.get("available") and not comparison.get("gate_passed") and Path(preview["pdf"]).exists():
+                # C2-0cR: retain the PRE-repair render as review evidence (the
+                # final fitted output overwrites c2_output.* below).
+                shutil.copy2(preview["pdf"], run_dir / "c2_output_before.pdf")
+                (run_dir / "c2_output_before.docx").write_bytes(deterministic_docx_bytes(document))
+                _render_pages(run_dir / "c2_output_before.pdf", run_dir, "c2_0cr_before")
         log.append(
             {
                 "iteration": iterations,
@@ -2055,6 +2092,7 @@ def fit_docx(
     return {
         "adjustments": adjustments,
         "comparison": comparison,
+        "first_comparison": first_comparison,
         "log": log,
         "iterations": iterations,
         "converged": bool(comparison.get("gate_passed")),
@@ -2062,21 +2100,6 @@ def fit_docx(
     }
 
 
-def compare_geometry(
-    state: C2LayoutState,
-    plan: Any,
-    target_geo: dict[str, Any],
-    rendered: dict[str, Any],
-) -> dict[str, Any]:
-    """Node-level geometry comparison in points (work order Parts 1/2/4).
-
-    Comparisons are node-local: relative x positions, relative y gaps, font
-    sizes, and topology invariants — never absolute page y across unrelated
-    candidate content. Basis: the measured target geometry where the property
-    is measurable there, otherwise the declared state value; a property with
-    neither basis is classified ``unmeasurable`` (a capability gap, never a
-    silent pass). Documented tolerances (TOLERANCE_PT) are never tuned after
-    seeing failures."""
 def bullet_rows_expected(plan: Any, section_plan: Any) -> bool:
     """Whether this section's plan actually renders native Word bullets."""
     return bool(
@@ -2369,6 +2392,129 @@ def compare_geometry(
                     "candidate entries carry no metadata lines (content reflow; "
                     "no meta tier rendered to measure)"
                 )
+        # -- leaf-level horizontal coverage (C2-0cR Part A) ----------------------
+        # Every visible content leaf carries an applicable horizontal-position
+        # contract: a leaf never leaves geometry validation because it was
+        # classified as a textline (the E→F Experience blind spot: entry child
+        # detail/bullet lines rendered at the page margin while only the
+        # section's FIRST content row was checked). Basis: the measured target
+        # counterpart where one is measurable, otherwise the declared state
+        # (the entry column the compiler aligns children to); a leaf with
+        # neither basis is an unmeasurable failure, never a silent pass.
+        # Node-local x positions only — never absolute page y.
+        target_bullets = (target_section or {}).get("bullets")
+        for leaf_row in content_rows:
+            if not leaf_row["lines"]:
+                continue
+            leaf_id = (leaf_row.get("leaf_ids") or [""])[0]
+            line0 = leaf_row["lines"][0]
+            kind = leaf_row["kind"]
+            if kind in {"entry_title", "entry_row"}:
+                rows.append(_row(
+                    "leaf_entry_x", node_id,
+                    (target_section or {}).get("content_start_x_pt"), "measured_target",
+                    round(line0["x0"], 3), TOLERANCE_PT["local_position"],
+                    control="entry_table_indent_pt", detail=f"leaf {leaf_id}",
+                ))
+                if kind == "entry_row":
+                    rows.append(_row(
+                        "leaf_entry_meta_x1", node_id,
+                        (target_section or {}).get("entry_right_edge_pt"), "measured_target",
+                        round(max(line["x1"] for line in leaf_row["lines"]), 3),
+                        TOLERANCE_PT["column_right_edge"], control="entry_right_edge_pt",
+                        detail=f"leaf {leaf_id}",
+                    ))
+                continue
+            leading_marker = (
+                bool(line0["chars"]) and line0["chars"][0]["text"] in _RENDERED_MARKER_GLYPHS
+            )
+            if leaf_row.get("native_bullet") or leading_marker:
+                # The visible first glyph IS a bullet marker: measure the
+                # marker x, the text x after it, and their hanging delta as
+                # separate contracts (target-measured anchors where the target
+                # carries marker lines, otherwise the declared tiers — the
+                # SAME bases the section-level bullet rows use, so one control
+                # never measures two different displacements). For native
+                # bullets the glyph is renderer-drawn; for a verbatim textline
+                # it is the candidate's own source glyph (never converted) —
+                # the measurable positions are the same.
+                native = bool(leaf_row.get("native_bullet"))
+                if native:
+                    marker_basis = (
+                        target_bullets["marker_x0_pt"] if target_bullets
+                        else section_plan.bullet_dot_x0_pt
+                    )
+                    text_basis = (
+                        target_bullets["text_x0_pt"]
+                        if target_bullets and target_bullets.get("text_x0_pt") is not None
+                        else section_plan.bullet_text_x0_pt
+                    )
+                else:
+                    marker_basis = (
+                        (target_bullets or {}).get("marker_x0_pt")
+                        if target_bullets else section_plan.base_x0_pt
+                    )
+                    text_basis = (target_bullets or {}).get("text_x0_pt") if target_bullets else None
+                basis_source = "measured_target" if target_bullets else "declared_state"
+                rendered_marker = round(line0["chars"][0]["x0"], 3)
+                skip = 0
+                for char in line0["chars"]:
+                    if char["text"] in _RENDERED_MARKER_GLYPHS or char["text"].isspace():
+                        skip += 1
+                    else:
+                        break
+                rendered_text = round(line0["chars"][skip]["x0"], 3) if skip < len(line0["chars"]) else None
+                marker_control = "bullet_marker_correction_pt" if native else "entry_child_text_indent_pt"
+                text_control = "bullet_text_correction_pt" if native else "entry_child_text_indent_pt"
+                rows.append(_row(
+                    "leaf_bullet_marker_x" if native else "leaf_child_marker_x", node_id,
+                    marker_basis, basis_source, rendered_marker,
+                    TOLERANCE_PT["local_position"], control=marker_control,
+                    detail=f"leaf {leaf_id}",
+                ))
+                rows.append(_row(
+                    "leaf_bullet_text_x" if native else "leaf_child_text_x", node_id,
+                    text_basis, basis_source, rendered_text,
+                    TOLERANCE_PT["local_position"], control=text_control,
+                    detail=(
+                        f"leaf {leaf_id}: target carries no measurable bullet-text anchor"
+                        if text_basis is None
+                        else f"leaf {leaf_id}"
+                    ),
+                ))
+                rows.append(_row(
+                    "leaf_bullet_hanging_indent" if native else "leaf_child_hanging_indent", node_id,
+                    (
+                        round(float(text_basis) - float(marker_basis), 3)
+                        if text_basis is not None and marker_basis is not None else None
+                    ),
+                    basis_source,
+                    (
+                        round(rendered_text - rendered_marker, 3)
+                        if rendered_text is not None else None
+                    ),
+                    TOLERANCE_PT["local_gap"],
+                    detail=f"leaf {leaf_id}",
+                ))
+                continue
+            # Plain visible content (ordinary textline/item/paragraph leaf):
+            # the target's measured content-start x where the target section
+            # is measurable, otherwise the declared entry column.
+            plain_basis = (
+                (target_section or {}).get("content_start_x_pt")
+                if target_section else section_plan.base_x0_pt
+            )
+            plain_control = (
+                "item_left_indent_pt" if kind == "item"
+                else "entry_child_text_indent_pt" if kind == "textline"
+                else None
+            )
+            rows.append(_row(
+                "leaf_item_x" if kind == "item" else "leaf_text_x", node_id,
+                plain_basis, "measured_target" if target_section else "declared_state",
+                round(line0["x0"], 3), TOLERANCE_PT["local_position"],
+                control=plain_control, detail=f"leaf {leaf_id}",
+            ))
         # -- bullets --------------------------------------------------------------
         bullet_rows = [
             row for row in content_rows
@@ -3025,6 +3171,14 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
         json.dumps(fitting["comparison"], ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    if fitting.get("first_comparison") is not None:
+        # C2-0cR: the PRE-repair comparison (first fitting iteration) is part
+        # of the repairability evidence — it shows which leaf rows failed
+        # before the bounded edit.
+        (run_dir / "docx_geometry_comparison_before.json").write_text(
+            json.dumps(fitting["first_comparison"], ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
     # 5. deterministic DOCX (two compiles of the FINAL fitted document;
     #    normalized package metadata)
@@ -3168,7 +3322,12 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
     write_review_index(
         run_dir, pair, spec, hard_gates, report, accounting, inspection, determinism,
         preview, pagination, comparison=fitting["comparison"],
-        fitting={"iterations": fitting["iterations"], "converged": fitting["converged"]},
+        fitting={
+            "iterations": fitting["iterations"],
+            "converged": fitting["converged"],
+            "corrections": json.loads(fitting["adjustments"].model_dump_json()),
+        },
+        before_comparison=fitting.get("first_comparison"),
     )
     result.update({"hard_gates_passed": hard_gates_passed, "hard_gates": hard_gates})
     return result
@@ -3222,6 +3381,7 @@ def write_review_index(
     pagination: dict[str, Any],
     comparison: dict[str, Any] | None = None,
     fitting: dict[str, Any] | None = None,
+    before_comparison: dict[str, Any] | None = None,
 ) -> None:
     def _rows(items: list[Any]) -> str:
         return "".join(f"<li>{_esc(item)}</li>" for item in items)
@@ -3278,6 +3438,79 @@ def write_review_index(
         for row in (comparison or {}).get("rows", [])
         if row["classification"] in {"fail", "unmeasurable"}
     ) or "<li>none recorded</li>"
+    # C2-0cR repairability checkpoint: before/after indentation comparison for
+    # every leaf row the bounded edit changed, the structured edit itself, and
+    # the affected stable node IDs.
+    repair_html = ""
+    if before_comparison:
+        after_by_key = {
+            (row["property"], row["node"], row.get("detail") or ""): row
+            for row in (comparison or {}).get("rows", [])
+        }
+        repair_rows = ""
+        affected_nodes: list[str] = []
+        for row in before_comparison.get("rows", []):
+            if row["classification"] not in {"fail", "unmeasurable"}:
+                continue
+            after = after_by_key.get((row["property"], row["node"], row.get("detail") or ""))
+            if after is None or (
+                after["classification"] == row["classification"]
+                and after.get("rendered") == row.get("rendered")
+            ):
+                continue  # unchanged failure: a remaining gap, not a repair
+            if row["node"] not in affected_nodes:
+                affected_nodes.append(row["node"])
+            repair_rows += (
+                "<tr>"
+                f"<td>{_esc(row['property'])}</td><td>{_esc(row['node'])}</td>"
+                f"<td>{_esc(row.get('detail') or '')}</td>"
+                f"<td>{_esc(row['basis'])} ({_esc(row.get('basis_source') or '')})</td>"
+                f"<td>{_esc(row.get('rendered'))}</td><td><strong>{_esc(row['classification'].upper())}</strong></td>"
+                f"<td>{_esc(after.get('rendered'))}</td><td><strong>{_esc(after['classification'].upper())}</strong></td>"
+                f"<td>{_esc(after.get('delta'))}</td></tr>"
+            )
+        before_preview_html = ""
+        before_png = run_dir / "c2_0cr_before_page_1.png"
+        if before_png.exists():
+            before_preview_html = (
+                '<li><a href="c2_0cr_before_page_1.png"><img src="c2_0cr_before_page_1.png" width="240"></a> '
+                'BEFORE (pre-repair) preview page 1 — '
+                '<a href="c2_output_before.docx">c2_output_before.docx</a> / '
+                '<a href="c2_output_before.pdf">c2_output_before.pdf</a> / '
+                '<a href="docx_geometry_comparison_before.json">docx_geometry_comparison_before.json</a></li>'
+            )
+        structured_edit_rows = ""
+        corrections = (fitting or {}).get("corrections") or {}
+        for node in affected_nodes:
+            node_fit = (corrections.get("sections") or {}).get(node) or {}
+            applied = {
+                control: value for control, value in node_fit.items()
+                if control != "node_id" and value not in (0.0, None, False, [])
+            }
+            structured_edit_rows += (
+                f"<li><code>{_esc(node)}</code>: "
+                f"{_esc(json.dumps(applied, sort_keys=True))}</li>"
+            )
+        repair_html = (
+            '<h2>Repairability checkpoint (C2-0cR) — bounded indentation repair</h2>'
+            '<p>Owner status: <strong>NOT accepted pending visual review</strong>. '
+            'The pre-repair geometry exposed the leaf-coverage blind spot (entry child '
+            'detail/bullet lines at the page margin while only the section\'s first content '
+            'row was checked); one bounded deterministic edit '
+            '(<code>FitAdjustments.sections[&lt;node_id&gt;].entry_child_text_indent_pt</code>, '
+            'rendered through the normal deterministic DOCX compiler; candidate content '
+            'untouched) re-indents the affected leaves.</p>'
+            + (
+                f"<p><strong>Affected stable node IDs</strong>: {_esc(', '.join(affected_nodes) or 'none')}</p>"
+                f"<h3>Structured edit applied (fitted corrections, points)</h3>"
+                f"<ul>{structured_edit_rows}</ul>"
+                f"<h3>Before → after (leaf-level rows the edit changed)</h3>"
+                f"<table><tr><th>property</th><th>node</th><th>leaf</th><th>basis (source)</th>"
+                f"<th>before</th><th>before result</th><th>after</th><th>after result</th><th>after delta</th></tr>"
+                f"{repair_rows}</table>"
+            )
+            + f"<ul>{before_preview_html}</ul>"
+        )
     fitting_html = ""
     if fitting is not None:
         fitting_html = (
@@ -3332,6 +3565,7 @@ never declares visual acceptance.</p>
 as exact).</p>
 {geometry_counts_html}
 <p>Remaining visual gaps: see the failed/unmeasurable rows below.</p>
+{repair_html}
 {fitting_html}
 <h2>Hard gates</h2><table>{gate_rows}</table>
 <p>Owner confirmation required for unsupported features:

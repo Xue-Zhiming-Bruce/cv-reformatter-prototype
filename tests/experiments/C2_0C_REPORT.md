@@ -1,6 +1,6 @@
 # Pipeline C2-0c Report: Minimal DOCX / Cross-Format Spike
 
-Status: `Owner visual review REJECTED C2-0c; two bounded corrective passes executed; awaiting owner re-review — NOT production work`
+Status: `Owner visual review REJECTED C2-0c; three bounded corrective passes executed; awaiting owner re-review — NOT production work`
 
 ## Owner Verdict (visual review, 2026-09-15)
 
@@ -19,7 +19,11 @@ architecture milestone; this rejection does not change that.
 Two bounded corrective passes were executed (same day, no Pipeline D, no
 C2-0d, no production integration, no frontend work, no live calls): the
 visual corrective pass is recorded in §0a and the rendered-geometry
-measurement-and-fitting pass is recorded in §0b; both await owner re-review.
+measurement-and-fitting pass is recorded in §0b. A third bounded pass — the
+C2-0cR repairability checkpoint (leaf-level indentation coverage + one
+bounded E→F indentation repair), recorded in §0c — was executed after the
+owner's second verdict below. C2-0c remains NOT accepted pending owner
+visual review.
 
 Date: 2026-09-15
 Branch: `experiment/pipeline-c2` (worktree `/private/tmp/cv-converter-c2`,
@@ -195,6 +199,80 @@ images/vector graphics + contact icons. E→D: 24 pass / 2 unmeasurable (the
 known entry-typography capability gap) / 9 not-applicable; still fail-closed;
 NOT made a parity case. C2-0c remains NOT accepted until owner visual review.
 
+## 0c. Repairability Checkpoint (C2-0cR, owner work order, 2026-09-15)
+
+Owner verdict on the rendered-geometry pass: **C2-0c remains NOT accepted.**
+The fitted E→F preview still shows visibly incorrect indentation — the
+Experience bullet/detail lines render at the page margin (x≈36.1pt) while
+their entry rows begin at x≈46.9pt. The reported 40/40 geometry pass was a
+false sense of completeness: it meant only "all PREVIOUSLY DEFINED
+measurements passed" — it never meant visual fidelity passed. The blind
+spot: those child lines are mapped as `kind=textline` and the plan declares
+`bullet_marker=none`, so they received no `bullet_marker_x`,
+`bullet_text_x`, or `bullet_hanging_indent` checks, and the section-level
+`content_start_x` check covered only the FIRST content row, letting the
+whole section pass while every child row sat wrong. The acceptance target
+is repairability (a broadly correct recognizable draft leaving only local,
+describable errors repairable through one or two bounded edits that do not
+damage unrelated nodes) — not an invented visual percentage.
+
+**Root-cause trace (why the lines become `textline` with `bullet_marker=none`).**
+The candidate's Experience detail leaves are `work_bullet` children whose
+text literally begins with `• `. Target F's entries carry no native list
+design (the state measures the entry column and metadata edge, and the
+state declares no bullet tiers for the entries section), so the plan
+compiler routes those leaves into `EntryPlan.text_lines` — verbatim TEXT,
+per the §0a marker ruling that semantic source glyphs are never silently
+converted into presentation bullets — and the compiler rendered them as
+plain body paragraphs at the page margin, outside every measured control
+(the entry-table indent covered only the entry rows).
+
+**Part A — leaf-level horizontal coverage.** `compare_geometry` now emits a
+per-leaf row for EVERY visible content leaf in every non-empty section
+(entry title, entry detail/meta rows, bullet marker/text/hanging per leaf,
+verbatim child textlines, ordinary items, paragraph lines). Basis: the
+measured target counterpart where measurable (e.g. target F's own child
+bullet lines: marker x=57.6pt, text x=62.83pt, hanging 5.23pt), otherwise
+an explicit declared-state basis (the entry column the compiler aligns
+to); a leaf with neither basis is `unmeasurable` — which fails the gate —
+with a documented reason. A textline leaf can therefore no longer leave
+geometry validation because of its classification, and a section's first
+row can no longer mask its child rows. Bases are shared with the
+section-level rows (one control never measures two displacements);
+tolerances unchanged; comparisons stay node-local x positions (never
+absolute page y); no pair-specific logic anywhere.
+
+**Part B — one bounded deterministic E→F indentation repair.** The
+smallest existing-state-compatible edit: a new typed fit control
+`FitAdjustments.sections[<node_id>].entry_child_text_indent_pt`
+(an additive field on the EXISTING `SectionFit` model; no new schema
+family), consumed by the existing `apply_measured_deltas` translation rule
+and rendered by the normal deterministic DOCX compiler as a paragraph left
+indent on the targeted node's child lines. Declared compiler behavior also
+changed by the same root-cause rule (general, not pair-specific): entry
+child detail lines now align with their entry's measured content column
+instead of the page margin. The repair: measured target-F child anchors →
+fitter correction `section.04: entry_child_text_indent_pt = 10.699pt` →
+source-glyph text stays verbatim, CandidateProfile/accounting untouched,
+E→F still exactly one page, header/skills/education/rules/reading order
+unchanged (proven row-for-row).
+
+Results (canonical C2-0cR runs, same frozen candidate/target/cached
+evidence/C1 baselines; exact paths in §4c): E→F pre-repair comparison
+`docx_geometry_comparison_before.json`: 46 failures — 31 in section.04
+(12 child textlines: marker basis 57.6 measured 46.9; text basis 62.83
+measured 52.54; hanging basis 5.23 measured ~1.0) proving the old 40/40
+was incomplete. One bounded edit → converged iteration 2: **98/98 rows
+pass, 0 fail, 0 unmeasurable**, all hard gates true, 1/1/1 pages,
+accounting exact (40 leaves, zero marker conversions — glyphs remain
+content). D→E retains its single honest failure (the borderline sparse
+trailing page) plus 41 not-applicable; still fail-closed on unsupported
+features. E→D gains honestly-documented unmeasurable child rows (target D
+carries no measurable bullet-text anchor for its plain child lines); still
+fail-closed. Neither was tuned. **C2-0cR is NOT accepted pending owner
+visual review** — the before/after preview comparison is the review
+artifact, not a convergence claim.
+
 ## 0. Explicit Non-Claims (read first)
 
 - This is an architecture experiment, NOT a production DOCX system.
@@ -335,6 +413,25 @@ rejection and are superseded by these):
 
 Every run directory contains: `c2_layout_state.json` (exact input state),
 `candidate_render_context.json`, `context_coverage.json`,
+
+### 4c. Canonical C2-0cR repairability-checkpoint runs (leaf coverage + bounded indentation repair)
+
+Same frozen E→F candidate, target, cached evidence, and C1 baselines as §4;
+no live call. Each run additionally carries `docx_geometry_comparison_before.json`
+(the PRE-repair first fitting iteration — the evidence that the old 40/40
+was incomplete), `c2_output_before.docx` / `c2_output_before.pdf` /
+`c2_0cr_before_page_N.png` (the pre-repair render), and a
+"Repairability checkpoint" section in `review.html` (before→after leaf
+rows, the structured edit, affected stable node IDs).
+
+| Pair | Run | Pre-repair (before) | Bounded edit | Post-repair (after) | Pages (DOCX/target/C1) |
+|---|---|---|---|---|---|
+| E→F | `c2_0cR_E_to_F_20260915T153327Z` | 46 fail / 52 pass / 98 total — 31 section.04 child-leaf failures (marker basis 57.6 vs rendered 46.9; text basis 62.83 vs 52.54; hanging 5.23 vs ≈1.0) | `FitAdjustments.sections[section.04].entry_child_text_indent_pt = 10.699pt` (fitted, not hardcoded) | 98/98 pass, 0 fail, 0 unmeasurable; all hard gates true | 1 / 1 / 1 (`exact`) |
+| D→E | `c2_0cR_D_to_E_20260915T153230Z` | 22 fail (same blind-spot rows) | fitter controls only; NOT tuned | 116 pass / 1 fail (the same borderline sparse trailing page) / 41 not-applicable; still fail-closed on unsupported features | 2 / 1 / 2 (=`frozen C1`) |
+| E→D | `c2_0cR_E_to_D_20260915T153321Z` | 13 fail / 26 unmeasurable | NOT tuned | 52 pass / 0 fail / 26 unmeasurable (the known entry-tier gaps + honestly documented child rows whose target carries no measurable bullet-text anchor); still fail-closed | 1 / 1 / 1 (`exact`) |
+
+Every run directory contains: `c2_layout_state.json` (exact input state),
+`candidate_render_context.json`, `context_coverage.json`,
 `docx_render_plan.json` (the shared renderer-neutral plan), `c2_output.docx`,
 `ooxml_inspection.json` (paragraphs in true document order INCLUDING table
 cells, native headings, list paragraphs, table records with column widths and
@@ -409,6 +506,15 @@ gaps), `adobe_raw.json`, `enriched_evidence.json`, `target_page_1.png`,
 .venv/bin/python -m tests.experiments.c2_docx_renderer --pair D_E   # stopped honestly, 3 iterations
 .venv/bin/python -m tests.experiments.c2_docx_renderer --pair E_D   # stopped honestly, 3 iterations
 
+# Canonical C2-0cR runs (leaf coverage + bounded indentation repair; same
+# cached evidence; LibreOffice previews; explicit --out run name)
+.venv/bin/python -m tests.experiments.c2_docx_renderer --pair E_F \
+    --out tests/experiments/runs/c2_0cR_E_to_F_20260915T153327Z
+.venv/bin/python -m tests.experiments.c2_docx_renderer --pair D_E \
+    --out tests/experiments/runs/c2_0cR_D_to_E_20260915T153230Z
+.venv/bin/python -m tests.experiments.c2_docx_renderer --pair E_D \
+    --out tests/experiments/runs/c2_0cR_E_to_D_20260915T153321Z
+
 # Focused offline tests
 pytest tests/experiments/test_c2_docx_renderer.py -m "not local_dataset"   # 26 passed
 pytest tests/experiments/test_c2_docx_renderer.py \
@@ -427,7 +533,10 @@ pytest tests/experiments/ tests/unit tests/integration -m "not live_provider"
 ```
 
 Pytest logs (canonical ignored directory):
-`tests/test_results/pytest/pytest_*_c2_0c_geometry_*.txt`.
+`tests/test_results/pytest/pytest_*_c2_0c_geometry_*.txt` and
+`pytest_*_c2_0cR_*.txt` (offline 89 passed; local-dataset lane 9 passed;
+broad offline 631 passed / the same 5 pre-existing unrelated
+`tests/unit/test_mock_api.py` failures documented in C2_0A_REPORT §7).
 
 ## 7. Part-1 Closure Also In This Change (C2-0b gate integrity)
 
@@ -498,8 +607,36 @@ superiority is claimed anywhere.
 10. **This pass is NOT accepted** — the owner re-review decides; the
     fitted result must visibly belong to the target template family to
     proceed, and no product-level PDF↔DOCX conversion is claimed either way.
+11. **Leaf coverage adds honest unmeasurable rows where the target has no
+    measurable counterpart** (E→D: target D's mapped entries region carries
+    plain child lines with no marker, so no bullet-text anchor exists; the
+    child marker x is compared on the declared entry-column basis, the text
+    x/hanging rows are `unmeasurable` with a documented reason). A plain
+    child detail line's target-side x is measured only as the section's
+    content-start minimum; a per-target-leaf child correspondence table
+    (matching candidate child lines to SPECIFIC target child lines) is not
+    built in this pass.
+12. **C2-0cR is NOT accepted** — the repair demonstrates bounded edit COST
+    (one typed control, one fitting iteration) and non-damage to unrelated
+    nodes; whether the repaired preview is visually acceptable is exactly
+    the owner's call.
 
 ## 9. Owner-Review Entry Points
+
+C2-0cR repairability checkpoint (review this first):
+
+- `tests/experiments/runs/c2_0cR_E_to_F_20260915T153327Z/review.html` →
+  leads with NOT-accepted status, the BEFORE render
+  (`c2_0cr_before_page_1.png`, `c2_output_before.docx/.pdf`,
+  `docx_geometry_comparison_before.json`) vs the AFTER render
+  (`c2_0c_preview_page_1.png`, `c2_output.docx/.pdf`), the target-F image,
+  the before→after leaf-row indentation table, the structured edit
+  (`entry_child_text_indent_pt = 10.699` on stable node `section.04`), and
+  the full 98-row expanded geometry table.
+- `tests/experiments/runs/c2_0cR_D_to_E_20260915T153230Z/review.html`
+- `tests/experiments/runs/c2_0cR_E_to_D_20260915T153321Z/review.html`
+
+Rendered-geometry pass (superseded by C2-0cR but retained):
 
 - `tests/experiments/runs/c2_0c_E_to_F_20260915T135455Z/review.html` →
   `c2_output.docx` + preview `c2_output.pdf` + target/C1 page images +
@@ -525,17 +662,37 @@ superiority is claimed anywhere.
   measurement, deterministic node mapping, node-local comparison with
   documented tolerances, typed `FitAdjustments` fitting (max 3 iterations),
   authored vs rendered typography, and the
-  `rendered_geometry_matches_declared_contract` hard gate.
+  `rendered_geometry_matches_declared_contract` hard gate. C2-0cR pass:
+  removed the dead duplicate `compare_geometry` definition; leaf-level
+  horizontal coverage rows in `compare_geometry` (entry title/meta per leaf,
+  per-leaf bullet marker/text/hanging, verbatim child textlines, plain
+  items, paragraph lines); additive `SectionFit.entry_child_text_indent_pt`
+  fit control + declared entry-column alignment of entry child detail lines;
+  pre-repair evidence retention (`first_comparison` →
+  `docx_geometry_comparison_before.json`, `c2_output_before.*`,
+  `c2_0cr_before_*.png`) and the review.html repairability-checkpoint
+  section. The reported duplicate `basis_source` key in a comparison-row
+  dictionary was searched for (AST duplicate-key scan over the experiment
+  modules and tests, plus raw-JSON pair-hook scans of the canonical
+  comparison artifacts) and does NOT exist in the current code or
+  artifacts; nothing else was cleaned up.
 - `tests/experiments/test_c2_docx_renderer.py` — corrective + rendered-
-  geometry regressions (26 offline tests; local-dataset lane).
+  geometry regressions (26 offline tests; local-dataset lane) plus C2-0cR
+  regressions (7 offline tests: pre-repair child failure, first-row masking,
+  separate marker/text/hanging contracts, honest unmeasurable without a
+  target anchor, bounded-edit node scoping, content/accounting invariance,
+  unrelated-section invariance; canonical lane asserts leaf coverage, the
+  E→F before/after evidence, one-page pagination, and D→E/E→D retained
+  fail-closed status).
 - `tests/experiments/C2_0B_REPORT.md` — verdict + wording corrections +
   corrective-pass records.
 - `tests/experiments/C2_0C_REPORT.md` — this report.
 - `tests/experiments/PIPELINE_EVOLUTION_PROPOSAL.md` — banner + §16.5
   verdict record + §16.6 C2-0c rejection and corrective-pass record + §16.7
-  rendered-geometry measurement-and-fitting record.
+  rendered-geometry measurement-and-fitting record + §16.8 C2-0cR
+  repairability-checkpoint record.
 - `docs/testing/TEST_STRUCTURE.md` — C2-0c canonical artifact registration
-  (rendered-geometry artifacts added).
+  (rendered-geometry artifacts added; C2-0cR pre-repair evidence added).
 
 No other files changed; `app/`, `frontend/`, product/API contracts, and
 ADRs untouched; nothing pushed or merged.
