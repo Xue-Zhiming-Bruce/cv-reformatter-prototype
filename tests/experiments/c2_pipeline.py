@@ -1,20 +1,25 @@
 """C2-0a: validate a provider-neutral JSON layout state (Pipeline C2, step 0a).
 
 Owner direction 2026-09-15 (PIPELINE_EVOLUTION_PROPOSAL §16): C2-0a compiles the
-provider-neutral target evidence DIRECTLY into a versioned ``LayoutTemplateSpec``
-JSON state and validates its structural expressiveness. No A/C1 seed HTML is an
-input, intermediate, or output; HTML becomes a compiled RenderPlan product only
-in C2-0b.
+provider-neutral target evidence DIRECTLY into a versioned layout state and
+validates that it can bind real structured candidate content to the target
+layout. No A/C1 seed HTML is an input, intermediate, or output; HTML becomes a
+compiled RenderPlan product only in C2-0b.
 
     Target document
     -> provider-neutral TargetLayoutEvidence (cached Adobe + local supplements)
     -> deterministic C2 compiler (reuses C1's measured scaffold derivations)
-    -> validated LayoutTemplateSpec JSON (layout-state/1)
+    -> validated C2LayoutState JSON (layout-state/1, experimental)
+    -> section semantic bindings + real structural probes
+
+This is an EXPERIMENTAL contract. The product schema remains
+``app.template_analysis.schemas.LayoutTemplateSpec`` (``2.0``); the
+compatibility/migration assessment lives in ``C2_0A_REPORT.md`` §11.
 
 Content/presentation separation: the state stores layout structure, measured
-presentation, and semantic slot kinds only. It has no free-text content field:
-candidate facts come from CandidateProfile at fill time (C2-0b+), and target
-sample facts never enter the state.
+presentation, and semantic slot kinds only. Candidate facts come from
+CandidateProfile at fill time (C2-0b+); target sample facts never enter the
+state; target labels are presentation and never a content source.
 
 Run one real target:
 
@@ -37,6 +42,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.template_analysis.commercial.bridge import _dominant_body
+from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from tests.experiments.a_pipeline import _analyze_target, build_format_summary
 from tests.experiments.c_pipeline import (
     BodyScaffold,
@@ -55,9 +62,62 @@ DEFAULT_TARGET = (
 # validator additionally rejects renderer syntax inside measured strings.
 _RENDERER_SYNTAX = re.compile(r"<\s*/?\s*(html|body|div|span|style|w:)", re.IGNORECASE)
 
+# Candidate source roles (aligned with the product SectionLayoutSpec.source
+# vocabulary). The contact header is not a body section and is not listed.
+SourceRole = Literal[
+    "summary",
+    "skills",
+    "languages",
+    "work_experience",
+    "education",
+    "certifications",
+    "additional_details",
+]
+
+# Sections that can own measured entry/list structure.
+ENTRY_CAPABLE_SOURCES: frozenset[str] = frozenset(
+    {"work_experience", "education", "certifications", "additional_details"}
+)
+
+# Deterministic label vocabulary for semantic binding. Labels are target
+# PRESENTATION used for matching only; they never become a content source.
+# A label matching keywords of >1 source is ambiguous and stays unresolved.
+_SOURCE_KEYWORDS: tuple[tuple[SourceRole, tuple[str, ...]], ...] = (
+    ("summary", ("summary", "profile", "objective")),
+    ("languages", ("language",)),
+    ("skills", ("skill",)),
+    ("education", ("education", "academic")),
+    ("certifications", ("certification", "certificate", "license", "licence")),
+    ("additional_details", (
+        "volunteer", "project", "award", "publication", "interest", "hobby",
+        "activity", "achievement", "additional", "strength", "affiliation",
+    )),
+    ("work_experience", ("employment", "work history", "experience")),
+)
+
+
+def bind_source(label: str) -> tuple[SourceRole | None, str | None]:
+    """Deterministically match a measured label to a candidate source role.
+
+    Returns (source, None) on a unique match, or (None, reason) when the
+    binding is unresolved. Never guesses between competing matches.
+    """
+    normalized = re.sub(r"[^a-z ]+", " ", label.casefold())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    matches = [
+        source
+        for source, keywords in _SOURCE_KEYWORDS
+        if any(keyword in normalized for keyword in keywords)
+    ]
+    if len(matches) == 1:
+        return matches[0], None
+    if len(matches) > 1:
+        return None, f"ambiguous between {', '.join(matches)}"
+    return None, "no source-vocabulary match"
+
 
 # ---------------------------------------------------------------------------
-# Versioned provider-neutral layout state schema (layout-state/1)
+# Versioned provider-neutral layout state schema (layout-state/1, experimental)
 # ---------------------------------------------------------------------------
 
 
@@ -134,6 +194,20 @@ class Column(StateModel):
     alignment: Literal["left", "center", "right"] = "left"
 
 
+class HeaderField(StateModel):
+    """One contact/header field of a compound row, in field order.
+
+    Per-field geometry is included ONLY when genuinely measured; the current
+    C1 scaffold measures row extent, so ``x0_pt``/``x1_pt`` stay None and the
+    compiler records that limitation instead of inventing geometry.
+    """
+
+    slot: str = Field(pattern=r"^[a-z_]+$")
+    order: int = Field(ge=0)
+    x0_pt: float | None = Field(default=None, ge=0)
+    x1_pt: float | None = Field(default=None, ge=0)
+
+
 class NodeSpacing(StateModel):
     """Measured vertical gaps to neighbouring measured features."""
 
@@ -146,6 +220,20 @@ class FlowConstraint(StateModel):
     keep_with_next: bool = False
 
 
+class SectionBinding(StateModel):
+    """Which candidate content one template section can consume.
+
+    ``source`` is the candidate data role; ``mapping_action`` is ``map`` when
+    the measured label binds uniquely, ``unresolved`` when evidence alone
+    cannot bind it (recorded as a capability gap — never guessed), and
+    ``preserve_as_additional`` for candidate-only overflow sections.
+    """
+
+    source: SourceRole
+    mapping_action: Literal["map", "preserve_as_additional", "unresolved"]
+    evidence_ids: list[str] = Field(min_length=1)
+
+
 class LayoutNode(StateModel):
     """One node of the layout tree.
 
@@ -154,9 +242,13 @@ class LayoutNode(StateModel):
     header region stores measured ``top_pt``. ``label`` is the measured target
     section label (presentation, per the product layout contract); it is the
     ONLY text in the state — no candidate or target body fact is stored.
+
+    Entry/list structure is SECTION-OWNED: ``entry_row``/``list_row`` nodes
+    always have a section parent, and other entry-capable sections reference
+    the shared archetype through ``entry_ref``/``list_ref``.
     """
 
-    node_id: str = Field(pattern=r"^(header|section|entry|list)\.[a-z0-9_.]+$")
+    node_id: str = Field(pattern=r"^(header|section)\.[a-z0-9_.]+$")
     parent_id: str | None = None
     kind: Literal["header_row", "section", "heading", "entry_row", "list_row"]
     reading_order: int = Field(ge=0)
@@ -165,6 +257,12 @@ class LayoutNode(StateModel):
     badge_ids: list[str] = Field(default_factory=list)
     slots: list[str] = Field(default_factory=list)
     columns: list[Column] = Field(default_factory=list)
+    fields: list[HeaderField] = Field(default_factory=list)
+    separator: str | None = None
+    icon_decorated: bool | None = None
+    binding: SectionBinding | None = None
+    entry_ref: str | None = None
+    list_ref: str | None = None
     label: str | None = None
     label_case: Literal["upper", "title", "mixed"] | None = None
     list_marker: Literal["bullet", "none"] | None = None
@@ -189,6 +287,20 @@ class LayoutNode(StateModel):
             raise ValueError(f"{self.node_id}: entry rows declare measured columns")
         if self.kind == "list_row" and self.list_marker is None:
             raise ValueError(f"{self.node_id}: list rows declare bullet semantics")
+        if self.kind == "section" and self.binding is None:
+            raise ValueError(f"{self.node_id}: sections declare a semantic binding")
+        if self.kind == "header_row":
+            orders = [field.order for field in self.fields]
+            if orders != list(range(len(orders))):
+                raise ValueError(
+                    f"{self.node_id}: header field order must be contiguous from 0"
+                )
+        if self.kind in {"entry_row", "list_row"} and self.parent_id is None:
+            raise ValueError(
+                f"{self.node_id}: entry/list structure is section-owned"
+            )
+        if self.separator is not None and _RENDERER_SYNTAX.search(self.separator):
+            raise ValueError(f"{self.node_id}: renderer syntax in separator")
         return self
 
 
@@ -200,15 +312,28 @@ class CapabilityGap(StateModel):
     evidence_ids: list[str] = Field(default_factory=list)
 
 
-class LayoutTemplateSpec(StateModel):
-    """C2 authoritative layout state (schema ``layout-state/1``).
+_ALLOWED_PARENT_KINDS: dict[str, set[str | None]] = {
+    "header_row": {None},
+    "section": {None},
+    "heading": {"section"},
+    "entry_row": {"section"},
+    "list_row": {"section"},
+}
 
-    Designed against the mainline ``app.template_analysis.schemas.LayoutTemplateSpec``
-    contract (proposal §12.1-5): page/margins, reusable style tokens, a node
-    tree with stable IDs, reading order, row/column archetypes, decoration
-    references, measured spacing/flow constraints, evidence provenance, and
-    explicit capability gaps. Renderer-specific properties are banned here;
-    they belong to a compiled RenderPlan.
+
+class C2LayoutState(StateModel):
+    """C2 authoritative layout state (schema ``layout-state/1``, EXPERIMENTAL).
+
+    NOT the product contract: ``app.template_analysis.schemas.LayoutTemplateSpec``
+    (``2.0``) remains the stored product template. This experimental state is
+    designed against that contract and its migration path is documented in
+    ``C2_0A_REPORT.md`` §11; promotion requires an ADR.
+
+    Carrier of: page/margins, reusable style tokens, a node tree with stable
+    IDs, reading order, semantic section bindings, section-owned row
+    archetypes, decoration references, measured spacing/flow constraints,
+    evidence provenance, and explicit capability gaps. Renderer-specific
+    properties are banned here; they belong to a compiled RenderPlan.
     """
 
     schema_version: Literal["layout-state/1"] = "layout-state/1"
@@ -223,18 +348,36 @@ class LayoutTemplateSpec(StateModel):
     warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def structure(self) -> "LayoutTemplateSpec":
+    def structure(self) -> "C2LayoutState":
         node_ids = [node.node_id for node in self.nodes]
         if len(set(node_ids)) != len(node_ids):
             raise ValueError("node_id values must be unique")
-        known = set(node_ids)
+        index_of = {node_id: index for index, node_id in enumerate(node_ids)}
+        kind_of = {node.node_id: node.kind for node in self.nodes}
         seen_orders: set[int] = set()
         previous_order = -1
         for node in self.nodes:
-            if node.parent_id is not None and node.parent_id not in known:
-                raise ValueError(f"{node.node_id}: unknown parent {node.parent_id}")
-            if node.parent_id == node.node_id:
-                raise ValueError(f"{node.node_id}: node cannot be its own parent")
+            allowed = _ALLOWED_PARENT_KINDS[node.kind]
+            if node.parent_id is None:
+                if None not in allowed:
+                    raise ValueError(
+                        f"{node.node_id} ({node.kind}): must be owned by a "
+                        f"{sorted(str(item) for item in allowed)} node"
+                    )
+            else:
+                parent_kind = kind_of.get(node.parent_id)
+                if parent_kind is None or parent_kind not in allowed:
+                    raise ValueError(
+                        f"{node.node_id} ({node.kind}): parent {node.parent_id!r} "
+                        f"has kind {parent_kind!r}; allowed parent kinds are "
+                        f"{sorted(str(item) for item in allowed)}"
+                    )
+                if node.parent_id == node.node_id:
+                    raise ValueError(f"{node.node_id}: node cannot be its own parent")
+                if index_of[node.parent_id] > index_of[node.node_id]:
+                    raise ValueError(
+                        f"{node.node_id}: parent {node.parent_id} appears after child"
+                    )
             if node.reading_order in seen_orders:
                 raise ValueError(f"duplicate reading_order {node.reading_order}")
             if node.reading_order < previous_order:
@@ -243,9 +386,20 @@ class LayoutTemplateSpec(StateModel):
             previous_order = node.reading_order
             if _RENDERER_SYNTAX.search(node.label or ""):
                 raise ValueError(f"{node.node_id}: renderer syntax in label")
+        # Multi-node parent cycles: walk each chain with a visited set.
+        by_id = {node.node_id: node for node in self.nodes}
+        for node in self.nodes:
+            visited: set[str] = set()
+            cursor: str | None = node.node_id
+            while cursor is not None:
+                if cursor in visited:
+                    raise ValueError(f"parent cycle detected at {cursor}")
+                visited.add(cursor)
+                cursor = by_id[cursor].parent_id
         style_ids = {style.style_id for style in self.styles}
         rule_ids = {rule.rule_id for rule in self.rules}
         badge_ids = {badge.badge_id for badge in self.badges}
+        node_id_set = set(node_ids)
         for node in self.nodes:
             if node.style_id is not None and node.style_id not in style_ids:
                 raise ValueError(f"{node.node_id}: unknown style ref {node.style_id}")
@@ -256,6 +410,9 @@ class LayoutTemplateSpec(StateModel):
                 raise ValueError(
                     f"{node.node_id}: unknown badge refs {sorted(missing_badges)}"
                 )
+            for ref in (node.entry_ref, node.list_ref):
+                if ref is not None and ref not in node_id_set:
+                    raise ValueError(f"{node.node_id}: unknown archetype ref {ref}")
         return self
 
 
@@ -299,18 +456,57 @@ def _header_style_token(
 
 
 def _body_style_token(
-    summary: dict[str, Any], heading: BodyHeadingScaffold
+    summary: dict[str, Any],
+    heading: Any,
+    evidence: NormalizedLayoutEvidence | None,
+    text_weights: dict[str, int] | None,
 ) -> StyleToken:
-    """Body style = the most frequent measured non-heading style group.
+    """Body style via the ACCEPTED text-volume rule (no second policy).
 
-    Follows the mainline doctrine (measured text volume, not visual-block
-    count): element counts vote; heading-sized bold groups are excluded; ties
-    resolve on the lexicographically smallest style key for determinism.
+    With typed evidence, reuse the production helper
+    ``bridge._dominant_body``: ``weight(signature) += max(1, len(text.strip()))``
+    over measured blocks. Without typed evidence (offline synthetic tests),
+    the same formula weights each style's available measured text
+    (``text_sample`` lengths); absent text collapses to the ``max(1, …)``
+    floor, never to element counts.
     """
-    counts: dict[str, int] = {}
-    for element in summary.get("elements", []):
-        style_id = str(element.get("style_id") or "")
-        counts[style_id] = counts.get(style_id, 0) + 1
+    if evidence is not None and evidence.text_blocks:
+        dominant = _dominant_body(evidence.text_blocks)
+        dominant_size = round(float(dominant.font_size_pt or 0), 2)
+        for key, group in sorted(summary.get("style_groups", {}).items()):
+            size = group.get("font_size_pt")
+            family = str(group.get("font_family") or "").casefold().replace(" ", "")
+            if (
+                size is not None
+                and abs(float(size) - dominant_size) <= 0.05
+                and family == str(dominant.font_family or "").casefold().replace(" ", "")
+                and (group.get("color_hex") or None) == (dominant.color_hex or None)
+            ):
+                return StyleToken(
+                    style_id="style.body",
+                    font_family=str(group.get("font_family") or dominant.font_family),
+                    font_size_pt=float(group.get("font_size_pt") or dominant_size),
+                    line_height_pt=group.get("line_height_pt"),
+                    bold=bool(group.get("bold")),
+                    color_hex=group.get("color_hex"),
+                    character_spacing_pt=group.get("char_spacing_pt"),
+                    evidence_ids=["app.bridge._dominant_body", f"style_group:{key}"],
+                )
+        return StyleToken(
+            style_id="style.body",
+            font_family=str(dominant.font_family or "Arial"),
+            font_size_pt=float(dominant.font_size_pt or 10.0),
+            line_height_pt=dominant.line_height_pt,
+            bold=bool(dominant.bold),
+            color_hex=dominant.color_hex,
+            evidence_ids=["app.bridge._dominant_body", "style_group:unmatched"],
+        )
+    weights: dict[str, int] = dict(text_weights or {})
+    if not weights:
+        for element in summary.get("elements", []):
+            style_id = str(element.get("style_id") or "")
+            weight = max(1, len(str(element.get("text_sample") or "").strip()))
+            weights[style_id] = weights.get(style_id, 0) + weight
     candidates = [
         (key, group)
         for key, group in sorted(summary.get("style_groups", {}).items())
@@ -319,11 +515,10 @@ def _body_style_token(
         or not group.get("bold")
     ]
     _, body = (
-        max(candidates, key=lambda item: (counts.get(item[0], 0), item[0]))
+        max(candidates, key=lambda item: (weights.get(item[0], 0), item[0]))
         if candidates
         else ("", {})
     )
-    provenance_ids = [f"style_group:majority_vote", *list(body.get("provenance") or [])[:3]]
     return StyleToken(
         style_id="style.body",
         font_family=str(body.get("font_family") or heading.font_family),
@@ -332,11 +527,11 @@ def _body_style_token(
         bold=bool(body.get("bold")),
         color_hex=body.get("color_hex"),
         character_spacing_pt=body.get("char_spacing_pt"),
-        evidence_ids=provenance_ids,
+        evidence_ids=["style_group:text_volume:max(1,len(text))", *list(body.get("provenance") or [])[:3]],
     )
 
 
-def _heading_rule(index: int, heading: BodyHeadingScaffold) -> RuleDecoration | None:
+def _heading_rule(index: int, heading: Any) -> RuleDecoration | None:
     if heading.rule_stroke_pt is None:
         return None
     return RuleDecoration(
@@ -355,9 +550,10 @@ def _bullet_archetype(tiers: dict[str, float]) -> LayoutNode | None:
     """Measured list-row semantics (zero-bullet ruling, proposal §10.5)."""
     marker: Literal["bullet", "none"] = "bullet" if "bullet_dot" in tiers else "none"
     return LayoutNode(
-        node_id="list.archetype",
+        node_id="section.00.list",  # re-parented to the owning section below
+        parent_id="section.00",
         kind="list_row",
-        reading_order=0,  # reassigned by the compiler's ordering pass
+        reading_order=0,
         list_marker=marker,
         bullet_dot_x0_pt=tiers.get("bullet_dot"),
         bullet_text_x0_pt=tiers.get("bullet_text"),
@@ -369,37 +565,6 @@ def _bullet_archetype(tiers: dict[str, float]) -> LayoutNode | None:
     )
 
 
-def compile_layout_state(
-    target_pdf: Path,
-    summary: dict[str, Any],
-    *,
-    provider_name: str = "adobe",
-    template_version: str = "c2-0a-1",
-) -> LayoutTemplateSpec:
-    """Compile the provider-neutral state directly from measured evidence."""
-    margins = summary.get("margins_pt", {}).get("default", {})
-    missing = [key for key in ("left", "right", "top") if margins.get(key) is None]
-    if missing:
-        raise ValueError(f"target evidence lacks measured margins: {missing}")
-
-    header_scaffold = derive_header_scaffold(target_pdf, summary)
-    body_scaffold = derive_body_scaffold(target_pdf, summary, header_scaffold=header_scaffold)
-    bullet_tiers = (
-        derive_body_tier_targets(target_pdf, float(body_scaffold.entry.left_x0_pt))
-        if body_scaffold.entry is not None
-        else {}
-    )
-    return state_from_scaffolds(
-        hashlib.sha256(target_pdf.read_bytes()).hexdigest(),
-        header_scaffold,
-        body_scaffold,
-        bullet_tiers,
-        summary,
-        provider_name=provider_name,
-        template_version=template_version,
-    )
-
-
 def state_from_scaffolds(
     target_sha256: str,
     header_scaffold: list[Any],
@@ -408,8 +573,9 @@ def state_from_scaffolds(
     summary: dict[str, Any],
     *,
     provider_name: str = "adobe",
-    template_version: str = "c2-0a-1",
-) -> LayoutTemplateSpec:
+    evidence: NormalizedLayoutEvidence | None = None,
+    template_version: str = "c2-0a-2",
+) -> C2LayoutState:
     """Pure evidence->state mapping (PDF-free; unit-testable offline)."""
     page = summary["pages"][0]
     margins = summary.get("margins_pt", {}).get("default", {})
@@ -434,6 +600,20 @@ def state_from_scaffolds(
         gap_above = (
             round(float(row.top_pt) - previous_top, 3) if previous_top is not None else None
         )
+        fields = [
+            HeaderField(slot=slot, order=position)  # per-field geometry not
+            for position, slot in enumerate(row.slots)  # measured by the scaffold
+        ]
+        if len(row.slots) > 1:
+            if body_scaffold.contact_separator is None:
+                warnings.append(
+                    f"header.{index:02d}: contact separator is not measurable in "
+                    "the target evidence; no delimiter invented"
+                )
+            warnings.append(
+                f"header.{index:02d}: per-field contact geometry is not measured; "
+                "only the row extent is recorded (field order preserved)"
+            )
         nodes.append(
             LayoutNode(
                 node_id=f"header.{index:02d}",
@@ -442,6 +622,9 @@ def state_from_scaffolds(
                 style_id=token.style_id,
                 slots=list(row.slots),
                 top_pt=round(float(row.top_pt), 3),
+                fields=fields,
+                separator=body_scaffold.contact_separator,
+                icon_decorated=body_scaffold.contact_icons_present,
                 spacing=NodeSpacing(gap_above_pt=gap_above),
                 columns=[
                     Column(
@@ -459,9 +642,10 @@ def state_from_scaffolds(
         order += 1
         previous_top = float(row.top_pt)
 
-    # -- body sections in measured reading order -----------------------------
+    # -- body sections with semantic bindings, in measured reading order ------
     headings = sorted(body_scaffold.headings, key=lambda item: (item.page, item.top_pt))
     heading_style_added = False
+    section_sources: list[SourceRole | None] = []
     for index, heading in enumerate(headings, 1):
         if not heading_style_added:
             styles.append(
@@ -479,11 +663,30 @@ def state_from_scaffolds(
         rule = _heading_rule(index, heading)
         if rule is not None:
             rules.append(rule)
+        source, reason = bind_source(heading.verbatim)
+        section_sources.append(source)
+        if source is None:
+            gaps.append(
+                CapabilityGap(
+                    feature=f"unresolved_section_binding:{section_id}",
+                    reason=(
+                        f"measured label {heading.verbatim!r} cannot be bound to a "
+                        f"candidate source role ({reason}); presentation is kept, "
+                        "content mapping requires owner/recruiter decision"
+                    ),
+                    evidence_ids=list(heading.evidence_ids),
+                )
+            )
         nodes.append(
             LayoutNode(
                 node_id=section_id,
                 kind="section",
                 reading_order=order,
+                binding=SectionBinding(
+                    source=source or "additional_details",
+                    mapping_action="map" if source is not None else "unresolved",
+                    evidence_ids=list(heading.evidence_ids),
+                ),
                 evidence_ids=list(heading.evidence_ids),
                 flow=FlowConstraint(keep_with_next=True),
             )
@@ -509,12 +712,22 @@ def state_from_scaffolds(
         )
         order += 1
 
-    # -- document row archetypes (measured, content-free) --------------------
+    # -- section-owned row archetypes ----------------------------------------
     entry = body_scaffold.entry
-    if entry is not None:
+    owner_index = next(
+        (
+            position
+            for position, source in enumerate(section_sources, 1)
+            if source in ENTRY_CAPABLE_SOURCES
+        ),
+        None,
+    )
+    if entry is not None and owner_index is not None:
+        owner_id = f"section.{owner_index:02d}"
         nodes.append(
             LayoutNode(
-                node_id="entry.archetype",
+                node_id=f"{owner_id}.entry",
+                parent_id=owner_id,
                 kind="entry_row",
                 reading_order=order,
                 columns=[
@@ -533,11 +746,48 @@ def state_from_scaffolds(
             )
         )
         order += 1
-        bullet_node = _bullet_archetype(bullet_tiers)
-        if bullet_node is not None:
-            nodes.append(bullet_node.model_copy(update={"reading_order": order}))
+        archetype = _bullet_archetype(bullet_tiers)
+        if archetype is not None:
+            nodes.append(
+                archetype.model_copy(
+                    update={
+                        "node_id": f"{owner_id}.list",
+                        "parent_id": owner_id,
+                        "reading_order": order,
+                    }
+                )
+            )
             order += 1
-    styles.append(_body_style_token(summary, headings[0]))
+        entry_node_id, list_node_id = f"{owner_id}.entry", f"{owner_id}.list"
+    elif entry is not None:
+        gaps.append(
+            CapabilityGap(
+                feature="unowned_entry_structure",
+                reason=(
+                    "entry column geometry is measured but no section binds to an "
+                    f"entry-capable source ({sorted(ENTRY_CAPABLE_SOURCES)}); the "
+                    "measured two-column structure is not emitted rather than "
+                    "attached to an unrelated section"
+                ),
+                evidence_ids=list(entry.evidence_ids) or ["derived.entry_columns"],
+            )
+        )
+        entry_node_id, list_node_id = None, None
+    else:
+        entry_node_id, list_node_id = None, None
+    for position, source in enumerate(section_sources, 1):
+        if source not in ENTRY_CAPABLE_SOURCES:
+            continue
+        section_node = nodes[
+            next(i for i, node in enumerate(nodes) if node.node_id == f"section.{position:02d}")
+        ]
+        nodes[nodes.index(section_node)] = section_node.model_copy(
+            update={
+                "entry_ref": entry_node_id,
+                "list_ref": list_node_id if list_node_id else None,
+            }
+        )
+    styles.append(_body_style_token(summary, headings[0], evidence, None))
 
     # -- measured badge clusters (attach per ADR 0006: nearest heading above) --
     page_height = float(page["height_pt"])
@@ -590,31 +840,46 @@ def state_from_scaffolds(
                 update={"badge_ids": [*heading_node.badge_ids, badge_state.badge_id]}
             )
 
-    # -- explicit capability gaps from evidence counts -----------------------
-    if int(summary.get("table_count") or 0) > 0:
+    # -- explicit capability gaps from typed evidence counts ------------------
+    table_count = int(
+        evidence.table_count if evidence is not None else summary.get("table_count") or 0
+    )
+    figure_count = int(
+        evidence.figure_count if evidence is not None else summary.get("figure_count") or 0
+    )
+    graphic_count = int(
+        evidence.graphic_count if evidence is not None else summary.get("graphic_count") or 0
+    )
+    if table_count > 0:
         gaps.append(
             CapabilityGap(
                 feature="tables",
                 reason=(
-                    f"evidence measures {summary['table_count']} table(s); "
+                    f"evidence measures {table_count} table(s); "
                     "the state has no table node kind"
                 ),
             )
         )
-    figures = int(summary.get("figure_count") or 0) + int(summary.get("graphic_count") or 0)
-    if figures > 0:
+    # Rules and badges are SUPPORTED decorations with their own measured
+    # state; subtract them so genuinely unsupported graphics are not
+    # double-counted.
+    residual_graphics = max(
+        0,
+        graphic_count - len(summary.get("rules", [])) - len(summary.get("badges", [])),
+    )
+    if figure_count > 0 or residual_graphics > 0:
         gaps.append(
             CapabilityGap(
                 feature="images_or_vector_graphics",
                 reason=(
-                    f"evidence measures {figures} figure/graphic element(s) "
-                    "beyond rules and badges"
+                    f"evidence measures {figure_count} figure(s) and "
+                    f"{residual_graphics} unsupported vector graphic(s) beyond the "
+                    f"{len(summary.get('rules', []))} supported rules and "
+                    f"{len(summary.get('badges', []))} supported badge clusters"
                 ),
             )
         )
-    unattached_rules = max(
-        0, int(len(summary.get("rules", [])) - len(rules))
-    )
+    unattached_rules = max(0, int(len(summary.get("rules", [])) - len(rules)))
     if unattached_rules > 0:
         gaps.append(
             CapabilityGap(
@@ -643,7 +908,7 @@ def state_from_scaffolds(
         target_sha256=target_sha256,
         analyzer_version=summary.get("analyzer_version"),
     )
-    return LayoutTemplateSpec(
+    return C2LayoutState(
         template_version=template_version,
         provenance=provenance,
         page=margins_state,
@@ -656,106 +921,266 @@ def state_from_scaffolds(
     )
 
 
+def compile_layout_state(
+    target_pdf: Path,
+    summary: dict[str, Any],
+    *,
+    evidence: NormalizedLayoutEvidence | None = None,
+    provider_name: str = "adobe",
+    template_version: str = "c2-0a-2",
+) -> C2LayoutState:
+    """Compile the provider-neutral state directly from measured evidence."""
+    margins = summary.get("margins_pt", {}).get("default", {})
+    missing = [key for key in ("left", "right", "top") if margins.get(key) is None]
+    if missing:
+        raise ValueError(f"target evidence lacks measured margins: {missing}")
+
+    header_scaffold = derive_header_scaffold(target_pdf, summary)
+    body_scaffold = derive_body_scaffold(target_pdf, summary, header_scaffold=header_scaffold)
+    bullet_tiers = (
+        derive_body_tier_targets(target_pdf, float(body_scaffold.entry.left_x0_pt))
+        if body_scaffold.entry is not None
+        else {}
+    )
+    return state_from_scaffolds(
+        hashlib.sha256(target_pdf.read_bytes()).hexdigest(),
+        header_scaffold,
+        body_scaffold,
+        bullet_tiers,
+        summary,
+        provider_name=provider_name,
+        evidence=evidence,
+        template_version=template_version,
+    )
+
+
 # ---------------------------------------------------------------------------
-# Deterministic probes: short / medium / long candidate flow
+# Real structural probes: short / medium / long candidate content
 # ---------------------------------------------------------------------------
 
 
-def default_probe_profiles() -> dict[str, dict[str, Any]]:
-    return {
-        "short": {
-            "sections": 2,
-            "entries_per_section": 1,
-            "bullets_per_entry": 1,
-            "header_slots_present": ["name", "phone"],
-        },
-        "medium": {
-            "sections": 5,
-            "entries_per_section": 3,
-            "bullets_per_entry": 3,
-            "header_slots_present": [
-                "name", "location", "phone", "envelope", "github", "linkedin",
-            ],
-        },
-        "long": {
-            "sections": 8,
-            "entries_per_section": 6,
-            "bullets_per_entry": 5,
-            "header_slots_present": [
-                "name", "location", "phone", "envelope", "github", "linkedin",
-                "title", "tagline",
-            ],
-        },
-    }
+class ProbeCandidateSection(StateModel):
+    """Structured candidate content for one section (no free text needed)."""
+
+    source: SourceRole
+    entries: int = Field(default=0, ge=0)
+    bullets_per_entry: int = Field(default=0, ge=0)
 
 
-def run_flow_probe(state: LayoutTemplateSpec, profile_name: str, profile: dict[str, Any]) -> dict[str, Any]:
-    """Expand the state with synthetic instance content and check flow invariants.
+class ProbeCandidate(StateModel):
+    """Structured candidate content: header values + sections with items."""
 
-    Structural expressiveness only (no rendering): instances get deterministic
-    unique node ids, reading order stays strictly increasing, every required
-    header slot has a home, and body instances never inherit absolute y
-    positions.
+    header_slots: dict[str, int] = Field(default_factory=dict)
+    sections: list[ProbeCandidateSection] = Field(default_factory=list)
+
+
+def default_probe_profiles() -> dict[str, dict[str, int]]:
+    return {"short": {"entries": 1, "bullets": 1}, "medium": {"entries": 3, "bullets": 2}, "long": {"entries": 5, "bullets": 3}}
+
+
+def build_probe_candidate(state: C2LayoutState, profile: dict[str, int]) -> ProbeCandidate:
+    """Build structured candidate content by round-tripping the state's own
+    mapped bindings: every mapped template section receives content sized by
+    the profile; unmapped (unresolved) sections receive none.
     """
-    notes: list[str] = []
-    header_nodes = [node for node in state.nodes if node.kind == "header_row"]
-    sections = [node for node in state.nodes if node.kind == "section"]
-    entry_archetype = next(
-        (node for node in state.nodes if node.node_id == "entry.archetype"), None
-    )
-    list_archetype = next(
-        (node for node in state.nodes if node.node_id == "list.archetype"), None
-    )
-
-    home_slots = {slot for node in header_nodes for slot in node.slots}
-    for slot in profile["header_slots_present"]:
-        if slot not in home_slots:
-            notes.append(f"header slot {slot!r} has no measured home row (requires disposition)")
-
-    if profile["entries_per_section"] > 0 and entry_archetype is None:
-        notes.append("profile needs entry rows but the target measured no entry archetype")
-    if (
-        profile["bullets_per_entry"] > 0
-        and list_archetype is not None
-        and list_archetype.list_marker == "none"
-    ):
-        notes.append(
-            "zero-bullet target: source bullet glyphs are retained verbatim (§10.5 ruling)"
+    header_slots = {
+        slot: 1 for node in state.nodes if node.kind == "header_row" for slot in node.slots
+    }
+    sections = [
+        ProbeCandidateSection(
+            source=node.binding.source,
+            entries=profile["entries"] if node.entry_ref else 0,
+            bullets_per_entry=profile["bullets"] if node.list_ref else 0,
         )
+        for node in state.nodes
+        if node.kind == "section"
+        and node.binding is not None
+        and node.binding.mapping_action == "map"
+    ]
+    return ProbeCandidate(header_slots=header_slots, sections=sections)
 
-    body_nodes = [node for node in state.nodes if node.kind != "header_row"]
-    body_y_free = not any(node.top_pt is not None for node in body_nodes)
-    if not body_y_free:
-        notes.append("FLOW VIOLATION: body node carries absolute y geometry")
 
+def run_flow_probe(state: C2LayoutState, candidate: ProbeCandidate) -> dict[str, Any]:
+    """Instantiate structured candidate content against the state and validate
+    the resulting structure. This is a real materialization: instances are
+    created, then unique-ID, reading-order, parent-child, home, duplicate/drop,
+    and no-absolute-y invariants are CHECKED (and can fail).
+    """
+    failures: list[str] = []
+    notes: list[str] = []
+    header_rows = [node for node in state.nodes if node.kind == "header_row"]
+    sections = [node for node in state.nodes if node.kind == "section"]
+    by_id = {node.node_id: node for node in state.nodes}
+
+    instances: list[dict[str, Any]] = []
     next_order = max(node.reading_order for node in state.nodes) + 1
-    instance_ids: list[str] = []
-    for section_index in range(1, profile["sections"] + 1):
-        section = sections[(section_index - 1) % len(sections)]
-        for node_id in (f"{section.node_id}.i{section_index}", f"{section.node_id}.heading.i{section_index}"):
-            instance_ids.append(node_id)
+
+    # -- header binding -------------------------------------------------------
+    declared_slot_items = sum(candidate.header_slots.values())
+    instantiated_slot_items = 0
+    for slot, count in sorted(candidate.header_slots.items()):
+        homes = [row for row in header_rows if slot in row.slots]
+        if not homes:
+            failures.append(f"header slot {slot!r} has no home row in the template state")
+            continue
+        for value_index in range(1, count + 1):
+            home = homes[min(value_index - 1, len(homes) - 1)]
+            instances.append(
+                {
+                    "node_id": f"{home.node_id}.{slot}.v{value_index}",
+                    "parent_id": home.node_id,
+                    "kind": "header_value",
+                    "reading_order": next_order,
+                }
+            )
             next_order += 1
-        for entry_index in range(1, profile["entries_per_section"] + 1):
-            if entry_archetype is not None:
-                instance_ids.append(f"{entry_archetype.node_id}.s{section_index}e{entry_index}")
-                next_order += 1
-            for bullet_index in range(1, profile["bullets_per_entry"] + 1):
-                if list_archetype is not None and list_archetype.list_marker == "bullet":
-                    instance_ids.append(
-                        f"{list_archetype.node_id}.s{section_index}e{entry_index}b{bullet_index}"
+            instantiated_slot_items += 1
+
+    # -- section binding ------------------------------------------------------
+    consumed: set[str] = set()
+    declared_entry_items = 0
+    instantiated_entry_items = 0
+    declared_bullet_items = 0
+    instantiated_bullet_items = 0
+    for candidate_section in candidate.sections:
+        match = next(
+            (
+                section
+                for section in sections
+                if section.binding is not None
+                and section.binding.source == candidate_section.source
+                and section.binding.mapping_action in {"map", "preserve_as_additional"}
+                and section.node_id not in consumed
+            ),
+            None,
+        )
+        if match is None:
+            failures.append(
+                f"candidate section source {candidate_section.source!r} has no "
+                "available template home (missing, already consumed, or unresolved)"
+            )
+            continue
+        consumed.add(match.node_id)
+        section_instance_id = f"{match.node_id}.content"
+        instances.append(
+            {
+                "node_id": section_instance_id,
+                "parent_id": match.node_id,
+                "kind": "section_content",
+                "reading_order": next_order,
+            }
+        )
+        next_order += 1
+        if candidate_section.entries == 0:
+            continue
+        if match.entry_ref is None:
+            failures.append(
+                f"{match.node_id} consumes {candidate_section.entries} entries but "
+                "owns no entry structure (entry_ref is unset)"
+            )
+            continue
+        list_node = by_id.get(match.list_ref) if match.list_ref else None
+        for entry_index in range(1, candidate_section.entries + 1):
+            entry_id = f"{match.node_id}.entry.v{entry_index}"
+            instances.append(
+                {
+                    "node_id": entry_id,
+                    "parent_id": match.node_id,
+                    "kind": "entry_instance",
+                    "reading_order": next_order,
+                }
+            )
+            next_order += 1
+            instantiated_entry_items += 1
+            for bullet_index in range(1, candidate_section.bullets_per_entry + 1):
+                declared_bullet_items += 1
+                if list_node is None:
+                    failures.append(
+                        f"{match.node_id} consumes bullets but owns no list structure"
+                    )
+                    continue
+                if list_node.list_marker == "bullet":
+                    instances.append(
+                        {
+                            "node_id": f"{entry_id}.bullet.v{bullet_index}",
+                            "parent_id": entry_id,
+                            "kind": "bullet_instance",
+                            "reading_order": next_order,
+                        }
                     )
                     next_order += 1
+                    instantiated_bullet_items += 1
+                else:
+                    # Zero-bullet target ruling (§10.5): source bullet glyphs
+                    # stay verbatim body text, so each bullet becomes a text
+                    # line instance inside its entry.
+                    instances.append(
+                        {
+                            "node_id": f"{entry_id}.textline.v{bullet_index}",
+                            "parent_id": entry_id,
+                            "kind": "text_line_instance",
+                            "reading_order": next_order,
+                        }
+                    )
+                    next_order += 1
+                    instantiated_bullet_items += 1
+        declared_entry_items += candidate_section.entries
+
+    for section in sections:
+        if section.node_id not in consumed:
+            notes.append(
+                f"template section {section.node_id} "
+                f"({section.binding.source if section.binding else '?'}) received no "
+                "candidate content (sections are optional)"
+            )
+
+    # -- invariant checks (computed, never asserted True) ----------------------
+    instance_ids = [instance["node_id"] for instance in instances]
     unique_ids = len(set(instance_ids)) == len(instance_ids)
     if not unique_ids:
-        notes.append("ID VIOLATION: generated instance node ids are not unique")
+        failures.append("generated instance node ids are not unique")
+    orders = [instance["reading_order"] for instance in instances]
+    reading_order_valid = orders == sorted(orders) and len(set(orders)) == len(orders)
+    if not reading_order_valid:
+        failures.append("instance reading order is not strictly increasing")
+    known_ids = set(by_id) | set(instance_ids)
+    parents_valid = all(instance["parent_id"] in known_ids for instance in instances)
+    if not parents_valid:
+        failures.append("instance parent references a nonexistent node")
+    body_y_free = not any(node.top_pt is not None for node in state.nodes if node.kind != "header_row")
+    if not body_y_free:
+        failures.append("body node carries absolute y geometry")
+    uninstantiated_header_items = declared_slot_items - instantiated_slot_items
+    if uninstantiated_header_items > 0:
+        failures.append(
+            f"{uninstantiated_header_items} declared header item(s) were not instantiated"
+        )
+    dropped_entries = declared_entry_items - instantiated_entry_items
+    if dropped_entries > 0:
+        failures.append(f"{dropped_entries} declared candidate entr(ies) were dropped")
+    dropped_bullets = declared_bullet_items - instantiated_bullet_items
+    if dropped_bullets > 0:
+        failures.append(f"{dropped_bullets} declared candidate bullet(s) were dropped")
+
     return {
-        "profile": profile_name,
-        "expanded_instance_nodes": len(instance_ids),
-        "instance_ids_unique": unique_ids,
-        "final_reading_order": next_order - 1,
-        "reading_order_strictly_increasing": True,
-        "body_nodes_carry_no_absolute_y": body_y_free,
+        "passed": not failures,
+        "failures": failures,
         "notes": notes,
+        "checks": {
+            "instance_ids_unique": unique_ids,
+            "reading_order_valid": reading_order_valid,
+            "parent_references_valid": parents_valid,
+            "body_nodes_carry_no_absolute_y": body_y_free,
+            "no_uninstantiated_header_items": uninstantiated_header_items == 0,
+            "no_dropped_entries": dropped_entries == 0,
+            "no_dropped_bullets": dropped_bullets == 0,
+        },
+        "instantiated": {
+            "header_items": instantiated_slot_items,
+            "sections": len(consumed),
+            "entries": instantiated_entry_items,
+            "bullets_or_textlines": instantiated_bullet_items,
+        },
     }
 
 
@@ -764,7 +1189,7 @@ def run_flow_probe(state: LayoutTemplateSpec, profile_name: str, profile: dict[s
 # ---------------------------------------------------------------------------
 
 
-def validate_layout_state(state: LayoutTemplateSpec) -> list[str]:
+def validate_layout_state(state: C2LayoutState) -> list[str]:
     """Schema validation already runs on construction; this adds report checks."""
     violations: list[str] = []
     node_ids = {node.node_id for node in state.nodes}
@@ -781,10 +1206,17 @@ def validate_layout_state(state: LayoutTemplateSpec) -> list[str]:
     orders = [node.reading_order for node in state.nodes]
     if orders != sorted(orders):
         violations.append("node list is not in reading order")
+    unresolved = {node.node_id for node in state.nodes if node.binding and node.binding.mapping_action == "unresolved"}
+    gap_features = {
+        gap.feature.removeprefix("unresolved_section_binding:") for gap in state.capability_gaps
+    }
+    for node_id in unresolved:
+        if node_id not in gap_features:
+            violations.append(f"{node_id}: unresolved binding lacks a capability gap")
     return violations
 
 
-def state_bytes(state: LayoutTemplateSpec) -> bytes:
+def state_bytes(state: C2LayoutState) -> bytes:
     """Deterministic serialization: sorted keys, no timestamps, stable floats."""
     payload = json.dumps(
         state.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True
@@ -797,13 +1229,18 @@ def compile_target(target_pdf: Path, run_dir: Path) -> dict[str, Any]:
     run_dir.mkdir(parents=True, exist_ok=True)
     evidence, raw = _analyze_target(target_pdf, run_dir, use_persistent_cache=True)
     summary = build_format_summary(evidence, raw, target_pdf)
-    state = compile_layout_state(target_pdf, summary, provider_name=evidence.provider)
+    state = compile_layout_state(
+        target_pdf, summary, evidence=evidence, provider_name=evidence.provider
+    )
 
     violations = validate_layout_state(state)
-    probes = {
-        name: run_flow_probe(state, name, profile)
-        for name, profile in default_probe_profiles().items()
-    }
+    probes = {}
+    for profile_name, profile in default_probe_profiles().items():
+        candidate = build_probe_candidate(state, profile)
+        probes[profile_name] = {
+            "candidate": candidate.model_dump(mode="json"),
+            "result": run_flow_probe(state, candidate),
+        }
     provenance = {
         "schema_version": state.schema_version,
         "template_version": state.template_version,
@@ -855,7 +1292,10 @@ def compile_target(target_pdf: Path, run_dir: Path) -> dict[str, Any]:
     )
     (run_dir / "capability_gaps.json").write_text(
         json.dumps(
-            {"gaps": [gap.model_dump() for gap in state.capability_gaps], "warnings": state.warnings},
+            {
+                "gaps": [gap.model_dump() for gap in state.capability_gaps],
+                "warnings": state.warnings,
+            },
             ensure_ascii=False,
             indent=2,
             sort_keys=True,
