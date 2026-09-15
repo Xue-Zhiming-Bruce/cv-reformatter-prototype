@@ -8,7 +8,7 @@
 > | B 管线 | 已关闭（假设证伪，零件经 §7.3 移植） |
 > | C1 D→E（header + body） | owner 终审通过，完成（§9/§11） |
 > | C1 E→F 泛化 | **调试中，尚未通过**（十次冻结，缺口 #1–#8 已闭；#9 右缘杠杆失效、#10 种子行宽派生假设待验证，见 run 20260910T161228Z） |
-> | C2 | **active experiment**：C2-0a 第二轮纠正完成，待 owner 评审（见 §16.4 与 `C2_0A_REPORT.md`）；C2-0b 待 owner 裁决后启动 |
+> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑（带既记录能力缺口，不晋级产品契约）；C2-0b 渲染实现与自动门禁完成，**待 owner 视觉评审**（见 §16.5 与 `C2_0B_REPORT.md`） |
 > | Pipeline D | D0/D0-R/D1-0 已完成；暂停后续工作，等待 C2 结果（见 `D_PIPELINE_PROPOSAL.md`） |
 >
 > 日期:2026-09-08 初版;2026-09-09 §7–§8;2026-09-10 §9–§12;
@@ -946,3 +946,26 @@ fully_materialized / materialized_with_gaps / failed——D/E/F 实测均为
 materialized_with_gaps（目标缺 section 的候选源逐叶入表），不再声称全量
 no-loss 物化。与产品 schema 2.0 的诚实边界及迁移评估见 `C2_0A_REPORT.md`
 §11。未做任何渲染 parity 声明；C2-0b 待 owner 对报告 §12 裁决后启动。
+
+### 16.5 C2-0b 执行结果（2026-09-15，实现与自动门禁完成，待 owner 视觉评审）
+
+C2-0b 已实现（`tests/experiments/c2_renderer.py`）：`C2LayoutState` JSON + 独立候选
+内容 → 确定性 HTML RenderPlan → 现有 Chrome 导出 → 内容/隐私/结构/确定性硬门禁
+→ owner 评审工件。权威可编辑状态仍是 JSON；HTML 仅为编译产物。
+
+- 复用现有工具链（无第二套栈）：a_pipeline 的 pinned Chrome 导出、本地字体注入、
+  页面栅格化、side-by-side/diff 合成、typography delta；c_pipeline 的
+  pinned_export_environment、行级几何稳定性；c2_pipeline 的所有权台账。
+- 评估对（与冻结 C1 基线相同候选内容）：主对 D→E、泛化 E→F、gap-only E→D
+  （E→D 在不解决 D 歧义绑定的前提下诚实运行：Education 作为 candidate-only
+  附录节保留源标题；D 对不参与 parity/胜负结论）。
+- 冻结 C1 基线（主仓 runs，路径+校验和已记录于 comparison_manifest.json）：
+  D→E = `c_pipeline_D_to_E_20260910T200018Z`，E→F =
+  `c_pipeline_D_to_E_20260910T195515Z`，E→D = `c1_matrix_ED_B_20260911T044203Z`。
+- 候选内容取自冻结 C1 run 的 verbatim `source_text.txt`，由
+  `render_context_coverage` 逐行验证全量有序覆盖（被授权的按行审阅式结构
+  标注，非 LLM 抽取声明）。
+- 三个 pair 全部通过硬门禁（每叶恰一次、目标样本事实零泄漏、节序匹配、
+  无绝对 y、双渲染确定性、无空白页、无裁切、无目标背景图、能力缺口显式）。
+- 自动证据不构成接受：视觉评审待 owner（`C2_0B_REPORT.md` §13 检查单）。
+  C2-0c（DOCX）、Pipeline D、chat 编辑均未启动。

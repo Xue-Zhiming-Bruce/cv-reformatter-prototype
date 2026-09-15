@@ -704,6 +704,39 @@ def test_probe_header_slot_without_any_home_is_recorded() -> None:
     assert result["status"] == "materialized_with_gaps"
 
 
+def test_work_bullets_inherit_the_entry_unhomed_status() -> None:
+    # C2-0a bookkeeping closure (2026-09-15): when the target has no usable
+    # work-experience section, work entries AND their child bullets are all
+    # recorded as unhomed leaves — never left as unexplained unconsumed
+    # failures.
+    state = compile_synthetic(["SUMMARY", "TECHNICAL SKILLS"])  # no work section
+    candidate = independent_candidate_fixtures()["medium"]
+    result = run_flow_probe(state, candidate)
+    assert result["status"] == "materialized_with_gaps"
+    assert result["passed"] is True  # an honest gap, not a structural failure
+    unhomed_ids = {record["leaf_id"] for record in result["unhomed"]}
+    work_entries = {
+        leaf.leaf_id for leaf in candidate.leaves if leaf.kind == "work_entry"
+    }
+    work_bullets = {
+        leaf.leaf_id for leaf in candidate.leaves if leaf.kind == "work_bullet"
+    }
+    assert work_entries <= unhomed_ids
+    assert work_bullets <= unhomed_ids  # bullets inherit the parent's status
+    bullet_records = {
+        record["leaf_id"]: record["reason"]
+        for record in result["unhomed"]
+        if record["leaf_id"] in work_bullets
+    }
+    assert all("parent work entry has no home" in reason for reason in bullet_records.values())
+    # Owned + unhomed still accounts for every leaf (no silent drops).
+    assert (
+        result["leaf_ownership"]["owned_leaves"]
+        + result["leaf_ownership"]["unhomed_leaves"]
+        == result["leaf_ownership"]["total_leaves"]
+    )
+
+
 # -- real-target lane (needs local fixtures + cached provider evidence) ------
 
 REAL = {

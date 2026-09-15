@@ -1,12 +1,24 @@
 # Pipeline C2-0a Report: Provider-Neutral Layout State
 
-Status: `Second corrective implementation complete, awaiting owner review`
+Status: `Accepted experimental milestone; rendering parity not yet tested`
 
 Date: 2026-09-15 (second corrective pass; supersedes earlier report versions)
 Branch: `experiment/pipeline-c2` (isolated worktree, base `8b14555` from
 `codex/pipeline-d1`; the Pipeline D worktree was not modified)
 Scope: `tests/experiments/` plus the minimal runner registration in
 `docs/testing/TEST_STRUCTURE.md`. `app/` and `frontend/` untouched.
+
+Owner decision 2026-09-15: C2-0a is accepted as an experimental schema
+milestone, with its documented capability gaps. This does NOT promote
+`layout-state/1` into the product contract and does not prove universal
+resume support. Rendering parity is tested separately in C2-0b
+(`C2_0B_REPORT.md`).
+
+Bookkeeping closure (2026-09-15, C2-0b Phase 0): when a target has no usable
+work-experience section, work entries AND their child bullets are now both
+recorded as unhomed leaves (previously the bullets were skipped without an
+explanation). Regression test:
+`test_c2_pipeline.py::test_work_bullets_inherit_the_entry_unhomed_status`.
 
 ## 1. Objective And Result
 
