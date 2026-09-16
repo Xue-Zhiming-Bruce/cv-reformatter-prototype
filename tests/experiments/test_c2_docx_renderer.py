@@ -18,6 +18,7 @@ Run:
 from __future__ import annotations
 
 import json
+import os
 import zipfile
 from pathlib import Path
 
@@ -49,7 +50,7 @@ from tests.experiments.c2_docx_renderer import (
     strip_presentation_marker,
     typography_tables,
 )
-from tests.experiments.c2_renderer import LeafText, compile_render_plan
+from tests.experiments.c2_renderer import LeafText, compile_render_plan, render_html
 from tests.experiments.test_c2_pipeline import (
     BULLET_TIERS,
     FULL_COVERAGE_LABELS,
@@ -2866,3 +2867,224 @@ def test_same_page_gap_failure_still_produces_the_expected_correction() -> None:
     updates = apply_measured_deltas(FitAdjustments(), comparison)
     expected = round(-float(row["delta"]), 3)
     assert updates.section(target.node_id).heading_space_before_pt == expected
+
+
+# ---------------------------------------------------------------------------
+# C2 nested-entry spike: titled entry sub-groups through BOTH lanes
+# (H's "employer -> project -> bullets" is only the observed SHAPE; the
+# candidates and states here are anonymous synthetic content)
+# ---------------------------------------------------------------------------
+
+
+def _nested_docx_candidate(bullet_counts: tuple[int, ...], titles: tuple[str, ...], *, with_meta: bool, long_bullet: bool = False) -> "object":
+    from tests.experiments.c2_pipeline import CandidateDocument, CandidateLeaf
+
+    def leaf(leaf_id: str, kind: str, source: str | None = None, **kwargs: object) -> CandidateLeaf:
+        if "parent" in kwargs:
+            kwargs["parent_leaf_id"] = kwargs.pop("parent")
+        return CandidateLeaf(leaf_id=leaf_id, kind=kind, source=source, **kwargs)  # type: ignore[arg-type]
+
+    leaves = [
+        leaf("header.name", "header_field", slot="name", text="C. Docx Probe"),
+        leaf("header.location", "header_field", slot="location", text="Probe City, PC"),
+        leaf("header.phone", "header_field", slot="phone", text="+1 555 0100"),
+        leaf("header.email", "header_field", slot="envelope", text="probe@example.test"),
+        leaf("header.github", "header_field", slot="github", text="github.com/probe"),
+        leaf("header.linkedin", "header_field", slot="linkedin", text="linkedin.com/in/probe"),
+        leaf("work.e1", "work_entry", "work_experience", text="Parent Program Coordinator, Example Organization"),
+        leaf(
+            "work.e1.m1", "entry_meta", "work_experience", parent="work.e1",
+            text="Sep. 2024 to Present",
+        ) if with_meta else leaf("work.e1.detail", "entry_detail", "work_experience", parent="work.e1", text="Example Organization, Probe City"),
+    ]
+    for index, (title, count) in enumerate(zip(titles, bullet_counts), 1):
+        sg = f"work.e1.sg{index}"
+        leaves.append(leaf(sg, "entry_subgroup", "work_experience", parent="work.e1", text=title))
+        for b in range(1, count + 1):
+            text = (
+                f"Verified item {b} of sub-group {index}: "
+                + ("a deliberately much longer verification line so the rendered wrap behaviour of zero-bullet designs and long sub-group titles is exercised in the offline fixture. " * (1 if long_bullet else 0))
+                + f"owns group {index} item {b}"
+            )
+            marker = "• " if (index == 1 and b == 1) else ""
+            leaves.append(leaf(f"{sg}.b{b}", "work_bullet", "work_experience", parent=sg, text=f"{marker}{text}"))
+    return CandidateDocument(candidate_id="docx_nested", leaves=leaves)
+
+
+def _nested_full_pipeline(tmp_path: Path, candidate):
+    from tests.experiments.test_c2_pipeline import _state_with_declared_subgroup_tier
+
+    state = _state_with_declared_subgroup_tier(["WORK EXPERIENCE"])
+    plan = compile_render_plan(state, candidate)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    path = tmp_path / "c2_output.docx"
+    path.write_bytes(deterministic_docx_bytes(build_document(state, plan)))
+    inspection = inspect_docx(path)
+    inspection["reading_order_gate"] = reading_order_gate(plan, inspection)
+    accounting = content_accounting(plan, inspection)
+    return state, plan, path, inspection, accounting
+
+
+def test_nested_three_subgroups_render_in_order_with_exact_accounting(tmp_path: Path) -> None:
+    """Shape A: one parent entry, THREE titled sub-groups (3/1/2 bullets)."""
+    candidate = _nested_docx_candidate((3, 1, 2), ("Outreach Programs", "Facility Logistics", "Reporting & Records"), with_meta=True)
+    state, plan, path, inspection, accounting = _nested_full_pipeline(tmp_path, candidate)
+    assert plan.status != "failed", plan.failures
+    assert accounting["passed"] is True, (accounting["missing"], accounting["duplicated"])
+    assert inspection["reading_order_gate"]["passed"] is True
+    # Document order in the written package: parent title, meta, then each
+    # sub-group title followed by ITS OWN bullets — never interleaved.
+    texts = [record["text"] for record in inspection["paragraphs"]]
+    order = [
+        "Parent Program Coordinator, Example Organization",
+        "Sep. 2024 to Present",
+        "Outreach Programs",
+        "Verified item 1 of sub-group 1: owns group 1 item 1",
+        "Verified item 2 of sub-group 1: owns group 1 item 2",
+        "Verified item 3 of sub-group 1: owns group 1 item 3",
+        "Facility Logistics",
+        "Verified item 1 of sub-group 2: owns group 2 item 1",
+        "Reporting & Records",
+        "Verified item 1 of sub-group 3: owns group 3 item 1",
+        "Verified item 2 of sub-group 3: owns group 3 item 2",
+    ]
+    positions = [texts.index(t) for t in order]
+    assert positions == sorted(positions)
+    for t in order:
+        assert texts.count(t) == 1
+    # The marker-prefixed sub-group bullet converts into a native Word list
+    # paragraph (no double marker); the accounting verified the conversion +
+    # verbatim substantive text.
+    native = [record for record in inspection["paragraphs"] if record.get("style") == "List Bullet"]
+    assert any("Verified item 1 of sub-group 1: owns group 1 item 1" == r["text"] for r in native)
+    assert accounting["presentation_marker_conversions"].get("work.e1.sg1.b1") is True
+    # No target-sample (Resume H) facts anywhere in the written package.
+    with zipfile.ZipFile(path) as package:
+        document_xml = package.read("word/document.xml").decode("utf-8")
+    for fact in ("GE Transportation", "Non-Disclosure Agreement", "Third Party Agreement",
+                 "Mexico T&L", "MIS Club", "Gamers Club", "Boy Scouts", "Steven", "Champlin"):
+        assert fact not in document_xml
+
+
+def test_nested_two_subgroups_varying_lengths_zero_bullet_path(tmp_path: Path) -> None:
+    """Shape B: TWO sub-groups, longer titles/bullets, plain (no-meta) path."""
+    candidate = _nested_docx_candidate(
+        (2, 3),
+        ("Community Workshops", "A Considerably Longer Sub-Group Title For The Second Group"),
+        with_meta=False,
+        long_bullet=True,
+    )
+    state, plan, path, inspection, accounting = _nested_full_pipeline(tmp_path, candidate)
+    assert plan.status != "failed", plan.failures
+    assert accounting["passed"] is True, (accounting["missing"], accounting["duplicated"])
+    assert inspection["reading_order_gate"]["passed"] is True
+    texts = [record["text"] for record in inspection["paragraphs"]]
+    # The synthetic state declares the bullet design, so the leading "• "
+    # marker on the first sub-group bullet converts into a native Word bullet
+    # (the accounting verified the conversion + verbatim substantive text).
+    assert accounting["presentation_marker_conversions"]
+    # Order + ownership: both sub-group titles present exactly once, bullets
+    # follow their own titles.
+    for sg_title in ("Community Workshops", "A Considerably Longer Sub-Group Title For The Second Group"):
+        assert sum(1 for t in texts if t == sg_title) == 1
+    assert texts.index("Community Workshops") < texts.index("A Considerably Longer Sub-Group Title For The Second Group")
+    # Determinism: two compiles are byte-identical.
+    again = deterministic_docx_bytes(build_document(state, plan))
+    assert again == path.read_bytes()
+
+
+def test_nested_rendered_visual_rows_map_in_document_order() -> None:
+    """The expected visual rows carry sub-group rows in document order."""
+    from tests.experiments.test_c2_pipeline import _state_with_declared_subgroup_tier
+
+    state = _state_with_declared_subgroup_tier(["WORK EXPERIENCE"])
+    plan = compile_render_plan(state, _nested_docx_candidate((2, 1), ("Group A Title", "Group B Title"), with_meta=True))
+    rows = expected_visual_rows(plan)
+    kinds = [row["kind"] for row in rows if row.get("section_node_id") == "section.01"]
+    assert "subgroup_title" in kinds
+    order_texts = [row["text"] for row in rows if row.get("section_node_id") == "section.01"]
+    assert order_texts.index("Group A Title") < order_texts.index("Verified item 1 of sub-group 1: owns group 1 item 1")
+    assert order_texts.index("Verified item 2 of sub-group 1: owns group 1 item 2") < order_texts.index("Group B Title")
+
+
+def test_spike_render_artifacts_are_reviewable() -> None:
+    """Opt-in deliverable render (run with C2_NESTED_SPIKE_OUT=<dir>): renders
+    BOTH output paths for the two synthetic shapes — DOCX + LibreOffice PDF
+    preview + page PNGs, and semantic HTML + pinned Chrome PDF. No provider,
+    no network beyond local Chrome; artifacts under tests/experiments/runs/."""
+    out = os.environ.get("C2_NESTED_SPIKE_OUT")
+    if not out:
+        pytest.skip("set C2_NESTED_SPIKE_OUT=<run_dir> to render the reviewable deliverables")
+    run_dir = Path(out)
+    run_dir.mkdir(parents=True, exist_ok=False)
+
+    from tests.experiments.test_c2_pipeline import _state_with_declared_subgroup_tier
+
+    shapes = {
+        "shape_a_three_groups": (
+            _nested_docx_candidate((3, 1, 2), ("Outreach Programs", "Facility Logistics", "Reporting & Records"), with_meta=True),
+            _state_with_declared_subgroup_tier(["WORK EXPERIENCE"]),
+        ),
+        "shape_b_two_groups_long": (
+            _nested_docx_candidate(
+                (2, 1),
+                ("Community Workshops", "A Considerably Longer Sub-Group Title For The Second Group"),
+                with_meta=False,
+                long_bullet=True,
+            ),
+            _state_with_declared_subgroup_tier(["WORK EXPERIENCE"]),
+        ),
+    }
+    summary: dict = {
+        "pages": [{"width_pt": 612.0, "height_pt": 792.0}],
+        "style_groups": {},
+    }
+    results: dict[str, object] = {}
+    for name, (candidate, state) in shapes.items():
+        plan = compile_render_plan(state, candidate)
+        assert plan.status != "failed", plan.failures
+        shape_dir = run_dir / name
+        shape_dir.mkdir(parents=True, exist_ok=True)
+        # Native DOCX + deterministic bytes + LibreOffice preview.
+        docx_path = shape_dir / "c2_output.docx"
+        docx_path.write_bytes(deterministic_docx_bytes(build_document(state, plan)))
+        inspection = inspect_docx(docx_path)
+        inspection["reading_order_gate"] = reading_order_gate(plan, inspection)
+        accounting = content_accounting(plan, inspection)
+        from tests.experiments.c2_docx_renderer import _preview_pdf
+
+        preview = _preview_pdf(docx_path, shape_dir)
+        # Semantic HTML + pinned Chrome PDF.
+        html = render_html(state, plan)
+        html_path = shape_dir / "c2_output.html"
+        html_path.write_text(html, encoding="utf-8")
+        from tests.experiments.a_pipeline import _export_pinned_html_to_pdf
+        from tests.experiments.c_pipeline import pinned_export_environment
+
+        environment = pinned_export_environment(summary)
+        chrome_pdf = _export_pinned_html_to_pdf(html_path, shape_dir / "c2_output_chrome.pdf", environment)
+        (shape_dir / "structure_checks.json").write_text(
+            json.dumps(
+                {
+                    "plan_status": plan.status,
+                    "accounting": accounting,
+                    "reading_order_gate": inspection["reading_order_gate"],
+                    "docx_preview": preview,
+                    "chrome_pdf": str(chrome_pdf),
+                    "leaf_ledger": plan.leaf_ledger,
+                },
+                ensure_ascii=False, indent=2, sort_keys=True,
+            ) + "\n",
+            encoding="utf-8",
+        )
+        results[name] = {
+            "accounting_passed": accounting["passed"],
+            "reading_order_passed": inspection["reading_order_gate"]["passed"],
+            "preview_pages": (preview or {}).get("page_count"),
+        }
+    (run_dir / "SPIKE_INDEX.json").write_text(
+        json.dumps(results, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    for name, result in results.items():
+        assert result["accounting_passed"] is True
+        assert result["reading_order_passed"] is True

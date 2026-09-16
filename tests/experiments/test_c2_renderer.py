@@ -1167,3 +1167,91 @@ def test_visible_rhythm_never_touches_candidate_only_sections() -> None:
     assert plan.appended_sections
     for decision in plan.visible_rhythm_decisions:
         assert decision.node_id.startswith("section.")
+
+
+# ---------------------------------------------------------------------------
+# C2 nested-entry spike: titled entry sub-groups in the RenderPlan + HTML
+# ---------------------------------------------------------------------------
+
+
+def _subgrouped_plan_candidate(bullet_counts: tuple[int, ...], titles: tuple[str, ...]) -> CandidateDocument:
+    """One parent entry over len(titles) titled sub-groups. Anonymous text."""
+    leaves = [
+        _leaf("header.name", "header_field", slot="name", text="C. Plan Probe"),
+        _leaf("header.phone", "header_field", slot="phone", text="+1 555 0100"),
+        _leaf("work.e1", "work_entry", "work_experience", text="Parent Coordinator, Example Org"),
+        _leaf("work.e1.m1", "entry_meta", "work_experience", parent="work.e1", text="2024-Present"),
+    ]
+    for index, (title, count) in enumerate(zip(titles, bullet_counts), 1):
+        sg = f"work.e1.sg{index}"
+        leaves.append(_leaf(sg, "entry_subgroup", "work_experience", parent="work.e1", text=title))
+        for b in range(1, count + 1):
+            leaves.append(_leaf(
+                f"{sg}.b{b}", "work_bullet", "work_experience", parent=sg,
+                text=f"Sub-group {index} verified item {b} " + ("with a longer tail of details " * (index - 1)),
+            ))
+    return CandidateDocument(candidate_id="plan_nested", leaves=leaves)
+
+
+def _plan_state_with_subgroup_tier() -> C2LayoutState:
+    from tests.experiments.test_c2_pipeline import _state_with_declared_subgroup_tier
+
+    return _state_with_declared_subgroup_tier(["WORK EXPERIENCE"])
+
+
+def test_plan_compiles_titled_subgroups_in_document_order() -> None:
+    plan = compile_render_plan(_plan_state_with_subgroup_tier(), _subgrouped_plan_candidate((3, 1, 2), ("Group A Title", "Group B Title", "A Much Longer Third Sub-Group Title")))
+    assert plan.status != "failed", plan.failures
+    entry = plan.sections[0].entries[0]
+    assert [sg.title.text for sg in entry.subgroups] == ["Group A Title", "Group B Title", "A Much Longer Third Sub-Group Title"]
+    assert [len(sg.bullet_items) for sg in entry.subgroups] == [3, 1, 2]
+    # Ownership: every sub-group title + own bullet owned exactly once.
+    for subgroup in entry.subgroups:
+        assert subgroup.title.leaf_id in plan.leaf_ledger
+        for item in subgroup.bullet_items:
+            assert item.leaf_id in plan.leaf_ledger
+            assert plan.leaf_ledger[item.leaf_id] == f"section.01.content.work.e1.subgroup.{subgroup.subgroup_leaf_id}"
+    # The sub-group title tier style is the declared measured token.
+    assert plan.sections[0].subgroup_title_style_id == "style.body"
+
+
+def test_plan_fails_closed_without_a_declared_subgroup_tier() -> None:
+    from tests.experiments.test_c2_pipeline import compile_synthetic
+
+    state = compile_synthetic(["WORK EXPERIENCE"])  # no declared sub-group tier
+    plan = compile_render_plan(state, _subgrouped_plan_candidate((1,), ("Group A Title",)))
+    assert plan.status == "failed"
+    assert any("subgroup_title_style_id" in failure for failure in plan.failures)
+
+
+def test_plan_fails_closed_on_subgroup_bullets_after_entry_level_bullets() -> None:
+    candidate = _subgrouped_plan_candidate((1,), ("Group A Title",))
+    # Entry-level bullet AFTER the sub-group in document order: not reproducible.
+    late_bullet = _leaf("work.e1.b1", "work_bullet", "work_experience", parent="work.e1", text="Late entry-level bullet")
+    leaves = [*candidate.leaves, late_bullet]
+    plan = compile_render_plan(_plan_state_with_subgroup_tier(), candidate.model_copy(update={"leaves": leaves}))
+    assert plan.status == "failed"
+    assert any("mixes entry-level bullets with titled subgroups" in failure for failure in plan.failures)
+
+
+def test_plan_fails_closed_on_unsupported_subgroup_child_kinds() -> None:
+    candidate = _subgrouped_plan_candidate((1,), ("Group A Title",))
+    stray = _leaf("work.e1.sg1.detail", "entry_detail", "work_experience", parent="work.e1.sg1", text="Stray detail line")
+    leaves = [*candidate.leaves, stray]
+    plan = compile_render_plan(_plan_state_with_subgroup_tier(), candidate.model_copy(update={"leaves": leaves}))
+    assert plan.status == "failed"
+    assert any("unsupported sub-group child kind" in failure for failure in plan.failures)
+
+
+def test_subgroup_html_is_element_scoped_and_ordered(fake_pdf_text) -> None:
+    state = _plan_state_with_subgroup_tier()
+    plan = compile_render_plan(state, _subgrouped_plan_candidate((2, 1), ("Group A Title", "Longer Group B Title")))
+    html = render_html(state, plan)
+    assert 'class="c2-entry-subgroup"' in html
+    assert "Group A Title" in html and "Longer Group B Title" in html
+    # Document order: group A's title + its bullets BEFORE group B's title.
+    assert html.index("Group A Title") < html.index("Longer Group B Title")
+    assert html.index("Group A Title") < html.index("Sub-group 1 verified item 1")
+    assert html.index("Sub-group 1 verified item 2") < html.index("Longer Group B Title")
+    # Sub-group bullets keep the section's measured bullet design.
+    assert 'class="c2-bullet-dot"' in html

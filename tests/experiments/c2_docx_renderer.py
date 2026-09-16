@@ -1093,6 +1093,60 @@ def build_document(
                             left_indent_pt=child_left_indent,
                         )
                     )
+                # C2 nested-entry spike: titled sub-groups with their own
+                # bullets, in candidate document order, after the entry's own
+                # title/meta and any entry-level bullets. The title tier style
+                # is the measured state declaration (subgroup_title_style_id);
+                # subgroup bullets consume the section's measured bullet tiers.
+                for subgroup in entry.subgroups:
+                    subgroup_token = _style_of(state, section_plan.subgroup_title_style_id) or (
+                        detail_token or title_token
+                    )
+                    subgroup_indent = (
+                        round(
+                            float(section_plan.base_x0_pt) - float(state.page.margin_left_pt),
+                            3,
+                        )
+                        if section_plan.base_x0_pt is not None
+                        else None
+                    )
+                    entry_paragraphs.append(
+                        _write_text_paragraph(
+                            document, subgroup.title.text, subgroup_token,
+                            written_font=(
+                                written_fonts.get(section_plan.subgroup_title_style_id)
+                                if section_plan.subgroup_title_style_id
+                                else None
+                            ),
+                            left_indent_pt=subgroup_indent,
+                            keep_with_next=bool(subgroup.bullet_items or subgroup.text_lines) or None,
+                        )
+                    )
+                    for item in subgroup.bullet_items:
+                        entry_paragraphs.append(
+                            _write_native_bullet(
+                                document, state, section_plan, item.text, content_token,
+                                written_font=content_written, adjustments=adjustments,
+                            )
+                        )
+                    for line in subgroup.text_lines:
+                        subgroup_fit = adjustments.section(section_plan.node_id)
+                        subgroup_child_indent = (
+                            round(
+                                float(section_plan.base_x0_pt)
+                                - float(state.page.margin_left_pt)
+                                + subgroup_fit.entry_child_text_indent_pt,
+                                3,
+                            )
+                            if section_plan.base_x0_pt is not None
+                            else (subgroup_fit.entry_child_text_indent_pt or None)
+                        )
+                        entry_paragraphs.append(
+                            _write_text_paragraph(
+                                document, line.text, content_token, written_font=content_written,
+                                left_indent_pt=subgroup_child_indent,
+                            )
+                        )
                 last_paragraph = entry_paragraphs[-1] if entry_paragraphs else last_paragraph
         if section_plan.category_grid_cells:
             _write_category_grid(
@@ -1472,6 +1526,61 @@ def expected_paragraphs(plan: Any) -> list[dict[str, Any]]:
                         "alignment": "left",
                     }
                 )
+            # C2 nested-entry spike: titled sub-groups after the entry's own
+            # title/meta and any entry-level bullets (document order; the plan
+            # compiler fails closed on any other order).
+            for subgroup in entry.subgroups:
+                paragraphs.append(
+                    {
+                        "kind": "subgroup_title",
+                        "text": subgroup.title.text,
+                        "leaf_ids": [subgroup.title.leaf_id],
+                        "marker_conversions": {},
+                        "native_bullet": False,
+                        "measured_token": bool(section_plan.subgroup_title_style_id),
+                        "section_node_id": section_plan.node_id,
+                        "entry_index": entry_index,
+                        "style_id": (
+                            section_plan.subgroup_title_style_id
+                            or section_plan.title_style_id
+                            or section_plan.content_style_id
+                            or "style.body"
+                        ),
+                        "tier": "subgroup_title",
+                        "alignment": "left",
+                    }
+                )
+                for line in subgroup.bullet_items:
+                    rendered = strip_presentation_marker(line.text, native_bullet=True)
+                    paragraphs.append(
+                        {
+                            "kind": "bullet",
+                            "text": rendered,
+                            "leaf_ids": [line.leaf_id],
+                            "marker_conversions": {line.leaf_id: line.text != rendered},
+                            "native_bullet": True,
+                            "section_node_id": section_plan.node_id,
+                            "entry_index": entry_index,
+                            "style_id": section_plan.content_style_id or "style.body",
+                            "tier": "bullet",
+                            "alignment": "left",
+                        }
+                    )
+                for line in subgroup.text_lines:
+                    paragraphs.append(
+                        {
+                            "kind": "textline",
+                            "text": line.text,
+                            "leaf_ids": [line.leaf_id],
+                            "marker_conversions": {},
+                            "native_bullet": False,
+                            "section_node_id": section_plan.node_id,
+                            "entry_index": entry_index,
+                            "style_id": section_plan.content_style_id or "style.body",
+                            "tier": "content",
+                            "alignment": "left",
+                        }
+                    )
         for line in section_plan.items:
             native_bullet = section_plan.bullet_marker == "bullet"
             rendered = strip_presentation_marker(line.text, native_bullet=native_bullet)
@@ -1801,6 +1910,10 @@ def _leaf_text(plan: Any, leaf_id: str) -> str:
             for line in [*entry.title_lines, *entry.meta_lines, *entry.bullet_items, *entry.text_lines]:
                 if line.leaf_id == leaf_id:
                     return line.text
+            for subgroup in entry.subgroups:
+                for line in [subgroup.title, *subgroup.bullet_items, *subgroup.text_lines]:
+                    if line.leaf_id == leaf_id:
+                        return line.text
     return ""
 
 

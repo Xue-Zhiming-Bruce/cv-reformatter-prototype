@@ -198,6 +198,23 @@ class EntryPlan(StateModel):
     meta_lines: list[LeafText] = Field(default_factory=list)
     bullet_items: list[LeafText] = Field(default_factory=list)  # measured bullet design
     text_lines: list[LeafText] = Field(default_factory=list)  # zero-bullet design: verbatim text
+    # C2 nested-entry spike: titled sub-groups inside this entry (e.g. project
+    # groups under one employer line), each with its own bullets. Candidate
+    # document order; an entry never mixes entry-level bullets with subgroups
+    # (the plan compiler fails closed on any other order).
+    subgroups: list["EntrySubGroupPlan"] = Field(default_factory=list)
+
+
+class EntrySubGroupPlan(StateModel):
+    """One titled sub-group inside an entry (C2 nested-entry spike): the
+    sub-group's own title line followed by ITS bullets. Order and ownership
+    are the candidate's document order; the title tier style is the measured
+    state declaration on the entry row (``subgroup_title_style_id``)."""
+
+    subgroup_leaf_id: str
+    title: LeafText
+    bullet_items: list[LeafText] = Field(default_factory=list)  # measured bullet design
+    text_lines: list[LeafText] = Field(default_factory=list)  # zero-bullet design: verbatim text
 
 
 class RhythmDecision(StateModel):
@@ -310,6 +327,9 @@ class SectionPlan(StateModel):
     # C2-0cS: measured category-grid cells (row-major); when present the
     # plain item list is not rendered (leaves are owned by their cells).
     category_grid_cells: list[CategoryGridCell] = Field(default_factory=list)
+    # C2 nested-entry spike: the measured sub-group title tier declared on the
+    # entry row (None = the section's entries declare no sub-group tier).
+    subgroup_title_style_id: str | None = None
 
 
 class C2RenderPlan(StateModel):
@@ -704,6 +724,7 @@ def _entry_plan(
     ledger: dict[str, str],
     failures: list[str],
     own: Any,
+    subgroup_tier_declared: bool = False,
 ) -> EntryPlan:
     instance_id = f"{section_node_id}.content.{entry_leaf.leaf_id}"
     own(entry_leaf.leaf_id, f"{section_node_id}.entry" if not section_node_id.startswith("candidate_only") else instance_id)
@@ -711,6 +732,7 @@ def _entry_plan(
     meta_lines: list[LeafText] = []
     bullet_items: list[LeafText] = []
     text_lines: list[LeafText] = []
+    subgroups: list[EntrySubGroupPlan] = []
     for child in leaves_by_parent.get(entry_leaf.leaf_id, []):
         if child.text is None:
             failures.append(f"candidate leaf {child.leaf_id!r} has no text")
@@ -721,7 +743,57 @@ def _entry_plan(
         elif child.kind == "entry_meta":
             meta_lines.append(LeafText(leaf_id=child.leaf_id, text=child.text))
             own(child.leaf_id, instance_id)
+        elif child.kind == "entry_subgroup":
+            # C2 nested-entry spike: a titled sub-group inside this entry.
+            # Fail closed unless the entry row DECLARES the measured sub-group
+            # title tier; entry-level bullets never follow a subgroup (the
+            # document-order rule: flat bullets precede subgroups).
+            if not subgroup_tier_declared:
+                failures.append(
+                    f"candidate leaf {child.leaf_id!r}: entry sub-group requires a "
+                    "declared measured sub-group title tier on the entry row "
+                    "(subgroup_title_style_id); none is declared"
+                )
+                continue
+            if bullet_items:
+                failures.append(
+                    f"candidate leaf {child.leaf_id!r}: entry mixes entry-level "
+                    "bullets with titled subgroups; document order is not "
+                    "reproducible (fail closed)"
+                )
+                continue
+            own(child.leaf_id, instance_id)
+            subgroup_bullet_items: list[LeafText] = []
+            subgroup_text_lines: list[LeafText] = []
+            for group_child in leaves_by_parent.get(child.leaf_id, []):
+                if group_child.text is None:
+                    failures.append(f"candidate leaf {group_child.leaf_id!r} has no text")
+                    continue
+                if group_child.kind == "work_bullet":
+                    target = subgroup_bullet_items if bullet_marker == "bullet" else subgroup_text_lines
+                    target.append(LeafText(leaf_id=group_child.leaf_id, text=group_child.text))
+                    own(group_child.leaf_id, f"{instance_id}.subgroup.{child.leaf_id}")
+                else:
+                    failures.append(
+                        f"candidate leaf {group_child.leaf_id!r}: unsupported "
+                        f"sub-group child kind {group_child.kind!r}"
+                    )
+            subgroups.append(
+                EntrySubGroupPlan(
+                    subgroup_leaf_id=child.leaf_id,
+                    title=LeafText(leaf_id=child.leaf_id, text=child.text),
+                    bullet_items=subgroup_bullet_items,
+                    text_lines=subgroup_text_lines,
+                )
+            )
         elif child.kind == "work_bullet":
+            if subgroups:
+                failures.append(
+                    f"candidate leaf {child.leaf_id!r}: entry mixes entry-level "
+                    "bullets with titled subgroups; document order is not "
+                    "reproducible (fail closed)"
+                )
+                continue
             target = bullet_items if bullet_marker == "bullet" else text_lines
             target.append(LeafText(leaf_id=child.leaf_id, text=child.text))
             own(child.leaf_id, instance_id)
@@ -736,6 +808,7 @@ def _entry_plan(
         meta_lines=meta_lines,
         bullet_items=bullet_items,
         text_lines=text_lines,
+        subgroups=subgroups,
     )
 
 
@@ -974,6 +1047,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             plan.detail_style_id = entry_node.detail_style_id
             plan.meta_style_id = entry_node.meta_style_id
             plan.inter_entry_gap_above_pt = entry_node.inter_entry_gap_above_pt
+            plan.subgroup_title_style_id = entry_node.subgroup_title_style_id
         if heading_node is not None:
             plan.heading_gap_above_pt = (
                 heading_node.spacing.gap_above_pt if heading_node.spacing else None
@@ -1027,6 +1101,11 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                             _entry_plan(
                                 section.node_id, entry_leaf, leaves_by_parent,
                                 plan.bullet_marker, ledger, failures, own,
+                                subgroup_tier_declared=bool(
+                                    section.entry_ref
+                                    and by_id.get(section.entry_ref) is not None
+                                    and by_id[section.entry_ref].subgroup_title_style_id is not None
+                                ),
                             )
                         )
                 else:  # item_list / inline_items
@@ -1088,6 +1167,11 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                     _entry_plan(
                         section.node_id, entry_leaf, leaves_by_parent,
                         plan.bullet_marker, ledger, failures, own,
+                        subgroup_tier_declared=bool(
+                            section.entry_ref
+                            and by_id.get(section.entry_ref) is not None
+                            and by_id[section.entry_ref].subgroup_title_style_id is not None
+                        ),
                     )
                 )
         else:  # item_list / inline_items
@@ -1487,6 +1571,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                     _entry_plan(
                         section_plan.node_id, entry_leaf, leaves_by_parent,
                         None, ledger, failures, own,
+                        subgroup_tier_declared=True,
                     )
                 )
             orphan = [leaf.leaf_id for leaf in section_leaves if leaf.leaf_id not in ledger]
@@ -1897,6 +1982,40 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                             f'        <p class="{content_class}" data-node-id="{_esc(entry.node_id)}.textline.{_esc(line.leaf_id)}">'
                             f"{_esc(line.text)}</p>"
                         )
+                    parts.append("      </div>")
+                # C2 nested-entry spike: titled sub-groups with their own
+                # bullets, in candidate document order (after the entry's own
+                # title/meta and any entry-level bullets — never interleaved).
+                for subgroup in entry.subgroups:
+                    subgroup_class = _class_for(section_plan.subgroup_title_style_id) or (
+                        detail_class or title_class or content_class
+                    )
+                    parts.append(
+                        '      <div class="c2-entry-subgroup" '
+                        f'data-owner-instance="{_esc(entry.node_id)}">'
+                    )
+                    parts.append(
+                        f'        <p class="{subgroup_class}" '
+                        f'data-node-id="{_esc(entry.node_id)}.subgroup.{_esc(subgroup.subgroup_leaf_id)}.title">'
+                        f"{_esc(subgroup.title.text)}</p>"
+                    )
+                    if subgroup.bullet_items or subgroup.text_lines:
+                        if subgroup.bullet_items:
+                            parts.append(
+                                _list_html(
+                                    section_plan, subgroup.bullet_items,
+                                    f"{entry.node_id}.subgroup.{_esc(subgroup.subgroup_leaf_id)}.list",
+                                    entry.node_id,
+                                    f"{entry.node_id}.subgroup.{_esc(subgroup.subgroup_leaf_id)}.bullet",
+                                    content_class,
+                                )
+                            )
+                        for line in subgroup.text_lines:
+                            parts.append(
+                                f'        <p class="{content_class}" '
+                                f'data-node-id="{_esc(entry.node_id)}.subgroup.{_esc(subgroup.subgroup_leaf_id)}.textline.{_esc(line.leaf_id)}">'
+                                f"{_esc(line.text)}</p>"
+                            )
                     parts.append("      </div>")
                 parts.append("    </article>")
         if section_plan.content_kind in {"item_list", "inline_items", "composite"}:

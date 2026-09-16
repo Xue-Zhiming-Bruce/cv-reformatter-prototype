@@ -433,6 +433,12 @@ class LayoutNode(StateModel):
     detail_style_id: str | None = None
     meta_style_id: str | None = None
     inter_entry_gap_above_pt: float | None = Field(default=None, ge=0)
+    # C2 nested-entry spike (entry_row-only): the measured typography of the
+    # TITLED sub-group tier inside this entry (e.g. bold project titles under
+    # one employer line). Author-supplied structure declaration — never
+    # derived by detection; None = the entry declares no sub-group tier and
+    # the plan compiler rejects subgroup children fail-closed.
+    subgroup_title_style_id: str | None = None
     # Measured category-grid structure (C2-0cS; section-only; None = the
     # section's content range measured no aligned-pair column cluster — the
     # ordinary item-list rendering applies).
@@ -1778,6 +1784,13 @@ CandidateLeafKind = Literal[
     # ("entry_detail", e.g. the role line) or metadata column ("entry_meta",
     # e.g. location/date lines). Children of a work/education entry leaf.
     "entry_detail", "entry_meta",
+    # C2 nested-entry spike: a TITLED sub-group inside an entry (e.g. one
+    # employer over several titled project groups, each with its own bullets).
+    # The title text is this leaf's verbatim text; the sub-group's own bullets
+    # are work_bullet leaves parented to this leaf. Expression only — the
+    # state field that authorizes the tier is author-supplied; nothing here
+    # detects the structure from a target PDF.
+    "entry_subgroup",
 ]
 
 
@@ -2758,6 +2771,7 @@ def run_flow_probe(state: C2LayoutState, candidate: CandidateDocument) -> dict[s
             "mapped work_experience section declares no supported entries structure"
         )
     entry_instance_ids: dict[str, str] = {}
+    subgroup_instance_ids: dict[str, str] = {}
     for leaf in (item for item in candidate.leaves if item.kind == "work_entry"):
         if not work_usable:
             unhomed.append(
@@ -2771,8 +2785,39 @@ def run_flow_probe(state: C2LayoutState, candidate: CandidateDocument) -> dict[s
         add_instance(instance_id, work_section.node_id, "entry_instance")
         own(leaf.leaf_id, work_section.entry_ref or work_section.node_id)
         entry_instance_ids[leaf.leaf_id] = instance_id
+    for leaf in (item for item in candidate.leaves if item.kind == "entry_subgroup"):
+        parent_instance = entry_instance_ids.get(leaf.parent_leaf_id or "")
+        if parent_instance is None:
+            if work_usable:
+                failures.append(
+                    f"candidate leaf {leaf.leaf_id!r}: parent work entry has no instance"
+                )
+            else:
+                unhomed.append(
+                    {
+                        "leaf_id": leaf.leaf_id, "kind": leaf.kind,
+                        "source": leaf.source,
+                        "reason": "parent work entry has no home: no usable "
+                        "work-experience section",
+                    }
+                )
+            continue
+        entry_node = by_id.get(work_section.entry_ref) if work_section.entry_ref else None
+        if entry_node is None or entry_node.subgroup_title_style_id is None:
+            failures.append(
+                f"candidate leaf {leaf.leaf_id!r}: entry sub-group requires a declared "
+                "measured sub-group title tier on the entry row "
+                "(subgroup_title_style_id); none is declared"
+            )
+            continue
+        instance_id = f"{parent_instance}.subgroup.{leaf.leaf_id}"
+        add_instance(instance_id, parent_instance, "subgroup_instance")
+        own(leaf.leaf_id, parent_instance)
+        subgroup_instance_ids[leaf.leaf_id] = instance_id
     for leaf in (item for item in candidate.leaves if item.kind == "work_bullet"):
         parent_instance = entry_instance_ids.get(leaf.parent_leaf_id or "")
+        if parent_instance is None:
+            parent_instance = subgroup_instance_ids.get(leaf.parent_leaf_id or "")
         if parent_instance is None:
             if work_usable:
                 failures.append(
@@ -2962,6 +3007,7 @@ def validate_layout_state(state: C2LayoutState) -> list[str]:
             node.title_style_id,
             node.detail_style_id,
             node.meta_style_id,
+            node.subgroup_title_style_id,
         ):
             if style_ref and style_ref not in style_ids:
                 violations.append(f"{node.node_id}: dangling style reference {style_ref}")

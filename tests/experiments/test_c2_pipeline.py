@@ -821,8 +821,88 @@ def test_work_bullets_inherit_the_entry_unhomed_status() -> None:
     )
 
 
-# -- real-target lane (needs local fixtures + cached provider evidence) ------
+# -- C2 nested-entry spike: titled entry sub-groups (expression only) ---------
 
+
+def _subgrouped_probe_candidate() -> CandidateDocument:
+    """One parent entry over THREE titled sub-groups (3/1/2 bullets). Anonymous
+    synthetic text only — no target-sample content of any real corpus file."""
+    leaves = [
+        c2_module.CandidateLeaf(leaf_id="header.name", kind="header_field", slot="name", text="C. Probe"),
+        c2_module.CandidateLeaf(leaf_id="header.location", kind="header_field", slot="location", text="Probe City, PC"),
+        c2_module.CandidateLeaf(leaf_id="header.phone", kind="header_field", slot="phone", text="+1 555 0100"),
+        c2_module.CandidateLeaf(leaf_id="header.email", kind="header_field", slot="envelope", text="probe@example.test"),
+        c2_module.CandidateLeaf(leaf_id="header.github", kind="header_field", slot="github", text="github.com/probe"),
+        c2_module.CandidateLeaf(leaf_id="header.linkedin", kind="header_field", slot="linkedin", text="linkedin.com/in/probe"),
+        c2_module.CandidateLeaf(leaf_id="work.e1", kind="work_entry", source="work_experience", text="Parent Coordinator, Example Org"),
+        c2_module.CandidateLeaf(leaf_id="work.e1.m1", kind="entry_meta", source="work_experience", parent_leaf_id="work.e1", text="2024-Present"),
+        c2_module.CandidateLeaf(leaf_id="work.e1.sg1", kind="entry_subgroup", source="work_experience", parent_leaf_id="work.e1", text="Group One Title"),
+        c2_module.CandidateLeaf(leaf_id="work.e1.sg1.b1", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg1", text="Planned the first group's weekly schedule"),
+        c2_module.CandidateLeaf(leaf_id="work.e1.sg1.b2", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg1", text="Trained six volunteers"),
+        c2_module.CandidateLeaf(leaf_id="work.e1.sg1.b3", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg1", text="Reported attendance monthly"),
+        c2_module.CandidateLeaf(leaf_id="work.e1.sg2", kind="entry_subgroup", source="work_experience", parent_leaf_id="work.e1", text="Group Two Title"),
+        c2_module.CandidateLeaf(leaf_id="work.e1.sg2.b1", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg2", text="Ran the second group's single event"),
+        c2_module.CandidateLeaf(leaf_id="work.e1.sg3", kind="entry_subgroup", source="work_experience", parent_leaf_id="work.e1", text="Group Three Title"),
+        c2_module.CandidateLeaf(leaf_id="work.e1.sg3.b1", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg3", text="Audited the third group's records"),
+        c2_module.CandidateLeaf(leaf_id="work.e1.sg3.b2", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg3", text="Filed the third group's summary"),
+    ]
+    return c2_module.CandidateDocument(candidate_id="probe_nested", leaves=leaves)
+
+
+def _state_with_declared_subgroup_tier(labels: list[str] | None = None) -> C2LayoutState:
+    state = compile_synthetic(labels)
+    nodes = [
+        node.model_copy(update={"subgroup_title_style_id": "style.body"})
+        if node.node_id.endswith(".entry")
+        else node
+        for node in state.nodes
+    ]
+    return state.model_copy(update={"nodes": nodes})
+
+
+def test_entry_subgroup_probe_owns_every_leaf_exactly_once() -> None:
+    state = _state_with_declared_subgroup_tier(["WORK EXPERIENCE"])
+    candidate = _subgrouped_probe_candidate()
+    result = run_flow_probe(state, candidate)
+    assert result["failures"] == [], result["failures"]
+    assert result["status"] == "fully_materialized"
+    ledger = result["ledger"]
+    # Parent entry, its meta, and every sub-group title + own bullet owned once.
+    assert ledger["work.e1"] == "section.01.entry"
+    assert ledger["work.e1.sg1"] == "section.01.content.work.e1"
+    # Sub-group bullets own under their sub-group instance, never the entry.
+    assert ledger["work.e1.sg1.b2"] == "section.01.content.work.e1.subgroup.work.e1.sg1"
+    assert ledger["work.e1.sg2.b1"] == "section.01.content.work.e1.subgroup.work.e1.sg2"
+    subgroup_leaves = [leaf.leaf_id for leaf in candidate.leaves if leaf.kind == "entry_subgroup"]
+    assert all(leaf_id in ledger for leaf_id in subgroup_leaves)
+    subgroup_bullets = [leaf.leaf_id for leaf in candidate.leaves if leaf.parent_leaf_id in subgroup_leaves]
+    assert all(leaf_id in ledger for leaf_id in subgroup_bullets)
+    assert result["leaf_ownership"]["ownership_exactly_one"] is True
+
+
+def test_entry_subgroup_probe_fails_closed_without_declared_tier() -> None:
+    state = compile_synthetic(["WORK EXPERIENCE"])  # entry row declares NO sub-group tier
+    candidate = _subgrouped_probe_candidate()
+    result = run_flow_probe(state, candidate)
+    assert result["passed"] is False
+    assert any("subgroup_title_style_id" in failure for failure in result["failures"])
+
+
+def test_entry_subgroup_probe_cascades_without_work_section() -> None:
+    state = compile_synthetic(["SUMMARY", "TECHNICAL SKILLS"])  # no work section
+    candidate = _subgrouped_probe_candidate()
+    result = run_flow_probe(state, candidate)
+    unhomed_ids = {record["leaf_id"] for record in result["unhomed"]}
+    subgroup_leaves = {leaf.leaf_id for leaf in candidate.leaves if leaf.kind == "entry_subgroup"}
+    subgroup_bullets = {
+        leaf.leaf_id for leaf in candidate.leaves if leaf.kind == "work_bullet" and leaf.parent_leaf_id in subgroup_leaves
+    }
+    assert subgroup_leaves <= unhomed_ids
+    assert subgroup_bullets <= unhomed_ids  # sub-group bullets inherit the entry's status
+    assert result["leaf_ownership"]["owned_leaves"] + result["leaf_ownership"]["unhomed_leaves"] == result["leaf_ownership"]["total_leaves"]
+
+
+# -- real-target lane (needs local fixtures + cached provider evidence) ------
 REAL = {
     target: Path(c2_module.__file__).resolve().parents[2] / (
         f"tests/local_datasets/resume_matrix/resume_{target}.pdf"
