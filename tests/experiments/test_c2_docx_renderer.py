@@ -1012,7 +1012,7 @@ def test_font_substitution_cannot_pass_as_typography_exact(monkeypatch: pytest.M
     # The requested family is NOT installed: the documented portable fallback
     # is written and rendered, so typography is classified adjusted.
     monkeypatch.setattr(
-        "tests.experiments.c2_docx_renderer.installed_font_families",
+        "tests.experiments.c2_docx_build.installed_font_families",
         lambda: frozenset({"arial"}),
     )
     state = state.model_copy(deep=True)
@@ -1029,7 +1029,7 @@ def test_font_substitution_cannot_pass_as_typography_exact(monkeypatch: pytest.M
     assert all(record["classification"] == "adjusted" for record in tables["rendered_typography"])
     # With the family actually installed and rendered, the record is exact.
     monkeypatch.setattr(
-        "tests.experiments.c2_docx_renderer.installed_font_families",
+        "tests.experiments.c2_docx_build.installed_font_families",
         lambda: frozenset({"arial", "roboto"}),
     )
     state = state.model_copy(deep=True)
@@ -1052,7 +1052,7 @@ def test_font_substitution_cannot_pass_as_typography_exact(monkeypatch: pytest.M
 
 def test_requested_and_rendered_fonts_are_recorded_separately(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "tests.experiments.c2_docx_renderer.installed_font_families",
+        "tests.experiments.c2_docx_build.installed_font_families",
         lambda: frozenset({"arial"}),
     )
     state, plan = _state_and_plan(["WORK EXPERIENCE"])
@@ -1069,7 +1069,7 @@ def test_requested_and_rendered_fonts_are_recorded_separately(monkeypatch: pytes
 
 def test_incorrect_font_size_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "tests.experiments.c2_docx_renderer.installed_font_families",
+        "tests.experiments.c2_docx_build.installed_font_families",
         lambda: frozenset({"arial"}),
     )
     state, plan = _state_and_plan(["WORK EXPERIENCE"])
@@ -1126,13 +1126,13 @@ def test_the_fitter_stops_after_the_documented_iteration_budget(monkeypatch: pyt
             }],
         }
 
-    monkeypatch.setattr("tests.experiments.c2_docx_renderer.build_document", lambda *a, **k: None)
-    monkeypatch.setattr("tests.experiments.c2_docx_renderer.deterministic_docx_bytes", lambda document: b"docx")
-    monkeypatch.setattr("tests.experiments.c2_docx_renderer._preview_pdf", fake_preview)
-    monkeypatch.setattr("tests.experiments.c2_docx_renderer.measure_target_geometry", lambda *a, **k: {"sections": {}})
-    monkeypatch.setattr("tests.experiments.c2_docx_renderer.measure_rendered_geometry", lambda *a, **k: {"page_count": 1})
+    monkeypatch.setattr("tests.experiments.c2_docx_compare.build_document", lambda *a, **k: None)
+    monkeypatch.setattr("tests.experiments.c2_docx_compare.deterministic_docx_bytes", lambda document: b"docx")
+    monkeypatch.setattr("tests.experiments.c2_docx_compare._preview_pdf", fake_preview)
+    monkeypatch.setattr("tests.experiments.c2_docx_compare.measure_target_geometry", lambda *a, **k: {"sections": {}})
+    monkeypatch.setattr("tests.experiments.c2_docx_compare.measure_rendered_geometry", lambda *a, **k: {"page_count": 1})
     monkeypatch.setattr(
-        "tests.experiments.c2_docx_renderer.compare_geometry",
+        "tests.experiments.c2_docx_compare.compare_geometry",
         lambda state, plan, target_geo, rendered: always_failing(state, plan, target_geo, rendered),
     )
     result = fit_docx(state, plan, Path("unused.pdf"), docx_path, Path("."))
