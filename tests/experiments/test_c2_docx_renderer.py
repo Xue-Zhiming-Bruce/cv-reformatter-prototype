@@ -55,7 +55,7 @@ from tests.experiments.test_c2_pipeline import (
     FULL_COVERAGE_LABELS,
     compile_synthetic,
 )
-from tests.experiments.test_c2_renderer import rich_candidate
+from tests.experiments.test_c2_renderer import _leaf, rich_candidate
 
 
 def _state_and_plan(labels: list[str] | None = None):
@@ -2128,13 +2128,114 @@ def test_grid_preflight_is_metric_driven_not_char_count() -> None:
     assert narrow_extent < wide_extent
     assert len("iiiiiiiii:") == len("MMMMMMMMM:")
     # A wrapped VALUE in the LAST rendered row is the C2-0cS-accepted E→D
-    # shape: no inter-row pitch delta exists, so it FITS (metric rule, not
-    # an absolute no-wrap rule).
-    single_row_wrap = [LeafText(leaf_id="skills.g1", text="Group: MMMMMMMMM")]
-    assert category_grid_preflight(state, section, single_row_wrap)["fits"] is True
+    # shape: no inter-row pitch delta exists, so it FITS — but ONLY within
+    # the finite measured wrap capacity (C2-0eB-R), and ONLY at word
+    # boundaries (a single word wider than the value window would have to
+    # break mid-word and never fits).
+    single_row_wrap = [LeafText(leaf_id="skills.g1", text="Group: AA AA AA AA AA AA")]
+    wrap_result = category_grid_preflight(state, section, single_row_wrap)
+    assert wrap_result["fits"] is True
+    value_cell = next(
+        cell for cell in wrap_result["probe"]["cells"] if cell["fragment"] == "value"
+    )
+    assert value_cell["predicted_lines"] == 6
+    assert value_cell["wrap_bounded"] is True
+    assert value_cell["allowed_lines"] == wrap_result["probe"]["row_capacity"][
+        "last_row_allowed_value_lines"
+    ]
+    assert value_cell["allowed_lines"] >= 6
+    # A single word wider than the window can never wrap without breaking
+    # mid-word: the preflight fails it closed (never a fit).
+    unbreakable = [LeafText(leaf_id="skills.g1", text="Group: MMMMMMMMM")]
+    assert category_grid_preflight(state, section, unbreakable)["fits"] is False
     # The evidence records the resolved font file/face, not a count.
     assert wide_fit["probe"]["cells"][0]["font_file"].endswith(".ttf")
     assert wide_fit["probe"]["method"].startswith("PIL")
+
+
+def test_extremely_long_final_value_cannot_preserve_grid_topology() -> None:
+    """C2-0eB-R capacity hole: a very long LAST-ROW value once received
+    preserve_target_topology while visibly overflowing. The finite measured
+    wrap capacity now fails it into the existing single-column fallback."""
+    from tests.experiments.c2_renderer import compile_render_plan
+
+    base = rich_candidate(include_unmatched=False)
+    # The final skill leaf carries an extremely long value (its greedy
+    # word-wrap needs far more lines than the measured wrap capacity admits).
+    long_leaf = _leaf("skills.g1.i2", "skill", "skills", parent="skills.g1",
+                      text="Skill: " + " ".join(["M"] * 200))
+    leaves = [
+        leaf if leaf.leaf_id != "skills.g1.i2" else long_leaf for leaf in base.leaves
+    ]
+    candidate = base.model_copy(update={"leaves": leaves})
+    state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]), split_x=120.0)
+    section = next(n for n in state.nodes if n.category_grid)
+    plan = compile_render_plan(state, candidate)
+    assert plan.status != "failed", plan.failures
+    decision = next(d for d in plan.adaptation_decisions if d.destination_node == "section.01")
+    assert decision.action == "fallback_within_section"
+    assert decision.status == "ready"
+    assert decision.reason_code == "grid_cell_preflight_fit_failed"
+    assert decision.selected_topology == "single_column_label_value_items"
+    # The decision names the finite capacity, not just a width failure.
+    assert any("row_capacity" in evidence for evidence in decision.evidence)
+    # The candidate ROWS fit (2 <= 3): the failure is the unbounded WRAP,
+    # not the row count.
+    assert not any(evidence.startswith("row capacity: candidate needs") for evidence in decision.evidence)
+    section_plan = next(p for p in plan.sections if p.node_id == "section.01")
+    assert section_plan.category_grid_cells == []
+    # Exact content accounting through the fallback path.
+    assert len(plan.leaf_ledger) == len(candidate.leaves)
+    assert all(leaf_id in plan.leaf_ledger for leaf_id in ("skills.g1", "skills.g1.i1", "skills.g1.i2"))
+    # Deterministic: the same inputs compile byte-identically.
+    assert compile_render_plan(state, candidate).model_dump_json() == plan.model_dump_json()
+
+
+def test_candidate_rows_exceeding_measured_grid_capacity_fall_back() -> None:
+    """C2-0eB-R capacity hole: the candidate may not use more grid rows than
+    the measured target grid carries."""
+    from tests.experiments.c2_renderer import (
+        category_grid_preflight,
+        compile_render_plan,
+    )
+
+    base = rich_candidate(include_unmatched=False)
+    extra_leaves = [
+        _leaf(f"skills.g1.i{index}", "skill", "skills", parent="skills.g1",
+              text=f"Extra skill {index}")
+        for index in range(3, 8)  # 3 + 5 extra = 8 plan items -> 4 rows > 3 measured rows
+    ]
+    sections = [
+        s.model_copy(update={"leaf_ids": [*s.leaf_ids, *[l.leaf_id for l in extra_leaves]]})
+        if s.section_id == "skills" else s
+        for s in base.sections
+    ]
+    candidate = base.model_copy(
+        update={"leaves": [*base.leaves, *extra_leaves], "sections": sections}
+    )
+    state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]), split_x=120.0)
+    section = next(n for n in state.nodes if n.category_grid)
+    items = [LeafText(leaf_id=l.leaf_id, text=l.text or "") for l in extra_leaves]
+    probe = category_grid_preflight(state, section, [
+        LeafText(leaf_id="skills.g1", text="Group One"),
+        LeafText(leaf_id="skills.g1.i1", text="Skill A"),
+        LeafText(leaf_id="skills.g1.i2", text="Skill B"),
+        *items,
+    ])
+    assert probe["fits"] is False
+    assert probe["row_capacity_exceeded"] is True
+    assert probe["probe"]["row_capacity"]["candidate_rows"] == 4
+    assert probe["probe"]["row_capacity"]["measured_rows"] == 3
+    # At plan level the same inputs take the existing single-column fallback.
+    plan = compile_render_plan(state, candidate)
+    assert plan.status != "failed", plan.failures
+    decision = next(d for d in plan.adaptation_decisions if d.destination_node == "section.01")
+    assert decision.action == "fallback_within_section" and decision.status == "ready"
+    assert any(evidence.startswith("row capacity: candidate needs 4") for evidence in decision.evidence)
+    section_plan = next(p for p in plan.sections if p.node_id == "section.01")
+    assert section_plan.category_grid_cells == []
+    assert len(section_plan.items) == 8
+    assert len(plan.leaf_ledger) == len(candidate.leaves)
 
 
 def test_document_review_result_sparse_and_ready_classifications() -> None:

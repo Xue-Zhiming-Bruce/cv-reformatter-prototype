@@ -1687,8 +1687,9 @@ pair-specific 分支、无通用政策框架、无第二拟合循环。
   RenderPlan 编译边界上，用既定 written-font 政策字体的 PIL 度量
   （无字符数启发式、无新依赖、无第二布局引擎）对每个携带实测 grid 的
   章节，在提交 `category_grid_cells` 之前判定拟合；标签片段一律单行，
-  值片段除最后一渲染行外须单行（最后一行的换行落入未占用的实测行空间，
-  不产生行距 delta——即 C2-0cS 已接受的 E→D 形态）；不可测量时 plan
+  值片段除最后一渲染行外须单行（最后一行的换行不产生行距 delta——即
+  C2-0cS 已接受的 E→D 形态；其换行容量由 C2-0eB-R 的有限实测规则约束，
+  见下节）；不可测量时 plan
   fail-closed。决策记录（additive `SectionAdaptation`，action 与 status
   分离，Literal 词汇强制）随 plan 落盘。
 - **F→D：fallback_within_section / ready**——预检实测三个 bold 标签
@@ -1713,3 +1714,30 @@ pair-specific 分支、无通用政策框架、无第二拟合循环。
   fallback 是实验默认而非产品政策批准；视觉可接受性待 owner 目检
   （`runs/C2_0E_MATRIX_INDEX.html` + `C2_0E_OWNER_REVIEW/`
   skills_pool_before_after_target.png）。
+
+### 16.16 C2-0eB-R 纠偏（owner 工单，2026-09-17；详情见 `C2_0E_REPORT.md`）
+
+**Owner 裁决：接受 C2-0eB 的 F→D 单列 fallback 与渲染后稀疏页分类为有界
+实验进展；不接受 C2-0eB 为完整安全适配机制；Pipeline C2 与一次成型质量
+保持未接受。** 两项纠偏：
+
+1. **grid 预检容量洞闭合。** 原实现允许最后一渲染行的值片段无界换行，
+   且候选可占用超过实测行数的行——一个超长末行值可拿到
+   `preserve_target_topology` 而明显溢出。修正（实测几何/字体/probe 设施，
+   无字符数启发式、无成对分支、无任意缩字、无第二拟合环）：
+   候选行数 > 实测 `row_count` ⇒ 不拟合（fallback）；末行值换行按实测
+   词宽贪心逐词换行计数（单个词宽超过实测值窗口 ⇒ 必然断词，永不拟合）；
+   有限容量 = 实测可写页高减去实测 grid 自身范围后按实测行单元
+   （实测行距与值 token 实测行高的较大者）可容纳的行数。已记录局限：
+   精确剩余流空间需流式布局引擎（未建），故该容量是可用空间的上界，
+   渲染后硬门禁（页数/稀疏页/空白页/几何）保持最终裁决，行为不变。
+   已接受的 E→D 行为保留（其末行值换行在实测页界内、零断词）。
+2. **review 横幅显式分页限定。** review.html 顶部横幅改为
+   "PAGINATION REVIEW: no sparse trailing page — READY" 类文案，并在其
+   旁新增 OVERALL HARD GATES 横幅（门禁失败时
+   "NOT ACCEPTED / owner review required — failing: …"）；分页分类与
+   总体转换裁决保持分离，门禁结论与稀疏页警告的语义均未改变。
+
+六对 canonical 全部重跑：F→D（fallback / 1 页）、E→D（preserve /
+60/0/40）、D→F、F→E、D→E（review_required 稀疏页）、E→F（全绿）的
+决策、密度与几何计数与 C2-0eB 一致（零回归）。

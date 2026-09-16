@@ -434,6 +434,29 @@ def _fragment_extent_pt(text: str, font: Any) -> float:
     return round(float(font.getlength(text)) / 10.0, 3)
 
 
+def _wrap_line_count(text: str, font: Any, available_pt: float) -> int | None:
+    """C2-0eB-R: greedy word-wrap line count for one fragment at a measured
+    window, using PIL extents of the resolved written face (arithmetic on
+    measured word widths — no second layout engine). Returns ``None`` when a
+    single word alone exceeds the window: rendering would then have to break
+    the word mid-word, which the preflight must NEVER accept."""
+    words = text.split()
+    if not words:
+        return 1
+    lines = 1
+    current = ""
+    for word in words:
+        candidate = word if not current else f"{current} {word}"
+        if _fragment_extent_pt(candidate, font) <= available_pt:
+            current = candidate
+            continue
+        if _fragment_extent_pt(word, font) > available_pt:
+            return None
+        lines += 1
+        current = word
+    return lines
+
+
 def category_grid_preflight(
     state: C2LayoutState, section: Any, plan_items: list[LeafText]
 ) -> dict[str, Any]:
@@ -456,8 +479,27 @@ def category_grid_preflight(
       window in every row EXCEPT the last rendered row — a wrapped value in
       the last row consumes unpopulated measured row space and creates no
       inter-row pitch delta (the C2-0cS-accepted E→D shape); a wrapped
-      value in an earlier row pushes the following row and violates the
-      uniform measured pitch.
+    - every VALUE fragment must be single-line within its measured value
+      window in every row EXCEPT the last rendered row — a wrapped value in
+      the last row consumes unpopulated measured row space and creates no
+      inter-row pitch delta (the C2-0cS-accepted E→D shape); a wrapped value
+      in an earlier row pushes the following row and violates the uniform
+      measured pitch.
+    - the last-row wrap allowance is FINITE (C2-0eB-R capacity rule). The
+      candidate may occupy at most ``row_count`` rows. The last rendered
+      row's value may wrap, but only within a measured, conservative page
+      bound: each extra wrapped line consumes the measured vertical unit
+      ``max(row_pitch_pt, value_token.line_height_pt)`` (both measured), and
+      the whole wrapped block must fit the measured writable page area that
+      remains after the grid's own measured extent
+      (``row_count * row_pitch_pt``) even in its most generous placement.
+      The wrapped line count is derived with a greedy word-wrap over measured
+      word extents — a wrap that must break a word mid-word never fits.
+      Documented limitation: the exact remaining flow space below the grid
+      (other sections' heights) is not derivable pre-render without a flow
+      engine, so this is an upper bound of the available space; the existing
+      post-render hard gates (page count, sparse trailing page, blank page,
+      geometry) remain the final arbiter and are unchanged.
 
     Returns ``{"fits": True|False, ...}`` with the full evidence, or
     ``{"fits": None, "error": ...}`` when no trustworthy measurement exists
@@ -466,6 +508,11 @@ def category_grid_preflight(
     styles = {token.style_id: token for token in state.styles}
     label_token = styles.get("style.body")
     value_token = styles.get(section.content_style_id) if section.content_style_id else None
+    # C2-0eB-R: measured line height of the VALUE token (None when the token
+    # carries no measured line height) — part of the wrap capacity unit.
+    value_token_line_height_pt = (
+        float(value_token.line_height_pt) if value_token and value_token.line_height_pt else None
+    )
     probe: dict[str, Any] = {
         "method": GRID_PREFLIGHT_METHOD,
         "allowed_lines_per_row": 1,
@@ -507,6 +554,49 @@ def category_grid_preflight(
         )
     fits = True
     rendered_rows = max(1, -(-len(plan_items) // len(grid.columns)))  # ceil
+    # C2-0eB-R: FINITE capacity for the section. The candidate may not use
+    # more rows than the target measured, and the last rendered row's value
+    # may wrap only within the measured wrap capacity below (see probe
+    # row_capacity) — a very long final value can no longer receive
+    # ``preserve_target_topology`` while overflowing.
+    unpopulated_rows = max(0, grid.row_count - rendered_rows)
+    # C2-0eB-R: measured vertical capacity of the grid's own extent and of
+    # the writable page area (both conservative, both measured).
+    page = state.page
+    writable_height_pt = round(
+        float(page.height_pt) - float(page.margin_top_pt) - float(page.margin_bottom_pt), 3
+    )
+    value_line_unit_pt = max(
+        float(grid.row_pitch_pt),
+        float(value_token_line_height_pt) if value_token_line_height_pt else 0.0,
+    )
+    grid_extent_pt = round(float(grid.row_count) * float(grid.row_pitch_pt), 3)
+    remaining_writable_pt = max(0.0, writable_height_pt - grid_extent_pt)
+    page_bound_extra_lines = int(remaining_writable_pt // value_line_unit_pt)
+    last_row_wrap_capacity_lines = 1 + page_bound_extra_lines
+    rows_exceed_capacity = rendered_rows > grid.row_count
+    probe["row_capacity"] = {
+        "measured_rows": grid.row_count,
+        "candidate_rows": rendered_rows,
+        "columns": len(grid.columns),
+        "unpopulated_measured_rows": unpopulated_rows,
+        "writable_height_pt": writable_height_pt,
+        "grid_measured_extent_pt": grid_extent_pt,
+        "value_line_unit_pt": round(value_line_unit_pt, 3),
+        "last_row_allowed_value_lines": last_row_wrap_capacity_lines,
+        "per_extra_line_consumption_pt": round(value_line_unit_pt, 3),
+        "rule": (
+            "candidate rows <= measured row_count; the last rendered row's "
+            "value may wrap only within the measured writable page area that "
+            "remains after the grid's measured extent, one measured line unit "
+            "(max of the measured row pitch and the value token's measured "
+            "line height) per extra wrapped line; a wrap that must break a "
+            "word mid-word never fits. Upper bound of the available flow "
+            "space (no flow engine pre-render); the post-render hard gates "
+            "remain the final arbiter"
+        ),
+        "rows_exceed_capacity": rows_exceed_capacity,
+    }
     for item_index, item in enumerate(plan_items):
         row_index = item_index // len(grid.columns)
         column_index = item_index % len(grid.columns)
@@ -555,6 +645,22 @@ def category_grid_preflight(
             violates = wraps and not (
                 fragment_kind == "value" and is_last_row
             )
+            predicted_lines = 1 if fits_cell else 2
+            allowed_lines = None
+            wrap_bounded = None
+            # C2-0eB-R: a wrapped LAST-ROW value is accepted ONLY inside the
+            # finite measured capacity — greedy word-wrap over measured word
+            # extents; a wrap that must break a word mid-word (``None``) or
+            # that needs more lines than the unpopulated measured rows admit
+            # violates the contract (fail → existing single-column fallback).
+            if wraps and fragment_kind == "value" and is_last_row:
+                wrapped_lines = _wrap_line_count(fragment_text, font, available_pt)
+                allowed_lines = last_row_wrap_capacity_lines
+                if wrapped_lines is None or wrapped_lines > allowed_lines:
+                    violates = True
+                else:
+                    predicted_lines = wrapped_lines
+                    wrap_bounded = True
             fits = fits and not violates
             probe["cells"].append(
                 {
@@ -571,12 +677,21 @@ def category_grid_preflight(
                     "bold": bool(token.bold),
                     "measured_extent_pt": extent,
                     "available_width_pt": available_pt,
-                    "predicted_lines": 1 if fits_cell else 2,
+                    "predicted_lines": predicted_lines,
+                    "allowed_lines": allowed_lines,
+                    "wrap_bounded": wrap_bounded,
                     "fits": fits_cell,
                     "violates_pitch": violates,
                 }
             )
-    return {"fits": fits, "probe": probe, "error": None}
+    if rows_exceed_capacity:
+        fits = False
+    return {
+        "fits": fits,
+        "row_capacity_exceeded": rows_exceed_capacity,
+        "probe": probe,
+        "error": None,
+    }
 
 
 def _entry_plan(
@@ -1060,10 +1175,22 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                     failing = [
                         cell for cell in preflight["probe"]["cells"] if cell["violates_pitch"]
                     ]
+                    # C2-0eB-R: row-capacity evidence beside the per-fragment
+                    # evidence (the fallback must name WHY the grid cannot bind).
+                    capacity = preflight["probe"]["row_capacity"]
+                    row_capacity_evidence = (
+                        f"row capacity: candidate needs {capacity['candidate_rows']} "
+                        f"grid row(s); the measured grid has {capacity['measured_rows']} "
+                        f"row(s) — exceeding the measured row count is a fit failure"
+                        if preflight["row_capacity_exceeded"]
+                        else None
+                    )
                     notes.append(
                         f"{section.node_id}: category-grid preflight NO-FIT "
                         f"({len(failing)}/{len(preflight['probe']['cells'])} fragments exceed "
-                        "the measured cell capacity at the written font); experimental "
+                        "the measured cell capacity at the written font; "
+                        f"candidate rows {capacity['candidate_rows']} vs measured rows "
+                        f"{capacity['measured_rows']}); experimental "
                         "single-column fallback applies — the measured grid topology is "
                         "NOT preserved (C2-0eB experiment default)"
                     )
@@ -1077,6 +1204,8 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                         evidence=[
                             f"measured_grid: {', '.join(grid.evidence_ids)}",
                             f"preflight: {GRID_PREFLIGHT_METHOD}",
+                            f"row_capacity: {preflight['probe']['row_capacity']['rule']}",
+                            *([row_capacity_evidence] if row_capacity_evidence else []),
                             *(
                                 f"{cell['leaf_id']} {cell['fragment']} col{cell['column_index']} "
                                 f"{cell['style_id']} ({cell['face']}): measured "

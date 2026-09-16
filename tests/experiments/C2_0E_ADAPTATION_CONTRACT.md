@@ -45,6 +45,36 @@ C2-0eB and ordered five corrections before any implementation:
    finding; criterion 7 PARTIAL; structural generalization succeeded;
    product-quality one-shot generalization did not.
 
+### 0c. C2-0eB-R corrective verdicts (owner work order, 2026-09-17)
+
+The owner accepted C2-0eB's F→D single-column fallback and post-render
+sparse-page classification as bounded experimental progress, did NOT accept
+C2-0eB as a complete safe-adaptation mechanism, and ordered two corrective
+findings (implemented in the C2-0eB-R pass; see `C2_0E_REPORT.md`):
+
+1. **The grid preflight's last-row wrap allowance is FINITE.** The candidate
+   may not use more rows than the measured target grid (`row_count`), and the
+   last rendered row's value may wrap only within a measured, conservative
+   page bound: each extra wrapped line consumes the measured vertical unit
+   `max(row_pitch_pt, value_token.line_height_pt)` and the wrapped block must
+   fit the measured writable page area remaining after the grid's own measured
+   extent (`row_count * row_pitch_pt`). The wrapped line count comes from a
+   greedy word-wrap over measured word extents; a wrap that must break a word
+   mid-word never fits. Documented limitation: the exact remaining flow space
+   below the grid is not derivable pre-render without a flow engine, so this
+   is an upper bound of the available space and the existing post-render hard
+   gates remain the final arbiter (unchanged). The accepted E→D last-row wrap
+   is preserved (it fits this bound and breaks no words). No character-count
+   heuristic, no pair-specific branch, no font shrinking, no second fitting
+   loop.
+2. **The post-render review banner is explicitly pagination-scoped.** The
+   review page labels the result "PAGINATION REVIEW: no sparse trailing page"
+   (or the sparse/unmeasurable equivalent) and shows the OVERALL HARD GATES
+   verdict beside it — "NOT ACCEPTED / owner review required" with the failing
+   gate names when any gate fails. Sparse-page classification stays separate
+   from the overall conversion verdict; no hard-gate outcome changed and no
+   sparse-page warning turns a failed run into a pass.
+
 ### 0b. C2-0d verdict (unchanged)
 
 1. **C2-0d is ACCEPTED as a useful diagnostic/generalization audit.** It is

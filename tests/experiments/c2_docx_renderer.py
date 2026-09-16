@@ -4727,10 +4727,16 @@ def write_review_index(
             "review_required": "fail-badge",
             "unsupported": "fail-badge",
         }.get(review_result.status, "fail-badge")
+        # C2-0eB-R: the banner is explicitly PAGINATION-scoped. A green
+        # pagination result says NOTHING about the overall conversion.
+        pagination_label = {
+            "no_sparse_trailing_page": "no sparse trailing page",
+            "sparse_trailing_page": "SPARSE trailing page below the 30% density threshold",
+            "trailing_page_density_unmeasurable": "trailing page density UNMEASURABLE",
+        }.get(review_result.reason_code, review_result.reason_code)
         review_banner = (
-            f'<p class="review-banner {badge_class}">POST-RENDER REVIEW: '
-            f'<strong>{_esc(review_result.status).upper()}</strong> — '
-            f"{_esc(review_result.reason_code)}"
+            f'<p class="review-banner {badge_class}">PAGINATION REVIEW: '
+            f"{_esc(pagination_label)} — <strong>{_esc(review_result.status).upper()}</strong>"
             + (
                 f" (trailing page density {_esc(review_result.trailing_page_density)} "
                 f"< threshold {_esc(review_result.density_threshold)}; "
@@ -4740,13 +4746,33 @@ def write_review_index(
             )
             + "</p>"
         )
+        # C2-0eB-R: the OVERALL hard-gate verdict beside the pagination
+        # banner — a failed run is never presented as passing.
+        failed_gates = [name for name, passed in hard_gates.items() if not passed]
+        gates_passed = not failed_gates
+        overall_banner = (
+            f'<p class="review-banner {"pass-badge" if gates_passed else "fail-badge"}">'
+            f"OVERALL HARD GATES: <strong>{'PASS' if gates_passed else 'FAIL'}</strong> — "
+            + (
+                "all hard gates pass; owner visual review still required for "
+                "product acceptance"
+                if gates_passed
+                else (
+                    "NOT ACCEPTED / owner review required — failing: "
+                    f"{_esc(', '.join(failed_gates))}"
+                )
+            )
+            + "</p>"
+        )
         review_section = (
-            "<h2>Post-render document review result (C2-0eB; classification only)</h2>"
+            "<h2>Pagination review result (post-render; classification only)</h2>"
             "<p>Measured from the rendered preview (docx_rendered_geometry.json → "
-            "sparse_trailing_page; pre-documented 30% density threshold). This result "
-            "is separate from any pre-render adaptation action: it never mutates the "
-            "plan, never triggers re-rendering, and never converts the output into a "
-            "passing one-shot result. Full record: <code>docx_review_result.json</code>.</p>"
+            "sparse_trailing_page; pre-documented 30% density threshold). This result is "
+            "pagination-SCOPED ONLY: it says nothing about geometry, typography, or any "
+            "other hard gate — the overall verdict is the OVERALL HARD GATES line above. "
+            "It never mutates the plan, never triggers re-rendering, and never converts "
+            "the output into a passing one-shot result. Full record: "
+            "<code>docx_review_result.json</code>.</p>"
             "<table><tr><th>status</th><th>reason</th><th>pages</th><th>trailing density</th>"
             "<th>threshold</th><th>evidence</th></tr>"
             f"<tr><td><strong>{_esc(review_result.status)}</strong></td>"
@@ -4783,6 +4809,7 @@ owner makes the final visual judgment; automated measurement supports it and
 never declares visual acceptance.</p>
 <h2>Summary</h2>
 {review_banner}
+{overall_banner}
 {pagination_html}
 <p>Typography result: <strong>{_esc((report.typography or {}).get('classification', 'unmeasurable'))}</strong>
 (requested vs rendered fonts table below; a substituted family can never pass
