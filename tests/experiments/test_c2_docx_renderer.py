@@ -2745,3 +2745,124 @@ def test_unmapped_appended_next_heading_is_unverified_not_silent_pass() -> None:
     assert entry["verified"] is False and entry["classification"] == "unverified"
     assert any("could not be located" in r for r in entry["unverified_reasons"])
     assert result["passed"] is False
+
+
+# ---------------------------------------------------------------------------
+# C2-0eD: a section gap spanning a page break is unmeasurable, never a
+# numeric fit-adjustable delta (root cause of D→F's written 2192.85pt)
+# ---------------------------------------------------------------------------
+
+
+def _gapped_state_and_plan():
+    """The full-coverage synthetic with MEASURED heading gaps, so the
+    heading_gap_above rows carry a non-None declared basis."""
+    state = compile_synthetic()
+    _set_gap(state, 1, 10.0)
+    _set_gap(state, 2, 12.0)
+    _set_gap(state, 4, 12.0)
+    _set_gap(state, 5, 15.0)
+    return state, compile_render_plan(state, rich_candidate(include_unmatched=False))
+
+
+def _cross_page_rendered(state, plan, last_node: str):
+    """A fake rendered geometry in which the LAST visible section's lines
+    render on PAGE 2 with page-local y coordinates (the real D→F EDUCATION
+    break shape) while the predecessor content stays on page 1."""
+    rendered = _fake_rendered(state, plan)
+    # The full line dicts (with chars) live in the mapping rows; collect them
+    # in document order for the mapping rebuild after the page move.
+    full_lines = [line for row in rendered["mapping"]["mapped"] for line in row["lines"]]
+    section_tops = [
+        line["top"]
+        for row in rendered["mapping"]["mapped"]
+        if row.get("section_node_id") == last_node
+        for line in row["lines"]
+    ]
+    assert section_tops
+    threshold = min(section_tops)
+    moved = 0
+    for line in full_lines:
+        if line["top"] >= threshold:
+            line["page"] = 2
+            line["top"] = round(line["top"] - 700.0, 3)
+            line["bottom"] = round(line["bottom"] - 700.0, 3)
+            for char in line.get("chars", []):
+                char["bottom"] = line["bottom"]
+            moved += 1
+    assert moved
+    rendered["page_count"] = 2
+    rendered["pages"] = [
+        {"page": 1, "width_pt": float(state.page.width_pt), "height_pt": float(state.page.height_pt)},
+        {"page": 2, "width_pt": float(state.page.width_pt), "height_pt": float(state.page.height_pt)},
+    ]
+    rendered["mapping"] = map_rendered_to_expected(plan, full_lines)
+    return rendered
+
+
+def test_cross_page_section_gap_is_unmeasurable_and_not_fit_adjustable() -> None:
+    from tests.experiments.c2_docx_renderer import (
+        FitAdjustments,
+        apply_measured_deltas,
+        compare_geometry,
+    )
+
+    state, plan = _gapped_state_and_plan()
+    last_node = next(s.node_id for s in reversed(plan.sections) if not s.empty)
+    assert next(
+        s.heading_gap_above_pt for s in plan.sections if s.node_id == last_node
+    ) is not None  # a declared basis EXISTS; the break alone unmeasurables it
+    rendered = _cross_page_rendered(state, plan, last_node)
+    comparison = compare_geometry(state, plan, _fake_target_geo(state, plan), rendered)
+    row = next(
+        r for r in comparison["rows"]
+        if r["node"] == last_node and r["property"] == "heading_gap_above"
+    )
+    # Honest unmeasurable: explicit cross-page reason, NO numeric delta (the
+    # declared basis exists, the rendered gap is suppressed), and no fit
+    # control — never a bogus negative gap, never a silent pass.
+    assert row["basis"] is not None
+    assert row["classification"] == "unmeasurable"
+    assert row["rendered"] is None and row["delta"] is None
+    assert row["control"] is None
+    assert "cross-page section gap" in row["detail"] and "page 2" in row["detail"]
+    # The bounded fitter cannot and does not touch heading_space_before_pt.
+    updates = apply_measured_deltas(FitAdjustments(), comparison)
+    assert updates.section(last_node).heading_space_before_pt == 0.0
+    # The gate does not silently pass on the cross-page row.
+    assert comparison["gate_passed"] is False
+
+
+def test_same_page_gap_failure_still_produces_the_expected_correction() -> None:
+    from tests.experiments.c2_docx_renderer import (
+        FitAdjustments,
+        apply_measured_deltas,
+        compare_geometry,
+    )
+
+    state, plan = _gapped_state_and_plan()
+    target = plan.sections[1]  # TECHNICAL SKILLS (gap 12.0), same page as predecessor
+    # A SAME-PAGE heading whose rendered top sits 5pt below its declared gap:
+    # the documented translation is a heading_space_before correction of
+    # minus the measured delta (one bounded fitting step) — unchanged by the
+    # cross-page fix.
+    rendered = _fake_rendered(state, plan)
+    heading_row = next(
+        row for row in rendered["mapping"]["mapped"]
+        if row.get("section_node_id") == target.node_id and row["kind"] == "heading"
+    )
+    for line in heading_row["lines"]:
+        line["top"] = round(line["top"] + 5.0, 3)
+        line["bottom"] = round(line["bottom"] + 5.0, 3)
+        for char in line.get("chars", []):
+            char["bottom"] = line["bottom"]
+    comparison = compare_geometry(state, plan, _fake_target_geo(state, plan), rendered)
+    row = next(
+        r for r in comparison["rows"]
+        if r["node"] == target.node_id and r["property"] == "heading_gap_above"
+    )
+    assert row["classification"] == "fail"
+    assert row["control"] == "heading_space_before_pt"
+    assert row["delta"] is not None and row["delta"] > 0
+    updates = apply_measured_deltas(FitAdjustments(), comparison)
+    expected = round(-float(row["delta"]), 3)
+    assert updates.section(target.node_id).heading_space_before_pt == expected

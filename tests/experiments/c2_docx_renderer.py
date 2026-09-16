@@ -2532,20 +2532,25 @@ def bullet_rows_expected(plan: Any, section_plan: Any) -> bool:
     )
 
 
-def _previous_content_bottom(mapping: dict[str, Any], node_id: str) -> float | None:
-    """Bottom of the last rendered content row BEFORE this section's heading
-    (document order; header rows and previous sections count — the gap is
-    measured node-locally between neighbours, never as absolute page y)."""
+def _previous_content_bottom(
+    mapping: dict[str, Any], node_id: str
+) -> tuple[float | None, int | None]:
+    """Bottom (and its page) of the last rendered content row BEFORE this
+    section's heading (document order; header rows and previous sections
+    count — the gap is measured node-locally between neighbours, never as
+    absolute page y). The page is returned so a predecessor/heading pair
+    that spans a PAGE BREAK is never compared as one numeric page-local gap
+    (C2-0eD: such a pair is reported unmeasurable, never a bogus delta)."""
     bottom: float | None = None
+    bottom_page: int | None = None
     for row in mapping["mapped"]:
         if row.get("section_node_id") == node_id and row["kind"] == "heading":
             break
-        if row.get("lines"):
-            bottom = max(
-                bottom if bottom is not None else 0.0,
-                max(line["bottom"] for line in row["lines"]),
-            )
-    return bottom
+        for line in row.get("lines", []):
+            if bottom is None or float(line["bottom"]) > bottom:
+                bottom = float(line["bottom"])
+                bottom_page = int(line["page"])
+    return bottom, bottom_page
 
 
 def _has_following_content_on_page(mapping: dict[str, Any], heading_row: dict[str, Any]) -> bool:
@@ -2701,7 +2706,7 @@ def compare_geometry(
             rendered_content_gap, TOLERANCE_PT["local_gap"], control="heading_space_after_pt",
         ))
         # -- heading gap above (section rhythm) --------------------------------
-        previous_bottom = _previous_content_bottom(mapping, node_id)
+        previous_bottom, previous_page = _previous_content_bottom(mapping, node_id)
         # C2-0cV: the declared basis may be a visible-rhythm recompute; the
         # row records that provenance so the comparison is auditable.
         rhythm = next(
@@ -2723,19 +2728,48 @@ def compare_geometry(
                 f"visible rhythm has no preserved measured evidence; original gap "
                 f"retained and flagged (never silently zeroed)"
             )
-        rows.append(_row(
-            "heading_gap_above", node_id, section_plan.heading_gap_above_pt, rhythm_source,
-            (
-                round(heading_line["top"] - previous_bottom, 3)
-                if heading_line and previous_bottom is not None else None
-            ),
-            TOLERANCE_PT["local_gap"],
-            control="heading_space_before_pt",
-            detail=(
-                ("candidate-only sections carry no measured section gap"
-                 if section_plan.candidate_only else rhythm_detail)
-            ),
-        ))
+        gap_detail = (
+            ("candidate-only sections carry no measured section gap"
+             if section_plan.candidate_only else rhythm_detail)
+        )
+        heading_page = int(heading_line["page"]) if heading_line else None
+        if (
+            heading_line is not None
+            and previous_bottom is not None
+            and heading_page != previous_page
+        ):
+            # C2-0eD root-cause fix: a section gap whose predecessor ends on a
+            # DIFFERENT rendered page than the heading is NOT one measurable
+            # page-local gap — subtracting two page-local y coordinates
+            # produced a meaningless negative delta and an absurd cumulative
+            # heading_space_before correction (D→F's written 2192.85pt). The
+            # page boundary itself is classified by the pagination evidence.
+            # Honest unmeasurable with an explicit reason, no numeric delta,
+            # no fit control (never a silent pass; same-page gaps unchanged).
+            rows.append(_row(
+                "heading_gap_above", node_id, section_plan.heading_gap_above_pt, rhythm_source,
+                None,
+                TOLERANCE_PT["local_gap"],
+                control=None,
+                detail=(
+                    f"cross-page section gap: the heading renders on page {heading_page} "
+                    f"while its predecessor content ends on page {previous_page}; the two "
+                    "page-local y coordinates are not one measurable gap, so no numeric "
+                    "delta and no heading_space_before_pt correction are derived across "
+                    "the page break"
+                ),
+            ))
+        else:
+            rows.append(_row(
+                "heading_gap_above", node_id, section_plan.heading_gap_above_pt, rhythm_source,
+                (
+                    round(heading_line["top"] - previous_bottom, 3)
+                    if heading_line and previous_bottom is not None else None
+                ),
+                TOLERANCE_PT["local_gap"],
+                control="heading_space_before_pt",
+                detail=gap_detail,
+            ))
         # -- C2-0cS: category-grid cell anchors ---------------------------------
         state_grid = next(
             (

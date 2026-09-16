@@ -1812,3 +1812,34 @@ C2-0eC（诊断，零代码改动）：对 D→F / F→E / D→E / E→F 四对�
 不花预算。**未决 owner/产品决策：** 接受两页输出与既存 review_required
 警告（招聘官编辑或接受第二页），或批准 Q6 class 2 有界压缩动作（本证据
 显示当前无触发情形）；强制单页/删改/重排/合并/缩字号/改阈值均未授权。
+
+### 16.19 C2-0eD 跨页拟合纠偏（owner 工单，2026-09-17；详见 `C2_0E_REPORT.md` §0eD）
+
+**范围：** 修复 C2-0eC §0eC-4 记录的跨页拟合缺陷——D→F 的 EDUCATION 标题在
+第 2 页而前章内容在第 1 页，比较把两个页局部 y 坐标当作一个可测间距
+（−717.43pt delta），有界拟合器三次迭代累计把 2192.85pt 的标题前间距写进
+DOCX。真实缺陷，但并非原断页原因。仅限
+`c2_docx_renderer.py`/`test_c2_docx_renderer.py` 的最小根因修复。
+
+**修复（单一共享比较点，无新拟合框架）：** `_previous_content_bottom()` 返回
+前章最后一行 bottom 所在页；`heading_gap_above` 行据此分支——前后章位于
+不同渲染页 ⇒ 该行诚实报告 UNMEASURABLE（rendered/delta=None、无 control、
+显式 cross-page 原因，绝不静默通过；声明基准与节奏溯源保留在行上供审计；
+页边界本身仍由既有分页证据分类）；同页间距的数值测量与
+`heading_space_before_pt` 校正翻译完全不变。`apply_measured_deltas` 无需
+改动：无数字 delta 的行本就不参与校正（非事后钳制）。
+
+**回归测试：** 跨页对不能改变 `heading_space_before_pt` 且整比较不静默通过
+（`test_cross_page_section_gap_is_unmeasurable_and_not_fit_adjustable`）；
+同页对仍产生 −delta 的预期校正
+（`test_same_page_gap_failure_still_produces_the_expected_correction`）。
+
+**四对 before(C2-0eC)/after(C2-0eD run 20260916T155257Z)：**
+D→F 95/31/4 → 95/30/5（跨页行诚实重分类），2 页/13.78%/accounting exact/
+整体 FAIL 不变，书面 EDUCATION `space_before` 43857 → 313 twips
+（15.65pt）；F→E、D→E、E→F 页数/稀疏度/记账/门禁/几何行全部不变
+（E→F 仍全绿）。无强制单页、无删改/压缩、无字体/边距/阈值改动。
+
+**测试：** focused 301 passed；local_dataset 10 passed / 1 skipped；
+broad offline 769 passed / 5 failed（同前置 mock_api 五项，未触碰）。
+Pipeline C2 保持实验性、未接受；四对结果待 owner 视觉评审。

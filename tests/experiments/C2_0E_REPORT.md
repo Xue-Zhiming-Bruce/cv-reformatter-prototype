@@ -11,7 +11,10 @@ the rendered output, and that rendered verification is now part of the
 overall hard-gate decision (C2-0eB-R3, fail closed). C2-0eC (below) measured
 all sparse trailing pages and found NO avoidable renderer defect: the
 observed sparse pages are legitimate content overflow, so NO pagination
-correction was implemented and the review_required warnings stand.`
+correction was implemented and the review_required warnings stand. C2-0eD
+fixed the cross-page fitter defect identified there: a section gap spanning
+a page break is now honestly UNMEASURABLE (no numeric delta, no fit
+correction), so D→F's written 2192.85pt pathological spacing is gone.`
 
 Date: 2026-09-17
 Branch: `experiment/pipeline-c2` (worktree `/private/tmp/cv-converter-c2`,
@@ -19,6 +22,90 @@ base `b4c3db2` = the C2-0eA contract commit).
 Contract: `C2_0E_ADAPTATION_CONTRACT.md` (owner-accepted boundary; corrections
 §0a applied before implementation, commit `efbe1dc`; corrective verdicts §0c
 applied by C2-0eB-R; corrective verdicts §0d applied by C2-0eB-R2, below).
+
+## 0eD. C2-0eD: cross-page fitting correction (owner work order, 2026-09-17)
+
+### 0eD-0. Scope
+
+Fix the cross-page geometry-fitting defect identified in C2-0eC §0eC-4: in
+D→F the EDUCATION heading renders on page 2 while its predecessor ends on
+page 1; the comparison treated the two page-local y coordinates as ONE
+measurable gap (−717.43pt delta) and the bounded fitter cumulatively wrote
+2192.85pt of heading space into the DOCX over its 3 iterations. A real
+fitter defect that did NOT cause the original page break. Smallest root-cause
+fix only; source/test edits confined to `tests/experiments/c2_docx_renderer.py`
+and `tests/experiments/test_c2_docx_renderer.py`.
+
+### 0eD-1. The fix (one shared comparison point; no new fitting framework)
+
+`_previous_content_bottom()` now returns the predecessor's bottom PAGE
+beside its bottom, and the `heading_gap_above` comparison row branches on
+it:
+
+- **predecessor and heading on DIFFERENT rendered pages** ⇒ the row is
+  reported `unmeasurable` with rendered=None (⇒ delta=None), control=None,
+  and an explicit detail: "cross-page section gap: the heading renders on
+  page N while its predecessor content ends on page M; the two page-local y
+  coordinates are not one measurable gap, so no numeric delta and no
+  heading_space_before_pt correction are derived across the page break".
+  The declared basis and its provenance stay on the row for auditability;
+  the row is never silently marked passed, and the page boundary itself
+  remains classified by the existing pagination evidence.
+- **same-page pairs are unchanged**: the numeric gap, the
+  `heading_space_before_pt` control, and the bounded correction translation
+  behave exactly as before (regression-tested).
+- `apply_measured_deltas` needs no change: it already skips rows without a
+  numeric delta, so the correction is never calculated for a cross-page
+  pair (nothing is clamped after the fact).
+
+### 0eD-2. Focused regressions (`tests/experiments/test_c2_docx_renderer.py`)
+
+- `test_cross_page_section_gap_is_unmeasurable_and_not_fit_adjustable`:
+  a synthetic render in which the last visible section's lines carry
+  page-local coordinates on page 2 while the predecessor stays on page 1 ⇒
+  the `heading_gap_above` row is unmeasurable with the cross-page reason,
+  no delta, no control, and `apply_measured_deltas` leaves
+  `heading_space_before_pt` at 0.0; the comparison gate does not pass.
+- `test_same_page_gap_failure_still_produces_the_expected_correction`:
+  a same-page heading 5pt below its declared gap still fails the row with
+  the `heading_space_before_pt` control and yields exactly −delta.
+
+### 0eD-3. Four-pair before (C2-0eC runs) / after (C2-0eD reruns)
+
+After runs: `c2_0eD_{d_to_f,f_to_e,d_to_e,e_to_f}_20260916T155257Z`.
+
+| Pair | Pages | Sparse | Accounting | Geometry counts before → after | Gate outcome | Written-OOXML pathological spacing |
+|---|---|---|---|---|---|---|
+| D→F | 2 → 2 | 13.78% → 13.78% | exact → exact | 95/31/4 → 95/30/5 (the cross-page row honestly reclassified) | FAIL → FAIL (unchanged) | EDUCATION `before="43857"` (2192.85pt) → `before="313"` (15.65pt, the declared 15.63 + bounded corrections) |
+| F→E | 2 → 2 | 6.44% → 6.44% | exact → exact | 106/1/0 → 106/1/0 (unchanged) | FAIL → FAIL | none before, none after |
+| D→E | 2 → 2 | 28.83% → 28.83% | exact → exact | 116/1/0 → 116/1/0 (unchanged) | FAIL → FAIL | none before, none after |
+| E→F | 1 → 1 | none | exact → exact | 98/0/0 → 98/0/0 | PASS all gates → PASS (unchanged) | — |
+
+No forced one-page output, no compaction/deletion, no font/margin/threshold
+change, no product-policy change. Page counts, sparse-page warnings,
+accounting, privacy, and all unrelated geometry rows are unchanged; D→F's
+gate still honestly fails on its remaining same-page deltas and E→F stays
+all-green.
+
+### 0eD-4. Test results (timestamped logs in `tests/test_results/pytest/`)
+
+- Focused C2 offline (`pytest_c2_0ed_focused_20260916T155331Z.txt`):
+  **301 passed** (all `tests/experiments/`, `not local_dataset`), including
+  the two new C2-0eD regressions.
+- Local-dataset lane (`pytest_c2_0ed_local_dataset_20260916T155341Z.txt`):
+  **10 passed / 1 skipped**.
+- Broad offline (`pytest_c2_0ed_broad_offline_20260916T155420Z.txt`):
+  **769 passed / 5 failed / 2 skipped** — the SAME 5 pre-existing unrelated
+  `tests/unit/test_mock_api.py` failures documented since C2-0A §7
+  (identical names; separated, not touched, not fixed here).
+
+### 0eD-5. Explicit non-claims
+
+The correction changes no page count, no sparse-page classification, and no
+overall gate outcome — it removes a written-OOXML pathology and makes the
+comparison truthful across page breaks. Pipeline C2 and one-shot product
+quality remain NOT accepted; the four pairs above await owner visual review
+(reviewable PDFs/page images in the runs directories).
 
 ## 0eC. C2-0eC: sparse-trailing-page diagnosis (owner work order, 2026-09-17)
 
