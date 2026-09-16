@@ -1,6 +1,6 @@
 # Pipeline C2-0d Report: Frozen Multi-Template Structural Generalization Audit
 
-Status: `Evaluation-first checkpoint per owner work order — C2 implementation FROZEN for the audit; six directed pairs (D→E, D→F, E→D, E→F, F→D, F→E) pre-registered, executed on the unchanged canonical runner, and honestly reported; overall Pipeline C2 acceptance is NOT claimed — the owner decides`
+Status: `Evaluation-first checkpoint per owner work order — C2 implementation FROZEN for the audit; six directed pairs (D→E, D→F, E→D, E→F, F→D, F→E) pre-registered, executed on the unchanged canonical runner, and honestly reported; overall Pipeline C2 acceptance is NOT claimed — the owner decides. OWNER VERDICT (2026-09-17, §0b): ACCEPTED as a diagnostic/generalization audit; NOT accepted as proof of product-quality one-shot conversion; Pipeline C2 remains experimental and NOT accepted`
 
 Date: 2026-09-16
 Branch: `experiment/pipeline-c2` (worktree `/private/tmp/cv-converter-c2`,
@@ -14,6 +14,32 @@ frozen-audit base `6bb4924`, C2-0cS base `6ad89a9`).
   two-column category-grid structure as editable DOCX/HTML content. It did
   NOT prove general template support. Overall E→D remains NOT accepted.
   Pipeline C2 remains experimental and is not approved for production.
+
+## 0b. Owner verdict on C2-0d itself (2026-09-17)
+
+This verdict supersedes the §4/§5 framing where they conflict.
+
+- **C2-0d is ACCEPTED as a useful diagnostic/generalization audit.** It is
+  **NOT accepted as proof of product-quality one-shot conversion.**
+- **Structural generalization holds:** C2-0cS grid detection generalized —
+  zero grid false positives and zero grid false negatives in the registered
+  matrix (§4 criteria 1–3).
+- **The broader product result did NOT generalize:** only E→F passed all
+  hard gates. F→D visibly broke long grid labels ("Programmin/g",
+  "Deep/Learning/Framework/s:") and no longer resembled target D outside a
+  few mapped sections. D→F produced a highly sparse second page (13.8%).
+  F→E produced a second page containing almost only Certifications (6.4%).
+- **Overall Pipeline C2 remains experimental and NOT accepted.**
+- The §4 scorecard summary "12 PASS" was **misleading**: criterion 7 was
+  PARTIAL, not a pass. The summary below is corrected to distinguish full
+  pass (10), partial pass (1), and the truthfulness finding on criterion 6.
+- The §5.7 "four small fixes" framing is **superseded**: those four items are
+  symptoms. The common missing capability across all product-quality
+  failures is **content-to-layout adaptation** — candidate content shape and
+  volume must be reconciled with target structure and capacity BEFORE
+  deterministic rendering. That contract is defined in
+  `C2_0E_ADAPTATION_CONTRACT.md` (C2-0eA); no renderer implementation is
+  authorized by this report.
 
 ## 1. Why C2-0d exists (work order restated)
 
@@ -376,8 +402,18 @@ no HTML-level privacy gate.)
 | 11 | No implementation/tolerance change after results | **PASS** (implementation frozen at the setup commit; only this report and proposal records changed afterwards) |
 | 12 | Owner receives directly reviewable outputs | **PASS** (matrix index + per-run review pages + previews) |
 
-**Scorecard: 12 PASS (one with a documented truthfulness finding); no
-criterion was waived, tuned, or repaired.**
+**Corrected scorecard summary (owner verdict 2026-09-17; replaces the
+earlier "12 PASS" wording, which was misleading because criterion 7 was
+PARTIAL): 10 criteria full PASS (1, 2, 3, 4, 5, 8, 9, 10, 11, 12), 1
+criterion PARTIAL (7 — no blank pages anywhere, but two NEW
+sparse-trailing-page fails), and criterion 6 PASS with a documented
+truthfulness finding (empty grid-cell paragraphs uncontrolled).**
+Distinguishing structural generalization from product quality: the
+STRUCTURAL layer (criteria 1–5, 10 — grid detection, bindings, accounting,
+privacy, fail-closed honesty) generalized across all six pairs, but the
+PRODUCT-QUALITY result did NOT — 3 of 6 pairs fail the DOCX geometry gate
+and only E→F passes every hard gate, so this audit does not evidence
+one-shot product conversion. No criterion was waived, tuned, or repaired.
 
 ## 5. Architecture assessment (evidence-based)
 
@@ -460,6 +496,16 @@ wrapped grid values instead of a fitting chase. Whether the F→D grid-wrapping
 visual is acceptable at all is the owner's call — the honest alternative is
 declaring wrapped-value grid rendering `unsupported` (fail closed) rather
 than rendering overflowing cells.
+
+**Owner verdict note (2026-09-17):** the "four small fixes" framing above is
+superseded. Those four items are honest, named symptoms, but the remaining
+work is NOT merely them: every product-quality failure in this matrix
+shares one missing capability — content-to-layout adaptation (reconciling
+candidate content shape/volume with target structure/capacity before
+deterministic rendering). That contract is now defined in
+`C2_0E_ADAPTATION_CONTRACT.md` (C2-0eA); the named items become candidate
+inputs to that contract's implementation, not a standalone fix list. No
+implementation is authorized by this report.
 
 ## 6. Commands run
 
