@@ -1801,6 +1801,10 @@ def _with_grid(state, columns: int = 2, split_x: float = 300.0):
                         row_count=3,
                         evidence_ids=["local_pdf.category_grid"],
                     ),
+                    # A measured content token so the C2-0eB preflight can
+                    # measure the value fragments (the synthetic state carries
+                    # style.body; the value tier is honestly the same token).
+                    "content_style_id": "style.body",
                 }
             )
         nodes.append(node)
@@ -1957,3 +1961,253 @@ def test_grid_geometry_rows_offline(tmp_path: Path) -> None:
         r["node"] == "section.01" and r["property"] == "content_start_x"
         for r in comparison["rows"]
     )
+
+
+# ---------------------------------------------------------------------------
+# C2-0eB: content-to-layout adaptation spike (grid preflight + fallback,
+# post-render sparse-page review classification)
+# ---------------------------------------------------------------------------
+
+
+def test_adaptation_action_and_status_are_separate_fields() -> None:
+    from pydantic import ValidationError
+
+    from tests.experiments.c2_renderer import SectionAdaptation
+
+    record = SectionAdaptation(
+        decision_id="adapt.section.01",
+        destination_node="section.01",
+        candidate_source_nodes=["skills.g1"],
+        action="fallback_within_section",
+        status="ready",
+        reason_code="grid_cell_preflight_fit_failed",
+        original_topology="category_grid_3rows_x_2cols",
+        selected_topology="single_column_label_value_items",
+        content_disposition="all candidate leaves rendered exactly once",
+        warning_text="experimental fallback",
+    )
+    assert record.action == "fallback_within_section"
+    assert record.status == "ready"
+    # action=None + unsupported is a legal honest combination.
+    record = SectionAdaptation(
+        decision_id="adapt.x",
+        destination_node="section.01",
+        action=None,
+        status="unsupported",
+        reason_code="structure_unsupported",
+        content_disposition="no content rendered",
+    )
+    assert record.action is None and record.status == "unsupported"
+    # Review states are STATUSES, never actions; unknown actions reject.
+    with pytest.raises(ValidationError):
+        SectionAdaptation(
+            decision_id="adapt.y",
+            destination_node="section.01",
+            action="require_layout_review",
+            status="ready",
+            reason_code="r",
+            content_disposition="d",
+        )
+    with pytest.raises(ValidationError):
+        SectionAdaptation(
+            decision_id="adapt.z",
+            destination_node="section.01",
+            action="fallback_within_section",
+            reason_code="r",
+            content_disposition="d",
+            candidate_source_nodes=[],
+            # unknown status value below
+            status="pending",  # type: ignore[arg-type]
+        )
+
+
+def test_fitting_grid_preserves_topology_and_is_ready() -> None:
+    state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]))
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    assert plan.status != "failed"
+    decision = next(d for d in plan.adaptation_decisions if d.destination_node == "section.01")
+    assert decision.action == "preserve_target_topology"
+    assert decision.status == "ready"
+    assert decision.reason_code == "grid_cell_preflight_fit_passed"
+    assert decision.original_topology == decision.selected_topology
+    assert decision.warning_text is None
+    section = next(p for p in plan.sections if p.node_id == "section.01")
+    assert len(section.category_grid_cells) == 3  # grid binding unchanged
+    assert section.items == []
+    # Evidence carries measured font extents, not counts.
+    assert any("measured" in e and "available" in e for e in decision.evidence)
+
+
+def test_nonfitting_grid_falls_back_to_single_column_and_is_ready() -> None:
+    # A narrow first column (split 120 -> value capacity 26.4pt) cannot hold
+    # the synthetic value fragments at the written font -> no-fit.
+    state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]), split_x=120.0)
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    assert plan.status != "failed", plan.failures
+    decision = next(d for d in plan.adaptation_decisions if d.destination_node == "section.01")
+    # action and status are SEPARATE: the fallback is an experiment-default
+    # READY result, not a review state.
+    assert decision.action == "fallback_within_section"
+    assert decision.status == "ready"
+    assert decision.reason_code == "grid_cell_preflight_fit_failed"
+    assert decision.original_topology != decision.selected_topology
+    assert decision.selected_topology == "single_column_label_value_items"
+    assert "NOT approved product policy" in (decision.warning_text or "")
+    section = next(p for p in plan.sections if p.node_id == "section.01")
+    # No grid cells, no empty grid rows: the plain item path renders instead.
+    assert section.category_grid_cells == []
+    assert [item.leaf_id for item in section.items] == ["skills.g1", "skills.g1.i1", "skills.g1.i2"]
+    assert [item.text for item in section.items] == ["Group One", "Skill A", "Skill B"]
+    # Every candidate leaf owned exactly once at the section destination.
+    for leaf_id in ("skills.g1", "skills.g1.i1", "skills.g1.i2"):
+        assert plan.leaf_ledger[leaf_id].startswith("section.01.")
+    # Evidence names the failing fragments with measured extents and windows.
+    assert any("measured" in e and ">" in e for e in decision.evidence)
+
+
+def test_fallback_preserves_section_identity_and_editable_content(tmp_path: Path) -> None:
+    state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]), split_x=120.0)
+    section_node = next(n for n in state.nodes if n.node_id == "section.01")
+    heading_node = next(n for n in state.nodes if n.node_id == "section.01.heading")
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    section = next(p for p in plan.sections if p.node_id == "section.01")
+    # Target section identity preserved on the PLAN: same heading style,
+    # same rule, same measured content token, same reading-order position.
+    assert section.style_id == heading_node.style_id
+    assert section.rule_id == heading_node.rule_id
+    assert section.content_style_id == section_node.content_style_id
+    path = tmp_path / "fallback.docx"
+    path.write_bytes(deterministic_docx_bytes(build_document(state, plan)))
+    inspection = inspect_docx(path)
+    inspection["reading_order_gate"] = reading_order_gate(plan, inspection)
+    assert inspection["reading_order_gate"]["passed"] is True
+    texts = [record["text"] for record in inspection["paragraphs"]]
+    # The measured heading identity renders (target section label verbatim).
+    assert "TECHNICAL SKILLS" in texts
+    # All three candidate skill groups render exactly once, verbatim, as
+    # editable plain paragraphs (never a table, never a bullet restyle).
+    for text in ("Group One", "Skill A", "Skill B"):
+        assert texts.count(text) == 1
+    accounting = content_accounting(plan, inspection)
+    assert accounting["passed"] is True, (accounting["missing"], accounting["duplicated"])
+    for leaf_id in ("skills.g1", "skills.g1.i1", "skills.g1.i2"):
+        assert accounting["leaf_records"][leaf_id]["rendered_exactly_once"] is True
+        assert "grid_fragments" not in accounting["leaf_records"][leaf_id]
+    # No grid table was emitted (no empty grid rows / empty-cell paragraphs).
+    assert not any(record["columns"] == 4 for record in inspection["tables"])
+
+
+def test_no_grid_sections_emit_no_adaptation_decision() -> None:
+    plan = compile_render_plan(
+        compile_synthetic(["TECHNICAL SKILLS"]), rich_candidate(include_unmatched=False)
+    )
+    assert plan.adaptation_decisions == []
+    section = next(p for p in plan.sections if p.node_id == "section.01")
+    assert section.category_grid_cells == []
+    assert [item.leaf_id for item in section.items] == ["skills.g1", "skills.g1.i1", "skills.g1.i2"]
+
+
+def test_grid_preflight_is_metric_driven_not_char_count() -> None:
+    from tests.experiments.c2_renderer import (
+        category_grid_preflight,
+    )
+
+    state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]), split_x=120.0)
+    section = next(n for n in state.nodes if n.category_grid)
+    # SAME character count (10), different measured widths -> different
+    # decisions. A character-count rule could never separate these. Labels
+    # are the discriminator: they must be single-line in EVERY row.
+    narrow = [LeafText(leaf_id="skills.g1", text="iiiiiiiii: v")]
+    wide = [LeafText(leaf_id="skills.g1", text="MMMMMMMMM: v")]
+    narrow_fit = category_grid_preflight(state, section, narrow)
+    wide_fit = category_grid_preflight(state, section, wide)
+    assert narrow_fit["fits"] is True
+    assert wide_fit["fits"] is False
+    narrow_extent = narrow_fit["probe"]["cells"][0]["measured_extent_pt"]
+    wide_extent = wide_fit["probe"]["cells"][0]["measured_extent_pt"]
+    assert narrow_extent < wide_extent
+    assert len("iiiiiiiii:") == len("MMMMMMMMM:")
+    # A wrapped VALUE in the LAST rendered row is the C2-0cS-accepted E→D
+    # shape: no inter-row pitch delta exists, so it FITS (metric rule, not
+    # an absolute no-wrap rule).
+    single_row_wrap = [LeafText(leaf_id="skills.g1", text="Group: MMMMMMMMM")]
+    assert category_grid_preflight(state, section, single_row_wrap)["fits"] is True
+    # The evidence records the resolved font file/face, not a count.
+    assert wide_fit["probe"]["cells"][0]["font_file"].endswith(".ttf")
+    assert wide_fit["probe"]["method"].startswith("PIL")
+
+
+def test_document_review_result_sparse_and_ready_classifications() -> None:
+    from tests.experiments.c2_docx_renderer import (
+        SPARSE_TRAILING_PAGE_FRACTION,
+        document_review_result,
+    )
+
+    ready = document_review_result({"page_count": 1, "sparse_trailing_page": None})
+    assert ready.status == "ready" and ready.reason_code == "no_sparse_trailing_page"
+    # Trailing page at/above the threshold: ready with the measured density.
+    ok_trailing = document_review_result(
+        {
+            "page_count": 2,
+            "sparse_trailing_page": {
+                "page": 2, "fraction": 0.42, "sparse": False,
+                "content_extent_pt": 300.0, "writable_height_pt": 753.8,
+            },
+        }
+    )
+    assert ok_trailing.status == "ready"
+    assert ok_trailing.reason_code == "no_sparse_trailing_page"
+    assert ok_trailing.trailing_page_density == 0.42
+    assert ok_trailing.density_threshold == SPARSE_TRAILING_PAGE_FRACTION == 0.30
+    # Sparse trailing page -> review_required with full evidence.
+    sparse = document_review_result(
+        {
+            "page_count": 2,
+            "sparse_trailing_page": {
+                "page": 2, "fraction": 0.064, "sparse": True,
+                "content_extent_pt": 48.3, "writable_height_pt": 753.8,
+            },
+        }
+    )
+    assert sparse.status == "review_required"
+    assert sparse.reason_code == "sparse_trailing_page"
+    assert sparse.page_count == 2 and sparse.trailing_page_density == 0.064
+    assert sparse.density_threshold == 0.30
+    assert "docx_rendered_geometry.json" in sparse.evidence_ref
+    # Unmeasurable preview -> honest unsupported, never a silent pass.
+    unmeasured = document_review_result({"page_count": 2, "sparse_trailing_page": None})
+    assert unmeasured.status == "unsupported"
+    assert unmeasured.reason_code == "trailing_page_density_unmeasurable"
+
+
+def test_review_classification_is_post_render_and_cannot_mutate_a_plan() -> None:
+    import inspect as _inspect
+
+    from tests.experiments.c2_docx_renderer import document_review_result
+
+    # The classifier consumes ONLY rendered evidence — no plan/state/candidate
+    # input exists through which it could mutate or re-render anything.
+    parameters = _inspect.signature(document_review_result).parameters
+    assert set(parameters) == {"rendered_geometry"}
+    plan = compile_render_plan(
+        _with_grid(compile_synthetic(["TECHNICAL SKILLS"])),
+        rich_candidate(include_unmatched=False),
+    )
+    before = plan.model_dump_json()
+    document_review_result(
+        {
+            "page_count": 2,
+            "sparse_trailing_page": {"page": 2, "fraction": 0.1, "sparse": True},
+        }
+    )
+    assert plan.model_dump_json() == before
+
+
+def test_plan_compilation_with_adaptation_stays_deterministic() -> None:
+    state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]), split_x=120.0)
+    candidate = rich_candidate(include_unmatched=False)
+    first = compile_render_plan(state, candidate)
+    second = compile_render_plan(state, candidate)
+    assert first.model_dump_json() == second.model_dump_json()
+    # The state is never mutated by the adaptation pass.
+    assert next(n for n in state.nodes if n.category_grid) is not None

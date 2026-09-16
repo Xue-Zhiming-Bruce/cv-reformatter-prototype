@@ -484,5 +484,7 @@ sub-content geometry (case E), any automatic sparse-page repair action, and
 any chat/LLM editing. Each of those needs its own two-case justification
 and owner approval first.
 
-Stop condition honored: this checkpoint produced documents only; C2-0eB is
-not started and no renderer code was touched.
+Stop condition honored for C2-0eA: that checkpoint produced documents only.
+C2-0eB was subsequently authorized with exactly this scope and implemented
+(see `C2_0E_REPORT.md`); the corrections of §0a were applied before that
+implementation.

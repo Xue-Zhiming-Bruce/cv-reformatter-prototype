@@ -376,6 +376,23 @@ class ConversionCompatibilityReport(StateModel):
     owner_confirmation_required: bool = False
 
 
+class DocumentReviewResult(StateModel):
+    """C2-0eB: document-level POST-RENDER review result (additive, separate
+    from any pre-render adaptation action). The sparse-page density is a
+    measured property of the RENDERED document; this result classifies it
+    for owner review. It never mutates the render plan, never triggers
+    re-rendering, and never converts an output into a passing one-shot
+    result."""
+
+    schema_version: str = "c2-docx-review-result/1"
+    status: str  # ready | review_required | unsupported
+    reason_code: str  # no_sparse_trailing_page | sparse_trailing_page | trailing_page_density_unmeasurable
+    page_count: int | None = None
+    trailing_page_density: float | None = None
+    density_threshold: float | None = None
+    evidence_ref: str = "docx_rendered_geometry.json#sparse_trailing_page"
+
+
 # ---------------------------------------------------------------------------
 # Low-level OOXML helpers (python-docx has no typed API for these)
 # ---------------------------------------------------------------------------
@@ -821,12 +838,19 @@ def _write_category_grid(
     by_row: dict[int, list[Any]] = {}
     for cell in section_plan.category_grid_cells:
         by_row.setdefault(cell.row_index, []).append(cell)
+    controlled_cells: set[tuple[int, int]] = set()
     for row_index in sorted(by_row):
         row = table.rows[row_index]
         for cell in sorted(by_row[row_index], key=lambda c: c.column_index):
             column = grid.columns[cell.column_index]
             label_cell = row.cells[2 * cell.column_index]
             value_cell = row.cells[2 * cell.column_index + 1]
+            controlled_cells.update(
+                {
+                    (row_index, 2 * cell.column_index),
+                    (row_index, 2 * cell.column_index + 1),
+                }
+            )
             label_paragraph = label_cell.paragraphs[0]
             if cell.label_text:
                 label_run = label_paragraph.add_run(cell.label_text)
@@ -846,6 +870,18 @@ def _write_category_grid(
                 _apply_token(value_run, content_token, content_written)
             _control_paragraph(value_paragraph, content_token)
             paragraphs.append(value_paragraph)
+    # C2-0eB truthfulness fix: sub-cell positions NOT owned by a bound grid
+    # cell (fewer candidate rows than the measured grid, e.g. a 2-row
+    # candidate grid in a 3-row measured topology, or a missing label/value
+    # split) would otherwise carry python-docx's uncontrolled default
+    # paragraphs, breaking the output-verified "every paragraph explicitly
+    # controlled" claim. They are controlled empty paragraphs — never target
+    # text, never invented content.
+    for row_index in range(len(table.rows)):
+        for position in range(len(table.rows[row_index].cells)):
+            if (row_index, position) in controlled_cells:
+                continue
+            _control_paragraph(table.rows[row_index].cells[position].paragraphs[0], content_token)
     return paragraphs
 
 
@@ -4066,6 +4102,15 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
         encoding="utf-8",
     )
 
+    # 9a. C2-0eB: POST-RENDER document review result (sparse-page density is
+    # a measured property of the rendered document). Pure classification: it
+    # never mutates the plan, never re-renders, and never passes the output.
+    review_result = document_review_result(rendered_geometry)
+    (run_dir / "docx_review_result.json").write_text(
+        json.dumps(json.loads(review_result.model_dump_json()), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
     # 9b. rendered-color verification (C2-0cC Part C): measured from the same
     # preview PDF (character non-stroking color + rule stroke color), compared
     # node-locally against the measured state tokens; separate hard gate.
@@ -4176,9 +4221,56 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
         colors=color_comparison,
         binding_rows=binding_review_rows(state, plan, candidate),
         rhythm_decisions=plan.visible_rhythm_decisions,
+        adaptation_decisions=plan.adaptation_decisions,
+        review_result=review_result,
     )
     result.update({"hard_gates_passed": hard_gates_passed, "hard_gates": hard_gates})
     return result
+
+
+def document_review_result(rendered_geometry: dict[str, Any]) -> DocumentReviewResult:
+    """C2-0eB: classify the RENDERED document's sparse-trailing-page evidence
+    into a document-level review result. Reuses the existing measured
+    pagination/density evidence (``measure_rendered_geometry``'s
+    ``sparse_trailing_page`` record; the pre-documented
+    ``SPARSE_TRAILING_PAGE_FRACTION`` threshold). Pure classification: no
+    plan mutation, no re-render, no automatic repair."""
+    sparse = (rendered_geometry or {}).get("sparse_trailing_page")
+    page_count = (rendered_geometry or {}).get("page_count")
+    if not sparse:
+        # No sparse-trailing evidence record: one page (density not measured —
+        # there is no trailing page) or an unmeasured preview.
+        if page_count == 1:
+            return DocumentReviewResult(
+                status="ready",
+                reason_code="no_sparse_trailing_page",
+                page_count=1,
+                evidence_ref="docx_rendered_geometry.json#sparse_trailing_page",
+            )
+        return DocumentReviewResult(
+            status="unsupported",
+            reason_code="trailing_page_density_unmeasurable",
+            page_count=page_count,
+            evidence_ref="docx_rendered_geometry.json#sparse_trailing_page (absent/unmeasured)",
+        )
+    density = sparse.get("fraction")
+    if sparse.get("sparse"):
+        return DocumentReviewResult(
+            status="review_required",
+            reason_code="sparse_trailing_page",
+            page_count=rendered_geometry.get("page_count"),
+            trailing_page_density=density,
+            density_threshold=SPARSE_TRAILING_PAGE_FRACTION,
+            evidence_ref="docx_rendered_geometry.json#sparse_trailing_page",
+        )
+    return DocumentReviewResult(
+        status="ready",
+        reason_code="no_sparse_trailing_page",
+        page_count=rendered_geometry.get("page_count"),
+        trailing_page_density=density,
+        density_threshold=SPARSE_TRAILING_PAGE_FRACTION,
+        evidence_ref="docx_rendered_geometry.json#sparse_trailing_page",
+    )
 
 
 def _preview_pdf(docx_path: Path, run_dir: Path) -> dict[str, Any] | None:
@@ -4348,6 +4440,8 @@ def write_review_index(
     colors: dict[str, Any] | None = None,
     binding_rows: list[dict[str, Any]] | None = None,
     rhythm_decisions: list[Any] | None = None,
+    adaptation_decisions: list[Any] | None = None,
+    review_result: Any | None = None,
 ) -> None:
     def _rows(items: list[Any]) -> str:
         return "".join(f"<li>{_esc(item)}</li>" for item in items)
@@ -4601,6 +4695,67 @@ def write_review_index(
             "<th>basis</th><th>evidence (node, gap pt)</th><th>rule</th></tr>"
             f"{rhythm_rows_html}</table>"
         )
+    adaptation_html = ""
+    if adaptation_decisions:
+        adaptation_rows_html = "".join(
+            "<tr>"
+            f"<td>{_esc(d.decision_id)}</td><td>{_esc(d.destination_node)}</td>"
+            f"<td><strong>{_esc(d.action or 'none')}</strong></td>"
+            f"<td><strong>{_esc(d.status)}</strong></td>"
+            f"<td>{_esc(d.reason_code)}</td>"
+            f"<td>{_esc(d.original_topology or '—')} → {_esc(d.selected_topology or '—')}</td>"
+            f"<td>{_esc(d.content_disposition)}</td>"
+            f"<td><small>{_esc(d.warning_text or '—')}</small></td></tr>"
+            for d in adaptation_decisions
+        )
+        adaptation_html = (
+            "<h2>Pre-render adaptation decisions (C2-0eB; before the render "
+            "plan)</h2><p>ACTION (what the body topology does) and STATUS "
+            "(ready / review_required / unsupported) are separate fields; "
+            "evidence and disclosure live in <code>docx_render_plan.json</code> → "
+            "<code>adaptation_decisions</code>:</p>"
+            "<table><tr><th>decision</th><th>node</th><th>action</th><th>status</th>"
+            "<th>reason</th><th>topology (original → selected)</th>"
+            "<th>content disposition</th><th>warning</th></tr>"
+            f"{adaptation_rows_html}</table>"
+        )
+    review_banner = ""
+    review_section = ""
+    if review_result is not None:
+        badge_class = {
+            "ready": "pass-badge",
+            "review_required": "fail-badge",
+            "unsupported": "fail-badge",
+        }.get(review_result.status, "fail-badge")
+        review_banner = (
+            f'<p class="review-banner {badge_class}">POST-RENDER REVIEW: '
+            f'<strong>{_esc(review_result.status).upper()}</strong> — '
+            f"{_esc(review_result.reason_code)}"
+            + (
+                f" (trailing page density {_esc(review_result.trailing_page_density)} "
+                f"< threshold {_esc(review_result.density_threshold)}; "
+                f"{_esc(review_result.page_count)} pages)"
+                if review_result.trailing_page_density is not None
+                else ""
+            )
+            + "</p>"
+        )
+        review_section = (
+            "<h2>Post-render document review result (C2-0eB; classification only)</h2>"
+            "<p>Measured from the rendered preview (docx_rendered_geometry.json → "
+            "sparse_trailing_page; pre-documented 30% density threshold). This result "
+            "is separate from any pre-render adaptation action: it never mutates the "
+            "plan, never triggers re-rendering, and never converts the output into a "
+            "passing one-shot result. Full record: <code>docx_review_result.json</code>.</p>"
+            "<table><tr><th>status</th><th>reason</th><th>pages</th><th>trailing density</th>"
+            "<th>threshold</th><th>evidence</th></tr>"
+            f"<tr><td><strong>{_esc(review_result.status)}</strong></td>"
+            f"<td>{_esc(review_result.reason_code)}</td>"
+            f"<td>{_esc(review_result.page_count)}</td>"
+            f"<td>{_esc(review_result.trailing_page_density)}</td>"
+            f"<td>{_esc(review_result.density_threshold)}</td>"
+            f"<td>{_esc(review_result.evidence_ref)}</td></tr></table>"
+        )
     pagination_html = ""
     if report.pagination is not None:
         pagination_html = (
@@ -4614,7 +4769,10 @@ def write_review_index(
 <html lang="en"><head><meta charset="utf-8"><title>C2-0c owner review — {pair}</title>
 <style>body{{font-family:-apple-system,sans-serif;margin:2rem;max-width:80rem}}
 td,th{{border:1px solid #ccc;padding:.3rem .6rem;text-align:left;vertical-align:top}}
-img{{border:1px solid #ddd}}</style></head><body>
+img{{border:1px solid #ddd}}
+.review-banner{{border:2px solid;padding:.6rem 1rem;font-size:1.05rem}}
+.pass-badge{{border-color:#1a7f37;background:#e6f4ea}}
+.fail-badge{{border-color:#b42318;background:#fdecea}}</style></head><body>
 <h1>C2-0c owner review — pair {pair} ({spec['role']})</h1>
 <h2>Owner status</h2>
 <p><strong>NOT ACCEPTED — awaiting owner visual review.</strong> The DOCX lane
@@ -4624,6 +4782,7 @@ production DOCX system and no product-level PDF↔DOCX conversion claim. The
 owner makes the final visual judgment; automated measurement supports it and
 never declares visual acceptance.</p>
 <h2>Summary</h2>
+{review_banner}
 {pagination_html}
 <p>Typography result: <strong>{_esc((report.typography or {}).get('classification', 'unmeasurable'))}</strong>
 (requested vs rendered fonts table below; a substituted family can never pass
@@ -4631,6 +4790,8 @@ as exact).</p>
 {geometry_counts_html}
 <p>Remaining visual gaps: see the failed/unmeasurable rows below.</p>
 {binding_html}
+{adaptation_html}
+{review_section}
 {rhythm_html}
 {repair_html}
 {colors_html}
@@ -4679,6 +4840,8 @@ explicitly omitted (never rendered); accounting gate passed:
 <li><a href="preview_validation.json">preview_validation.json</a></li>
 <li><a href="docx_determinism.json">docx_determinism.json</a></li>
 <li><a href="hard_gates.json">hard_gates.json</a></li>
+<li><a href="docx_review_result.json">docx_review_result.json</a> (C2-0eB post-render review result)</li>
+<li>adaptation decisions: <a href="docx_render_plan.json">docx_render_plan.json</a> → <code>adaptation_decisions</code> (C2-0eB)</li>
 </ul>
 </body></html>
 """

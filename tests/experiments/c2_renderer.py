@@ -45,7 +45,7 @@ import re
 from html.parser import HTMLParser
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ConfigDict, Field
 
@@ -244,6 +244,40 @@ class CategoryGridCell(StateModel):
     value_style_id: str | None = None
 
 
+AdaptationAction = Literal[
+    "preserve_target_topology",
+    "fallback_within_section",
+    "append_target_styled_section",
+    "merge_into_compatible_section",
+]
+AdaptationStatus = Literal["ready", "review_required", "unsupported"]
+
+
+class SectionAdaptation(StateModel):
+    """C2-0eB: one PRE-RENDER adaptation decision for a section (additive,
+    optional — non-spike paths emit none and behave exactly as before).
+
+    ACTION and STATUS are separate vocabularies (owner correction, C2-0eA):
+    an action never encodes review state, and review status is never an
+    action. ACTION: preserve_target_topology / fallback_within_section /
+    append_target_styled_section / merge_into_compatible_section (or None
+    when the section is honestly unsupported). STATUS: ready /
+    review_required / unsupported. The record never invents candidate facts,
+    never copies target facts, and never drops content."""
+
+    decision_id: str
+    destination_node: str
+    candidate_source_nodes: list[str] = Field(default_factory=list)
+    action: AdaptationAction | None = None
+    status: AdaptationStatus
+    reason_code: str
+    evidence: list[str] = Field(default_factory=list)
+    original_topology: str | None = None
+    selected_topology: str | None = None
+    content_disposition: str
+    warning_text: str | None = None
+
+
 class SectionPlan(StateModel):
     node_id: str
     label: str
@@ -294,6 +328,9 @@ class C2RenderPlan(StateModel):
     # C2-0cV: one auditable vertical-rhythm decision per visible mapped
     # section (see ``RhythmDecision``); additive to c2-render-plan/1.
     visible_rhythm_decisions: list[RhythmDecision] = Field(default_factory=list)
+    # C2-0eB: PRE-RENDER adaptation decisions (additive, optional — sections
+    # without an adaptation decision keep the pre-spike behavior exactly).
+    adaptation_decisions: list[SectionAdaptation] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     unhomed: list[dict[str, str]] = Field(default_factory=list)
     failures: list[str] = Field(default_factory=list)
@@ -303,6 +340,243 @@ class C2RenderPlan(StateModel):
 # ---------------------------------------------------------------------------
 # Plan compiler: state + candidate -> plan (state is never mutated)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# C2-0eB: category-grid fit preflight (PRE-RENDER adaptation, once)
+# ---------------------------------------------------------------------------
+
+GRID_PREFLIGHT_METHOD = (
+    "PIL (Pillow) ImageFont metrics of the resolved WRITTEN font file — the "
+    "same documented installed-font policy the renderers consume; no network, "
+    "no character-count heuristic, no second layout engine"
+)
+
+_GRID_FONT_CACHE: dict[tuple[str, str, bool], tuple[Any, str, str]] = {}
+
+
+def _preflight_font(
+    family: str, size_pt: float, bold: bool
+) -> tuple[Any, str, str] | None:
+    """Resolve the WRITTEN font face for one style token and load it for
+    deterministic extent measurement.
+
+    Reuses the single documented font policy definition (installed-font
+    search dirs, family alias, portable-fallback rule) from
+    ``c2_docx_renderer`` — imported lazily at call time to keep the plan
+    compiler import-clean; the policy itself stays defined in exactly one
+    place. No network, no new dependency (Pillow ships with the existing
+    pdfplumber stack). Returns (font_object, font_file_name, face_name) or
+    None when no trustworthy local file exists (the caller fails closed —
+    it never guesses)."""
+    from PIL import ImageFont  # lazy: ships with the existing pdfplumber stack
+
+    from tests.experiments.c2_docx_renderer import (  # lazy: single font-policy source
+        FAMILY_ALIASES,
+        _FONT_SEARCH_DIRS,
+        _font_is_installed,
+    )
+
+    # The written-font policy (documented, single source): an installed
+    # measured family is written verbatim; an unavailable one is written as
+    # the portable fallback. The preflight measures what will RENDER — the
+    # written family, never the bare requested one.
+    written = family if _font_is_installed(family) else "Arial"
+    key = written.casefold().replace(" ", "")
+    cache_key = (key, str(round(float(size_pt), 3)), bool(bold))
+    if cache_key in _GRID_FONT_CACHE:
+        return _GRID_FONT_CACHE[cache_key]
+    wanted_keys = [key]
+    alias = FAMILY_ALIASES.get(key)
+    if alias:
+        wanted_keys.append(alias)
+    files: dict[str, Path] = {}
+    for directory in _FONT_SEARCH_DIRS:
+        if not Path(directory).is_dir():
+            continue
+        for path in Path(directory).rglob("*"):
+            if path.suffix.casefold() in {".ttf", ".otf", ".ttc"}:
+                files.setdefault(path.stem.casefold().replace(" ", ""), path)
+    font_file = next((files[k] for k in wanted_keys if k in files), None)
+    if font_file is None:
+        return None
+    # Deterministic PIL measurement: 10x point scale for sub-point precision.
+    measured_size = int(round(float(size_pt) * 10))
+    if font_file.suffix.casefold() == ".ttc":
+        chosen = None
+        for index in range(8):
+            try:
+                font = ImageFont.truetype(str(font_file), size=measured_size, index=index)
+            except OSError:
+                break
+            face_family, face_style = font.getname()
+            if face_family.casefold().replace(" ", "") in wanted_keys:
+                chosen = (font, f"{font_file.name}#{index}", f"{face_family} {face_style}")
+                if ("bold" in face_style.casefold()) == bool(bold):
+                    break
+        result = chosen
+    else:
+        bold_file = files.get(f"{key}bold") or (files.get(f"{alias}bold") if alias else None)
+        plain_file = files.get(key) or (files.get(alias) if alias else None)
+        if bold and bold_file is not None:
+            font_file = bold_file
+        elif not bold and plain_file is not None:
+            font_file = plain_file
+        font = ImageFont.truetype(str(font_file), size=measured_size)
+        result = (font, font_file.name, str(font.getname()[1]))
+    if result is not None:
+        _GRID_FONT_CACHE[cache_key] = result
+    return result
+
+def _fragment_extent_pt(text: str, font: Any) -> float:
+    """Measured single-line extent of ``text`` at the resolved written face,
+    in points (measured at 10x size, divided back — deterministic)."""
+    return round(float(font.getlength(text)) / 10.0, 3)
+
+
+def category_grid_preflight(
+    state: C2LayoutState, section: Any, plan_items: list[LeafText]
+) -> dict[str, Any]:
+    """C2-0eB: deterministic PRE-RENDER fit check for a section with a
+    measured ``category_grid`` — decides BEFORE the existing RenderPlan
+    commits to ``category_grid_cells`` whether the candidate label/value
+    content can safely use the measured fixed-grid topology.
+
+    Method (no character-count heuristic, no new dependency, no second
+    layout engine): each fragment is measured with PIL font metrics of the
+    WRITTEN font face (the same installed-font policy the renderers
+    consume) at the fragment's own style token size. The fit rule models
+    the measured row-pitch contract exactly:
+
+    - every LABEL fragment must be single-line within its measured label
+      window in EVERY rendered row (the measured label anchors come from
+      the target's own single-line labels; a wrapped right-aligned label
+      breaks mid-word in a narrow line box);
+    - every VALUE fragment must be single-line within its measured value
+      window in every row EXCEPT the last rendered row — a wrapped value in
+      the last row consumes unpopulated measured row space and creates no
+      inter-row pitch delta (the C2-0cS-accepted E→D shape); a wrapped
+      value in an earlier row pushes the following row and violates the
+      uniform measured pitch.
+
+    Returns ``{"fits": True|False, ...}`` with the full evidence, or
+    ``{"fits": None, "error": ...}`` when no trustworthy measurement exists
+    (the caller fails closed — never guesses)."""
+    grid = section.category_grid
+    styles = {token.style_id: token for token in state.styles}
+    label_token = styles.get("style.body")
+    value_token = styles.get(section.content_style_id) if section.content_style_id else None
+    probe: dict[str, Any] = {
+        "method": GRID_PREFLIGHT_METHOD,
+        "allowed_lines_per_row": 1,
+        "allowed_row_capacity": (
+            {"row_pitch_pt": grid.row_pitch_pt, "rule": "each row renders exactly one line per fragment; a wrapped fragment consumes >= 2 line heights and violates the measured pitch"}
+        ),
+        "columns": [],
+        "cells": [],
+    }
+    right_edge = round(float(state.page.width_pt) - float(state.page.margin_right_pt), 3)
+    for column_index, column in enumerate(grid.columns):
+        window_left = (
+            float(grid.column_splits_x_pt[column_index - 1])
+            if column_index
+            else float(state.page.margin_left_pt)
+        )
+        window_right = (
+            float(grid.column_splits_x_pt[column_index])
+            if column_index + 1 < len(grid.columns)
+            else right_edge
+        )
+        probe["columns"].append(
+            {
+                "column_index": column_index,
+                "label_window_pt": [round(window_left, 3), round(float(column.label_right_x_pt), 3)],
+                "label_available_width_pt": round(float(column.label_right_x_pt) - window_left, 3),
+                "value_window_pt": [round(float(column.value_x0_pt), 3), round(window_right, 3)],
+                "value_available_width_pt": round(window_right - float(column.value_x0_pt), 3),
+            }
+        )
+    fragments_by_leaf: dict[str, list[tuple[str, str]]] = {}
+    for index, item in enumerate(plan_items):
+        text = item.text or ""
+        split_at = text.find(":")
+        label_text = text[: split_at + 1] if split_at >= 0 else ""
+        value_text = text[split_at + 1 :] if split_at >= 0 else text
+        fragments_by_leaf.setdefault(item.leaf_id, []).append(
+            (label_text, value_text)
+        )
+    fits = True
+    rendered_rows = max(1, -(-len(plan_items) // len(grid.columns)))  # ceil
+    for item_index, item in enumerate(plan_items):
+        row_index = item_index // len(grid.columns)
+        column_index = item_index % len(grid.columns)
+        column = grid.columns[column_index]
+        label_text, value_text = fragments_by_leaf[item.leaf_id][0]
+        # The measured pitch contract constrains only rows that are FOLLOWED
+        # by another rendered row: a wrapped fragment in the LAST rendered row
+        # consumes unpopulated measured row space and creates no inter-row
+        # pitch delta (this is exactly the C2-0cS-accepted E→D shape: one
+        # rendered row whose value wraps within the cell). A wrapped fragment
+        # in any earlier row pushes the next row and violates the uniform
+        # pitch. Labels are ALWAYS single-line: the measured label anchors
+        # come from the target's own single-line labels, and a wrapped
+        # right-aligned label breaks mid-word in a narrow line box.
+        is_last_row = row_index == rendered_rows - 1
+        for fragment_kind, fragment_text, token, available_pt in (
+            ("label", label_text, label_token, probe["columns"][column_index]["label_available_width_pt"]),
+            ("value", value_text, value_token, probe["columns"][column_index]["value_available_width_pt"]),
+        ):
+            if token is None:
+                return {
+                    "fits": None,
+                    "probe": probe,
+                    "error": (
+                        f"category-grid preflight unmeasurable: style token for the "
+                        f"{fragment_kind} fragment of leaf {item.leaf_id} is absent from the state"
+                    ),
+                }
+            resolved = _preflight_font(
+                token.font_family, token.font_size_pt, token.bold
+            )
+            if resolved is None:
+                return {
+                    "fits": None,
+                    "probe": probe,
+                    "error": (
+                        f"category-grid preflight unmeasurable: no installed font file "
+                        f"for the written family of {token.style_id} "
+                        f"(requested {token.font_family!r}); refusing to guess"
+                    ),
+                }
+            font, font_file, face = resolved
+            extent = _fragment_extent_pt(fragment_text, font) if fragment_text else 0.0
+            fits_cell = extent <= available_pt
+            wraps = not fits_cell
+            violates = wraps and not (
+                fragment_kind == "value" and is_last_row
+            )
+            fits = fits and not violates
+            probe["cells"].append(
+                {
+                    "leaf_id": item.leaf_id,
+                    "row_index": row_index,
+                    "column_index": column_index,
+                    "fragment": fragment_kind,
+                    "text": fragment_text,
+                    "style_id": token.style_id,
+                    "requested_family": token.font_family,
+                    "font_file": font_file,
+                    "face": face,
+                    "size_pt": round(float(token.font_size_pt), 3),
+                    "bold": bool(token.bold),
+                    "measured_extent_pt": extent,
+                    "available_width_pt": available_pt,
+                    "predicted_lines": 1 if fits_cell else 2,
+                    "fits": fits_cell,
+                    "violates_pitch": violates,
+                }
+            )
+    return {"fits": fits, "probe": probe, "error": None}
 
 
 def _entry_plan(
@@ -354,6 +628,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
     unhomed: list[dict[str, str]] = []
     ledger: dict[str, str] = {}
     notes: list[str] = []
+    adaptation_decisions: list[SectionAdaptation] = []
 
     def own(leaf_id: str, destination: str) -> bool:
         return own_leaf(ledger, failures, leaf_id, destination)
@@ -705,39 +980,129 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             plan.base_x0_pt = state.page.margin_left_pt
             grid = section.category_grid
             plan_items = items_for(role)
+            grid_decision: SectionAdaptation | None = None
             if grid is not None and plan_items and content.content_kind == "item_list":
-                # C2-0cS: the section's content range measured an aligned-pair
-                # category grid (right-aligned bold label edge + shared value
-                # left edge per column). The candidate skill-group leaves bind
-                # row-major in document order; each leaf renders EXACTLY ONCE
-                # as its ordered label+value fragments (verbatim
-                # concatenation), splitting ONLY at the leaf's own first
-                # colon. Deterministic, target-geometry-driven, no target
-                # facts, no per-cell color invention.
-                for index, item in enumerate(plan_items):
-                    text = item.text or ""
-                    split_at = text.find(":")
-                    label_text = text[: split_at + 1] if split_at >= 0 else ""
-                    value_text = text[split_at + 1 :] if split_at >= 0 else text
-                    cell = CategoryGridCell(
-                        leaf_id=item.leaf_id,
-                        row_index=index // len(grid.columns),
-                        column_index=index % len(grid.columns),
-                        label_text=label_text,
-                        value_text=value_text,
-                        label_style_id="style.body",
-                        value_style_id=section.content_style_id,
+                # C2-0eB: PRE-RENDER fit preflight BEFORE committing to the
+                # measured grid topology. The decision is evidence-based font
+                # metrics (no character-count heuristic, no pair-specific
+                # rule); an unmeasurable preflight fails the plan closed.
+                preflight = category_grid_preflight(state, section, plan_items)
+                if preflight["fits"] is None:
+                    failures.append(
+                        f"{section.node_id}: {preflight['error']}"
                     )
-                    plan.category_grid_cells.append(cell)
-                    own(item.leaf_id, f"{section.node_id}.category.r{cell.row_index}c{cell.column_index}")
-                notes.append(
-                    f"{section.node_id}: measured category grid binds {len(plan_items)} "
-                    f"candidate group leaf(s) row-major to {len(grid.columns)} measured "
-                    "columns (C2-0cS; label/value fragments concatenate to the leaf text)"
-                )
+                elif preflight["fits"]:
+                    # C2-0cS: the section's content range measured an aligned-pair
+                    # category grid (right-aligned bold label edge + shared value
+                    # left edge per column). The candidate skill-group leaves bind
+                    # row-major in document order; each leaf renders EXACTLY ONCE
+                    # as its ordered label+value fragments (verbatim
+                    # concatenation), splitting ONLY at the leaf's own first
+                    # colon. Deterministic, target-geometry-driven, no target
+                    # facts, no per-cell color invention.
+                    for index, item in enumerate(plan_items):
+                        text = item.text or ""
+                        split_at = text.find(":")
+                        label_text = text[: split_at + 1] if split_at >= 0 else ""
+                        value_text = text[split_at + 1 :] if split_at >= 0 else text
+                        cell = CategoryGridCell(
+                            leaf_id=item.leaf_id,
+                            row_index=index // len(grid.columns),
+                            column_index=index % len(grid.columns),
+                            label_text=label_text,
+                            value_text=value_text,
+                            label_style_id="style.body",
+                            value_style_id=section.content_style_id,
+                        )
+                        plan.category_grid_cells.append(cell)
+                        own(item.leaf_id, f"{section.node_id}.category.r{cell.row_index}c{cell.column_index}")
+                    notes.append(
+                        f"{section.node_id}: measured category grid binds {len(plan_items)} "
+                        f"candidate group leaf(s) row-major to {len(grid.columns)} measured "
+                        "columns (C2-0cS; label/value fragments concatenate to the leaf text)"
+                    )
+                    grid_decision = SectionAdaptation(
+                        decision_id=f"adapt.{section.node_id}",
+                        destination_node=section.node_id,
+                        candidate_source_nodes=[item.leaf_id for item in plan_items],
+                        action="preserve_target_topology",
+                        status="ready",
+                        reason_code="grid_cell_preflight_fit_passed",
+                        evidence=[
+                            f"measured_grid: {', '.join(grid.evidence_ids)}",
+                            f"preflight: {GRID_PREFLIGHT_METHOD}",
+                            *(
+                                f"{cell['leaf_id']} {cell['fragment']} col{cell['column_index']} "
+                                f"{cell['style_id']} ({cell['face']}): measured "
+                                f"{cell['measured_extent_pt']}pt <= {cell['available_width_pt']}pt "
+                                "available (single-line rule)"
+                                for cell in preflight["probe"]["cells"]
+                            ),
+                        ],
+                        original_topology=f"category_grid_{grid.row_count}rows_x_{len(grid.columns)}cols",
+                        selected_topology=f"category_grid_{grid.row_count}rows_x_{len(grid.columns)}cols",
+                        content_disposition=(
+                            "all candidate leaves rendered exactly once as ordered "
+                            "grid fragments; verbatim text preserved"
+                        ),
+                        warning_text=None,
+                    )
+                else:
+                    # C2-0eB experimental fallback default (NOT approved product
+                    # policy): the measured grid topology is abandoned for the
+                    # BODY only — the target section identity (heading, rule,
+                    # measured heading/body style tokens, section order) is
+                    # preserved, and the candidate skill groups render through
+                    # the EXISTING single-column item path. No new renderer
+                    # path; no text mutation; every leaf exactly once.
+                    plan.items = plan_items
+                    own_items(section.node_id, plan.items)
+                    failing = [
+                        cell for cell in preflight["probe"]["cells"] if cell["violates_pitch"]
+                    ]
+                    notes.append(
+                        f"{section.node_id}: category-grid preflight NO-FIT "
+                        f"({len(failing)}/{len(preflight['probe']['cells'])} fragments exceed "
+                        "the measured cell capacity at the written font); experimental "
+                        "single-column fallback applies — the measured grid topology is "
+                        "NOT preserved (C2-0eB experiment default)"
+                    )
+                    grid_decision = SectionAdaptation(
+                        decision_id=f"adapt.{section.node_id}",
+                        destination_node=section.node_id,
+                        candidate_source_nodes=[item.leaf_id for item in plan_items],
+                        action="fallback_within_section",
+                        status="ready",
+                        reason_code="grid_cell_preflight_fit_failed",
+                        evidence=[
+                            f"measured_grid: {', '.join(grid.evidence_ids)}",
+                            f"preflight: {GRID_PREFLIGHT_METHOD}",
+                            *(
+                                f"{cell['leaf_id']} {cell['fragment']} col{cell['column_index']} "
+                                f"{cell['style_id']} ({cell['face']}): measured "
+                                f"{cell['measured_extent_pt']}pt > {cell['available_width_pt']}pt "
+                                f"available (single-line rule; pitch {grid.row_pitch_pt}pt)"
+                                for cell in failing
+                            ),
+                        ],
+                        original_topology=f"category_grid_{grid.row_count}rows_x_{len(grid.columns)}cols",
+                        selected_topology="single_column_label_value_items",
+                        content_disposition=(
+                            "all candidate leaves rendered exactly once through the "
+                            "existing single-column item path; verbatim text preserved"
+                        ),
+                        warning_text=(
+                            "experimental single-column fallback (C2-0eB experiment "
+                            "default, NOT approved product policy): the target grid "
+                            "topology was NOT preserved because candidate content "
+                            "exceeds the measured cell capacity"
+                        ),
+                    )
             else:
                 plan.items = plan_items
                 own_items(section.node_id, plan.items)
+            if grid_decision is not None:
+                adaptation_decisions.append(grid_decision)
             if content.content_kind == "inline_items" and content.inline_separator:
                 notes.append(
                     f"{section.node_id}: inline separator {content.inline_separator!r} joins items"
@@ -1001,6 +1366,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             and heading_of(section.node_id)
         ],
         visible_rhythm_decisions=rhythm_decisions,
+        adaptation_decisions=adaptation_decisions,
         notes=notes,
         unhomed=unhomed,
         failures=failures,
