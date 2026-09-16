@@ -114,6 +114,32 @@ C2-0eB-R2 therefore corrects the evidence model:
    not-applicable); more candidate rows than measured rows and an overwide
    single word remain hard no-fit.
 
+### 0e. C2-0eB-R3 corrective verdicts (owner work order, 2026-09-17)
+
+The owner accepted C2-0eB-R2's truthful E→D wrap evidence and rendered grid
+measurement as bounded progress, but R2 was NOT fully closed: its rendered
+grid verification was report-only, and its next-visible-section lookup
+reconstructed order from `state.nodes` alone (excluding candidate-only
+appended sections). Two narrow corrections (see `C2_0E_REPORT.md` §0-R3):
+
+1. **Rendered grid verification is part of the overall hard-gate decision,
+   fail closed.** A preserved grid classified `unverified` (or otherwise
+   `verified=false`) prevents overall hard-gate success; a verified grid
+   passes; a fallback grid is `not_applicable` and never fails for having no
+   grid to verify; a document with no preserved grid passes vacuously. No
+   geometry tolerance, content-accounting, or pagination rule changed; no
+   second verification framework and no other render/fitting loop.
+2. **The next-visible-section check uses the REAL DOCX renderer's emission
+   order** (`plan.sections` then `plan.appended_sections`), so an appended
+   candidate-only section that actually follows a preserved grid is checked
+   against it, with the renderer's own declared/measured gap basis (its
+   median measured heading rhythm). No trustworthy gap basis ⇒ verify what
+   is measurable (page, intact words, non-overlap) and mark the spacing
+   claim UNVERIFIED — never an invented target gap; an unmapped next heading
+   stays UNVERIFIED. The E→D measured 7.59pt rhythm basis is preserved.
+
+Pipeline C2 and one-shot product quality remain unaccepted.
+
 ### 0b. C2-0d verdict (unchanged)
 
 1. **C2-0d is ACCEPTED as a useful diagnostic/generalization audit.** It is

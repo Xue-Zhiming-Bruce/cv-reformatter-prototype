@@ -4196,6 +4196,12 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
         "rendered_geometry_matches_declared_contract": bool(fitting["comparison"].get("gate_passed")),
         "rendered_colors_match_declared_contract": bool(color_comparison.get("gate_passed")),
         "unsupported_features_confirmed": (not report.unsupported) or confirm_unsupported,
+        # C2-0eB-R3: the rendered grid verification is part of the OVERALL
+        # hard-gate decision, fail closed. A preserved grid classified
+        # unverified (verified=false) prevents overall success; a verified
+        # preserved grid passes; a fallback grid is not_applicable and a
+        # document with no preserved grid passes vacuously (no regression).
+        "rendered_grid_verification_passed": grid_verification_gate(grid_verification),
     }
     hard_gates_passed = all(hard_gates.values())
     (run_dir / "hard_gates.json").write_text(
@@ -4211,6 +4217,20 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
                 },
                 "typography_classification": typography.get("classification"),
                 "color_comparison": color_comparison.get("counts"),
+                # C2-0eB-R3: the grid-render-verification result and any
+                # failure are shown beside the other hard gates.
+                "grid_render_verification": {
+                    "passed": grid_verification["passed"],
+                    "sections": [
+                        {
+                            "node_id": entry["node_id"],
+                            "classification": entry["classification"],
+                            "verified": entry.get("verified"),
+                            "unverified_reasons": entry.get("unverified_reasons", []),
+                        }
+                        for entry in grid_verification["sections"]
+                    ],
+                },
             },
             indent=2,
             sort_keys=True,
@@ -4281,7 +4301,9 @@ def verify_rendered_grids(
     (a) renders every word intact (no mid-word breaks), (b) stays on one
     page, (c) ends before the next visible section with the required measured
     heading gap (the section's effective rhythm basis, else its measured
-    heading gap) or before the page's writable bottom when no section follows,
+    heading gap; for an APPENDED candidate-only next section, the renderer's
+    own median measured rhythm basis — never an invented target gap) or
+    before the page's writable bottom when no section follows,
     and (d) overlaps no later content. Any relationship that cannot be
     measured is reported UNVERIFIED — never a grid-fit success."""
     mapping = (rendered_geometry or {}).get("mapping") or {}
@@ -4297,15 +4319,14 @@ def verify_rendered_grids(
         decision.node_id: decision
         for decision in (plan.visible_rhythm_decisions or [])
     }
-    plan_sections_all = [*plan.sections, *plan.appended_sections]
-    plan_by_node = {s.node_id: s for s in plan_sections_all}
-    # True reading order comes from the state's node order (appended
-    # candidate-only sections may sit between mapped sections).
-    plan_sections = [
-        plan_by_node[node.node_id]
-        for node in state.nodes
-        if node.kind == "section" and node.node_id in plan_by_node
-    ]
+    # C2-0eB-R3: the section order here MUST be the REAL DOCX renderer's
+    # emission order (``build_document``: ``plan.sections`` — mapped target
+    # sections in state order — then ``plan.appended_sections``; empty
+    # sections emit nothing). Reconstructing the order from ``state.nodes``
+    # alone omits candidate-only appended sections, so a preserved grid that
+    # is followed by an appended section would wrongly report "no next
+    # section" and skip the spacing check.
+    plan_sections = [*plan.sections, *plan.appended_sections]
     decisions = {
         d.destination_node: d
         for d in plan.adaptation_decisions
@@ -4536,6 +4557,20 @@ def verify_rendered_grids(
                 if next_heading_node is not None:
                     required_gap_pt = float(next_heading_node.spacing.gap_above_pt)
                     gap_basis = "declared_state_measured_gap"
+            if required_gap_pt is None and next_section.candidate_only:
+                # C2-0eB-R3: an appended candidate-only section has no state
+                # node of its own. The REAL DOCX renderer (``build_document``)
+                # gives such headings the median measured heading gap of the
+                # visible sections — reuse exactly that declared/measured
+                # basis, never an invented target gap.
+                measured_heading_gaps = [
+                    float(s.heading_gap_above_pt)
+                    for s in plan_sections
+                    if not s.empty and s.heading_gap_above_pt is not None
+                ]
+                if measured_heading_gaps:
+                    required_gap_pt = round(float(_median(measured_heading_gaps)), 3)
+                    gap_basis = "appended_section_median_measured_rhythm"
             if next_heading_row is None:
                 unverified.append(
                     f"next visible section {next_section.node_id}: its rendered heading "
@@ -4647,12 +4682,30 @@ def verify_rendered_grids(
             "the rendered result is authoritative over the pre-render preflight"
         ),
         "sections": results,
+        # C2-0eB-R3 hard-gate basis (fail closed): every preserved grid must
+        # be VERIFIED; ``not_applicable`` (fallback) and a document with no
+        # preserved grid at all pass vacuously; anything not verified
+        # (including an internal ``unverifiable`` preserve-without-cells
+        # inconsistency) fails.
         "passed": all(
             entry["verified"] is True
             for entry in results
-            if entry["classification"] in {"verified", "unverified"}
+            if entry["classification"] != "not_applicable"
         ),
     }
+
+
+def grid_verification_gate(grid_verification: dict[str, Any] | None) -> bool:
+    """C2-0eB-R3: the rendered grid verification as a HARD GATE (fail closed).
+
+    ``verify_rendered_grids`` already computes ``passed``: a preserved grid
+    classified ``unverified`` (or otherwise not verified) fails; a verified
+    preserved grid passes; a fallback grid is ``not_applicable`` and never
+    fails merely because it has no grid to verify; a document with no
+    preserved grid passes vacuously. This gate participates in the overall
+    hard-gate decision beside the existing gates — no geometry tolerance,
+    content-accounting, or pagination rule is changed by it."""
+    return bool((grid_verification or {}).get("passed"))
 
 
 def document_review_result(rendered_geometry: dict[str, Any]) -> DocumentReviewResult:
@@ -5203,7 +5256,12 @@ def write_review_index(
             "section with the required measured gap, no overlap). The rendered "
             "result is authoritative over the pre-render preflight; an unmeasurable "
             "relationship is reported UNVERIFIED, never as grid-fit success. No "
-            "re-render, no plan mutation, no automatic repair. Full record: "
+            "re-render, no plan mutation, no automatic repair. C2-0eB-R3: this "
+            "verification is part of the OVERALL HARD GATES verdict (gate "
+            "<code>rendered_grid_verification_passed</code>) — a preserved grid "
+            "that is not verified fails the run; a fallback grid "
+            "(<em>not_applicable</em>) and a document with no preserved grid "
+            "pass vacuously. Full record: "
             "<code>docx_grid_render_verification.json</code>.</p>"
             "<table><tr><th>node</th><th>pre-render action</th><th>pre-render status</th>"
             "<th>classification</th><th>unverified reasons</th><th>checks</th></tr>"

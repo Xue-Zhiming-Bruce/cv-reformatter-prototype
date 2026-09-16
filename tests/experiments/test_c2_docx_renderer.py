@@ -2529,3 +2529,219 @@ def test_unmeasurable_rendered_relationship_is_unverified_not_success() -> None:
     assert entry["verified"] is False and entry["classification"] == "unverified"
     assert any("could not be located" in r or "no rendered grid lines" in r for r in entry["unverified_reasons"])
     assert result["passed"] is False
+
+
+# ---------------------------------------------------------------------------
+# C2-0eB-R3: rendered grid verification is a HARD GATE + appended-section
+# next-visible order (the REAL DOCX renderer emits appended sections after
+# all mapped sections)
+# ---------------------------------------------------------------------------
+
+
+def _appended_after_grid_fixture(intrude: bool, set_gap: bool = True):
+    """A preserved grid on the LAST mapped section, followed by a candidate-only
+    APPENDED section (unmatched candidate content). In the REAL DOCX renderer's
+    emission order (plan.sections then plan.appended_sections) the appended
+    section follows the grid; the fake rendered geometry either ends before the
+    appended heading with the renderer's median measured rhythm gap, or
+    intrudes into it."""
+    from tests.experiments.c2_renderer import compile_render_plan
+
+    state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]), split_x=160.0)
+    if set_gap:
+        _set_gap(state, 1, 10.0)
+    candidate = rich_candidate(include_unmatched=False)
+    plan = compile_render_plan(state, candidate)
+    section_plan = next(p for p in plan.sections if p.node_id == "section.01")
+    assert section_plan.category_grid_cells  # grid preserved, not fallback
+    decision = next(d for d in plan.adaptation_decisions if d.destination_node == "section.01")
+    assert decision.action == "preserve_target_topology"
+    # Emission-order evidence: the appended candidate-only section follows the
+    # preserved grid in the REAL renderer order (appended sections are emitted
+    # after every mapped section; state.nodes does not contain them).
+    assert plan.sections and all(p.node_id == "section.01" for p in plan.sections)
+    next_plan = plan.appended_sections[0]
+    assert next_plan.node_id.startswith("candidate_only.") and next_plan.candidate_only
+
+    def cells_for_row(row_index: int) -> list[dict]:
+        out = []
+        for cell in section_plan.category_grid_cells:
+            if cell.row_index != row_index:
+                continue
+            out.append({
+                "leaf_id": cell.leaf_id, "kind": "grid_label", "text": cell.label_text,
+                "grid_row": cell.row_index, "grid_column": cell.column_index, "style_id": None,
+            })
+            out.append({
+                "leaf_id": cell.leaf_id, "kind": "grid_value", "text": cell.value_text,
+                "grid_row": cell.row_index, "grid_column": cell.column_index, "style_id": None,
+            })
+        return out
+
+    heading_row = {"kind": "heading", "section_node_id": "section.01",
+                   "lines": [_fake_line("TECHNICAL SKILLS", 36.0, 100.0)]}
+    row0_line = _fake_line("Group One", 93.6, 160.0)  # col0 value window
+    row0_line["chars"] += _fake_line("Skill A", 369.94, 160.0)["chars"]  # col1 value window
+    row0 = {"kind": "grid_row", "section_node_id": "section.01",
+            "grid_cells": cells_for_row(0), "lines": [row0_line]}
+    row1 = {"kind": "grid_row", "section_node_id": "section.01",
+            "grid_cells": cells_for_row(1),
+            "lines": [_fake_line("Skill B", 93.6, 180.0)]}  # col0 value window
+    grid_bottom = max(line["bottom"] for line in row1["lines"])  # 190.0
+    if intrude:
+        # The appended section's heading physically intrudes into the grid's
+        # space (negative measured gap AND an overlapped heading row).
+        next_heading_top = grid_bottom - 5.0
+    else:
+        # The renderer's declared appended-heading gap basis (the median
+        # measured heading gap of the visible sections = 10.0 here).
+        next_heading_top = grid_bottom + 10.0
+    next_heading = {"kind": "heading", "section_node_id": next_plan.node_id,
+                    "lines": [_fake_line(next_plan.label, 36.0, next_heading_top)]}
+    mapped = [heading_row, row0, row1]
+    if next_plan.label:
+        mapped.append(next_heading)
+    rendered_geometry = {
+        "pages": [{"page": 1, "width_pt": state.page.width_pt, "height_pt": state.page.height_pt}],
+        "page_count": 1,
+        "mapping": {"mapped": mapped, "unmapped": [], "passed": True},
+    }
+    return state, plan, rendered_geometry, next_plan
+
+
+def _all_other_gates_pass() -> dict[str, bool]:
+    """Every OTHER hard gate set to PASS (names mirror run_pair's hard_gates;
+    the grid gate itself is supplied by the caller)."""
+    return {
+        "package_opens_and_structurally_valid": True,
+        "native_structure_inspected_from_ooxml": True,
+        "candidate_content_accounting_exact": True,
+        "reading_order_preserved": True,
+        "deterministic_output": True,
+        "compatibility_report_complete": True,
+        "preview_and_blank_pages": True,
+        "rendered_geometry_matches_declared_contract": True,
+        "rendered_colors_match_declared_contract": True,
+        "unsupported_features_confirmed": True,
+    }
+
+
+def test_grid_verification_failure_fails_overall_hard_gates() -> None:
+    """Regression: all OTHER hard gates pass, rendered grid verification fails
+    -> the overall hard-gate decision must still FAIL."""
+    from tests.experiments.c2_docx_renderer import grid_verification_gate, verify_rendered_grids
+
+    state, plan, rendered_geometry, _ = _appended_after_grid_fixture(intrude=True)
+    grid_verification = verify_rendered_grids(state, plan, rendered_geometry)
+    assert grid_verification["passed"] is False
+    hard_gates = {**_all_other_gates_pass(),
+                  "rendered_grid_verification_passed": grid_verification_gate(grid_verification)}
+    others = {k: v for k, v in hard_gates.items() if k != "rendered_grid_verification_passed"}
+    assert all(others.values())  # every other gate passes
+    assert not all(hard_gates.values())  # overall still fails
+    # A verified preserved grid passes the gate.
+    state, plan, rendered_geometry, _ = _appended_after_grid_fixture(intrude=False)
+    assert grid_verification_gate(verify_rendered_grids(state, plan, rendered_geometry)) is True
+
+
+def test_grid_gate_verified_fallback_and_no_grid_cases() -> None:
+    from tests.experiments.c2_docx_renderer import grid_verification_gate, verify_rendered_grids
+
+    # VERIFIED preserved grid -> gate passes.
+    state, plan, rendered_geometry, _ = _appended_after_grid_fixture(intrude=False)
+    verification = verify_rendered_grids(state, plan, rendered_geometry)
+    assert verification["passed"] is True
+    entry = next(s for s in verification["sections"] if s["classification"] == "verified")
+    assert entry["verified"] is True
+    # FALLBACK grid -> not_applicable, must not fail merely because it has no
+    # grid to verify.
+    fallback_state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]), split_x=120.0)
+    fallback_plan = compile_render_plan(fallback_state, rich_candidate(include_unmatched=False))
+    fallback_decision = next(
+        d for d in fallback_plan.adaptation_decisions if d.destination_node == "section.01"
+    )
+    assert fallback_decision.action == "fallback_within_section"
+    fallback_verification = verify_rendered_grids(fallback_state, fallback_plan, {
+        "pages": [{"page": 1, "width_pt": 612.0, "height_pt": 792.0}],
+        "page_count": 1,
+        "mapping": {"mapped": [], "unmapped": []},
+    })
+    assert all(s["classification"] == "not_applicable" for s in fallback_verification["sections"])
+    assert grid_verification_gate(fallback_verification) is True
+    # NO preserved grid anywhere -> the gate passes vacuously (no regression).
+    no_grid_state, no_grid_plan = _state_and_plan()  # no category grid
+    assert not no_grid_plan.adaptation_decisions
+    no_grid_verification = verify_rendered_grids(no_grid_state, no_grid_plan, {})
+    assert no_grid_verification["sections"] == []
+    assert grid_verification_gate(no_grid_verification) is True
+
+
+def test_appended_candidate_only_section_following_grid_is_next_section() -> None:
+    """The next-visible-section lookup must include an APPENDED candidate-only
+    section when it follows a preserved grid (real renderer emission order)."""
+    from tests.experiments.c2_docx_renderer import grid_verification_gate, verify_rendered_grids
+
+    # Non-intruding: the appended heading sits exactly one median measured
+    # rhythm gap (10.0pt) below the grid -> VERIFIED with the appended basis.
+    state, plan, rendered_geometry, next_plan = _appended_after_grid_fixture(intrude=False)
+    result = verify_rendered_grids(state, plan, rendered_geometry)
+    entry = next(s for s in result["sections"] if s["node_id"] == "section.01")
+    assert entry["classification"] == "verified" and entry["verified"] is True
+    gap = entry["checks"]["ends_before_next_section"]
+    assert gap["measurable"] is True
+    assert gap["next_section"] == next_plan.node_id
+    assert gap["basis"] == "appended_section_median_measured_rhythm"
+    assert gap["required_gap_pt"] == 10.0  # the renderer's median rhythm basis
+    assert result["passed"] is True
+    assert grid_verification_gate(result) is True
+
+    # Intruding into the appended section's space: verification AND overall
+    # gates must fail.
+    state, plan, rendered_geometry, next_plan = _appended_after_grid_fixture(intrude=True)
+    result = verify_rendered_grids(state, plan, rendered_geometry)
+    entry = next(s for s in result["sections"] if s["node_id"] == "section.01")
+    assert entry["verified"] is False and entry["classification"] == "unverified"
+    assert any("does not end before the next visible section" in r for r in entry["unverified_reasons"])
+    assert any(entry["checks"]["no_overlap"]["overlaps"]) or not entry["checks"]["no_overlap"]["passed"]
+    assert result["passed"] is False
+
+
+def test_appended_next_section_without_gap_basis_is_unverified_never_success() -> None:
+    """No trustworthy gap basis -> verify what CAN be measured (page, intact
+    words, non-overlap) and mark the missing spacing claim UNVERIFIED; never
+    invent a target gap; never pass silently."""
+    from tests.experiments.c2_docx_renderer import verify_rendered_grids
+
+    state, plan, rendered_geometry, _ = _appended_after_grid_fixture(
+        intrude=False, set_gap=False
+    )
+    section_plan = next(p for p in plan.sections if p.node_id == "section.01")
+    assert section_plan.heading_gap_above_pt is None  # no measured gap anywhere
+    result = verify_rendered_grids(state, plan, rendered_geometry)
+    entry = next(s for s in result["sections"] if s["node_id"] == "section.01")
+    assert entry["verified"] is False and entry["classification"] == "unverified"
+    assert any("no measured gap" in r for r in entry["unverified_reasons"])
+    # The measurable relationships are still measured and pass.
+    assert entry["checks"]["words_intact"]["passed"] is True
+    assert entry["checks"]["single_page"]["passed"] is True
+    assert entry["checks"]["no_overlap"]["passed"] is True
+    assert result["passed"] is False
+
+
+def test_unmapped_appended_next_heading_is_unverified_not_silent_pass() -> None:
+    from tests.experiments.c2_docx_renderer import verify_rendered_grids
+
+    state, plan, rendered_geometry, next_plan = _appended_after_grid_fixture(
+        intrude=False, set_gap=False
+    )
+    # Drop the appended heading from the rendered mapping: the required
+    # relationship cannot be located -> UNVERIFIED, never a silent pass.
+    rendered_geometry["mapping"]["mapped"] = [
+        row for row in rendered_geometry["mapping"]["mapped"]
+        if row.get("section_node_id") != next_plan.node_id
+    ]
+    result = verify_rendered_grids(state, plan, rendered_geometry)
+    entry = next(s for s in result["sections"] if s["node_id"] == "section.01")
+    assert entry["verified"] is False and entry["classification"] == "unverified"
+    assert any("could not be located" in r for r in entry["unverified_reasons"])
+    assert result["passed"] is False

@@ -1,12 +1,14 @@
 # Pipeline C2-0e Report: Content-to-Layout Adaptation Spike (C2-0eB)
 
-Status: `IMPLEMENTED BOUNDED SPIKE + C2-0eB-R / C2-0eB-R2 CORRECTIVE PASSES —
-awaiting owner visual review. Pipeline C2 remains experimental and NOT
-accepted. The single-column grid fallback is an EXPERIMENT DEFAULT, not an
-approved product policy. The sparse-page review classification is a
-post-render pagination-scoped result, not a conversion-success claim. The
-grid preflight does NOT claim wrapped last-row values fit: they are
-provisionally retained and verified against the rendered output.`
+Status: `IMPLEMENTED BOUNDED SPIKE + C2-0eB-R / C2-0eB-R2 / C2-0eB-R3
+CORRECTIVE PASSES — awaiting owner visual review. Pipeline C2 remains
+experimental and NOT accepted. The single-column grid fallback is an
+EXPERIMENT DEFAULT, not an approved product policy. The sparse-page review
+classification is a post-render pagination-scoped result, not a
+conversion-success claim. The grid preflight does NOT claim wrapped last-row
+values fit: they are provisionally retained and verified against the rendered
+output, and that rendered verification is now part of the overall hard-gate
+decision (C2-0eB-R3, fail closed).`
 
 Date: 2026-09-17
 Branch: `experiment/pipeline-c2` (worktree `/private/tmp/cv-converter-c2`,
@@ -248,6 +250,128 @@ verification status distinct.
   NOT accepted; the owner decides via the review artifacts.
 - The coarse whole-page bound remains only as an early rejection of absurd
   wraps; it proves nothing about remaining flow space.
+
+## 0-R3. C2-0eB-R3 corrective pass (owner work order, 2026-09-17)
+
+Owner verdict on C2-0eB-R2: the truthful E→D wrap evidence and the rendered
+grid measurement are accepted as BOUNDED progress; R2 is NOT fully closed
+because its grid verification is REPORT-ONLY (not connected to the overall
+hard-gate decision) and its next-visible-section lookup reconstructs order
+only from `state.nodes`, which excludes candidate-only appended sections.
+Pipeline C2 and one-shot product quality remain unaccepted. Two narrow
+fixes, no new runner, schema family, renderer path, dependency, provider
+call, capability checkpoint, pagination repair, or unrelated fix.
+
+### 0-R3.1 Fix 1 — rendered grid verification is a HARD GATE (fail closed)
+
+`verify_rendered_grids()` already produced
+`docx_grid_render_verification.json`; its result is now connected to the
+EXISTING overall hard-gate decision via `grid_verification_gate()` (one
+small pure helper, no second verification framework, no other render/fitting
+loop):
+
+- a preserved grid with `classification=unverified` (or otherwise
+  `verified=false`, including the internal `unverifiable`
+  preserve-without-cells inconsistency) makes
+  `rendered_grid_verification_passed` FALSE and prevents overall hard-gate
+  success;
+- a verified preserved grid passes this check;
+- a fallback grid is `not_applicable` and never fails merely because it has
+  no grid to verify;
+- a document with no preserved grid passes vacuously (no regression);
+- no existing geometry tolerance, content-accounting rule, or pagination
+  rule is changed.
+
+The result and any failure are shown beside the other gates:
+`hard_gates.json` now carries a `grid_render_verification` summary (passed,
+per-section classification, unverified reasons), and `review.html` lists the
+new gate in the hard-gates table and the OVERALL HARD GATES banner (a failed
+grid verification is named among the failing gates); the rendered-grid
+verification section states its hard-gate membership explicitly.
+
+Regressions (offline, synthetic): all OTHER hard gates set to pass + a
+failing rendered grid verification ⇒ overall still FAILS
+(`test_grid_verification_failure_fails_overall_hard_gates`); verified,
+fallback (`not_applicable`), and no-grid (vacuous) cases all gate correctly
+(`test_grid_gate_verified_fallback_and_no_grid_cases`).
+
+### 0-R3.2 Fix 2 — the next visible section is found in the REAL renderer order
+
+The verifier previously reconstructed section order from `state.nodes`,
+which excludes candidate-only appended sections. It now reuses the REAL
+DOCX renderer's emission order — `build_document` emits `plan.sections`
+(mapped target sections, state order) then `plan.appended_sections`, empty
+sections emitting nothing — so a preserved grid that is followed by an
+appended section is checked against it:
+
+- an appended candidate-only next section consumes the renderer's OWN
+  declared/measured gap basis (`build_document`'s
+  `appended_heading_gap`: the median measured heading gap of the visible
+  sections — the same value the renderer applies to that heading),
+  recorded as basis `appended_section_median_measured_rhythm`;
+- if no trustworthy gap basis exists, what can be measured is still
+  verified (page, intact words, non-overlap) and the missing spacing claim
+  is marked UNVERIFIED — never an invented target gap;
+- an unmapped next heading remains UNVERIFIED, never a silent pass;
+- the E→D case is unchanged: the next MAPPED section keeps its measured
+  7.59pt rhythm basis (`visible_rhythm_effective_gap`).
+
+New synthetic regressions: an appended candidate-only section immediately
+following a preserved grid and intruding into its space ⇒ grid verification
+UNVERIFIED and the overall gates FAIL
+(`test_appended_candidate_only_section_following_grid_is_next_section`,
+`test_grid_verification_failure_fails_overall_hard_gates`); a non-intruding
+appended section at the renderer's median gap verifies
+(`appended_section_median_measured_rhythm`, required 10.0pt in the
+fixture); a no-gap-basis case marks only the spacing claim unverified while
+still measuring words/page/overlap
+(`test_appended_next_section_without_gap_basis_is_unverified_never_success`);
+an unmapped appended heading is unverified
+(`test_unmapped_appended_next_heading_is_unverified_not_silent_pass`).
+Emission-order evidence: `c2_docx_renderer.py` `build_document` emits
+`plan.sections` then `plan.appended_sections`; the plan compiler builds
+`plan.sections` in state order (`c2_renderer.py`, mapped-section pass)
+and `plan.appended_sections` in candidate-section order; F→D's real run
+shows `appended: [candidate_only.summary, candidate_only.projects]` after
+the mapped sections in `docx_render_plan.json`.
+
+### 0-R3.3 Canonical regeneration (E→D, F→D, E→F; existing runner, unchanged)
+
+Runs `tests/experiments/runs/c2_0eB_R3_<cand>_to_<tgt>_<ts>/` (stamp
+`20260916T102728Z`); summary `c2_0eB_R3_summary.json`.
+
+| Pair | Grid verification (per section) | Grid hard gate | Overall gates | Pages | Geometry pass/fail/unmeas |
+|---|---|---|---|---|---|
+| E→D | `section.02` VERIFIED (rendered gap 7.561pt vs required 7.59pt rhythm basis, 0.5pt tolerance; one page; word-intact; no overlap) | PASS | FAIL (pre-existing unmeasurables/unsupported set, unchanged) | 1 | 60/0/40 (unchanged) |
+| F→D | `section.02` not_applicable (single-column fallback; no preserved grid to verify) | PASS | FAIL (pre-existing composite cert-tier rows + unsupported, unchanged) | 1 | 64/6/26 (unchanged) |
+| E→F | no preserved grid — vacuously passing | PASS | PASS — all gates (owner visual review still required) | 1 | 98/0/0 (unchanged) |
+
+E→D's rendered grid remains visually unchanged from the accepted shape (the
+verification spans and geometry rows are unchanged; no new render or
+fitting loop ran). Each run carries reviewable DOCX/PDF, page images
+(`target_page_1.png`, `c2_0c_preview_page_1.png`, `c1_page_1.png`),
+`review.html`, `docx_grid_render_verification.json`, and `hard_gates.json`
+(now including the grid gate and its per-section summary).
+
+### 0-R3.4 Test results (timestamped logs in `tests/test_results/pytest/`)
+
+- Focused C2 offline (`pytest_c2_0ebr3_focused_20260916T102957Z.txt`):
+  **299 passed** (all `tests/experiments/`, `not local_dataset`), including
+  the 5 new C2-0eB-R3 regressions above.
+- Local-dataset lane (`pytest_c2_0ebr3_local_dataset_20260916T102519Z.txt`):
+  **10 passed / 1 skipped**.
+- Broad offline (`pytest_c2_0ebr3_broad_offline_20260916T102559Z.txt`):
+  **767 passed / 5 failed / 2 skipped** — the SAME 5 pre-existing unrelated
+  `tests/unit/test_mock_api.py` failures documented since C2-0A §7
+  (identical names; separated, not touched, not fixed here).
+
+### 0-R3.5 Explicit non-claims
+
+- Closing the two named R2 findings does NOT close R2's larger verdict:
+  Pipeline C2 and one-shot product quality remain NOT accepted; the owner
+  decides via the review artifacts.
+- The E→D/F→D/E→F overall outcomes are UNCHANGED by design: the new gate
+  adds fail-closed protection; it tuned nothing toward passing.
 
 ## 0. Owner verdicts recorded first
 
