@@ -4111,6 +4111,16 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
         encoding="utf-8",
     )
 
+    # 9a-2. C2-0eB-R2: POST-RENDER verification of every provisionally
+    # preserved grid against the rendered preview (the rendered result is
+    # authoritative over the pre-render preflight). One measurement pass —
+    # no re-render, no plan mutation, no automatic repair.
+    grid_verification = verify_rendered_grids(state, plan, rendered_geometry)
+    (run_dir / "docx_grid_render_verification.json").write_text(
+        json.dumps(grid_verification, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
     # 9b. rendered-color verification (C2-0cC Part C): measured from the same
     # preview PDF (character non-stroking color + rule stroke color), compared
     # node-locally against the measured state tokens; separate hard gate.
@@ -4223,9 +4233,426 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
         rhythm_decisions=plan.visible_rhythm_decisions,
         adaptation_decisions=plan.adaptation_decisions,
         review_result=review_result,
+        grid_verification=grid_verification,
     )
     result.update({"hard_gates_passed": hard_gates_passed, "hard_gates": hard_gates})
     return result
+
+
+def _cell_words(chars: list[dict[str, Any]]) -> list[str]:
+    """C2-0eB-R2: reconstruct the WORD sequence of one rendered line segment
+    (one grid sub-cell's chars on ONE visual line) from pdfplumber chars.
+    Words break on space glyphs and on horizontal gaps larger than 25% of
+    the char size. Line breaks are NOT word boundaries by themselves: a
+    mid-word break inside a wrapped cell yields two fragment words that can
+    never match the expected fragment's word sequence."""
+    words: list[str] = []
+    current = ""
+    prev_x1: float | None = None
+    for char in sorted(chars, key=lambda c: float(c["x0"])):
+        text = str(char["text"])
+        size = float(char.get("size") or 10.0) or 10.0
+        gap = float(char["x0"]) - prev_x1 if prev_x1 is not None else 0.0
+        if text.isspace() or (prev_x1 is not None and gap > 0.25 * max(size, 1.0)):
+            if current:
+                words.append(current)
+                current = ""
+            if not text.isspace():
+                current = text
+        else:
+            current += text
+        prev_x1 = float(char["x1"])
+    if current:
+        words.append(current)
+    return words
+
+
+def verify_rendered_grids(
+    state: C2LayoutState, plan: Any, rendered_geometry: dict[str, Any]
+) -> dict[str, Any]:
+    """C2-0eB-R2: POST-RENDER verification of every provisionally preserved
+    category grid (plan ``category_grid_cells``) against the RENDERED preview
+    PDF geometry. Reuses the existing measured evidence (``measure_rendered_geometry``'s
+    line/mapping records; pdfplumber; no new dependency, no second layout
+    engine, no re-render, no automatic repair — one measurement pass).
+
+    The rendered result is authoritative over the pre-render preflight:
+    a provisionally retained wrapped last-row value is VERIFIED only when it
+    (a) renders every word intact (no mid-word breaks), (b) stays on one
+    page, (c) ends before the next visible section with the required measured
+    heading gap (the section's effective rhythm basis, else its measured
+    heading gap) or before the page's writable bottom when no section follows,
+    and (d) overlaps no later content. Any relationship that cannot be
+    measured is reported UNVERIFIED — never a grid-fit success."""
+    mapping = (rendered_geometry or {}).get("mapping") or {}
+    mapped_rows = mapping.get("mapped") or []
+    unmapped_rows = mapping.get("unmapped") or []
+    preview_ok = not (rendered_geometry or {}).get("error") and bool(
+        (rendered_geometry or {}).get("pages")
+    )
+    page = state.page
+    writable_bottom_pt = round(float(page.height_pt) - float(page.margin_bottom_pt), 3)
+    right_edge = round(float(page.width_pt) - float(page.margin_right_pt), 3)
+    rhythm = {
+        decision.node_id: decision
+        for decision in (plan.visible_rhythm_decisions or [])
+    }
+    plan_sections_all = [*plan.sections, *plan.appended_sections]
+    plan_by_node = {s.node_id: s for s in plan_sections_all}
+    # True reading order comes from the state's node order (appended
+    # candidate-only sections may sit between mapped sections).
+    plan_sections = [
+        plan_by_node[node.node_id]
+        for node in state.nodes
+        if node.kind == "section" and node.node_id in plan_by_node
+    ]
+    decisions = {
+        d.destination_node: d
+        for d in plan.adaptation_decisions
+    }
+    results: list[dict[str, Any]] = []
+    for decision in plan.adaptation_decisions:
+        node_id = decision.destination_node
+        if decision.action != "preserve_target_topology":
+            results.append(
+                {
+                    "node_id": node_id,
+                    "action": decision.action,
+                    "pre_render_status": decision.status,
+                    "classification": "not_applicable",
+                    "verified": None,
+                    "detail": (
+                        "no preserved grid topology to verify — the existing "
+                        "single-column fallback path is covered by the existing "
+                        "content/geometry gates"
+                        if decision.action == "fallback_within_section"
+                        else "no preserved grid topology to verify"
+                    ),
+                }
+            )
+            continue
+        section_plan = next(
+            (s for s in plan_sections if s.node_id == node_id), None
+        )
+        if section_plan is None or not section_plan.category_grid_cells:
+            results.append(
+                {
+                    "node_id": node_id,
+                    "action": decision.action,
+                    "pre_render_status": decision.status,
+                    "classification": "unverifiable",
+                    "verified": False,
+                    "detail": "preserve decision without plan grid cells; nothing to verify",
+                }
+            )
+            continue
+        grid = next(
+            (
+                node.category_grid for node in state.nodes
+                if node.node_id == node_id and node.category_grid
+            ),
+            None,
+        )
+        windows = (
+            [
+                (
+                    (
+                        float(grid.column_splits_x_pt[column_index - 1])
+                        if column_index
+                        else float(state.page.margin_left_pt)
+                    ),
+                    float(column.value_x0_pt),
+                )
+                for column_index, column in enumerate(grid.columns)
+            ]
+            if grid is not None
+            else []
+        )
+        checks: dict[str, Any] = {}
+        unverified: list[str] = []
+        if not preview_ok:
+            unverified.append("rendered preview unavailable; no rendered measurement exists")
+            results.append(
+                {
+                    "node_id": node_id,
+                    "action": decision.action,
+                    "pre_render_status": decision.status,
+                    "classification": "unverified",
+                    "verified": False,
+                    "checks": checks,
+                    "unverified_reasons": unverified,
+                }
+            )
+            continue
+        section_grid_rows = [
+            row for row in mapped_rows
+            if row.get("kind") == "grid_row" and row.get("section_node_id") == node_id
+        ]
+        section_unmapped = [
+            row for row in unmapped_rows
+            if row.get("kind") == "grid_row" and row.get("section_node_id") == node_id
+        ]
+        checks["grid_rows_mapped"] = {
+            "passed": not section_unmapped
+            and len(section_grid_rows)
+            >= len({cell.row_index for cell in section_plan.category_grid_cells}),
+            "mapped_rows": len(section_grid_rows),
+            "unmapped": len(section_unmapped),
+        }
+        if section_unmapped:
+            unverified.append(
+                f"{len(section_unmapped)} grid row(s) did not map to the rendered preview"
+            )
+        if len(section_grid_rows) < len({cell.row_index for cell in section_plan.category_grid_cells}):
+            unverified.append(
+                "the rendered preview does not carry every preserved grid row "
+                f"({len(section_grid_rows)} of "
+                f"{len({cell.row_index for cell in section_plan.category_grid_cells})} mapped)"
+            )
+        # (a) every word intact: per rendered grid row, segment each consumed
+        # line's chars into the declared column windows and compare each
+        # sub-cell's reconstructed word sequence against the expected fragment.
+        word_failures: list[dict[str, Any]] = []
+        cell_word_checks: list[dict[str, Any]] = []
+        for row in section_grid_rows:
+            expected_cells = {
+                (cell["grid_column"], cell["kind"]): cell
+                for cell in row["grid_cells"]
+            }
+            chunks: dict[tuple[int, str], list[list[dict[str, Any]]]] = {}
+            for line in row["lines"]:
+                per_key: dict[tuple[int, str], list[dict[str, Any]]] = {}
+                for char in line["chars"]:
+                    x0 = float(char["x0"])
+                    for column_index, (window_left, value_x0) in enumerate(windows):
+                        value_right = (
+                            windows[column_index + 1][0]
+                            if column_index + 1 < len(windows)
+                            else right_edge
+                        )
+                        if window_left - 0.01 <= x0 < float(value_x0):
+                            key = (column_index, "grid_label")
+                        elif float(value_x0) - 0.01 <= x0 < value_right:
+                            key = (column_index, "grid_value")
+                        else:
+                            continue
+                        per_key.setdefault(key, []).append(char)
+                        break
+                # Keep PER-LINE char groups: a line break is not a word
+                # boundary by itself, so word reconstruction must never merge
+                # across lines (that would hide mid-word breaks).
+                for key, chars in per_key.items():
+                    chunks.setdefault(key, []).append(chars)
+            for (column_index, kind), expected_cell in sorted(expected_cells.items()):
+                rendered_words = [
+                    word
+                    for line_chars in chunks.get((column_index, kind), [])
+                    for word in _cell_words(line_chars)
+                ]
+                expected_words = str(expected_cell.get("text") or "").split()
+                intact = rendered_words == expected_words
+                cell_word_checks.append(
+                    {
+                        "leaf_id": expected_cell["leaf_id"],
+                        "grid_row": expected_cell["grid_row"],
+                        "grid_column": column_index,
+                        "fragment": kind,
+                        "intact": intact,
+                        "expected_words": expected_words,
+                        "rendered_words": rendered_words,
+                    }
+                )
+                if not intact:
+                    word_failures.append(cell_word_checks[-1])
+        checks["words_intact"] = {
+            "passed": not word_failures,
+            "cells_checked": len(cell_word_checks),
+            "failures": word_failures,
+        }
+        if word_failures:
+            unverified.append(
+                f"{len(word_failures)} grid sub-cell(s) render broken words"
+            )
+        grid_lines = [line for row in section_grid_rows for line in row["lines"]]
+        if not grid_lines:
+            unverified.append("no rendered grid lines found for the preserved grid")
+            results.append(
+                {
+                    "node_id": node_id,
+                    "action": decision.action,
+                    "pre_render_status": decision.status,
+                    "classification": "unverified",
+                    "verified": False,
+                    "checks": checks,
+                    "unverified_reasons": unverified,
+                }
+            )
+            continue
+        grid_pages = sorted({line["page"] for line in grid_lines})
+        checks["single_page"] = {"passed": len(grid_pages) == 1, "pages": grid_pages}
+        if len(grid_pages) != 1:
+            unverified.append(f"the grid renders across pages {grid_pages}")
+        grid_top = min(line["top"] for line in grid_lines)
+        grid_bottom = max(line["bottom"] for line in grid_lines)
+        # (c) ends before the next visible section with the required gap, or
+        # (no next section) ends within the page's writable area.
+        section_index = next(
+            (i for i, s in enumerate(plan_sections) if s.node_id == node_id), None
+        )
+        next_section = (
+            next(
+                (s for s in plan_sections[section_index + 1 :] if not s.empty),
+                None,
+            )
+            if section_index is not None
+            else None
+        )
+        if next_section is not None:
+            next_heading_row = next(
+                (
+                    row for row in mapped_rows
+                    if row.get("kind") == "heading"
+                    and row.get("section_node_id") == next_section.node_id
+                ),
+                None,
+            )
+            rhythm_decision = rhythm.get(next_section.node_id)
+            required_gap_pt = (
+                float(rhythm_decision.effective_gap_above_pt)
+                if rhythm_decision is not None
+                else None
+            )
+            gap_basis = "visible_rhythm_effective_gap" if rhythm_decision is not None else None
+            if required_gap_pt is None:
+                # Fall back to the next section's own measured heading gap.
+                next_heading_node = next(
+                    (
+                        node for node in state.nodes
+                        if node.node_id == f"{next_section.node_id}.heading"
+                        and node.spacing and node.spacing.gap_above_pt is not None
+                    ),
+                    None,
+                )
+                if next_heading_node is not None:
+                    required_gap_pt = float(next_heading_node.spacing.gap_above_pt)
+                    gap_basis = "declared_state_measured_gap"
+            if next_heading_row is None:
+                unverified.append(
+                    f"next visible section {next_section.node_id}: its rendered heading "
+                    "could not be located in the preview mapping"
+                )
+                checks["ends_before_next_section"] = {
+                    "passed": False, "measurable": False,
+                    "detail": "next heading not found in the rendered mapping",
+                }
+            elif required_gap_pt is None:
+                unverified.append(
+                    f"next visible section {next_section.node_id}: no measured gap "
+                    "evidence — the required heading gap is unmeasurable"
+                )
+                checks["ends_before_next_section"] = {
+                    "passed": False, "measurable": False,
+                    "detail": "no measured gap basis for the next section",
+                }
+            else:
+                next_heading_top = float(next_heading_row["lines"][0]["top"])
+                next_heading_page = int(next_heading_row["lines"][0]["page"])
+                if next_heading_page != grid_pages[0]:
+                    measured_gap_pt = None
+                    gap_ok = True
+                    detail = (
+                        f"next section starts on page {next_heading_page} "
+                        "(page break after the grid); no same-page overlap"
+                    )
+                else:
+                    measured_gap_pt = round(next_heading_top - grid_bottom, 3)
+                    gap_ok = measured_gap_pt >= required_gap_pt - 0.5
+                    detail = (
+                        f"rendered gap {measured_gap_pt}pt vs required {required_gap_pt}pt "
+                        f"({gap_basis}; 0.5pt tolerance)"
+                    )
+                checks["ends_before_next_section"] = {
+                    "passed": gap_ok,
+                    "measurable": True,
+                    "measured_gap_pt": measured_gap_pt,
+                    "required_gap_pt": required_gap_pt,
+                    "basis": gap_basis,
+                    "next_section": next_section.node_id,
+                    "detail": detail,
+                }
+                if not gap_ok:
+                    unverified.append(
+                        "the grid does not end before the next visible section "
+                        f"with the required measured gap ({detail})"
+                    )
+        else:
+            within = grid_bottom <= writable_bottom_pt + 0.5
+            checks["ends_before_next_section"] = {
+                "passed": within,
+                "measurable": True,
+                "measured_grid_bottom_pt": round(grid_bottom, 3),
+                "writable_bottom_pt": writable_bottom_pt,
+                "detail": "no visible section follows; the grid must end within the page",
+                "basis": "page_writable_bottom",
+            }
+            if not within:
+                unverified.append("the grid extends past the page's writable bottom")
+        # (d) no overlap with ANY other rendered content in the grid's span.
+        grid_line_ids = {id(line) for row in section_grid_rows for line in row["lines"]}
+        overlaps = []
+        for row in mapped_rows:
+            if row.get("kind") == "grid_row" and row.get("section_node_id") == node_id:
+                continue
+            for line in row["lines"]:
+                if id(line) in grid_line_ids:
+                    continue
+                if line["page"] != grid_pages[0]:
+                    continue
+                if float(line["top"]) < grid_bottom - 0.01 and float(line["bottom"]) > grid_top + 0.01:
+                    overlaps.append(
+                        {
+                            "kind": row.get("kind"),
+                            "section_node_id": row.get("section_node_id"),
+                            "text": line["text"][:60],
+                            "top": line["top"],
+                            "bottom": line["bottom"],
+                        }
+                    )
+                    break
+        checks["no_overlap"] = {"passed": not overlaps, "overlaps": overlaps}
+        if overlaps:
+            unverified.append(
+                f"{len(overlaps)} other rendered row(s) overlap the grid's vertical span"
+            )
+        verified = not unverified
+        results.append(
+            {
+                "node_id": node_id,
+                "action": decision.action,
+                "pre_render_status": decision.status,
+                "classification": "verified" if verified else "unverified",
+                "verified": verified,
+                "checks": checks,
+                "unverified_reasons": unverified,
+                "grid_top_pt": round(grid_top, 3),
+                "grid_bottom_pt": round(grid_bottom, 3),
+                "page": grid_pages[0] if grid_pages else None,
+                "pre_render_decision_evidence": list(decisions[node_id].evidence),
+            }
+        )
+    return {
+        "schema_version": "c2-docx-grid-render-verification/1",
+        "measured_from": (
+            "docx preview PDF (pinned LibreOffice renderer), pdfplumber, points; "
+            "the rendered result is authoritative over the pre-render preflight"
+        ),
+        "sections": results,
+        "passed": all(
+            entry["verified"] is True
+            for entry in results
+            if entry["classification"] in {"verified", "unverified"}
+        ),
+    }
 
 
 def document_review_result(rendered_geometry: dict[str, Any]) -> DocumentReviewResult:
@@ -4442,6 +4869,7 @@ def write_review_index(
     rhythm_decisions: list[Any] | None = None,
     adaptation_decisions: list[Any] | None = None,
     review_result: Any | None = None,
+    grid_verification: dict[str, Any] | None = None,
 ) -> None:
     def _rows(items: list[Any]) -> str:
         return "".join(f"<li>{_esc(item)}</li>" for item in items)
@@ -4695,8 +5123,29 @@ def write_review_index(
             "<th>basis</th><th>evidence (node, gap pt)</th><th>rule</th></tr>"
             f"{rhythm_rows_html}</table>"
         )
+    grid_verification_section = ""
     adaptation_html = ""
     if adaptation_decisions:
+        # C2-0eB-R2: the POST-RENDER grid verification verdict beside each
+        # decision (rendered result is authoritative; never a fit claim).
+        verification_by_node = {
+            entry["node_id"]: entry for entry in ((grid_verification or {}).get("sections") or [])
+        }
+
+        def _verification_cell(node_id: str) -> str:
+            entry = verification_by_node.get(node_id)
+            if entry is None:
+                return "—"
+            if entry.get("classification") == "not_applicable":
+                return "n/a (fallback path)"
+            if entry.get("verified") is True:
+                return '<span style="color:#1a7f37"><strong>VERIFIED</strong></span>'
+            reasons = "; ".join(entry.get("unverified_reasons") or [])
+            return (
+                '<span style="color:#b42318"><strong>NOT VERIFIED</strong></span>'
+                + (f"<br><small>{_esc(reasons)}</small>" if reasons else "")
+            )
+
         adaptation_rows_html = "".join(
             "<tr>"
             f"<td>{_esc(d.decision_id)}</td><td>{_esc(d.destination_node)}</td>"
@@ -4705,7 +5154,8 @@ def write_review_index(
             f"<td>{_esc(d.reason_code)}</td>"
             f"<td>{_esc(d.original_topology or '—')} → {_esc(d.selected_topology or '—')}</td>"
             f"<td>{_esc(d.content_disposition)}</td>"
-            f"<td><small>{_esc(d.warning_text or '—')}</small></td></tr>"
+            f"<td><small>{_esc(d.warning_text or '—')}</small></td>"
+            f"<td>{_verification_cell(d.destination_node)}</td></tr>"
             for d in adaptation_decisions
         )
         adaptation_html = (
@@ -4713,11 +5163,51 @@ def write_review_index(
             "plan)</h2><p>ACTION (what the body topology does) and STATUS "
             "(ready / review_required / unsupported) are separate fields; "
             "evidence and disclosure live in <code>docx_render_plan.json</code> → "
-            "<code>adaptation_decisions</code>:</p>"
+            "<code>adaptation_decisions</code>. The rendered-verification column "
+            "is the C2-0eB-R2 POST-RENDER verdict on any provisionally preserved "
+            "grid — separate from the pre-render action and authoritative over "
+            "it:</p>"
             "<table><tr><th>decision</th><th>node</th><th>action</th><th>status</th>"
             "<th>reason</th><th>topology (original → selected)</th>"
-            "<th>content disposition</th><th>warning</th></tr>"
+            "<th>content disposition</th><th>warning</th><th>rendered verification</th></tr>"
             f"{adaptation_rows_html}</table>"
+        )
+    if grid_verification:
+        def _verification_row(entry: dict[str, Any]) -> str:
+            reasons = "; ".join(
+                _esc(reason) for reason in (entry.get("unverified_reasons") or [])
+            ) or "—"
+            checks_html = "; ".join(
+                f"{_esc(name)}: {'PASS' if check.get('passed') else 'FAIL'}"
+                + (" (unmeasurable)" if not check.get("measurable", True) else "")
+                for name, check in (entry.get("checks") or {}).items()
+            ) or "—"
+            return (
+                "<tr>"
+                f"<td>{_esc(entry['node_id'])}</td>"
+                f"<td>{_esc(entry.get('pre_render_action') or entry.get('action') or '—')}</td>"
+                f"<td>{_esc(entry.get('pre_render_status') or '—')}</td>"
+                f"<td><strong>{_esc(entry['classification'])}</strong></td>"
+                f"<td><small>{reasons}</small></td>"
+                f"<td><small>{checks_html}</small></td>"
+                "</tr>"
+            )
+
+        verification_rows_html = "".join(
+            _verification_row(entry) for entry in grid_verification["sections"]
+        )
+        grid_verification_section = (
+            "<h2>Rendered grid verification (C2-0eB-R2; post-render, authoritative)</h2>"
+            "<p>Every provisionally preserved grid is verified against the RENDERED "
+            "preview PDF (words intact, one page, ends before the next visible "
+            "section with the required measured gap, no overlap). The rendered "
+            "result is authoritative over the pre-render preflight; an unmeasurable "
+            "relationship is reported UNVERIFIED, never as grid-fit success. No "
+            "re-render, no plan mutation, no automatic repair. Full record: "
+            "<code>docx_grid_render_verification.json</code>.</p>"
+            "<table><tr><th>node</th><th>pre-render action</th><th>pre-render status</th>"
+            "<th>classification</th><th>unverified reasons</th><th>checks</th></tr>"
+            f"{verification_rows_html}</table>"
         )
     review_banner = ""
     review_section = ""
@@ -4818,6 +5308,7 @@ as exact).</p>
 <p>Remaining visual gaps: see the failed/unmeasurable rows below.</p>
 {binding_html}
 {adaptation_html}
+{grid_verification_section}
 {review_section}
 {rhythm_html}
 {repair_html}
@@ -4867,7 +5358,8 @@ explicitly omitted (never rendered); accounting gate passed:
 <li><a href="preview_validation.json">preview_validation.json</a></li>
 <li><a href="docx_determinism.json">docx_determinism.json</a></li>
 <li><a href="hard_gates.json">hard_gates.json</a></li>
-<li><a href="docx_review_result.json">docx_review_result.json</a> (C2-0eB post-render review result)</li>
+<li><a href="docx_review_result.json">docx_review_result.json</a> (C2-0eB post-render pagination review result)</li>
+<li><a href="docx_grid_render_verification.json">docx_grid_render_verification.json</a> (C2-0eB-R2 rendered grid verification)</li>
 <li>adaptation decisions: <a href="docx_render_plan.json">docx_render_plan.json</a> → <code>adaptation_decisions</code> (C2-0eB)</li>
 </ul>
 </body></html>

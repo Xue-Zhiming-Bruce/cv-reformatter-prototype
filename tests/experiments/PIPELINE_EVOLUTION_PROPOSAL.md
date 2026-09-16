@@ -1727,10 +1727,9 @@ pair-specific 分支、无通用政策框架、无第二拟合循环。
    无字符数启发式、无成对分支、无任意缩字、无第二拟合环）：
    候选行数 > 实测 `row_count` ⇒ 不拟合（fallback）；末行值换行按实测
    词宽贪心逐词换行计数（单个词宽超过实测值窗口 ⇒ 必然断词，永不拟合）；
-   有限容量 = 实测可写页高减去实测 grid 自身范围后按实测行单元
-   （实测行距与值 token 实测行高的较大者）可容纳的行数。已记录局限：
-   精确剩余流空间需流式布局引擎（未建），故该容量是可用空间的上界，
-   渲染后硬门禁（页数/稀疏页/空白页/几何）保持最终裁决，行为不变。
+   并以实测可写页高减去实测 grid 自身范围作为粗拒绝上界（该整页余量后来
+   在 C2-0eB-R2 中被 owner 判定为不能作为拟合主张，降级为仅粗拒绝界，
+   见下节 16.17）。
    已接受的 E→D 行为保留（其末行值换行在实测页界内、零断词）。
 2. **review 横幅显式分页限定。** review.html 顶部横幅改为
    "PAGINATION REVIEW: no sparse trailing page — READY" 类文案，并在其
@@ -1741,3 +1740,34 @@ pair-specific 分支、无通用政策框架、无第二拟合循环。
 六对 canonical 全部重跑：F→D（fallback / 1 页）、E→D（preserve /
 60/0/40）、D→F、F→E、D→E（review_required 稀疏页）、E→F（全绿）的
 决策、密度与几何计数与 C2-0eB 一致（零回归）。
+
+### 16.17 C2-0eB-R2 纠偏（owner 工单，2026-09-17；详见 `C2_0E_REPORT.md` §0-R2）
+
+**Owner 裁决：分页限定的 review 横幅已被纠正并被接受；候选行容量与断词
+检查是有用的部分保障；但末行“fit”主张仍不成立——整页上限几乎占用整个
+可写页高且未扣除后续章节，且 E→D 决策记录含假陈述（报告
+`950.372pt <= 205.338pt` 并把换行值描述为单行拟合）。C2-0eB-R 因此未完全
+闭合；Pipeline C2 与一次成型质量保持未接受。** 修正：
+
+1. **预检证据改为真实陈述，不再宣称拟合。** 单行片段可陈述
+   `measured Xpt <= Ypt available (single-line)`；换行的末行值仅
+   **暂保留（provisionally retained）**：证据陈述 `measured Xpt > Ypt
+   available`、预测换行行数与“requires rendered verification”，绝不出现
+   假不等式或单行描述。整页余量降级为**粗拒绝上界**（仅用于提前拒绝
+   荒谬换行），永不作为安全/拟合主张。含换行末行值的章节预渲染决策为
+   `preserve_target_topology / review_required`（action 与 status 仍分离）。
+2. **渲染后网格验证（新增，一次测量，无新布局引擎、无重渲染、无自动修复）：**
+   `verify_rendered_grids()` 复用既有 pdfplumber 行/字符提取与
+   `map_rendered_to_expected` 网格映射，对每个暂保留的网格实测：每个网格行
+   映射到渲染预览；每个词完整渲染（逐行逐列窗口重建词序列——换行绝不
+   掩盖断词）；单页；在下一个可见章节之前以要求的实测间距结束（节奏
+   effective gap，否则该章节实测标题间距）；不与后续内容重叠；页可写区内。
+   渲染结果对预渲染预检具有权威性；不可测量即报告 UNVERIFIED，绝不报告
+   网格拟合成功。产物 `docx_grid_render_verification.json`，review.html
+   增加渲染验证列与专节，预渲染动作与渲染后验证状态保持分离。
+3. **E→D** 视觉不变（60/0/40、1 页），证据已真实化，渲染验证 VERIFIED
+   （词完整、1 页、实测间距 7.561pt 对节奏基准 7.59pt、无重叠）；**F→D**
+   保持既有单列 fallback（无断词），验证 honestly not_applicable；候选行数
+   超实测行数与超宽单词仍为硬不拟合；E→F 全绿不变。测试：focused 294
+   passed；local_dataset 10 passed / 1 skipped；broad offline 762 passed /
+   5 failed（同前置 mock_api 五项，未触碰）。

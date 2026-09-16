@@ -478,30 +478,25 @@ def category_grid_preflight(
     - every VALUE fragment must be single-line within its measured value
       window in every row EXCEPT the last rendered row — a wrapped value in
       the last row consumes unpopulated measured row space and creates no
-      inter-row pitch delta (the C2-0cS-accepted E→D shape); a wrapped
-    - every VALUE fragment must be single-line within its measured value
-      window in every row EXCEPT the last rendered row — a wrapped value in
-      the last row consumes unpopulated measured row space and creates no
       inter-row pitch delta (the C2-0cS-accepted E→D shape); a wrapped value
       in an earlier row pushes the following row and violates the uniform
       measured pitch.
-    - the last-row wrap allowance is FINITE (C2-0eB-R capacity rule). The
-      candidate may occupy at most ``row_count`` rows. The last rendered
-      row's value may wrap, but only within a measured, conservative page
-      bound: each extra wrapped line consumes the measured vertical unit
-      ``max(row_pitch_pt, value_token.line_height_pt)`` (both measured), and
-      the whole wrapped block must fit the measured writable page area that
-      remains after the grid's own measured extent
-      (``row_count * row_pitch_pt``) even in its most generous placement.
-      The wrapped line count is derived with a greedy word-wrap over measured
-      word extents — a wrap that must break a word mid-word never fits.
-      Documented limitation: the exact remaining flow space below the grid
-      (other sections' heights) is not derivable pre-render without a flow
-      engine, so this is an upper bound of the available space; the existing
-      post-render hard gates (page count, sparse trailing page, blank page,
-      geometry) remain the final arbiter and are unchanged.
+    - C2-0eB-R2 TRUTHFULNESS RULE: a wrapped LAST-ROW value is never claimed
+      to "fit" pre-render. The preflight cannot bound the rendered height of
+      the wrapped block against the remaining flow space (other sections'
+      heights are not derivable without a flow engine), so a wrapped final-row
+      value is only PROVISIONALLY RETAINED and flagged "requires rendered
+      verification"; the post-render grid verification (C2-0eB-R2,
+      ``verify_rendered_grids``) is authoritative. A coarse whole-page
+      rejection bound (``writable_height − grid_extent``) may reject an
+      absurd wrap early, but it is recorded as a COARSE bound — never as a
+      fit claim.
+    - a mid-word break never fits: the greedy word-wrap over measured word
+      extents returns ``None`` when a single word alone exceeds the window.
 
-    Returns ``{"fits": True|False, ...}`` with the full evidence, or
+    Returns ``{"fits": True|False, ...}`` where ``fits`` means "no pre-render
+    no-fit condition; the measured grid is provisionally bindable" (wrapped
+    last-row values still require rendered verification), or
     ``{"fits": None, "error": ...}`` when no trustworthy measurement exists
     (the caller fails closed — never guesses)."""
     grid = section.category_grid
@@ -554,14 +549,13 @@ def category_grid_preflight(
         )
     fits = True
     rendered_rows = max(1, -(-len(plan_items) // len(grid.columns)))  # ceil
-    # C2-0eB-R: FINITE capacity for the section. The candidate may not use
-    # more rows than the target measured, and the last rendered row's value
-    # may wrap only within the measured wrap capacity below (see probe
-    # row_capacity) — a very long final value can no longer receive
-    # ``preserve_target_topology`` while overflowing.
-    unpopulated_rows = max(0, grid.row_count - rendered_rows)
-    # C2-0eB-R: measured vertical capacity of the grid's own extent and of
-    # the writable page area (both conservative, both measured).
+    # C2-0eB-R: the candidate may not use more rows than the target
+    # measured — a candidate that needs more rows than the measured grid
+    # carries is a hard no-fit, and a very long final value can no longer
+    # receive ``preserve_target_topology`` via unbounded wrap.
+    # C2-0eB-R2: the whole-page remainder is only a COARSE REJECTION bound
+    # (absurd wraps are rejected early); it is NOT a fit claim — the exact
+    # remaining flow space is not derivable pre-render without a flow engine.
     page = state.page
     writable_height_pt = round(
         float(page.height_pt) - float(page.margin_top_pt) - float(page.margin_bottom_pt), 3
@@ -572,28 +566,27 @@ def category_grid_preflight(
     )
     grid_extent_pt = round(float(grid.row_count) * float(grid.row_pitch_pt), 3)
     remaining_writable_pt = max(0.0, writable_height_pt - grid_extent_pt)
-    page_bound_extra_lines = int(remaining_writable_pt // value_line_unit_pt)
-    last_row_wrap_capacity_lines = 1 + page_bound_extra_lines
+    coarse_bound_extra_lines = int(remaining_writable_pt // value_line_unit_pt)
+    coarse_whole_page_bound_lines = 1 + coarse_bound_extra_lines
     rows_exceed_capacity = rendered_rows > grid.row_count
     probe["row_capacity"] = {
         "measured_rows": grid.row_count,
         "candidate_rows": rendered_rows,
         "columns": len(grid.columns),
-        "unpopulated_measured_rows": unpopulated_rows,
         "writable_height_pt": writable_height_pt,
         "grid_measured_extent_pt": grid_extent_pt,
         "value_line_unit_pt": round(value_line_unit_pt, 3),
-        "last_row_allowed_value_lines": last_row_wrap_capacity_lines,
+        "coarse_whole_page_bound_lines": coarse_whole_page_bound_lines,
         "per_extra_line_consumption_pt": round(value_line_unit_pt, 3),
         "rule": (
-            "candidate rows <= measured row_count; the last rendered row's "
-            "value may wrap only within the measured writable page area that "
-            "remains after the grid's measured extent, one measured line unit "
-            "(max of the measured row pitch and the value token's measured "
-            "line height) per extra wrapped line; a wrap that must break a "
-            "word mid-word never fits. Upper bound of the available flow "
-            "space (no flow engine pre-render); the post-render hard gates "
-            "remain the final arbiter"
+            "candidate rows <= measured row_count (hard no-fit when exceeded); "
+            "labels single-line in every row; values single-line in every row "
+            "except the last rendered row; a wrapped last-row value is NOT "
+            "claimed to fit pre-render — it is provisionally retained and "
+            "requires rendered verification (C2-0eB-R2). The whole-page "
+            "allowance is a COARSE rejection bound only (an absurd wrap is "
+            "rejected early), never a fit claim; exact remaining flow space "
+            "is not derivable without a flow engine"
         ),
         "rows_exceed_capacity": rows_exceed_capacity,
     }
@@ -640,27 +633,32 @@ def category_grid_preflight(
                 }
             font, font_file, face = resolved
             extent = _fragment_extent_pt(fragment_text, font) if fragment_text else 0.0
-            fits_cell = extent <= available_pt
-            wraps = not fits_cell
+            single_line_fit = extent <= available_pt
+            wraps = not single_line_fit
             violates = wraps and not (
                 fragment_kind == "value" and is_last_row
             )
-            predicted_lines = 1 if fits_cell else 2
-            allowed_lines = None
-            wrap_bounded = None
-            # C2-0eB-R: a wrapped LAST-ROW value is accepted ONLY inside the
-            # finite measured capacity — greedy word-wrap over measured word
-            # extents; a wrap that must break a word mid-word (``None``) or
-            # that needs more lines than the unpopulated measured rows admit
-            # violates the contract (fail → existing single-column fallback).
+            predicted_lines = 1 if single_line_fit else None
+            mid_word_break = None
+            wrap_pending_rendered_verification = None
+            coarse_bound_exceeded = None
+            # C2-0eB-R2: a wrapped LAST-ROW value is NEVER claimed to fit.
+            # Its wrap line count is derived with a greedy word-wrap over
+            # measured word extents; a wrap that must break a word mid-word
+            # (``None``) is a hard no-fit, and a wrap exceeding the COARSE
+            # whole-page rejection bound is a hard no-fit. Anything between
+            # is provisionally retained, flagged for rendered verification.
             if wraps and fragment_kind == "value" and is_last_row:
                 wrapped_lines = _wrap_line_count(fragment_text, font, available_pt)
-                allowed_lines = last_row_wrap_capacity_lines
-                if wrapped_lines is None or wrapped_lines > allowed_lines:
+                mid_word_break = wrapped_lines is None
+                predicted_lines = wrapped_lines
+                coarse_bound_exceeded = (
+                    wrapped_lines is None or wrapped_lines > coarse_whole_page_bound_lines
+                )
+                if mid_word_break or coarse_bound_exceeded:
                     violates = True
                 else:
-                    predicted_lines = wrapped_lines
-                    wrap_bounded = True
+                    wrap_pending_rendered_verification = True
             fits = fits and not violates
             probe["cells"].append(
                 {
@@ -677,10 +675,11 @@ def category_grid_preflight(
                     "bold": bool(token.bold),
                     "measured_extent_pt": extent,
                     "available_width_pt": available_pt,
+                    "single_line_fit": single_line_fit,
                     "predicted_lines": predicted_lines,
-                    "allowed_lines": allowed_lines,
-                    "wrap_bounded": wrap_bounded,
-                    "fits": fits_cell,
+                    "mid_word_break": mid_word_break,
+                    "wrap_pending_rendered_verification": wrap_pending_rendered_verification,
+                    "coarse_bound_exceeded": coarse_bound_exceeded,
                     "violates_pitch": violates,
                 }
             )
@@ -689,6 +688,9 @@ def category_grid_preflight(
     return {
         "fits": fits,
         "row_capacity_exceeded": rows_exceed_capacity,
+        "wrapped_pending_verification": [
+            cell for cell in probe["cells"] if cell["wrap_pending_rendered_verification"]
+        ],
         "probe": probe,
         "error": None,
     }
@@ -1136,23 +1138,64 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                         f"candidate group leaf(s) row-major to {len(grid.columns)} measured "
                         "columns (C2-0cS; label/value fragments concatenate to the leaf text)"
                     )
+                    # C2-0eB-R2: truthful per-fragment evidence. A single-line
+                    # fragment may state the measured inequality; a WRAPPED
+                    # last-row value is provisionally retained and must show
+                    # its measured extent > available width, its predicted
+                    # wrap line count, and "requires rendered verification" —
+                    # never a false inequality or a single-line claim.
+                    capacity = preflight["probe"]["row_capacity"]
+                    wrapped_cells = preflight["wrapped_pending_verification"]
+                    pending = bool(wrapped_cells)
+                    cell_evidence = [
+                        (
+                            f"{cell['leaf_id']} {cell['fragment']} col{cell['column_index']} "
+                            f"{cell['style_id']} ({cell['face']}): measured "
+                            f"{cell['measured_extent_pt']}pt <= {cell['available_width_pt']}pt "
+                            "available (single-line)"
+                            if cell["single_line_fit"]
+                            else (
+                                f"{cell['leaf_id']} {cell['fragment']} col{cell['column_index']} "
+                                f"{cell['style_id']} ({cell['face']}): measured "
+                                f"{cell['measured_extent_pt']}pt > {cell['available_width_pt']}pt "
+                                f"available; predicted {cell['predicted_lines']} wrapped "
+                                "lines (word-boundary wrap, no mid-word break); requires "
+                                "rendered verification — NOT claimed to fit the remaining "
+                                "page/section space pre-render (C2-0eB-R2)"
+                            )
+                        )
+                        for cell in preflight["probe"]["cells"]
+                    ]
                     grid_decision = SectionAdaptation(
                         decision_id=f"adapt.{section.node_id}",
                         destination_node=section.node_id,
                         candidate_source_nodes=[item.leaf_id for item in plan_items],
                         action="preserve_target_topology",
-                        status="ready",
-                        reason_code="grid_cell_preflight_fit_passed",
+                        # ACTION and STATUS are separate vocabularies: a
+                        # provisionally retained wrapped last-row value is
+                        # review_required until the rendered verification
+                        # resolves it (C2-0eB-R2).
+                        status=(
+                            "review_required" if pending else "ready"
+                        ),
+                        reason_code=(
+                            "grid_cell_wrapped_last_row_requires_rendered_verification"
+                            if pending
+                            else "grid_cell_preflight_fit_passed"
+                        ),
                         evidence=[
                             f"measured_grid: {', '.join(grid.evidence_ids)}",
                             f"preflight: {GRID_PREFLIGHT_METHOD}",
-                            *(
-                                f"{cell['leaf_id']} {cell['fragment']} col{cell['column_index']} "
-                                f"{cell['style_id']} ({cell['face']}): measured "
-                                f"{cell['measured_extent_pt']}pt <= {cell['available_width_pt']}pt "
-                                "available (single-line rule)"
-                                for cell in preflight["probe"]["cells"]
+                            f"row_capacity: {capacity['rule']}",
+                            (
+                                f"row capacity: candidate rows {capacity['candidate_rows']} "
+                                f"of measured {capacity['measured_rows']} row(s); the coarse "
+                                f"whole-page rejection bound admits at most "
+                                f"{capacity['coarse_whole_page_bound_lines']} wrapped line(s) "
+                                "for the last rendered row's value — a coarse bound only, "
+                                "not a fit claim"
                             ),
+                            *cell_evidence,
                         ],
                         original_topology=f"category_grid_{grid.row_count}rows_x_{len(grid.columns)}cols",
                         selected_topology=f"category_grid_{grid.row_count}rows_x_{len(grid.columns)}cols",
@@ -1160,7 +1203,16 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                             "all candidate leaves rendered exactly once as ordered "
                             "grid fragments; verbatim text preserved"
                         ),
-                        warning_text=None,
+                        warning_text=(
+                            (
+                                "wrapped last-row value(s) are provisionally retained on the "
+                                "measured grid (C2-0cS shape); the preflight does NOT claim "
+                                "they fit the remaining page/section space — rendered "
+                                "verification (C2-0eB-R2) is authoritative"
+                                if pending
+                                else None
+                            )
+                        ),
                     )
                 else:
                     # C2-0eB experimental fallback default (NOT approved product

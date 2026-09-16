@@ -75,6 +75,45 @@ findings (implemented in the C2-0eB-R pass; see `C2_0E_REPORT.md`):
    from the overall conversion verdict; no hard-gate outcome changed and no
    sparse-page warning turns a failed run into a pass.
 
+### 0d. C2-0eB-R2 corrective verdicts (owner work order, 2026-09-17)
+
+The owner corrected the C2-0eB-R pass: the pagination-scoped review banner is
+accepted; the candidate-row capacity and mid-word checks are useful partial
+safeguards; BUT the last-row "fit" claim was still unsound — the whole-page
+allowance used almost the entire writable page without subtracting later
+sections, and the E→D decision record contained a FALSE statement (it reported
+`950.372pt <= 205.338pt` and called a wrapped value a single-line fit).
+C2-0eB-R2 therefore corrects the evidence model:
+
+1. **Preflight evidence is truthful, not fit-claiming.** Single-line fragments
+   may state `measured extent <= available width`. A wrapped final-row value
+   is PROVISIONALLY RETAINED only: its evidence states `measured extent >
+   available width`, the predicted word-boundary wrap line count, and
+   "requires rendered verification" — never a false inequality, never a
+   single-line description, never a claim to fit the remaining page/section
+   space. The pre-render decision status for a section with wrapped last-row
+   values is `review_required` (action `preserve_target_topology` — action
+   and status remain separate vocabularies). The whole-page allowance is
+   DEMOTED to a coarse rejection bound only (absurd wraps are rejected
+   early); it is never a safety or fit claim.
+2. **Post-render rendered verification (new, one measurement pass, no new
+   layout engine, no re-render):** `verify_rendered_grids` checks each
+   provisionally preserved grid against the rendered preview PDF — every
+   word intact (no mid-word break), one page, ends before the next visible
+   section with the required measured gap (rhythm effective gap, else the
+   state's measured heading gap), no overlap with later content, and inside
+   the page's writable area. The rendered result is authoritative over the
+   pre-render preflight. Any unmeasurable relationship is reported
+   UNVERIFIED — never a grid-fit success. The artifact
+   (`docx_grid_render_verification.json`) and the review page keep
+   pre-render adaptation action and post-render verification status
+   distinct.
+3. The accepted E→D wrapped last-row grid remains visually unchanged and now
+   carries truthful evidence plus a rendered-verification VERIFIED verdict;
+   F→D keeps the existing single-column fallback (verification
+   not-applicable); more candidate rows than measured rows and an overwide
+   single word remain hard no-fit.
+
 ### 0b. C2-0d verdict (unchanged)
 
 1. **C2-0d is ACCEPTED as a useful diagnostic/generalization audit.** It is

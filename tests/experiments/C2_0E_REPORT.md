@@ -1,17 +1,19 @@
 # Pipeline C2-0e Report: Content-to-Layout Adaptation Spike (C2-0eB)
 
-Status: `IMPLEMENTED BOUNDED SPIKE + C2-0eB-R CORRECTIVE PASS — awaiting
-owner visual review. Pipeline C2 remains experimental and NOT accepted.
-The single-column grid fallback is an EXPERIMENT DEFAULT, not an approved
-product policy. The sparse-page review classification is a post-render
-pagination-scoped result, not a conversion-success claim.`
+Status: `IMPLEMENTED BOUNDED SPIKE + C2-0eB-R / C2-0eB-R2 CORRECTIVE PASSES —
+awaiting owner visual review. Pipeline C2 remains experimental and NOT
+accepted. The single-column grid fallback is an EXPERIMENT DEFAULT, not an
+approved product policy. The sparse-page review classification is a
+post-render pagination-scoped result, not a conversion-success claim. The
+grid preflight does NOT claim wrapped last-row values fit: they are
+provisionally retained and verified against the rendered output.`
 
 Date: 2026-09-17
 Branch: `experiment/pipeline-c2` (worktree `/private/tmp/cv-converter-c2`,
 base `b4c3db2` = the C2-0eA contract commit).
 Contract: `C2_0E_ADAPTATION_CONTRACT.md` (owner-accepted boundary; corrections
 §0a applied before implementation, commit `efbe1dc`; corrective verdicts §0c
-applied by C2-0eB-R, below).
+applied by C2-0eB-R; corrective verdicts §0d applied by C2-0eB-R2, below).
 
 ## 0-R. C2-0eB-R corrective pass (owner work order, 2026-09-17)
 
@@ -122,13 +124,130 @@ words; E→D keeps the measured grid binding with the accepted last-row wrap).
   `tests/unit/test_mock_api.py` failures documented since C2-0A §7
   (identical names; separated, not touched, not fixed here).
 
-### 0-R.5 Explicit non-claims
+### 0-R.5 Explicit non-claims (C2-0eB-R, superseded in part by 0-R2)
 
-- C2-0eB-R closes the two named findings ONLY. No overall C2 acceptance,
-  no one-shot acceptance, and no safe-adaptation-mechanism completeness is
-  claimed; the owner decides via the review artifacts.
-- The wrap-capacity bound is an upper bound (documented limitation, §0-R.1);
-  the post-render hard gates remain the final arbiter.
+- C2-0eB-R closed the two named findings of that pass. No overall C2
+  acceptance, no one-shot acceptance, and no safe-adaptation-mechanism
+  completeness is claimed; the owner decides via the review artifacts.
+- The C2-0eB-R whole-page wrap bound was subsequently found UNSOUND as a fit
+  claim by the owner and is demoted to a coarse rejection bound in C2-0eB-R2
+  (§0-R2); the rendered verification there is the authority.
+
+### 0-R2. C2-0eB-R2 corrective pass (owner work order, 2026-09-17)
+
+Owner verdict on C2-0eB-R: the pagination-scoped review banner is corrected
+and ACCEPTED; the candidate-row capacity and mid-word checks are useful
+partial safeguards; BUT the last-row "fit" claim was still unsound — the
+whole-page allowance used almost the entire writable page without subtracting
+later sections, and the E→D decision record contained a FALSE statement
+(it reported `950.372pt <= 205.338pt` and described the wrapped Software value
+as a single-line fit). C2-0eB-R is therefore not fully closed; Pipeline C2 and
+one-shot product quality remain unaccepted. Fixed in place, no new capability
+checkpoint, no new pre-render page-layout predictor, no second fitting loop,
+no new renderer.
+
+#### 0-R2.1 Part A — truthful preflight evidence
+
+- The per-fragment probe now records `single_line_fit`, `predicted_lines`,
+  `mid_word_break`, `wrap_pending_rendered_verification`, and
+  `coarse_bound_exceeded` (replacing the unsound R "allowed_lines" bound).
+- The whole-page allowance is DEMOTED to a COARSE REJECTION BOUND only
+  (`coarse_whole_page_bound_lines`): absurd wraps are rejected early; it is
+  recorded explicitly as "a coarse bound only, not a fit claim" and is no
+  longer used as a safety claim.
+- Corrected evidence: single-line fragments state
+  `measured Xpt <= Ypt available (single-line)`; wrapped fragments state
+  `measured Xpt > Ypt available; predicted N wrapped lines (word-boundary
+  wrap, no mid-word break); requires rendered verification — NOT claimed to
+  fit the remaining page/section space pre-render (C2-0eB-R2)`. The E→D
+  false inequality (`950.372pt <= 205.338pt`) is gone; the record now states
+  `950.372pt > 205.338pt ... requires rendered verification`.
+- Every grid decision records `candidate rows R of measured M row(s)`.
+- Pre-render ACTION and STATUS stay distinct: a section with wrapped last-row
+  values gets `action=preserve_target_topology, status=review_required,
+  reason_code=grid_cell_wrapped_last_row_requires_rendered_verification`, and
+  a warning_text disclosing that the preflight does NOT claim they fit. An
+  all-single-line grid keeps `status=ready, reason_code=
+  grid_cell_preflight_fit_passed` (true single-line fits only).
+- Obvious no-fit checks unchanged: candidate rows > measured rows; label not
+  fitting its window; a word needing a mid-word break; an earlier row
+  violating the measured pitch. Unmeasurable preflight still fails closed.
+
+#### 0-R2.2 Part B — post-render rendered verification (authoritative)
+
+New `verify_rendered_grids()` in `tests/experiments/c2_docx_renderer.py`,
+run AFTER rendering inside the existing `run_pair` (one measurement pass; reuses
+the existing pdfplumber line/char extraction and the existing
+`map_rendered_to_expected` grid mapping — no new layout engine, no re-render,
+no plan mutation, no automatic repair). For every provisionally preserved
+grid it measures, from the rendered preview PDF:
+
+- every preserved grid row maps to the rendered preview (`grid_rows_mapped`);
+- every word of every cell renders INTACT — per rendered line, per declared
+  column window, word sequences are reconstructed from pdfplumber chars
+  (per-line, so a line break never hides a mid-word break) and compared to
+  the expected fragment's words (`words_intact`);
+- all grid lines render on ONE page (`single_page`);
+- the grid ends before the NEXT VISIBLE section with the required measured
+  gap — the next section's rhythm effective gap, else its state-measured
+  heading gap (`ends_before_next_section`, 0.5pt tolerance); with no next
+  section, the grid must end within the page's writable bottom;
+- no other rendered content overlaps the grid's vertical span (`no_overlap`).
+
+The rendered result is AUTHORITATIVE over the pre-render preflight. If any
+required relationship cannot be measured, the section is classified
+UNVERIFIED with explicit reasons — never a grid-fit success. Artifact:
+`docx_grid_render_verification.json` (`c2-docx-grid-render-verification/1`);
+shown on the review page as a rendered-verification column in the adaptation
+table plus a dedicated section, keeping pre-render action and post-render
+verification status distinct.
+
+#### 0-R2.3 Required cases
+
+- **E→D** (`c2_0eB_R2_E_to_D_20260916T094927Z`): visually unchanged from the
+  accepted render (grid binding preserved, 1 page, 60/0/40 geometry);
+  decision `preserve_target_topology / review_required` with truthful
+  evidence (`950.372pt > 205.338pt available; predicted 5 wrapped lines ...;
+  requires rendered verification`); rendered verification VERIFIED
+  (4 value/label cells word-intact, one page, rendered gap 7.561pt vs
+  required 7.59pt rhythm basis, no overlap).
+- **F→D** (`c2_0eB_R2_F_to_D_20260916T094927Z`): keeps the existing
+  single-column fallback (`fallback_within_section / ready`, no broken
+  words); rendered verification honestly `not_applicable` (no preserved
+  grid topology to verify).
+- **Synthetic boundary — coarse-pass/intrude:** a wrapped last-row value that
+  passes the coarse whole-page rejection bound but whose rendered output
+  intrudes into the following section is classified UNVERIFIED (measured gap
+  below the required gap / overlap), never verified
+  (`test_wrapped_last_row_intruding_into_next_section_is_not_verified`).
+- **Synthetic boundary — genuine fit verifies:**
+  (`test_wrapped_last_row_grid_verifies_when_rendered_output_fits`).
+- **More candidate rows than measured rows / overwide single word:** remain
+  hard no-fit (existing C2-0eB-R tests, updated field names).
+- **Unmeasurable relationship ⇒ UNVERIFIED, never success:**
+  (`test_unmeasurable_rendered_relationship_is_unverified_not_success`).
+- **E→F** (`c2_0eB_R2_E_to_F_20260916T094927Z`): unchanged — all hard gates
+  pass, 98/0/0 geometry, 1 page; empty grid-verification sections.
+
+#### 0-R2.4 Test results (timestamped logs in `tests/test_results/pytest/`)
+
+- Focused C2 offline (`pytest_c2_0ebr2_focused_20260916T095001Z.txt`): **294 passed**,
+  including the new truthful-evidence and rendered-verification regressions.
+- Local-dataset lane (`pytest_c2_0ebr2_local_dataset_20260916T095015Z.txt`):
+  **10 passed / 1 skipped**.
+- Broad offline (`pytest_c2_0ebr2_broad_offline_20260916T095057Z.txt`): **762 passed /
+  5 failed / 2 skipped** — the SAME 5 pre-existing unrelated
+  `tests/unit/test_mock_api.py` failures documented since C2-0A §7
+  (identical names; separated, not touched, not fixed here).
+
+#### 0-R2.5 Explicit non-claims
+
+- The wrapped last-row "fit" is no longer claimed anywhere: pre-render the
+  value is PROVISIONAL (`review_required`), and only the rendered
+  verification can report VERIFIED. Pipeline C2 and one-shot quality remain
+  NOT accepted; the owner decides via the review artifacts.
+- The coarse whole-page bound remains only as an early rejection of absurd
+  wraps; it proves nothing about remaining flow space.
 
 ## 0. Owner verdicts recorded first
 

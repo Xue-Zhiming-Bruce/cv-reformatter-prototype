@@ -499,6 +499,7 @@ REQUIRED_ARTIFACTS = (
     "docx_rendered_geometry.json", "docx_geometry_comparison.json",
     "docx_color_comparison.json",
     "docx_fitting_log.json",
+    "docx_grid_render_verification.json",
     "review.html", "target_page_1.png", "c1_page_1.png",
 )
 
@@ -2128,26 +2129,38 @@ def test_grid_preflight_is_metric_driven_not_char_count() -> None:
     assert narrow_extent < wide_extent
     assert len("iiiiiiiii:") == len("MMMMMMMMM:")
     # A wrapped VALUE in the LAST rendered row is the C2-0cS-accepted E→D
-    # shape: no inter-row pitch delta exists, so it FITS — but ONLY within
-    # the finite measured wrap capacity (C2-0eB-R), and ONLY at word
-    # boundaries (a single word wider than the value window would have to
-    # break mid-word and never fits).
+    # shape: no inter-row pitch delta exists, so it is PROVISIONALLY
+    # RETAINED — but the preflight NEVER claims it fits (C2-0eB-R2
+    # truthfulness rule): the fragment evidence must say the measured extent
+    # EXCEEDS the window, record the predicted wrap line count, and require
+    # rendered verification.
     single_row_wrap = [LeafText(leaf_id="skills.g1", text="Group: AA AA AA AA AA AA")]
     wrap_result = category_grid_preflight(state, section, single_row_wrap)
+    # No hard no-fit: the grid stays provisionally bindable pre-render.
     assert wrap_result["fits"] is True
     value_cell = next(
         cell for cell in wrap_result["probe"]["cells"] if cell["fragment"] == "value"
     )
+    assert value_cell["single_line_fit"] is False
+    assert value_cell["wrap_pending_rendered_verification"] is True
     assert value_cell["predicted_lines"] == 6
-    assert value_cell["wrap_bounded"] is True
-    assert value_cell["allowed_lines"] == wrap_result["probe"]["row_capacity"][
-        "last_row_allowed_value_lines"
-    ]
-    assert value_cell["allowed_lines"] >= 6
+    assert value_cell["mid_word_break"] is False
+    assert value_cell["coarse_bound_exceeded"] is False
+    assert value_cell["measured_extent_pt"] > value_cell["available_width_pt"]
+    assert value_cell["violates_pitch"] is False
+    assert wrap_result["wrapped_pending_verification"][0]["leaf_id"] == "skills.g1"
     # A single word wider than the window can never wrap without breaking
     # mid-word: the preflight fails it closed (never a fit).
     unbreakable = [LeafText(leaf_id="skills.g1", text="Group: MMMMMMMMM")]
-    assert category_grid_preflight(state, section, unbreakable)["fits"] is False
+    unbreakable_result = category_grid_preflight(state, section, unbreakable)
+    assert unbreakable_result["fits"] is False
+    unbreakable_cell = next(
+        cell for cell in unbreakable_result["probe"]["cells"] if cell["fragment"] == "value"
+    )
+    assert unbreakable_result["probe"]["cells"][0]["single_line_fit"] is True  # label fits
+    assert unbreakable_result["probe"]["cells"][0]["mid_word_break"] is None
+    assert unbreakable_cell["mid_word_break"] is True
+    assert unbreakable_cell["wrap_pending_rendered_verification"] is None
     # The evidence records the resolved font file/face, not a count.
     assert wide_fit["probe"]["cells"][0]["font_file"].endswith(".ttf")
     assert wide_fit["probe"]["method"].startswith("PIL")
@@ -2312,3 +2325,207 @@ def test_plan_compilation_with_adaptation_stays_deterministic() -> None:
     assert first.model_dump_json() == second.model_dump_json()
     # The state is never mutated by the adaptation pass.
     assert next(n for n in state.nodes if n.category_grid) is not None
+
+
+# ---------------------------------------------------------------------------
+# C2-0eB-R2: truthful preflight evidence + post-render grid verification
+# ---------------------------------------------------------------------------
+
+
+def _fake_char(glyph: str, x0: float, top: float, size: float = 10.0, page: int = 1) -> dict:
+    width = size * (0.28 if glyph == " " else 0.5)
+    return {
+        "text": glyph, "x0": round(x0, 3), "x1": round(x0 + width, 3),
+        "bottom": round(top + size, 3), "size": size, "font": "TestFont",
+        "color": "#000000",
+    }
+
+
+def _fake_line(text: str, x0: float, top: float, size: float = 10.0, page: int = 1) -> dict:
+    chars = []
+    x = x0
+    for glyph in text:
+        chars.append(_fake_char(glyph, x, top, size, page))
+        x += size * (0.28 if glyph == " " else 0.5)
+    return {
+        "page": page, "top": round(top, 3), "bottom": round(top + size, 3),
+        "x0": round(x0, 3), "x1": round(x, 3), "size": size, "font": "TestFont",
+        "text": text, "chars": chars,
+    }
+
+
+def _wrapped_last_row_fixture(intrude: bool):
+    """A preserved grid whose LAST rendered row carries a wrapped multi-word
+    value (passes the coarse whole-page rejection bound pre-render). The fake
+    rendered geometry either ends before the next visible section with the
+    measured gap, or intrudes into it."""
+    from tests.experiments.c2_renderer import compile_render_plan
+
+    state = _with_grid(compile_synthetic(), split_x=160.0)
+    # The next VISIBLE section (section.04) gets a measured heading gap so
+    # the "ends before the next section" relationship is measurable.
+    _set_gap(state, 4, 7.5)
+    base = rich_candidate(include_unmatched=False)
+    modified = _leaf(
+        "skills.g1.i2", "skill", "skills", parent="skills.g1",
+        text="Skill: AA AA AA AA AA AA",
+    )
+    candidate = base.model_copy(
+        update={"leaves": [leaf if leaf.leaf_id != "skills.g1.i2" else modified for leaf in base.leaves]}
+    )
+    plan = compile_render_plan(state, candidate)
+    section_plan = next(p for p in plan.sections if p.node_id == "section.02")
+    assert len(section_plan.category_grid_cells) == 3  # grid preserved, not fallback
+    decision = next(d for d in plan.adaptation_decisions if d.destination_node == "section.02")
+    assert decision.action == "preserve_target_topology"
+    # Truthful pre-render evidence: the wrapped fragment shows a measured
+    # extent EXCEEDING its window, its predicted wrap line count, and
+    # "requires rendered verification" — never a false inequality and never
+    # a single-line claim.
+    assert decision.status == "review_required"
+    assert decision.reason_code == "grid_cell_wrapped_last_row_requires_rendered_verification"
+    wrapped_evidence = [
+        e for e in decision.evidence
+        if "available; predicted" in e and "requires rendered verification" in e
+    ]
+    assert wrapped_evidence
+    assert all(
+        ">" in e and " <= " not in e and "predicted" in e and "single-line" not in e
+        for e in wrapped_evidence
+    )
+    assert any(e.startswith("row capacity: candidate rows 2 of measured 3") for e in decision.evidence)
+    assert "does NOT claim they fit" in (decision.warning_text or "")
+
+    # Fake rendered geometry (pdfplumber-shaped lines/chars, points).
+    def cells_for_row(row_index: int) -> list[dict]:
+        out = []
+        for cell in section_plan.category_grid_cells:
+            if cell.row_index != row_index:
+                continue
+            out.append({
+                "leaf_id": cell.leaf_id, "kind": "grid_label", "text": cell.label_text,
+                "grid_row": cell.row_index, "grid_column": cell.column_index, "style_id": None,
+            })
+            out.append({
+                "leaf_id": cell.leaf_id, "kind": "grid_value", "text": cell.value_text,
+                "grid_row": cell.row_index, "grid_column": cell.column_index, "style_id": None,
+            })
+        return out
+
+    heading_row = {"kind": "heading", "section_node_id": "section.02",
+                   "lines": [_fake_line("TECHNICAL SKILLS", 36.0, 100.0)]}
+    row0_line = _fake_line("Group One", 93.6, 160.0)  # col0 value window
+    row0_line["chars"] += _fake_line("Skill A", 369.94, 160.0)["chars"]
+    row0 = {"kind": "grid_row", "section_node_id": "section.02",
+            "grid_cells": cells_for_row(0), "lines": [row0_line]}
+    # The wrapped last-row value renders as three word-boundary lines in the
+    # col0 value window (each line two/three words) — never mid-word.
+    label_line = _fake_line("Skill:", 58.15, 180.0)
+    value_line_a = _fake_line("AA AA AA", 93.6, 180.0)
+    value_line_b = _fake_line("AA AA AA", 93.6, 193.0)
+    row1 = {"kind": "grid_row", "section_node_id": "section.02",
+            "grid_cells": cells_for_row(1),
+            "lines": [label_line, value_line_a, value_line_b]}
+    grid_bottom = max(line["bottom"] for line in row1["lines"])  # 203.0
+    gap_above = next(
+        (
+            node.spacing.gap_above_pt for node in state.nodes
+            if node.node_id == "section.04.heading" and node.spacing
+        ),
+        None,
+    )
+    required_gap = float(gap_above) if gap_above is not None else 7.5
+    if intrude:
+        # The wrapped grid's last line physically intrudes into the next
+        # visible section's heading (negative measured gap AND an overlapped
+        # heading row) — the rendered result must NOT verify.
+        next_heading_top = grid_bottom - 5.0
+    else:
+        next_heading_top = grid_bottom + required_gap
+    next_heading = {"kind": "heading", "section_node_id": "section.04",
+                    "lines": [_fake_line("WORK EXPERIENCE", 36.0, next_heading_top)]}
+    rendered_geometry = {
+        "pages": [{"page": 1, "width_pt": state.page.width_pt, "height_pt": state.page.height_pt}],
+        "page_count": 1,
+        "mapping": {"mapped": [heading_row, row0, row1, next_heading], "unmapped": [], "passed": True},
+    }
+    return state, plan, rendered_geometry
+
+
+def wrapped_evidence_matches(wrapped_evidence: list[str], decision: object) -> bool:
+    return any("requires rendered verification" in e for e in wrapped_evidence)
+
+
+def test_wrapped_last_row_grid_verifies_when_rendered_output_fits() -> None:
+    from tests.experiments.c2_docx_renderer import verify_rendered_grids
+
+    state, plan, rendered_geometry = _wrapped_last_row_fixture(intrude=False)
+    result = verify_rendered_grids(state, plan, rendered_geometry)
+    assert result["schema_version"] == "c2-docx-grid-render-verification/1"
+    entry = next(s for s in result["sections"] if s["node_id"] == "section.02")
+    assert entry["classification"] == "verified" and entry["verified"] is True
+    assert entry["pre_render_status"] == "review_required"  # action/status stay distinct
+    assert all(check["passed"] for check in entry["checks"].values())
+    words = entry["checks"]["words_intact"]
+    assert words["passed"] is True and words["cells_checked"] >= 5
+    gap = entry["checks"]["ends_before_next_section"]
+    assert gap["measurable"] is True and gap["measured_gap_pt"] >= gap["required_gap_pt"] - 0.5
+    assert result["passed"] is True
+
+
+def test_wrapped_last_row_intruding_into_next_section_is_not_verified() -> None:
+    from tests.experiments.c2_docx_renderer import verify_rendered_grids
+
+    state, plan, rendered_geometry = _wrapped_last_row_fixture(intrude=True)
+    result = verify_rendered_grids(state, plan, rendered_geometry)
+    entry = next(s for s in result["sections"] if s["node_id"] == "section.02")
+    # The rendered result is authoritative: intrusion into the following
+    # section is NEVER classified as verified, even though the pre-render
+    # coarse whole-page bound passed.
+    assert entry["verified"] is False and entry["classification"] == "unverified"
+    assert any("does not end before the next visible section" in r for r in entry["unverified_reasons"])
+    assert result["passed"] is False
+
+
+def test_fallback_grid_decision_is_not_applicable_to_rendered_verification() -> None:
+    from tests.experiments.c2_docx_renderer import verify_rendered_grids
+
+    state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]), split_x=120.0)
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    decision = next(d for d in plan.adaptation_decisions if d.destination_node == "section.01")
+    assert decision.action == "fallback_within_section"
+    rendered_geometry = {
+        "pages": [{"page": 1, "width_pt": 612.0, "height_pt": 792.0}],
+        "page_count": 1,
+        "mapping": {"mapped": [], "unmapped": []},
+    }
+    result = verify_rendered_grids(state, plan, rendered_geometry)
+    entry = next(s for s in result["sections"] if s["node_id"] == "section.01")
+    assert entry["classification"] == "not_applicable"
+    assert entry["verified"] is None
+
+
+def test_unmeasurable_rendered_relationship_is_unverified_not_success() -> None:
+    from tests.experiments.c2_docx_renderer import verify_rendered_grids
+
+    state, plan, _ = _wrapped_last_row_fixture(intrude=False)
+    # The next visible section's heading cannot be located in the preview:
+    # the required relationship is unmeasurable -> UNVERIFIED, never success.
+    rendered_geometry = {
+        "pages": [{"page": 1, "width_pt": state.page.width_pt, "height_pt": state.page.height_pt}],
+        "page_count": 1,
+        "mapping": {
+            "mapped": [
+                {"kind": "heading", "section_node_id": "section.01",
+                 "lines": [_fake_line("TECHNICAL SKILLS", 36.0, 100.0)]},
+                {"kind": "grid_row", "section_node_id": "section.01",
+                 "grid_cells": [], "lines": []},
+            ],
+            "unmapped": [],
+        },
+    }
+    result = verify_rendered_grids(state, plan, rendered_geometry)
+    entry = next(s for s in result["sections"] if s["node_id"] == "section.02")
+    assert entry["verified"] is False and entry["classification"] == "unverified"
+    assert any("could not be located" in r or "no rendered grid lines" in r for r in entry["unverified_reasons"])
+    assert result["passed"] is False
