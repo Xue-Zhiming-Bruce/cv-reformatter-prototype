@@ -1987,16 +1987,27 @@ FROZEN_C1_RUNS: dict[str, str] = {
     "D_E": "c_pipeline_D_to_E_20260910T200018Z",  # owner-accepted D→E, regression re-run
     "E_F": "c_pipeline_D_to_E_20260910T195515Z",  # E→F matrix green run
     "E_D": "c1_matrix_ED_B_20260911T044203Z",  # E→D under the Option-B contract
+    # C2-0d generalization audit: the frozen C1 runs for the remaining three
+    # directed pairs (owner-accepted matrix finals; local artifact copies).
+    "D_F": "c1_matrix_DF_B",  # D→F matrix green run
+    "F_D": "c1_matrix_FD_B_20260911T061127Z",  # F→D matrix green run
+    "F_E": "c1_matrix_FE2_20260910T200958Z",  # F→E matrix green run
 }
 
 # Evaluation pairs: candidate resume -> target resume. Resume D never
 # participates in a parity/winner conclusion while E→D overall remains
 # fail-closed (C2-0cM resolves its composite EDUCATION & CERTIFICATIONS
 # binding; the SKILLS POOL internal-layout and inline-color gaps remain).
+# C2-0d registers the full six-pair directed matrix (same runner; candidate
+# F authored in c2_pipeline; no second runner, no schema family).
 C2_0B_PAIRS: dict[str, dict[str, str]] = {
     "D_E": {"candidate": "D", "target": "E", "role": "primary"},
     "E_F": {"candidate": "E", "target": "F", "role": "generalization"},
     "E_D": {"candidate": "E", "target": "D", "role": "gap_only"},
+    # C2-0d: the remaining three directed pairs of the authorized D/E/F corpus.
+    "D_F": {"candidate": "D", "target": "F", "role": "generalization"},
+    "F_D": {"candidate": "F", "target": "D", "role": "generalization_grid_target"},
+    "F_E": {"candidate": "F", "target": "E", "role": "generalization"},
 }
 
 
@@ -2272,6 +2283,130 @@ def candidate_resume_E() -> CandidateDocument:
     )
 
 
+def candidate_resume_F() -> CandidateDocument:
+    """Resume F verbatim (frozen C1 run ``c1_matrix_FE2_20260910T200958Z``).
+
+    Author-assigned segmentation (same authorship rule as D/E — NOT an LLM
+    extraction claim; C2-0d generalization audit input). Authoring note: the
+    candidate's contact values are ONE verbatim source line, authored as a
+    single header leaf on the ``phone`` slot — the coverage gate consumes one
+    source line with one authored text (the documented 2-3 partition rule
+    does not reach four items on one line), and layout-state/1 measures
+    header rows, not per-field geometry (C2-0c limitation). The PROJECTS
+    block is authored as ordered ``additional_item`` lines: the frozen role
+    vocabulary has no projects role and the audit must not expand it.
+    """
+    leaves: list[CandidateLeaf] = [
+        _leaf("header.name", "header_field", slot="name", text="Alex Webb"),
+        _leaf(
+            "header.contact", "header_field", slot="phone",
+            text="555-123-4567 | alex@email.com | linkedin.com/in/alexwebbx | github.com/alexwebbx",
+        ),
+        _leaf(
+            "summary.p1", "summary_paragraph", "summary",
+            text="Passionate AI/ML engineer with a strong background in deep learning, computer vision, and natural language processing. "
+                 "Skilled in Python, TensorFlow, PyTorch, and various ML libraries. Excellent problem-solving, research, and collaboration "
+                 "abilities. Seeking a challenging role to develop cutting-edge AI solutions.",
+        ),
+    ]
+    skills = [
+        "Programming Languages: Python, C++, SQL, MATLAB",
+        "Deep Learning Frameworks: TensorFlow, PyTorch, Keras, Caffe",
+        "Libraries & Tools: NumPy, Pandas, Scikit-learn, OpenCV, NLTK, Git, Docker",
+    ]
+    leaves += [
+        _leaf(f"skills.g{i}", "skill_group", "skills", text=text)
+        for i, text in enumerate(skills, 1)
+    ]
+    project_lines = [
+        "Image Captioning System",
+        "Deep Learning Project",
+        "Jan 2023 – Present",
+        "Python, TensorFlow, OpenCV",
+        "• Developed an end-to-end system for generating descriptive captions for images",
+        "• Utilized CNN and LSTM models for image feature extraction and caption generation",
+        "• Achieved state-of-the-art performance on the COCO dataset",
+        "Sentiment Analysis API",
+        "Natural Language Processing",
+        "Aug 2022 – Dec 2022",
+        "Python, Flask, NLTK, Hugging Face",
+        "• Built a RESTful API for sentiment analysis of text data",
+        "• Implemented pre-trained transformer models using Hugging Face",
+        "• Deployed the API on a cloud platform for easy integration",
+    ]
+    leaves += [
+        _leaf(f"projects.i{i}", "additional_item", "additional_details", text=text)
+        for i, text in enumerate(project_lines, 1)
+    ]
+
+    def entry(index: int, title: str, detail: str, metas: list[str], bullets: list[str]) -> None:
+        leaves.append(_leaf(f"work.e{index}", "work_entry", "work_experience", text=title))
+        leaves.append(_leaf(f"work.e{index}.d1", "entry_detail", "work_experience",
+                            parent=f"work.e{index}", text=detail))
+        for meta_index, meta in enumerate(metas, 1):
+            leaves.append(_leaf(f"work.e{index}.m{meta_index}", "entry_meta", "work_experience",
+                                parent=f"work.e{index}", text=meta))
+        for bullet_index, bullet in enumerate(bullets, 1):
+            leaves.append(_leaf(f"work.e{index}.b{bullet_index}", "work_bullet", "work_experience",
+                                parent=f"work.e{index}", text=bullet))
+
+    entry(1, "AI Research Intern", "DeepMind", ["June 2022 – Aug 2022", "London, UK"], [
+        "• Conducted research on reinforcement learning algorithms for robotics",
+        "• Implemented and evaluated deep RL models using PyTorch and RLlib",
+        "• Presented findings at weekly research meetings",
+    ])
+    entry(2, "Machine Learning Engineer", "Acme AI Solutions", ["Jan 2021 – May 2022", "San Francisco, CA"], [
+        "• Developed and deployed machine learning models for various industries",
+        "• Optimized model performance and ensured data quality",
+        "• Collaborated with cross-functional teams to deliver AI solutions",
+    ])
+    education_entries = [
+        ("Stanford University", "M.S. in Computer Science, Artificial Intelligence",
+         ["Stanford, CA", "Aug 2019 – May 2021"]),
+        ("University of California, Berkeley", "B.S. in Electrical Engineering and Computer Science",
+         ["Berkeley, CA", "Aug 2015 – May 2019"]),
+    ]
+    for index, (school, degree, metas) in enumerate(education_entries, 1):
+        leaves.append(_leaf(f"education.e{index}", "education_entry", "education", text=school))
+        leaves.append(_leaf(f"education.e{index}.d1", "entry_detail", "education",
+                            parent=f"education.e{index}", text=degree))
+        for meta_index, meta in enumerate(metas, 1):
+            leaves.append(_leaf(f"education.e{index}.m{meta_index}", "entry_meta", "education",
+                                parent=f"education.e{index}", text=meta))
+    certifications = [
+        "• AWS Certified Machine Learning - Specialty",
+        "• TensorFlow Developer Certificate",
+    ]
+    leaves += [
+        _leaf(f"certifications.i{i}", "certification_item", "certifications", text=text)
+        for i, text in enumerate(certifications, 1)
+    ]
+    work_ids = [leaf.leaf_id for leaf in leaves if leaf.source == "work_experience"]
+    education_ids = [leaf.leaf_id for leaf in leaves if leaf.source == "education"]
+    return CandidateDocument(
+        candidate_id="resume-f",
+        leaves=leaves,
+        unroutable=[],
+        sections=[
+            CandidateSection(section_id="summary", heading="SUMMARY", source="summary",
+                             content_kind="paragraph", leaf_ids=["summary.p1"]),
+            CandidateSection(section_id="skills", heading="TECHNICAL SKILLS", source="skills",
+                             content_kind="item_list",
+                             leaf_ids=[f"skills.g{i}" for i in range(1, 4)]),
+            CandidateSection(section_id="projects", heading="PROJECTS", source="additional_details",
+                             content_kind="item_list",
+                             leaf_ids=[f"projects.i{i}" for i in range(1, 15)]),
+            CandidateSection(section_id="experience", heading="EXPERIENCE", source="work_experience",
+                             content_kind="entries", leaf_ids=work_ids),
+            CandidateSection(section_id="education", heading="EDUCATION", source="education",
+                             content_kind="entries", leaf_ids=education_ids),
+            CandidateSection(section_id="certifications", heading="CERTIFICATIONS", source="certifications",
+                             content_kind="item_list",
+                             leaf_ids=["certifications.i1", "certifications.i2"]),
+        ],
+    )
+
+
 def candidate_document_for_pair(pair: str) -> CandidateDocument:
     """The frozen C1 candidate render context for one C2-0b evaluation pair."""
     if pair not in C2_0B_PAIRS:
@@ -2279,6 +2414,8 @@ def candidate_document_for_pair(pair: str) -> CandidateDocument:
     candidate_letter = C2_0B_PAIRS[pair]["candidate"]
     if candidate_letter == "D":
         return candidate_resume_D()
+    if candidate_letter == "F":
+        return candidate_resume_F()
     return candidate_resume_E()
 
 
