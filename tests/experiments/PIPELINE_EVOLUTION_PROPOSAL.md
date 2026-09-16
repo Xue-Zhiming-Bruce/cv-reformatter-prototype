@@ -1568,3 +1568,38 @@ unsupported）。
    除非 owner 另行授权纠偏 pass，不在同一 checkpoint 内修复。
 
 裁决权：owner。自动门禁与分数只是支持性文档。
+
+**C2-0d 执行结果（2026-09-16，冻结实现，六对全矩阵；未修复任何失败）**
+
+实现冻结于 `22996c2`（仅输入数据 + 注册表；管线代码与 C2-0cS 接受态
+`6ad89a9` 完全一致）。结果：
+
+- **结构层泛化成立**：复合绑定（F→D 首次双侧子内容均非空）、grid 检测
+  （E/F 零误检、D ×2 候选人零漏检）、row-major 网格锚点（E→D 与 F→D
+  ≤0.12pt 全过）、三种 header 设计、条目/颜色/确定性/核算/逐字安全在六对
+  上零代码改动成立；D→F HTML lane 全绿。
+- **实测几何保真未完全泛化**：6 对中 3 对 DOCX 几何门禁诚实失败，根因
+  收敛到四个（F→D 网格值换行破坏实测行距 52.4 vs 12.546pt；F→D 空
+  网格单元格段落未受控 → 输出验证声明不完整（诚实门禁触发）；D→F
+  merged item 章节中带 presentation glyph 的候选条目未达目标实测锚
+  （31 失败，fitter 3 轮停止）；候选-only 溢出稀疏尾页两例新失败
+  （D→F 13.8%、F→E 6.4%）+ 跨页 heading gap 测量伪影）。零 extraction
+  /证据层失败。HTML lane 对照项缺陷三处如实入档（多行网格分桶、连字符
+  归一化不对称、"Certifications:" 复合标题子串隐私误报——后者为
+  C2-0cM 以来即存在的前置缺陷）。
+- **验收记分卡**：12 项 PASS（其中一项带诚实 truthfulness 发现），
+  E→F 门禁无回归（98/98 全真），C2-0cV/C2-0cS 无回归，无空白页，
+  无目标事实泄漏（DOCX 直检零命中）。
+- **建议（基于冻结证据，待 owner 裁决）**：不因测试通过而继续拟合；
+  建议**先简化/巩固 C2**——一个 owner 授权的小纠偏 pass 处理四个已命名
+  小根因（空单元格段格式、网格分桶按行分离、连字符归一化对称、合并
+  item 章节的 item 锚点），均不需新布局词汇；网格换行值以显式能力缺口
+  声明处理（或 owner 判定 unsupported fail-closed），不做拟合追逐。
+  不退回 C1（同对冻结 C1 基线同样存在双页与字形残留），架构无需重估。
+
+运行目录：`runs/c2_0d_<cand>_to_<tgt>_<ts>`（DOCX lane ×6）+
+`runs/c2_0d_<pair>_html_<ts>`（HTML lane ×3）；
+矩阵索引 `runs/C2_0D_MATRIX_INDEX.html`；报告 `C2_0D_REPORT.md`。
+测试：focused 123 passed；local_dataset lane 9 passed；broad offline
+665 passed / 5 failed（同 C2_0A_REPORT §7 的 5 个前置无关 mock_api 失败，
+未变化）。
