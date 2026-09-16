@@ -1,14 +1,17 @@
 # Pipeline C2-0e Report: Content-to-Layout Adaptation Spike (C2-0eB)
 
 Status: `IMPLEMENTED BOUNDED SPIKE + C2-0eB-R / C2-0eB-R2 / C2-0eB-R3
-CORRECTIVE PASSES — awaiting owner visual review. Pipeline C2 remains
-experimental and NOT accepted. The single-column grid fallback is an
-EXPERIMENT DEFAULT, not an approved product policy. The sparse-page review
-classification is a post-render pagination-scoped result, not a
-conversion-success claim. The grid preflight does NOT claim wrapped last-row
-values fit: they are provisionally retained and verified against the rendered
-output, and that rendered verification is now part of the overall hard-gate
-decision (C2-0eB-R3, fail closed).`
+CORRECTIVE PASSES + C2-0eC SPARSE-PAGE DIAGNOSIS — awaiting owner visual
+review. Pipeline C2 remains experimental and NOT accepted. The single-column
+grid fallback is an EXPERIMENT DEFAULT, not an approved product policy. The
+sparse-page review classification is a post-render pagination-scoped result,
+not a conversion-success claim. The grid preflight does NOT claim wrapped
+last-row values fit: they are provisionally retained and verified against
+the rendered output, and that rendered verification is now part of the
+overall hard-gate decision (C2-0eB-R3, fail closed). C2-0eC (below) measured
+all sparse trailing pages and found NO avoidable renderer defect: the
+observed sparse pages are legitimate content overflow, so NO pagination
+correction was implemented and the review_required warnings stand.`
 
 Date: 2026-09-17
 Branch: `experiment/pipeline-c2` (worktree `/private/tmp/cv-converter-c2`,
@@ -16,6 +19,140 @@ base `b4c3db2` = the C2-0eA contract commit).
 Contract: `C2_0E_ADAPTATION_CONTRACT.md` (owner-accepted boundary; corrections
 §0a applied before implementation, commit `efbe1dc`; corrective verdicts §0c
 applied by C2-0eB-R; corrective verdicts §0d applied by C2-0eB-R2, below).
+
+## 0eC. C2-0eC: sparse-trailing-page diagnosis (owner work order, 2026-09-17)
+
+### 0eC-0. Owner verdict recorded first
+
+- C2-0eB-R3 is accepted as a bounded grid-verification and hard-gate
+  milestone. It does NOT imply Pipeline C2 or one-shot product-quality
+  acceptance.
+- Further grid work is STOPPED in this checkpoint (no grid code was
+  touched in C2-0eC).
+- The next question is whether sparse trailing pages caused by
+  candidate-only sections are avoidable renderer defects or legitimate
+  content overflow requiring product policy / recruiter review.
+- Diagnosis-first: no assumption that every two-page output should become
+  one page.
+
+### 0eC-1. Method
+
+Measured from the frozen C2-0e canonical runs (written OOXML AND the
+rendered preview PDFs — never from page counts alone): per pair, the plan
+(`docx_render_plan.json`: appended sections + notes), the rendered line
+topology (`docx_rendered_geometry.json`: per-line page/top/bottom), the
+pre-fitting iteration-1 render (`c2_output_before.pdf` / `docx_geometry
+_comparison_before.json`), and the written DOCX paragraph properties
+(`w:keepNext`, `w:keepLines`, `w:widowControl`, `w:spacing`, `w:cantSplit`,
+table structure). All four pairs were then RERUN with the current runner
+(runs `c2_0eC_<cand>_to_<tgt>_<ts>/`, stamp `20260916T111405Z`); every
+number below reproduces identically.
+
+### 0eC-2. Four-pair cause table
+
+Writable bottoms: target E margin 34.614 → writable bottom 757.386pt; target
+F margin 29.655 → 762.345pt (page height 792pt).
+
+| Pair | Candidate-only sections appended (why) | Appended content height (ink) | Page break location | Available before break vs required | Written-DOCX keep/spacing behavior | Classification |
+|---|---|---|---|---|---|---|
+| F→E (6.44%) | SUMMARY (source `summary` — target E has no summary section), PROJECTS (source `additional_details`, 14 items), CERTIFICATIONS (source `certifications`) — all appended per the owner overflow policy: no mapped target binding, substantive content, exactly-once accounting | SUMMARY 59.2pt; PROJECTS 224.2pt (page 1); CERTIFICATIONS 44.2pt ink (+ 12.281pt intended gap, suppressed at page top) | Between PROJECTS last item (p1 bottom 742.971) and the CERTIFICATIONS heading (p2 top 37.0) | Available 14.415pt; the CERTIFICATIONS block needs ≈ 59.8pt; even the heading ALONE needs 29.55pt (12.281 gap + 17.25 exact line) > 14.415 | Heading keepNext (headings never orphan); items keepNext=false; explicit spacing 0/0, exact line heights; widowControl on; Normal style blocks docDefaults `after=200` | NECESSARILY sparse: candidate summary+projects+certifications exceed target E's one-page template by ≈ 45–60pt |
+| D→F (13.78%) | NONE appended (all six target-F sections mapped; CERTIFICATIONS empty with explicit note) | — | Between EXPERIENCE last entry row (p1 bottom 733.81) and EDUCATION (a MAPPED target section, p2 top 32.0) | Available 28.535pt; the EDUCATION block needs ≈ 114.2pt (15.63 gap + 98.6 ink); the heading alone needs 32.88pt > 28.535 | Heading keepNext; entry tables carry `cantSplit` rows; explicit spacing; the EDUCATION heading's WRITTEN space_before is 2192.85pt — a fitter side-effect (below), NOT the cause: the iteration-1 render (zero corrections) was ALREADY 2 pages | NECESSARILY sparse: candidate D's content exceeds target F's one-page template at measured typography |
+| D→E (28.83% borderline) | summary, HIGHLIGHTS (8 items), VOLUNTEER EXPERIENCE (2), ANOTHER SECTION (4) — appended: no target binding | summary 29.2pt; HIGHLIGHTS 119.6pt (splits across the break); VOLUNTEER 44.2pt; ANOTHER 74.2pt (total ≈ 260pt) | INSIDE the HIGHLIGHTS item list: p1 ends at item 4 (bottom 743.471); items 5–8 continue on p2 | Available 13.915pt; the next item's measured pitch is 15.0pt → the list misses the page by ≈ 1.1pt; the remaining two appended sections follow | Items keepNext=false (no keep rule forces the break); widowControl on (single-line items unaffected); appended headings carry the renderer's declared median rhythm `before=246` twips (12.3pt) | NECESSARILY sparse: the item list genuinely does not fit (1.1pt short), and two more substantive appended sections follow |
+| E→F (control) | none (two target sections empty with explicit notes) | — | none — one page | — | — | No sparse page; ALL hard gates pass (unchanged) |
+
+### 0eC-3. Ruled-out avoidable-defect hypotheses (measured, not assumed)
+
+1. **Keep-with-next pushing a small block:** in every pair the first block
+   on page 2 could not fit even WITHOUT its keep rule — F→E: the
+   CERTIFICATIONS heading alone (29.55pt) exceeds the 14.415pt available;
+   D→F: the EDUCATION heading alone (32.88pt) exceeds 28.535pt; D→E: the
+   break is mid-item-list where items carry `keepNext=false`. No heading is
+   orphaned as the last row of page 1 in any pair (keepNext works as
+   designed).
+2. **Leaked paragraph spacing:** every rendered paragraph carries explicit
+   `before/after=0` (or the measured/declared heading gap); the Normal style
+   overrides the docDefaults `after=200`; appended headings carry the
+   documented 12.3pt median rhythm, not a leaked default. Item pitch (15pt)
+   matches the target's own measured bullet rhythm.
+3. **Widow/orphan control:** `widowControl` on everywhere; no two-line
+   paragraph splits at the break in any pair (each moved block starts with
+   a heading or a full item).
+4. **Table-row splitting:** entry tables carry `cantSplit` rows; no table
+   row splits across the break in any pair.
+5. **The bounded fitter:** all three sparse pairs were already 2 pages in
+   iteration 1 with ZERO corrections (`c2_output_before.pdf`, 2 pages in
+   each; `docx_geometry_comparison_before.json` D→F `preview_page_count` 2).
+   The fitter did not create the breaks.
+
+### 0eC-4. No bounded correction implemented (and why)
+
+Phase A found NO concrete, general renderer defect that causes an avoidable
+sparse page — every observed break is forced by measured space arithmetic
+at the target's measured typography, so a correction would either change
+nothing or would have to delete/compact/reorder candidate content, which is
+NOT authorized (no forced one-page output; the existing `review_required`
+warnings are correct and stand). Per the work order, the checkpoint STOPS
+after the diagnosis; no automatic "fix" was invented.
+
+One non-pagination anomaly was observed and is RECORDED AS A RECOMMENDATION
+ONLY (not implemented, not this checkpoint's sparse-page question, affects
+ONE matrix case): the bounded fitter measures the D→F cross-page
+`heading_gap_above` for EDUCATION as a −717.43pt delta (previous section's
+bottom on page 1 minus the heading top on page 2) and cumulatively inflates
+`heading_space_before_pt` to 2192.85pt over its 3 bounded iterations. The
+rendered comparison honestly reports the row FAIL and the page outcome is
+unchanged, but the WRITTEN OOXML carries an absurd spacing value a recruiter
+would see when editing. A future checkpoint could make the fitter skip
+spacing corrections for rows measured ACROSS a page break (one shared
+control at `apply_measured_deltas`), with a synthetic boundary test; it was
+NOT implemented here because it explains only one case, does not affect any
+page outcome, and this checkpoint's correction budget is reserved for the
+sparse-page question.
+
+### 0eC-5. Rerun results (current code; existing runner unchanged)
+
+| Pair | Run | Pages | Sparse fraction | Review status | Accounting | Hard-gate outcome |
+|---|---|---|---|---|---|---|
+| D→F | `c2_0eC_d_to_f_20260916T111405Z` | 2 | 13.78% | review_required | exact | FAIL (geometry; unchanged) |
+| F→E | `c2_0eC_f_to_e_20260916T111405Z` | 2 | 6.44% | review_required | exact | FAIL (geometry + unsupported; unchanged) |
+| D→E | `c2_0eC_d_to_e_20260916T111405Z` | 2 | 28.83% | review_required | exact | FAIL (geometry + unsupported; unchanged) |
+| E→F | `c2_0eC_e_to_f_20260916T111405Z` | 1 | none | ready | exact | PASS — all gates (owner visual review still required) |
+
+No regression: E→F's accepted gates and all content/privacy/accounting
+checks are unchanged; the three sparse pairs keep their honest
+`review_required` classifications — never converted into a passing result.
+
+### 0eC-6. Test results (timestamped logs in `tests/test_results/pytest/`)
+
+- Focused C2 offline (`pytest_c2_0ec_focused_20260916T111520Z.txt`):
+  **299 passed** (all `tests/experiments/`, `not local_dataset`) — no code
+  change, no new failure.
+- Local-dataset lane (`pytest_c2_0ec_local_dataset_20260916T111530Z.txt`):
+  **10 passed / 1 skipped**.
+- Broad offline (`pytest_c2_0ec_broad_offline_20260916T111607Z.txt`):
+  **767 passed / 5 failed / 2 skipped** — the SAME 5 pre-existing unrelated
+  `tests/unit/test_mock_api.py` failures documented since C2-0A §7
+  (identical names; separated, not touched, not fixed here).
+
+### 0eC-7. Explicit non-claims and the unresolved owner decision
+
+- No pagination code was changed in C2-0eC; the reruns reproduce the frozen
+  outcomes exactly. No Pipeline C2 acceptance and no one-shot acceptance is
+  claimed.
+- The measured evidence says the sparse pages are LEGITIMATE overflow —
+  contract Q6 class 1 ("legitimate additional page"), not the avoidable
+  class 2 — so the Q6 bounded automatic actions (drop a keep rule at the
+  break; compact a measured inter-section gap) have NO eligible trigger in
+  any observed case.
+- **Unresolved product decision (owner):** accept the two-page outputs with
+  the standing `review_required` sparse-page warnings (recruiter edits
+  content or accepts a second page), or approve FUTURE bounded compaction
+  actions (contract Q6 class 2, owner approval required) — which the
+  measured evidence says are not triggered by these cases today. Forcing
+  one-page output, deleting/summarizing candidate facts, reordering
+  candidate-only sections, merging by semantic similarity, font shrinking,
+  margin changes, or threshold changes are NOT authorized and were not
+  considered.
 
 ## 0-R. C2-0eB-R corrective pass (owner work order, 2026-09-17)
 

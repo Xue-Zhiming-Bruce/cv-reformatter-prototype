@@ -1771,3 +1771,44 @@ pair-specific 分支、无通用政策框架、无第二拟合循环。
    超实测行数与超宽单词仍为硬不拟合；E→F 全绿不变。测试：focused 294
    passed；local_dataset 10 passed / 1 skipped；broad offline 762 passed /
    5 failed（同前置 mock_api 五项，未触碰）。
+
+### 16.18 C2-0eB-R3 纠偏与 C2-0eC 稀疏尾页诊断（owner 工单，2026-09-17；详见 `C2_0E_REPORT.md` §0-R3/§0eC）
+
+**Owner 裁决：C2-0eB-R3 被接受为有界网格验证与硬门禁里程碑（不构成
+Pipeline C2 或一次成型质量接受）；网格工作在本 checkpoint 停止；下一问题是
+候选-only 章节导致的稀疏尾页是可避免的渲染缺陷，还是需要产品政策/招聘官
+评审的正当内容溢出。诊断优先，不假设两页输出都应压成一页。**
+
+R3（已提交 `016b8d8`）：渲染后网格验证接入整体硬门禁决策
+（fail closed——未验证的保留网格使整体失败；fallback 与无网格不因此失败，
+无回归），且下一可见章节查找改用真实 DOCX 渲染器发射顺序
+（`plan.sections` 后 `plan.appended_sections`），附加章节以渲染器自身的
+中位实测节奏为间距基准；无可信基准即仅将间距主张标 UNVERIFIED，绝不
+编造目标间距。E→D 7.59pt 节奏基准保留。测试：focused 299 passed；
+local_dataset 10 passed / 1 skipped；broad offline 767 passed / 5 failed
+（同前置 mock_api 五项）。
+
+C2-0eC（诊断，零代码改动）：对 D→F / F→E / D→E / E→F 四对，从书面 OOXML
+与渲染 PDF 双证据测量分页成因。**结论：无可避免的渲染缺陷——三例稀疏尾页
+全部是正当内容溢出**（合同 Q6 class 1，非 class 2）：
+
+| 对 | 分页点 | 分页前可用 vs 需要 | 分类 |
+|---|---|---|---|
+| F→E 6.44% | PROJECTS 末项 → 附加 CERTIFICATIONS | 14.4pt vs 块 ≈59.8pt（标题单独需 29.55pt） | 必然稀疏：候选 summary+projects+certs 超出目标 E 一页模板 ≈45–60pt |
+| D→F 13.78% | EXPERIENCE → 映射章节 EDUCATION | 28.5pt vs ≈114pt（标题单独需 32.9pt） | 必然稀疏：候选内容超出目标 F 一页模板 |
+| D→E 28.83% | HIGHLIGHTS 列表中断（第 4/8 项后） | 13.9pt vs 下一项 15.0pt 节距 | 必然稀疏：列表差 1.1pt 放不下，其后两个附加章节共 ≈118pt |
+| E→F 对照 | 一页 | — | 全绿不变 |
+
+排除的假设（逐项以 OOXML/渲染实测排除）：keep-with-next 推块（每例首个
+上移块即便无 keep 规则也放不下；无孤儿标题）；默认间距泄漏（全部显式
+0/0，附加标题 12.3pt 中位节奏）；widow/orphan（无可断双行段）；表格行拆分
+（cantSplit，无拆分）；拟合器致断页（三例 iteration-1 零修正渲染即为两页）。
+
+**未实现修复（按工单，无可修复的共享受影响缺陷即停止）：** 唯一观察到的
+非分页异常是 D→F EDUCATION 书面 `space_before=2192.85pt`——拟合器把跨页
+间距测成 −717.43pt delta 并三次迭代累积放大；这不是断页原因（iteration-1
+已两页）、仅影响一例，已记录为未来 checkpoint 建议（在
+`apply_measured_deltas` 跳过跨页行间距校正 + 合成边界测试），本 checkpoint
+不花预算。**未决 owner/产品决策：** 接受两页输出与既存 review_required
+警告（招聘官编辑或接受第二页），或批准 Q6 class 2 有界压缩动作（本证据
+显示当前无触发情形）；强制单页/删改/重排/合并/缩字号/改阈值均未授权。
