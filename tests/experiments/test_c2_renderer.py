@@ -1057,3 +1057,113 @@ def test_frozen_c1_pair_runs_end_to_end(pair: str) -> None:
     else:
         assert manifest["hard_gates_passed"] is True
         assert all(gates.values())
+
+
+# ---------------------------------------------------------------------------
+# C2-0cV: visible-section rhythm (compile_render_plan)
+# ---------------------------------------------------------------------------
+
+
+def _set_heading_gap(state, section_index: int, gap: float) -> None:
+    heading = next(
+        node for node in state.nodes
+        if node.node_id == f"section.{section_index:02d}.heading"
+    )
+    heading.spacing = heading.spacing.model_copy(update={"gap_above_pt": gap})
+
+
+def _rhythm_decision(plan, node_id: str):
+    return next(d for d in plan.visible_rhythm_decisions if d.node_id == node_id)
+
+
+def test_visible_rhythm_preserves_local_gaps_without_omissions() -> None:
+    # Every target section renders with content, and no target section sits
+    # between two visible ones: every measured local gap is preserved.
+    state = compile_synthetic(["SUMMARY", "TECHNICAL SKILLS", "WORK EXPERIENCE", "EDUCATION"])
+    for index, gap in enumerate([10.0, 12.0, 14.0, 16.0], start=1):
+        _set_heading_gap(state, index, gap)
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    assert [d.basis for d in plan.visible_rhythm_decisions] == ["measured_local_gap_preserved"] * 4
+    for decision in plan.visible_rhythm_decisions:
+        assert decision.effective_gap_above_pt == decision.original_gap_above_pt
+        assert decision.omitted_between == []
+    assert [p.heading_gap_above_pt for p in plan.sections if not p.empty] == [10.0, 12.0, 14.0, 16.0]
+
+
+def test_visible_rhythm_recomputes_after_one_omitted_section() -> None:
+    # KEY SKILLS re-consumes the skills source -> unresolved -> omitted; the
+    # WORK EXPERIENCE gap (measured from KEY SKILLS) must not be reused.
+    state = compile_synthetic(["TECHNICAL SKILLS", "KEY SKILLS", "WORK EXPERIENCE"])
+    _set_heading_gap(state, 1, 10.0)
+    _set_heading_gap(state, 2, 12.0)
+    _set_heading_gap(state, 3, 45.0)  # WORK EXPERIENCE measured from omitted KEY SKILLS
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    decision = _rhythm_decision(plan, "section.03")
+    assert decision.original_predecessor == "section.02"
+    assert decision.visible_predecessor == "section.01"
+    assert decision.omitted_between == ["section.02"]
+    assert decision.original_gap_above_pt == 45.0
+    assert decision.effective_gap_above_pt == 10.0  # median of preserved visible gaps
+    assert decision.basis == "measured_common_section_rhythm"
+    assert list(zip(decision.evidence_nodes, decision.evidence_values)) == [("section.01", 10.0)]
+    assert next(p.heading_gap_above_pt for p in plan.sections if p.node_id == "section.03") == 10.0
+    assert any("visible_rhythm_decisions" in note for note in plan.notes)
+
+
+def test_visible_rhythm_treats_an_empty_mapped_section_as_omitted() -> None:
+    # LANGUAGES binds but the candidate carries no language content: the
+    # section renders nothing, so WORK EXPERIENCE's measured local gap
+    # (measured from LANGUAGES) no longer reflects a visible relationship.
+    state = compile_synthetic(["TECHNICAL SKILLS", "LANGUAGES", "WORK EXPERIENCE"])
+    _set_heading_gap(state, 1, 8.0)
+    _set_heading_gap(state, 2, 30.0)
+    _set_heading_gap(state, 3, 9.0)
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    decision = _rhythm_decision(plan, "section.03")
+    assert decision.omitted_between == ["section.02"]
+    assert decision.basis == "measured_common_section_rhythm"
+    assert decision.effective_gap_above_pt == 8.0
+
+
+def test_visible_rhythm_median_over_several_preserved_gaps() -> None:
+    state = compile_synthetic(["SUMMARY", "TECHNICAL SKILLS", "KEY SKILLS", "WORK EXPERIENCE"])
+    for index, gap in enumerate([10.0, 14.0, 50.0, 99.0], start=1):
+        _set_heading_gap(state, index, gap)
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    decision = _rhythm_decision(plan, "section.04")
+    assert decision.omitted_between == ["section.03"]
+    # Median of the preserved visible gaps (10.0, 14.0) — the stale 50.0
+    # measured from KEY SKILLS is not evidence and the recomputed self value
+    # is excluded from its own evidence.
+    assert decision.effective_gap_above_pt == 12.0
+    assert sorted(decision.evidence_nodes) == ["section.01", "section.02"]
+
+
+def test_visible_rhythm_without_evidence_retains_original_and_records() -> None:
+    # The only mapped section follows an omitted one, and no other visible
+    # section carries a preserved measured gap: the original gap is kept and
+    # the decision is recorded (never a silent zero).
+    state = compile_synthetic(["LANGUAGES", "TECHNICAL SKILLS"])
+    _set_heading_gap(state, 1, 40.0)
+    _set_heading_gap(state, 2, 22.0)
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    decision = _rhythm_decision(plan, "section.02")
+    assert decision.omitted_between == ["section.01"]
+    assert decision.basis == "no_rhythm_evidence_original_gap_retained"
+    assert decision.effective_gap_above_pt == 22.0 == decision.original_gap_above_pt
+    assert next(p.heading_gap_above_pt for p in plan.sections if p.node_id == "section.02") == 22.0
+    assert any(
+        "no measured evidence; the original predecessor gap is retained" in note
+        for note in plan.notes
+    )
+
+
+def test_visible_rhythm_never_touches_candidate_only_sections() -> None:
+    # Candidate-only overflow sections carry no measured gap of their own
+    # (the existing documented median rule applies at render time); the
+    # rhythm rule records decisions for TARGET sections only.
+    state = compile_synthetic(["SUMMARY", "TECHNICAL SKILLS"])
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=True))
+    assert plan.appended_sections
+    for decision in plan.visible_rhythm_decisions:
+        assert decision.node_id.startswith("section.")

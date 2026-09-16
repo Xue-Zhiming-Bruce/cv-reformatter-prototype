@@ -71,6 +71,7 @@ from tests.experiments.c2_pipeline import (
     C2_0B_PAIRS,
     StateModel,
     StyleToken,
+    _COMPOSITE_SPLIT,
     candidate_document_for_pair,
     compile_layout_state,
     render_context_coverage,
@@ -2347,15 +2348,39 @@ def compare_geometry(
         ))
         # -- heading gap above (section rhythm) --------------------------------
         previous_bottom = _previous_content_bottom(mapping, node_id)
+        # C2-0cV: the declared basis may be a visible-rhythm recompute; the
+        # row records that provenance so the comparison is auditable.
+        rhythm = next(
+            (d for d in plan.visible_rhythm_decisions if d.node_id == node_id), None
+        )
+        rhythm_detail = ""
+        rhythm_source = "declared_state"
+        if rhythm is not None and rhythm.basis == "measured_common_section_rhythm":
+            rhythm_source = "declared_state_visible_rhythm"
+            rhythm_detail = (
+                f"visible-rhythm recompute: original gap {rhythm.original_gap_above_pt}pt "
+                f"measured from omitted predecessor(s) {rhythm.omitted_between or '(header)'}; "
+                f"effective gap derived from preserved visible rhythm evidence "
+                f"{list(zip(rhythm.evidence_nodes, rhythm.evidence_values))}"
+            )
+        elif rhythm is not None and rhythm.basis == "no_rhythm_evidence_original_gap_retained":
+            rhythm_source = "declared_state_no_rhythm_evidence"
+            rhythm_detail = (
+                f"visible rhythm has no preserved measured evidence; original gap "
+                f"retained and flagged (never silently zeroed)"
+            )
         rows.append(_row(
-            "heading_gap_above", node_id, section_plan.heading_gap_above_pt, "declared_state",
+            "heading_gap_above", node_id, section_plan.heading_gap_above_pt, rhythm_source,
             (
                 round(heading_line["top"] - previous_bottom, 3)
                 if heading_line and previous_bottom is not None else None
             ),
             TOLERANCE_PT["local_gap"],
             control="heading_space_before_pt",
-            detail="candidate-only sections carry no measured section gap" if section_plan.candidate_only else "",
+            detail=(
+                ("candidate-only sections carry no measured section gap"
+                 if section_plan.candidate_only else rhythm_detail)
+            ),
         ))
         # -- content start x ----------------------------------------------------
         # A bulleted ITEM LIST's content edge IS its declared bullet marker
@@ -3644,6 +3669,8 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
         },
         before_comparison=fitting.get("first_comparison"),
         colors=color_comparison,
+        binding_rows=binding_review_rows(state, plan, candidate),
+        rhythm_decisions=plan.visible_rhythm_decisions,
     )
     result.update({"hard_gates_passed": hard_gates_passed, "hard_gates": hard_gates})
     return result
@@ -3684,6 +3711,121 @@ def _preview_pdf(docx_path: Path, run_dir: Path) -> dict[str, Any] | None:
     }
 
 
+def binding_review_rows(
+    state: C2LayoutState, plan: Any, candidate: Any
+) -> list[dict[str, Any]]:
+    """C2-0cV Part B: one auditable row per TARGET section for the owner
+    review page. Presentation only — every value is read from the existing
+    state binding, the compiled render plan (ledger, notes, plans), and the
+    candidate render context. No second binding engine; no decision is
+    recomputed here."""
+    sections = [node for node in state.nodes if node.kind == "section"]
+    headings = {
+        node.node_id: node for node in state.nodes if node.kind == "heading"
+    }
+    plan_sections = {
+        section.node_id: section
+        for section in [*plan.sections, *plan.appended_sections]
+    }
+    unresolved_reasons = {
+        gap.feature.split(":", 1)[1]: gap.reason
+        for gap in state.capability_gaps
+        if gap.feature.startswith("unresolved_section_binding:")
+    }
+    candidate_sources = {
+        leaf.source for leaf in candidate.leaves if leaf.source
+    }
+    rows: list[dict[str, Any]] = []
+    for section in sections:
+        node_id = section.node_id
+        heading = headings.get(f"{node_id}.heading")
+        binding = section.binding
+        if binding is None:
+            classification = "no_binding"
+            sources: list[str] = []
+            components: list[str] = []
+        elif binding.mapping_action == "unresolved":
+            classification = "unresolved"
+            sources = []
+            label_text = heading.label if heading else ""
+            components = [
+                re.sub(r"\s+", " ", part.strip().casefold())
+                for part in _COMPOSITE_SPLIT.split(label_text)
+                if part.strip()
+            ]
+        elif binding.composite:
+            classification = "composite"
+            sources = list(binding.sources)
+            label_text = heading.label if heading else ""
+            components = [
+                re.sub(r"\s+", " ", part.strip().casefold())
+                for part in _COMPOSITE_SPLIT.split(label_text)
+                if part.strip()
+            ]
+        else:
+            classification = "simple"
+            sources = list(binding.sources)
+            components = []
+        present = [source for source in sources if source in candidate_sources]
+        absent = [source for source in sources if source not in candidate_sources]
+        rendered_leaves = sorted(
+            leaf_id
+            for leaf_id, destination in plan.leaf_ledger.items()
+            if destination.startswith(f"{node_id}.")
+        )
+        section_plan = plan_sections.get(node_id)
+        if section_plan is None:
+            status = "omitted"
+            status_reason = (
+                "unresolved binding (renders no content)"
+                if classification == "unresolved"
+                else "mapped section without renderable content"
+            )
+        elif section_plan.empty:
+            status = "omitted"
+            status_reason = "target section has no candidate content; renders nothing"
+        else:
+            status = "rendered"
+            status_reason = ""
+        if classification == "unresolved":
+            reason = unresolved_reasons.get(node_id, "unresolved binding (no recorded reason)")
+        elif classification == "composite":
+            reason = (
+                f"composite heading decomposes ONLY on explicit measured separator "
+                f"evidence into ordered components {sources}; every component "
+                "resolves uniquely through the source-role vocabulary and no "
+                "component source maps elsewhere (all-or-nothing)"
+            )
+        else:
+            reason = (
+                f"measured label resolves uniquely to source role(s) {sources} "
+                "through the source-role vocabulary"
+            )
+        related_notes = [
+            note for note in plan.notes if note.startswith(f"{node_id}:")
+        ]
+        if related_notes:
+            reason = f"{reason}; " + " ".join(related_notes)
+        rows.append(
+            {
+                "node_id": node_id,
+                "heading_text": heading.label if heading else "",
+                "components": components,
+                "resolved_sources": sources,
+                "classification": classification,
+                "candidate_sources_present": present,
+                "candidate_sources_absent": absent,
+                "rendered_leaf_count": len(rendered_leaves),
+                "rendered_leaf_ids": rendered_leaves,
+                "status": status,
+                "status_reason": status_reason,
+                "evidence_ids": list(binding.evidence_ids) if binding else [],
+                "reason": reason,
+            }
+        )
+    return rows
+
+
 def write_review_index(
     run_dir: Path,
     pair: str,
@@ -3699,6 +3841,8 @@ def write_review_index(
     fitting: dict[str, Any] | None = None,
     before_comparison: dict[str, Any] | None = None,
     colors: dict[str, Any] | None = None,
+    binding_rows: list[dict[str, Any]] | None = None,
+    rhythm_decisions: list[Any] | None = None,
 ) -> None:
     def _rows(items: list[Any]) -> str:
         return "".join(f"<li>{_esc(item)}</li>" for item in items)
@@ -3893,6 +4037,65 @@ def write_review_index(
             f"{preview['page_count']} pages; blank-page gate passed: "
             f"{preview['blank_page_gate']['passed']}</p><ul>{links}</ul>"
         )
+    # C2-0cV Part B: auditable per-target-section binding decisions (read
+    # from the existing state binding + plan; presentation only).
+    binding_html = ""
+    if binding_rows:
+        binding_rows_html = "".join(
+            "<tr>"
+            f"<td>{_esc(row['node_id'])}</td><td>{_esc(row['heading_text'])}</td>"
+            f"<td>{_esc(', '.join(row['components']) or '—')}</td>"
+            f"<td>{_esc(', '.join(row['resolved_sources']) or '—')}</td>"
+            f"<td><strong>{_esc(row['classification'])}</strong></td>"
+            f"<td>{_esc(', '.join(row['candidate_sources_present']) or '—')}</td>"
+            f"<td>{_esc(', '.join(row['candidate_sources_absent']) or '—')}</td>"
+            f"<td>{_esc(row['rendered_leaf_count'])}{('<br><small>' + _esc(', '.join(row['rendered_leaf_ids']) or '—') + '</small>') if row['rendered_leaf_ids'] else ''}</td>"
+            f"<td><strong>{_esc(row['status'])}</strong>"
+            + (f"<br><small>{_esc(row['status_reason'])}</small>" if row['status_reason'] else "")
+            + "</td>"
+            f"<td>{_esc(', '.join(row['evidence_ids']) or '—')}</td>"
+            f"<td><small>{_esc(row['reason'])}</small></td></tr>"
+            for row in binding_rows
+        )
+        binding_html = (
+            "<h2>Section binding decisions (C2-0cV Part B; read from the state binding "
+            "and the compiled plan — presentation, not a second binding engine)</h2>"
+            "<table><tr><th>target node</th><th>heading</th><th>decomposed components</th>"
+            "<th>resolved source roles</th><th>classification</th>"
+            "<th>candidate sources present</th><th>candidate sources absent</th>"
+            "<th>rendered leaves</th><th>status</th><th>evidence IDs</th>"
+            "<th>deterministic reason</th></tr>"
+            f"{binding_rows_html}</table>"
+        )
+    # C2-0cV: visible-section vertical-rhythm provenance (plan compiler).
+    rhythm_html = ""
+    if rhythm_decisions:
+        rhythm_rows_html = "".join(
+            "<tr>"
+            f"<td>{_esc(d.node_id)}</td>"
+            f"<td>{_esc(d.original_predecessor or '(header)')}</td>"
+            f"<td>{_esc(d.visible_predecessor or '(header)')}</td>"
+            f"<td>{_esc(', '.join(d.omitted_between) or '—')}</td>"
+            f"<td>{_esc(d.original_gap_above_pt)}</td>"
+            f"<td><strong>{_esc(d.effective_gap_above_pt)}</strong></td>"
+            f"<td>{_esc(d.basis)}</td>"
+            f"<td>{_esc(list(zip(d.evidence_nodes, d.evidence_values)) or '—')}</td>"
+            f"<td><small>{_esc(d.rule)}</small></td></tr>"
+            for d in rhythm_decisions
+        )
+        rhythm_html = (
+            "<h2>Visible-section rhythm decisions (C2-0cV; render-plan compiler)</h2>"
+            "<p>When target sections between visible sections are omitted, a heading's "
+            "measured predecessor-specific gap is no longer reused blindly; the effective "
+            "gap is derived from the measured common section rhythm (median of the "
+            "preserved visible sections' measured gaps). Recorded provenance per "
+            "decision (also in <code>docx_render_plan.json</code> → "
+            "<code>visible_rhythm_decisions</code>):</p>"
+            "<table><tr><th>node</th><th>original predecessor</th><th>visible predecessor</th>"
+            "<th>omitted between</th><th>original gap pt</th><th>effective gap pt</th>"
+            "<th>basis</th><th>evidence (node, gap pt)</th><th>rule</th></tr>"
+            f"{rhythm_rows_html}</table>"
+        )
     pagination_html = ""
     if report.pagination is not None:
         pagination_html = (
@@ -3922,6 +4125,8 @@ never declares visual acceptance.</p>
 as exact).</p>
 {geometry_counts_html}
 <p>Remaining visual gaps: see the failed/unmeasurable rows below.</p>
+{binding_html}
+{rhythm_html}
 {repair_html}
 {colors_html}
 {fitting_html}

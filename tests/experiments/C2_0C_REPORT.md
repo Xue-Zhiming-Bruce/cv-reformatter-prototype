@@ -1,6 +1,6 @@
 # Pipeline C2-0c Report: Minimal DOCX / Cross-Format Spike
 
-Status: `Owner visual review REJECTED C2-0c; five bounded corrective passes executed (C2-0cR repairability, C2-0cC color fidelity, C2-0cM composite section mapping); C2-0cC color capability ACCEPTED by the owner as a bounded milestone (overall E→D still NOT accepted); C2-0cM executed per owner work order — awaiting owner re-review — NOT production work`
+Status: `Owner visual review REJECTED C2-0c; five bounded corrective passes executed (C2-0cR repairability, C2-0cC color fidelity, C2-0cM composite section mapping); C2-0cC ACCEPTED and C2-0cM ACCEPTED by the owner as bounded milestones (overall E→D still NOT accepted); sixth bounded pass C2-0cV visible-section rhythm checkpoint executed per owner work order — awaiting owner re-review — NOT production work`
 
 ## Owner Verdict (visual review, 2026-09-15)
 
@@ -24,11 +24,15 @@ C2-0cR repairability checkpoint (leaf-level indentation coverage + one
 bounded E→F indentation repair), recorded in §0c — was executed after the
 owner's second verdict below, a fourth bounded pass — the C2-0cC color
 fidelity checkpoint (node-level color restoration + rendered-color gate +
-styled-run capability proof), recorded in §0d — after the third, and a fifth
+styled-run capability proof), recorded in §0d — after the third, a fifth
 bounded pass — the C2-0cM composite section mapping checkpoint
 (deterministic composite-heading decomposition + honest partial-population
 rendering), recorded in §0e — after the owner accepted the C2-0cC color
-milestone. C2-0c remains NOT accepted pending owner visual review.
+milestone, and a sixth bounded pass — the C2-0cV visible-section rhythm
+checkpoint (predecessor-aware visible-section vertical rhythm + the
+auditable binding-decision review table), recorded in §0f — after the owner
+accepted the C2-0cM composite-mapping milestone. C2-0c remains NOT accepted
+pending owner visual review.
 
 Date: 2026-09-15
 Branch: `experiment/pipeline-c2` (worktree `/private/tmp/cv-converter-c2`,
@@ -497,7 +501,125 @@ future bounded checkpoint would need (a) per-category measured
 sub-structure in the state (deterministically derivable from the existing
 color/style groups — no LLM) and (b) an explicit fragment→color binding
 policy. Neither exists today; nothing was invented in this pass.
-**C2-0cM is NOT accepted pending owner visual review.**
+
+**Owner verdict (2026-09-15): C2-0cM is ACCEPTED as a bounded
+composite-section-mapping milestone.** Recorded acceptance scope: the
+`EDUCATION & CERTIFICATIONS` heading deterministically binds the ordered
+sources `education + certifications`; candidate education renders inside the
+destination target section; absent certifications remain absent; no
+duplicate candidate-only `Education` section remains; the target purple
+heading and green rule are consumed; candidate content remains exact and
+appears exactly once. Overall E→D is STILL NOT accepted as a complete
+conversion. The next active checkpoint is the visible-section vertical
+rhythm (§0f) — the owner's finding on the accepted C2-0cM output: the
+gap between `SKILLS POOL` and `EDUCATION & CERTIFICATIONS` is an obviously
+excessive blank band (§0f documents the checkpoint that addresses it; the
+SKILLS POOL internal layout remains a separate structural gap, §0e Part E).
+
+## 0f. Visible-Section Rhythm Checkpoint (C2-0cV, owner work order, 2026-09-15)
+
+Owner finding on the accepted C2-0cM E→D output: an obviously excessive
+blank gap separates `SKILLS POOL` from `EDUCATION & CERTIFICATIONS`. The
+plan applied `section.04.heading_gap_above_pt = 45.227` and the geometry
+gate passed because the output matched that declared value — but the value
+is not visually correct after intermediate target sections are omitted.
+Resume D's target originally carries `KEY SKILLS` (and other sections)
+between `SKILLS POOL` and `EDUCATION & CERTIFICATIONS`; when those target
+sections are unresolved and omitted, the original local predecessor
+relationship no longer exists, and a gap measured relative to the ORIGINAL
+predecessor must not be reused relative to a different visible predecessor.
+This is a rendered-flow/section-rhythm problem, not a color or
+composite-binding problem.
+
+**Part A (documentation status).** C2-0cC color capability accepted;
+C2-0cM composite mapping accepted (both as bounded milestones); overall
+E→D remains fail-closed; this checkpoint addresses ONLY visible-section
+vertical rhythm; the SKILLS POOL internal layout (§0e Part E) remains the
+next separate structural gap. C2 is not marked complete.
+
+**Part B (binding-decision review artifact).** The C2-0cM state and plan
+notes carried the binding decisions, but the owner-facing review page had
+no auditable binding table. Added `binding_review_rows()` in
+`c2_docx_renderer.py` — PRESENTATION ONLY: every value is read from the
+existing state `SectionBinding`, the compiled render plan (ledger, notes),
+and the candidate render context; no second binding engine, no duplicated
+binding decision. The review index now renders one row per TARGET section:
+target heading text, stable node ID, normalized/decomposed components
+(existing `_COMPOSITE_SPLIT` evidence split), resolved source roles,
+simple/composite/unresolved classification, candidate sources present,
+candidate sources absent, rendered leaf IDs + count (from the shared
+ownership ledger), rendered/omitted status, evidence IDs, and the
+deterministic reason (unresolved reasons come verbatim from the state's
+recorded `capability_gaps`; composite/simple reasons compose the binding
+facts and the plan's partial-population notes).
+
+**Part C (predecessor-aware visible-section rhythm, earliest shared
+boundary).** Implemented in `compile_render_plan` (c2_renderer.py) — the
+ONE plan compiler both renderers consume — as an additive typed plan
+record `visible_rhythm_decisions` (`RhythmDecision`) plus the plan gap
+adjustment itself:
+
+1. A section whose measured target predecessor relationship still exists
+   in the visible output keeps its measured local gap
+   (`measured_local_gap_preserved`).
+2. When one or more target sections between the visible predecessor and a
+   section are omitted (unresolved binding, empty mapped section,
+   unsupported content), the original predecessor-specific gap is NOT
+   reused blindly: the effective gap is the median of the measured heading
+   gaps of the visible sections whose OWN local predecessor relationship is
+   preserved — the SAME measured `_median` helper the candidate-only
+   overflow rule already consumes (`measured_common_section_rhythm`).
+   Evidence uses only ORIGINAL measured state values, so the decision is
+   order-independent; an omitted empty mapped section counts exactly like
+   an unresolved one.
+3. The fallback is derived only from measured target evidence: no hardcoded
+   Resume-D value, no pair-specific condition, no visual guess, no LLM/VLM,
+   no tolerance tuning. With NO preserved measured rhythm evidence the
+   original gap is retained and the decision is recorded
+   (`no_rhythm_evidence_original_gap_retained`) — never a silent zero.
+4. Provenance per decision: original target predecessor, actual visible
+   predecessor, omitted nodes between, original measured gap, selected
+   effective gap, evidence nodes/values, and the rule — on the plan
+   (`docx_render_plan.json → visible_rhythm_decisions`), as plan notes, and
+   as a review-index table.
+5. Unchanged: rule-to-heading gap, rule-to-content gap, heading
+   typography/color, candidate content, section order, composite binding.
+6. Verified for: one omitted section, multiple omissions, no omissions,
+   an empty target section, and candidate-only overflow sections (which
+   keep their existing documented median rule; the rhythm rule touches
+   TARGET sections only). Focused offline regressions cover each case.
+
+**Part D (rendered verification from the preview PDF).** The geometry
+gate's `heading_gap_above` row now carries the rhythm provenance
+(`basis_source: declared_state_visible_rhythm`, detail naming the original
+gap, the omitted predecessor(s), and the evidence used), and the rendered
+vertical gap is measured and compared against the EFFECTIVE declared basis
+(pre-documented ±1.5pt tolerance, never tuned). E→D canonical run
+`c2_0cV_E_to_D_20260915T190000Z`: `section.04` gap 45.227 → 7.59pt
+(median of preserved visible rhythm evidence `[section.05: 7.59]`);
+`section.02` recomputed 7.59 → 7.59 (same value, honest provenance);
+`section.05` preserved; rendered gap 7.561pt vs basis 7.59 (delta −0.029,
+pass) and the preview visibly shows the compact target rhythm instead of
+the blank band. Geometry 57 pass / 0 fail / 40 honest unmeasurable (the
+same known entry-tier gaps as C2-0cM), color gate TRUE, 1/1/1 pages,
+accounting exact (40 leaves) — STILL fail-closed overall
+(`unsupported_features_confirmed` false), exactly as before: this
+checkpoint changed one gap, not the pair's acceptance status.
+
+**Part E (regression verification).** E→F `c2_0cV_E_to_F_20260915T190500Z`:
+98/98 geometry, ALL hard gates true — the recomputed gaps
+(section.02 15.36 → 15.63, section.04 15.63 → 15.63, both derived from the
+preserved visible rhythm) stay within the declared contract after fitting.
+D→E `c2_0cV_D_to_E_20260915T191000Z`: all target gaps preserved (no
+omissions between consecutive mapped sections), the single documented
+borderline sparse-trailing-page fail remains, still fail-closed on images/
+vector graphics + contact icons. Focused offline: 117 C2 tests pass
+(6 new rhythm tests in `test_c2_renderer.py`, 3 new C2-0cV tests in
+`test_c2_docx_renderer.py`); local-dataset lane 9 passed; broad offline
+659 passed / the same 5 pre-existing unrelated `tests/unit/test_mock_api.py`
+failures documented in C2_0A_REPORT §7.
+
+**C2-0cV is NOT accepted pending owner visual review.**
 
 ## 0. Explicit Non-Claims (read first)
 
@@ -689,6 +811,20 @@ state (`section.04` composite in E→D) and the partial-population note.
 | E→F | `c2_0cM_E_to_F_20260915T182200Z` | no regression: all hard gates true, 98/98 geometry, 43/43 color; final fitting corrections identical to the C2-0cR baseline |
 | D→E | `c2_0cM_D_to_E_20260915T182215Z` | no regression: the single documented borderline sparse-trailing-page fail remains, still fail-closed on images/vector graphics + contact icons |
 
+### 4e. Canonical C2-0cV visible-section-rhythm runs
+
+Same frozen candidate/target/cached evidence/C1 baselines; no live call.
+`c2_0cV_` runs carry the full artifact set above plus the plan's
+`visible_rhythm_decisions` provenance, the review-index binding table
+(Part B), the rhythm-decision table, and rhythm provenance in the
+`heading_gap_above` geometry rows.
+
+| Pair | Run | Outcome |
+|---|---|---|
+| E→D | `c2_0cV_E_to_D_20260915T190000Z` | visible rhythm corrected: section.04 gap 45.227 → 7.59pt (median of preserved visible evidence [section.05: 7.59]); rendered gap 7.561pt vs effective basis, pass; section.02 recomputed 7.59 → 7.59 (honest provenance), section.05 preserved; geometry 57 pass / 0 fail / 40 unmeasurable (same honest entry-tier gaps), color gate TRUE, 1/1/1 pages, accounting exact; STILL fail-closed (unchanged unsupported set) |
+| E→F | `c2_0cV_E_to_F_20260915T190500Z` | no regression: all hard gates true, 98/98 geometry; section.02 15.36 → 15.63 and section.04 15.63 → 15.63 recomputed from the preserved visible rhythm, section.05 preserved |
+| D→E | `c2_0cV_D_to_E_20260915T191000Z` | no regression: all target gaps preserved (no omissions between consecutive mapped sections); the single documented borderline sparse-trailing-page fail remains, still fail-closed |
+
 ## 5. Verification Coverage (corrective pass)
 
 - **Package validity:** every run's DOCX re-opens with python-docx and
@@ -868,15 +1004,38 @@ superiority is claimed anywhere.
     (one typed control, one fitting iteration) and non-damage to unrelated
     nodes; whether the repaired preview is visually acceptable is exactly
     the owner's call.
-13. **C2-0cM is NOT accepted** — the composite binding, partial-population
-    rendering, and E→D verification are recorded; the owner re-review of the
-    canonical `c2_0cM_E_to_D_20260915T181530Z` preview decides. The inline
-    mixed-color mapping and the SKILLS POOL internal-layout gap remain
-    explicitly unresolved (§0e Part E).
+13. **C2-0cM is ACCEPTED as a bounded composite-section-mapping milestone**
+    (owner verdict, §0e): the composite binding, partial-population
+    rendering, and E→D verification are accepted; overall E→D remains NOT
+    accepted. The inline mixed-color mapping and the SKILLS POOL
+    internal-layout gap remain explicitly unresolved (§0e Part E).
+13b. **C2-0cV is NOT accepted pending owner visual review** — the
+    visible-section rhythm correction, the auditable binding table, and
+    the rhythm provenance are recorded; the owner re-review of the
+    canonical `c2_0cV_E_to_D_20260915T190000Z` preview decides. The SKILLS
+    POOL internal layout remains the next separate structural gap.
 
 ## 9. Owner-Review Entry Points
 
-C2-0cM composite-section-mapping checkpoint (review this first):
+C2-0cV visible-section-rhythm checkpoint (review this first):
+
+- `tests/experiments/runs/c2_0cV_E_to_D_20260915T190000Z/review.html` →
+  leads with NOT-accepted status, the target-D image, the auditable
+  **Section binding decisions** table (one row per target section:
+  heading, decomposed components, resolved roles, classification, candidate
+  sources present/absent, rendered leaves, status, evidence, reason), the
+  **Visible-section rhythm decisions** provenance table, the corrected
+  preview (compact SKILLS POOL → EDUCATION & CERTIFICATIONS transition),
+  the `heading_gap_above` row carrying `declared_state_visible_rhythm`
+  provenance, geometry 57/0/40, color gate TRUE, pagination 1/1/1, and the
+  unchanged honest fail-closed status.
+- `tests/experiments/runs/c2_0cV_E_to_F_20260915T190500Z/review.html` (no
+  regression; all hard gates true)
+- `tests/experiments/runs/c2_0cV_D_to_E_20260915T191000Z/review.html` (no
+  regression; the documented borderline sparse-page fail remains)
+
+C2-0cM composite-section-mapping checkpoint (ACCEPTED as a bounded
+milestone):
 
 - `tests/experiments/runs/c2_0cM_E_to_D_20260915T181530Z/review.html` →
   leads with NOT-accepted status, target-D image, full-page side-by-side
@@ -940,11 +1099,16 @@ Rendered-geometry pass (superseded by C2-0cR but retained):
   deterministic PDF-color normalization, additive rule `color_hex`, additive
   `StyledRun`/`StyledLine` plan structures (whitespace-stripping disabled for
   run fragments) consumed by the HTML renderer as ordered native spans.
+  C2-0cV: additive typed `RhythmDecision` plan record +
+  `visible_rhythm_decisions` on `C2RenderPlan`; the visible-section rhythm
+  rule in `compile_render_plan` (both renderers' shared plan compiler):
+  preserved measured local gaps, predecessor-aware recompute from the
+  median preserved visible rhythm (`_median`, the documented helper),
+  recorded no-evidence fallback, plan notes; additive `_median` import.
 - `tests/experiments/c2_pipeline.py` — C2-0cC: `_measured_color_for_evidence`,
   color-consuming `_header_style_token`, and `_heading_style_token` (one
   StyleToken per distinct measured heading presentation with deterministic
   reuse; heading nodes reference their own token).
-- `tests/experiments/c2_renderer.py` — Part-1 rule-geometry gate fix; the
 - `tests/experiments/c2_docx_renderer.py` — corrective pass (entry topology
   tables, controlled paragraph formatting, marker handling, output-verified
   exact claims, pagination classification, preview gate, table-aware
@@ -973,7 +1137,15 @@ Rendered-geometry pass (superseded by C2-0cR but retained):
   dictionary was searched for (AST duplicate-key scan over the experiment
   modules and tests, plus raw-JSON pair-hook scans of the canonical
   comparison artifacts) and does NOT exist in the current code or
-  artifacts; nothing else was cleaned up.
+  artifacts; nothing else was cleaned up. C2-0cV pass: additive
+  `binding_review_rows()` (per-target-section auditable binding table read
+  from the existing state binding + plan + candidate context — presentation
+  only, no second binding engine) rendered into review.html as the
+  **Section binding decisions** table; the **Visible-section rhythm
+  decisions** provenance table (from `plan.visible_rhythm_decisions`);
+  rhythm provenance in `compare_geometry`'s `heading_gap_above` rows
+  (`basis_source: declared_state_visible_rhythm` + detail naming the
+  original gap, omitted predecessor(s), and evidence).
 - `tests/experiments/test_c2_pipeline.py` — C2-0cM: `bind_composite`
   decomposition + fail-closed unit tests; composite state binding/content/
   validator tests; all-or-nothing composite cardinality test;
@@ -984,6 +1156,11 @@ Rendered-geometry pass (superseded by C2-0cR but retained):
   fail-closed test split into (a) unsupported stays fail-closed, (b) a
   fully materializable composite compiles and renders both sources under
   one heading, (c) a non-materializable sub-content stays fail-closed.
+  C2-0cV: six visible-rhythm regressions (preserved without omissions;
+  recompute after one omitted section with full provenance; empty mapped
+  section counts as omitted; median over several preserved gaps; no-evidence
+  fallback retains + records; candidate-only sections never receive
+  decisions).
 - `tests/experiments/test_c2_docx_renderer.py` — C2-0cM: composite section
   renders partially populated content under ONE measured heading (topology
   table, accounting exact, explicit empty-sub note) and copies no target
@@ -1005,6 +1182,13 @@ Rendered-geometry pass (superseded by C2-0cR but retained):
   runs preserve text/order/color/bold/editability; styled runs copy no
   target facts; styled-run accounting/reading order unchanged; canonical
   lane asserts `docx_color_comparison.json` and the separate color gate).
+  C2-0cV: three regressions (binding_review_rows covers every target section
+  with classification/components/present/absent/leaves/status/evidence/reason;
+  binding rows are presentation-only with zero state mutation; the
+  `heading_gap_above` geometry row carries visible-rhythm provenance while a
+  preserved node keeps the plain declared-state basis); the canonical lane
+  now asserts the binding + rhythm sections in review.html, the plan's
+  `visible_rhythm_decisions`, and the E→D `section.04` recompute provenance.
 - `tests/experiments/C2_0B_REPORT.md` — verdict + wording corrections +
   corrective-pass records.
 - `tests/experiments/C2_0C_REPORT.md` — this report.

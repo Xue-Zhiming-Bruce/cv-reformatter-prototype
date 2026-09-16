@@ -53,6 +53,7 @@ from app.ingestion.pdf_reader import read_pdf_text
 from tests.experiments.a_pipeline import (
     RUNS,
     _analyze_target,
+    _median,
     _comparison_diff,
     _export_pinned_html_to_pdf,
     _html_text,
@@ -199,6 +200,31 @@ class EntryPlan(StateModel):
     text_lines: list[LeafText] = Field(default_factory=list)  # zero-bullet design: verbatim text
 
 
+class RhythmDecision(StateModel):
+    """One auditable visible-section rhythm decision (C2-0cV).
+
+    Recorded for every visible mapped section that carries a measured
+    heading gap: either the measured LOCAL gap is preserved (the measured
+    target predecessor relationship still exists in the visible output) or
+    the gap is recomputed from the measured common section rhythm of the
+    other visible sections because one or more target sections between the
+    visible predecessor and this section are omitted (unresolved binding or
+    empty target section). Never a hardcoded value, never a pair-specific
+    condition, never an LLM/VLM output.
+    """
+
+    node_id: str
+    original_predecessor: str | None = None  # target section measured above; None = header region
+    visible_predecessor: str | None = None  # nearest rendered section above; None = header region
+    omitted_between: list[str] = Field(default_factory=list)
+    original_gap_above_pt: float
+    effective_gap_above_pt: float
+    basis: str  # measured_local_gap_preserved | measured_common_section_rhythm | no_rhythm_evidence_original_gap_retained
+    evidence_nodes: list[str] = Field(default_factory=list)
+    evidence_values: list[float] = Field(default_factory=list)
+    rule: str
+
+
 class SectionPlan(StateModel):
     node_id: str
     label: str
@@ -243,6 +269,9 @@ class C2RenderPlan(StateModel):
     explicit_omissions: list[OmittedContent] = Field(default_factory=list)
     merged_candidate_headings: list[dict[str, str]] = Field(default_factory=list)
     skipped_unresolved_sections: list[str] = Field(default_factory=list)
+    # C2-0cV: one auditable vertical-rhythm decision per visible mapped
+    # section (see ``RhythmDecision``); additive to c2-render-plan/1.
+    visible_rhythm_decisions: list[RhythmDecision] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     unhomed: list[dict[str, str]] = Field(default_factory=list)
     failures: list[str] = Field(default_factory=list)
@@ -666,6 +695,143 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                 "content; renders nothing (empty block dropped, never an orphan heading)"
             )
 
+    # -- C2-0cV: visible-section rhythm ---------------------------------------
+    # A measured heading gap belongs to the target predecessor relationship
+    # it was measured from. When one or more target sections between two
+    # visible sections are omitted from the output (unresolved binding, empty
+    # content, unsupported content), that local relationship no longer
+    # exists, so the stale predecessor-specific gap is NOT reused blindly:
+    # the replacement derives from the measured common section rhythm — the
+    # median of the measured gaps of the visible sections whose OWN local
+    # predecessor relationship is preserved (the same documented median
+    # helper the candidate-only overflow rule consumes). With no measured
+    # rhythm evidence the original gap is retained and the decision is
+    # recorded — never a silent zero. Measured state values only; no pair
+    # -specific condition; no LLM/VLM.
+    section_order = [section.node_id for section in sections]
+    order_index = {node_id: index for index, node_id in enumerate(section_order)}
+    visible_plans = [section_plan for section_plan in section_plans if not section_plan.empty]
+    # Pass 1: predecessor topology for every visible section (static; no
+    # mutation), so rhythm evidence never depends on decision order.
+    omitted_by_node: dict[str, list[str]] = {}
+    visible_predecessor_by_node: dict[str, str | None] = {}
+    last_visible: SectionPlan | None = None
+    for current in visible_plans:
+        current_index = order_index[current.node_id]
+        if last_visible is None:
+            visible_predecessor_by_node[current.node_id] = None
+            omitted_by_node[current.node_id] = [
+                node_id for node_id in section_order if order_index[node_id] < current_index
+            ]
+        else:
+            visible_predecessor_by_node[current.node_id] = last_visible.node_id
+            omitted_by_node[current.node_id] = [
+                node_id
+                for node_id in section_order
+                if order_index[last_visible.node_id] < order_index[node_id] < current_index
+            ]
+        last_visible = current
+    original_gaps = {
+        section_plan.node_id: section_plan.heading_gap_above_pt
+        for section_plan in visible_plans
+    }
+    preserved_by_node = {
+        section_plan.node_id: (
+            not omitted_by_node[section_plan.node_id]
+            and original_gaps[section_plan.node_id] is not None
+        )
+        for section_plan in visible_plans
+    }
+    evidence_pool = [
+        (node_id, float(original_gaps[node_id]))
+        for node_id in sorted(original_gaps)
+        if preserved_by_node[node_id]
+    ]
+    # Pass 2: decide and record (deterministic; mutation after evidence).
+    rhythm_decisions: list[RhythmDecision] = []
+    for current in visible_plans:
+        node_id = current.node_id
+        original_gap = original_gaps[node_id]
+        if original_gap is None:
+            # Unmeasured gap: the renderer's documented zero fallback applies,
+            # unchanged by this rule.
+            continue
+        original_predecessor = (
+            section_order[order_index[node_id] - 1] if order_index[node_id] > 0 else None
+        )
+        if preserved_by_node[node_id]:
+            rhythm_decisions.append(
+                RhythmDecision(
+                    node_id=node_id,
+                    original_predecessor=original_predecessor,
+                    visible_predecessor=visible_predecessor_by_node[node_id],
+                    omitted_between=[],
+                    original_gap_above_pt=original_gap,
+                    effective_gap_above_pt=original_gap,
+                    basis="measured_local_gap_preserved",
+                    rule=(
+                        "the measured target predecessor relationship still "
+                        "exists in the visible output; the local gap is kept"
+                    ),
+                )
+            )
+            continue
+        # One or more target sections between the visible predecessor and
+        # this section are omitted: do NOT reuse the original gap blindly.
+        evidence = [
+            (e_node, e_value)
+            for e_node, e_value in evidence_pool
+            if e_node != node_id
+        ]
+        evidence_nodes = [e_node for e_node, _ in evidence]
+        evidence_values = [e_value for _, e_value in evidence]
+        if evidence_values:
+            effective_gap = round(float(_median(evidence_values)), 3)
+            basis = "measured_common_section_rhythm"
+            rule = (
+                "the measured target predecessor relationship no longer exists "
+                "in the visible output (omitted target section(s) in between); "
+                "the effective gap is the median measured heading gap of the "
+                "visible sections whose local predecessor relationship is "
+                "preserved"
+            )
+            current.heading_gap_above_pt = effective_gap
+        else:
+            effective_gap = original_gap
+            basis = "no_rhythm_evidence_original_gap_retained"
+            rule = (
+                "the measured target predecessor relationship no longer exists "
+                "and no visible section carries a preserved measured heading "
+                "gap; the original gap is retained and recorded (never a "
+                "silent zero)"
+            )
+            notes.append(
+                f"{node_id}: visible-section rhythm has no measured "
+                "evidence; the original predecessor gap is retained and flagged"
+            )
+        rhythm_decisions.append(
+            RhythmDecision(
+                node_id=node_id,
+                original_predecessor=original_predecessor,
+                visible_predecessor=visible_predecessor_by_node[node_id],
+                omitted_between=omitted_by_node[node_id],
+                original_gap_above_pt=original_gap,
+                effective_gap_above_pt=effective_gap,
+                basis=basis,
+                evidence_nodes=evidence_nodes,
+                evidence_values=evidence_values,
+                rule=rule,
+            )
+        )
+        if basis == "measured_common_section_rhythm":
+            notes.append(
+                f"{node_id}: target section(s) {omitted_by_node[node_id]} between "
+                f"{visible_predecessor_by_node[node_id] or 'header'} and this section are omitted; "
+                f"heading gap recomputed {original_gap} -> {effective_gap} pt "
+                "from the measured common section rhythm (C2-0cV; provenance on "
+                "plan.visible_rhythm_decisions)"
+            )
+
     # -- candidate-only overflow sections (owner policy) -----------------------
     appended_plans: list[SectionPlan] = []
     merged_headings: list[dict[str, str]] = []
@@ -776,6 +942,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             if section.binding and section.binding.mapping_action == "unresolved"
             and heading_of(section.node_id)
         ],
+        visible_rhythm_decisions=rhythm_decisions,
         notes=notes,
         unhomed=unhomed,
         failures=failures,

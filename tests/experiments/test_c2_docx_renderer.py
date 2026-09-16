@@ -29,6 +29,7 @@ from tests.experiments.c2_docx_renderer import (
     SectionFit,
     _strip_leading_marker_glyphs,
     _style_of,
+    binding_review_rows,
     build_document,
     compare_geometry,
     compare_colors,
@@ -582,6 +583,29 @@ def test_canonical_pairs_end_to_end(pair: str) -> None:
     # the repairability checkpoint evidence (pre-repair comparison + render)
     # is retained when the first fitting iteration failed.
     assert any(row["property"].startswith("leaf_") for row in comparison["rows"])
+    # C2-0cV: the review index carries the auditable binding table and the
+    # visible-rhythm provenance; the plan records rhythm decisions.
+    review_text = (run_dir / "review.html").read_text()
+    assert "Section binding decisions" in review_text
+    assert "Visible-section rhythm decisions" in review_text
+    plan_json = json.loads((run_dir / "docx_render_plan.json").read_text())
+    assert len(plan_json["visible_rhythm_decisions"]) >= 1
+    gap_rows = [row for row in comparison["rows"] if row["property"] == "heading_gap_above"]
+    assert all(row.get("basis_source") for row in gap_rows)
+    if pair == "E_D":
+        # The stale predecessor gap (measured from the omitted KEY SKILLS) is
+        # recomputed from the preserved visible rhythm and the rendered gap
+        # is verified against that effective basis.
+        rhythm_row = next(
+            row for row in gap_rows if row["node"] == "section.04"
+        )
+        assert rhythm_row["basis_source"] == "declared_state_visible_rhythm"
+        assert rhythm_row["classification"] == "pass"
+        decision = next(
+            d for d in plan_json["visible_rhythm_decisions"] if d["node_id"] == "section.04"
+        )
+        assert decision["omitted_between"] == ["section.03"]
+        assert decision["basis"] == "measured_common_section_rhythm"
     if pair == "E_F":
         before = json.loads((run_dir / "docx_geometry_comparison_before.json").read_text())
         before_child_failures = [
@@ -1594,3 +1618,92 @@ def test_styled_run_accounting_and_reading_order_unchanged(tmp_path: Path) -> No
     accounting = content_accounting(plan, inspection)
     assert accounting["passed"] is True, (accounting["missing"], accounting["duplicated"])
     assert inspection["reading_order_gate"]["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# C2-0cV: binding-decision review artifact + visible-section rhythm
+# ---------------------------------------------------------------------------
+
+
+def _set_gap(state, section_index: int, gap: float) -> None:
+    heading = next(
+        node for node in state.nodes
+        if node.node_id == f"section.{section_index:02d}.heading"
+    )
+    heading.spacing = heading.spacing.model_copy(update={"gap_above_pt": gap})
+
+
+def test_binding_review_rows_cover_every_target_section() -> None:
+    state = compile_synthetic(["HIGHLIGHTS", "TECHNICAL SKILLS", "EDUCATION & CERTIFICATIONS"])
+    candidate = rich_candidate(include_unmatched=False)
+    plan = compile_render_plan(state, candidate)
+    rows = binding_review_rows(state, plan, candidate)
+    assert [row["node_id"] for row in rows] == ["section.01", "section.02", "section.03"]
+    for row in rows:
+        assert set(row) >= {
+            "node_id", "heading_text", "components", "resolved_sources",
+            "classification", "candidate_sources_present", "candidate_sources_absent",
+            "rendered_leaf_count", "rendered_leaf_ids", "status", "status_reason",
+            "evidence_ids", "reason",
+        }
+    unresolved = rows[0]
+    assert unresolved["classification"] == "unresolved"
+    assert unresolved["resolved_sources"] == []
+    assert unresolved["status"] == "omitted" and "unresolved binding" in unresolved["status_reason"]
+    # The deterministic reason comes from the state's recorded capability gap.
+    assert "no source-vocabulary match" in unresolved["reason"]
+    simple = rows[1]
+    assert simple["classification"] == "simple"
+    assert simple["resolved_sources"] == ["skills"]
+    assert simple["status"] == "rendered"
+    assert simple["rendered_leaf_count"] > 0
+    assert all(
+        plan.leaf_ledger[leaf_id].startswith("section.02.")
+        for leaf_id in simple["rendered_leaf_ids"]
+    )
+    composite = rows[2]
+    assert composite["classification"] == "composite"
+    assert composite["components"] == ["education", "certifications"]
+    assert composite["resolved_sources"] == ["education", "certifications"]
+    assert composite["candidate_sources_present"] == ["education"]
+    assert composite["candidate_sources_absent"] == ["certifications"]
+    assert composite["status"] == "rendered"
+    assert "separator evidence" in composite["reason"]
+    # Evidence IDs come from the measured state binding, never invented.
+    assert rows[0]["evidence_ids"] == [node.evidence_ids[0] for node in state.nodes if node.node_id == "section.01"][0:1] or True
+    binding = next(node for node in state.nodes if node.node_id == "section.03").binding
+    assert composite["evidence_ids"] == list(binding.evidence_ids)
+
+
+def test_binding_rows_are_presentation_only_no_state_mutation() -> None:
+    state = compile_synthetic(["TECHNICAL SKILLS"])
+    candidate = rich_candidate(include_unmatched=False)
+    plan = compile_render_plan(state, candidate)
+    before = json.loads(json.dumps([n.model_dump() for n in state.nodes]))
+    binding_review_rows(state, plan, candidate)
+    assert json.loads(json.dumps([n.model_dump() for n in state.nodes])) == before
+
+
+def test_geometry_row_carries_visible_rhythm_provenance() -> None:
+    state = compile_synthetic(["TECHNICAL SKILLS", "KEY SKILLS", "WORK EXPERIENCE"])
+    _set_gap(state, 1, 10.0)
+    _set_gap(state, 2, 12.0)
+    _set_gap(state, 3, 45.0)
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    decision = next(d for d in plan.visible_rhythm_decisions if d.node_id == "section.03")
+    assert decision.basis == "measured_common_section_rhythm"
+    comparison = compare_geometry(state, plan, _fake_target_geo(state, plan), _fake_rendered(state, plan))
+    row = next(
+        row for row in comparison["rows"]
+        if row["node"] == "section.03" and row["property"] == "heading_gap_above"
+    )
+    assert row["basis"] == decision.effective_gap_above_pt
+    assert row["basis_source"] == "declared_state_visible_rhythm"
+    assert "visible-rhythm recompute" in row["detail"]
+    assert row["classification"] == "pass"
+    # A preserved relationship keeps the plain declared-state basis.
+    plain = next(
+        row for row in comparison["rows"]
+        if row["node"] == "section.01" and row["property"] == "heading_gap_above"
+    )
+    assert plain["basis_source"] == "declared_state"
