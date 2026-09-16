@@ -724,6 +724,17 @@ added. The state and plan stay additive to their existing versions.
 `runs/c2_0cS_E_to_D_20260916T041500Z/skills_pool_before_after.html` (target /
 C2-0cV before / C2-0cS after crops) and the full review page.
 
+**Owner verdict (2026-09-16): C2-0cS is ACCEPTED as a bounded Skills Pool
+structural milestone.** Recorded acceptance scope: C2-0cS materially improved
+Resume D, and it proved that C2 can represent and render the measured
+two-column category-grid structure as editable DOCX/HTML content. It did NOT
+prove general template support. Overall E→D remains NOT accepted. Pipeline C2
+remains experimental and is not approved for production. Recorded before the
+C2-0d generalization audit (see `C2_0D_REPORT.md`); the next question is not
+whether Resume D can be fitted further but whether the same unchanged logic
+generalizes across the candidate/target matrix without template-specific
+patches, false grid detection, or regressions.
+
 ## 0. Explicit Non-Claims (read first)
 
 - This is an architecture experiment, NOT a production DOCX system.
@@ -1131,16 +1142,18 @@ superiority is claimed anywhere.
     visible-section rhythm correction, the auditable binding table, and
     the rhythm provenance are recorded; the owner re-review of the
     canonical `c2_0cV_E_to_D_20260915T190000Z` preview decides.
-13c. **C2-0cS is NOT accepted pending owner visual review** — the measured
-    category grid, the row-major candidate binding, the verified anchors,
-    and the before/after SKILLS POOL comparison are recorded; the owner
-    re-review of the canonical `c2_0cS_E_to_D_20260916T041500Z` preview
-    decides. Per-category colors (red Sales/Finance, blue ERP) remain the
-    explicitly recorded inline-binding capability gap (C2-0cC ruling).
+13c. **C2-0cS is ACCEPTED as a bounded Skills Pool structural milestone**
+    (owner verdict, 2026-09-16, §0g): the measured category grid, the
+    row-major candidate binding, the verified anchors, and the before/after
+    SKILLS POOL comparison are accepted. It did NOT prove general template
+    support; overall E→D remains NOT accepted. Per-category colors (red
+    Sales/Finance, blue ERP) remain the explicitly recorded inline-binding
+    capability gap (C2-0cC ruling). The next checkpoint is C2-0d: the frozen
+    multi-template generalization audit.
 
 ## 9. Owner-Review Entry Points
 
-C2-0cS skills-pool-structure checkpoint (review this first):
+C2-0cS skills-pool-structure checkpoint (ACCEPTED as a bounded milestone; §0g):
 
 - `tests/experiments/runs/c2_0cS_E_to_D_20260916T041500Z/skills_pool_before_after.html`
   → the direct owner artifact: target crop / accepted C2-0cV before crop /

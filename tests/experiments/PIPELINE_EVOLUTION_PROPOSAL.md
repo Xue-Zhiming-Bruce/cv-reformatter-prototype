@@ -8,7 +8,7 @@
 > | B 管线 | 已关闭（假设证伪，零件经 §7.3 移植） |
 > | C1 D→E（header + body） | owner 终审通过，完成（§9/§11） |
 > | C1 E→F 泛化 | **调试中，尚未通过**（十次冻结，缺口 #1–#8 已闭；#9 右缘杠杆失效、#10 种子行宽派生假设待验证，见 run 20260910T161228Z） |
-> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑；C2-0b 经三轮纠偏后由 owner 终审裁决：**接受为实验性 PDF 架构里程碑；非生产批准，非视觉 parity 主张**（rule-geometry 门禁完整性已闭合，含 page/垂直区域关联）；**C2-0c 被 owner 视觉评审否决**（机械可编辑 ≠ 模板保真：双栏条目拓扑丢失、内建样式间距失控、双 marker、E→F 变两页、D→E 三页稀疏）→ 一次有界视觉纠偏已执行（无边框双栏表恢复拓扑、逐段显式格式控制、确认型 marker 转换、E→F 回到一页、D→E 回到 C1 页数、exact 声明逐条输出验证、preview/空白页入硬门禁、分页显式分类），**待 owner 复审**；随后按 owner 工单执行**渲染几何实测与有界拟合 pass**（E→F 40/40 点级几何全部通过、2 次拟合收敛、hard gate 全真；typography 拆分 authored/rendered 两种结果，替换字体诚实判 adjusted；D→E 1 个剩余 delta 诚实记录、E→D 保持 fail-closed gap-only），**仍待 owner 视觉复审**；C2-0cC 颜色能力已被 owner 接受为有界里程碑（整体 E→D 仍未接受）；随后按 owner 工单执行 **C2-0cM 复合章节映射检查点**：`EDUCATION & CERTIFICATIONS` 经确定性复合标题分解绑定为 `[education, certifications]`，候选人教育经历在目标章节呈现（紫标题/绿规则/实测内容起点）内渲染、certifications 子内容诚实留空，E→D 仍 fail-closed（SKILLS POOL 内部布局与行内颜色缺口已入诊断），**待 owner 复审**（见 §16.5/§16.6/§16.7/§16.9/§16.10 与 `C2_0B_REPORT.md`/`C2_0C_REPORT.md`） |
+> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑；C2-0b 经三轮纠偏后由 owner 终审裁决：**接受为实验性 PDF 架构里程碑；非生产批准，非视觉 parity 主张**（rule-geometry 门禁完整性已闭合，含 page/垂直区域关联）；**C2-0c 被 owner 视觉评审否决**（机械可编辑 ≠ 模板保真：双栏条目拓扑丢失、内建样式间距失控、双 marker、E→F 变两页、D→E 三页稀疏）→ 一次有界视觉纠偏已执行（无边框双栏表恢复拓扑、逐段显式格式控制、确认型 marker 转换、E→F 回到一页、D→E 回到 C1 页数、exact 声明逐条输出验证、preview/空白页入硬门禁、分页显式分类），**待 owner 复审**；随后按 owner 工单执行**渲染几何实测与有界拟合 pass**（E→F 40/40 点级几何全部通过、2 次拟合收敛、hard gate 全真；typography 拆分 authored/rendered 两种结果，替换字体诚实判 adjusted；D→E 1 个剩余 delta 诚实记录、E→D 保持 fail-closed gap-only），**仍待 owner 视觉复审**；C2-0cC 颜色能力已被 owner 接受为有界里程碑（整体 E→D 仍未接受）；随后按 owner 工单执行 **C2-0cM 复合章节映射检查点**：`EDUCATION & CERTIFICATIONS` 经确定性复合标题分解绑定为 `[education, certifications]`，候选人教育经历在目标章节呈现（紫标题/绿规则/实测内容起点）内渲染、certifications 子内容诚实留空，E→D 仍 fail-closed（SKILLS POOL 内部布局与行内颜色缺口已入诊断），**待 owner 复审**；随后按 owner 工单执行 **C2-0cV 可见章节节奏检查点**（已被 owner 接受为节奏检查点里程碑）；随后按 owner 工单执行 **C2-0cS SKILLS POOL 内部结构检查点**（实测双栏 category grid + 行主序候选人绑定，**owner 裁决（2026-09-16）：C2-0cS 接受为有界 Skills Pool 结构里程碑——它证明了 C2 能以可编辑 DOCX/HTML 内容表示并渲染实测双栏类目网格结构；未证明通用模板支持；整体 E→D 仍未接受；Pipeline C2 保持实验性、未获生产批准**）；当前 checkpoint = **C2-0d 冻结多模板泛化审计**（六个定向 pair 全矩阵，评估先行，不改实现，见 §16.13 与 `C2_0D_REPORT.md`）（见 §16.5/§16.6/§16.7/§16.9/§16.10/§16.13 与 `C2_0B_REPORT.md`/`C2_0C_REPORT.md`/`C2_0D_REPORT.md`） |
 > | Pipeline D | D0/D0-R/D1-0 已完成；暂停后续工作，等待 C2 结果（见 `D_PIPELINE_PROPOSAL.md`） |
 >
 > 日期:2026-09-08 初版;2026-09-09 §7–§8;2026-09-10 §9–§12;
@@ -1537,3 +1537,34 @@ Owner-review artifacts:
 **C2-0cS is NOT accepted pending owner visual review; per-category colors
 remain the explicitly recorded inline-binding capability gap; C2 remains an
 active experiment, not production work.**
+
+### 16.13 C2-0cS owner verdict 与 C2-0d 启动记录（2026-09-16）
+
+**Owner verdict（先于 C2-0d 记录）：C2-0cS 接受为有界 Skills Pool 结构里程碑。**
+记录的接受范围：C2-0cS 实质改进了 Resume D；它证明了 C2 能以可编辑 DOCX/HTML
+内容表示并渲染实测的双栏类目网格结构。它**未**证明通用模板支持。整体 E→D
+仍未接受。Pipeline C2 保持实验性、未获生产批准。
+
+**C2-0d（下一个 checkpoint，评估先行，非功能开发）**：C2-0cS 实质改进了
+Resume D，但加入了大量检测/状态/render plan/渲染器/测量/门禁逻辑。下一个
+问题不是继续拟合 Resume D，而是**同一套未改动逻辑能否跨候选人/目标组合泛化**
+（无模板特定补丁、无误检 grid、无回归）。主目标：在授权本地
+resume/template 语料上按现状评估当前 C2 实现——能否可靠选择并渲染既有结构
+（普通单栏列表 / 行内 skills / 双栏类目网格 / 条目表 / 复合章节 / 诚实
+unsupported）。
+
+方法（预注册，见 `C2_0D_REPORT.md`）：
+
+1. 冻结 C2 实现；所有六个定向 D/E/F pair（D→E、D→F、E→D、E→F、F→D、F→E）
+   经既有 canonical runner（c2-0c DOCX lane；新 pair 补 c2-0b HTML lane）
+   运行，不加任何布局能力/schema/detector/渲染路径/容差/拟合规则/目标特定条件；
+2. 预注册矩阵：每个 target 每个相关章节的期望结构分类来自目标证据 + 目测，
+   不来自 detector 输出；先落盘再看运行结果；
+3. 新增 pair 只注册冻结 C1 基线（D→F=`c1_matrix_DF_B`、F→D=
+   `c1_matrix_FD_B_20260911T061127Z`、F→E=`c1_matrix_FE2_20260910T200958Z`）
+   与候选人 F 的作者分段（作者赋值输入数据，非管线逻辑）；不建第二 runner、
+   不新增 schema 族、不调用 provider、不下载新简历；
+4. 若冻结实现在矩阵上失败：保留失败、诊断、报告最小根因、停下待 owner 复审；
+   除非 owner 另行授权纠偏 pass，不在同一 checkpoint 内修复。
+
+裁决权：owner。自动门禁与分数只是支持性文档。
