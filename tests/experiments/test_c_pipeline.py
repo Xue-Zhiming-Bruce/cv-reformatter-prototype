@@ -827,7 +827,10 @@ class _FakePage:
         self.lines = list(lines)
         self.width = width
 
-    def extract_words(self):
+    def extract_words(self, *args, **kwargs):
+        # pdfplumber's extra_attrs (e.g. fontname for C2-0cS grid detection)
+        # is accepted and ignored: these fixtures carry no font data, so the
+        # grid detection sees no bold words and honestly finds no grid.
         return self._words
 
 

@@ -1450,3 +1450,90 @@ integration, frontend, broad matrix, or live calls):
 
 **C2-0cV is NOT accepted pending owner visual review.** C2 remains an
 active experiment, not production work.
+
+### 16.12 C2-0cS skills-pool internal-structure checkpoint (2026-09-15/16, owner work order)
+
+Owner direction: C2-0cV was accepted only as the visible-section rhythm
+checkpoint; the next largest visible E→D mismatch is the INTERNAL structure
+of SKILLS POOL — the target's categories, grouping, column/grid
+relationships, inline emphasis/colors, and local spacing. Objective:
+determine whether the existing provider-neutral state can truthfully
+represent and render the measurable internal structure, then implement the
+smallest evidence-backed change. Explicitly not permission to redesign
+Pipeline C2 or build a generic grid engine.
+
+Measured investigation (before any edit; local pdfplumber word geometry +
+cached Adobe evidence + rendered crops): the target's SKILLS POOL body is a
+measured TWO-COLUMN category grid — three rows (uniform 12.546pt pitch) ×
+two columns; each cell = a BOLD category label RIGHT-ALIGNED at the column's
+label edge (left column all labels end at x1=88.146, right column at
+x1=364.488) and REGULAR value texts starting at the column's shared value
+anchor (93.60 / 369.94; label→value gap 5.454pt), all at 10.909pt; category
+colors black #000000 / red #B50013 with a blue #1F1D8E sub-run inside
+Software's values. The Adobe provider blocks cover the left column + Sales
+but MISS the right column's Marketing/Software/ERP cells (provider gap) —
+the bounded local word-row measurement (same input bytes, local_pdf
+provenance) covers them. Evidence classes: directly measured (rows,
+anchors, typography, colors) vs deterministic derivation (column split =
+midpoint of the adjacent measured bounds, 303.302pt) vs unsupported
+(per-category color BINDING — the candidate's two categories do not
+correspond to the target's six; the only exact-label match, Software→black,
+equals the documented fallback — recorded honestly, nothing invented,
+C2-0cC ruling stands).
+
+Implemented (additive only; no new runner/report family/corpus/adapter/
+dependency/schema family; no LLM/VLM; no pair-specific condition; no
+flattening, no target facts copied):
+
+1. **State (c_pipeline/c2_pipeline)** — pure `detect_category_grid` (≥2
+   columns, each anchored by a cluster of ≥2 bold labels sharing x1 within
+   the documented 2.0pt tolerance, values at a shared x0 within the measured
+   gap bound, uniform row pitch within 1.0pt; ANY missing cluster → None),
+   `_measure_category_grids` (local_pdf provenance), additive
+   `BodyScaffold.category_grids` → `CategoryGridScaffold` → state
+   `category_grid` on the section node (geometry only: anchors, gap, pitch,
+   documented splits, NO target text, NO per-cell colors).
+2. **Plan (c2_renderer)** — additive `CategoryGridCell` +
+   `category_grid_cells`: the mapped section's candidate skill-group leaves
+   bind ROW-MAJOR in document order; the split is the leaf's own first
+   colon; fragments concatenate to the leaf's verbatim text; leaves owned
+   exactly once at their cell destinations; the plain item list is skipped
+   for that section.
+3. **Renderers** — DOCX: borderless fixed-layout table (existing entry-table
+   patterns), label sub-cells right-aligned by the measured gap indent
+   (label ends exactly at the measured label edge), values at the measured
+   anchors; HTML (C2-0b): the same geometry as a CSS table (inline-block
+   would wrap whole cells and lose the columns). Both fully editable.
+4. **Verification** — per-cell `grid_label_right_x`/`grid_value_x0`/
+   `grid_label_bold` geometry rows (measured-target basis, pre-documented
+   tolerances, never tuned) with honest `not_applicable` handling (empty
+   label fragments; fewer candidate rows than the target's measured grid);
+   `grid_row_pitch` only when ≥2 rows render; accounting extends the
+   exactly-once rule (a grid leaf renders once AS its ordered fragments);
+   output-verified attributed table claims (entry 2-column, grid 2n-column
+   at the measured boundaries); the C2-0b HTML content gate verifies grid
+   leaves per fragment within the measured column windows (the flattened
+   PDF text interleaves the columns exactly like the target's own text).
+5. **Canonical runs** — E→D `c2_0cS_E_to_D_20260916T041500Z`: the grid
+   renders (Languages r0c0, Software r0c1), anchors verified ≤0.1pt, bold
+   verified, row pitch honestly not_applicable (candidate fills 1 of 3
+   measured rows), geometry 60/0/40 (+1 not_applicable), color gate TRUE,
+   1/1/1 pages (fits the measured slack), accounting exact, the C2-0cV
+   rhythm rows unchanged (7.583/7.561/7.59 vs 7.59pt — the blank band did
+   NOT return), STILL fail-closed on the unchanged unsupported set. E→F
+   `c2_0cS_E_to_F_20260916T042000Z` and D→E
+   `c2_0cS_D_to_E_20260916T042500Z`: no measured grid cluster on those
+   targets → ordinary rendering unchanged (E→F all gates true, 98/98;
+   D→E keeps its single documented borderline sparse-page fail).
+6. **Tests** — 7 new C2-0cS regressions + 2 updated c_pipeline fixture
+   fakes; 123 C2 offline passed, local-dataset lane 9 passed, broad offline
+   665 passed (the same 5 pre-existing unrelated mock_api failures
+   documented in C2_0A_REPORT §7); state/plan reproducibility verified
+   (recompiling reproduces the canonical run's state bytes and plan JSON).
+
+Owner-review artifacts:
+`runs/c2_0cS_E_to_D_20260916T041500Z/skills_pool_before_after.html`
+(target / accepted C2-0cV before / C2-0cS after crops) and `review.html`.
+**C2-0cS is NOT accepted pending owner visual review; per-category colors
+remain the explicitly recorded inline-binding capability gap; C2 remains an
+active experiment, not production work.**

@@ -368,6 +368,31 @@ class SectionContent(StateModel):
         return self
 
 
+class CategoryGridColumn(StateModel):
+    """Measured anchors of one category-grid column (C2-0cS; local PDF
+    evidence). Geometry only — no target text, no per-cell colors."""
+
+    label_right_x_pt: float = Field(ge=0)
+    value_x0_pt: float = Field(ge=0)
+    label_value_gap_pt: float = Field(ge=0)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class CategoryGrid(StateModel):
+    """Measured category-grid structure of one mapped section (C2-0cS):
+    ≥2 aligned-pair columns (right-aligned bold label edge + shared value
+    left edge), a measured uniform row pitch, and the documented column
+    splits (midpoint of the two adjacent measured bounds). Carried on the
+    SECTION node; the render plan binds candidate skill-group leaves to the
+    cells row-major in document order."""
+
+    columns: list[CategoryGridColumn] = Field(min_length=2)
+    row_pitch_pt: float = Field(gt=0)
+    column_splits_x_pt: list[float] = Field(default_factory=list)
+    row_count: int = Field(ge=1)
+    evidence_ids: list[str] = Field(min_length=1)
+
+
 class LayoutNode(StateModel):
     """One node of the layout tree.
 
@@ -408,6 +433,10 @@ class LayoutNode(StateModel):
     detail_style_id: str | None = None
     meta_style_id: str | None = None
     inter_entry_gap_above_pt: float | None = Field(default=None, ge=0)
+    # Measured category-grid structure (C2-0cS; section-only; None = the
+    # section's content range measured no aligned-pair column cluster — the
+    # ordinary item-list rendering applies).
+    category_grid: CategoryGrid | None = None
     label: str | None = None
     label_case: Literal["upper", "title", "mixed"] | None = None
     list_marker: Literal["bullet", "none"] | None = None
@@ -491,6 +520,8 @@ class LayoutNode(StateModel):
             )
         if self.kind != "section" and self.content_style_id is not None:
             raise ValueError(f"{self.node_id}: content_style_id belongs on section nodes")
+        if self.kind != "section" and self.category_grid is not None:
+            raise ValueError(f"{self.node_id}: category_grid belongs on section nodes")
         if self.kind in {"entry_row", "list_row"} and self.parent_id is None:
             raise ValueError(
                 f"{self.node_id}: entry/list structure is section-owned"
@@ -1508,6 +1539,28 @@ def state_from_scaffolds(
                 content_style_id=content_style.style_id if content_style else None,
                 entry_ref=entry_node_id,
                 list_ref=list_node_id,
+                category_grid=next(
+                    (
+                        CategoryGrid(
+                            columns=[
+                                CategoryGridColumn(
+                                    label_right_x_pt=column.label_right_x_pt,
+                                    value_x0_pt=column.value_x0_pt,
+                                    label_value_gap_pt=column.label_value_gap_pt,
+                                    evidence_ids=list(column.evidence_ids),
+                                )
+                                for column in grid.columns
+                            ],
+                            row_pitch_pt=grid.row_pitch_pt,
+                            column_splits_x_pt=list(grid.column_splits_x_pt),
+                            row_count=grid.row_count,
+                            evidence_ids=list(grid.evidence_ids),
+                        )
+                        for grid in body_scaffold.category_grids
+                        if grid.heading_index == index - 1
+                    ),
+                    None,
+                ),
                 evidence_ids=list(heading.evidence_ids),
                 flow=FlowConstraint(keep_with_next=True),
             )

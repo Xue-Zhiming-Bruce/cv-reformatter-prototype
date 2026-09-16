@@ -225,6 +225,25 @@ class RhythmDecision(StateModel):
     rule: str
 
 
+class CategoryGridCell(StateModel):
+    """C2-0cS: one candidate skill-group leaf bound to a measured target
+    category-grid cell (row-major, document order). The leaf renders EXACTLY
+    ONCE as its ordered cell fragments — the label fragment (measured bold
+    label token) right-aligned in the label sub-cell, the value fragment
+    (measured content token) left-aligned in the value sub-cell; the
+    fragments concatenate to the leaf's verbatim text (the accounting
+    contract). No target label text, no per-cell colors, no invented
+    binding: the cell placement is the measured column/row geometry."""
+
+    leaf_id: str
+    row_index: int = Field(ge=0)
+    column_index: int = Field(ge=0)
+    label_text: str
+    value_text: str
+    label_style_id: str | None = None
+    value_style_id: str | None = None
+
+
 class SectionPlan(StateModel):
     node_id: str
     label: str
@@ -254,6 +273,9 @@ class SectionPlan(StateModel):
     detail_style_id: str | None = None
     meta_style_id: str | None = None
     inter_entry_gap_above_pt: float | None = None
+    # C2-0cS: measured category-grid cells (row-major); when present the
+    # plain item list is not rendered (leaves are owned by their cells).
+    category_grid_cells: list[CategoryGridCell] = Field(default_factory=list)
 
 
 class C2RenderPlan(StateModel):
@@ -681,14 +703,50 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             plan.bullet_dot_x0_pt = list_node.bullet_dot_x0_pt if list_node else None
             plan.bullet_text_x0_pt = list_node.bullet_text_x0_pt if list_node else None
             plan.base_x0_pt = state.page.margin_left_pt
-            plan.items = items_for(role)
-            own_items(section.node_id, plan.items)
+            grid = section.category_grid
+            plan_items = items_for(role)
+            if grid is not None and plan_items and content.content_kind == "item_list":
+                # C2-0cS: the section's content range measured an aligned-pair
+                # category grid (right-aligned bold label edge + shared value
+                # left edge per column). The candidate skill-group leaves bind
+                # row-major in document order; each leaf renders EXACTLY ONCE
+                # as its ordered label+value fragments (verbatim
+                # concatenation), splitting ONLY at the leaf's own first
+                # colon. Deterministic, target-geometry-driven, no target
+                # facts, no per-cell color invention.
+                for index, item in enumerate(plan_items):
+                    text = item.text or ""
+                    split_at = text.find(":")
+                    label_text = text[: split_at + 1] if split_at >= 0 else ""
+                    value_text = text[split_at + 1 :] if split_at >= 0 else text
+                    cell = CategoryGridCell(
+                        leaf_id=item.leaf_id,
+                        row_index=index // len(grid.columns),
+                        column_index=index % len(grid.columns),
+                        label_text=label_text,
+                        value_text=value_text,
+                        label_style_id="style.body",
+                        value_style_id=section.content_style_id,
+                    )
+                    plan.category_grid_cells.append(cell)
+                    own(item.leaf_id, f"{section.node_id}.category.r{cell.row_index}c{cell.column_index}")
+                notes.append(
+                    f"{section.node_id}: measured category grid binds {len(plan_items)} "
+                    f"candidate group leaf(s) row-major to {len(grid.columns)} measured "
+                    "columns (C2-0cS; label/value fragments concatenate to the leaf text)"
+                )
+            else:
+                plan.items = plan_items
+                own_items(section.node_id, plan.items)
             if content.content_kind == "inline_items" and content.inline_separator:
                 notes.append(
                     f"{section.node_id}: inline separator {content.inline_separator!r} joins items"
                 )
         section_plans.append(plan)
-        plan.empty = not (plan.paragraph_lines or plan.styled_lines or plan.entries or plan.items)
+        plan.empty = not (
+            plan.paragraph_lines or plan.styled_lines or plan.entries or plan.items
+            or plan.category_grid_cells
+        )
         if plan.empty:
             notes.append(
                 f"{section.node_id} ({plan.label!r}): target section has no candidate "
@@ -1303,6 +1361,77 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                         content_class,
                     )
                 )
+        # C2-0cS: the measured category grid renders its cells row-major as
+        # inline-block columns at the measured label/value anchors (same
+        # measured geometry the DOCX table consumes; no target facts).
+        if section_plan.category_grid_cells:
+            grid = next(
+                (
+                    node.category_grid for node in state.nodes
+                    if node.node_id == section_plan.node_id and node.category_grid
+                ),
+                None,
+            )
+            if grid is not None:
+                base_indent = round(
+                    (section_plan.base_x0_pt or page.margin_left_pt) - page.margin_left_pt, 3
+                )
+                right_edge = page.width_pt - page.margin_right_pt
+                splits = [*grid.column_splits_x_pt, right_edge]
+                by_row: dict[int, list[Any]] = {}
+                for cell in section_plan.category_grid_cells:
+                    by_row.setdefault(cell.row_index, []).append(cell)
+                # CSS table layout: the browser lays the measured columns the
+                # same way the DOCX table does — cells share their row's
+                # baseline and values wrap WITHIN their cell (inline-block
+                # would wrap whole cells to the next line and lose the
+                # columns).
+                row_parts: list[str] = []
+                for row_index in sorted(by_row):
+                    cell_parts = []
+                    for cell in sorted(by_row[row_index], key=lambda c: c.column_index):
+                        column = grid.columns[cell.column_index]
+                        label_left = (
+                            grid.column_splits_x_pt[cell.column_index - 1]
+                            if cell.column_index
+                            else page.margin_left_pt + base_indent
+                        )
+                        label_width = round(column.value_x0_pt - label_left, 3)
+                        value_width = round(splits[cell.column_index] - column.value_x0_pt, 3)
+                        label_style = (
+                            f"display: table-cell; width: {_pt(label_width)}; text-align: right;"
+                            f" padding-right: {_pt(column.label_value_gap_pt)};"
+                            " vertical-align: top;"
+                        )
+                        value_style = (
+                            f"display: table-cell; width: {_pt(value_width)}; vertical-align: top;"
+                        )
+                        cell_id = (
+                            f"{_esc(section_plan.node_id)}.category."
+                            f"r{cell.row_index}c{cell.column_index}"
+                        )
+                        cell_parts.append(
+                            f'        <span class="c2-grid-label {_class_for(cell.label_style_id)}" '
+                            f'data-node-id="{cell_id}.label" data-leaf-id="{_esc(cell.leaf_id)}" '
+                            f'style="{label_style}">{_esc(cell.label_text)}</span>'
+                        )
+                        cell_parts.append(
+                            f'        <span class="c2-grid-value {_class_for(cell.value_style_id)}" '
+                            f'data-node-id="{cell_id}.value" data-leaf-id="{_esc(cell.leaf_id)}" '
+                            f'style="{value_style}">{_esc(cell.value_text)}</span>'
+                        )
+                    row_parts.append(
+                        f'      <div class="c2-grid-row" data-node-id="{_esc(section_plan.node_id)}.category.r{row_index}" '
+                        'style="display: table-row;">\n' + "\n".join(cell_parts) + "\n      </div>"
+                    )
+                table_style = (
+                    f"display: table; table-layout: fixed; margin-left: {_pt(base_indent)};"
+                    if base_indent else "display: table; table-layout: fixed;"
+                )
+                parts.append(
+                    f'    <div class="c2-grid" data-node-id="{_esc(section_plan.node_id)}.category" '
+                    f'style="{table_style}">\n' + "\n".join(row_parts) + "\n    </div>"
+                )
         if not section_plan.empty:
             parts.append("  </section>")
 
@@ -1375,9 +1504,98 @@ class _IdentityParser(HTMLParser):
             buffer.append(data)
 
 
-def content_gate(plan: C2RenderPlan, html: str, pdf: Path) -> dict[str, Any]:
+def _grid_fragment_count(plan: C2RenderPlan, leaf_id: str) -> int | None:
+    """The expected number of rendered HTML/DOCX fragments for a leaf: 2 for
+    a category-grid cell with a label fragment, 1 for one without (C2-0cS),
+    and None (the ordinary exactly-one rule) for every other leaf."""
+    for section in [*plan.sections, *plan.appended_sections]:
+        for cell in section.category_grid_cells:
+            if cell.leaf_id == leaf_id:
+                return 2 if cell.label_text else 1
+    return None
+
+
+def _grid_pdf_leaf_presence(
+    pdf: Path,
+    plan: C2RenderPlan,
+    grid_windows: dict[str, list[tuple[float, float]]],
+    grid_line_ranges: dict[str, tuple[int, float, float]],
+) -> dict[str, bool]:
+    """C2-0cS: column-window PDF presence for category-grid leaves.
+
+    The flattened PDF text interleaves a grid's columns (the same measured
+    interleave the target PDF itself shows), so a grid leaf's presence is
+    verified per cell fragment: the section's OWN visual-row range (the
+    rendered heading top to the next heading's top) is segmented by the
+    measured column windows, and each fragment must be reconstructable from
+    its own window's characters. Deterministic; geometry-driven; no
+    LLM/VLM. Returns {leaf_id: present} for grid leaves only."""
+    import pdfplumber
+
+    buckets: dict[tuple[str, int, int, str], str] = {}
+    with pdfplumber.open(pdf) as document:
+        for page_index, page in enumerate(document.pages, 1):
+            for line in page.extract_text_lines() or []:
+                for section in [*plan.sections, *plan.appended_sections]:
+                    if not section.category_grid_cells:
+                        continue
+                    node_range = grid_line_ranges.get(section.node_id)
+                    windows = grid_windows.get(section.node_id)
+                    if not node_range or not windows:
+                        continue
+                    page_number, top_min, top_max = node_range
+                    if page_index != page_number or not (top_min - 0.01 <= float(line["top"]) < top_max):
+                        continue
+                    for char in sorted(line["chars"], key=lambda char: char["x0"]):
+                        x0 = float(char["x0"])
+                        for column_index, (window_left, value_x0) in enumerate(windows):
+                            value_right = (
+                                windows[column_index + 1][0]
+                                if column_index + 1 < len(windows) else float("inf")
+                            )
+                            if window_left - 0.01 <= x0 < float(value_x0):
+                                kind = "label"
+                            elif float(value_x0) - 0.01 <= x0 < value_right:
+                                kind = "value"
+                            else:
+                                continue
+                            for cell in section.category_grid_cells:
+                                if cell.column_index != column_index:
+                                    continue
+                                key = (section.node_id, cell.row_index, cell.column_index, kind)
+                                buckets[key] = buckets.get(key, "") + str(char["text"])
+                            break
+    presence: dict[str, bool] = {}
+    section_cells = {
+        section.node_id: section.category_grid_cells
+        for section in [*plan.sections, *plan.appended_sections]
+        if section.category_grid_cells
+    }
+    for node_id, section_cells_list in section_cells.items():
+        for cell in section_cells_list:
+            label_bucket = buckets.get((node_id, cell.row_index, cell.column_index, "label"), "")
+            value_bucket = buckets.get((node_id, cell.row_index, cell.column_index, "value"), "")
+            label_ok = (
+                re.sub(r"\s+", "", _norm(cell.label_text)) == re.sub(r"\s+", "", _norm(label_bucket))
+            )
+            value_ok = (
+                re.sub(r"\s+", "", _norm(cell.value_text)) == re.sub(r"\s+", "", _norm(value_bucket))
+            )
+            presence[cell.leaf_id] = bool(label_ok and value_ok)
+    return presence
+
+
+def content_gate(
+    plan: C2RenderPlan,
+    html: str,
+    pdf: Path,
+    grid_windows: dict[str, list[tuple[float, float]]] | None = None,
+    grid_line_ranges: dict[str, tuple[int, float, float]] | None = None,
+) -> dict[str, Any]:
     """Every candidate leaf: claimed by exactly one rendered element carrying
-    its value, and present in the PDF text."""
+    its value, and present in the PDF text. For category-grid leaves
+    (C2-0cS) the PDF presence is verified per cell fragment within the
+    measured column windows (the flattened text interleaves the columns)."""
     html_text, empty_sections = _html_text(html)
     del html_text
     # PDF-side comparison is hyphen-artifact tolerant (C1 owner decision,
@@ -1385,6 +1603,10 @@ def content_gate(plan: C2RenderPlan, html: str, pdf: Path) -> dict[str, Any]:
     # and read_pdf_text merges the fragments, so both "x-y" and the broken
     # "x- y" must match. Drop hyphens plus the line-break remnant "- ".
     normalized_pdf = _norm(read_pdf_text(pdf)).replace("- ", "").replace("-", "")
+    grid_presence = (
+        _grid_pdf_leaf_presence(pdf, plan, grid_windows, grid_line_ranges)
+        if grid_windows and grid_line_ranges else {}
+    )
     parser = _IdentityParser(set(plan.leaf_ledger))
     parser.feed(html)
     records: dict[str, Any] = {}
@@ -1396,8 +1618,19 @@ def content_gate(plan: C2RenderPlan, html: str, pdf: Path) -> dict[str, Any]:
         token = _norm(text)
         occurrences = parser.counts[leaf_id]
         element_text = " ".join(parser.texts[leaf_id])
-        rendered = occurrences == 1 and token in _norm(element_text)
-        present_pdf = _hyphen_free(token) in normalized_pdf if token else False
+        # C2-0cS: a category-grid leaf renders once AS its ordered cell
+        # fragments (label span + value span; one element when the leaf has
+        # no label fragment) — the expected fragment count comes from the
+        # plan, never from the rendered output.
+        expected_fragments = _grid_fragment_count(plan, leaf_id)
+        rendered = (
+            occurrences == (1 if expected_fragments is None else expected_fragments)
+            and token in _norm(element_text)
+        )
+        if leaf_id in grid_presence:
+            present_pdf = grid_presence[leaf_id]
+        else:
+            present_pdf = _hyphen_free(token) in normalized_pdf if token else False
         records[leaf_id] = {
             "destination": destination,
             "element_identity_count": occurrences,
@@ -1433,6 +1666,11 @@ def _leaf_text(plan: C2RenderPlan, leaf_id: str) -> str:
         for line in [*section.paragraph_lines, *section.items]:
             if line.leaf_id == leaf_id:
                 return line.text
+        # C2-0cS: a category-grid leaf's verbatim text is its ordered cell
+        # fragments' concatenation.
+        for cell in section.category_grid_cells:
+            if cell.leaf_id == leaf_id:
+                return cell.label_text + cell.value_text
         for entry in section.entries:
             for line in [*entry.title_lines, *entry.meta_lines, *entry.bullet_items, *entry.text_lines]:
                 if line.leaf_id == leaf_id:
@@ -2351,7 +2589,63 @@ def run_pair(pair: str, out: Path | None = None, c1_runs_root: Path | None = Non
     )
 
     # 5. gates
-    content = content_gate(plan, html, pdf)
+    # C2-0cS: measured category-grid column windows for the PDF-presence gate.
+    grid_windows = {}
+    for node in state.nodes:
+        if node.kind != "section" or node.category_grid is None:
+            continue
+        grid_windows[node.node_id] = [
+            (
+                (
+                    float(node.category_grid.column_splits_x_pt[column_index - 1])
+                    if column_index
+                    else float(state.page.margin_left_pt)
+                ),
+                column.value_x0_pt,
+            )
+            for column_index, column in enumerate(node.category_grid.columns)
+        ]
+    # C2-0cS: the grid's visual-row range = the section heading's rendered
+    # top to the next heading's rendered top on the same page.
+    grid_line_ranges: dict[str, tuple[int, float, float]] = {}
+    if grid_windows:
+        heading_labels = [node.label for node in state.nodes if node.kind == "heading" and node.label]
+        heading_positions = _rendered_heading_positions(pdf, heading_labels)
+        heading_items = sorted(
+            {
+                (int(position[0]), float(position[1]))
+                for position in heading_positions.values()
+                if position is not None
+            }
+        )
+        for section in [*plan.sections, *plan.appended_sections]:
+            if not section.category_grid_cells or section.node_id not in grid_windows:
+                continue
+            section_label = next(
+                (node.label for node in state.nodes if node.node_id == f"{section.node_id}.heading"),
+                None,
+            )
+            own_position = heading_positions.get(_norm(section_label or ""))
+            if own_position is None:
+                continue
+            own_page, own_top = int(own_position[0]), float(own_position[1])
+            following_top = next(
+                (
+                    top for page, top in heading_items
+                    if page == own_page and top > own_top
+                ),
+                None,
+            )
+            grid_line_ranges[section.node_id] = (
+                own_page, own_top + 2.0, (following_top or 792.0) - 2.0,
+            )
+    content = content_gate(
+        plan,
+        html,
+        pdf,
+        grid_windows=grid_windows or None,
+        grid_line_ranges=grid_line_ranges or None,
+    )
     (run_dir / "content_validation.json").write_text(
         json.dumps(content, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -2370,8 +2664,10 @@ def run_pair(pair: str, out: Path | None = None, c1_runs_root: Path | None = Non
         "unhomed_leaves": len(plan.unhomed),
         "status": plan.status,
         "ownership_exactly_one": all(
-            record["element_identity_count"] == 1 and record["rendered_with_value"]
-            for record in content["leaf_records"].values()
+            record["element_identity_count"]
+            == (_grid_fragment_count(plan, leaf_id) or 1)
+            and record["rendered_with_value"]
+            for leaf_id, record in content["leaf_records"].items()
         ),
         "ledger": content["leaf_records"],
     }

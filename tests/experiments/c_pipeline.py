@@ -145,6 +145,40 @@ class BodyEntryScaffold(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
 
 
+class CategoryGridColumnScaffold(BaseModel):
+    """Measured anchors of one category-grid column (C2-0cS, local PDF
+    evidence): the shared right edge of the column's bold category labels
+    (right-aligned label column) and the shared left edge of the column's
+    value texts, plus the measured label→value gap used as the label cell's
+    right margin. All values are measured clusters, never inferred."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label_right_x_pt: float
+    value_x0_pt: float
+    label_value_gap_pt: float
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class CategoryGridScaffold(BaseModel):
+    """Measured category-grid structure of one target section's content
+    region (C2-0cS). Detected when the region's text rows carry ≥2 columns
+    whose bold labels share a right edge and whose values share a left edge
+    (the aligned-pair topology); uniform row pitch recorded. The scaffold
+    carries GEOMETRY ONLY — no target label/value text, no per-cell colors
+    (those stay a recorded capability gap; no target candidate facts enter
+    the reusable state)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    heading_index: int = Field(ge=0)
+    columns: list[CategoryGridColumnScaffold] = Field(min_length=2)
+    row_pitch_pt: float
+    column_splits_x_pt: list[float] = Field(default_factory=list)
+    row_count: int = Field(ge=1)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
 class BodyScaffold(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -152,6 +186,7 @@ class BodyScaffold(BaseModel):
     entry: BodyEntryScaffold | None = None
     contact_icons_present: bool = True
     contact_separator: str | None = None
+    category_grids: list[CategoryGridScaffold] = Field(default_factory=list)
 
 
 class BodyHeadingSlot(BaseModel):
@@ -660,7 +695,233 @@ def derive_body_scaffold(
         entry=entry,
         contact_icons_present=icons_present,
         contact_separator=separator,
+        category_grids=_measure_category_grids(
+            target_pdf,
+            headings,
+            page_height=float(summary["pages"][0]["height_pt"]),
+        ),
     )
+
+
+# Documented detection tolerances (C2-0cS; fixed BEFORE evaluating any
+# rendered result, same discipline as the geometry-gate tolerances).
+_CATEGORY_CLUSTER_TOLERANCE_PT = 2.0
+_CATEGORY_ROW_TOLERANCE_PT = 2.0
+_CATEGORY_MAX_LABEL_VALUE_GAP_PT = 10.0
+_CATEGORY_ROW_PITCH_UNIFORMITY_PT = 1.0
+
+
+def detect_category_grid(word_rows: list[list[dict[str, Any]]]) -> dict[str, Any] | None:
+    """Detect a measured category-grid structure from one section's word rows
+    (pure; unit-testable offline; no LLM/VLM, no pair-specific condition).
+
+    A category grid is present when the rows carry ≥2 columns, each anchored
+    by a CLUSTER of ≥2 bold label words sharing their right edge (a
+    right-aligned label column, the aligned-pair topology) with the column's
+    value texts starting at a shared left edge a measured gap to the right.
+    The scaffold carries geometry only (label/value anchors, measured gap,
+    uniform row pitch, and the documented column split derived as the
+    midpoint of the two adjacent measured bounds: the previous column's
+    max value extent and the next column's min label x0). Any missing
+    cluster -> None (no grid; the caller keeps the ordinary list rendering).
+    """
+    label_columns: list[dict[str, Any]] = []
+    grid_row_indices: list[int] = []
+    for row_index, words in enumerate(word_rows):
+        labels = [word for word in words if word.get("bold")]
+        values = [word for word in words if not word.get("bold")]
+        for label in labels:
+            column = next(
+                (
+                    entry for entry in label_columns
+                    if abs(float(entry["label_right_x_pt"]) - float(label["x1"]))
+                    <= _CATEGORY_CLUSTER_TOLERANCE_PT
+                ),
+                None,
+            )
+            if column is None:
+                column = {
+                    "label_right_x_pt": round(float(label["x1"]), 3),
+                    "label_x0s": [float(label["x0"])],
+                    "value_x0s": [],
+                    "rows": [],
+                    "matched": [],
+                    "evidence": [],
+                }
+                label_columns.append(column)
+            else:
+                column["label_x0s"].append(float(label["x0"]))
+            column["rows"].append(row_index)
+            column["matched"].append({"row": row_index, "x0": float(label["x0"]), "x1": float(label["x1"])})
+            # The column's value anchor is the first non-bold word to the
+            # right of this label within the measured gap bound.
+            following = next(
+                (
+                    word for word in values
+                    if 0 < float(word["x0"]) - float(label["x1"])
+                    <= _CATEGORY_MAX_LABEL_VALUE_GAP_PT
+                ),
+                None,
+            )
+            if following is not None:
+                column["value_x0s"].append(float(following["x0"]))
+    columns = []
+    for column in label_columns:
+        if len(column["rows"]) < 2 or len(column["value_x0s"]) < 2:
+            continue  # no measured cluster: no column, never a guessed anchor
+        label_right = round(float(column["label_right_x_pt"]), 3)
+        sorted_values = sorted(column["value_x0s"])
+        middle = len(sorted_values) // 2
+        value_x0 = round(
+            sorted_values[middle]
+            if len(sorted_values) % 2
+            else (sorted_values[middle - 1] + sorted_values[middle]) / 2,
+            3,
+        )
+        if value_x0 is None or not (0.0 < value_x0 - label_right <= _CATEGORY_MAX_LABEL_VALUE_GAP_PT):
+            continue
+        columns.append(
+            {
+                "label_right_x_pt": label_right,
+                "value_x0_pt": value_x0,
+                "label_value_gap_pt": round(value_x0 - label_right, 3),
+                "rows": list(column["rows"]),
+                "matched": list(column["matched"]),
+                "evidence": [
+                    f"local_pdf.category_grid.col{len(columns)}.label_right_x:{label_right:.3f}",
+                    f"local_pdf.category_grid.col{len(columns)}.value_x0:{value_x0:.3f}",
+                ],
+            }
+        )
+    if len(columns) < 2:
+        return None
+    columns.sort(key=lambda entry: entry["value_x0_pt"])
+    grid_rows = sorted({index for column in columns for index in column["rows"]})
+    pitches = [
+        round(word_rows[grid_rows[index + 1]][0]["top"] - word_rows[grid_rows[index]][0]["top"], 3)
+        for index in range(len(grid_rows) - 1)
+    ]
+    if pitches and max(pitches) - min(pitches) > _CATEGORY_ROW_PITCH_UNIFORMITY_PT:
+        return None  # rows are not a uniform rhythm: not the measured grid
+    row_pitch = round(sum(pitches) / len(pitches), 3) if pitches else 0.0
+    splits: list[float] = []
+    for index in range(len(columns) - 1):
+        left_column = columns[index]
+        right_column = columns[index + 1]
+        # Per shared row, the left column's value run ends before the right
+        # column's label begins (both bounds measured on the same row).
+        right_label_x0_by_row = {
+            match["row"]: match["x0"] for match in right_column["matched"]
+        }
+        left_extents: list[float] = []
+        right_bounds: list[float] = []
+        for row_index in left_column["rows"]:
+            right_label_x0 = right_label_x0_by_row.get(row_index)
+            if right_label_x0 is None:
+                continue
+            # The left value RUN may wrap onto further words; take every
+            # non-bold word right of the anchor up to the next label.
+            row_values = [
+                float(word["x1"])
+                for word in word_rows[row_index]
+                if not word.get("bold")
+                and float(word["x0"]) >= left_column["value_x0_pt"] - _CATEGORY_CLUSTER_TOLERANCE_PT
+                and float(word["x1"]) < right_label_x0_by_row[row_index]
+            ]
+            if row_values:
+                left_extents.append(max(row_values))
+                right_bounds.append(right_label_x0_by_row[row_index])
+        if not left_extents:
+            continue
+        splits.append(round((max(left_extents) + min(right_bounds)) / 2, 3))
+    return {
+        "columns": columns,
+        "row_pitch_pt": row_pitch,
+        "column_splits_x_pt": splits,
+        "row_count": len(grid_rows),
+        "evidence": [
+            *(id_ for column in columns for id_ in column["evidence"]),
+            f"local_pdf.category_grid.row_pitch:{row_pitch:.3f}",
+        ],
+    }
+
+
+def _measure_category_grids(
+    target_pdf: Path,
+    headings: list[BodyHeadingScaffold],
+    page_height: float,
+) -> list[CategoryGridScaffold]:
+    """Bounded deterministic local measurement (local_pdf provenance) of
+    category-grid structure per section content range: the provider evidence
+    may drop wrapped grid cells (Resume D's right SKILLS POOL column), so the
+    region's word rows are re-measured from the same input bytes. Geometry
+    only; no target text is recorded."""
+    import pdfplumber
+
+    grids: list[CategoryGridScaffold] = []
+    if len(headings) < 2:
+        return grids
+    with pdfplumber.open(target_pdf) as document:
+        pages = document.pages
+        for index, heading in enumerate(headings):
+            following = headings[index + 1] if index + 1 < len(headings) else None
+            page = pages[heading.page - 1]
+            rows: list[list[dict[str, Any]]] = []
+            current: list[dict[str, Any]] = []
+            for word in sorted(
+                page.extract_words(extra_attrs=["fontname"]),
+                key=lambda word: (float(word["top"]), float(word["x0"])),
+            ):
+                top = float(word["top"])
+                range_end = (
+                    following.top_pt
+                    if following is not None and following.page == heading.page
+                    else page_height
+                )
+                if not (heading.top_pt + 2 <= top < range_end):
+                    continue
+                if current and top - float(current[-1]["top"]) <= _CATEGORY_ROW_TOLERANCE_PT:
+                    current.append(word)
+                else:
+                    if current:
+                        rows.append(current)
+                    current = [word]
+            if current:
+                rows.append(current)
+            word_rows = [
+                [
+                    {
+                        "x0": float(word["x0"]),
+                        "x1": float(word["x1"]),
+                        "top": float(word["top"]),
+                        "bold": "bold" in str(word.get("fontname", "")).lower(),
+                    }
+                    for word in sorted(row, key=lambda word: float(word["x0"]))
+                ]
+                for row in rows
+            ]
+            detected = detect_category_grid(word_rows)
+            if detected is None:
+                continue
+            grids.append(
+                CategoryGridScaffold(
+                    heading_index=index,
+                    columns=[
+                        CategoryGridColumnScaffold(
+                            label_right_x_pt=column["label_right_x_pt"],
+                            value_x0_pt=column["value_x0_pt"],
+                            label_value_gap_pt=column["label_value_gap_pt"],
+                            evidence_ids=column["evidence"],
+                        )
+                        for column in detected["columns"]
+                    ],
+                    row_pitch_pt=detected["row_pitch_pt"],
+                    column_splits_x_pt=detected["column_splits_x_pt"],
+                    row_count=detected["row_count"],
+                    evidence_ids=detected["evidence"],
+                )
+            )
+    return grids
 
 
 def derive_body_topology_candidates(

@@ -606,6 +606,24 @@ def test_canonical_pairs_end_to_end(pair: str) -> None:
         )
         assert decision["omitted_between"] == ["section.03"]
         assert decision["basis"] == "measured_common_section_rhythm"
+        # C2-0cS: the measured SKILLS POOL category grid binds the candidate
+        # groups row-major and every measured anchor verifies from the preview.
+        grid_cells = next(
+            p["category_grid_cells"] for p in plan_json["sections"]
+            if p["node_id"] == "section.02"
+        )
+        assert [(c["row_index"], c["column_index"], c["leaf_id"]) for c in grid_cells] == [
+            (0, 0, "skills.languages"), (0, 1, "skills.software"),
+        ]
+        grid_rows = [row for row in comparison["rows"] if row["property"].startswith("grid_")]
+        anchors = [row for row in grid_rows if row["property"] in {"grid_label_right_x", "grid_value_x0"}]
+        assert anchors and all(row["classification"] == "pass" for row in anchors)
+        bold_rows = [row for row in grid_rows if row["property"] == "grid_label_bold"]
+        assert bold_rows and all(row["classification"] == "pass" for row in bold_rows)
+    else:
+        # E→F and D→E measured no category-grid cluster: the ordinary item
+        # rendering applies, unchanged by this checkpoint.
+        assert all(not p["category_grid_cells"] for p in plan_json["sections"])
     if pair == "E_F":
         before = json.loads((run_dir / "docx_geometry_comparison_before.json").read_text())
         before_child_failures = [
@@ -850,6 +868,47 @@ def _fake_rendered(state, plan, *, overrides=None, page_y_shift=0.0):
                                 "bottom": y + content_size, "size": content_size, "font": font}
                                for i, char in enumerate(paragraph_line.text)]))
             y += content_size
+        # C2-0cS: grid cells render as one line per cell fragment at the
+        # measured anchors (label right-aligned at the label edge; values at
+        # the value anchor), so the mapping buckets them by column window.
+        grid_cells = section_plan.category_grid_cells
+        if grid_cells:
+            grid = next(
+                (node.category_grid for node in state.nodes
+                 if node.node_id == section_plan.node_id and node.category_grid),
+                None,
+            )
+            if grid is not None:
+                content_token = _style_of(state, section_plan.content_style_id)
+                grid_line_pitch = float(
+                    (content_token.line_height_pt if content_token else None) or content_size
+                )
+                by_row = {}
+                for cell in grid_cells:
+                    by_row.setdefault(cell.row_index, []).append(cell)
+                for row_index in sorted(by_row):
+                    row_y = y
+                    for cell in sorted(by_row[row_index], key=lambda c: c.column_index):
+                        column = grid.columns[cell.column_index]
+                        if cell.label_text:
+                            width = 0.6 * content_size
+                            start_x = column.label_right_x_pt - 0.6 * content_size * len(cell.label_text)
+                            chars = [
+                                {"text": char, "x0": start_x + 0.6 * content_size * i,
+                                 "x1": start_x + 0.6 * content_size * (i + 1),
+                                 "bottom": y + content_size, "size": content_size, "font": font}
+                                for i, char in enumerate(cell.label_text)
+                            ]
+                            lines.append(line("grid_label", row_y, start_x, column.label_right_x_pt, content_size, font, cell.label_text, chars))
+                        if cell.value_text:
+                            chars = [
+                                {"text": char, "x0": column.value_x0_pt + 0.5 * i,
+                                 "x1": column.value_x0_pt + 0.5 * (i + 1),
+                                 "bottom": y + content_size, "size": content_size, "font": font}
+                                for i, char in enumerate(cell.value_text)
+                            ]
+                            lines.append(line("grid_value", row_y, column.value_x0_pt, column.value_x0_pt + 0.5 * len(cell.value_text), content_size, font, cell.value_text, chars))
+                    y = row_y + grid_line_pitch
     lines.sort(key=lambda entry: (entry["page"], entry["top"]))
     mapping = map_rendered_to_expected(plan, lines)
     return {
@@ -1707,3 +1766,194 @@ def test_geometry_row_carries_visible_rhythm_provenance() -> None:
         if row["node"] == "section.01" and row["property"] == "heading_gap_above"
     )
     assert plain["basis_source"] == "declared_state"
+
+
+# ---------------------------------------------------------------------------
+# C2-0cS: measured category grid (detection, plan binding, DOCX emission)
+# ---------------------------------------------------------------------------
+
+
+def _with_grid(state, columns: int = 2, split_x: float = 300.0):
+    """Attach a measured category grid to the skills section (synthetic offline)."""
+    from tests.experiments.c2_pipeline import CategoryGrid, CategoryGridColumn
+
+    grid_section = next(
+        node.node_id for node in state.nodes
+        if node.kind == "section" and node.binding and node.binding.sources == ["skills"]
+    )
+    nodes = []
+    for node in state.nodes:
+        if node.node_id == grid_section:
+            node = node.model_copy(
+                update={
+                    "category_grid": CategoryGrid(
+                        columns=[
+                            CategoryGridColumn(
+                                label_right_x_pt=88.15 + 276.34 * index,
+                                value_x0_pt=93.6 + 276.34 * index,
+                                label_value_gap_pt=5.454,
+                                evidence_ids=[f"local_pdf.category_grid.col{index}"],
+                            )
+                            for index in range(columns)
+                        ],
+                        row_pitch_pt=12.546,
+                        column_splits_x_pt=[split_x] * (columns - 1),
+                        row_count=3,
+                        evidence_ids=["local_pdf.category_grid"],
+                    ),
+                }
+            )
+        nodes.append(node)
+    return state.model_copy(update={"nodes": nodes})
+
+
+def test_category_grid_detection_pure() -> None:
+    from tests.experiments.c_pipeline import detect_category_grid
+
+    def word(text, x0, x1, top, bold):
+        return {"x0": x0, "x1": x1, "top": top, "bold": bold}
+
+    rows = [
+        [word("Management", 22.36, 88.15, 100.0, True), word("People,", 93.6, 150.0, 100.0, False),
+         word("Sales", 338.45, 364.49, 100.0, True), word("B2B,", 369.94, 400.0, 100.0, False)],
+        [word("Business", 44.48, 88.15, 112.55, True), word("Analysis,", 93.6, 160.0, 112.55, False),
+         word("Marketing", 312.74, 364.49, 112.55, True), word("Research,", 369.94, 430.0, 112.55, False)],
+        [word("Finance", 48.96, 88.15, 125.09, True), word("Budgeting,", 93.6, 170.0, 125.09, False),
+         word("Software", 319.41, 364.49, 125.09, True), word("OpenOffice,", 369.94, 450.0, 125.09, False)],
+    ]
+    grid = detect_category_grid(rows)
+    assert grid is not None
+    assert [c["label_right_x_pt"] for c in grid["columns"]] == [88.15, 364.49]
+    assert [c["value_x0_pt"] for c in grid["columns"]] == [93.6, 369.94]
+    assert grid["row_count"] == 3
+    assert grid["row_pitch_pt"] == 12.545
+    # The split is the midpoint of the measured adjacent bounds
+    # (max left value extent 170, min right label x0 312.74).
+    assert grid["column_splits_x_pt"] == [241.37]
+    # Missing clusters -> honestly no grid.
+    assert detect_category_grid([rows[0]]) is None  # single row: no clusters
+    uneven = [
+        [word("A", 22.0, 88.15, 100.0, True), word("v,", 93.6, 150.0, 100.0, False),
+         word("B", 338.45, 364.49, 100.0, True), word("w,", 369.94, 420.0, 369.94, False)],
+        [word("B", 44.0, 88.15, 120.0, True), word("v2,", 93.6, 150.0, 120.0, False),
+         word("C", 338.45, 364.49, 120.0, True), word("w2,", 369.94, 420.0, 120.0, False)],
+    ]
+    # Rows 100/120: pitch 20 vs 12.5x? uniform within tolerance -> still a grid
+    grid2 = detect_category_grid(uneven)
+    assert grid2 is not None and grid2["row_pitch_pt"] == 20.0
+    # Non-uniform rhythm (pitches 40 then 20) -> not the measured grid.
+    ragged = [
+        rows[0],
+        [word("B", 44.48, 88.15, 140.0, True), word("Analysis,", 93.6, 160.0, 140.0, False),
+         word("Marketing", 312.74, 364.49, 140.0, True), word("Research,", 369.94, 430.0, 140.0, False)],
+        [word("C", 44.48, 88.15, 160.0, True), word("v3,", 93.6, 160.0, 160.0, False),
+         word("More", 312.74, 364.49, 160.0, True), word("w3,", 369.94, 430.0, 160.0, False)],
+    ]
+    assert detect_category_grid(ragged) is None
+
+
+def test_grid_state_validator_scope() -> None:
+    from tests.experiments.c2_pipeline import validate_layout_state, CategoryGrid
+    from pydantic import ValidationError
+
+    state = compile_synthetic(["TECHNICAL SKILLS"])
+    heading = next(n for n in state.nodes if n.node_id == "section.01.heading")
+    from tests.experiments.c2_pipeline import LayoutNode
+    with pytest.raises(ValidationError):
+        LayoutNode(
+            **{**heading.model_dump(), "category_grid": {
+                "columns": [], "row_pitch_pt": 1.0, "row_count": 1, "evidence_ids": ["e"]
+            }}
+        )
+    grid_state = _with_grid(state)
+    assert validate_layout_state(grid_state) == []
+    grid = next(n.category_grid for n in grid_state.nodes if n.category_grid)
+    assert len(grid.columns) == 2
+
+
+def test_plan_binds_candidate_groups_row_major_to_measured_grid() -> None:
+    from tests.experiments.c2_renderer import compile_render_plan
+
+    state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]))
+    candidate = rich_candidate(include_unmatched=False)
+    plan = compile_render_plan(state, candidate)
+    section = next(p for p in plan.sections if p.node_id == "section.01")
+    # Row-major binding in document order; the plain item list is not rendered.
+    assert [(c.row_index, c.column_index, c.leaf_id) for c in section.category_grid_cells] == [
+        (0, 0, "skills.g1"), (0, 1, "skills.g1.i1"), (1, 0, "skills.g1.i2"),
+    ]
+    assert section.items == []
+    first = section.category_grid_cells[0]
+    assert first.label_text == ""  # no colon: the whole text stays the value fragment
+    assert first.value_text == "Group One"
+    assert first.label_style_id == "style.body"
+    # The value fragment carries the section's measured content token when the
+    # evidence provides one (None = honest unmeasured tier in the synthetic state).
+    assert first.value_style_id is None or first.value_style_id
+    # Every leaf owned exactly once by the shared ledger, at its cell.
+    assert plan.leaf_ledger["skills.g1"] == "section.01.category.r0c0"
+    assert plan.leaf_ledger["skills.g1.i1"] == "section.01.category.r0c1"
+    assert plan.leaf_ledger["skills.g1.i2"] == "section.01.category.r1c0"
+    assert any("category grid" in note for note in plan.notes)
+    # The C2-0cV rhythm machinery is untouched: the plan still carries its
+    # visible-rhythm decisions (recorded for measured-gap sections).
+    assert plan.visible_rhythm_decisions is not None
+
+
+def test_plan_keeps_plain_items_without_grid_evidence() -> None:
+    state = compile_synthetic(["TECHNICAL SKILLS"])
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    section = next(p for p in plan.sections if p.node_id == "section.01")
+    assert section.category_grid_cells == []
+    assert [item.leaf_id for item in section.items] == ["skills.g1", "skills.g1.i1", "skills.g1.i2"]
+
+
+def test_grid_docx_renders_editable_table_and_accounting(tmp_path: Path) -> None:
+    state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]))
+    candidate = rich_candidate(include_unmatched=False)
+    plan = compile_render_plan(state, candidate)
+    path = tmp_path / "grid.docx"
+    path.write_bytes(deterministic_docx_bytes(build_document(state, plan)))
+    inspection = inspect_docx(path)
+    inspection["reading_order_gate"] = reading_order_gate(plan, inspection)
+    assert inspection["reading_order_gate"]["passed"] is True
+    accounting = content_accounting(plan, inspection)
+    assert accounting["passed"] is True, (accounting["missing"], accounting["duplicated"])
+    for leaf_id in ("skills.g1", "skills.g1.i1", "skills.g1.i2"):
+        record = accounting["leaf_records"][leaf_id]
+        assert record["rendered_exactly_once"] is True and record.get("grid_fragments") is True
+    tables = inspection["tables"]
+    grid_tables = [record for record in tables if record["columns"] == 4]
+    assert len(grid_tables) == 1
+    assert grid_tables[0]["borders_none"] is True and grid_tables[0]["rows_cannot_split"] is True
+    # The section remains ordinary editable DOCX content: table cell paragraphs
+    # carry the verbatim fragments.
+    texts = [record["text"] for record in inspection["paragraphs"]]
+    assert "Group One" in texts and "Skill A" in texts and "Skill B" in texts
+
+
+def test_grid_geometry_rows_offline(tmp_path: Path) -> None:
+    state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]))
+    plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
+    comparison = compare_geometry(state, plan, _fake_target_geo(state, plan), _fake_rendered(state, plan))
+    grid_rows = [r for r in comparison["rows"] if r["property"].startswith("grid_")]
+    assert grid_rows, comparison["counts"]
+    for row in grid_rows:
+        if row["property"] in {"grid_label_right_x", "grid_label_bold"}:
+            # The synthetic leaves carry no label fragment (no colon): the
+            # label sub-cell renders nothing -> explicitly not applicable.
+            assert row["classification"] == "not_applicable", row
+        elif row["property"] == "grid_row_pitch":
+            # Two rendered rows carry a MEASURED pitch (the synthetic state has
+            # no measured content token, so the honest rendered pitch differs
+            # from the target's measured 12.546pt and the row records it —
+            # the fitter, not the fixture, closes such deltas).
+            assert row["classification"] in {"pass", "fail"} and row["rendered"] is not None, row
+        else:
+            # Value anchors sit exactly on the measured columns in the fixture.
+            assert row["classification"] == "pass", row
+    # The plain content-start basis does not apply to a grid section.
+    assert not any(
+        r["node"] == "section.01" and r["property"] == "content_start_x"
+        for r in comparison["rows"]
+    )

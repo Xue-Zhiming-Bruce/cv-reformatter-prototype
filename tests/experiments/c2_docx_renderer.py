@@ -746,6 +746,109 @@ def _write_entry_table(
     return paragraphs
 
 
+def category_grid_table_geometry(
+    state: C2LayoutState, section_plan: Any
+) -> dict[str, Any] | None:
+    """The expected authored table geometry of the section's measured
+    category grid (C2-0cS): contiguous cell boundaries from the measured
+    anchors — [previous split (or writable left edge), value_x0] per column
+    plus the writable right edge. Shared by the DOCX emitter (authoring) and
+    the compatibility claim (output verification)."""
+    grid = next(
+        (
+            node.category_grid for node in state.nodes
+            if node.node_id == section_plan.node_id and node.category_grid
+        ),
+        None,
+    )
+    if grid is None:
+        return None
+    page = state.page
+    right_edge = round(float(page.width_pt) - float(page.margin_right_pt), 3)
+    splits = [*grid.column_splits_x_pt, right_edge]
+    boundaries: list[float] = []
+    for column_index, column in enumerate(grid.columns):
+        boundaries.append(splits[column_index - 1] if column_index else float(page.margin_left_pt))
+        boundaries.append(column.value_x0_pt)
+    boundaries.append(right_edge)
+    return {
+        "columns": 2 * len(grid.columns),
+        "column_widths_pt": [
+            round(boundaries[index + 1] - boundaries[index], 3)
+            for index in range(len(boundaries) - 1)
+        ],
+        "rows": max(len({cell.row_index for cell in section_plan.category_grid_cells}), 1),
+        "label_value_gaps_pt": [column.label_value_gap_pt for column in grid.columns],
+    }
+
+
+def _write_category_grid(
+    document: Any,
+    state: C2LayoutState,
+    section_plan: Any,
+    content_token: StyleToken | None,
+    content_written: str | None,
+    written_fonts: dict[str, str] | None = None,
+    adjustments: FitAdjustments | None = None,
+) -> list[Any]:
+    """The measured category grid (C2-0cS) as a borderless fixed-layout Word
+    table: one row per candidate grid row; per column a right-aligned label
+    sub-cell and a left-aligned value sub-cell. The column boundaries are
+    the MEASURED anchors (label right edge, value x0, documented column
+    split, writable right edge); the label sub-cell's right paragraph indent
+    is the measured label→value gap, so the right-aligned label ends exactly
+    at the measured label edge. Fully editable native table content — the
+    fragments concatenate to each leaf's verbatim text (accounting)."""
+    adjustments = adjustments or FitAdjustments()
+    written_fonts = written_fonts or {}
+    geometry = category_grid_table_geometry(state, section_plan)
+    grid = next(
+        (
+            node.category_grid for node in state.nodes
+            if node.node_id == section_plan.node_id and node.category_grid
+        ),
+        None,
+    )
+    if grid is None or geometry is None:
+        return []
+    label_token = _style_of(state, "style.body")
+    column_widths = geometry["column_widths_pt"]
+    table = document.add_table(rows=geometry["rows"], cols=geometry["columns"])
+    _no_table_borders(table)
+    _fixed_table_layout(table, column_widths, indent_pt=0.0)
+    _rows_cannot_split(table)
+    paragraphs: list[Any] = []
+    by_row: dict[int, list[Any]] = {}
+    for cell in section_plan.category_grid_cells:
+        by_row.setdefault(cell.row_index, []).append(cell)
+    for row_index in sorted(by_row):
+        row = table.rows[row_index]
+        for cell in sorted(by_row[row_index], key=lambda c: c.column_index):
+            column = grid.columns[cell.column_index]
+            label_cell = row.cells[2 * cell.column_index]
+            value_cell = row.cells[2 * cell.column_index + 1]
+            label_paragraph = label_cell.paragraphs[0]
+            if cell.label_text:
+                label_run = label_paragraph.add_run(cell.label_text)
+                _apply_token(
+                    label_run, label_token,
+                    written_fonts.get(cell.label_style_id) if cell.label_style_id else None,
+                )
+            _control_paragraph(
+                label_paragraph, content_token,
+                alignment="right",
+                right_indent_pt=round(float(column.label_value_gap_pt), 3),
+            )
+            paragraphs.append(label_paragraph)
+            value_paragraph = value_cell.paragraphs[0]
+            if cell.value_text:
+                value_run = value_paragraph.add_run(cell.value_text)
+                _apply_token(value_run, content_token, content_written)
+            _control_paragraph(value_paragraph, content_token)
+            paragraphs.append(value_paragraph)
+    return paragraphs
+
+
 def build_document(
     state: C2LayoutState, plan: Any, adjustments: FitAdjustments | None = None
 ) -> Document:
@@ -955,6 +1058,11 @@ def build_document(
                         )
                     )
                 last_paragraph = entry_paragraphs[-1] if entry_paragraphs else last_paragraph
+        if section_plan.category_grid_cells:
+            _write_category_grid(
+                document, state, section_plan, content_token, content_written,
+                written_fonts=written_fonts, adjustments=adjustments,
+            )
         if section_plan.content_kind in {"item_list", "inline_items", "composite"}:
             for item in section_plan.items:
                 if section_plan.bullet_marker == "bullet":
@@ -1345,6 +1453,46 @@ def expected_paragraphs(plan: Any) -> list[dict[str, Any]]:
                     "alignment": "left",
                 }
             )
+        # C2-0cS: measured category-grid cells — one paragraph per CELL
+        # FRAGMENT in document order (row-major, label then value per cell);
+        # both fragments carry the same leaf id and their ordered
+        # concatenation equals the leaf text (accounting verifies it).
+        for cell in section_plan.category_grid_cells:
+            cell_id = f"{section_plan.node_id}.category.r{cell.row_index}c{cell.column_index}"
+            paragraphs.append(
+                {
+                    "kind": "grid_label",
+                    "text": cell.label_text,
+                    "leaf_ids": [cell.leaf_id],
+                    "marker_conversions": {},
+                    "native_bullet": False,
+                    "section_node_id": section_plan.node_id,
+                    "entry_index": None,
+                    "style_id": cell.label_style_id or "style.body",
+                    "tier": "content",
+                    "alignment": "right",
+                    "grid_row": cell.row_index,
+                    "grid_column": cell.column_index,
+                    "grid_cell_id": cell_id,
+                }
+            )
+            paragraphs.append(
+                {
+                    "kind": "grid_value",
+                    "text": cell.value_text,
+                    "leaf_ids": [cell.leaf_id],
+                    "marker_conversions": {},
+                    "native_bullet": False,
+                    "section_node_id": section_plan.node_id,
+                    "entry_index": None,
+                    "style_id": cell.value_style_id or section_plan.content_style_id or "style.body",
+                    "tier": "content",
+                    "alignment": "left",
+                    "grid_row": cell.row_index,
+                    "grid_column": cell.column_index,
+                    "grid_cell_id": cell_id,
+                }
+            )
     return paragraphs
 
 
@@ -1364,9 +1512,13 @@ def expected_visual_rows(plan: Any) -> list[dict[str, Any]]:
     for section_plan in plan_sections:
         if section_plan.empty:
             continue
-        for paragraph in expected_paragraphs(plan):
-            if paragraph["section_node_id"] != section_plan.node_id:
-                continue
+        section_paragraphs = [
+            paragraph for paragraph in expected_paragraphs(plan)
+            if paragraph["section_node_id"] == section_plan.node_id
+        ]
+        for paragraph in section_paragraphs:
+            if paragraph["kind"] in {"grid_label", "grid_value"}:
+                continue  # folded into their grid visual row below
             if paragraph["kind"] == "entry_meta":
                 # Meta lines ride on their title's visual row when paired.
                 if not (set(paragraph["leaf_ids"]) & paired_meta_leaf_ids):
@@ -1376,6 +1528,46 @@ def expected_visual_rows(plan: Any) -> list[dict[str, Any]]:
                 rows.append(paragraph)
             elif not _pair_with_meta(section_plan, paragraph, rows, paired_meta_leaf_ids):
                 rows.append(paragraph)
+        # C2-0cS: a grid row's label/value fragments share ONE visual
+        # baseline per table row; the mapping consumes them as one row,
+        # AFTER the section heading (document order).
+        grid_fragments = [
+            paragraph for paragraph in section_paragraphs
+            if paragraph["kind"] in {"grid_label", "grid_value"}
+        ]
+        if grid_fragments:
+            by_row = {}
+            for fragment in grid_fragments:
+                by_row.setdefault(fragment["grid_row"], []).append(fragment)
+            for row_index in sorted(by_row):
+                fragments = sorted(by_row[row_index], key=lambda p: p["grid_column"])
+                rows.append(
+                    {
+                        "kind": "grid_row",
+                        "text": " ".join(fragment["text"] for fragment in fragments).strip(),
+                        "leaf_ids": sorted(
+                            {leaf_id for fragment in fragments for leaf_id in fragment["leaf_ids"]}
+                        ),
+                        "marker_conversions": {},
+                        "native_bullet": False,
+                        "section_node_id": section_plan.node_id,
+                        "entry_index": None,
+                        "style_id": fragments[0]["style_id"],
+                        "tier": "content",
+                        "alignment": "left",
+                        "grid_cells": [
+                            {
+                                "leaf_id": fragment["leaf_ids"][0],
+                                "kind": fragment["kind"],
+                                "text": fragment["text"],
+                                "grid_row": fragment["grid_row"],
+                                "grid_column": fragment["grid_column"],
+                                "style_id": fragment["style_id"],
+                            }
+                            for fragment in fragments
+                        ],
+                    }
+                )
     return rows
 
 
@@ -1417,8 +1609,12 @@ def _pair_with_meta(
 
 
 def expected_reading_order(plan: Any) -> list[str]:
-    """The plan's deterministic reading order as flat paragraph text."""
-    return [paragraph["text"] for paragraph in expected_paragraphs(plan)]
+    """The plan's deterministic reading order as flat paragraph text (empty
+    fragments — e.g. an unused category-grid label cell — never enter the
+    reading order; the document's own empty paragraphs are filtered alike)."""
+    return [
+        paragraph["text"] for paragraph in expected_paragraphs(plan) if _norm(paragraph["text"])
+    ]
 
 
 def content_accounting(plan: Any, inspection: dict[str, Any]) -> dict[str, Any]:
@@ -1451,6 +1647,27 @@ def content_accounting(plan: Any, inspection: dict[str, Any]) -> dict[str, Any]:
     marker_conversions: dict[str, bool] = {}
     for leaf_id in plan.leaf_ledger:
         owners = [paragraph for paragraph in expected if leaf_id in paragraph["leaf_ids"]]
+        # C2-0cS: a category-grid leaf renders EXACTLY ONCE as its ordered
+        # cell fragments; the document-order fragment concatenation must
+        # equal the leaf's verbatim text (the position-for-position
+        # alignment above already places each fragment at its position).
+        fragment_owners = [
+            paragraph for paragraph in owners
+            if paragraph["kind"] in {"grid_label", "grid_value"}
+        ]
+        if owners and len(owners) == len(fragment_owners):
+            rendered = _norm(" ".join(paragraph["text"] for paragraph in fragment_owners))
+            expected_text = _norm(_leaf_text(plan, leaf_id))
+            ok = bool(aligned and rendered == expected_text and rendered)
+            records[leaf_id] = {
+                "occurrences": 1 if ok else 0,
+                "rendered_exactly_once": ok,
+                "owning_paragraphs": len(fragment_owners),
+                "grid_fragments": True,
+            }
+            if not ok:
+                missing.append(leaf_id)
+            continue
         rendered_text = owners[0]["text"] if len(owners) == 1 else _leaf_text(plan, leaf_id)
         token = _norm(rendered_text)
         if len(owners) != 1 or not aligned:
@@ -1539,6 +1756,11 @@ def _leaf_text(plan: Any, leaf_id: str) -> str:
         for styled_line in section.styled_lines:
             if styled_line.leaf_id == leaf_id:
                 return styled_line.text
+        # C2-0cS: a category-grid leaf's verbatim text is its ordered cell
+        # fragments' concatenation.
+        for cell in section.category_grid_cells:
+            if cell.leaf_id == leaf_id:
+                return cell.label_text + cell.value_text
         for entry in section.entries:
             for line in [*entry.title_lines, *entry.meta_lines, *entry.bullet_items, *entry.text_lines]:
                 if line.leaf_id == leaf_id:
@@ -1630,13 +1852,25 @@ def _text_key(value: str) -> str:
     return re.sub(r"\s+", "", _norm(value))
 
 
-def map_rendered_to_expected(plan: Any, lines: list[dict[str, Any]]) -> dict[str, Any]:
+def map_rendered_to_expected(
+    plan: Any,
+    lines: list[dict[str, Any]],
+    grid_windows: dict[str, list[tuple[float, float]]] | None = None,
+) -> dict[str, Any]:
     """Deterministic node mapping (work order Part 2): match the rendered PDF's
     visual lines back to the plan's expected visual rows — candidate leaf text,
     document order, and (for bullets) the leading native marker; NO LLM/VLM
     participates. Long paragraphs consume consecutive wrapped lines until the
     normalized text matches; a line that stops being a prefix of the expected
-    text fails the mapping (an unmappable required row never disappears)."""
+    text fails the mapping (an unmappable required row never disappears).
+
+    ``grid_windows`` (C2-0cS, optional) maps a section node id to its measured
+    column windows ``[(label_window_left, value_x0), ...]``. A category grid's
+    visual rows interleave its columns' wrapped lines (the same measured
+    interleaving the target PDF itself shows), so a grid row is matched by
+    segmenting each consumed line's characters into the DECLARED column
+    windows and accumulating each cell's text until every fragment matches —
+    deterministic, geometry-driven, no per-cell guess."""
     rows = expected_visual_rows(plan)
     pointer = 0
     mapped: list[dict[str, Any]] = []
@@ -1646,6 +1880,70 @@ def map_rendered_to_expected(plan: Any, lines: list[dict[str, Any]]) -> dict[str
         if not expected:
             continue
         start = pointer
+        if row["kind"] == "grid_row" and grid_windows:
+            windows = grid_windows.get(row["section_node_id"])
+            if windows is not None and row.get("grid_cells"):
+                # Column value windows: [value_x0, next column's label window
+                # or page right edge); label window: [column_left, value_x0).
+                cells = row["grid_cells"]
+                grid_row_index = cells[0]["grid_row"]
+                ranges: dict[int, tuple[float, float, float]] = {}
+                for column_index, (window_left, value_x0) in enumerate(windows):
+                    value_right = (
+                        windows[column_index + 1][0]
+                        if column_index + 1 < len(windows)
+                        else float("inf")
+                    )
+                    ranges[column_index] = (float(window_left), float(value_x0), value_right)
+                accumulated = {
+                    (grid_row_index, cell["grid_column"], cell["kind"]): "" for cell in cells
+                }
+                expected_cells = {
+                    (grid_row_index, cell["grid_column"], cell["kind"]): _text_key(cell["text"])
+                    for cell in cells
+                }
+                consumed_grid: list[dict[str, Any]] = []
+                matched = False
+                while pointer < len(lines):
+                    line = lines[pointer]
+                    pointer += 1
+                    consumed_grid.append(line)
+                    for char in line["chars"]:
+                        x0 = float(char["x0"])
+                        for column_index, (window_left, value_x0, value_right) in ranges.items():
+                            if window_left - 0.01 <= x0 < float(value_x0):
+                                key = (grid_row_index, column_index, "grid_label")
+                            elif float(value_x0) - 0.01 <= x0 < value_right:
+                                key = (grid_row_index, column_index, "grid_value")
+                            else:
+                                continue
+                            if key in accumulated:
+                                accumulated[key] += str(char["text"])
+                            break
+                    if all(
+                        _text_key(accumulated[cell_key]) == expected_cells[cell_key]
+                        for cell_key in expected_cells
+                    ):
+                        mapped.append({**row, "expected_index": index, "lines": consumed_grid})
+                        matched = True
+                        break
+                    if not all(
+                        expected_cells[cell_key].startswith(_text_key(accumulated[cell_key]))
+                        for cell_key in expected_cells
+                    ):
+                        break
+                if not matched:
+                    pointer = start
+                    unmapped.append(
+                        {
+                            "expected_index": index,
+                            "kind": row["kind"],
+                            "expected_text": row["text"],
+                            "section_node_id": row.get("section_node_id"),
+                            "detail": "no rendered line sequence matched this required row",
+                        }
+                    )
+                continue
         consumed: list[dict[str, Any]] = []
         accumulated: list[str] = []
         while pointer < len(lines):
@@ -1692,7 +1990,27 @@ def measure_rendered_geometry(pdf_path: Path, plan: Any, state: C2LayoutState) -
     import pdfplumber
 
     lines = _rendered_lines(pdf_path)
-    mapping = map_rendered_to_expected(plan, lines)
+    # C2-0cS: measured column windows for the category-grid rows — the label
+    # window is [previous column split (or the writable left edge), value
+    # anchor) (the label is right-aligned; its own x0 varies with the label
+    # text), and the value window starts at the measured value anchor and
+    # ends at the next column's label window.
+    grid_windows = {}
+    for node in state.nodes:
+        if node.kind != "section" or node.category_grid is None:
+            continue
+        grid_windows[node.node_id] = [
+            (
+                (
+                    float(node.category_grid.column_splits_x_pt[column_index - 1])
+                    if column_index
+                    else float(state.page.margin_left_pt)
+                ),
+                column.value_x0_pt,
+            )
+            for column_index, column in enumerate(node.category_grid.columns)
+        ]
+    mapping = map_rendered_to_expected(plan, lines, grid_windows=grid_windows)
     rules = _rendered_rule_extents(pdf_path)
     with pdfplumber.open(pdf_path) as document:
         pages = [
@@ -2382,11 +2700,125 @@ def compare_geometry(
                  if section_plan.candidate_only else rhythm_detail)
             ),
         ))
+        # -- C2-0cS: category-grid cell anchors ---------------------------------
+        state_grid = next(
+            (
+                node.category_grid for node in state.nodes
+                if node.node_id == node_id and node.category_grid
+            ),
+            None,
+        )
+        grid_visual_rows = [row for row in content_rows if row["kind"] == "grid_row"]
+        if section_plan.category_grid_cells and state_grid:
+            label_token = _style_of(state, "style.body")
+            for cell in section_plan.category_grid_cells:
+                column = state_grid.columns[cell.column_index]
+                window_left = (
+                    state_grid.column_splits_x_pt[cell.column_index - 1]
+                    if cell.column_index
+                    else float(state.page.margin_left_pt)
+                )
+                visual = next(
+                    (
+                        row for row in grid_visual_rows
+                        if any(
+                            fragment["leaf_id"] == cell.leaf_id
+                            and fragment["grid_column"] == cell.column_index
+                            for fragment in row.get("grid_cells", [])
+                        )
+                    ),
+                    None,
+                )
+                if visual is None or not visual["lines"]:
+                    rows.append(_row(
+                        "grid_label_right_x", node_id, column.label_right_x_pt,
+                        "measured_target", None, TOLERANCE_PT["local_position"],
+                        detail=f"cell leaf {cell.leaf_id}: no mapped grid visual row",
+                    ))
+                    rows.append(_row(
+                        "grid_value_x0", node_id, column.value_x0_pt,
+                        "measured_target", None, TOLERANCE_PT["local_position"],
+                        detail=f"cell leaf {cell.leaf_id}: no mapped grid visual row",
+                    ))
+                    continue
+                chars = [char for line in visual["lines"] for char in line["chars"]]
+                label_chars = [
+                    char for char in chars
+                    if window_left - 0.01 <= float(char["x0"]) < float(column.value_x0_pt)
+                ]
+                value_chars = [
+                    char for char in chars
+                    if float(char["x0"]) >= float(column.value_x0_pt) - 0.01
+                ]
+                label_right = (
+                    round(max(float(char["x1"]) for char in label_chars), 3)
+                    if label_chars else None
+                )
+                value_x0 = (
+                    round(min(float(char["x0"]) for char in value_chars), 3)
+                    if value_chars else None
+                )
+                label_cell_rendered = bool(cell.label_text)
+                rows.append(_row(
+                    "grid_label_right_x", node_id, column.label_right_x_pt,
+                    "measured_target", label_right, TOLERANCE_PT["local_position"],
+                    detail=f"cell leaf {cell.leaf_id} (r{cell.row_index}c{cell.column_index})",
+                ))
+                rows.append(_row(
+                    "grid_value_x0", node_id, column.value_x0_pt,
+                    "measured_target", value_x0, TOLERANCE_PT["local_position"],
+                    detail=f"cell leaf {cell.leaf_id} (r{cell.row_index}c{cell.column_index})",
+                ))
+                bold_row = _row(
+                    "grid_label_bold", node_id,
+                    1.0 if (label_token is not None and label_token.bold) else 0.0,
+                    "declared_state",
+                    (
+                        1.0 if any("bold" in str(char["font"]).lower() for char in label_chars)
+                        else 0.0
+                    ) if label_chars else None,
+                    0.0,
+                    detail=f"cell leaf {cell.leaf_id}: measured bold label presentation",
+                )
+                rows.append(bold_row)
+                if label_cell_rendered is False:
+                    # The leaf carries no label fragment: the label sub-cell
+                    # renders nothing — the anchors are explicitly not
+                    # applicable for this cell, never unmeasurable failures.
+                    for row in rows[-3:]:
+                        if row["property"] in {"grid_label_right_x", "grid_label_bold"}:
+                            row["classification"] = "not_applicable"
+                            row["detail"] = (
+                                f"cell leaf {cell.leaf_id}: no label fragment (the "
+                                "leaf text carries no label/value split)"
+                            )
+            if state_grid.row_count >= 2:
+                rendered_tops = [row["lines"][0]["top"] for row in grid_visual_rows if row["lines"]]
+                rendered_pitches = [
+                    round(rendered_tops[index + 1] - rendered_tops[index], 3)
+                    for index in range(len(rendered_tops) - 1)
+                ]
+                pitch_row = _row(
+                    "grid_row_pitch", node_id, state_grid.row_pitch_pt,
+                    "measured_target",
+                    _median(rendered_pitches) if rendered_pitches else None,
+                    TOLERANCE_PT["local_gap"],
+                    detail="measured uniform category-grid row rhythm",
+                )
+                if len(rendered_tops) < 2:
+                    # The candidate contributes fewer category rows than the
+                    # target's measured grid: no rendered row rhythm exists to
+                    # verify — explicitly not applicable, never unmeasurable.
+                    pitch_row["classification"] = "not_applicable"
+                    pitch_row["detail"] = (
+                        "candidate content fills fewer grid rows than the "
+                        "target's measured grid; no rendered row rhythm"
+                    )
+                rows.append(pitch_row)
         # -- content start x ----------------------------------------------------
-        # A bulleted ITEM LIST's content edge IS its declared bullet marker
-        # (the target's own non-bullet lines are content the plan does not
-        # reproduce); an entries section's content edge is its measured
-        # target title column.
+        # A grid section's content edge is its measured label/value anchors
+        # (rows above); the region's min-x0 basis does not apply to a
+        # right-aligned label column.
         bullet_shape = bool(bullet_rows_expected(plan, section_plan))
         item_list_bullet_shape = (
             bullet_shape and section_plan.content_kind in {"item_list", "inline_items"}
@@ -2396,7 +2828,8 @@ def compare_geometry(
             if item_list_bullet_shape and section_plan.bullet_dot_x0_pt is not None
             else (target_section or {}).get("content_start_x_pt")
         )
-        rows.append(_row(
+        if not section_plan.category_grid_cells:
+            rows.append(_row(
             "content_start_x", node_id,
             content_start_basis,
             "declared_state" if item_list_bullet_shape and section_plan.bullet_dot_x0_pt is not None else "measured_target",
@@ -2502,6 +2935,12 @@ def compare_geometry(
             leaf_id = (leaf_row.get("leaf_ids") or [""])[0]
             line0 = leaf_row["lines"][0]
             kind = leaf_row["kind"]
+            if kind == "grid_row":
+                # C2-0cS: a category-grid leaf's horizontal contracts are its
+                # measured cell anchors (the grid_label_right_x / grid_value_x0
+                # rows above); the plain content-start basis does not apply to
+                # a right-aligned label cell.
+                continue
             if kind in {"entry_title", "entry_row"}:
                 rows.append(_row(
                     "leaf_entry_x", node_id,
@@ -3199,11 +3638,29 @@ def conversion_compatibility_report(
         section for section in entry_sections
         if any(entry.meta_lines for entry in section.entries)
     ]
+    # Tables are attributed to their RENDERING unit in document order: an
+    # entry section renders ONE 2-column table per meta-carrying entry; a
+    # category grid renders ONE 2n-column table (each with its own verified
+    # topology).
+    table_units: list[tuple[Any, str]] = []
+    for section in [*plan.sections, *plan.appended_sections]:
+        if section.empty:
+            continue
+        if section.content_kind in {"entries", "composite"} and not section.category_grid_cells:
+            meta_entries = [entry for entry in section.entries if entry.meta_lines]
+            table_units.extend([(section, "entry")] * len(meta_entries))
+        if section.category_grid_cells:
+            table_units.append((section, "grid"))
+    tables = inspection.get("tables", [])
+    attributed = (
+        list(zip(table_units, tables))
+        if len(table_units) == len(tables) else []
+    )
     if entries_with_meta:
-        tables = inspection.get("tables", [])
-        topology_ok = bool(tables) and all(
+        topology_ok = bool(attributed) and all(
             record["columns"] == 2 and record["borders_none"] and record["rows_cannot_split"]
-            for record in tables
+            for (section, unit), record in attributed
+            if unit == "entry"
         )
         claim(
             "entry rows keep left/right topology as borderless two-column tables (left: title/detail, right: metadata)",
@@ -3224,6 +3681,54 @@ def conversion_compatibility_report(
                     "x0 and the right edge only)"
                 ),
                 evidence=[section.node_id for section in entries_with_meta],
+            )
+        )
+    grid_sections = [
+        section for section in [*plan.sections, *plan.appended_sections]
+        if not section.empty and section.category_grid_cells
+    ]
+    if grid_sections:
+        # C2-0cS: the measured category grid renders as a borderless fixed
+        # layout table whose authored geometry equals the measured cell
+        # boundaries (output-verified against the written package).
+        grid_topology_ok = bool(attributed) and all(
+            record["borders_none"]
+            and record["rows_cannot_split"]
+            and record["columns"] == expected["columns"]
+            and record["rows"] == expected["rows"]
+            and len(record["column_widths_pt"]) == len(expected["column_widths_pt"])
+            and all(
+                abs(width - expected_width) <= 0.05
+                for width, expected_width in zip(
+                    record["column_widths_pt"], expected["column_widths_pt"]
+                )
+            )
+            for (section, unit), record in attributed
+            if unit == "grid"
+            for expected in [category_grid_table_geometry(state, section)]
+            if expected is not None
+        )
+        claim(
+            "the measured category grid renders as a borderless fixed-layout table "
+            "with the measured label/value column boundaries (label sub-cells "
+            "right-aligned by the measured label-to-value gap)",
+            grid_topology_ok,
+            f"tables={tables}",
+        )
+        adjusted.append(
+            AdjustedFeature(
+                feature="category grid cell layout",
+                detail=(
+                    "the measured two-column category grid renders as a "
+                    "borderless fixed-layout table: bold label fragments "
+                    "right-aligned at the measured label edges, value fragments "
+                    "left-aligned at the measured value anchors; the cell "
+                    "fragments concatenate to each leaf's verbatim text; "
+                    "per-category target colors stay an explicitly recorded "
+                    "capability gap (no deterministic candidate-fragment to "
+                    "category-color binding)"
+                ),
+                evidence=[section.node_id for section in grid_sections],
             )
         )
     appended = [section for section in plan.appended_sections]
