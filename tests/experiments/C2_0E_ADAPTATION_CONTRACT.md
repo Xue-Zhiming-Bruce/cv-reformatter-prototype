@@ -14,6 +14,39 @@ Evidence base: the frozen C2-0d six-pair matrix
 
 ## 0. Owner verdicts recorded first (2026-09-17)
 
+### 0a. C2-0eA corrections (owner review, 2026-09-17; authoritative)
+
+The owner accepted the overall adaptation-boundary design as the basis for
+C2-0eB and ordered five corrections before any implementation:
+
+1. **Action and review status are separate vocabularies.** The adaptation
+   ACTIONS are only `preserve_target_topology`, `fallback_within_section`,
+   `append_target_styled_section`, `merge_into_compatible_section`. The
+   review STATUS values are `ready`, `review_required`, `unsupported`. A
+   result is therefore e.g. `action=fallback_within_section, status=ready`,
+   `action=append_target_styled_section, status=review_required`, or
+   `action=null, status=unsupported`. `require_layout_review` and
+   `unsupported` are NOT adaptation actions.
+2. **Pre-render adaptation and post-render validation are separate passes.**
+   The adaptation pass runs ONCE before RenderPlan compilation. Sparse-page
+   density is a POST-render validation result over the rendered document; it
+   is not a pre-render adaptation decision and does not feed any fitting
+   loop in C2-0eB.
+3. **Merge compatibility is tightened:** matching `content_kind` alone is
+   never enough. A merge additionally requires an explicitly approved
+   source-role mapping, compatible measured content kinds, a stable
+   destination node, and exact content accounting. Merge behavior is NOT
+   implemented in C2-0eB.
+4. **Candidate-only section reordering is removed** from the proposed
+   sparse-page actions: reordering does not reliably reduce total height and
+   may damage reading order. Not approved.
+5. The stale C2-0d "12 PASS" summary in `PIPELINE_EVOLUTION_PROPOSAL.md` is
+   corrected to: 10 criteria full PASS; criterion 6 PASS with a truthfulness
+   finding; criterion 7 PARTIAL; structural generalization succeeded;
+   product-quality one-shot generalization did not.
+
+### 0b. C2-0d verdict (unchanged)
+
 1. **C2-0d is ACCEPTED as a useful diagnostic/generalization audit.** It is
    **NOT accepted as proof of product-quality one-shot conversion.**
 2. **Structural generalization held:** C2-0cS grid detection generalized —
@@ -35,7 +68,8 @@ Evidence base: the frozen C2-0d six-pair matrix
    capability across all observed failures is **content-to-layout
    adaptation**: candidate content shape and volume must be reconciled with
    target structure and capacity BEFORE deterministic rendering. This
-   checkpoint defines that boundary; it does not authorize renderer work.
+   checkpoint defines that boundary; C2-0eB implements only the bounded
+   spike below.
 
 ## 1. Why C2-0eA exists
 
@@ -81,16 +115,24 @@ measured target capacity    (page writable area, section row capacity,
                              grid cell width, measured anchors)
         |
         v
-[NEW BOUNDARY: deterministic adaptation pass — decisions only]
-        |   adaptation decisions (one per reconciled section)
+[PRE-RENDER ADAPTATION PASS — once, before RenderPlan compilation]
+        |   adaptation decisions: ACTION (4-value vocabulary) + STATUS
+        |   (ready / review_required / unsupported), evidence, disclosure
         v
-EXISTING deterministic RenderPlan compiler  (consumes decisions; unchanged
-        |                                    inputs/outputs otherwise)
+EXISTING deterministic RenderPlan compiler  (unchanged otherwise)
         v
 EXISTING DOCX renderer  and  EXISTING HTML renderer  (unchanged)
         |
         v
-DOCX / PDF  -> existing hard gates (content, privacy, geometry, pagination)
+DOCX / PDF
+        |
+        v
+[EXISTING POST-RENDER VALIDATION: content, privacy, geometry, pagination]
+        |   sparse-page density is measured HERE — a post-render review
+        |   result, never a pre-render decision, never an automatic
+        |   repair input in C2-0eB
+        v
+post-render document review result (status + evidence)
 ```
 
 Hard invariants of the adaptation layer:
@@ -156,23 +198,28 @@ A decision carries `require_layout_review` when any of:
 express at all (existing behavior, unchanged).
 
 **Q6. How are pagination and sparse trailing pages handled?**
-Not by forcing the target page count. The contract classifies, in order:
+Not by forcing the target page count — and NOT by pre-render decisions.
+Sparse-page density is a POST-RENDER validation result measured on the
+rendered document (the existing sparse-trailing-page measurement): the
+adaptation pass cannot see it, and in C2-0eB it feeds NO automatic repair
+(no re-render loop). The contract classifies, in order:
 1. **legitimate additional page** — caused by substantive candidate content
    that genuinely exceeds one page of the selected template at measured
-   typography; acceptable, classified `adjusted`, disclosed;
+   typography; acceptable, disclosed;
 2. **avoidable sparse page** — caused by keep rules, section placement, or
-   spacing artifacts (e.g. one small section pushed over the break); bounded
-   automatic actions may run: (a) drop a keep-with-next/keep-together rule
-   that forces the break, (b) compact an explicitly measured inter-section
-   gap within its measured variance, (c) reorder candidate-only appended
-   sections among themselves to fill the last page. Order is fixed and each
-   action is a recorded decision. NO font shrinking, NO content deletion,
-   NO measured-value tuning;
+   spacing artifacts (e.g. one small section pushed over the break);
+   FUTURE bounded automatic actions may apply in a fixed order: (a) drop a
+   keep-with-next/keep-together rule that forces the break, (b) compact an
+   explicitly measured inter-section gap within its measured variance.
+   Candidate-only section REORDERING is NOT an approved action (removed:
+   reordering does not reliably reduce total height and may damage reading
+   order). None of these actions is implemented in C2-0eB;
 3. **cannot fit** — content exceeds template capacity without a structural
-   fallback; goes to `fallback_within_section` or `require_layout_review`.
-If a trailing page remains sparse (< the pre-documented 30% density
-threshold) after the bounded actions, the output carries a visible
-warning/review state — never a clean pass.
+   fallback; goes to `fallback_within_section` or a review status.
+If the final page's measured density is below the pre-documented 30%
+threshold, the POST-render validation result is `review_required` with the
+measured density, page count, threshold, and evidence reference — never a
+clean pass.
 
 **Q7. Renderer limitation vs upstream CandidateProfile normalization gap?**
 - **Renderer/render-plan limitation**: the measured state already expresses
@@ -204,7 +251,7 @@ user choice?**
   vague semantic similarity); the sparse-page bounded-action set; whether
   wrapped-grid rendering should instead be declared `unsupported`
   (fail-closed).
-- **User choice:** decisions flagged `require_layout_review`; the one-shot
+- **User choice:** decisions whose STATUS is `review_required`; the one-shot
   acceptance of a result as chat-refinable (§9).
 
 **Q9. How will a later chat/LLM edit modify an adaptation decision?**
@@ -220,19 +267,27 @@ classification. Rejected proposals fail closed; accepted proposals produce a
 new decision-record version and a re-compiled RenderPlan. Nothing about the
 chat layer is implemented in this checkpoint.
 
-## 4. Minimal decision vocabulary
+## 4. Minimal decision vocabulary (corrected: action + status)
 
-Six decisions. Nothing is added unless at least two matrix cases (or one
-case plus a synthetic boundary test) require it.
+ACTION (what the adaptation pass does to a section's body topology) and
+STATUS (whether the result is ready for the deterministic pipeline or needs
+review) are SEPARATE fields — an action never encodes review state:
 
-| Decision | Meaning | Trigger (deterministic) |
+| ACTION | Meaning | Trigger (deterministic) |
 |---|---|---|
 | `preserve_target_topology` | bound content fits the bound measured topology; render as-is | preflight fit PASS |
 | `fallback_within_section` | keep target section identity (heading/rule/colors/tokens); degrade body topology to a pre-declared safe tier | preflight fit FAIL on a measured dimension; tier selected by policy |
 | `append_target_styled_section` | candidate-only section rendered as a new section inheriting measured target heading/body tokens | no target binding; substantive content; no approved merge |
-| `merge_into_compatible_section` | candidate content joins an existing target section of the SAME measured content kind | explicit structural compatibility rule passes (policy-gated) |
-| `require_layout_review` | output is produced but flagged for recruiter/owner layout review | sparse page after bounded actions; unapproved fallback tier; unvalidated kind conversion |
-| `unsupported` | state cannot express the structure; fail closed (existing) | no measured/deterministic representation exists |
+| `merge_into_compatible_section` | candidate content joins an existing target section of the SAME measured content kind | explicit structural compatibility rule passes (policy-gated; requires an approved source-role mapping, compatible measured kinds, a stable destination node, and exact accounting — `content_kind` equality alone is never sufficient) |
+
+| STATUS | Meaning |
+|---|---|
+| `ready` | the decision is complete; the deterministic pipeline proceeds |
+| `review_required` | output is produced but flagged for recruiter/owner review (sparse page, unapproved fallback tier, unvalidated kind conversion) |
+| `unsupported` | the state cannot express the structure; fail closed (existing) |
+
+Nothing is added unless at least two matrix cases (or one case plus a
+synthetic boundary test) require it.
 
 ## 5. Decision record (JSON example — NOT a new Pydantic model yet)
 
@@ -240,42 +295,44 @@ One record per reconciled section. Example: F→D SKILLS POOL (case A).
 
 ```json
 {
-  "decision_id": "adapt.section.03",
+  "decision_id": "adapt.section.02",
+  "destination_node": "section.02",
+  "candidate_source_nodes": ["skills.g1", "skills.g2", "skills.g3"],
   "action": "fallback_within_section",
-  "destination_node": "section.03",
-  "target_section_label": "SKILLS POOL",
-  "candidate_source_nodes": ["leaf.skills.g1", "leaf.skills.g2", "leaf.skills.g3"],
+  "status": "ready",
   "reason_code": "grid_cell_preflight_fit_failed",
   "evidence": [
-    {"kind": "measured", "ref": "category_grid.section.03",
+    {"kind": "measured", "ref": "category_grid.section.02",
      "detail": "3x2 grid; value anchors x0=93.60/369.94; column split x=303.302; pitch 12.546pt"},
-    {"kind": "render_probe", "ref": "preflight.skills.g2",
-     "detail": "'Deep Learning Frameworks:' wraps to 4 lines in 209.7pt cell; row pitch violation"}
+    {"kind": "preflight_font_metrics", "ref": "preflight.section.02",
+     "detail": "label 'Deep Learning Frameworks:' measures 147.0pt bold in the written font vs 61.19pt available in the measured col-1 label window; single-line requirement violated"}
   ],
-  "original_target_topology": "category_grid_3rows_x_2cols",
-  "selected_output_topology": "single_column_label_value_list",
-  "content_disposition": "all_candidate_leaves_rendered_exactly_once; verbatim text preserved",
-  "expected_pagination_effect": "section grows ~2 rows; stays within page 1 writable capacity",
-  "editability_guarantee": "one native editable paragraph per skill group; heading/rule/colors unchanged",
-  "warning": {
-    "requires_user_review": false,
-    "notice": "grid pitch not preserved: candidate values exceed measured cell capacity; single-column fallback applied",
-    "disclosure_class": "adjusted"
-  },
-  "style_tokens": {
-    "heading": "style.heading.2 (measured SKILLS POOL token)",
-    "body": "style.body (measured)",
-    "source": "section.03 measured state tokens; nothing invented"
-  }
+  "original_topology": "category_grid_3rows_x_2cols",
+  "selected_topology": "single_column_label_value_items",
+  "content_disposition": "all candidate leaves rendered exactly once; verbatim text preserved",
+  "warning_text": "experimental single-column fallback (C2-0eB experiment default, NOT approved product policy): the target grid topology was NOT preserved because candidate labels exceed the measured label windows"
 }
 ```
 
-A record for `preserve_target_topology` (E→F Experience) carries the same
-fields with `reason_code: "preflight_fit_passed"`, the fit evidence, and a
-null `warning`. A record for `require_layout_review` (F→E page 2) carries
-`expected_pagination_effect: "second_page_density_6.4pct_below_0.30_threshold"`.
-The records are a DOCUMENTATION artifact here; a later implementation spike
-must propose the typed schema for owner review before code exists.
+A `preserve_target_topology` record carries the same fields with
+`action: "preserve_target_topology"`, `status: "ready"`,
+`reason_code: "grid_cell_preflight_fit_passed"`, and the fit evidence.
+A post-render sparse-page result is NOT a decision record — it is the
+document-level review result:
+
+```json
+{
+  "status": "review_required",
+  "reason_code": "sparse_trailing_page",
+  "page_count": 2,
+  "trailing_page_density": 0.064,
+  "density_threshold": 0.30,
+  "evidence_ref": "docx_rendered_geometry.json#sparse_trailing_page"
+}
+```
+
+The records are a DOCUMENTATION artifact here; the C2-0eB spike implements
+them as additive optional typed records in the existing plan/model family.
 
 ## 6. Six-pair evidence table
 
@@ -309,11 +366,16 @@ Source: `C2_0D_REPORT.md` §3 (DOCX-lane runs, 2026-09-16).
 2. **Candidate-only append:** inherit the target's predominant measured
    heading/body tokens + median heading gap (formalizes the existing
    candidate-only overflow rule into a decision record).
-3. **Merge policy:** only same-measured-content-kind structural
-   compatibility (e.g. certification items → a composite's certifications
-   sub-content). Semantic similarity alone NEVER triggers a merge.
-4. **Sparse-page policy:** classification + the three bounded actions of §3
-   Q6 in fixed order; residual sparse page ⇒ visible review warning.
+3. **Merge policy (NOT implemented in C2-0eB):** same-measured-content-kind
+   structural compatibility is necessary but NEVER sufficient — a merge
+   additionally requires an explicitly approved source-role mapping,
+   compatible measured content kinds, a stable destination node, and exact
+   content accounting. Semantic similarity alone NEVER triggers a merge.
+4. **Sparse-page policy:** POST-render classification only in C2-0eB; any
+   future bounded actions (drop keep rule at the break; compact a measured
+   inter-section gap) need owner approval — candidate-only section
+   reordering is NOT an approved action (removed). Residual sparse page ⇒
+   `review_required` review result.
 5. **Kind incompatibility:** entries stay entries, lists stay lists; no
    cross-kind reconstruction without a validated contract; missing profile
    structure ⇒ upstream gap, recorded, not renderer-patched.
@@ -396,21 +458,24 @@ A C2-0eB spike is successful when, on the frozen matrix pairs it targets:
   (e.g. grid-fit preflight: F→D fail case + a synthetic fits case; sparse
   classification: D→F + F→E + the pre-documented D→E baseline).
 
-## 13. Required recommendation: smallest C2-0eB spike
+## 13. Required recommendation: smallest C2-0eB spike (owner-authorized
+## scope, corrected)
 
 Recommend ONLY:
 
-1. **Grid-fit preflight + safe within-section fallback** — case A. Pairs:
-   F→D (the observed fail) plus a synthetic boundary case (a skill group
-   that fits the measured cells → `preserve_target_topology`) to prove the
-   preflight discriminates. Deliverable: decision records + a rendered F→D
-   SKILLS POOL with zero broken words and the proposed tier-1 fallback,
-   shown next to the target for owner review.
-2. **Explicit sparse-page/review classification** — case C, bounded
-   classification ONLY (no automatic flow actions yet). Pairs: F→E
-   (6.4% "almost only Certifications") and D→F (13.8%), plus the frozen
-   D→E baseline (28.8% borderline) as the boundary case. Deliverable: the
-   classification in each run's report + the visible review warning state.
+1. **Category-grid fit preflight + experimental safe within-section
+   fallback** — case A. Pairs: F→D (the observed fail) plus a synthetic
+   boundary case (a skill group that fits the measured cells →
+   `preserve_target_topology`) to prove the preflight discriminates.
+   Deliverable: decision records (action + status separate) + a rendered
+   F→D SKILLS POOL with zero broken words and the experimental single-column
+   fallback, shown next to the target for owner review.
+2. **Post-render sparse-page review classification** — case C, bounded
+   classification ONLY (no automatic repair). Pairs: F→E (6.4%), D→F
+   (13.8%), D→E (28.8% borderline), E→F (one page, ready). Deliverable: a
+   document-level review result per run with status, reason code, measured
+   density, threshold, and evidence reference, shown prominently in
+   review.html.
 
 Explicitly NOT in the spike: candidate-only section restyle variants beyond
 the existing measured-token inheritance (case B beyond record emission),

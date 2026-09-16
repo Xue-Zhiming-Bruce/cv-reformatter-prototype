@@ -8,7 +8,7 @@
 > | B 管线 | 已关闭（假设证伪，零件经 §7.3 移植） |
 > | C1 D→E（header + body） | owner 终审通过，完成（§9/§11） |
 > | C1 E→F 泛化 | **调试中，尚未通过**（十次冻结，缺口 #1–#8 已闭；#9 右缘杠杆失效、#10 种子行宽派生假设待验证，见 run 20260910T161228Z） |
-> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑；C2-0b 经三轮纠偏后由 owner 终审裁决：**接受为实验性 PDF 架构里程碑；非生产批准，非视觉 parity 主张**（rule-geometry 门禁完整性已闭合，含 page/垂直区域关联）；**C2-0c 被 owner 视觉评审否决**（机械可编辑 ≠ 模板保真：双栏条目拓扑丢失、内建样式间距失控、双 marker、E→F 变两页、D→E 三页稀疏）→ 一次有界视觉纠偏已执行（无边框双栏表恢复拓扑、逐段显式格式控制、确认型 marker 转换、E→F 回到一页、D→E 回到 C1 页数、exact 声明逐条输出验证、preview/空白页入硬门禁、分页显式分类），**待 owner 复审**；随后按 owner 工单执行**渲染几何实测与有界拟合 pass**（E→F 40/40 点级几何全部通过、2 次拟合收敛、hard gate 全真；typography 拆分 authored/rendered 两种结果，替换字体诚实判 adjusted；D→E 1 个剩余 delta 诚实记录、E→D 保持 fail-closed gap-only），**仍待 owner 视觉复审**；C2-0cC 颜色能力已被 owner 接受为有界里程碑（整体 E→D 仍未接受）；随后按 owner 工单执行 **C2-0cM 复合章节映射检查点**：`EDUCATION & CERTIFICATIONS` 经确定性复合标题分解绑定为 `[education, certifications]`，候选人教育经历在目标章节呈现（紫标题/绿规则/实测内容起点）内渲染、certifications 子内容诚实留空，E→D 仍 fail-closed（SKILLS POOL 内部布局与行内颜色缺口已入诊断），**待 owner 复审**；随后按 owner 工单执行 **C2-0cV 可见章节节奏检查点**（已被 owner 接受为节奏检查点里程碑）；随后按 owner 工单执行 **C2-0cS SKILLS POOL 内部结构检查点**（实测双栏 category grid + 行主序候选人绑定，**owner 裁决（2026-09-16）：C2-0cS 接受为有界 Skills Pool 结构里程碑——它证明了 C2 能以可编辑 DOCX/HTML 内容表示并渲染实测双栏类目网格结构；未证明通用模板支持；整体 E→D 仍未接受；Pipeline C2 保持实验性、未获生产批准**）；C2-0d 六对冻结泛化审计已执行，**owner 裁决（2026-09-17）：接受为诊断/泛化审计，不接受为产品质量一次成型证明**（结构层泛化成立——grid 零误检/零漏检；产品质量未泛化——仅 E→F 全过、F→D 网格断词、D→F/F→E 稀疏尾页；"12 PASS" 摘要已更正）；当前 checkpoint = **C2-0eA 内容-版式适配契约**（契约/设计检查点，不改实现，见 `C2_0E_ADAPTATION_CONTRACT.md` 与 §16.14；未授权任何渲染器实现）（见 §16.5/§16.6/§16.7/§16.9/§16.10/§16.13/§16.14 与 `C2_0B_REPORT.md`/`C2_0C_REPORT.md`/`C2_0D_REPORT.md`/`C2_0E_ADAPTATION_CONTRACT.md`） |
+> | C2 | **active experiment**：C2-0a 已被 owner 接受为实验性 schema 里程碑；C2-0b 经三轮纠偏后由 owner 终审裁决：**接受为实验性 PDF 架构里程碑；非生产批准，非视觉 parity 主张**（rule-geometry 门禁完整性已闭合，含 page/垂直区域关联）；**C2-0c 被 owner 视觉评审否决**（机械可编辑 ≠ 模板保真：双栏条目拓扑丢失、内建样式间距失控、双 marker、E→F 变两页、D→E 三页稀疏）→ 一次有界视觉纠偏已执行（无边框双栏表恢复拓扑、逐段显式格式控制、确认型 marker 转换、E→F 回到一页、D→E 回到 C1 页数、exact 声明逐条输出验证、preview/空白页入硬门禁、分页显式分类），**待 owner 复审**；随后按 owner 工单执行**渲染几何实测与有界拟合 pass**（E→F 40/40 点级几何全部通过、2 次拟合收敛、hard gate 全真；typography 拆分 authored/rendered 两种结果，替换字体诚实判 adjusted；D→E 1 个剩余 delta 诚实记录、E→D 保持 fail-closed gap-only），**仍待 owner 视觉复审**；C2-0cC 颜色能力已被 owner 接受为有界里程碑（整体 E→D 仍未接受）；随后按 owner 工单执行 **C2-0cM 复合章节映射检查点**：`EDUCATION & CERTIFICATIONS` 经确定性复合标题分解绑定为 `[education, certifications]`，候选人教育经历在目标章节呈现（紫标题/绿规则/实测内容起点）内渲染、certifications 子内容诚实留空，E→D 仍 fail-closed（SKILLS POOL 内部布局与行内颜色缺口已入诊断），**待 owner 复审**；随后按 owner 工单执行 **C2-0cV 可见章节节奏检查点**（已被 owner 接受为节奏检查点里程碑）；随后按 owner 工单执行 **C2-0cS SKILLS POOL 内部结构检查点**（实测双栏 category grid + 行主序候选人绑定，**owner 裁决（2026-09-16）：C2-0cS 接受为有界 Skills Pool 结构里程碑——它证明了 C2 能以可编辑 DOCX/HTML 内容表示并渲染实测双栏类目网格结构；未证明通用模板支持；整体 E→D 仍未接受；Pipeline C2 保持实验性、未获生产批准**）；C2-0d 六对冻结泛化审计已执行，**owner 裁决（2026-09-17）：接受为诊断/泛化审计，不接受为产品质量一次成型证明**（结构层泛化成立——grid 零误检/零漏检；产品质量未泛化——仅 E→F 全过、F→D 网格断词、D→F/F→E 稀疏尾页；"12 PASS" 摘要已更正）；当前 checkpoint = **C2-0eB 内容-版式适配最小实现 spike**（owner 已接受 C2-0eA 契约边界并授权仅两项：grid 拟合预检+实验性单列 fallback、渲染后稀疏页 review 分类；action/status 分离与渲染前/后分离见契约 §0a；见 `C2_0E_ADAPTATION_CONTRACT.md` 与 §16.14/§16.15）（见 §16.5/§16.6/§16.7/§16.9/§16.10/§16.13/§16.14/§16.15 与 `C2_0B_REPORT.md`/`C2_0C_REPORT.md`/`C2_0D_REPORT.md`/`C2_0E_ADAPTATION_CONTRACT.md`） |
 > | Pipeline D | D0/D0-R/D1-0 已完成；暂停后续工作，等待 C2 结果（见 `D_PIPELINE_PROPOSAL.md`） |
 >
 > 日期:2026-09-08 初版;2026-09-09 §7–§8;2026-09-10 §9–§12;
@@ -1587,9 +1587,14 @@ unsupported）。
   /证据层失败。HTML lane 对照项缺陷三处如实入档（多行网格分桶、连字符
   归一化不对称、"Certifications:" 复合标题子串隐私误报——后者为
   C2-0cM 以来即存在的前置缺陷）。
-- **验收记分卡**：12 项 PASS（其中一项带诚实 truthfulness 发现），
-  E→F 门禁无回归（98/98 全真），C2-0cV/C2-0cS 无回归，无空白页，
-  无目标事实泄漏（DOCX 直检零命中）。
+- **验收记分卡（2026-09-17 更正，替代早先的 "12 项 PASS" 概括——criterion 7 为
+  PARTIAL，"12 PASS" 的原表述具误导性）**：10 项完全 PASS（1–5、8–12），
+  criterion 6 PASS 但带诚实 truthfulness 发现（空网格单元格段落未受控），
+  criterion 7 PARTIAL（无空白页，但两例新增稀疏尾页失败）。区分：**结构层
+  泛化成立**（grid 检测/绑定/核算/隐私/fail-closed 六对全过）；**产品质量
+  一次成型未泛化**（6 对中 3 对 DOCX 几何门禁诚实失败，仅 E→F 全过）。E→F
+  门禁无回归（98/98 全真），C2-0cV/C2-0cS 无回归，无空白页，无目标事实
+  泄漏（DOCX 直检零命中）。
 - **建议（基于冻结证据，待 owner 裁决）**：不因测试通过而继续拟合；
   建议**先简化/巩固 C2**——一个 owner 授权的小纠偏 pass 处理四个已命名
   小根因（空单元格段格式、网格分桶按行分离、连字符归一化对称、合并
@@ -1645,3 +1650,33 @@ c2_renderer.py / c2_docx_renderer.py 及其测试、生产代码、前端、Pipe
 provider 集成全部不动；不加新渲染器、通用优化器、agent 框架、第二 schema
 族、新测试 runner、新依赖、目标特定条件或另一个拟合循环。产品契约与 ADR
 不更新（适配政策尚未批准）。C2-0eB 未启动。
+
+### 16.15 C2-0eA owner 裁决与 C2-0eB 授权（2026-09-17）
+
+**Owner verdict：适配边界总体设计被接受为 C2-0eB 的基础；Pipeline C2 保持
+实验性、未获接受；C2-0eB 保持有界 spike，不实现全部提议政策。** 实施前
+五项契约更正（已写入契约 §0a 并提交）：
+
+1. **action 与 review status 分离**：适配动作词汇仅
+   `preserve_target_topology / fallback_within_section /
+   append_target_styled_section / merge_into_compatible_section`；状态词汇
+   为 `ready / review_required / unsupported`。`require_layout_review` 与
+   `unsupported` 不是适配动作。
+2. **渲染前适配与渲染后验证分离**：适配 pass 在 RenderPlan 编译前运行一次；
+   稀疏页密度是渲染后验证结果，不是渲染前决策，在 C2-0eB 中不驱动任何
+   自动修复。
+3. **merge 兼容性收紧**：仅 `content_kind` 相同永远不够；还要求已批准的
+   source-role 映射、兼容的实测内容形态、稳定目标节点与精确内容核算。
+   C2-0eB 不实现 merge 行为。
+4. **候选-only 章节重排序从稀疏页候选动作中移除**（不可靠且可能破坏阅读
+   顺序）。
+5. 提案文档中 C2-0d 的 "12 PASS" 陈旧摘要已更正（10 项完全 PASS /
+   criterion 6 带诚实发现 / criterion 7 PARTIAL；结构层泛化成立，产品质量
+   一次成型未泛化）。
+
+**C2-0eB 授权范围（仅两项）：**（1）category-grid 拟合预检 + 实验性
+section 内安全 fallback（单列 label:value，实验默认，非产品政策批准）；
+（2）渲染后稀疏页 review 分类（无自动修复）。复杂度预算：一个共享
+预渲染适配函数、一条 grid 拟合规则、一条既有单列 fallback 路径、一个
+渲染后分页 review 分类；无新渲染器路径、无新依赖、无新 runner、无
+pair-specific 分支、无通用政策框架、无第二拟合循环。
