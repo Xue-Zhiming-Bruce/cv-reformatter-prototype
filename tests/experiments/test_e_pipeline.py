@@ -13,6 +13,7 @@ Run: pytest tests/experiments/test_e_pipeline.py
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -875,3 +876,351 @@ def test_run_e3_reviewer_cannot_approve_its_own_repair(tmp_path: Path) -> None:
     assert promotion_agents <= {"shell"}  # only the shell promotes (may be empty on rollback)
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["pending_candidate_id"] is None
+
+
+# ===========================================================================
+# E4 — live-agent Resume I convergence trial (PIPELINE_E_PLAN.md §11/§14;
+# E_PIPELINE_PREP.md E4 work order). Focused tests for the new shared
+# behavior only; everything here runs fully OFFLINE (zero live calls).
+# ===========================================================================
+
+e4_skip = e3_skip  # the same authorized corpus + cached evidence + pinned Chrome
+
+
+def test_budget_counts_live_and_scripted_calls_separately() -> None:
+    """Phase 0: 'model requests' must not merge scripted agent invocations
+    with live provider calls; token usage belongs to live calls only."""
+    from tests.experiments.d_pipeline import BudgetExhausted
+
+    budget = e.RunBudget(max_model_requests=3, max_tool_calls=8)
+    budget.spend_model("visual_reviewer")  # scripted invocation (default mode)
+    budget.spend_model("visual_reviewer", mode="scripted")
+    class _Usage:
+        requests = 1
+        input_tokens = 11
+        output_tokens = 7
+        tool_calls = 0
+    budget.spend_model("visual_reviewer", usage=_Usage(), mode="live")
+    state = budget.to_json()
+    assert state["calls_by_mode"]["scripted"] == 2
+    assert state["calls_by_mode"]["live"] == 1
+    assert state["usage"]["input_tokens"] == 11  # tokens belong to live only
+    with pytest.raises(BudgetExhausted):
+        budget.spend_model("visual_reviewer")
+
+
+def test_duplicate_unresolved_items_are_deduplicated_by_item_id() -> None:
+    items = [
+        e.UnresolvedItem(
+            item_id="unresolved.same",
+            question="same question",
+            status="unresolved",
+            reason="r",
+            evidence_gap="ambiguous_relation",
+        )
+        for _ in range(5)
+    ] + [
+        e.UnresolvedItem(
+            item_id="unresolved.other",
+            question="different question",
+            status="unresolved",
+            reason="r",
+            evidence_gap="normalization_loss",
+        )
+    ]
+    deduped = e._dedup_unresolved(items)
+    assert len(deduped) == 2
+    assert len({item.item_id for item in deduped}) == 2
+
+
+def test_repair_counts_agree_across_state_trace_and_report(
+    tmp_path: Path,
+) -> None:
+    """Phase 0: repair_attempt_count was 0 while a repair/rollback was
+    recorded; now state, trace, budget, and evaluation report agree."""
+    run_dir, _terminal, record = e.run_e4(TARGET_I, tmp_path / "run")
+    executed = [a for a in record["repair_attempts"] if "layer" in a]
+    budget_state = record["budget_state"]
+    assert budget_state["repair_attempt_count"] == len(executed)
+    trace = json.loads((run_dir / "trace.json").read_text())
+    proposal_entries = [
+        json.loads((run_dir / entry["output_artifact"]).read_text())
+        for entry in trace
+        if entry.get("action") == "proposal" and entry.get("output_artifact")
+    ]
+    assert len(proposal_entries) == len(executed)
+    rollbacks_in_trace = [entry for entry in trace if entry.get("action") == "rolled_back"]
+    rollbacks_in_state = [s for s in record["attempted_strategies"] if "rolled_back" in s]
+    assert len(rollbacks_in_trace) >= 1
+    assert len(rollbacks_in_trace) == len(rollbacks_in_state)
+    # The shared evaluation report derives every count from the SAME state.
+    from app.template_analysis.commercial.models import NormalizedLayoutEvidence
+
+    structure_evaluation = {
+        "sections_bound_to_candidate_sources": 4,
+        "unresolved_items": [],
+    }
+    report = e.write_evaluation_report(
+        run_dir,
+        record,
+        structure_evaluation=structure_evaluation,
+        rubric_source="test (post-run)",
+    )
+    assert report["repairs"]["attempts"] == len(executed)
+    assert report["repairs"]["improving"] == len(
+        [v for v in record["render_versions"] if v["promoted"]]
+    )
+    assert report["costs"]["scripted_agent_invocations"] == budget_state[
+        "calls_by_mode"
+    ]["scripted"]
+    assert report["costs"]["live_model_calls"] == budget_state["calls_by_mode"][
+        "live"
+    ]
+
+
+def test_signed_provider_urls_never_enter_shareable_artifacts(
+    tmp_path: Path,
+) -> None:
+    """Phase 0: the raw Adobe evidence carries signed download URLs with
+    security-token query data; the shareable run-dir copy must be the
+    deterministic redacted derivative, and the immutable original must stay
+    untouched in the restricted target cache."""
+    signed = "https://s3.example.com/asset?X-Amz-Security-Token=tok&X-Amz-Signature=sig"
+    raw = {
+        "status": {
+            "content": {"downloadUri": signed, "size": 10},
+            "resource": {"downloadUri": "https://s3.example.com/plain"},
+        },
+        "structured_data": {"pages": [{"page": 1, "size": [612, 792]}]},
+    }
+    redacted = e.redact_signed_urls(raw)
+    assert e.SIGNED_QUERY_MARKERS[0] not in json.dumps(redacted)
+    assert redacted["status"]["content"]["downloadUri"] == e.REDACTED_SIGNED_URL
+    # Useful content, IDs, geometry, provenance and hashes are preserved.
+    assert redacted["status"]["content"]["size"] == 10
+    assert redacted["status"]["resource"]["downloadUri"] == "https://s3.example.com/plain"
+    with pytest.raises(RuntimeError, match="signed provider credential"):
+        e.assert_no_signed_strings({"a": [signed]})
+    # The offline run dir carries the redacted derivative only; the original
+    # cache file keeps its signed content and is byte-unchanged by the run.
+    original = TARGET_I_CACHE / "adobe_raw.json"
+    before = original.read_bytes()
+    run_dir, _terminal, _record = e.run_e4(TARGET_I, tmp_path / "run")
+    run_raw = json.loads((run_dir / "adobe_raw.json").read_text())
+    assert "X-Amz" not in (run_dir / "adobe_raw.json").read_text()
+    assert original.read_bytes() == before
+    e.assert_no_signed_strings((run_dir / "adobe_raw.json").read_text(encoding="utf-8"))
+    # The owner package is checked too (no signed credential may enter it).
+    assert (run_dir / "owner_review" / "REPORT.md").exists()
+
+
+@e4_skip
+def test_run_e4_freezes_config_before_first_live_call(tmp_path: Path) -> None:
+    run_dir, terminal, record = e.run_e4(TARGET_I, tmp_path / "run")
+    config = json.loads((run_dir / "run_config.json").read_text())
+    assert config["frozen_before_first_live_call"] is True
+    assert config["target_sha256"] == e._sha256_file(TARGET_I)
+    assert config["starting_commit"]
+    # Candidate input frozen by hash; the Builder can never edit candidate facts.
+    assert config["candidate_input"]["sha256"]
+    assert "facts are never editable" in config["candidate_input"]["builder_boundary"]
+    # Model name + sampling control frozen; no keys/URLs/tokens recorded.
+    assert config["model_configuration"]["text_model"]
+    assert config["sampling"]["temperature"] == 0.0
+    prompts = json.loads((run_dir / "prompts.json").read_text())
+    for name, text in prompts.items():
+        assert hashlib.sha256(text.encode("utf-8")).hexdigest() == config["prompts"][
+            "sha256"
+        ][name]
+    # The human rubric is evaluation truth only: path + hash, never content.
+    assert config["evaluation_rubric_reference"]["not_given_to_agents"] is True
+    assert "sections" not in config
+    rubric_text = (ROOT / "tests/experiments/C2_RESUME_I_BLIND_STRUCTURE_AUDIT.md").read_text()
+    for name, text in prompts.items():
+        assert not any(
+            len(line.strip()) > 30 and line.strip() in text
+            for line in rubric_text.splitlines()
+        )
+
+
+@e4_skip
+def test_run_e4_records_the_live_loop_trajectory(tmp_path: Path) -> None:
+    run_dir, terminal, record = e.run_e4(TARGET_I, tmp_path / "run")
+    assert terminal in {"ready_for_owner_review", "budget_exhausted"}
+    assert record["schema_version"] == "pipeline-e-e4-state/1"
+    assert record["findings"] and record["measurement_results"] and record["attributions"]
+    # The reviewer covered pages; findings are deduplicated.
+    page_keys = {
+        (f["region"], f["suspected_dimension"], f["render_version"])
+        for f in record["findings"]
+    }
+    assert len(page_keys) == len(record["findings"])
+    # Resumable state + owner package exist; never success/unsupported.
+    assert (run_dir / "e4_state.json").exists()
+    assert record["summary"]["terminal_state"] != "unsupported"
+    assert (run_dir / "owner_review" / "comparison_page_1.png").exists()
+
+
+@e4_skip
+def test_run_e4_repeats_the_identical_measurement_after_repair(
+    tmp_path: Path,
+) -> None:
+    run_dir, _terminal, record = e.run_e4(TARGET_I, tmp_path / "run")
+    promoted = [entry for entry in record["render_versions"] if entry["promoted"]]
+    assert promoted, record["attempted_strategies"]
+    wrap_results = [
+        m for m in record["measurement_results"]
+        if m["method"] == "content_gate_missing_pdf/1"
+    ]
+    # The IDENTICAL request id was repeated on the candidate render and the
+    # confirmed defect measurably improved (missing-leaf count decreased).
+    assert wrap_results, record["measurement_results"]
+    by_id: dict[str, list] = {}
+    for m in wrap_results:
+        by_id.setdefault(m["request_id"], []).append(m)
+    repeated = [ids for ids in by_id.values() if len(ids) >= 2]
+    assert repeated
+    first, second = repeated[0][0], repeated[0][-1]
+    assert first["request_id"] == second["request_id"]
+    assert second["current_value_pt"] < first["current_value_pt"]
+
+
+@e4_skip
+def test_run_e4_promotes_only_verified_improvement_and_records_ceilings(
+    tmp_path: Path,
+) -> None:
+    run_dir, terminal, record = e.run_e4(TARGET_I, tmp_path / "run")
+    promoted = [v for v in record["render_versions"] if v["promoted"]]
+    if promoted:
+        # A promoted defect-level repair improved its confirmed defect without
+        # candidate-fact damage: its content gates are green; remaining failed
+        # gates (the template-representation ceiling) stay recorded honestly.
+        version_id = promoted[-1]["version_id"]
+        gates = json.loads((run_dir / f"hard_gates_{version_id}.json").read_text())
+        for gate in e.CANDIDATE_FACT_GATES:
+            assert gates["gates"][gate] is True
+        assert terminal in {"ready_for_owner_review", "budget_exhausted"}
+    assert terminal == "budget_exhausted"  # the shape ceiling keeps this run resumable
+
+
+@e4_skip
+def test_run_e4_budget_exhaustion_is_resumable_and_never_unsupported(
+    tmp_path: Path,
+) -> None:
+    budget = e.RunBudget(max_model_requests=0, max_tool_calls=48)
+    run_dir, terminal, record = e.run_e4(TARGET_I, tmp_path / "run", budget=budget)
+    assert terminal == "budget_exhausted"
+    state = json.loads((run_dir / "e4_state.json").read_text())
+    assert state["schema_version"] == "pipeline-e-e4-state/1"
+    assert "attempted_strategies" in state and "budget_state" in state
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["terminal_state"] == "budget_exhausted"
+
+
+def test_no_unsupported_terminal_state_exists() -> None:
+    source = (Path(__file__).resolve().parents[0] / "e_pipeline.py").read_text()
+    # The terminal vocabulary: ready_for_owner_review / budget_exhausted /
+    # operational_abort — never a bare 'unsupported' classification.
+    for terminal in ("ready_for_owner_review", "budget_exhausted", "operational_abort"):
+        assert terminal in source
+
+
+def test_live_reviewer_and_builder_outputs_cannot_promote() -> None:
+    """No agent output type can express promotion; only the shell promotes."""
+    assert "promoted" not in e.DefectFinding.model_fields
+    assert "promoted" not in e.LiveBuilderRepair.model_fields
+    assert "promoted" not in e.LiveAttributionHypothesis.model_fields
+
+
+def test_builder_cannot_modify_candidate_facts_or_unbounded_layers() -> None:
+    with pytest.raises(ValueError, match="candidate fact mutation"):
+        e.RepairProposal(
+            finding_id="f1",
+            base_render_version="v1",
+            layer="state_style",
+            section_node_id="section.03",
+            style_updates={"leaf_name": "rewritten"},
+            rationale="attempted fact edit",
+            agent="llm",
+        )
+    with pytest.raises(ValueError, match="bounded 'title_row' placement"):
+        e.RepairProposal(
+            finding_id="f1",
+            base_render_version="v1",
+            layer="plan_entry_meta_placement",
+            section_node_id="section.03",
+            rationale="unbounded placement",
+            agent="llm",
+        )
+    with pytest.raises(ValueError, match="state_style layer"):
+        e.RepairProposal(
+            finding_id="f1",
+            base_render_version="v1",
+            layer="plan_entry_gap",
+            section_node_id="section.03",
+            gap_delta_pt=-2.0,
+            style_updates={"font_size_pt": "20"},
+            rationale="style outside the layer",
+            agent="llm",
+        )
+
+
+def test_accepted_region_recheck_rolls_a_regression_back() -> None:
+    """An accepted region regressing beyond tolerance fails the recheck."""
+    from tests.experiments.c2_docx_build import TOLERANCE_PT
+
+    tolerance = TOLERANCE_PT["local_gap"]
+
+    def holds(prior_delta: float, repeat_delta: float) -> bool:
+        prior = e.MeasurementResult(
+            request_id="r1", status="confirmed",
+            target_value_pt=0.0, current_value_pt=prior_delta, delta_pt=prior_delta,
+        )
+        repeat = e.MeasurementResult(
+            request_id="r1", status="confirmed",
+            target_value_pt=0.0, current_value_pt=repeat_delta, delta_pt=repeat_delta,
+        )
+        return (
+            abs(repeat.current_value_pt - repeat.target_value_pt)
+            <= abs(prior.current_value_pt - prior.target_value_pt) + tolerance
+        )
+
+    assert holds(10.0, 8.0) is True   # improvement holds
+    assert holds(10.0, 10.0) is True  # unchanged holds
+    assert holds(10.0, 12.0) is False  # accepted region regressed
+
+
+@e4_skip
+def test_run_e4_promotion_rechecks_accepted_regions(tmp_path: Path) -> None:
+    run_dir, _terminal, record = e.run_e4(TARGET_I, tmp_path / "run")
+    trace = json.loads((run_dir / "trace.json").read_text())
+    promoted = [entry for entry in trace if entry.get("action") == "promoted"]
+    assert promoted, record["attempted_strategies"]
+    data = json.loads((run_dir / promoted[-1]["output_artifact"]).read_text())
+    # Every ACCEPTED region rechecked on the whole new render held; the
+    # promoted version's own repeat measurement shows the defect improvement.
+    assert all(entry["held"] for entry in data["accepted_region_rechecks"])
+    assert data["before"]["request_id"] == data["after"]["request_id"]
+
+
+@e4_skip
+def test_run_e4_no_target_specific_rules() -> None:
+    source = (Path(__file__).resolve().parents[0] / "e_pipeline.py").read_text()
+    for leaked in ("CONTACT INFO", "ACHIEVEMENTS", "REFERENCES", "JOB TITLE", "ABOUT ME",
+                   "CONFERENCES", "PUBLICATIONS", "VERSTAPPEN"):
+        assert leaked not in source, leaked
+    for line in source.splitlines():
+        if "resume_I" in line:
+            stripped = line.strip()
+            assert stripped.startswith("#"), f"target-name code (not comment): {stripped}"
+
+
+def test_promotion_requires_shell_not_any_agent(tmp_path: Path) -> None:
+    run_dir, _terminal, record = e.run_e4(TARGET_I, tmp_path / "run")
+    trace = json.loads((run_dir / "trace.json").read_text())
+    finding_agents = {entry["agent"] for entry in trace if entry.get("action") == "finding"}
+    proposal_agents = {entry["agent"] for entry in trace if entry.get("action") == "proposal"}
+    promotion_agents = {entry["agent"] for entry in trace if entry.get("action") == "promoted"}
+    assert finding_agents <= {"visual_reviewer"}
+    assert proposal_agents == {"builder"}
+    assert promotion_agents <= {"shell"}

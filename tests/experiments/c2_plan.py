@@ -278,6 +278,10 @@ class SectionPlan(StateModel):
     # C2 nested-entry spike: the measured sub-group title tier declared on the
     # entry row (None = the section's entries declare no sub-group tier).
     subgroup_title_style_id: str | None = None
+    # Pipeline E4 bounded repair layer (generic; None = historical rendering):
+    # "title_row" renders the entry meta column beside the FIRST title line's
+    # row only, letting the remaining head lines span the whole entry width.
+    entry_meta_placement: Literal["title_row"] | None = None
 
 
 class C2RenderPlan(StateModel):

@@ -342,6 +342,11 @@ class RunBudget:
     repair_attempt_count: int = 0
     calls_by_agent: dict[str, int] = field(default_factory=Counter)
     calls_by_tool: dict[str, int] = field(default_factory=Counter)
+    # Pipeline E4 evidence bookkeeping (Phase 0): scripted agent invocations and
+    # LIVE provider model calls are counted separately. spend_model defaults to
+    # "scripted" (offline rehearsals); the PydanticAI live paths report
+    # mode="live" through _record_usage.
+    calls_by_mode: dict[str, int] = field(default_factory=lambda: Counter({"live": 0, "scripted": 0}))
     usage: dict[str, int] = field(
         default_factory=lambda: {
             "input_tokens": 0,
@@ -354,7 +359,9 @@ class RunBudget:
     def remaining_model_requests(self) -> int:
         return self.max_model_requests - self.model_requests
 
-    def spend_model(self, agent: str, requests: int = 1, usage: Any = None) -> None:
+    def spend_model(
+        self, agent: str, requests: int = 1, usage: Any = None, mode: str = "scripted"
+    ) -> None:
         """Hard pre-execution cap: reject BEFORE incrementing when the action
         would exceed the limit, so persisted executed counts never do."""
         if self.model_requests + requests > self.max_model_requests:
@@ -364,6 +371,7 @@ class RunBudget:
             )
         self.model_requests += requests
         self.calls_by_agent[agent] += requests
+        self.calls_by_mode[mode] = self.calls_by_mode.get(mode, 0) + requests
         self.usage["requests"] += requests
         if usage is not None:
             self.usage["input_tokens"] += int(getattr(usage, "input_tokens", 0) or 0)
@@ -396,6 +404,7 @@ class RunBudget:
             "repair_attempt_count": self.repair_attempt_count,
             "calls_by_agent": dict(self.calls_by_agent),
             "calls_by_tool": dict(self.calls_by_tool),
+            "calls_by_mode": dict(self.calls_by_mode),
             "usage": dict(self.usage),
         }
 
@@ -964,7 +973,7 @@ def _record_usage(
     usage = result.usage
     if callable(usage):  # pydantic-ai version differences: property vs method
         usage = usage()
-    budget.spend_model(agent, requests=int(usage.requests or 1), usage=usage)
+    budget.spend_model(agent, requests=int(usage.requests or 1), usage=usage, mode="live")
     trace.add(
         agent=agent,
         phase=phase,
@@ -1199,7 +1208,7 @@ def _live_model() -> Any:
         or os.environ.get("C_PIPELINE_MODEL")
         or os.environ.get("B_PIPELINE_MODEL")
         or os.environ.get("A_PIPELINE_MODEL")
-        or "deepseek-v4-flash-vision-exp"
+        or "deepseek-flash"
     )
     provider = OpenAIProvider(
         openai_client=AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=300)
@@ -1330,12 +1339,22 @@ def _sha256_file(path: Path) -> str:
 
 
 class EvidenceStore:
-    """References and authority for the run — never uncontrolled file access."""
+    """References and authority for the run — never uncontrolled file access.
 
-    def __init__(self, base_run_dir: Path, out_dir: Path) -> None:
+    `base_html` may be injected for runs that have no C1 base render (Pipeline E1
+    target understanding has no `filled.html`); the default path keeps reading
+    the D0/D1 base run unchanged.
+    """
+
+    def __init__(self, base_run_dir: Path, out_dir: Path, *, base_html: str | None = None) -> None:
         self.base_run_dir = base_run_dir
         self.out_dir = out_dir
-        self.base_html = (base_run_dir / "filled.html").read_text(encoding="utf-8")
+        if base_html is None:
+            base_html = (base_run_dir / "filled.html").read_text(encoding="utf-8")
+            base_html_sha256 = _sha256_file(base_run_dir / "filled.html")
+        else:
+            base_html_sha256 = hashlib.sha256(base_html.encode("utf-8")).hexdigest()
+        self.base_html = base_html
         self.nodes = discover_section_nodes(self.base_html)
         self.target_design: TargetRuleDesign | None = None
         self.base_facts: list[HeadingRuleFact] = []
@@ -1349,7 +1368,7 @@ class EvidenceStore:
             "experiment": "d_pipeline_d0",
             "pipeline_phase": "d1_0",
             "base_run_dir": str(base_run_dir),
-            "base_html_sha256": _sha256_file(base_run_dir / "filled.html"),
+            "base_html_sha256": base_html_sha256,
             "versions": [],
             "active_layout_version_id": "layout_v1",
             "pending_candidate_id": None,

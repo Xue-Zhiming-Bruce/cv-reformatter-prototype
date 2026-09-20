@@ -460,3 +460,258 @@ Test results: offline experiments lane 385 passed / 2 skipped
 failures verified present at the milestone's base commit via `git stash`).
 Protected files re-verified byte-identical: `D_PIPELINE_PROPOSAL.md`
 (`eabf6a11…`), `unused.docx` (`584cb925…`); `PIPELINE_E_PLAN.md` untouched.
+
+---
+
+# E4 implementation ledger (2026-09-20/21, owner-authorized live-agent Resume I convergence trial)
+
+Status: `Proposed experiment record; not an approved product architecture or
+roadmap item`. Implements the E4 milestone (PIPELINE_E_PLAN.md §11/§13/§14) —
+the first genuine live-agent Resume I convergence run. No product contract,
+ADR, roadmap item, or production `app/` module was touched; DOCX stays out;
+editable HTML + Chrome PDF is the only render surface. This remains an
+EXPERIMENT: live provider use is NOT approved production behavior.
+
+## Terminology guard (repeated)
+
+E3 proved only that the deterministic orchestration + measurement path runs
+against Resume I with ZERO live calls. E3 is NOT a successful template
+reconstruction and never was. E4 is the first trial of the live roles.
+
+## Phase 0: evidence-bookkeeping repairs (before the live run)
+
+Smallest shared fixes only; no broad E3 refactor:
+
+1. **"3 bind" vs 4**: the E3 `evaluation_report.json` prose disagreed with
+   `sections_bound_to_candidate_sources`. The corrected count is derived from
+   the compiled state (4 section nodes with `mapping_action="map"` + non-empty
+   candidate sources) by the NEW shared writer
+   `e_pipeline.write_evaluation_report()` — every count now comes from the
+   same typed loop state, so state, trace, and report agree.
+2. **`repair_attempt_count` = 0 despite a recorded repair/rollback**:
+   `budget.repair_attempt_count` is now incremented where an executed repair
+   attempt is recorded (run_e2, run_e3, run_e4); the writer reports
+   `repairs.attempts/improving/regressions_and_rollbacks` from the state.
+3. **Five identical page-2 continuation questions counted as five items**:
+   `e_pipeline._dedup_unresolved` collapses records by `item_id` (first wins);
+   run_e3/run_e4 deduplicate at draft construction and in the report. The E3
+   draft's 6 unresolved records are now honestly 2 unresolved QUESTIONS
+   (`unresolved.continuation.2`, `unresolved.bullet_marker_glyph`).
+4. **Scripted invocations merged with "model requests"**: `RunBudget.spend_model`
+   now records `mode="scripted"|"live"` (`calls_by_mode`); D's `_record_usage`
+   (live PydanticAI calls) reports `mode="live"`, so token usage belongs to
+   live calls only. Legacy states (E3) fall back to `calls_by_agent` totals
+   labeled scripted. Reports state both numbers separately.
+5. **Signed Adobe URLs in shareable evidence**: the cached raw response's
+   `downloadUri` fields embed signed AWS query credentials
+   (`X-Amz-Security-Token`/`X-Amz-Signature`). The immutable original stays in
+   the restricted target cache (byte-unchanged, verified); every shareable
+   copy (run-dir `adobe_raw.json`, owner package) is now a DETERMINISTIC
+   REDACTED DERIVATIVE (`redact_signed_urls`: only signed-credential strings
+   are replaced; element content/IDs/geometry/provenance/hashes preserved).
+   `assert_no_signed_strings` runs over the run-dir copy and the owner
+   package; a focused test proves the original stays untouched and no marker
+   can enter a shareable artifact. The E3 canonical run-dir copy was also
+   replaced by the redacted derivative (original untouched).
+
+## Scope actually implemented
+
+Entry point: `run_e4()` in `tests/experiments/e_pipeline.py` (CLI `--e4`, live
+`--live`); focused tests appended to `tests/experiments/test_e_pipeline.py`
+(16 new E4/Phase-0 tests; all E2/E3 tests preserved — 62 total in the file).
+
+Component map (reuse; the PydanticAI runtime is the ONLY agent framework):
+
+- **Orchestrator = `run_e4()` deterministic shell** (D's `RunBudget`/`RunTrace`
+  /`EvidenceStore`): owns artifact versions, budgets, tool permissions,
+  validation, rollback, best-valid selection, strategy escalation, terminal
+  state. No agent promotes its own output (promotion exists only in the shell
+  after the verified improvement + candidate-safety gates + accepted-region
+  recheck; no agent output type can express promotion — tested).
+- **Live Target Investigator**: one bounded PydanticAI agent run over E1's
+  read-only evidence tools (page overviews, original-resolution region crops,
+  verbatim raw-Adobe lookup, permitted local PDF measurement, coverage audit).
+  Output: the typed `TargetStructureDraft`. The shell validates every claim's
+  evidence pointer: claims citing never-collected evidence are DEMOTED to
+  recorded unresolved items — never accepted, never dropped. The deterministic
+  compile basis (E3's generic two-column derivation) stays the shell's compile
+  basis; the live draft adds the agent's own evidence-linked claims.
+- **Live independent Visual Reviewer**: bounded per-round PydanticAI agent over
+  downscaled whole-page overviews of BOTH documents (all pages, region by
+  region), node inventory + open observations in context, NEVER the builder's
+  rationale. Output: typed, version-bound `DefectFinding`s (shell re-assigns
+  ids; invalid-version findings dropped; duplicates collapsed per
+  region+dimension+render-version).
+- **Live Attribution Investigator**: invoked ONLY where the deterministic
+  measurement cannot bind (evidence_missing / not confirmed) AND the finding
+  is high severity AND budget remains; read-only evidence tools + the render
+  word channel; may REPLACE the reviewer's causal hypothesis (observation
+  survives) and may return `unresolved`. Output: typed
+  `LiveAttributionHypothesis` → shell-bound `AttributionRecord`.
+- **Live Builder/Repair agent**: one bounded request per confirmed finding;
+  output `LiveBuilderRepair` (typed layer + the six required statements:
+  attributed defect, exact layer, files/fields/selectors, expected measurable
+  result, possible regressions, rollback condition). The shell binds versions,
+  validates (`_validate_repair`: base-version freshness, scope in the compiled
+  state, candidate-facts boundary), applies, renders, re-measures, decides.
+- **New bounded renderer capability (generic, reusable)**:
+  `SectionPlan.entry_meta_placement = "title_row"` — the entry meta column
+  shares the FIRST title line's row and the remaining head lines span the
+  whole entry width (the E3 run's recorded escalation target: the entry-wrap
+  interleave defect). Default `None` preserves the historical rendering
+  byte-for-byte; the C2 lanes stay green.
+- **New measurement channel (generic)**: entry-wrap findings measure the
+  verbatim leaf presence the content gate checks on the ACTUAL final PDF
+  (`content_gate_missing_pdf/1`; target baseline 0). The repair-loop's
+  "improvement" for that defect class = the missing-leaf count decreased.
+- **Repair evaluation order (E4 work order definition of improving)**: repeat
+  the IDENTICAL measurement first; then candidate-safety gates
+  (`CANDIDATE_FACT_GATES`: content, accounting, privacy, blank, determinism,
+  section order) must be green; then accepted-region recheck; then promotion.
+  A gate that fails identically on the base version and sits outside the
+  repaired defect (the `content_shapes_match_evidence` template-representation
+  ceiling) does NOT block defect-level promotion — it stays recorded on the
+  version, and the TERMINAL `ready_for_owner_review` still requires ALL hard
+  gates. Gate before/after diffs (fixed vs remaining) are traced per repair.
+- **Repeated-fingerprint rejection, §14 escalation ladder, stalls**: identical
+  actions with identical evidence are rejected; every stall records an
+  escalation; the run never stops on a stall while budget remains.
+- **Freeze before the first live call** (`_freeze_e4_config`):
+  `run_config.json` + `prompts.json` written BEFORE any live call with target
+  hash, candidate input hash, model NAMES (never keys/URLs/tokens),
+  temperature (0.0), budgets (global + per-agent-run), prompt hashes, rubric
+  reference (path + sha256, `not_given_to_agents: true`), starting commit,
+  permitted tools, delivery gates. The rubric file content is evaluation
+  truth only and never reached any agent input (tested).
+- **Owner package** (`owner_review/`): whole-page target/best comparisons,
+  localized target/before/after strips per executed repair, best HTML/PDF
+  copies, full iteration history, cost summary, remaining material
+  differences, non-claims — with the signed-URL check over the package.
+- **Offline verification path**: `run_e4(live=False)` runs the SAME shell with
+  the deterministic derivation + ScriptedReviewer + scripted bounded-repair
+  rehearsal (zero live calls; real Chrome renders; real PDF measurement). The
+  offline shell reproduces the full loop mechanics and demonstrates a
+  defect-level promoted repair (v3) with the ceiling gate honestly red.
+
+## Live-run plumbing fixes found and fixed during the trial (recorded honestly)
+
+1. The DeepSeek-compatible runtime's thinking mode rejects `tool_choice` for
+   typed structured outputs → `_live_model_settings()` disables thinking for
+   the typed outputs (same pattern as `deepseek.py` streaming).
+2. pydantic-ai derived EMPTY tool schemas from the traced `(*args, **kwargs)`
+   wrappers → `_pod_tools` now exposes TYPED closures so live models see real
+   signatures (before that, live agents called tools with wrong/missing
+   arguments and every investigator/attribution round failed).
+3. Provider default output cap truncated typed outputs → `max_tokens=8192`
+   plus compact-output instructions in the frozen prompts.
+4. Per-agent-run bounds (`request_limit` + `tool_calls_limit`) inside the
+   global budget; mid-loop tool-budget exhaustion is a recorded escalation and
+   a normal `budget_exhausted` exit (never a crash, never `unsupported`).
+5. Owner model direction (2026-09-20): the VLM roles do NOT use the retired
+   `deepseek-v4-flash-vision-exp` alias; the E-role default model is
+   `deepseek-flash` (DeepSeek-V4.1-Flash, native multimodal). The configured
+   DashScope visual provider (owner decision 2026-09-08, `_live_visual_model`)
+   was UNREACHABLE from this network at run time (proxy CONNECT established,
+   TLS never completed) and is recorded as verified-unavailable for this run;
+   `_live_visual_model` falls back to the same runtime path when unset.
+
+## Canonical live run (this step; owner-authorized Resume I data only)
+
+Run: `tests/experiments/runs/e_pipeline_e4_20260920T134946Z/` (ignored).
+
+- Frozen: target `af6b9234…`, candidate E render content (hash in config),
+  model `deepseek-flash` (V4.1-Flash) via the existing PydanticAI runtime,
+  temperature 0.0, thinking disabled for typed outputs, `max_tokens=8192`,
+  budgets: 40 model requests / 200 tool calls / 5 repair rounds, per-role
+  bounded calls (investigator 12 req + 24 tools, reviewer 4 req, builder 2,
+  attribution 8), prompts hashed in `prompts.json`, starting commit recorded,
+  delivery gates enumerated. Rubric: path+sha256, `not_given_to_agents: true`.
+- Terminal: `budget_exhausted` after the FULL frozen budget (never success,
+  never unsupported; resumable `e4_state.json`).
+- **All four live roles ran**: investigator 10 requests (typed draft with 22
+  live evidence-linked claims; shell validated, none demoted), reviewer 5
+  rounds over both pages (region-by-region), attribution 24 requests (8 typed
+  live attributions recorded, including one that REPLACED the reviewer's
+  causal hypothesis with `target_understanding`), builder 1 request (chose
+  `plan_entry_meta_placement` itself).
+- **Live model calls: 40/40; scripted: 0**; tokens 661,923 in / 40,859 out;
+  130 tool calls (53 final-PDF geometry measurements, 19 region crops, 12
+  verbatim Adobe lookups, 14 local measurements, 11 render-word
+  measurements, 13 overviews, 2 whole-document double-exports); elapsed
+  552.3 s; estimated provider cost: pricing not available → recorded null.
+- **Iteration trajectory**: v1 (compiled two-column state) → live reviewer
+  round (region-by-region findings) → measurements on the ACTUAL final PDF →
+  attribution → LIVE builder repair (`title_row` meta placement) → v2 → the
+  IDENTICAL wrap measurement repeated (missing-leaf count 1 → 0, the
+  confirmed defect measurably improved) → candidate-safety gates green →
+  accepted regions held → v2 PROMOTED as the best valid version → further
+  rounds: repeated fingerprints rejected, defects beyond the bounded layers
+  (section presence, contact grid, heading style) escalated per §14, live
+  attributions recorded — budget exhausted. v2 gates: ALL candidate-fact/
+  structure gates green; `content_shapes_match_evidence` remains red (the
+  known template-representation ceiling), so the run is NOT
+  `ready_for_owner_review` and honestly stays resumable.
+- Structure: 31 evidence-linked draft claims (22 live + 9 deterministic);
+  2 unresolved items (deduplicated); 4 sections bind to candidate sources
+  (state-derived); no confidently-wrong structure claim. Owner-verifiable
+  against the human audit §1 in the owner package.
+- Costs E3 vs E4 (separate reports; "9/9" always means detected SECTION
+  LABELS, never whole-structure accuracy):
+  E3: 3 scripted reviewer rounds, 0 live calls, 0 tokens, 11 tool calls,
+  2 whole-doc double-exports, 6 measurements; repair attempts 1, improving 0,
+  rollbacks 1; best-valid None; confirmed defects 6, falsified 0.
+  E4: 40 live calls (10 investigator / 5 reviewer / 24 attribution / 1
+  builder), 0 scripted, 702,782 tokens, 130 tool calls, 2 whole-doc
+  double-exports, 53 measurements + 11 render-word channels; repair attempts
+  1, improving 1 (the entry-wrap defect: missing-PDF leaves 1 → 0), rollbacks
+  0; best-valid `render-resume_I-v2` (defect-level; shape ceiling stays red);
+  confirmed attribution classes 11, falsified 3, measurement failures 43
+  (honest: most live reviewer role-gap requests did not bind to verbatim
+  render anchors — recorded, escalated, never faked).
+
+## Honest ceilings (what E4 does NOT establish)
+
+- NO convergence claim: the two-rail sidebar PRESENTATION is still not
+  expressible in layout-state/1 — the best-valid render remains a
+  single-column presentation of a two-column target (the plan §10/§14
+  `template representation reconsideration` boundary, schema evolution →
+  owner/ADR decision). The measured progress is: the confirmed renderer-layer
+  entry-wrap defect was repaired (verbatim leaf presence 1 → 0) with zero
+  candidate-fact damage and zero accepted-region regressions, by the LIVE
+  builder within the bounded layer vocabulary.
+- The live reviewer's measurement anchors are noisy: most model-emitted
+  role-gap anchors did not bind to the final PDF (43 measurement failures,
+  recorded + escalated, never faked). Anchor-quality guidance is the next
+  lever, not a new framework.
+- Live agents are tool-hungry: attribution consumed 24 of 40 requests across
+  rounds (bounded per call, still budget-dominant). Per-call limits are the
+  guard; tighter attribution triage is the next executable step.
+- Estimated provider cost is not computable from available data (null).
+- Owner visual acceptance remains owner-only (plan §13); this run creates NO
+  T-v1 record and NO delivered state.
+
+## Remaining work (next executable steps)
+
+1. Template-representation decision (owner/ADR): sidebar-label + main-column
+   section geometry in layout-state — the single remaining red gate.
+2. Reviewer anchor-quality guidance (verbatim line-prefix extraction from the
+   render words channel) to cut the 43 measurement failures.
+3. Attribution triage (severity/cost-bounded) so the budget reaches more
+   repair rounds; per-run attribution memory (one trace per defect class).
+4. Resume-from-state CLI driver over `e4_state.json`.
+5. Owner visual acceptance of any delivered render (owner-only).
+
+Test results: offline experiments lane 401 passed / 2 skipped
+(`tests/test_results/pytest/pytest_e4_phase0_offline_*.txt` and
+`pytest_e4_live_trial_offline_*.txt`; broad lane 777 passed / 5 skipped with
+the SAME 5 pre-existing `test_mock_api.py` failures verified present at the
+base commit via `git stash`). Protected files re-verified byte-identical:
+`D_PIPELINE_PROPOSAL.md` (`eabf6a11…`), `unused.docx` (`584cb925…`);
+`PIPELINE_E_PLAN.md` untouched. Commit scope note: the E4 commit includes
+`tests/experiments/d_pipeline.py` because Phase 0's shared scripted/live
+call accounting lives in `RunBudget` — the file also carries the
+PRE-EXISTING owner working-tree modification (EvidenceStore `base_html`
+injection, committed verbatim and unchanged; it has been the uncommitted
+run-time prerequisite of every committed E milestone since E1, so this
+commit finally makes HEAD self-consistent). `D_PIPELINE_PROPOSAL.md` and
+`unused.docx` remain untouched and uncommitted, exactly as found.

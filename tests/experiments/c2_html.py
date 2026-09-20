@@ -331,9 +331,8 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                 parts.append(
                     f'    <article class="c2-entry" data-node-id="{_esc(entry.node_id)}"{entry_style}>'
                 )
-                parts.append('      <div class="c2-entry-head">')
-                parts.append('      <div class="c2-entry-main">')
-                for line_index, line in enumerate(entry.title_lines):
+
+                def _title_line_html(line: LeafText, line_index: int) -> None:
                     # Entry typography tiers are measured state: the entry leaf's
                     # own first line is the title tier, further lines are the
                     # detail tier.
@@ -347,8 +346,8 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                             f'        <p class="{line_class}" data-node-id="{_esc(entry.node_id)}.title.{_esc(line.leaf_id)}">'
                             f"{_esc(line.text)}</p>"
                         )
-                parts.append("      </div>")
-                if entry.meta_lines:
+
+                def _meta_lines_html() -> None:
                     parts.append('      <div class="c2-entry-meta">')
                     for line_index, line in enumerate(entry.meta_lines):
                         # The right column mirrors the row tiers: the title row
@@ -359,7 +358,32 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                             f"{_esc(line.text)}</p>"
                         )
                     parts.append("      </div>")
+
+                # entry_meta_placement="title_row" (Pipeline E4 bounded repair
+                # layer): the meta column shares the FIRST title line's row
+                # only; the remaining entry-head lines render full width below
+                # the head so long head/detail lines wrap within the whole
+                # entry width instead of squeezing beside the meta column.
+                # Default None keeps the historical head-wide meta column.
+                title_row_meta = (
+                    section_plan.entry_meta_placement == "title_row" and bool(entry.meta_lines)
+                )
+                parts.append('      <div class="c2-entry-head">')
+                parts.append('      <div class="c2-entry-main">')
+                for line_index, line in enumerate(
+                    entry.title_lines[:1] if title_row_meta else entry.title_lines
+                ):
+                    _title_line_html(line, line_index)
                 parts.append("      </div>")
+                if entry.meta_lines and not title_row_meta:
+                    _meta_lines_html()
+                parts.append("      </div>")
+                if title_row_meta:
+                    parts.append('      <div class="c2-entry-main">')
+                    for line_index, line in enumerate(entry.title_lines[1:], 1):
+                        _title_line_html(line, line_index)
+                    parts.append("      </div>")
+                    _meta_lines_html()
                 if entry.bullet_items or entry.text_lines:
                     parts.append('      <div class="c2-entry-body">')
                     if entry.bullet_items:
