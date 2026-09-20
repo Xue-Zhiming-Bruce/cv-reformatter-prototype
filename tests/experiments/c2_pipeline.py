@@ -432,7 +432,13 @@ def _content_to_heading_gap(
     above_bottom = max(
         float(element["bbox_pt"].get("bottom", 0)) for element in previous
     )
-    return round(float(heading.top_pt) - above_bottom, 3) if above_bottom else None
+    gap = round(float(heading.top_pt) - above_bottom, 3)
+    # E3 (2026-09-21): a NEGATIVE derived gap means the walk measured the
+    # heading's own container (e.g. a two-column family whose heading shares
+    # one table row with its content) — that is unmeasurable evidence, not a
+    # negative rhythm; the honest value is None (unmeasured), never a
+    # negative spacing (NodeSpacing forbids it) and never a silent clamp.
+    return gap if gap >= 0 else None
 
 
 def _mode_style_group(counts: Counter) -> str | None:

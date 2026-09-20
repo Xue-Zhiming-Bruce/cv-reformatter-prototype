@@ -14,6 +14,7 @@ Run: pytest tests/experiments/test_e_pipeline.py
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -548,7 +549,7 @@ def test_run_e2_delivers_verified_repair_with_versions_and_repeat_measurement(
     tmp_path: Path,
 ) -> None:
     run_dir, terminal, record = e.run_e2(TARGET_F, tmp_path / "run")
-    assert terminal == "delivered_pending_owner"
+    assert terminal == "ready_for_owner_review"
     versions = record["render_versions"]
     assert len(versions) >= 2  # first render + at least one repaired candidate
     # 1. Every render is a versioned record with hashes and gate results.
@@ -706,3 +707,171 @@ def test_run_e2_measurements_inspect_real_final_content_not_probes(tmp_path: Pat
         if result["status"] == "confirmed":
             assert result["target_value_pt"] is not None
             assert result["current_value_pt"] is not None
+
+
+# ===========================================================================
+# E3 — Resume I walkthrough (PIPELINE_E_PLAN.md §11; E_PIPELINE_PREP.md E3
+# work order). Focused tests for the new E3 behavior only.
+# ===========================================================================
+
+TARGET_I = RESUME_I  # the frozen_blind two-column sidebar family case
+TARGET_I_CACHE = (
+    ROOT / "tests/experiments/runs/target_cache/af6b9234ca96948b7b34de9e535c452ef26a60b7508cfc3a8189fe56e5b1b3d8"
+)
+
+
+def _e3_available() -> bool:
+    return TARGET_I.exists() and (TARGET_I_CACHE / "adobe_raw.json").exists()
+
+
+e3_skip = pytest.mark.skipif(
+    not _e3_available(),
+    reason="authorized resume_I corpus, cached Adobe response, or pinned Chrome are not present",
+)
+
+
+def test_measure_sidebar_headings_are_generic_and_evidence_linked(tmp_path: Path) -> None:
+    raw_path = tmp_path / "adobe_raw.json"
+    raw_path.write_text(
+        json.dumps(json.loads((TARGET_I_CACHE / "adobe_raw.json").read_text())),
+        encoding="utf-8",
+    )
+    from app.template_analysis.commercial.models import NormalizedLayoutEvidence
+
+    ev = NormalizedLayoutEvidence.model_validate_json(
+        (TARGET_I_CACHE / "enriched_evidence.json").read_text()
+    )
+    from tests.experiments.a_pipeline import build_format_summary
+
+    summary = build_format_summary(ev, json.loads(raw_path.read_text()), TARGET_I)
+    labels = e.measure_sidebar_headings(TARGET_I, summary)
+    # The clustered sidebar-label evidence recovers the section boundaries
+    # (9 measured labels across the page break) without target-specific code.
+    assert len(labels) == 9
+    pages = {record["page"] for record in labels}
+    assert pages == {1, 2}
+    # No target text is carried in the derivation — labels are the target's
+    # own presentation rows, measured by geometry (shared right edge) only.
+    assert all(record["x1"] <= 160.0 for record in labels)
+
+
+def test_compile_two_column_state_is_valid_and_candidate_safe(tmp_path: Path) -> None:
+    raw_path = tmp_path / "adobe_raw.json"
+    raw_path.write_text(
+        json.dumps(json.loads((TARGET_I_CACHE / "adobe_raw.json").read_text())),
+        encoding="utf-8",
+    )
+    from app.template_analysis.commercial.models import NormalizedLayoutEvidence
+
+    ev = NormalizedLayoutEvidence.model_validate_json(
+        (TARGET_I_CACHE / "enriched_evidence.json").read_text()
+    )
+    from tests.experiments.a_pipeline import build_format_summary
+
+    summary = build_format_summary(ev, json.loads(raw_path.read_text()), TARGET_I)
+    state, derived = e.compile_two_column_state(TARGET_I, summary, ev)
+    from tests.experiments.c2_state import validate_layout_state
+
+    assert validate_layout_state(state) == []
+    assert state.schema_version == "layout-state/1"
+    assert state.provenance.provider == "adobe"
+    assert state.provenance.target_sha256 == e._sha256_file(TARGET_I)
+    # 9 evidence-linked section claims; unresolved bindings never carry sources.
+    sections = [node for node in state.nodes if node.kind == "section"]
+    assert len(sections) == 9
+    for section in sections:
+        if section.binding.mapping_action == "unresolved":
+            assert section.binding.sources == []
+            assert any(
+                gap.feature == f"unresolved_section_binding:{section.node_id}"
+                for gap in state.capability_gaps
+            )
+    # The header region carries the measured name row only (honest ceiling).
+    header_rows = [node for node in state.nodes if node.kind == "header_row"]
+    assert len(header_rows) == 1
+    assert header_rows[0].slots == ["name"]
+
+
+def test_terminal_rename_ready_for_owner_review_reserved_delivered(tmp_path: Path) -> None:
+    # The work order terminology correction: waiting for the owner is a
+    # resumable pause (`ready_for_owner_review`), never `delivered_pending_owner`;
+    # `delivered` is reserved for explicit owner acceptance.
+    from pathlib import Path as _P
+
+    source = (_P(__file__).resolve().parents[0] / "e_pipeline.py").read_text()
+    assert "delivered_pending_owner" not in source
+    assert "ready_for_owner_review" in source
+
+
+@e3_skip
+def test_run_e3_walkthrough_records_the_loop_trajectory(tmp_path: Path) -> None:
+    run_dir, terminal, record = e.run_e3(TARGET_I, tmp_path / "run")
+    assert terminal in {"ready_for_owner_review", "budget_exhausted"}
+    # Frozen inputs before examination: hashes + run config persisted.
+    frozen = json.loads((run_dir / "frozen_case.json").read_text())
+    assert frozen["target_sha256"] == e._sha256_file(TARGET_I)
+    config = json.loads((run_dir / "run_config.json").read_text())
+    assert config["target_sha256"] == frozen["target_sha256"]
+    # The rubric reference is path+hash only, explicitly not given to agents.
+    assert config["evaluation_rubric_reference"]["not_given_to_agents"] is True
+    assert "sections" not in config  # no rubric answers in agent inputs
+    # Structure draft: versioned, evidence-linked.
+    assert record["structure_draft_version"] == "structure_draft_v1"
+    draft = json.loads((run_dir / "structure_draft.json").read_text())
+    assert draft["structure"], "the draft carries evidence-linked claims"
+    for claim in draft["structure"]:
+        assert claim["evidence"], "every material claim cites evidence"
+    # Real render artifacts exist (HTML + PDF + page images).
+    assert (run_dir / "render_1.html").exists()
+    assert (run_dir / "render_1.pdf").exists()
+    assert (run_dir / "render_1_page_1.png").exists()
+    assert (run_dir / "target_resume_I_page_1.png").exists()
+    # Trajectory: findings -> measurements -> attributions -> strategies.
+    assert record["findings"] and record["measurement_results"] and record["attributions"]
+    for finding in record["findings"]:
+        assert finding["target_version"] == record["target_id"]
+        assert finding["render_version"] in {v["version_id"] for v in record["render_versions"]}
+    # No target-person facts in the candidate output (privacy gate green).
+    assert record["render_versions"], "at least one versioned render exists"
+    # Content-shape probes pass through the canonical C2 fixtures.
+    probes = json.loads((run_dir / "content_shape_probes.json").read_text())
+    assert set(probes) == {"short", "medium", "long"}
+
+
+@e3_skip
+def test_run_e3_no_target_specific_rules(tmp_path: Path) -> None:
+    """The E3 shell derives structure from evidence; no Resume-I string,
+    heading, or coordinate may appear as a module-level constant, branch
+    condition, or literal in e_pipeline.py (the scripted reviewer scenario
+    records are runtime data keyed by the target id, not production rules)."""
+    source = (Path(__file__).resolve().parents[0] / "e_pipeline.py").read_text()
+    for leaked in ("CONTACT INFO", "ACHIEVEMENTS", "REFERENCES", "JOB TITLE", "ABOUT ME"):
+        assert leaked not in source, leaked
+    # No target-name branch anywhere in the module (comment mentions of the
+    # walkthrough case are provenance, never conditions or constants).
+    for line in source.splitlines():
+        if "resume_I" in line:
+            stripped = line.strip()
+            assert stripped.startswith("#"), f"target-name code (not comment): {stripped}"
+
+
+@e3_skip
+def test_run_e3_operational_abort_never_classifies_unsupported(tmp_path: Path) -> None:
+    # Missing cached evidence → operational_abort describing the failed
+    # operation, never 'unsupported'.
+    with pytest.raises(RuntimeError, match="target PDF not found"):
+        e.run_e3(tmp_path / "missing.pdf", tmp_path / "run")
+
+
+@e3_skip
+def test_run_e3_reviewer_cannot_approve_its_own_repair(tmp_path: Path) -> None:
+    run_dir, _terminal, record = e.run_e3(TARGET_I, tmp_path / "run")
+    trace = json.loads((run_dir / "trace.json").read_text())
+    finding_agents = {entry["agent"] for entry in trace if entry.get("action") == "finding"}
+    proposal_agents = {entry["agent"] for entry in trace if entry.get("action") == "proposal"}
+    promotion_agents = {entry["agent"] for entry in trace if entry.get("action") == "promoted"}
+    assert finding_agents == {"visual_reviewer"}
+    assert proposal_agents == {"builder"}
+    assert promotion_agents <= {"shell"}  # only the shell promotes (may be empty on rollback)
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["pending_candidate_id"] is None

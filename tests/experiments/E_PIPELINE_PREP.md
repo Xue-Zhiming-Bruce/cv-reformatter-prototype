@@ -307,3 +307,156 @@ content — the canonical C2-0b E->F pair content; no live call):
 4. A resume-from-state CLI driver over `e2_state.json`.
 5. Owner visual acceptance of the delivered render (owner-only; never
    automatable).
+
+---
+
+# E3 implementation ledger (2026-09-21, owner-authorized Resume I walkthrough work order)
+
+Status: `Proposed experiment record; not an approved product architecture or
+roadmap item`. Implements the E3 milestone of PIPELINE_E_PLAN.md §11 (Resume I
+walkthrough) as an evidence milestone — the question is whether the loop makes
+sustained progress on an unfamiliar template WITHOUT Resume-I-specific
+production rules, not whether Pipeline E converged. No product contract, ADR,
+roadmap item, or production `app/` module was touched; DOCX stays out;
+editable HTML + Chrome PDF is the only render surface.
+
+## Terminology correction (work order item 1)
+
+`delivered_pending_owner` is renamed `ready_for_owner_review` everywhere in
+`e_pipeline.py` (E2 and E3 terminals, docstrings) and in the E2 test
+expectation. `delivered` is now reserved for explicit owner acceptance only;
+waiting for the owner is a resumable pause state, never success or failure.
+
+## Scope actually implemented (verified, all offline, zero live model calls)
+
+Entry point: `run_e3()` in `tests/experiments/e_pipeline.py` (CLI:
+`--e3`); focused tests appended to `tests/experiments/test_e_pipeline.py`
+(6 new E3 tests; all E2 tests preserved — 46 total in the file).
+
+What E3 adds beyond E2 (each is the smallest reusable capability for the
+observed Resume I problem; NO Resume-I-specific rule, constant, or branch
+exists in the module — enforced by `test_run_e3_no_target_specific_rules`):
+
+1. **Strategy-escalation compile layer** (`compile_two_column_state` +
+   `measure_sidebar_headings` + `measure_sidebar_rules` +
+   `compile_two_column_state_for_scaffold`): the canonical single-column
+   derivation (`derive_header_scaffold`) CANNOT compile the Resume I family —
+   it raises `target PDF has no measurable header text rows` because the
+   centered name line is margin-aligned under the measured rule column, so the
+   header cap binds at the name line itself (verified pre-implementation,
+   recorded in `run_config.json`-adjacent probe). The E3 Builder measures the
+   two-column sidebar structure GENERICALLY (clustered right-aligned short
+   label rows left of the rule column; label-over-rule presentation; name row
+   above the first page-1 label; LI/Lbl bullet tiers) and compiles through the
+   EXISTING `state_from_scaffolds` mapping — no second renderer, no new schema
+   family, no layout-state/1 change.
+2. **Versioned evidence-linked StructureDraft** (`structure_draft_v1`, E1's
+   typed schema): 9 section-boundary claims, each citing its measured sidebar
+   label row + rule; 6 unresolved items recorded honestly (page-2 continuation
+   reading order; bullet-marker glyph style). The evaluation rubric lives in
+   `C2_RESUME_I_BLIND_STRUCTURE_AUDIT.md` and is referenced in
+   `run_config.json` by path + sha256 with `not_given_to_agents: true` — no
+   rubric answer (headings, coordinates, dates) reached any agent input.
+3. **Generic header-overflow disposition transition**: candidate header
+   fields with no measured home in the compiled state (the two-column family
+   hosts the contact-table rows INSIDE the first section's content, measured
+   document order) route through the EXISTING explicit candidate-only
+   header-overflow node; `c2_plan` now exempts leaves whose slot carries an
+   explicit render-disposition record from the fail-closed
+   "author it as unroutable" failure (generic fix; nothing silently dropped).
+4. **Gate-driven findings**: the render's own deterministic delivery gates
+   produce observation-first `DefectFinding`s (deduplicated per failed-gate
+   class, bound to exact versions, one typed measurement request each)
+   measured against the ACTUAL final PDF — the offline rehearsal of the
+   multi-region independent reviewer.
+5. **§14 escalation ladder enforcement**: a confirmed defect whose suspected
+   dimension is not `role_gap` (e.g. the renderer-owned entry-wrap interleave
+   found by the content gate) records
+   `change_repair_layer_or_template_representation` instead of being repaired
+   blindly; repeated fingerprints are rejected (`repeated_action_change_strategy`).
+6. **Shared-code honesty fix in `c2_pipeline._content_to_heading_gap`**: a
+   NEGATIVE derived gap (the element walk measured the heading's own table
+   block) is unmeasurable evidence → returns None (unmeasured), never a
+   negative `NodeSpacing` (which forbids it — the old code crashed at state
+   construction for this family). Generic; previously a hard construction
+   crash, so no previously-compiled state could regress.
+
+## Canonical offline run (this step, `resume_I` target + candidate E render content; zero live model calls)
+
+Run: `tests/experiments/runs/e_pipeline_e3_20260920T103813Z/` (ignored).
+
+- Terminal: `budget_exhausted` with NO hard-gate-valid version (v1's
+  `content_shapes_match_evidence`/`content_gate`/`candidate_content_accounting`
+  are false; the scripted repair attempt renders but cannot pass the same
+  gates and is rolled back; repeated fingerprints escalate). The run is
+  resumable (`e3_state.json`) and never claims success or `unsupported`.
+- Structure recovery (post-run evaluation vs the frozen human rubric —
+  `evaluation_report.json`, separate from agent inputs): 9/9 sidebar section
+  labels recovered with measured label+rule evidence; 4 sections bind to
+  candidate source roles deterministically; 6 stay unresolved fail-closed
+  (vs the blind recognizer's confidently wrong `status=ok` with 1/9 — no
+  confident-wrong structure was produced this round). Missed (recorded, not
+  claimed): dated entry heads, ACHIEVEMENTS' Awards/Scholarships nested
+  groups, skill rating rows.
+- Loop trajectory (REPORT.md): observation -> measurement (role-gap delta
+  66.6pt beyond the 1.5pt tolerance, confirmed on the ACTUAL final PDF) ->
+  attribution `template_compilation` decided by measurement -> repair
+  proposal rolled back on failed gates -> strategy escalation
+  (`change_repair_layer_or_template_representation`) → repeat with identical
+  evidence rejected. The identified renderer-layer defect (wrapped entry
+  body text interleaves the meta column in the final PDF text, so verbatim
+  detail lines are not present as one text object) is REAL, measured, and
+  beyond the two bounded repair layers — recorded as the escalation target,
+  NOT repaired blindly and NOT classified unsupported.
+- Costs: 3 model requests (scripted reviewer rounds), 11 tool calls,
+  2 Chrome double-exports, 6 pdfplumber measurements; zero API cost.
+- Artifacts: `target_resume_I_page_{1,2}.png` (target page images),
+  `render_{1,2}.html`/`.pdf` + page PNGs, `overview_*` (E1 pod),
+  `structure_draft.json` + `structure.jsonl`, `run_config.json` (frozen
+  inputs/budget/rubric reference), `coverage_ev.coverage.001.json`
+  (raw-vs-normalized loss: 122 raw leaves / 58 normalized), per-version
+  `hard_gates_*.json`, `flow_probe.json` (materialized_with_gaps),
+  `content_shape_probes.json` (short/medium/long all pass),
+  `trace.json` + persisted trace artifacts, `e3_state.json` (resumable),
+  `REPORT.md` (owner-facing, non-claims section), `evaluation_report.json`
+  (post-run, rubric-consulted).
+
+## Honest ceilings (what E3 does NOT establish)
+
+- The two-column sidebar PRESENTATION (sidebar label + rule geometry,
+  label-column groups, skill rating rows, mixed-weight runs) is measured and
+  recorded as claims/gaps, but layout-state/1 cannot EXPRESS the sidebar
+  geometry — the first render is a single-column presentation of a two-column
+  target. This is the plan's §10/§14 `template representation reconsideration`
+  boundary, recorded as an attempted strategy with evidence, not solved.
+- No promotion occurred (no version passed all hard gates), so the best-valid
+  version is None; the run's value is the evidence trajectory, not an
+  owner-reviewable pass. The owner-review package is the evidence record.
+- No live model/VLM call (provider-gated path untouched); `--live` remains
+  wired and unexercised.
+- Resume-from-state CLI is still not built (the typed `e3_state.json` record
+  is the interface).
+
+## Remaining work (next executable steps)
+
+1. Renderer-layer repair capability for the confirmed entry-wrap defect
+   (the entry flex geometry is renderer-owned; the plan's
+   `change_repair_layer` escalation needs a bounded typed renderer-layer
+   proposal to progress beyond rollbacks).
+2. Template-representation escalation: sidebar-label + main-column section
+   geometry (heading in a separate column from its content) needs an explicit
+   layout-state/1 capability decision (schema evolution → owner/ADR).
+3. Dated-entry-head + nested-group structure rules over raw evidence
+   (the §3 Investigator claims list is assembled but only section boundaries
+   were derived this round).
+4. Live investigator/reviewer round (`--live`) under the existing
+   provider-gated path, when authorized.
+5. Owner visual acceptance of any delivered render (owner-only; never
+   automatable).
+
+Test results: offline experiments lane 385 passed / 2 skipped
+(`pytest_e3_resume_i_walkthrough_offline_20260921T0930Z.txt`; broad lane
+761 passed / 18 skipped with the SAME 5 pre-existing `test_mock_api.py`
+failures verified present at the milestone's base commit via `git stash`).
+Protected files re-verified byte-identical: `D_PIPELINE_PROPOSAL.md`
+(`eabf6a11…`), `unused.docx` (`584cb925…`); `PIPELINE_E_PLAN.md` untouched.

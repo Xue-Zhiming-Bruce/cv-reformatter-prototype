@@ -837,6 +837,21 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             )
     for leaf in candidate.leaves:
         if leaf.kind == "header_field" and leaf.leaf_id not in used_header_leaves:
+            # E3 (2026-09-21): a leaf whose slot carries an explicit
+            # render-disposition unroutable record IS routed (through the
+            # candidate-only header-overflow node, owned and verified below)
+            # — only a leaf with NO recorded disposition fails closed. The
+            # two-column family legitimately leaves contact-value leaves
+            # unhomed (the measured contact rows sit inside the section
+            # content), so the Builder records the disposition and the run
+            # reports the presentation gap; nothing is silently dropped.
+            routed_slots = {
+                record.slot
+                for record in candidate.unroutable
+                if record.disposition == "render"
+            }
+            if leaf.slot in routed_slots:
+                continue
             failures.append(
                 f"candidate leaf {leaf.leaf_id!r}: header slot {leaf.slot!r} has no home in "
                 "any target header row (author it as unroutable instead of guessing)"
