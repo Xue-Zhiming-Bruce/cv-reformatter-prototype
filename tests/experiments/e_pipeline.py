@@ -6701,9 +6701,6 @@ class LaneAStructureProposal(EvidenceModel):
 
     proposal_id: str = Field(pattern=r"^[a-z0-9_-]+$")
     sections: list[E5LaneASection]
-    rationale: str = ""
-    evidence_refs: list[str] = Field(default_factory=list)
-    expected_measurements: list[str] = Field(default_factory=list)
     agent: Literal["scripted", "llm"]
 
 
@@ -6723,6 +6720,7 @@ class E5LaneRecord(EvidenceModel):
     measurement_results: list[MeasurementResult] = Field(default_factory=list)
     attributions: list[AttributionRecord] = Field(default_factory=list)
     repair_attempts: list[dict[str, Any]] = Field(default_factory=list)
+    builder_candidates: list[dict[str, Any]] = Field(default_factory=list)
     attempted_strategies: list[str] = Field(default_factory=list)
     action_fingerprints: list[str] = Field(default_factory=list)
     ledger: list[E5LedgerEntry] = Field(default_factory=list)
@@ -6747,6 +6745,143 @@ class E5LoopRecord(EvidenceModel):
     started_at: str = ""
     finished_at: str = ""
     summary: dict[str, Any] = Field(default_factory=dict)
+
+
+def _e5_builder_evidence_package(
+    *,
+    draft: TargetStructureDraft,
+    state: Any,
+    derived: dict[str, Any],
+    page_size: tuple[float, float],
+    current_render_version: str | None = None,
+    findings: list[DefectFinding] | None = None,
+    measurements: list[MeasurementResult] | None = None,
+    current_gates: dict[str, Any] | None = None,
+    last_rejection: str | None = None,
+    target_images: list[Path] | None = None,
+    current_render_images: list[Path] | None = None,
+) -> dict[str, Any]:
+    """One representation-neutral Builder evidence package.
+
+    Both lanes receive this exact data shape and the same target images. Only
+    their output schema/instructions differ. Repair calls additionally receive
+    the current render images outside this JSON package.
+    """
+    return {
+        "schema_version": "e5-builder-evidence/1",
+        "structure_draft": draft.model_dump(mode="json"),
+        "underlying_evidence_summary": {
+            "page_size_pt": list(page_size),
+            "state_sections": [
+                {
+                    "node_id": node.node_id,
+                    "kind": node.kind,
+                    "sources": getattr(node.binding, "sources", None) if node.binding else None,
+                }
+                for node in state.nodes
+                if node.kind == "section"
+            ],
+            "sidebar_rules": derived.get("sidebar_rules"),
+            "sidebar_labels": derived.get("sidebar_labels"),
+        },
+        "current_render_version": current_render_version,
+        "findings": [finding.model_dump(mode="json") for finding in findings or []],
+        "measurements": [result.model_dump(mode="json") for result in measurements or []],
+        "current_gates": current_gates or {},
+        "last_rejection": last_rejection,
+        "target_images": [
+            {"name": image.name, "sha256": _sha256_file(image)} for image in target_images or []
+        ],
+        "current_render_images": [
+            {"name": image.name, "sha256": _sha256_file(image)}
+            for image in current_render_images or []
+        ],
+    }
+
+
+def _e5_gate_classification(
+    lane: str,
+    gates: dict[str, Any],
+    *,
+    privacy_labels_symmetric: bool,
+) -> dict[str, Any]:
+    """Classify only what the implemented gates can establish."""
+    result: dict[str, Any] = {}
+    if lane == "a" and not gates.get("content_shapes_match_evidence", True):
+        result["representation_ceiling"] = "unverified"
+        result["reason"] = (
+            "content_shape_verification does not verify rail_heading, "
+            "rail_label_width_pt, rail_label_align, or rendered rail geometry"
+        )
+    if lane == "b" and not gates.get("no_target_candidate_facts", True):
+        result["privacy_failure"] = (
+            "unresolved" if privacy_labels_symmetric else "gate_false_positive_or_boundary_unresolved"
+        )
+        result["privacy_labels_symmetric"] = privacy_labels_symmetric
+    return result
+
+
+def _e5_hard_gate_record(
+    render_version: str,
+    gates: dict[str, bool],
+    details: dict[str, Any],
+) -> dict[str, Any]:
+    """Version-bound gate summary plus the evidence needed to explain it."""
+    return {
+        "render_version": render_version,
+        "passed": all(gates.values()),
+        "gates": gates,
+        "details": details,
+    }
+
+
+def _e5_builder_candidate_record(
+    *,
+    lane: str,
+    attempt: int,
+    stage: str,
+    input_render_version: str | None,
+    candidate_output: Any,
+    validation: dict[str, Any],
+    outcome: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Local audit record for one parsed typed Builder output."""
+    return {
+        "schema_version": "e5-builder-candidate-audit/1",
+        "lane": lane,
+        "builder_attempt": attempt,
+        "stage": stage,
+        "input_render_version": input_render_version,
+        "typed_candidate": candidate_output.model_dump(mode="json"),
+        "validation": validation,
+        "candidate_render_version": None,
+        "outcome": outcome,
+        "reason": reason,
+        "artifact": f"builder_candidate_{attempt:02d}.json",
+    }
+
+
+def _next_e5_repair_finding(
+    actionable: list[DefectFinding],
+    measured: dict[str, tuple[MeasurementResult, MeasurementRequest]],
+    fingerprints: list[str],
+) -> tuple[tuple[DefectFinding, MeasurementResult, MeasurementRequest, str] | None, bool]:
+    """Return the first measured, material, not-yet-executed action.
+
+    The boolean says repairable findings existed but every fingerprint was
+    already executed, so the lane must stop instead of burning another round.
+    """
+    repairable_seen = False
+    for finding in actionable:
+        result, bound = measured[finding.finding_id]
+        if result.status != "confirmed" or abs(result.delta_pt or 0.0) <= E2_IMPROVEMENT_TOLERANCE_PT:
+            continue
+        repairable_seen = True
+        fingerprint = f"{finding.region}:{finding.suspected_dimension}:{round(result.delta_pt or 0, 3)}"
+        if fingerprint not in fingerprints:
+            return (finding, result, bound, fingerprint), False
+    return None, repairable_seen
 
 
 def _builder_reserve_intact(budget: RunBudget) -> bool:
@@ -6991,7 +7126,6 @@ def _scripted_lane_a_proposal(state: Any, derived: dict[str, Any]) -> LaneAStruc
     return LaneAStructureProposal(
         proposal_id="scripted-rail-1",
         sections=sections,
-        rationale="scripted two-rail interpretation of the measured sidebar family",
         agent="scripted",
     )
 
@@ -7204,12 +7338,13 @@ def _live_lane_a_builder(
     trace: RunTrace,
     *,
     payload: dict[str, Any],
+    images: list[Any],
     proposal_id: str,
 ) -> LaneAStructureProposal:
     """The LIVE Lane A Builder: one bounded request that outputs the typed
     provider-neutral structure primitives. The shell validates, applies and
     renders — the agent never promotes anything."""
-    from pydantic_ai import Agent
+    from pydantic_ai import Agent, BinaryContent
 
     from tests.experiments.d_pipeline import _live_model
 
@@ -7223,7 +7358,10 @@ def _live_lane_a_builder(
     )
     run_result = _with_connection_retry(
         lambda: agent.run_sync(
-            json.dumps(payload, ensure_ascii=False, indent=1),
+            [
+                json.dumps(payload, ensure_ascii=False, indent=1),
+                *[BinaryContent(data=image.read_bytes(), media_type="image/png") for image in images],
+            ],
             usage_limits=_call_limits(budget, E5_BUILDER_MAX_REQUESTS),
             model_settings=_live_model_settings(),
         ),
@@ -7696,6 +7834,25 @@ def run_e5(
     store.manifest["experiment"] = "e_pipeline_e5"
     store.manifest["pipeline_phase"] = "e5"
     store.register_version("structure_draft_v1", out_dir / "structure_draft.json", "shared evidence-linked draft")
+    page_size = _page_pt_size(target_pdf, 1)
+    shared_target_images = _overview_pngs(target_pdf, out_dir, "builder_target_shared")
+    initial_builder_evidence = _e5_builder_evidence_package(
+        draft=draft,
+        state=state,
+        derived=derived,
+        page_size=page_size,
+        target_images=shared_target_images,
+    )
+    initial_builder_evidence_path = out_dir / "builder_evidence_initial.json"
+    initial_builder_evidence_path.write_text(
+        json.dumps(initial_builder_evidence, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    store.register_version(
+        "builder_evidence_initial_v1",
+        initial_builder_evidence_path,
+        "frozen common Builder evidence package",
+    )
 
     # Scripted-reviewer rehearsal data for THIS target (same runtime rehearsal
     # pattern as E3/E4, keyed by target id; Phase-0-style intent-only request).
@@ -7760,6 +7917,7 @@ def run_e5(
         measurement_results: list[MeasurementResult] = []
         attributions: list[AttributionRecord] = []
         repair_attempts: list[dict[str, Any]] = []
+        builder_candidates: list[dict[str, Any]] = []
         attempted_strategies: list[str] = []
         fingerprints: list[str] = []
         resolved_measurements: dict[str, tuple[MeasurementRequest, MeasurementResult]] = {}
@@ -7768,7 +7926,40 @@ def run_e5(
         pages_reviewed: set[int] = set()
         counter = {"finding": 0, "request": 0}
         lane_state: dict[str, Any] = {"proposal": None, "template": None}
-        page_size = _page_pt_size(target_pdf, 1)
+
+        def record_builder_candidate(
+            candidate_output: Any,
+            *,
+            stage: str,
+            input_render_version: str | None,
+            validation: dict[str, Any],
+            outcome: str,
+            reason: str,
+        ) -> int:
+            attempt = len(builder_candidates) + 1
+            record = _e5_builder_candidate_record(
+                lane=lane,
+                attempt=attempt,
+                stage=stage,
+                input_render_version=input_render_version,
+                candidate_output=candidate_output,
+                validation=validation,
+                outcome=outcome,
+                reason=reason,
+            )
+            builder_candidates.append(record)
+            (lane_dir / record["artifact"]).write_text(
+                json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            return attempt - 1
+
+        def update_builder_candidate(index: int, **updates: Any) -> None:
+            builder_candidates[index].update(updates)
+            (lane_dir / builder_candidates[index]["artifact"]).write_text(
+                json.dumps(builder_candidates[index], ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
 
         def escalate(strategy: str) -> None:
             attempted_strategies.append(strategy)
@@ -7941,6 +8132,7 @@ def run_e5(
                 measurement_results=measurement_results,
                 attributions=attributions,
                 repair_attempts=repair_attempts,
+                builder_candidates=builder_candidates,
                 attempted_strategies=attempted_strategies,
                 action_fingerprints=fingerprints,
                 ledger=list(ledger.entries.values()),
@@ -7961,6 +8153,11 @@ def run_e5(
                     "builder_calls": lane_budget.calls_by_agent.get(f"lane_{lane_id}_builder", 0),
                     "reviewer_calls": lane_budget.calls_by_agent.get("visual_reviewer", 0),
                     "attribution_calls": lane_budget.calls_by_agent.get("attribution_investigator", 0),
+                    "methodology_classification": _e5_gate_classification(
+                        lane_id,
+                        gates_by_version.get(active_version_id, {}),
+                        privacy_labels_symmetric=lane_id != "b",
+                    ),
                     "elapsed_seconds": None,
                     "live": live,
                 },
@@ -8015,6 +8212,20 @@ def run_e5(
                     "content_shapes_match_evidence": shape["passed"],
                     "content_gate": content["passed"],
                 }
+                gate_details = {
+                    "deterministic_render": {
+                        "passed": gates["deterministic_render"],
+                        "first_page_hashes": [c2r._sha256(page) for page in pages],
+                        "second_page_hashes": [c2r._sha256(page) for page in second_pages],
+                        "line_stability": stability,
+                    },
+                    "no_target_candidate_facts": privacy,
+                    "section_order_matches_state": structure_gate,
+                    "no_blank_page": blank,
+                    "candidate_content_accounting": accounting,
+                    "content_shapes_match_evidence": shape,
+                    "content_gate": content,
+                }
                 version = RenderVersion(
                     version_id=f"render-{target_pdf.stem}-laneA-v{index}",
                     html_sha256=_sha256_file(html_path),
@@ -8030,7 +8241,11 @@ def run_e5(
                 gates_by_version[version.version_id] = gates
                 store.register_version(version.version_id, pdf_path, note)
                 (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
-                    json.dumps({"passed": version.hard_gates_passed, "gates": gates}, indent=2, sort_keys=True) + "\n",
+                    json.dumps(
+                        _e5_hard_gate_record(version.version_id, gates, gate_details),
+                        indent=2,
+                        sort_keys=True,
+                    ) + "\n",
                     encoding="utf-8",
                 )
                 trace.add(agent="shell", phase="render", action="render_version", output=version.model_dump(mode="json"), note=note)
@@ -8086,6 +8301,28 @@ def run_e5(
                     "content_gate": presence["passed"],
                     "template_safety": True,  # validation raises otherwise
                 }
+                gate_details = {
+                    "deterministic_render": {
+                        "passed": gates["deterministic_render"],
+                        "first_page_hashes": [c2r._sha256(page) for page in pages],
+                        "second_page_hashes": [c2r._sha256(page) for page in second_pages],
+                        "line_stability": stability,
+                    },
+                    "no_target_candidate_facts": {
+                        "passed": gates["no_target_candidate_facts"],
+                        "baseline": privacy_baseline_gate,
+                        "target": privacy_target_gate,
+                        "label_semantics_symmetric": False,
+                    },
+                    "no_blank_page": blank,
+                    "candidate_content_accounting": {
+                        "passed": not fill.missing_leaves,
+                        "missing_leaves": fill.missing_leaves,
+                        "leaf_counts": fill.leaf_counts,
+                    },
+                    "content_gate": presence,
+                    "template_safety": {"passed": True},
+                }
                 version = RenderVersion(
                     version_id=f"render-{target_pdf.stem}-laneB-v{index}",
                     html_sha256=_sha256_file(html_path),
@@ -8100,7 +8337,11 @@ def run_e5(
                 gates_by_version[version.version_id] = gates
                 store.register_version(version.version_id, pdf_path, note)
                 (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
-                    json.dumps({"passed": version.hard_gates_passed, "gates": gates}, indent=2, sort_keys=True) + "\n",
+                    json.dumps(
+                        _e5_hard_gate_record(version.version_id, gates, gate_details),
+                        indent=2,
+                        sort_keys=True,
+                    ) + "\n",
                     encoding="utf-8",
                 )
                 trace.add(agent="shell", phase="render", action="render_version", output=version.model_dump(mode="json"), note=note)
@@ -8258,57 +8499,95 @@ def run_e5(
 
         # --- 3. Initial Builder output (representation under test) ---------
         initial_note = f"lane {lane} initial render ({'authored template' if lane == 'b' else 'structured layout'})"
+        candidate_audit_index: int | None = None
         try:
             if lane == "a":
                 proposal = None
                 if live:
-                    payload = {
-                        "state_sections": [
-                            {
-                                "node_id": n.node_id,
-                                "kind": n.kind,
-                                "sources": (getattr(n.binding, "sources", None) if n.binding else None),
-                            }
-                            for n in state.nodes if n.kind == "section"
-                        ],
-                        "measured_rail_evidence": {
-                            "sidebar_rules": derived.get("sidebar_rules"),
-                            "sidebar_labels_sample": (derived.get("sidebar_labels") or [])[:6],
-                        },
-                        "constraint": "typed primitives only; no candidate or target person text",
-                    }
-                    proposal = _live_lane_a_builder(lane_budget, trace, payload=payload, proposal_id="lane-a-r1")
+                    proposal = _live_lane_a_builder(
+                        lane_budget,
+                        trace,
+                        payload=initial_builder_evidence,
+                        images=shared_target_images,
+                        proposal_id="lane-a-r1",
+                    )
+                    validation_error = _validate_lane_a_proposal(proposal, state)
+                    candidate_audit_index = record_builder_candidate(
+                        proposal,
+                        stage="initial",
+                        input_render_version=None,
+                        validation={"passed": validation_error is None, "error": validation_error},
+                        outcome="validator_rejected" if validation_error else "validated",
+                        reason=validation_error or "typed proposal accepted by the shell validator",
+                    )
+                    if validation_error:
+                        raise ValueError(validation_error)
                 lane_state["proposal"] = proposal
                 lane_state["active_proposal"] = proposal
                 version, pdf, gates = render_version(initial_note, proposal)
+                if candidate_audit_index is not None:
+                    update_builder_candidate(
+                        candidate_audit_index,
+                        candidate_render_version=version.version_id,
+                        outcome="active_unpromoted",
+                        reason="initial validated candidate rendered and became the active version",
+                    )
             else:
                 template = None
                 if live:
-                    target_images = _overview_pngs(target_pdf, lane_dir, "builder_target")
-                    payload = {
-                        "structure_draft_claims": [
-                            {"child": c.child, "statement": c.statement} for c in draft.structure
-                        ],
-                        "page_size_pt": list(page_size),
-                        "slot_vocabulary_note": "see instructions; the shell fills slots, you never write values",
-                        "budget_note": "ONE bounded agent run; return the complete typed template",
-                    }
                     template = _live_lane_b_builder(
-                        lane_budget, trace, payload=payload, images=target_images, template_id="lane-b-r1"
+                        lane_budget,
+                        trace,
+                        payload=initial_builder_evidence,
+                        images=shared_target_images,
+                        template_id="lane-b-r1",
                     )
                 else:
                     from tests.experiments.e_authored_template import SCRIPTED_AUTHORED_TEMPLATE
 
                     template = SCRIPTED_AUTHORED_TEMPLATE
+                try:
+                    validation = validate_authored_template(
+                        template,
+                        target_pdf=target_pdf,
+                        render_candidate=candidate,
+                        known_evidence_ids=_known_evidence_ids(),
+                    )
+                    validation_error = None
+                except ValueError as error:
+                    validation = {"passed": False, "error": str(error)}
+                    validation_error = str(error)
+                candidate_audit_index = record_builder_candidate(
+                    template,
+                    stage="initial",
+                    input_render_version=None,
+                    validation=validation,
+                    outcome="validator_rejected" if validation_error else "validated",
+                    reason=validation_error or "typed template accepted by the shell validator",
+                )
+                if validation_error:
+                    raise ValueError(validation_error)
                 lane_state["template"] = template
                 lane_state["active_template"] = template
                 version, pdf, gates = render_version(initial_note, template)
+                update_builder_candidate(
+                    candidate_audit_index,
+                    candidate_render_version=version.version_id,
+                    outcome="active_unpromoted",
+                    reason="initial validated candidate rendered and became the active version",
+                )
         except CheckpointBudgetExceeded:
             escalate("builder_initial_budget_exhausted")
             return _lane_terminal(lane, "budget_exhausted")
         except Exception as error:
             import traceback as _tb
             detail = _tb.format_exc()[-600:]
+            if candidate_audit_index is not None and builder_candidates[candidate_audit_index]["outcome"] != "validator_rejected":
+                update_builder_candidate(
+                    candidate_audit_index,
+                    outcome="render_failed",
+                    reason=str(error)[:300],
+                )
             lane_state["last_rejection"] = f"initial render failed: {str(error)[:200]}"
             trace.add(agent="shell", phase="builder", action="initial_failed", note=str(error)[:200], output={"traceback": detail}, persist_output=True)
             escalate(f"lane_builder_initial_failed:{type(error).__name__}")
@@ -8490,41 +8769,65 @@ def run_e5(
                         result, bound = measured[finding.finding_id]
                         attribute(finding, result, bound)
     
-                # Builder opportunity: repair the FIRST attributable bound finding.
-                repair_finding = None
-                for finding in actionable:
-                    result, bound = measured[finding.finding_id]
-                    if result.status == "confirmed" and abs(result.delta_pt or 0.0) > E2_IMPROVEMENT_TOLERANCE_PT:
-                        repair_finding = (finding, result, bound)
-                        break
+                # Builder opportunity: skip already-executed fingerprints and
+                # use the next measured, material finding in review order.
+                repair_finding, all_repairable_repeated = _next_e5_repair_finding(
+                    actionable, measured, fingerprints
+                )
+                if repair_finding is None and all_repairable_repeated:
+                    escalate("stalled_no_new_action")
+                    break
                 if repair_finding is None:
                     escalate(f"round{round_no}:no_repairable_bound_finding_continue_review")
                     continue
-                finding, result, bound = repair_finding
-                fingerprint = f"{finding.region}:{finding.suspected_dimension}:{round(result.delta_pt or 0, 3)}"
-                if fingerprint in fingerprints:
-                    escalate(f"round{round_no}:{finding.finding_id}:repeated_action_change_strategy")
-                    continue
+                finding, result, bound, fingerprint = repair_finding
+                current_render_images = _overview_pngs(
+                    current_pdf, lane_dir, f"builder_render_r{round_no}"
+                )
+                repair_builder_evidence = _e5_builder_evidence_package(
+                    draft=draft,
+                    state=state,
+                    derived=derived,
+                    page_size=page_size,
+                    current_render_version=current_version.version_id,
+                    findings=actionable,
+                    measurements=[measured[item.finding_id][0] for item in actionable],
+                    current_gates=current_gates,
+                    last_rejection=lane_state.get("last_rejection"),
+                    target_images=shared_target_images,
+                    current_render_images=current_render_images,
+                )
+                (lane_dir / f"builder_evidence_round_{round_no:02d}.json").write_text(
+                    json.dumps(
+                        repair_builder_evidence,
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    ) + "\n",
+                    encoding="utf-8",
+                )
+                candidate_audit_index = None
                 try:
                     if lane == "a":
                         if live:
-                            payload = {
-                                "round": round_no,
-                                "finding": finding.model_dump(mode="json"),
-                                "measurement": result.model_dump(mode="json"),
-                                "current_gates": current_gates,
-                                "state_sections": [
-                                    {"node_id": n.node_id, "kind": n.kind}
-                                    for n in state.nodes if n.kind == "section"
-                                ],
-                                "constraint": "typed primitives only; candidate/target person text never appears",
-                            }
                             proposal = _live_lane_a_builder(
-                                lane_budget, trace, payload=payload, proposal_id=f"lane-a-r{round_no + 1}"
+                                lane_budget,
+                                trace,
+                                payload=repair_builder_evidence,
+                                images=[*shared_target_images, *current_render_images],
+                                proposal_id=f"lane-a-r{round_no + 1}",
                             )
                         else:
                             proposal = _scripted_lane_a_proposal(state, derived)
                         validation_error = _validate_lane_a_proposal(proposal, state)
+                        candidate_audit_index = record_builder_candidate(
+                            proposal,
+                            stage="repair",
+                            input_render_version=current_version.version_id,
+                            validation={"passed": validation_error is None, "error": validation_error},
+                            outcome="validator_rejected" if validation_error else "validated",
+                            reason=validation_error or "typed proposal accepted by the shell validator",
+                        )
                         if validation_error:
                             repair_attempts.append({"finding": finding.finding_id, "region": finding.region, "rejected": validation_error, "round": round_no})
                             trace.add(agent="shell", phase="repair", action="rejected", note=validation_error)
@@ -8538,29 +8841,9 @@ def run_e5(
                         )
                     else:
                         if live:
-                            target_images = _overview_pngs(target_pdf, lane_dir, f"builder_target_r{round_no}")
-                            render_images = _overview_pngs(current_pdf, lane_dir, f"builder_render_r{round_no}")
-                            payload = {
-                                "round": round_no,
-                                "findings": [
-                                    {"region": f.region, "observation": f.observation, "dimension": f.suspected_dimension}
-                                    for f in actionable
-                                ],
-                                "measurements": [
-                                    result.model_dump(mode="json")
-                                    for _, (result, _) in measured.items()
-                                ],
-                                "current_gates": current_gates,
-                                "last_rejection": lane_state.get("last_rejection"),
-                                "marker_rule": (
-                                    "every {{each:<collection>}} MUST have one matching {{/each}}; "
-                                    "unbalanced or stray markers are rejected"
-                                ),
-                                "budget_note": "ONE bounded agent run; return the complete revised template",
-                            }
                             template = _live_lane_b_builder(
-                                lane_budget, trace, payload=payload,
-                                images=[*target_images, *render_images],
+                                lane_budget, trace, payload=repair_builder_evidence,
+                                images=[*shared_target_images, *current_render_images],
                                 template_id=f"lane-b-r{round_no + 1}",
                             )
                         else:
@@ -8568,17 +8851,34 @@ def run_e5(
     
                             template = _scripted_lane_b_template(_base_template, finding, result)
                         try:
-                            validate_authored_template(
+                            validation = validate_authored_template(
                                 template,
                                 target_pdf=target_pdf,
                                 render_candidate=candidate,
                                 known_evidence_ids=_known_evidence_ids(),
                             )
                         except ValueError as error:
+                            validation = {"passed": False, "error": str(error)}
+                            candidate_audit_index = record_builder_candidate(
+                                template,
+                                stage="repair",
+                                input_render_version=current_version.version_id,
+                                validation=validation,
+                                outcome="validator_rejected",
+                                reason=str(error),
+                            )
                             lane_state["last_rejection"] = str(error)[:280]
                             repair_attempts.append({"finding": finding.finding_id, "region": finding.region, "rejected": str(error)[:300], "round": round_no})
                             trace.add(agent="shell", phase="repair", action="rejected", note=str(error)[:300])
                             continue
+                        candidate_audit_index = record_builder_candidate(
+                            template,
+                            stage="repair",
+                            input_render_version=current_version.version_id,
+                            validation=validation,
+                            outcome="validated",
+                            reason="typed template accepted by the shell validator",
+                        )
                         repair_attempts.append(
                             {"finding": finding.finding_id, "region": finding.region,
                              "round": round_no, "template": template.template_id}
@@ -8586,10 +8886,23 @@ def run_e5(
                         candidate_version, candidate_pdf, candidate_gates = render_version(
                             f"lane B repair round {round_no} for {finding.finding_id}", template
                         )
+                    assert candidate_audit_index is not None
+                    update_builder_candidate(
+                        candidate_audit_index,
+                        candidate_render_version=candidate_version.version_id,
+                        outcome="rendered_pending_decision",
+                        reason="validated candidate rendered; awaiting shell promotion or rollback",
+                    )
                 except CheckpointBudgetExceeded:
                     escalate("builder_budget_exhausted")
                     break
                 except Exception as error:
+                    if candidate_audit_index is not None:
+                        update_builder_candidate(
+                            candidate_audit_index,
+                            outcome="render_failed",
+                            reason=str(error)[:300],
+                        )
                     escalate(f"repair_render_failed:{type(error).__name__}: {str(error)[:150]}")
                     continue
                 lane_budget.repair_attempt_count += 1
@@ -8621,6 +8934,11 @@ def run_e5(
                 )
                 if not improved:
                     rolled_back_versions.add(candidate_version.version_id)
+                    update_builder_candidate(
+                        candidate_audit_index,
+                        outcome="rolled_back",
+                        reason="identical re-measurement did not improve",
+                    )
                     attempted_strategies.append(f"round{round_no}:{finding.finding_id}:non_improving_rolled_back")
                     trace.add(agent="shell", phase="repair", action="rolled_back", note="non-improving repair")
                     continue
@@ -8631,12 +8949,22 @@ def run_e5(
                 )
                 if not all(candidate_gates.get(gate) for gate in gate_keys):
                     rolled_back_versions.add(candidate_version.version_id)
+                    update_builder_candidate(
+                        candidate_audit_index,
+                        outcome="rolled_back",
+                        reason="candidate-safety gates failed",
+                    )
                     attempted_strategies.append(f"round{round_no}:{finding.finding_id}:repair_failed_gates_rolled_back")
                     trace.add(agent="shell", phase="repair", action="rolled_back", note="candidate-safety gate failed")
                     continue
                 holds, rechecks = accepted_regions_hold(candidate_pdf)
                 if not holds:
                     rolled_back_versions.add(candidate_version.version_id)
+                    update_builder_candidate(
+                        candidate_audit_index,
+                        outcome="rolled_back",
+                        reason="accepted-region recheck failed closed",
+                    )
                     attempted_strategies.append(f"round{round_no}:{finding.finding_id}:accepted_region_regressed_rolled_back")
                     trace.add(agent="shell", phase="repair", action="rolled_back", note="accepted region regressed")
                     continue
@@ -8644,6 +8972,11 @@ def run_e5(
                 # version; the rejected candidates before it stay in the
                 # immutable history and are never implicitly selected again.
                 versions[candidate_index] = candidate_version.model_copy(update={"promoted": True})
+                update_builder_candidate(
+                    candidate_audit_index,
+                    outcome="promoted",
+                    reason="shell verified improvement, safety gates, and accepted-region hold",
+                )
                 active_index = candidate_index
                 last_promoted_region = finding.region
                 if lane == "a":

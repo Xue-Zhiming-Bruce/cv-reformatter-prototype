@@ -1094,13 +1094,13 @@ def test_run_e4_promotes_only_verified_improvement_and_records_ceilings(
     if promoted:
         # A promoted defect-level repair improved its confirmed defect without
         # candidate-fact damage: its content gates are green; remaining failed
-        # gates (the template-representation ceiling) stay recorded honestly.
+        # gates stay recorded honestly; this test does not classify their cause.
         version_id = promoted[-1]["version_id"]
         gates = json.loads((run_dir / f"hard_gates_{version_id}.json").read_text())
         for gate in e.CANDIDATE_FACT_GATES:
             assert gates["gates"][gate] is True
         assert terminal in {"ready_for_owner_review", "budget_exhausted"}
-    assert terminal == "budget_exhausted"  # the shape ceiling keeps this run resumable
+    assert terminal == "budget_exhausted"  # the red shape gate keeps this run resumable
 
 
 @e4_skip
@@ -1375,6 +1375,136 @@ def test_lane_a_rejects_target_specific_identifiers_and_invalid_fields() -> None
         e.E5LaneASection.model_validate(
             {"section_node_id": "section.01", "heading_in_rail": True}
         )  # rail_heading without width is invalid
+    for unused_field in ("rationale", "evidence_refs", "expected_measurements"):
+        with pytest.raises(ValueError):
+            e.LaneAStructureProposal.model_validate(
+                {
+                    "proposal_id": "p1",
+                    "agent": "scripted",
+                    "sections": [],
+                    unused_field: "unused" if unused_field == "rationale" else ["unused"],
+                }
+            )
+
+
+def test_builder_evidence_package_is_representation_neutral() -> None:
+    class Binding:
+        sources = ["work_experience"]
+
+    class Node:
+        node_id = "section.01"
+        kind = "section"
+        binding = Binding()
+
+    class State:
+        nodes = [Node()]
+
+    draft = e.TargetStructureDraft(
+        target_id="target-v1",
+        investigator="scripted",
+        structure=[],
+        unresolved=[],
+        self_reported=e.SelfReportedStatus(status="partial"),
+    )
+    package_a = e._e5_builder_evidence_package(
+        draft=draft,
+        state=State(),
+        derived={"sidebar_rules": {"r": {"x0_pt": 1}}, "sidebar_labels": []},
+        page_size=(612.0, 792.0),
+    )
+    package_b = e._e5_builder_evidence_package(
+        draft=draft,
+        state=State(),
+        derived={"sidebar_rules": {"r": {"x0_pt": 1}}, "sidebar_labels": []},
+        page_size=(612.0, 792.0),
+    )
+    assert package_a == package_b
+    assert package_a["structure_draft"] == draft.model_dump(mode="json")
+    assert "representation" not in json.dumps(package_a).casefold()
+
+
+def _e5_finding(finding_id: str, region: str, dimension: str) -> e.DefectFinding:
+    return e.DefectFinding(
+        finding_id=finding_id,
+        target_version="target-v1",
+        render_version="render-v1",
+        page=1,
+        region=region,
+        observation=f"Observed {dimension} mismatch",
+        suspected_dimension=dimension,
+        requested_measurement=e.MeasurementRequest(
+            request_id=f"measure-{finding_id}",
+            metric="role_gap",
+            page=1,
+            intent="compare two roles",
+        ),
+        severity="high",
+        confidence=0.8,
+        reviewer="scripted",
+    )
+
+
+def test_repeated_fingerprint_uses_the_next_repairable_finding() -> None:
+    first = _e5_finding("f1", "header", "gap")
+    second = _e5_finding("f2", "experience", "alignment")
+    measured = {
+        "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), first.requested_measurement),
+        "f2": (e.MeasurementResult(request_id="m2", status="confirmed", delta_pt=4.0), second.requested_measurement),
+    }
+    selected, stalled = e._next_e5_repair_finding(
+        [first, second], measured, ["header:gap:8.0"]
+    )
+    assert stalled is False
+    assert selected is not None and selected[0].finding_id == "f2"
+
+
+def test_all_repeated_fingerprints_stop_as_stalled() -> None:
+    finding = _e5_finding("f1", "header", "gap")
+    measured = {
+        "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
+    }
+    selected, stalled = e._next_e5_repair_finding(
+        [finding], measured, ["header:gap:8.0"]
+    )
+    assert selected is None
+    assert stalled is True
+
+
+def test_gate_classification_does_not_overclaim_representation_or_privacy() -> None:
+    lane_a = e._e5_gate_classification(
+        "a", {"content_shapes_match_evidence": False}, privacy_labels_symmetric=True
+    )
+    assert lane_a["representation_ceiling"] == "unverified"
+    assert "rail_heading" in lane_a["reason"]
+    lane_b = e._e5_gate_classification(
+        "b", {"no_target_candidate_facts": False}, privacy_labels_symmetric=False
+    )
+    assert lane_b["privacy_failure"] == "gate_false_positive_or_boundary_unresolved"
+
+
+def test_gate_and_builder_candidate_audits_are_version_bound() -> None:
+    gate_record = e._e5_hard_gate_record(
+        "render-v2",
+        {"content_gate": False},
+        {"content_gate": {"missing_pdf_leaves": ["leaf.1"]}},
+    )
+    assert gate_record["render_version"] == "render-v2"
+    assert gate_record["details"]["content_gate"]["missing_pdf_leaves"] == ["leaf.1"]
+    proposal = e.LaneAStructureProposal(proposal_id="p1", sections=[], agent="scripted")
+    candidate_record = e._e5_builder_candidate_record(
+        lane="a",
+        attempt=2,
+        stage="repair",
+        input_render_version="render-v1",
+        candidate_output=proposal,
+        validation={"passed": False, "error": "unknown node"},
+        outcome="validator_rejected",
+        reason="unknown node",
+    )
+    assert candidate_record["input_render_version"] == "render-v1"
+    assert candidate_record["candidate_render_version"] is None
+    assert candidate_record["outcome"] == "validator_rejected"
+    assert candidate_record["typed_candidate"]["proposal_id"] == "p1"
 
 
 def test_lane_a_proposal_cites_only_known_state_nodes() -> None:
@@ -1432,11 +1562,48 @@ def test_run_e5_offline_lane_b_authored_template_loop(tmp_path: Path) -> None:
     assert terminal in {"ready_for_owner_review", "budget_exhausted"}
     lane = record["lanes"]["b"]
     assert lane["render_versions"], "the authored template rendered at least one version"
+    initial_candidate = lane["builder_candidates"][0]
+    assert initial_candidate["input_render_version"] is None
+    initial_render_version = lane["render_versions"][0]["version_id"]
+    assert initial_candidate["candidate_render_version"] == initial_render_version
+    assert (run_dir / "lane_b" / initial_candidate["artifact"]).exists()
+    gate_record = json.loads(
+        (run_dir / "lane_b" / f"hard_gates_{initial_render_version}.json").read_text()
+    )
+    assert gate_record["render_version"] == initial_render_version
+    assert set(gate_record["details"]) >= {
+        "content_gate",
+        "candidate_content_accounting",
+        "no_target_candidate_facts",
+        "deterministic_render",
+        "no_blank_page",
+    }
     assert lane["content_shape_probes_passed"] is True
     # The authored render chain ran through Chrome with network disabled.
     trace = json.loads((run_dir / "lane_b" / "trace.json").read_text())
     renders = [entry for entry in trace if entry.get("action") == "render_version"]
     assert renders
+
+
+@e5_skip
+def test_validator_rejected_builder_candidate_is_auditable_but_never_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def rejected_template(base, finding, result):
+        return base.model_copy(
+            update={"template_id": base.template_id + "-rejected", "css": base.css + ".x::before { content: 'x'; }"}
+        )
+
+    monkeypatch.setattr(e, "_scripted_lane_b_template", rejected_template)
+    run_dir, _terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
+    )
+    lane = record["lanes"]["b"]
+    rejected = [item for item in lane["builder_candidates"] if item["outcome"] == "validator_rejected"]
+    assert rejected and rejected[0]["candidate_render_version"] is None
+    assert (run_dir / "lane_b" / rejected[0]["artifact"]).exists()
+    assert lane["active_render_version"] == lane["render_versions"][0]["version_id"]
+    assert len(lane["render_versions"]) == 1
 
 
 def test_lane_b_rejects_unsafe_content_and_undeclared_slots(tmp_path: Path) -> None:

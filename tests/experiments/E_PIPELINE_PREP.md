@@ -649,7 +649,8 @@ Run: `tests/experiments/runs/e_pipeline_e4_20260920T134946Z/` (ignored).
   (section presence, contact grid, heading style) escalated per §14, live
   attributions recorded — budget exhausted. v2 gates: ALL candidate-fact/
   structure gates green; `content_shapes_match_evidence` remains red (the
-  known template-representation ceiling), so the run is NOT
+  older shape gate remains red; that gate does not test the later rail
+  primitives and therefore does not prove a representation ceiling, so the run is NOT
   `ready_for_owner_review` and honestly stays resumable.
 - Structure: 31 evidence-linked draft claims (22 live + 9 deterministic);
   2 unresolved items (deduplicated); 4 sections bind to candidate sources
@@ -1133,15 +1134,20 @@ splicing). Price is NOT consulted; raw usage only, cost null.
 - Recorded as operational failure; NOT interpreted as a Lane result; no
   artifacts reinterpreted; the run directory is preserved as-is.
 
-## The comparison run: `e_pipeline_e5_20260921T094707Z`
+## Exploratory / non-canonical follow-up: `e_pipeline_e5_20260921T094707Z`
 
-Mitigation (disclosed deviation, owner decision point below): the run was
+This is **not** the authorized canonical comparison. After `091721Z` reached
+the work order's bounded provider failure, the correct action was to preserve
+that operational failure and stop. Instead, a second live run was launched.
+That second run and its fallback were not explicitly pre-authorized.
+
+Mitigation used by the unapproved follow-up (disclosed deviation): the run was
 launched with the three visual-override variables set EMPTY in the subprocess
 environment only — owner `.env` untouched, zero code changes — so
 `_live_visual_model()` fell back to the existing approved `deepseek-flash`
 runtime path (the same path used for the image-bearing Reviewer in the
-canonical E4 and E5 runs). Recorded here because it was not explicitly
-pre-authorized in the work order.
+canonical E4 run). Preserving and disclosing this deviation does not make the
+follow-up canonical.
 
 - Frozen before first live call: starting commit `98ae486…`; target
   `af6b9234…`; Adobe `f1909346…`; candidate `e0b9c4e9…`; shared draft
@@ -1177,8 +1183,13 @@ pre-authorized in the work order.
 ### Observed gate facts (per-version `hard_gates_*.json`)
 
 - Lane A v1 (ACTIVE): ALL candidate-fact gates green; only
-  `content_shapes_match_evidence` red — the known layout-state/1
-  representation ceiling, same as E3/E4. Repairs v2/v3 additionally broke
+  `content_shapes_match_evidence` red. The gate does not inspect
+  `rail_heading`, `rail_label_width_pt`, `rail_label_align`, rendered rail
+  geometry, or the label/content-rail relationship. Therefore it shows that
+  the current output did not satisfy the older shape checks; it does **not**
+  prove that Lane A's schema cannot express the two-rail/sidebar presentation.
+  The former representation-ceiling classification is withdrawn and marked
+  `unverified`. Repairs v2/v3 additionally broke
   `content_gate` + `candidate_content_accounting` (Builder revision errors)
   and were rolled back by the shell.
 - Lane B v1 (ACTIVE): `content_gate` red (candidate leaves absent from the
@@ -1188,37 +1199,37 @@ pre-authorized in the work order.
   (`SUMMARY`, `EXPERIENCE`, `EDUCATION`, `CERTIFICATIONS`) into the template,
   which collide line-for-line with the C1 baseline target's all-caps label
   lines under the line-granularity gate. This is the authored-free-text-label
-  representation interacting with the privacy boundary — not an orchestration
-  bug and not a provider failure; whether generic section labels should be
-  excluded for the baseline gate (as they are for the Resume I gate) is an
-  owner boundary decision, NOT changed this round.
+  The Lane A privacy gate excludes typed RenderPlan labels. Lane B passed
+  `labels=set()` for the C1 baseline but used label exclusions for Resume I.
+  The two lanes therefore did not use symmetric privacy semantics. This result
+  is classified `gate_false_positive_or_boundary_unresolved`, not a Lane B
+  representation ceiling. Whether generic presentation labels may be excluded
+  remains an owner boundary decision and was not changed this round.
 - Rounds 2–8 (Lane A): the same header finding re-observed with an unchanged
   fingerprint was rejected 7× (`repeated_action_change_strategy`) — honest
   escalation-without-progress record. Lane B: 4 attribution batch calls hit
   the per-call request limit (recorded escalations; deterministic measurement
   stayed the objective record).
 
-### Valid-comparison conditions (work order §四): ALL 15 MET
+### Why this is not a valid representation comparison
 
-1 `source_identity_stable=true`; 2 both initial live Builder calls done;
-3 real HTML + Chrome PDF both; 4 Reviewer entered both (18 calls each);
-5 both target pages reviewed every round (`pages_reviewed [1,2]`); 6 real
-final-PDF measurement both; 7 attribution both (batch calls; B's limit
-exhaustions recorded, never faked); 8 real repair Builder opportunity both
-(A 2 executed, B 1 executed + 1 validator-rejected); 9 identical measurement
-repeated after every executed repair (request ids reused verbatim); 10
-promotion/rollback shell-only; 11 probes ran on the SELECTED active
-representation (diagnostic mode, recorded); 12 owner-package lane artifacts
-byte-identical to the lane active version (sha256 verified); 13
-content/safety/privacy/accounting gates executed every render; 14 separate
-agent contexts (fresh agents per call, separate lane dirs, no cross-lane
-output); 15 identical ceilings, neither lane budget-truncated (ended on the
-round ceiling). Classification discipline: representation ceiling = Lane A's
-`content_shapes_match_evidence` (schema cannot express the two-rail sidebar
-presentation) and Lane B's authored-label/privacy-gate collision; Builder
-output errors = the fact-breaking repairs (rolled back); validator refusal =
-Lane B round 7 CSS `content:`; provider failure = the first run's visual
-endpoint (operational). No categories were merged.
+Some controls did run: both lanes produced HTML/PDF, entered review and
+measurement, retained separate agent contexts, and used shell-only rollback.
+Those facts are useful exploratory evidence, but the earlier “ALL 15 MET”
+claim is withdrawn for two independent reasons:
+
+1. The run itself and the visual-provider fallback were not pre-authorized
+   after the bounded `091721Z` operational failure.
+2. Builder evidence was not equal. Initial Lane A received section IDs,
+   binding sources, and limited rail evidence but no target page images or
+   complete StructureDraft; initial Lane B received target page images and
+   StructureDraft claims. During repair, Lane A received one finding,
+   measurement, gates, and state sections; Lane B received target/current
+   render images plus the batch findings and measurements.
+
+The result therefore mixes representation differences with evidence-access
+differences. Disclosure of the deviation cannot repair that confound after the
+fact. Both historical run directories and all artifacts remain unchanged.
 
 ### Non-claims
 
@@ -1232,3 +1243,98 @@ Owner review package (local):
 HTML/PDF; probe reports; cost summary with null pricing; remaining open
 findings; non-claims). Signed-URL/credential scan over the run directory:
 clean.
+
+---
+
+# E5 methodology and audit correction (2026-09-21)
+
+Status: offline code, test, and ledger correction only. No live provider, new
+conversion experiment, or Lane A/B comparison was run.
+
+## Corrected run status
+
+- `e_pipeline_e5_20260921T091721Z` is the work order's operational failure:
+  both initial Builders rendered, then the required visual provider failed
+  after bounded retry. It is not a lane result.
+- `e_pipeline_e5_20260921T094707Z` is preserved as
+  **exploratory / non-canonical**. The second run and clearing the visual
+  provider overrides in its subprocess were not pre-authorized.
+- The earlier “valid comparison / all 15 conditions met” claim is withdrawn.
+  Evidence disclosure is necessary but cannot remove the authorization and
+  evidence-parity defects.
+
+## Builder evidence parity and audit artifacts
+
+Future authorized E5 runs freeze one shared `e5-builder-evidence/1` package.
+Both lanes receive the same complete StructureDraft, state/binding summary,
+rail evidence summary, page size, and target page images. Repair Builders both
+receive the same fields: actionable findings, measurements, current gates,
+target images, and their own exact current-render images. Only the output
+representation schema and Builder instructions differ. Agent contexts remain
+separate; neither lane receives the other lane's output, trace, rationale, or
+result.
+
+Every parsed initial/repair Builder output is now written to a local ignored
+`builder_candidate_NN.json`. The record binds lane, attempt, typed internal
+candidate, validator result, input/current render version, candidate render
+version, and final outcome/reason (`validator_rejected`, `render_failed`,
+`rolled_back`, `promoted`, or active initial). A rejected or rolled-back
+candidate stays auditable but cannot become the active/selected
+representation. These files are local run evidence, not product persistence or
+owner-package content.
+
+`LaneAStructureProposal` now contains only `proposal_id`, typed section
+primitives, and the minimal agent identity. Unused `rationale`,
+`evidence_refs`, and `expected_measurements` fields were deleted; no replacement
+free-text channel was added.
+
+## Version-bound gate evidence and corrected classifications
+
+Each future `hard_gates_<render-version>.json` records the exact render version,
+boolean summary, and full gate details. Details retain missing PDF leaves,
+candidate ownership/accounting, privacy leaked/checked lines and excluded
+labels, content presence, shape gaps, structure checks, blank-page evidence,
+and deterministic-render hashes/line stability. The owner package does not
+copy these internal detailed files.
+
+The former Lane A representation-ceiling claim is withdrawn. The current
+`content_shape_verification()` does not verify the new rail primitives or
+rendered label/content-rail geometry. Three different statements must remain
+separate:
+
+- a Builder may fail to implement the target rail;
+- the current gate does not verify the rail;
+- whether the schema can express the target rail remains `unverified`.
+
+Lane B's baseline privacy failure is now classified
+`gate_false_positive_or_boundary_unresolved`, because Lane A excludes typed
+RenderPlan presentation labels while Lane B passed an empty label set for the
+baseline and a different label set for Resume I. It is not evidence of a Lane
+B representation ceiling.
+
+## Owner decision still required: typed presentation labels
+
+The smallest symmetric option is a typed `PresentationLabel` inventory shared
+by both lanes. Only labels declared by the validated representation may be
+excluded: Lane A would derive them from validated RenderPlan section labels;
+Lane B would have to declare the equivalent bounded label records separately
+from authored HTML/CSS. The shell would accept a label only when it maps to a
+known StructureDraft/state section role and matches measured heading evidence;
+arbitrary template text, target body lines, contacts, employers, dates, and
+candidate values would remain checked. Both privacy gates would consume the
+same typed inventory and matching rules.
+
+This is an architecture/privacy boundary choice, so it is proposed here but
+not implemented. No new live comparison should run before the owner decides
+whether presentation-label exclusion is allowed and approves the exact typed
+source.
+
+## Repeated-action stop
+
+The repair loop now scans actionable findings in order and chooses the first
+confirmed, over-tolerance measurement whose fingerprint has not already been
+executed. A repeated first finding no longer blocks a later new action. If all
+repairable fingerprints are repeats, the lane records
+`stalled_no_new_action` and stops instead of repeating Reviewer/Attribution or
+calling Builder again. This is a normal `budget_exhausted`/resumable outcome,
+never `unsupported`.
