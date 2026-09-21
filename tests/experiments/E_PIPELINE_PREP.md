@@ -1435,6 +1435,12 @@ input, with no new service/registry/CLI framework:
   label's text/kind/evidence/status. Without an approval the package shows
   every label `proposed` and zero approved ids — no "owner-approved"
   wording is produced.
+- **Frozen run_config** (2026-09-22 P1 follow-up): the validated approval
+  identity (provided / validated / target_sha256 / catalog_sha256 /
+  approved_label_ids) is frozen into `run_config.json` BEFORE the first live
+  call via `_freeze_e5_config` — a mid-run crash still proves what the lanes
+  saw. No approval freezes the same shape with `provided=False` and the
+  measured target/catalog identity. No second report was added.
 - **No approval artifact exists yet**: the owner has NOT approved any
   concrete label id in this work order. The next live E5 run therefore
   still needs an explicit `PresentationLabelApproval` (passed as the

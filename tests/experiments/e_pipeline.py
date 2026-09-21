@@ -8024,10 +8024,16 @@ def _freeze_e5_config(
     candidate_sha256: str,
     shared_draft_ref: dict[str, Any],
     pricing: dict[str, Any] | None,
+    presentation_label_approval_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Frozen BEFORE the first live call (E5 work order): shared target/
     candidate/evidence/model/prompts/budgets plus per-lane budgets. Model
-    NAMES only — never keys, URLs or tokens; rubric content never recorded."""
+    NAMES only — never keys, URLs or tokens; rubric content never recorded.
+    ``presentation_label_approval_record`` freezes the validated label-approval
+    identity (provided/validated/target/catalog sha256/approved ids); an
+    invalid approval aborts BEFORE this freeze, so a recorded record is one
+    the shell actually applied. An omitted record (default) freezes the same
+    shape with ``provided=False`` — no approval is never ambiguity."""
     try:
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
@@ -8047,6 +8053,13 @@ def _freeze_e5_config(
             "builder_boundary": "candidate facts are never editable by any agent",
         },
         "shared_structure_draft": shared_draft_ref,
+        "presentation_label_approval": presentation_label_approval_record or {
+            "provided": False,
+            "validated": False,
+            "target_sha256": None,
+            "catalog_sha256": None,
+            "approved_label_ids": [],
+        },
         "e4_best_render_baseline": {
             "run_dir": E5_RUNS_E4_BASELINE,
             "note": "E4 promoted best render (baseline render; NOT an accepted template)",
@@ -8314,6 +8327,18 @@ def run_e5(
         candidate_sha256=candidate_sha256,
         shared_draft_ref=shared_draft_ref,
         pricing=pricing,
+        # Frozen BEFORE the first live call: the validated approval identity
+        # the lanes will run under (an invalid approval aborts before this
+        # freeze, so `validated` mirrors `provided` here).
+        presentation_label_approval_record={
+            "provided": approval_provided,
+            "validated": approval_provided,
+            "target_sha256": target_sha256,
+            "catalog_sha256": catalog_sha256,
+            "approved_label_ids": [
+                label.label_id for label in approved_label_catalog
+            ],
+        },
     )
 
     store = EvidenceStore(out_dir, out_dir, base_html="<html><body></body></html>")

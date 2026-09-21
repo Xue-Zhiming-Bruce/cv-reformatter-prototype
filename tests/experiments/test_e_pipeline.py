@@ -2418,6 +2418,18 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
     if any(l["best_render_version"] is None for l in lanes.values()):
         report = (package / "REPORT.md").read_text(encoding="utf-8")
         assert "no best-valid render exists" in report
+    # the frozen run_config proves BEFORE the first live call what approval
+    # the lanes ran under (no approval was passed here; the measured target
+    # and catalog identity are still frozen so a crash mid-run is auditable)
+    run_config = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
+    assert run_config["presentation_label_approval"]["provided"] is False
+    assert run_config["presentation_label_approval"]["validated"] is False
+    assert run_config["presentation_label_approval"]["approved_label_ids"] == []
+    assert run_config["presentation_label_approval"]["target_sha256"] == record["target_sha256"]
+    assert (
+        run_config["presentation_label_approval"]["catalog_sha256"]
+        == record["summary"]["presentation_label_approval"]["catalog_sha256"]
+    )
     # The shell-issued presentation-label catalog is part of the run dir AND
     # the owner package; the report table lists exactly the catalog.
     listing = json.loads((package / "presentation_labels.json").read_text(encoding="utf-8"))
@@ -3298,6 +3310,63 @@ def test_catalog_content_change_invalidates_old_approval() -> None:
     assert e.presentation_label_catalog_sha256(changed_evidence) != approval.catalog_sha256
     with pytest.raises(ValueError, match="catalog_sha256 does not match"):
         e._apply_presentation_label_approval(changed_evidence, approval, target_sha256="a" * 64)
+
+
+def test_frozen_e5_config_records_the_presentation_label_approval(tmp_path: Path) -> None:
+    """The validated approval identity is frozen into run_config.json BEFORE
+    the first live call — a mid-run crash still proves what the lanes saw.
+    No approval -> the same shape freezes provided=False, approved=[]."""
+    from tests.experiments.e_pipeline import _freeze_e5_config
+
+    target_frozen = e.FrozenCase(
+        case_id="x",
+        target_sha256="a" * 64,
+        adobe_json_sha256="b" * 64,
+        page_count=1,
+        role="frozen_blind",
+        label_status="pending_human_annotation",
+    )
+    kwargs = dict(
+        out_dir=tmp_path,
+        target_id="target-resume_I-v1",
+        target_frozen=target_frozen,
+        lanes=("a", "b"),
+        max_repair_rounds=1,
+        live=False,
+        prompts={"builder": "x"},
+        rubric_reference={},
+        candidate_sha256="c" * 64,
+        shared_draft_ref={},
+        pricing=None,
+    )
+    config = _freeze_e5_config(**kwargs)
+    # no approval record -> the same shape freezes provided=False, empty ids
+    assert config["presentation_label_approval"]["provided"] is False
+    assert config["presentation_label_approval"]["validated"] is False
+    assert config["presentation_label_approval"]["approved_label_ids"] == []
+    config = _freeze_e5_config(
+        **kwargs,
+        presentation_label_approval_record={
+            "provided": True,
+            "validated": True,
+            "target_sha256": "a" * 64,
+            "catalog_sha256": "d" * 64,
+            "approved_label_ids": ["label.section.p1.top221.5"],
+        },
+    )
+    assert config["presentation_label_approval"] == {
+        "provided": True,
+        "validated": True,
+        "target_sha256": "a" * 64,
+        "catalog_sha256": "d" * 64,
+        "approved_label_ids": ["label.section.p1.top221.5"],
+    }
+    # the SAME record is on disk in the frozen config file
+    frozen = json.loads((tmp_path / "run_config.json").read_text(encoding="utf-8"))
+    assert frozen["presentation_label_approval"]["approved_label_ids"] == [
+        "label.section.p1.top221.5"
+    ]
+    assert frozen["frozen_before_first_live_call"] is True
 
 
 def test_catalog_hash_is_deterministic_and_excludes_status() -> None:
