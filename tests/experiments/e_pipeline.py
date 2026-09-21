@@ -6471,13 +6471,17 @@ or shareable artifact.
 # ===========================================================================
 
 E5_SCHEMA_VERSION = "pipeline-e-e5-state/1"
-E5_LANE_MAX_MODEL_REQUESTS = 24
-E5_LANE_MAX_TOOL_CALLS = 120
-E5_MAX_REPAIR_ROUNDS = 4
+# 2026-09-21 owner direction: the model budget must not again be the primary
+# reason an experiment ends early. These are RUNAWAY SAFETY CEILINGS, not
+# targets to consume; per-agent-run request limits, timeouts, connection
+# retry bounds, and tool permission boundaries stay unchanged.
+E5_LANE_MAX_MODEL_REQUESTS = 400
+E5_LANE_MAX_TOOL_CALLS = 2000
+E5_MAX_REPAIR_ROUNDS = 8
 # Phase 0: a meaningful part of every lane's budget is RESERVED for Builder
 # calls and rerenders; diagnosis must not consume the run before the Builder
 # can act (attribution is skipped while the reserve is not covered).
-E5_BUILDER_RESERVE_REQUESTS = 6
+E5_BUILDER_RESERVE_REQUESTS = 40
 E5_REVIEWER_MAX_REQUESTS = 4
 E5_BUILDER_MAX_REQUESTS = 4
 E5_ATTRIBUTION_MAX_REQUESTS = 8
