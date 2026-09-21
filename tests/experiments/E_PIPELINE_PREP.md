@@ -890,7 +890,7 @@ no live call, no product contract/ADR change.
 1. **Lane B candidate HTML injection (P0, fixed + tested)**: every scalar
    CandidateDocument text is HTML-escaped at fill time (`_esc`); `<li>`/`<br>`
    and container markup are shell-generated only; values are substituted in
-   ONE pass. (The 2026-09-22 round removed the post-fill `_TOKEN_RE.sub("")`
+   ONE pass. (The 2026-09-21 round removed the post-fill `_TOKEN_RE.sub("")`
    cleanup, which had silently DELETED candidate text containing `{{...}}`;
    the fill now substitutes values verbatim and fails closed on ANY residual
    `{{...}}`, with the CandidateDocument never rewritten.) A malicious
@@ -901,7 +901,7 @@ no live call, no product contract/ADR change.
    version (`active_index` + `pdf_by_version`); rejected candidates stay in
    the immutable history un-promoted; the next round's reviewer, measurement,
    and builder read the OLD active PDF — never `versions[-1]`. The
-   2026-09-22 round made ALL render-bound mutable state version-bound:
+   2026-09-21 round made ALL render-bound mutable state version-bound:
    RenderPlan (Lane A) and delivery gates are stored per version id
    (`plan_by_version` / `gates_by_version`) and every reader — reviewer,
    measurement binding, Builder `current_gates` — resolves them through the
@@ -929,7 +929,7 @@ no live call, no product contract/ADR change.
    render exists"); BEST is used only for a real best-valid render; a
    defect-level promoted active version is shown as
    `ACTIVE DEFECT-LEVEL VERSION` (files `lane_*_active_defect_level.*`),
-   never BEST (2026-09-22 round); the comparison page count comes from the
+   never BEST (2026-09-21 round); the comparison page count comes from the
    selected artifact; `target_specific_code` is recorded as null /
    `not_evaluated` (it was never measured — the hardcoded 0 claimed a
    measurement that never ran).
@@ -984,7 +984,7 @@ byte-identical: `D_PIPELINE_PROPOSAL.md` (`eabf6a11…`), `unused.docx`
 
 ---
 
-# E5 second correctness round (2026-09-22, owner-authorized work order: best
+# E5 second correctness round (2026-09-21, owner-authorized work order: best
 # vs defect-level, version-bound rollback, fail-closed token fill, source
 # identity, ownership closure, honest metadata claims)
 
@@ -1041,7 +1041,7 @@ Protected files re-verified byte-identical after the round.
 
 ---
 
-# E5 third correctness round (2026-09-22, owner-authorized work order: ledger
+# E5 third correctness round (2026-09-21, owner-authorized work order: ledger
 # single source, fail-closed recheck, active-unpromoted artifact, metadata
 # deletion, source-identity wording)
 
@@ -1101,6 +1101,8 @@ Offline verification: `tests/experiments/test_e_pipeline.py` 104 passed;
 `tests/experiments` lane 447 passed / 2 skipped; broad offline lane 918
 passed / 5 failed — the SAME 5 pre-existing `tests/unit/test_mock_api.py`
 failures documented since E3. Pytest outputs:
-`tests/test_results/pytest/20260921T07*Z_e5_third_correctness_*.txt`.
+tests/test_results/pytest/20260921T080156Z_e5_third_correctness_focused.txt
+and tests/test_results/pytest/20260921T080632Z_e5_third_correctness_offline_experiments.txt
+and tests/test_results/pytest/20260921T081215Z_e5_third_correctness_broad_offline.txt.
 Protected files re-verified byte-identical: `D_PIPELINE_PROPOSAL.md`
 (`eabf6a11…`), `unused.docx` (`584cb925…`).

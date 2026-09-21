@@ -2605,3 +2605,34 @@ def test_owner_package_shows_active_unpromoted_never_rolled_back(tmp_path: Path)
     comparison = json.loads((out_dir / "comparison_report.json").read_text())
     assert comparison["lanes"][0]["render_label"] == "ACTIVE UNPROMOTED VERSION"
     assert comparison["lanes"][0]["selected_version"] == "v1"
+
+
+def test_authored_slot_carries_no_token_and_no_free_text() -> None:
+    """AuthoredSlot is declared by category/repeating/required ONLY: the old
+    `token` field duplicated the category and could carry an arbitrary
+    target-person string; it now fails closed via extra="forbid". The
+    reusable record keeps NO free-text metadata beyond HTML/CSS, and
+    `evidence_refs` remains typed-ID-only. (Inherent steganographic risk of
+    authored HTML/CSS stays documented as NOT eliminated.)"""
+    # category-only declaration constructs
+    slot = at.AuthoredSlot(category="summary", repeating=True)
+    assert slot.required is False
+    # the old token field (e.g. a person string) is rejected, not ignored
+    with pytest.raises(ValueError):
+        at.AuthoredSlot(category="summary", token="john_smith")  # type: ignore[call-arg]
+    # the reusable record's ONLY fields: identifier, render surfaces, slot
+    # declarations, and the typed evidence_refs metadata
+    assert set(at.AuthoredTemplateCandidate.model_fields) == {
+        "template_id", "html", "css", "slots", "evidence_refs",
+    }
+    assert set(at.AuthoredSlot.model_fields) == {"category", "repeating", "required"}
+    # scripted template still declares slots by category and validates
+    base = _base_authored_template()
+    assert not hasattr(base.slots[0], "token")
+    report = at.validate_authored_template(base, target_pdf=RESUME_I)
+    assert report["passed"] is True
+    assert report["declared_slots"] == sorted(slot.category for slot in base.slots)
+    from tests.experiments.c2_candidates import candidate_resume_E as _candidate_resume_E
+
+    fill = at.fill_authored_template(base, _candidate_resume_E())
+    assert not fill.missing_leaves

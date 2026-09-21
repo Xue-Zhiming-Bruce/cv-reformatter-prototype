@@ -48,7 +48,9 @@ Hard safety boundary enforced by `validate_authored_template`:
   presentation choices that no string gate enumerates); the shell does NOT
   claim the authored channel is theoretically closed — only that the known
   direct text channels are;
-- every slot token in the HTML must be a declared slot/collection.
+- every slot token in the HTML must resolve to a DECLARED slot category
+  (header tokens to a declared header category; each-regions to a declared
+  repeating category).
 
 Candidate-value encoding (deterministic fill): every scalar CandidateDocument
 text is HTML-escaped at fill time — candidate values are text nodes only,
@@ -159,11 +161,11 @@ _TEMPLATE_GENERIC_VOCABULARY = {
 
 
 class AuthoredSlot(EvidenceModel):
-    """One declared typed slot: what value category may be bound here. No
-    free-text description field: token/category/repeating/required carry the
-    entire declaration."""
+    """One declared typed slot: what value category may be bound here. The
+    declaration is ONLY category/repeating/required — no token, no free-text
+    description: the HTML marker closure derives everything else from the
+    category, and any extra string would be an unused person-fact channel."""
 
-    token: str
     category: Literal[
         "candidate_name", "candidate_contact", "summary", "experience",
         "education", "skills", "languages", "certifications", "additional",
@@ -299,7 +301,7 @@ def validate_authored_template(
             violations.append(f"unknown collection region: {name!r}")
         elif name not in declared_categories:
             violations.append(f"each-region {name!r} has no declared slot")
-    declared = {slot.token: slot for slot in candidate.slots}
+    declared = {slot.category for slot in candidate.slots}
 
     # Evidence refs must cite SHELL-ISSUED evidence ids (membership, not
     # string shape). Without a known-id set, any ref fails closed.
@@ -723,14 +725,14 @@ SCRIPTED_AUTHORED_TEMPLATE = AuthoredTemplateCandidate(
         ".rsv-bullets { list-style: none; }\n"
     ),
     slots=[
-        AuthoredSlot(token="candidate:name", category="candidate_name", required=True),
-        AuthoredSlot(token="candidate:contact", category="candidate_contact", required=True),
-        AuthoredSlot(token="each:summary", category="summary", repeating=True),
-        AuthoredSlot(token="each:experience", category="experience", repeating=True),
-        AuthoredSlot(token="each:education", category="education", repeating=True),
-        AuthoredSlot(token="each:skills", category="skills", repeating=True),
-        AuthoredSlot(token="each:languages", category="languages", repeating=True),
-        AuthoredSlot(token="each:certifications", category="certifications", repeating=True),
-        AuthoredSlot(token="each:additional", category="additional", repeating=True),
+        AuthoredSlot(category="candidate_name", required=True),
+        AuthoredSlot(category="candidate_contact", required=True),
+        AuthoredSlot(category="summary", repeating=True),
+        AuthoredSlot(category="experience", repeating=True),
+        AuthoredSlot(category="education", repeating=True),
+        AuthoredSlot(category="skills", repeating=True),
+        AuthoredSlot(category="languages", repeating=True),
+        AuthoredSlot(category="certifications", repeating=True),
+        AuthoredSlot(category="additional", repeating=True),
     ],
 )
