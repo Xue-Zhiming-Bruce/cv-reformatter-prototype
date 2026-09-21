@@ -798,6 +798,14 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         if leaf.parent_leaf_id:
             leaves_by_parent.setdefault(leaf.parent_leaf_id, []).append(leaf)
 
+    # Render-disposition unroutable records, bound one-to-one to unused
+    # candidate header leaves (see the header loop below).
+    render_records = [
+        record for record in candidate.unroutable if record.disposition == "render"
+    ]
+    consumed_records: set[int] = set()
+    bound_routed: list[tuple[CandidateLeaf, UnroutableContent]] = []
+
     by_id = {node.node_id: node for node in state.nodes}
     rules_dict = {rule.rule_id: rule for rule in state.rules}
     header_rows = [node for node in state.nodes if node.kind == "header_row"]
@@ -858,43 +866,68 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             )
     for leaf in candidate.leaves:
         if leaf.kind == "header_field" and leaf.leaf_id not in used_header_leaves:
-            # E3 (2026-09-21): a leaf whose slot carries an explicit
-            # render-disposition unroutable record IS routed (through the
-            # candidate-only header-overflow node, owned and verified below)
-            # — only a leaf with NO recorded disposition fails closed. The
-            # two-column family legitimately leaves contact-value leaves
-            # unhomed (the measured contact rows sit inside the section
-            # content), so the Builder records the disposition and the run
-            # reports the presentation gap; nothing is silently dropped.
-            routed_slots = {
-                record.slot
-                for record in candidate.unroutable
-                if record.disposition == "render"
-            }
-            if leaf.slot in routed_slots:
-                continue
-            failures.append(
-                f"candidate leaf {leaf.leaf_id!r}: header slot {leaf.slot!r} has no home in "
-                "any target header row (author it as unroutable instead of guessing)"
+            # E3 (2026-09-21), corrected 2026-09-22: a leaf whose slot carries
+            # an explicit render-disposition unroutable record IS routed
+            # (through the candidate-only header-overflow node) — but the
+            # disposition must bind ONE-TO-ONE to THIS leaf (slot AND verbatim
+            # text, each record consumed once). A slot-set match would let one
+            # overflow record cover several same-slot leaves. The two-column
+            # family legitimately leaves contact-value leaves unhomed (the
+            # measured contact rows sit inside the section content), so the
+            # Builder records the disposition per leaf and the run reports
+            # the presentation gap; nothing is silently dropped.
+            match_index = next(
+                (
+                    index for index, record in enumerate(render_records)
+                    if index not in consumed_records
+                    and record.slot == leaf.slot
+                    and (record.text or "") == (leaf.text or "")
+                ),
+                None,
             )
+            if match_index is None:
+                failures.append(
+                    f"candidate leaf {leaf.leaf_id!r}: header slot {leaf.slot!r} has no home in "
+                    "any target header row and no one-to-one render disposition "
+                    "(author it as unroutable instead of guessing)"
+                )
+                continue
+            consumed_records.add(match_index)
+            bound_routed.append((leaf, render_records[match_index]))
 
     # -- explicit candidate-content dispositions (owner corrective pass) -------
     # Render-disposition unroutables route through the explicit candidate-only
     # header-overflow node and are owned/verified like every other leaf;
     # omit-disposition records are explicitly omitted (never rendered, never
     # described as covered). A record without a truthful disposition fails.
+    # A record BOUND to a candidate leaf is owned under the ORIGINAL leaf id
+    # (one ledger entry per real leaf); a record with no matching leaf (an
+    # anchored extra content line, not a leaf) keeps the documented
+    # `unroutable.<slot>` synthetic identity. Two same-slot records each
+    # bind to their own leaf; two UNBOUND same-slot records collide on the
+    # synthetic id and fail via own_leaf — never silently merged.
     overflow_fields: list[OverflowField] = []
     explicit_omissions: list[OmittedContent] = []
+    for leaf, record in bound_routed:
+        overflow_fields.append(
+            OverflowField(slot=record.slot or "", leaf_id=leaf.leaf_id, text=record.text)
+        )
+        notes.append(
+            f"unroutable {record.slot!r} (leaf {leaf.leaf_id!r}) routes through the "
+            "candidate-only header-overflow node (explicit plan node, not hidden logic)"
+        )
+    for index, record in enumerate(render_records):
+        if index in consumed_records:
+            continue
+        overflow_fields.append(
+            OverflowField(slot=record.slot or "", leaf_id=f"unroutable.{record.slot}", text=record.text)
+        )
+        notes.append(
+            f"unroutable {record.slot!r} routes through the candidate-only "
+            "header-overflow node (explicit plan node, not hidden logic)"
+        )
     for record in candidate.unroutable:
-        if record.disposition == "render":
-            overflow_fields.append(
-                OverflowField(slot=record.slot or "", leaf_id=f"unroutable.{record.slot}", text=record.text)
-            )
-            notes.append(
-                f"unroutable {record.slot!r} routes through the candidate-only "
-                "header-overflow node (explicit plan node, not hidden logic)"
-            )
-        else:  # omit
+        if record.disposition != "render":
             explicit_omissions.append(OmittedContent(text=record.text, reason=record.reason))
             notes.append(
                 f"unroutable {record.text[:40]!r}: EXPLICITLY OMITTED under the approved "
@@ -1577,23 +1610,18 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             f"({candidate_section.source}) appended per owner overflow policy"
         )
 
-    # -- ownership closure ------------------------------------------------------
-    # Routed header leaves render under their `unroutable.{slot}` identity in
-    # the header-overflow node (see above); they are owned, just not under
-    # their original leaf id, so they must not be counted as duplicated.
-    routed_header_leaves = sum(
-        1
-        for leaf in candidate.leaves
-        if leaf.kind == "header_field"
-        and leaf.leaf_id not in used_header_leaves
-        and leaf.slot in {
-            record.slot
-            for record in candidate.unroutable
-            if record.disposition == "render"
-        }
-    )
+    # -- ownership closure (per leaf) -------------------------------------------
+    # Every candidate leaf is verified INDIVIDUALLY: it must carry an original
+    # leaf-ID ledger destination, or a one-to-one routed overflow disposition
+    # (owned above under the ORIGINAL leaf id), or an explicit approved
+    # omission — otherwise it is unhomed and the plan fails. own_leaf() is
+    # the ONLY duplicate-ownership detector (called at every own() site);
+    # there is NO aggregate compensation arithmetic that a wrong count could
+    # push negative and silently mask an error.
     for leaf in candidate.leaves:
         if leaf.kind == "header_field" or leaf.leaf_id in ledger:
+            # header leaves: owned above, or already failed closed in the
+            # one-to-one disposition check (no home, no record).
             continue
         unhomed.append(
             {
@@ -1605,11 +1633,6 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         )
     if unhomed:
         failures.append(f"{len(unhomed)} candidate leaf(s) have no rendered destination")
-    duplicated = (
-        len(candidate.leaves) - len(ledger) - len(unhomed) - routed_header_leaves
-    )
-    if duplicated > 0:
-        failures.append(f"{duplicated} candidate leaf(s) consumed more than once")
 
     if failures:
         status = "failed"

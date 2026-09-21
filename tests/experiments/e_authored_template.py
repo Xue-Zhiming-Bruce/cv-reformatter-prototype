@@ -31,18 +31,23 @@ Hard safety boundary enforced by `validate_authored_template`:
   `url(...)` CSS functions, no `@import`, no data: URLs, no src/href
   attributes at all (the template loads no external assets of any kind);
 - no target-person literals and no candidate facts hardcoded into the
-  HTML/CSS (candidate values enter ONLY through slot filling); free-text
-  rationale/evidence metadata is checked by the same literal gates, so it
-  can never become a candidate- or target-person content channel into the
-  reusable template;
+  HTML/CSS (candidate values enter ONLY through slot filling);
+- the reusable record carries NO free-text rationale field, and metadata
+  is restricted: `evidence_refs` accept only typed `ev.<kind>.<n>` evidence
+  IDs, `expected_measurements` only restricted measurement identifiers,
+  and slot descriptions a fixed bounded charset. The remaining literal
+  person-fact gate over template text is a HEURISTIC (word-list based): it
+  cannot reliably catch numbers, short words, or non-English facts, so the
+  metadata channel is narrowed by construction, not provably closed;
 - every slot token in the HTML must be a declared slot/collection.
 
 Candidate-value encoding (deterministic fill): every scalar CandidateDocument
 text is HTML-escaped at fill time — candidate values are text nodes only,
 never markup; `<li>`/`<br>`/container markup is generated exclusively by this
-shell; values are substituted in ONE pass, so a candidate value can never be
-re-scanned as slot syntax (a value carrying `{{...}}` fails closed at the
-residual-token check).
+shell; values are substituted in ONE pass and are NEVER re-scanned, stripped
+or rewritten afterwards — a candidate value carrying `{{...}}` therefore
+survives the fill verbatim and fails closed at the residual-token check
+(the original CandidateDocument is never modified).
 """
 
 from __future__ import annotations
@@ -92,6 +97,21 @@ _REMOTE_URL_RE = re.compile(r"(?:https?:)?//[^\s\"'><)]+", re.IGNORECASE)
 _ATTR_URL_RE = re.compile(r"\b(?:src|href)\s*=", re.IGNORECASE)
 _EVAL_RE = re.compile(r"\b(?:eval|fetch|xmlhttprequest)\b", re.IGNORECASE)
 
+# Typed evidence IDs are the shell pod's own vocabulary (`EvidenceStore._next_id`
+# -> `ev.<kind>.<seq>`); anything else (free text, prose, person facts) is
+# rejected at construction.
+_EVIDENCE_ID_RE = re.compile(
+    r"^ev\.(page_overview|region_crop|adobe_element|local_measurement|coverage_audit)\.[0-9]+$"
+)
+# Measurement identifiers are restricted to lowercase method ids (the
+# MeasurementRequest metric vocabulary), optionally with a bounded variant
+# suffix — never arbitrary prose or person facts.
+_MEASUREMENT_ID_RE = re.compile(r"^[a-z][a-z0-9_]*(/[0-9]+)?(:[a-z0-9_\-]+)*$")
+# Slot descriptions are FIXED bounded descriptions: a small charset, no
+# braces, no non-ASCII — they cannot carry free text, numbers-heavy person
+# facts, or non-English content.
+_SLOT_DESCRIPTION_RE = re.compile(r"^[A-Za-z0-9 .,'()/:_-]{0,200}$")
+
 # Generic resume presentation vocabulary that may legitimately appear in a
 # reusable template (never a target-person fact): section labels, months,
 # contact labels, boilerplate. Every OTHER word that appears verbatim in the
@@ -140,7 +160,7 @@ class AuthoredSlot(EvidenceModel):
     ]
     repeating: bool = False
     required: bool = False
-    description: str = ""
+    description: str = Field(default="", pattern=_SLOT_DESCRIPTION_RE.pattern)
 
 
 class AuthoredTemplateCandidate(EvidenceModel):
@@ -159,8 +179,32 @@ class AuthoredTemplateCandidate(EvidenceModel):
     optional_regions: list[str] = Field(default_factory=list)
     pagination_expectation: str = ""
     evidence_refs: list[str] = Field(default_factory=list)
-    rationale: str = ""
     expected_measurements: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def metadata_is_restricted(self) -> "AuthoredTemplateCandidate":
+        """Fail closed on non-typed metadata: `evidence_refs` accept ONLY
+        typed `ev.<kind>.<n>` evidence IDs; `expected_measurements` ONLY
+        restricted measurement identifiers. There is deliberately NO
+        free-text rationale field on the reusable record — prose belongs in
+        the run trace, never in the reusable template artifact."""
+        bad_refs = [ref for ref in self.evidence_refs if not _EVIDENCE_ID_RE.match(ref)]
+        if bad_refs:
+            raise ValueError(
+                "evidence_refs must be typed ev.<kind>.<n> evidence IDs "
+                f"(page_overview|region_crop|adobe_element|local_measurement|"
+                f"coverage_audit): {bad_refs[:3]}"
+            )
+        bad_measurements = [
+            item for item in self.expected_measurements
+            if not _MEASUREMENT_ID_RE.match(item)
+        ]
+        if bad_measurements:
+            raise ValueError(
+                "expected_measurements must be restricted measurement "
+                f"identifiers, not free text: {bad_measurements[:3]}"
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -250,14 +294,15 @@ def validate_authored_template(
     declared = {slot.token: slot for slot in candidate.slots}
 
     # Target-person literal check: no target word (outside the generic
-    # vocabulary) may appear as fixed template text. The free-text rationale/
-    # evidence metadata fields are checked by the SAME gate: they are part of
-    # the reusable candidate record and can never become a person-content
-    # channel. ponytail: a word-list allowlist, upgraded to a structured
-    # presentation-vs-content classifier if this misfires on live templates.
+    # vocabulary) may appear as fixed template text or in the restricted
+    # metadata fields. ponytail: a word-list HEURISTIC — it cannot reliably
+    # catch numbers, short words, or non-English person facts; the channel
+    # is primarily narrowed by construction (typed IDs, bounded descriptions,
+    # no free-text rationale field), and this gate is a second layer, not a
+    # proof that the channel is closed.
     target_words = _target_person_words(target_pdf)
     metadata_text = " ".join(
-        [candidate.rationale, *candidate.evidence_refs, *candidate.expected_measurements]
+        [*candidate.evidence_refs, *candidate.expected_measurements]
         + [slot.description for slot in candidate.slots]
     )
     static_words = {
@@ -274,8 +319,9 @@ def validate_authored_template(
         )
 
     # Candidate facts may not be hardcoded: no candidate leaf text may appear
-    # in the pre-fill template (the same check covers the free-text metadata
-    # fields — rationale/evidence can never smuggle candidate values).
+    # in the pre-fill template (the same check covers the restricted metadata
+    # fields — a typed ID cannot smuggle candidate values, but the gate stays
+    # as a second layer).
     if render_candidate is not None:
         payload_norm = _norm_text(
             candidate.html + " " + candidate.css + " " + metadata_text
@@ -474,21 +520,28 @@ def fill_authored_template(
         )
         rendered = []
         for item in items:
-            # ONE substitution pass: values are never re-scanned as slot
-            # syntax (a value carrying `{{...}}` cannot inject tokens and
-            # fails closed at the residual-token check below).
+            # ONE substitution pass: item tokens get their value (or "" for
+            # an optional no-value field). Values are never re-scanned,
+            # stripped or rewritten afterwards — a candidate value carrying
+            # `{{...}}` survives the fill verbatim and fails closed at the
+            # residual-token check below.
             filled = token_pattern.sub(
                 lambda m: str(item.get(m.group(0)[2:-2], "")), body
             )
-            # strip any residual unbound token in this region (optional field)
-            filled = _TOKEN_RE.sub("", filled)
             rendered.append(filled)
         return "".join(rendered)
 
     html = _EACH_RE.sub(_fill_region, html)
-    residual = _TOKEN_RE.findall(html)
+    # Fail closed on ANY residual `{{...}}`: either an unfilled template
+    # token or a candidate's own literal text containing brace syntax. The
+    # broad pattern (not just lowercase slot tokens) catches values like
+    # `{{Foo}}`/`{{ x }}` that the slot grammar would not match.
+    residual = re.findall(r"\{\{.*?\}\}", html, flags=re.DOTALL)
     if residual:
-        raise ValueError(f"unfilled slot tokens remain after fill: {residual[:6]}")
+        raise ValueError(
+            f"unfilled slot tokens remain after fill (fail closed; candidate "
+            f"values are never stripped or rewritten): {residual[:6]}"
+        )
 
     # Accounting: every candidate leaf is consumed by exactly one region
     # instance BY CONSTRUCTION (recorded per leaf); its verbatim value must
@@ -661,5 +714,4 @@ SCRIPTED_AUTHORED_TEMPLATE = AuthoredTemplateCandidate(
                        "certifications", "additional"],
     optional_regions=["certifications", "languages", "additional"],
     pagination_expectation="single-column flow; natural page breaks",
-    rationale="offline rehearsal template (deterministic verification path)",
 )

@@ -6526,8 +6526,12 @@ E5_LANE_B_BUILDER_INSTRUCTIONS = (
     "Representation: a constrained AUTHORED HTML/CSS template with typed\n"
     "candidate slots. You output ONE typed AuthoredTemplateCandidate:\n"
     "HTML (slot tokens only, no values), CSS, declared typed slots, declared\n"
-    "repeating/optional regions, pagination expectation, evidence refs, and\n"
-    "rationale. Slot vocabulary (exactly these tokens):\n"
+    "repeating/optional regions, and pagination expectation. There is NO\n"
+    "free-text rationale field; evidence_refs accept ONLY typed\n"
+    "ev.<kind>.<n> evidence IDs (page_overview|region_crop|adobe_element|\n"
+    "local_measurement|coverage_audit); expected_measurements accept ONLY\n"
+    "restricted measurement identifiers (no prose, no person facts). Slot\n"
+    "vocabulary (exactly these tokens):\n"
     "{{candidate:name}}, {{candidate:contact}}, and repeating regions\n"
     "{{each:summary}}/{{each:experience}}/{{each:education}}/{{each:skills}}/"
     "{{each:languages}}/{{each:certifications}}/{{each:additional}} closed\n"
@@ -6668,6 +6672,10 @@ class E5LaneRecord(EvidenceModel):
     representation: str
     render_versions: list[RenderVersion] = Field(default_factory=list)
     best_render_version: str | None = None
+    # Local improvement state: a defect-level promoted version (promoted with
+    # a known remaining red gate). Never labeled BEST; never the
+    # hard-gate-valid best.
+    best_defect_level_version: str | None = None
     active_render_version: str | None = None
     findings: list[DefectFinding] = Field(default_factory=list)
     measurement_results: list[MeasurementResult] = Field(default_factory=list)
@@ -6712,20 +6720,30 @@ def _best_valid_version_id(
     """Explicit best-valid selection rule (never 'first promoted' and never
     'first hard-gate-valid', and never `versions[-1]`):
 
-    1. the LATEST promoted version — promotion happens only in the shell
-       after the identical re-measurement improved, all candidate-safety
-       gates stayed green, and no accepted region regressed, so the latest
-       promoted version is the best verified state;
-    2. otherwise the LATEST hard-gate-valid version that was never explicitly
-       ROLLED BACK (a rolled-back candidate was rejected as the lane's
-       active state and must not masquerade as best);
-    3. otherwise None (no best-valid render exists)."""
+    1. the LATEST HARD-GATE-VALID version that was never explicitly ROLLED
+       BACK. A defect-level promotion (promoted with a known remaining red
+       gate, e.g. content_shapes_match_evidence) is NOT hard-gate-valid and
+       must never masquerade as the best-valid render — it is recorded as
+       the active/defect-level state instead (see
+       `_best_defect_level_version_id`);
+    2. otherwise None (no best-valid render exists)."""
     excluded = excluded or set()
     for version in reversed(versions):
-        if version.promoted:
-            return version.version_id
-    for version in reversed(versions):
         if version.hard_gates_passed and version.version_id not in excluded:
+            return version.version_id
+    return None
+
+
+def _best_defect_level_version_id(
+    versions: list[RenderVersion], excluded: set[str] | None = None
+) -> str | None:
+    """The latest defect-level promoted version (promoted=True with a known
+    remaining red hard gate) that was never rolled back. This is LOCAL
+    improvement state — the active render may rest on it — but it is never
+    the hard-gate-valid best and is never labeled BEST."""
+    excluded = excluded or set()
+    for version in reversed(versions):
+        if version.promoted and not version.hard_gates_passed and version.version_id not in excluded:
             return version.version_id
     return None
 
@@ -7260,31 +7278,100 @@ def _live_attribution_batch(
 
 
 E5_SOURCE_FILES = (
+    # The E5 entry module itself (prompts/config/freeze logic included).
     "tests/experiments/e_pipeline.py",
+    # Lane B boundary + scripted template.
     "tests/experiments/e_authored_template.py",
-    "tests/experiments/c2_plan.py",
-    "tests/experiments/c2_html.py",
-    # prompts/config source: every E5 prompt constant + freeze logic lives in
-    # e_pipeline.py; the pinned Chrome/export environment in c_pipeline.py.
+    # Shell infrastructure imported by e_pipeline: RunBudget/RunTrace/
+    # EvidenceStore/RenderVersion/MeasureController/live-call plumbing.
+    "tests/experiments/d_pipeline.py",
+    # Pinned Chrome export environment, scaffolds, line/marks measurement.
     "tests/experiments/c_pipeline.py",
+    # Render-plan compilation incl. the header-overflow ownership closure.
+    "tests/experiments/c2_plan.py",
+    # The fixed HTML renderer.
+    "tests/experiments/c2_html.py",
+    # Delivery gates (content/privacy/structure/accounting/determinism).
+    "tests/experiments/c2_renderer.py",
+    # CandidateDocument, fixtures, UnroutableContent.
+    "tests/experiments/c2_candidates.py",
+    # Layout-state (de)serialization + validation.
+    "tests/experiments/c2_state.py",
+    # state_from_scaffolds + flow probes used by the two-column compile.
+    "tests/experiments/c2_pipeline.py",
+    # TOLERANCE_PT imported at module level by e_pipeline.
+    "tests/experiments/c2_docx_build.py",
+    # Format summary + page rendering/font injection helpers.
+    "tests/experiments/a_pipeline.py",
+    # Production evidence model directly consumed by the E5 compile basis.
+    "app/template_analysis/commercial/models.py",
+    # Production PDF text reader used by the content/privacy/presence gates.
+    "app/ingestion/pdf_reader.py",
 )
 
 
 def _experiment_source_hashes() -> dict[str, str]:
-    """SHA-256 of every experiment source file whose behavior this run
-    depends on. Recorded in run_config.json BEFORE the first live call so a
-    run is bindable to its exact source, not just a starting commit."""
+    """SHA-256 of the critical DIRECT runtime sources this E5 run executes
+    (the entry module's direct local imports plus the shared gate/binding
+    modules). Recorded in run_config.json BEFORE the first live call so a
+    run is bindable to its exact source. This is a selected direct-runtime
+    set, NOT a claim about every transitive source file."""
     return {name: _sha256_file(ROOT / name) for name in E5_SOURCE_FILES}
 
 
+def _tracked_diff_sha256(root: Path, names: tuple[str, ...]) -> str | None:
+    """SHA-256 of the tracked working-tree diff of the registered sources
+    relative to HEAD (None when git is unavailable). Scoped to exactly the
+    registered paths: changes to unrelated files (e.g. the owner's proposal
+    notes) never enter the identity."""
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "HEAD", "--", *names],
+            capture_output=True, text=True, check=True, cwd=root,
+        ).stdout
+    except Exception:
+        return None
+    return hashlib.sha256(diff.encode("utf-8")).hexdigest()
+
+
+def _untracked_source_hashes() -> dict[str, str]:
+    """Registered sources NOT tracked at HEAD (if any): recorded by their
+    SHA-256 so untracked experiment modules are still identity-bound."""
+    untracked: dict[str, str] = {}
+    for name in E5_SOURCE_FILES:
+        try:
+            tracked = subprocess.run(
+                ["git", "ls-files", "--error-unmatch", name],
+                capture_output=True, text=True, cwd=ROOT,
+            ).returncode == 0
+        except Exception:
+            tracked = False
+        if not tracked:
+            untracked[name] = _sha256_file(ROOT / name)
+    return untracked
+
+
+def _source_identity() -> dict[str, Any]:
+    """The full source identity recorded in the frozen config: file hashes,
+    the tracked-diff hash relative to HEAD, and hashes of any registered
+    untracked sources."""
+    return {
+        "files": _experiment_source_hashes(),
+        "tracked_diff_sha256": _tracked_diff_sha256(ROOT, E5_SOURCE_FILES),
+        "untracked_files": _untracked_source_hashes(),
+    }
+
+
 def _source_hashes_changed(config: dict[str, Any]) -> bool:
-    """True when the current source hashes differ from the frozen config's
-    (the run then records `source_changed` and must not be treated as
-    canonical)."""
+    """True when the current source identity differs from the frozen config's
+    (the run then records `source_changed` and is NOT source-identity
+    stable). A config with missing or incomplete source identity is never
+    trusted as stable."""
     frozen = config.get("source_hashes")
     if not isinstance(frozen, dict) or not isinstance(frozen.get("files"), dict):
         return True
-    return frozen["files"] != _experiment_source_hashes()
+    current = _source_identity()
+    return any(frozen.get(key) != current[key] for key in current)
 
 
 def _freeze_e5_config(
@@ -7363,12 +7450,14 @@ def _freeze_e5_config(
         "evaluation_rubric_reference": {**rubric_reference, "not_given_to_agents": True},
         "starting_commit": commit,
         "source_hashes": {
-            "files": _experiment_source_hashes(),
+            **_source_identity(),
+            "basis": "critical_direct_runtime_sources",
             "recorded_before_first_live_call": True,
             "note": (
-                "exact SHA-256 of every experiment source file this run "
-                "executes; a mid-run change marks the run `source_changed` "
-                "(never canonical)"
+                "SHA-256 + tracked-diff hash of the critical DIRECT runtime "
+                "sources this run executes (a selected direct set, not a "
+                "claim about every source file); a mid-run change marks the "
+                "run `source_changed` and NOT source_identity_stable"
             ),
         },
         "live": live,
@@ -7591,6 +7680,16 @@ def run_e5(
         # produced it; probes must use the selected one, never the default
         # state or a scripted fixture.
         representation_by_version: dict[str, Any] = {}
+        # Version-bound mutable render state (rollback correctness): the
+        # RenderPlan (Lane A) and the delivery gates belong to ONE render
+        # version each. Every reader (reviewer, measurement binding,
+        # builder) resolves them through the ACTIVE version id — a rejected
+        # candidate never overwrites the active state.
+        plan_by_version: dict[str, Any] = {}
+        gates_by_version: dict[str, dict[str, Any]] = {}
+        # The region of the last PROMOTED repair (the only state that scopes
+        # the next review round; rejected attempts never do).
+        last_promoted_region: str | None = None
         findings: list[DefectFinding] = []
         measurement_results: list[MeasurementResult] = []
         attributions: list[AttributionRecord] = []
@@ -7602,9 +7701,7 @@ def run_e5(
         ledger = DefectLedger()
         pages_reviewed: set[int] = set()
         counter = {"finding": 0, "request": 0}
-        lane_state: dict[str, Any] = {
-            "proposal": None, "template": None, "plan": None, "last_gates": {},
-        }
+        lane_state: dict[str, Any] = {"proposal": None, "template": None}
         page_size = _page_pt_size(target_pdf, 1)
 
         def escalate(strategy: str) -> None:
@@ -7622,10 +7719,16 @@ def run_e5(
             # latest attempt gets DIAGNOSTIC probes only — never promotion
             # evidence.
             best_version_id = _best_valid_version_id(versions, excluded=rolled_back_versions)
+            defect_version_id = _best_defect_level_version_id(versions, excluded=rolled_back_versions)
             active_version_id = versions[active_index].version_id if versions else None
             best_version = next((v for v in versions if v.version_id == best_version_id), None)
             diagnostic_probes = best_version_id is None
-            selected_id = best_version_id or (versions[-1].version_id if versions else None)
+            # Probes run on the lane's ACTIVE state when no best-valid (or
+            # defect-level) render exists — a rejected candidate never
+            # becomes the probe basis.
+            selected_id = best_version_id or defect_version_id or (
+                versions[active_index].version_id if versions else None
+            )
             selected_representation = representation_by_version.get(selected_id)
             probes_ok = bool(versions) and selected_id is not None
             probe_report: dict[str, Any] = {
@@ -7645,7 +7748,7 @@ def run_e5(
                         else (
                             selected_representation.template_id
                             if selected_representation is not None
-                            else None
+                            else ("initial_compiled_plan" if lane == "a" else None)
                         )
                     ),
                 }
@@ -7765,6 +7868,7 @@ def run_e5(
                 ),
                 render_versions=versions,
                 best_render_version=best_version_id,
+                best_defect_level_version=defect_version_id,
                 active_render_version=active_version_id,
                 findings=findings,
                 measurement_results=measurement_results,
@@ -7781,6 +7885,7 @@ def run_e5(
                 summary={
                     "total_findings": len(findings),
                     "best_render_version": best_version_id,
+                    "best_defect_level_version": defect_version_id,
                     "active_render_version": active_version_id,
                     "probe_mode": probe_report.get("_probe_mode"),
                     "promoted_versions": len([v for v in versions if v.promoted]),
@@ -7854,8 +7959,8 @@ def run_e5(
                 versions.append(version)
                 pdf_by_version[version.version_id] = pdf_path
                 representation_by_version[version.version_id] = proposal
-                lane_state["plan"] = plan
-                lane_state["last_gates"] = gates
+                plan_by_version[version.version_id] = plan
+                gates_by_version[version.version_id] = gates
                 store.register_version(version.version_id, pdf_path, note)
                 (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
                     json.dumps({"passed": version.hard_gates_passed, "gates": gates}, indent=2, sort_keys=True) + "\n",
@@ -7920,7 +8025,7 @@ def run_e5(
                 versions.append(version)
                 pdf_by_version[version.version_id] = pdf_path
                 representation_by_version[version.version_id] = template
-                lane_state["last_gates"] = gates
+                gates_by_version[version.version_id] = gates
                 store.register_version(version.version_id, pdf_path, note)
                 (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
                     json.dumps({"passed": version.hard_gates_passed, "gates": gates}, indent=2, sort_keys=True) + "\n",
@@ -7929,19 +8034,22 @@ def run_e5(
                 trace.add(agent="shell", phase="render", action="render_version", output=version.model_dump(mode="json"), note=note)
                 return version, pdf_path, gates
 
-        def render_leaf_texts(region_id: str | None) -> list[str]:
-            if lane == "a":
-                plan = lane_state.get("plan")
-                if plan is not None:
-                    plan_section = next(
-                        (s for s in [*plan.sections, *plan.appended_sections] if s.node_id == region_id),
-                        None,
-                    )
-                    if plan_section is not None and plan_section.entries:
-                        return [
-                            entry.title_lines[0].text
-                            for entry in plan_section.entries if entry.title_lines
-                        ]
+        def render_leaf_texts(region_id: str | None, plan: Any = None) -> list[str]:
+            # The plan is always the version-bound plan of the render being
+            # measured (the ACTIVE plan for a round measurement, the
+            # candidate's own plan for the identical re-measurement) — never
+            # a mutable lane-wide variable that a rejected render could
+            # overwrite.
+            if lane == "a" and plan is not None:
+                plan_section = next(
+                    (s for s in [*plan.sections, *plan.appended_sections] if s.node_id == region_id),
+                    None,
+                )
+                if plan_section is not None and plan_section.entries:
+                    return [
+                        entry.title_lines[0].text
+                        for entry in plan_section.entries if entry.title_lines
+                    ]
             # generic fallback: the candidate's own entry heads (same role)
             return [
                 leaf.text or "" for leaf in candidate.leaves
@@ -7949,16 +8057,25 @@ def run_e5(
             ][:4]
 
         def execute_measurement(
-            finding: DefectFinding, pdf: Path, request_id: str
+            finding: DefectFinding,
+            pdf: Path,
+            request_id: str,
+            *,
+            plan: Any = None,
+            render_version: str = "",
         ) -> tuple[MeasurementResult, MeasurementRequest]:
             span = region_spans.get(finding.region)
             span_tuple = (span[1], span[2]) if span and span[0] == finding.page else None
+            trace.add(
+                agent="measure_controller", phase="measure", action="binding",
+                input={"render_version": render_version, "finding": finding.finding_id},
+            )
             bound = _bind_role_gap_anchors(
                 finding.requested_measurement.model_copy(update={"request_id": request_id}),
                 target_pdf=target_pdf,
                 current_pdf=pdf,
                 region_span=span_tuple,
-                render_leaf_texts=render_leaf_texts(finding.region),
+                render_leaf_texts=render_leaf_texts(finding.region, plan),
             )
             if isinstance(bound, MeasurementResult):
                 trace.add(
@@ -8104,9 +8221,14 @@ def run_e5(
                 # promotion) — never the newest render in history.
                 current_version = versions[active_index]
                 current_pdf = pdf_by_version[current_version.version_id]
-                changed_regions: list[str] = [
-                    entry["region"] for entry in repair_attempts[-1:] if entry.get("region")
-                ]
+                current_plan = plan_by_version.get(current_version.version_id)
+                current_gates = gates_by_version.get(current_version.version_id, {})
+                # The next round's changed-region scope comes ONLY from the
+                # last PROMOTED repair: a rejected/rolled-back attempt is
+                # immutable history (diagnostic), never review scope.
+                changed_regions: list[str] = (
+                    [last_promoted_region] if last_promoted_region else []
+                )
                 findings_new: list[DefectFinding] = []
                 try:
                     if live:
@@ -8209,7 +8331,10 @@ def run_e5(
                 for finding in actionable:
                     counter["request"] += 1
                     request_id = f"measure-l{lane}-{counter['request']:03d}"
-                    result, bound = execute_measurement(finding, current_pdf, request_id)
+                    result, bound = execute_measurement(
+                        finding, current_pdf, request_id,
+                        plan=current_plan, render_version=current_version.version_id,
+                    )
                     measurement_results.append(result)
                     measured[finding.finding_id] = (result, bound)
                     ledger.entries[_ledger_key(finding)].last_measured_version = current_version.version_id
@@ -8279,7 +8404,7 @@ def run_e5(
                                 "round": round_no,
                                 "finding": finding.model_dump(mode="json"),
                                 "measurement": result.model_dump(mode="json"),
-                                "current_gates": lane_state["last_gates"],
+                                "current_gates": current_gates,
                                 "state_sections": [
                                     {"node_id": n.node_id, "kind": n.kind}
                                     for n in state.nodes if n.kind == "section"
@@ -8317,7 +8442,7 @@ def run_e5(
                                     result.model_dump(mode="json")
                                     for _, (result, _) in measured.items()
                                 ],
-                                "current_gates": lane_state["last_gates"],
+                                "current_gates": current_gates,
                                 "last_rejection": lane_state.get("last_rejection"),
                                 "marker_rule": (
                                     "every {{each:<collection>}} MUST have one matching {{/each}}; "
@@ -8357,11 +8482,22 @@ def run_e5(
                 lane_budget.repair_attempt_count += 1
                 fingerprints.append(fingerprint)  # records the EXECUTED action
                 candidate_index = len(versions) - 1  # the candidate's history index
-                trace.add(agent="builder", phase="repair", action="proposal", note=f"round {round_no}", persist_output=True)
+                trace.add(
+                    agent="builder", phase="repair", action="proposal",
+                    note=f"round {round_no}", persist_output=True,
+                    output={
+                        "current_version": current_version.version_id,
+                        "current_gates": current_gates,
+                    },
+                )
                 # Re-measure FIRST: the IDENTICAL request, changing only the version.
                 counter["request"] += 1
                 repeat_id = bound.request_id
-                repeat_result, _ = execute_measurement(finding, candidate_pdf, repeat_id)
+                repeat_result, _ = execute_measurement(
+                    finding, candidate_pdf, repeat_id,
+                    plan=plan_by_version.get(candidate_version.version_id),
+                    render_version=candidate_version.version_id,
+                )
                 measurement_results.append(repeat_result)
                 improved = (
                     repeat_result.current_value_pt is not None
@@ -8396,6 +8532,7 @@ def run_e5(
                 # immutable history and are never implicitly selected again.
                 versions[candidate_index] = candidate_version.model_copy(update={"promoted": True})
                 active_index = candidate_index
+                last_promoted_region = finding.region
                 if lane == "a":
                     lane_state["active_proposal"] = proposal
                 else:
@@ -8428,8 +8565,10 @@ def run_e5(
         if lane_records and all(r.terminal_state == "ready_for_owner_review" for r in lane_records.values())
         else "budget_exhausted"
     )
-    # Source identity check: if any frozen source file changed mid-run, the
-    # run records `source_changed` and must not be treated as canonical.
+    # Source identity check: if any registered direct runtime source changed
+    # mid-run, the run records `source_changed` and is NOT source-identity
+    # stable. `source_identity_stable` says ONLY that the source did not
+    # drift — it never promotes an offline rehearsal to a canonical run.
     source_changed = _source_hashes_changed(config)
     loop_record = E5LoopRecord(
         target_id=target_id,
@@ -8444,7 +8583,7 @@ def run_e5(
             "elapsed_seconds": round(time.time() - started, 1),
             "lanes": {lane: r.terminal_state for lane, r in lane_records.items()},
             "source_changed": source_changed,
-            "canonical": not source_changed,
+            "source_identity_stable": not source_changed,
         },
     )
     (out_dir / "e5_state.json").write_text(
@@ -8476,8 +8615,8 @@ def _write_e5_lane_report_md(lane_id: str, record: E5LaneRecord) -> str:
         for e in record.ledger
     ) or "| - | - | - |"
     probes_note = (
-        "DIAGNOSTIC probes on the latest attempt (no best-valid render; NOT "
-        "promotion evidence)" if record.summary.get("probe_mode") == "diagnostic"
+        "DIAGNOSTIC probes on the selected non-best attempt (no best-valid "
+        "render; NOT promotion evidence)" if record.summary.get("probe_mode") == "diagnostic"
         else "promotion-evidence probes against the selected best-valid representation"
     )
     return f"""# Pipeline E5 Lane {lane_id.upper()} — {record.representation}
@@ -8485,6 +8624,7 @@ def _write_e5_lane_report_md(lane_id: str, record: E5LaneRecord) -> str:
 - Terminal state: **{record.terminal_state}** (never owner acceptance)
 - Best render: `{record.best_render_version or 'NONE — no best-valid render exists'}`
 - Active render: `{record.active_render_version}`
+- Defect-level promoted (never BEST): `{record.best_defect_level_version or 'none'}`
 - Findings: {record.summary.get('total_findings')}; confirmed measurements:
   {record.summary.get('confirmed_measurements')}; unbound:
   {record.summary.get('unbound_measurements')}
@@ -8555,24 +8695,42 @@ def summarize_e5_state(e5_state_path: Path) -> dict[str, Any]:
         "source": str(e5_state_path),
         "terminal_state": state.get("summary", {}).get("terminal_state"),
         "source_changed": state.get("summary", {}).get("source_changed"),
-        "canonical": state.get("summary", {}).get("canonical"),
+        "source_identity_stable": state.get("summary", {}).get("source_identity_stable"),
         "lanes": lanes,
     }
 
 
-def _selected_lane_artifact(lane: "E5LaneRecord") -> tuple[RenderVersion | None, str, bool]:
-    """Resolve the owner-facing lane artifact through `best_render_version`
-    (never `len(render_versions)` / `versions[-1]`). Returns
-    (version, file stem, is_best): only a real best-valid render is labeled
-    BEST; without one, the latest attempt stands in and must be labeled
-    LATEST ATTEMPT everywhere (report + comparison columns)."""
-    if lane.best_render_version:
+def _selected_lane_artifact(
+    lane: "E5LaneRecord",
+) -> tuple[RenderVersion | None, str, str]:
+    """Resolve the owner-facing lane artifact through the explicit version
+    state (never `len(render_versions)` / `versions[-1]` silently). Returns
+    (version, file stem, label):
+
+    - ``BEST`` — only a real hard-gate-valid best render;
+    - ``ACTIVE DEFECT-LEVEL VERSION`` — the defect-level promoted active
+      render when no hard-gate-valid best exists (local improvement state,
+      explicitly NOT best);
+    - ``LATEST ATTEMPT`` — a lane with neither; the artifact shown is the
+      latest attempt only.
+    """
+    def _stem(version_id: str) -> tuple[RenderVersion | None, str]:
         for index, version in enumerate(lane.render_versions):
-            if version.version_id == lane.best_render_version:
-                return version, f"render_{index + 1}", True
+            if version.version_id == version_id:
+                return version, f"render_{index + 1}"
+        return None, ""
+
+    if lane.best_render_version:
+        version, stem = _stem(lane.best_render_version)
+        if version is not None:
+            return version, stem, "BEST"
+    if lane.best_defect_level_version:
+        version, stem = _stem(lane.best_defect_level_version)
+        if version is not None:
+            return version, stem, "ACTIVE DEFECT-LEVEL VERSION"
     if lane.render_versions:
-        return lane.render_versions[-1], f"render_{len(lane.render_versions)}", False
-    return None, "", False
+        return lane.render_versions[-1], f"render_{len(lane.render_versions)}", "LATEST ATTEMPT"
+    return None, "", "LATEST ATTEMPT"
 
 
 def _write_e5_comparison(
@@ -8586,14 +8744,16 @@ def _write_e5_comparison(
         # Page count comes from the SELECTED artifact (best-valid render, or
         # the clearly-labeled latest attempt when none exists) — never from
         # `render_versions[-1]` silently.
-        selected, _stem, is_best = _selected_lane_artifact(lane)
+        selected, _stem, label = _selected_lane_artifact(lane)
         rows.append(
             {
                 "lane": lane_id,
                 "representation": lane.representation,
                 "terminal_state": lane.terminal_state,
                 "best_render": lane.best_render_version,
-                "render_label": "BEST" if is_best else "LATEST ATTEMPT",
+                "best_defect_level_version": lane.best_defect_level_version,
+                "active_render": lane.active_render_version,
+                "render_label": label,
                 "selected_version": selected.version_id if selected else None,
                 "selected_pages": selected.page_count if selected else None,
                 "findings": summary.get("total_findings"),
@@ -8648,9 +8808,10 @@ def _write_e5_comparison(
 - Question: which Builder representation gives the Agent a practical path
   toward convergence WITHOUT target-specific backend code?
 - This report declares NO winner; the owner decides from `owner_review/`.
-- BEST labels mark a real best-valid render; LATEST ATTEMPT means the lane
-  produced NO best-valid render and the artifact shown is the latest
-  attempt only.
+- BEST labels mark a real best-valid render; ACTIVE DEFECT-LEVEL VERSION
+  marks a defect-level promoted active render when no hard-gate-valid best
+  exists (a local improvement, never BEST); LATEST ATTEMPT means the lane
+  produced neither and the artifact shown is the latest attempt only.
 
 | lane | terminal | best render | findings | confirmed | builder calls | improving repairs | tokens in/out | elapsed s |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -8681,13 +8842,14 @@ def _write_e5_owner_package(
     page_count = len(target_pages)
     e4_dir = RUNS / E5_RUNS_E4_BASELINE
     e4_pdf = e4_dir / "render_2.pdf"
-    # Resolve each lane's artifact through best_render_version; without a
-    # best-valid render the latest attempt stands in, clearly labeled.
-    lane_selected: dict[str, tuple[RenderVersion | None, Path, bool]] = {}
+    # Resolve each lane's artifact through the explicit version state; the
+    # label distinguishes a real BEST render from a defect-level active
+    # version and from a mere latest attempt.
+    lane_selected: dict[str, tuple[RenderVersion | None, Path, str]] = {}
     for lane_id, lane in record.lanes.items():
-        version, stem, is_best = _selected_lane_artifact(lane)
+        version, stem, label = _selected_lane_artifact(lane)
         stem_path = (out_dir / f"lane_{lane_id}" / f"{stem}.pdf") if stem else None
-        lane_selected[lane_id] = (version, stem_path, is_best) if stem_path else (None, None, False)
+        lane_selected[lane_id] = (version, stem_path, label) if stem_path else (None, None, "LATEST ATTEMPT")
     lane_pdfs: dict[str, Path] = {
         lane_id: paths[1] for lane_id, paths in lane_selected.items() if paths[1]
     }
@@ -8702,19 +8864,21 @@ def _write_e5_owner_package(
         for lane_id, lane_pdf in lane_pdfs.items():
             lane_page = out_dir / f"lane_{lane_id}" / f"{lane_pdf.stem}_page_{page}.png"
             if lane_page.exists():
-                label = (
-                    f"LANE {lane_id.upper()} BEST" if lane_selected[lane_id][2]
-                    else f"LANE {lane_id.upper()} LATEST ATTEMPT"
-                )
-                columns.append((label, lane_page))
+                columns.append((f"LANE {lane_id.upper()} {lane_selected[lane_id][2]}", lane_page))
         if len(columns) >= 2:
             _side_by_side(columns, package / f"comparison_page_{page}.png")
     # Selected lane artifacts (copies; originals immutable). The filename and
-    # every label distinguish a real BEST render from a latest attempt.
-    for lane_id, (version, lane_pdf, is_best) in lane_selected.items():
+    # every label distinguish a real BEST render from a defect-level active
+    # version and from a latest attempt.
+    _LABEL_KIND = {
+        "BEST": "best",
+        "ACTIVE DEFECT-LEVEL VERSION": "active_defect_level",
+        "LATEST ATTEMPT": "latest_attempt",
+    }
+    for lane_id, (version, lane_pdf, label) in lane_selected.items():
         if lane_pdf is None:
             continue
-        kind = "best" if is_best else "latest_attempt"
+        kind = _LABEL_KIND[label]
         lane_html = out_dir / f"lane_{lane_id}" / f"{lane_pdf.stem}.html"
         shutil.copy2(lane_pdf, package / f"lane_{lane_id}_{kind}.pdf")
         if lane_html.exists():
@@ -8754,6 +8918,12 @@ def _write_e5_owner_package(
     def _best_line(lane_id: str, lane: E5LaneRecord) -> str:
         if lane.best_render_version:
             return f"- Lane {lane_id.upper()} best render: `{lane.best_render_version}`"
+        if lane.best_defect_level_version:
+            return (
+                f"- Lane {lane_id.upper()}: NO hard-gate-valid best render exists; the "
+                f"active defect-level version `{lane.best_defect_level_version}` is shown "
+                "as ACTIVE DEFECT-LEVEL VERSION (a local improvement, never BEST)"
+            )
         return (
             f"- Lane {lane_id.upper()} best render: NONE — no best-valid render "
             "exists; the package shows the latest attempt (LATEST ATTEMPT), "
@@ -8775,8 +8945,11 @@ def _write_e5_owner_package(
   a column labeled LANE X LATEST ATTEMPT is NOT a best-valid render;
 - `lane_*_best.html/.pdf` — each lane's best-valid render (only present when
   a best-valid render exists);
+- `lane_*_active_defect_level.html/.pdf` — a lane's defect-level promoted
+  active version when NO hard-gate-valid best exists (a local improvement,
+  explicitly NOT BEST);
 - `lane_*_latest_attempt.html/.pdf` — latest attempt for a lane with NO
-  best-valid render (explicitly not BEST);
+  best-valid render and no defect-level active version (explicitly not BEST);
 - `lane_*_content_shape_probes.json` — short/medium/long probe outcomes;
   probes marked diagnostic ran on a latest attempt and are NOT promotion
   evidence;

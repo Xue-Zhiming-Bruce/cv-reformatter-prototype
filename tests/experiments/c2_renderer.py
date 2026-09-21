@@ -492,14 +492,21 @@ def candidate_accounting_gate(
     truthful disposition fail the run.
     """
     rendered_leaf_ids = set(plan.leaf_ledger)
-    overflow_ids = {
-        field.leaf_id for field in plan.header_overflow.fields
-    } if plan.header_overflow else set()
+    overflow_fields = list(plan.header_overflow.fields) if plan.header_overflow else []
+    overflow_ids = {field.leaf_id for field in overflow_fields}
     routed_unroutable = sorted(overflow_ids & rendered_leaf_ids)
+    # A render-disposition record is resolved when its overflow field is
+    # actually rendered. A record may be leaf-bound (the field carries the
+    # ORIGINAL candidate leaf id) or record-only (the documented
+    # `unroutable.<slot>` synthetic id); both must appear in the ledger.
+    resolved_dispositions = {
+        (field.slot, field.text) for field in overflow_fields if field.leaf_id in rendered_leaf_ids
+    }
     unresolved_unroutable = [
         record.text
         for record in plan.unroutable
-        if record.disposition == "render" and f"unroutable.{record.slot}" not in rendered_leaf_ids
+        if record.disposition == "render"
+        and (record.slot or "", record.text) not in resolved_dispositions
     ]
     accounting = {
         "rendered_leaves": len(rendered_leaf_ids),

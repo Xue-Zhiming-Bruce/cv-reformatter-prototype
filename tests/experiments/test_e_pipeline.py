@@ -1706,35 +1706,40 @@ def test_run_e5_measurement_tool_count_matches_actual_measurements(tmp_path: Pat
 
 
 def test_best_valid_version_selection_follows_explicit_rule() -> None:
-    """Explicit rule: latest PROMOTED version wins; without any promotion,
-    the latest hard-gate-valid version; never `versions[-1]`, never the
-    first valid one."""
+    """Explicit rule: only a HARD-GATE-VALID, never-rolled-back version is
+    the best-valid render. A defect-level promotion (promoted with a known
+    remaining red gate) is NEVER best — it is the defect-level state."""
     def version(vid: str, *, gates: bool, promoted: bool = False) -> e.RenderVersion:
         return e.RenderVersion(
             version_id=vid, html_sha256="h", pdf_sha256="p",
             page_count=1, hard_gates_passed=gates, promoted=promoted, note="",
         )
 
-    v1 = version("v1", gates=True)
-    v2 = version("v2", gates=False)
-    v3 = version("v3", gates=True, promoted=True)
+    # promoted + hard-gate-INVALID: never best (defect-level promotion only)
+    v1 = version("v1", gates=False, promoted=True)
+    assert e._best_valid_version_id([v1]) is None
+    # the same version IS the defect-level state (it stays the latest
+    # promoted-not-valid version even after a full-valid promotion exists)
+    assert e._best_defect_level_version_id([v1]) == "v1"
+    # promoted + hard-gate-valid: the best
+    v2 = version("v2", gates=True, promoted=True)
+    assert e._best_valid_version_id([v1, v2]) == "v2"
+    # the LATEST hard-gate-valid version wins, promoted or not (in practice
+    # an executed repair is either promoted or rolled back, so this only
+    # differs for the pre-repair initial render)
+    v3 = version("v3", gates=True)
     assert e._best_valid_version_id([v1, v2, v3]) == "v3"
-    # a later hard-gate-valid but NOT promoted version never displaces the
-    # promoted one
-    v4 = version("v4", gates=True)
-    assert e._best_valid_version_id([v1, v2, v3, v4]) == "v3"
     # no promotion: the LATEST hard-gate-valid, not the first
-    assert e._best_valid_version_id([v1, v2]) == "v1"
-    v1_late = version("v1", gates=True)
-    v5 = version("v5", gates=True)
-    assert e._best_valid_version_id([v1_late, v2, v5]) == "v5"
+    assert e._best_valid_version_id([version("a", gates=True), version("b", gates=True)]) == "b"
     # nothing valid: None (no best-valid render exists)
     assert e._best_valid_version_id([version("v1", gates=False)]) is None
-    # a rolled-back candidate never masquerades as best
-    v6 = version("v6", gates=True)
-    assert e._best_valid_version_id([version("v1", gates=False), v6], excluded={"v6"}) is None
-    v7 = version("v7", gates=True)
-    assert e._best_valid_version_id([v6, v7], excluded={"v6"}) == "v7"
+    # a rolled-back hard-gate-valid candidate never masquerades as best
+    v4 = version("v4", gates=True)
+    assert e._best_valid_version_id([version("v1", gates=False), v4], excluded={"v4"}) is None
+    v5 = version("v5", gates=True)
+    assert e._best_valid_version_id([v4, v5], excluded={"v4"}) == "v5"
+    # a rolled-back defect-level promotion is not the defect-level state either
+    assert e._best_defect_level_version_id([v1, v2], excluded={"v1"}) is None
 
 
 @e5_skip
@@ -1841,12 +1846,14 @@ def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
         # the selected representation's identity matches the active/best
         # version's recorded representation (not a default scripted fixture)
         selected_id = probes["_selected_version"]
-        # the probes run against the best-valid representation; only a
-        # diagnostic probe (no best-valid) runs against the latest attempt
+        # the probes run against the best-valid representation, the
+        # defect-level active version, or — with neither — the ACTIVE
+        # attempt (a rejected candidate never becomes the probe basis);
+        # only a diagnostic probe (no best-valid) is not promotion evidence
         if lane["best_render_version"] is not None:
             assert selected_id == lane["best_render_version"]
         else:
-            assert selected_id == lane["render_versions"][-1]["version_id"]
+            assert selected_id == lane["active_render_version"]
 
 
 @e5_skip
@@ -1860,9 +1867,16 @@ def test_run_e5_owner_package_labels_latest_attempt_when_no_best(tmp_path: Path)
     )
     package = run_dir / "owner_review"
     lanes = record["lanes"]
-    if lanes["a"]["best_render_version"] is None:
-        assert (package / "lane_a_latest_attempt.pdf").exists()
-        assert not (package / "lane_a_best.pdf").exists()
+    for lane_id in ("a", "b"):
+        lane = lanes[lane_id]
+        if lane["best_render_version"] is None and lane.get("best_defect_level_version"):
+            # a defect-level active version is labeled as such, never BEST
+            assert (package / f"lane_{lane_id}_active_defect_level.pdf").exists()
+            assert not (package / f"lane_{lane_id}_latest_attempt.pdf").exists()
+        elif lane["best_render_version"] is None:
+            assert (package / f"lane_{lane_id}_latest_attempt.pdf").exists()
+            assert not (package / f"lane_{lane_id}_best.pdf").exists()
+    if any(l["best_render_version"] is None for l in lanes.values()):
         report = (package / "REPORT.md").read_text(encoding="utf-8")
         assert "no best-valid render exists" in report
     if lanes["b"]["best_render_version"] is not None:
@@ -1881,10 +1895,12 @@ def test_run_e5_owner_package_labels_latest_attempt_when_no_best(tmp_path: Path)
     comparison = json.loads((run_dir / "comparison_report.json").read_text())
     for row in comparison["lanes"]:
         lane_record = lanes[row["lane"]]
-        if lane_record["best_render_version"] is None:
-            assert row["render_label"] == "LATEST ATTEMPT"
-        else:
+        if lane_record["best_render_version"] is not None:
             assert row["render_label"] == "BEST"
+        elif lane_record.get("best_defect_level_version"):
+            assert row["render_label"] == "ACTIVE DEFECT-LEVEL VERSION"
+        else:
+            assert row["render_label"] == "LATEST ATTEMPT"
         selected = next(
             v for v in lane_record["render_versions"]
             if v["version_id"] == row["selected_version"]
@@ -1944,31 +1960,82 @@ def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -
 
 @e5_skip
 def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) -> None:
-    """The run config records SHA-256 of every experiment source file BEFORE
-    the first live call; the change detector flags any drift (a drifted run
-    records source_changed and is never canonical)."""
+    """The run config records the source identity (file SHA-256 + tracked-diff
+    hash relative to HEAD + untracked hashes) of the critical DIRECT runtime
+    sources BEFORE the first live call; any drift is detected and the run is
+    NOT source-identity stable. Source stability never promotes a run to
+    'canonical' — the field is `source_identity_stable`, nothing more."""
     run_dir, _terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     config = json.loads((run_dir / "run_config.json").read_text())
     hashes = config["source_hashes"]
     assert hashes["recorded_before_first_live_call"] is True
+    assert hashes["basis"] == "critical_direct_runtime_sources"
+    # the registered set covers the ACTUAL direct runtime dependencies
+    for name in e.E5_SOURCE_FILES:
+        assert hashes["files"][name] == e._sha256_file(e.ROOT / name), name
     for name in (
-        "tests/experiments/e_pipeline.py",
-        "tests/experiments/e_authored_template.py",
-        "tests/experiments/c2_plan.py",
-        "tests/experiments/c2_html.py",
+        "tests/experiments/d_pipeline.py",
+        "tests/experiments/c2_renderer.py",
+        "tests/experiments/c2_candidates.py",
+        "tests/experiments/a_pipeline.py",
+        "tests/experiments/c2_pipeline.py",
+        "tests/experiments/c2_state.py",
     ):
-        assert hashes["files"][name] == e._sha256_file(e.ROOT / name)
+        assert name in hashes["files"], f"missing direct runtime source: {name}"
+    assert hashes["tracked_diff_sha256"] == e._tracked_diff_sha256(e.ROOT, e.E5_SOURCE_FILES)
     assert record["summary"]["source_changed"] is False
-    assert record["summary"]["canonical"] is True
-    # any drift between frozen hashes and current source is detected
+    assert record["summary"]["source_identity_stable"] is True
+    # offline rehearsal runs are NEVER auto-promoted to canonical by a
+    # stable hash: the field records source stability only
+    assert "canonical" not in record["summary"]
+    # any drift between frozen identity and current source is detected
     drifted = json.loads(json.dumps(config))
     drifted["source_hashes"]["files"]["tests/experiments/e_pipeline.py"] = "0" * 64
     assert e._source_hashes_changed(drifted) is True
-    # a config WITHOUT source hashes (e.g. the pre-fix canonical run) is
+    # a changed tracked diff (same file hashes is impossible then, but a
+    # tampered diff hash must also be detected)
+    drifted = json.loads(json.dumps(config))
+    drifted["source_hashes"]["tracked_diff_sha256"] = "0" * 64
+    assert e._source_hashes_changed(drifted) is True
+    # a config WITHOUT source identity (e.g. the pre-fix canonical run) is
     # reported as changed/not-bindable, never silently trusted
     assert e._source_hashes_changed({"starting_commit": "x"}) is True
+
+
+def test_source_diff_identity_ignores_unrelated_files(tmp_path: Path) -> None:
+    """The tracked-diff identity is scoped to the registered source paths:
+    an unrelated owner edit (e.g. D_PIPELINE_PROPOSAL.md) must never make
+    the E5 source identity drift."""
+    import subprocess as sp
+
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    (repo / "unrelated").mkdir()
+    def git(*args: str) -> None:
+        sp.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    git("init", "-q")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (repo / "pkg/a.py").write_text("a = 1\n")
+    (repo / "pkg/b.py").write_text("b = 1\n")
+    (repo / "unrelated/notes.md").write_text("owner notes\n")
+    git("add", ".")
+    git("commit", "-qm", "base")
+    identity = ("pkg/a.py", "pkg/b.py")
+    baseline = e._tracked_diff_sha256(repo, identity)
+    assert baseline is not None
+    # an unrelated file changes: identity unchanged
+    (repo / "unrelated/notes.md").write_text("owner notes edited\n")
+    assert e._tracked_diff_sha256(repo, identity) == baseline
+    # an unregistered path inside the same tree changes: identity unchanged
+    (repo / "pkg/extra.txt").write_text("new file\n")
+    assert e._tracked_diff_sha256(repo, identity) == baseline
+    # a REGISTERED source changes: drift detected
+    (repo / "pkg/b.py").write_text("b = 2\n")
+    assert e._tracked_diff_sha256(repo, identity) != baseline
 
 
 def test_summarize_e5_state_reads_one_run_only() -> None:
@@ -2002,3 +2069,265 @@ def test_summarize_e5_state_reads_one_run_only() -> None:
     assert lane_summary["builder_calls"] == 2
     assert lane_summary["best_render_version"] is None
     assert summary["source_changed"] is False
+
+
+# --- E5 second correctness round: best vs defect-level, version-bound state,
+# --- fail-closed token fill, source identity, restricted metadata -------------
+
+
+@e5_skip
+def test_run_e5_rollback_binds_next_round_to_the_active_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Version-bound rollback: after a rejected (non-improving) candidate,
+    the next round's reviewer, measurement binding, and Builder all resolve
+    against the OLD ACTIVE version — PDF, RenderPlan, and gates — and the
+    rejected representation never enters the probe basis or best selection."""
+    from tests.experiments.e_pipeline import LaneAStructureProposal
+
+    # a scripted proposal that changes nothing -> the identical render ->
+    # the identical measurement -> deterministic non-improving rollback
+    def non_improving_proposal(state, derived):
+        return LaneAStructureProposal(proposal_id="noop", sections=[], agent="scripted")
+
+    class RoundDistinctReviewer(e.ScriptedReviewer):
+        # a distinct dimension per round keeps the repair fingerprint distinct
+        # so a repair actually executes in EVERY round (the fingerprint would
+        # otherwise be rejected as a repeat after the first rollback)
+        def run(self, *args, **kwargs):
+            findings = super().run(*args, **kwargs)
+            finding_id = kwargs.get("finding_id", "")
+            return [
+                f.model_copy(update={"suspected_dimension": f"role_gap::{finding_id}"})
+                for f in findings
+            ]
+
+    monkeypatch.setattr(e, "_scripted_lane_a_proposal", non_improving_proposal)
+    monkeypatch.setattr(e, "ScriptedReviewer", RoundDistinctReviewer)
+    run_dir, terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=2,
+    )
+    lane = record["lanes"]["a"]
+    assert terminal == "budget_exhausted"
+    versions = lane["render_versions"]
+    assert len(versions) >= 2, "at least one repair candidate was rendered"
+    active_id = lane["active_render_version"]
+    assert active_id == versions[0]["version_id"]
+    # every repair candidate was rolled back: un-promoted, never active,
+    # never best, never the probe basis
+    rejected_ids = [v["version_id"] for v in versions[1:]]
+    assert all(not v["promoted"] for v in versions[1:])
+    assert any("rolled_back" in s for s in lane["attempted_strategies"])
+    best = lane["best_render_version"]
+    assert best not in rejected_ids
+    if best is not None:
+        best_version = next(v for v in versions if v["version_id"] == best)
+        assert best_version["hard_gates_passed"], "best must be hard-gate-valid"
+    probes = json.loads((run_dir / "lane_a" / "content_shape_probes.json").read_text())
+    assert probes["_selected_version"] not in rejected_ids
+    # the probe basis is the best-valid render, else the ACTIVE attempt
+    assert probes["_selected_version"] == (best or active_id)
+
+    trace = json.loads((run_dir / "lane_a" / "trace.json").read_text())
+    # (1) the next round's measurement binding resolves against the OLD
+    # ACTIVE version (the first binding after the first rollback decision)
+    first_rollback = next(
+        index for index, entry in enumerate(trace) if entry.get("action") == "rolled_back"
+    )
+    bindings = [
+        entry for entry in trace[first_rollback + 1:]
+        if entry.get("agent") == "measure_controller" and entry.get("action") == "binding"
+    ]
+    assert bindings, "no measurement binding recorded after the rollback"
+    assert bindings[0]["input"]["render_version"] == active_id
+    # (2) every executed repair round received the OLD ACTIVE gates and
+    # declared the OLD ACTIVE version as its base
+    active_gates = json.loads(
+        (run_dir / "lane_a" / f"hard_gates_{active_id}.json").read_text()
+    )["gates"]
+    proposals = [
+        entry for entry in trace
+        if entry.get("agent") == "builder" and entry.get("action") == "proposal"
+    ]
+    assert len(proposals) >= 2, "a repair must execute in at least two rounds"
+    for entry in proposals:
+        payload = json.loads(
+            (run_dir / "lane_a" / entry["output_artifact"]).read_text()
+        )
+        assert payload["current_version"] == active_id
+        assert payload["current_gates"] == active_gates
+    # (3) the next rounds' reviewer findings cite the OLD ACTIVE version
+    assert all(f["render_version"] == active_id for f in lane["findings"])
+
+
+def test_owner_package_labels_defect_level_active_version_never_best(tmp_path: Path) -> None:
+    """promoted=True with hard_gates_passed=False is a defect-level state:
+    the owner package labels it ACTIVE DEFECT-LEVEL VERSION (with the actual
+    artifact copied under that name), never BEST, and best_render_version
+    stays None."""
+    out_dir = tmp_path / "pkg"
+    lane_dir = out_dir / "lane_a"
+    lane_dir.mkdir(parents=True)
+    v1_pdf = lane_dir / "render_1.pdf"
+    v2_pdf = lane_dir / "render_2.pdf"
+    v1_pdf.write_bytes(b"%PDF-1.4 v1")
+    v2_pdf.write_bytes(b"%PDF-1.4 v2 defect-level")
+    versions = [
+        e.RenderVersion(
+            version_id="v1", html_sha256="h1", pdf_sha256=e._sha256_file(v1_pdf),
+            page_count=1, hard_gates_passed=False, promoted=False, note="initial",
+        ),
+        e.RenderVersion(
+            version_id="v2", html_sha256="h2", pdf_sha256=e._sha256_file(v2_pdf),
+            page_count=1, hard_gates_passed=False, promoted=True, note="defect-level",
+        ),
+    ]
+    lane = e.E5LaneRecord(
+        lane="a", representation="lane A", render_versions=versions,
+        best_render_version=None,
+        best_defect_level_version="v2",
+        active_render_version="v2",
+    )
+    record = e.E5LoopRecord(
+        target_id="t", target_sha256="0" * 64, lanes={"a": lane},
+        summary={"terminal_state": "budget_exhausted"},
+    )
+    # the selection rule: the defect-level version is the shown artifact,
+    # labeled ACTIVE DEFECT-LEVEL VERSION
+    version, stem, label = e._selected_lane_artifact(lane)
+    assert label == "ACTIVE DEFECT-LEVEL VERSION"
+    assert version.version_id == "v2" and stem == "render_2"
+    package = e._write_e5_owner_package(out_dir, RESUME_I, record)
+    assert (package / "lane_a_active_defect_level.pdf").read_bytes() == v2_pdf.read_bytes()
+    assert not (package / "lane_a_best.pdf").exists()
+    assert not (package / "lane_a_latest_attempt.pdf").exists()
+    report = (package / "REPORT.md").read_text(encoding="utf-8")
+    assert "ACTIVE DEFECT-LEVEL VERSION" in report
+    assert "never BEST" in report
+    comparison = e._write_e5_comparison(out_dir, record, {"run_id": out_dir.name})
+    row = json.loads((out_dir / "comparison_report.json").read_text())["lanes"][0]
+    assert row["render_label"] == "ACTIVE DEFECT-LEVEL VERSION"
+    assert row["best_render"] is None
+    assert row["selected_version"] == "v2"
+
+
+def test_candidate_token_syntax_fails_closed_in_every_slot_region() -> None:
+    """A candidate value carrying `{{...}}` must fail closed in EVERY slot
+    region — never silently stripped — and the original CandidateDocument
+    stays byte-identical."""
+    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+
+    def entry_candidate(entry_text, *children) -> CandidateDocument:
+        return CandidateDocument(
+            candidate_id="token_probe",
+            leaves=[
+                CandidateLeaf(
+                    leaf_id="work.e1", kind="work_entry", source="work_experience",
+                    text=entry_text,
+                ),
+                *[
+                    CandidateLeaf(
+                        leaf_id=f"work.e1.c{i}", kind=kind, source="work_experience",
+                        parent_leaf_id="work.e1", text=text,
+                    )
+                    for i, (kind, text) in enumerate(children, 1)
+                ],
+            ],
+        )
+
+    cases = {
+        "header_name": CandidateDocument(
+            candidate_id="token_probe",
+            leaves=[CandidateLeaf(
+                leaf_id="header.name", kind="header_field", slot="name",
+                text="{{X Y}}",
+            )],
+        ),
+        "summary": CandidateDocument(
+            candidate_id="token_probe",
+            leaves=[CandidateLeaf(
+                leaf_id="summary.p1", kind="summary_paragraph", source="summary",
+                text="Summary {{something}}",
+            )],
+        ),
+        "work_title": entry_candidate("Engineer {{title_tok}}"),
+        "work_detail": entry_candidate("Engineer", ("entry_detail", "Did things {{detail_tok}}")),
+        "work_meta": entry_candidate("Engineer", ("entry_meta", "2020 {{meta_tok}}")),
+        "work_bullet": entry_candidate("Engineer", ("work_bullet", "Built {{bullet_tok}}")),
+        "skill": CandidateDocument(
+            candidate_id="token_probe",
+            leaves=[
+                CandidateLeaf(
+                    leaf_id="skills.g1", kind="skill_group", source="skills",
+                    text="Group {{skill_tok}}",
+                ),
+            ],
+        ),
+        "language": CandidateDocument(
+            candidate_id="token_probe",
+            leaves=[CandidateLeaf(
+                leaf_id="lang.1", kind="language", source="languages",
+                text="English {{lang_tok}}",
+            )],
+        ),
+        "certification": CandidateDocument(
+            candidate_id="token_probe",
+            leaves=[CandidateLeaf(
+                leaf_id="cert.1", kind="certification_item", source="certifications",
+                text="Cert {{cert_tok}}",
+            )],
+        ),
+    }
+    for label, candidate in cases.items():
+        original = candidate.model_dump(mode="json")
+        with pytest.raises(ValueError, match="unfilled slot tokens remain after fill"):
+            at.fill_authored_template(_base_authored_template(), candidate)
+        # the candidate document is never rewritten (fail closed, not fixed)
+        assert candidate.model_dump(mode="json") == original, label
+
+
+def test_lane_b_metadata_fields_are_restricted_not_free_text() -> None:
+    """`evidence_refs` accept ONLY typed ev.<kind>.<n> IDs,
+    `expected_measurements` ONLY restricted identifiers, slot descriptions a
+    fixed bounded charset; there is NO free-text rationale field. The
+    remaining literal person-fact gate is a HEURISTIC: numbers, short words,
+    and non-English text are NOT reliably caught (documented gap, not a
+    closed channel)."""
+    base = _base_authored_template()
+    assert "rationale" not in at.AuthoredTemplateCandidate.model_fields
+
+    def _with(**updates):
+        data = base.model_dump(mode="python")
+        data.update(updates)
+        return at.AuthoredTemplateCandidate.model_validate(data)
+
+    # non-evidence-ID refs fail closed
+    with pytest.raises(ValueError, match="evidence_refs must be typed"):
+        _with(evidence_refs=["the candidate's phone number"])
+    with pytest.raises(ValueError, match="evidence_refs must be typed"):
+        _with(evidence_refs=["overview.001"])
+    # typed IDs are accepted
+    _with(evidence_refs=["ev.page_overview.001", "ev.adobe_element.007"])
+    # prose person facts in expected_measurements fail closed
+    with pytest.raises(ValueError, match="expected_measurements must be restricted"):
+        _with(expected_measurements=["John Doe works at Acme"])
+    _with(expected_measurements=["role_gap", "content_gate_missing_pdf/1"])
+    # slot descriptions are bounded: braces and non-ASCII fail construction
+    with pytest.raises(ValueError):
+        _with(slots=[
+            *base.slots,
+            at.AuthoredSlot(token="x", category="summary", description="bad {{desc}}"),
+        ])
+    with pytest.raises(ValueError):
+        _with(slots=[
+            *base.slots,
+            at.AuthoredSlot(token="x", category="summary", description="非英文描述"),
+        ])
+    # HEURISTIC ceiling, documented by test: the literal gate alone does not
+    # catch numbers, short words, or non-English person facts in template
+    # text — the channel is narrowed by construction (typed fields), never
+    # claimed closed.
+    number_probe = base.model_copy(update={"html": base.html + "\n<!-- 555-0199 -->"})
+    assert at.validate_authored_template(number_probe, target_pdf=RESUME_I)["passed"]
+    non_english_probe = base.model_copy(update={"html": base.html + "\n<!-- 王小明 北京大学 -->"})
+    assert at.validate_authored_template(non_english_probe, target_pdf=RESUME_I)["passed"]

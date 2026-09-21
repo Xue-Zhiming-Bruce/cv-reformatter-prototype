@@ -1255,3 +1255,119 @@ def test_subgroup_html_is_element_scoped_and_ordered(fake_pdf_text) -> None:
     assert html.index("Sub-group 1 verified item 2") < html.index("Longer Group B Title")
     # Sub-group bullets keep the section's measured bullet design.
     assert 'class="c2-bullet-dot"' in html
+
+
+# --- header-overflow ownership closure: per-leaf, one-to-one (2026-09-22) ----
+
+
+def _routed_candidate(leaves_spec, records) -> CandidateDocument:
+    """A rich candidate whose header leaves/records are replaced by the given
+    spec: leaves_spec is a list of (leaf_id, slot, text); records is a list
+    of (slot, text) render-disposition unroutables."""
+    candidate = rich_candidate(include_unmatched=False)
+    header_leaves = [
+        leaf for leaf in candidate.leaves if leaf.kind != "header_field"
+    ]
+    header_leaves += [
+        _leaf(leaf_id, "header_field", slot=slot, text=text)
+        for leaf_id, slot, text in leaves_spec
+    ]
+    unroutable = [
+        UnroutableContent(
+            text=text,
+            reason="no measured header row carries this slot",
+            before_leaf_id="summary.p1",
+            disposition="render",
+            slot=slot,
+        )
+        for slot, text in records
+    ]
+    return candidate.model_copy(update={"leaves": header_leaves, "unroutable": unroutable})
+
+
+def test_routed_header_leaf_is_owned_under_its_original_leaf_id(fake_pdf_text) -> None:
+    """The routed header leaf keeps its ORIGINAL leaf-ID ownership (one
+    ledger entry per real leaf, no synthetic double state) AND renders
+    through the overflow node; the closure stays fully materialized — never
+    negative, never masked."""
+    state = compile_synthetic()
+    candidate = _routed_candidate(
+        [("header.tagline", "tagline", "CANDTAGLINE Senior Person")],
+        [("tagline", "CANDTAGLINE Senior Person")],
+    )
+    plan = compile_render_plan(state, candidate)
+    assert plan.status == "fully_materialized", plan
+    assert plan.header_overflow is not None
+    assert plan.header_overflow.fields[0].leaf_id == "header.tagline"
+    assert plan.leaf_ledger["header.tagline"] == "header_overflow.tagline"
+    html = render_html(state, plan)
+    assert "CANDTAGLINE Senior Person" in html
+    assert 'data-leaf-id="header.tagline"' in html
+    fake_pdf_text("\n".join(_all_leaf_texts(plan)))
+    gate = content_gate(plan, html, Path("unused.pdf"))
+    assert gate["passed"], gate["missing_pdf"]
+    accounting = candidate_accounting_gate(plan, gate)
+    assert accounting["passed"] is True, accounting
+    assert accounting["routed_header_overflow"] == ["header.tagline"]
+    assert accounting["unresolved_unroutable"] == []
+
+
+def test_two_same_slot_leaves_bind_one_to_one_not_via_one_record(fake_pdf_text) -> None:
+    """Two candidate leaves sharing a slot each need (and each get) their own
+    disposition record; one record cannot cover both, and the closure owns
+    each leaf individually."""
+    state = compile_synthetic()
+    candidate = _routed_candidate(
+        [
+            ("header.tagline", "tagline", "CANDTAGLINE Senior Person"),
+            ("header.tagline2", "tagline", "CANDTAGLINE Second Line"),
+        ],
+        [("tagline", "CANDTAGLINE Senior Person"), ("tagline", "CANDTAGLINE Second Line")],
+    )
+    plan = compile_render_plan(state, candidate)
+    assert plan.status == "fully_materialized", plan
+    assert plan.header_overflow is not None
+    assert [field.leaf_id for field in plan.header_overflow.fields] == [
+        "header.tagline", "header.tagline2",
+    ]
+    assert plan.leaf_ledger["header.tagline"] == "header_overflow.tagline"
+    assert plan.leaf_ledger["header.tagline2"] == "header_overflow.tagline"
+    assert len(plan.leaf_ledger) == len(
+        {leaf.leaf_id for leaf in candidate.leaves}
+    ), "every candidate leaf owned exactly once, no synthetic duplicates"
+
+
+def test_same_slot_leaf_without_its_own_record_fails_closed() -> None:
+    """Two same-slot leaves but only ONE disposition record: the unmatched
+    leaf fails closed (a slot-set match would have silently covered it)."""
+    state = compile_synthetic()
+    candidate = _routed_candidate(
+        [
+            ("header.tagline", "tagline", "CANDTAGLINE Senior Person"),
+            ("header.tagline2", "tagline", "CANDTAGLINE Second Line"),
+        ],
+        [("tagline", "CANDTAGLINE Senior Person")],
+    )
+    plan = compile_render_plan(state, candidate)
+    assert plan.status == "failed"
+    assert any(
+        "header.tagline2" in failure and "one-to-one render disposition" in failure
+        for failure in plan.failures
+    ), plan.failures
+
+
+def test_unbound_same_slot_records_cannot_share_a_synthetic_identity() -> None:
+    """Two record-only render dispositions for the SAME slot (no matching
+    leaves) collide on the `unroutable.<slot>` synthetic identity — own_leaf
+    rejects the second as duplicate consumption instead of silently merging."""
+    state = compile_synthetic()
+    candidate = _routed_candidate(
+        [],  # no header leaves at all: both records are record-only
+        [("tagline", "CANDCITY, ST"), ("tagline", "CANDTOWN, ZZ")],
+    )
+    plan = compile_render_plan(state, candidate)
+    assert plan.status == "failed"
+    assert any(
+        "unroutable.tagline" in failure and "consumed more than once" in failure
+        for failure in plan.failures
+    ), plan.failures
