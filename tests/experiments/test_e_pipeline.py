@@ -1387,6 +1387,40 @@ def test_lane_a_rejects_target_specific_identifiers_and_invalid_fields() -> None
             )
 
 
+@e5_skip
+def test_builder_entries_receive_identical_initial_payload_and_image_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    received: dict[str, dict[str, object]] = {}
+
+    def capture(lane: str, payload: dict, images: list[Path]) -> None:
+        received[lane] = {
+            "payload": payload,
+            "image_hashes": [hashlib.sha256(image.read_bytes()).hexdigest() for image in images],
+        }
+
+    def lane_a_builder(_budget, _trace, *, payload, images, proposal_id):
+        capture("a", payload, images)
+        return e.LaneAStructureProposal(proposal_id=proposal_id, sections=[], agent="llm")
+
+    def lane_b_builder(_budget, _trace, *, payload, images, template_id):
+        capture("b", payload, images)
+        return _base_authored_template().model_copy(update={"template_id": template_id})
+
+    monkeypatch.setattr(e, "_live_lane_a_builder", lane_a_builder)
+    monkeypatch.setattr(e, "_live_lane_b_builder", lane_b_builder)
+    monkeypatch.setattr(e, "_live_reviewer_findings", lambda *args, **kwargs: [])
+    e.run_e5(
+        RESUME_I, tmp_path / "run", live=True, lanes=("a", "b"), max_repair_rounds=0,
+    )
+    assert received["a"] == received["b"]
+    payload = received["a"]["payload"]
+    assert isinstance(payload, dict)
+    assert payload["target_images"]
+    assert [item["sha256"] for item in payload["target_images"]] == received["a"]["image_hashes"]
+    assert "representation" not in json.dumps(payload).casefold()
+
+
 def test_builder_evidence_package_is_representation_neutral() -> None:
     class Binding:
         sources = ["work_experience"]
@@ -1444,6 +1478,37 @@ def _e5_finding(finding_id: str, region: str, dimension: str) -> e.DefectFinding
     )
 
 
+def _e5_attribution(
+    finding: e.DefectFinding,
+    *,
+    owner: str = "builder",
+    status: str = "confirmed",
+    render_version: str | None = None,
+    request_id: str | None = None,
+) -> e.AttributionRecord:
+    return e.AttributionRecord(
+        finding_id=finding.finding_id,
+        render_version=render_version or finding.render_version,
+        measurement_request_id=request_id or finding.requested_measurement.request_id,
+        attribution="template_compilation" if owner == "builder" else "unresolved",
+        hypothesis_status=status,
+        repair_owner=owner,
+        evidence=[request_id or finding.requested_measurement.request_id],
+        reason="test attribution",
+    )
+
+
+def _force_scripted_builder_attribution(monkeypatch: pytest.MonkeyPatch) -> None:
+    default = e._e5_default_attribution
+
+    def scripted(finding, result, request):
+        if result.status == "confirmed" and abs(result.delta_pt or 0.0) > e.E2_IMPROVEMENT_TOLERANCE_PT:
+            return _e5_attribution(finding, request_id=request.request_id)
+        return default(finding, result, request)
+
+    monkeypatch.setattr(e, "_e5_default_attribution", scripted)
+
+
 def test_repeated_fingerprint_uses_the_next_repairable_finding() -> None:
     first = _e5_finding("f1", "header", "gap")
     second = _e5_finding("f2", "experience", "alignment")
@@ -1452,7 +1517,9 @@ def test_repeated_fingerprint_uses_the_next_repairable_finding() -> None:
         "f2": (e.MeasurementResult(request_id="m2", status="confirmed", delta_pt=4.0), second.requested_measurement),
     }
     selected, stalled = e._next_e5_repair_finding(
-        [first, second], measured, ["header:gap:8.0"]
+        [first, second], measured,
+        [_e5_attribution(first), _e5_attribution(second)],
+        ["header:gap:8.0"],
     )
     assert stalled is False
     assert selected is not None and selected[0].finding_id == "f2"
@@ -1464,10 +1531,107 @@ def test_all_repeated_fingerprints_stop_as_stalled() -> None:
         "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
     }
     selected, stalled = e._next_e5_repair_finding(
-        [finding], measured, ["header:gap:8.0"]
+        [finding], measured, [_e5_attribution(finding)], ["header:gap:8.0"]
     )
     assert selected is None
     assert stalled is True
+
+
+def test_mixed_confirmed_and_unbound_findings_are_both_sent_for_attribution() -> None:
+    confirmed = _e5_finding("f1", "experience", "gap")
+    unbound = _e5_finding("f2", "experience", "alignment")
+    no_defect = _e5_finding("f3", "header", "gap")
+    measured = {
+        "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), confirmed.requested_measurement),
+        "f2": (e.MeasurementResult(request_id="m2", status="evidence_missing", reason="unbound"), unbound.requested_measurement),
+        "f3": (e.MeasurementResult(request_id="m3", status="confirmed", delta_pt=0.1), no_defect.requested_measurement),
+    }
+    batches = e._e5_attribution_batches([confirmed, unbound, no_defect], measured)
+    assert [[finding.finding_id for finding in batch] for batch in batches] == [["f1", "f2"]]
+
+
+def test_measurement_alone_never_confirms_template_compilation() -> None:
+    finding = _e5_finding("f1", "experience", "gap")
+    attribution = e._e5_default_attribution(
+        finding,
+        e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
+        finding.requested_measurement,
+    )
+    assert attribution.attribution == "unresolved"
+    assert attribution.hypothesis_status == "unresolved"
+    assert attribution.repair_owner == "reviewer"
+
+
+def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
+    class State:
+        nodes = []
+
+    finding = _e5_finding("f1", "experience", "gap")
+    attribution = _e5_attribution(finding)
+    package = e._e5_builder_evidence_package(
+        draft=e.TargetStructureDraft(
+            target_id="target-v1",
+            investigator="scripted",
+            structure=[],
+            unresolved=[],
+            self_reported=e.SelfReportedStatus(status="partial"),
+        ),
+        state=State(),
+        derived={},
+        page_size=(612.0, 792.0),
+        current_render_version=finding.render_version,
+        findings=[finding],
+        measurements=[e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0)],
+        selected_attribution=attribution,
+        action_fingerprint="experience:gap:8.0",
+    )
+    assert package["current_render_version"] == "render-v1"
+    assert package["selected_attribution"] == attribution.model_dump(mode="json")
+    assert package["selected_attribution"]["finding_id"] == "f1"
+    assert package["selected_attribution"]["measurement_request_id"] == "measure-f1"
+    assert package["action_fingerprint"] == "experience:gap:8.0"
+
+
+@pytest.mark.parametrize("owner", ["renderer", "binding", "reviewer", "none"])
+def test_non_builder_owner_never_selects_builder(owner: str) -> None:
+    finding = _e5_finding("f1", "experience", "gap")
+    measured = {
+        "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
+    }
+    selected, stalled = e._next_e5_repair_finding(
+        [finding], measured, [_e5_attribution(finding, owner=owner)], []
+    )
+    assert selected is None and stalled is False
+
+
+def test_unresolved_attribution_never_selects_builder() -> None:
+    finding = _e5_finding("f1", "experience", "gap")
+    measured = {
+        "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
+    }
+    selected, stalled = e._next_e5_repair_finding(
+        [finding], measured, [_e5_attribution(finding, status="unresolved")], []
+    )
+    assert selected is None and stalled is False
+
+
+def test_only_current_confirmed_builder_attribution_selects_builder() -> None:
+    finding = _e5_finding("f1", "experience", "gap")
+    measured = {
+        "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
+    }
+    stale = _e5_attribution(finding, render_version="render-old")
+    wrong_measurement = _e5_attribution(finding, request_id="measure-old")
+    selected, stalled = e._next_e5_repair_finding(
+        [finding], measured, [stale, wrong_measurement], []
+    )
+    assert selected is None and stalled is False
+    current = _e5_attribution(finding)
+    selected, stalled = e._next_e5_repair_finding(
+        [finding], measured, [stale, wrong_measurement, current], []
+    )
+    assert stalled is False
+    assert selected is not None and selected[3] is current
 
 
 def test_gate_classification_does_not_overclaim_representation_or_privacy() -> None:
@@ -1500,11 +1664,24 @@ def test_gate_and_builder_candidate_audits_are_version_bound() -> None:
         validation={"passed": False, "error": "unknown node"},
         outcome="validator_rejected",
         reason="unknown node",
+        attribution=_e5_attribution(_e5_finding("f1", "experience", "gap")),
+        action_fingerprint="experience:gap:8.0",
     )
     assert candidate_record["input_render_version"] == "render-v1"
     assert candidate_record["candidate_render_version"] is None
     assert candidate_record["outcome"] == "validator_rejected"
     assert candidate_record["typed_candidate"]["proposal_id"] == "p1"
+    assert candidate_record["trigger_attribution"] == {
+        "finding_id": "f1",
+        "render_version": "render-v1",
+        "measurement_request_id": "measure-f1",
+        "attribution": "template_compilation",
+        "hypothesis_status": "confirmed",
+        "repair_owner": "builder",
+        "evidence": ["measure-f1"],
+        "reason": "test attribution",
+    }
+    assert candidate_record["action_fingerprint"] == "experience:gap:8.0"
 
 
 def test_lane_a_proposal_cites_only_known_state_nodes() -> None:
@@ -1549,6 +1726,7 @@ def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
     lane = record["lanes"]["a"]
     assert lane["terminal_state"] == terminal
     assert lane["content_shape_probes_passed"] is True
+    assert "awaiting_attribution_or_other_owner" in lane["attempted_strategies"]
     # the led cycle persisted resumable state
     assert (run_dir / "lane_a" / "e5_lane_a_state.json").exists()
     assert (run_dir / "comparison_report.json").exists()
@@ -1589,6 +1767,7 @@ def test_run_e5_offline_lane_b_authored_template_loop(tmp_path: Path) -> None:
 def test_validator_rejected_builder_candidate_is_auditable_but_never_active(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _force_scripted_builder_attribution(monkeypatch)
     def rejected_template(base, finding, result):
         return base.model_copy(
             update={"template_id": base.template_id + "-rejected", "css": base.css + ".x::before { content: 'x'; }"}
@@ -1676,7 +1855,10 @@ def test_authored_rendering_uses_a_network_disabled_chrome_environment() -> None
 
 
 @e5_skip
-def test_run_e5_repeats_the_identical_measurement_after_repair(tmp_path: Path) -> None:
+def test_run_e5_repeats_the_identical_measurement_after_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_scripted_builder_attribution(monkeypatch)
     _run_dir, _terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
@@ -1917,6 +2099,8 @@ def test_run_e5_rejected_render_stays_in_history_and_next_round_uses_old_active(
     immutable history un-promoted, the active version stays the pre-repair
     render, and the NEXT round's reviewer/measurement read the OLD active
     PDF — never `versions[-1]`."""
+    _force_scripted_builder_attribution(monkeypatch)
+
     def non_improving_template(base, finding, result):
         # a repair that changes nothing -> identical measurement -> rollback
         return base.model_copy(update={"template_id": base.template_id + "-r"})
@@ -1952,12 +2136,13 @@ def test_run_e5_rejected_render_stays_in_history_and_next_round_uses_old_active(
 
 @e5_skip
 def test_run_e5_promoted_render_becomes_active_and_best_matches_artifact(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Promotion: the shell promotes only a verified improvement; the
     promoted render becomes the active version, the explicit best-valid
     selection resolves to it, and the best ID matches the actual artifact
     bytes on disk."""
+    _force_scripted_builder_attribution(monkeypatch)
     run_dir, _terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
@@ -2264,6 +2449,7 @@ def test_run_e5_rollback_binds_next_round_to_the_active_version(
     the next round's reviewer, measurement binding, and Builder all resolve
     against the OLD ACTIVE version — PDF, RenderPlan, and gates — and the
     rejected representation never enters the probe basis or best selection."""
+    _force_scripted_builder_attribution(monkeypatch)
     from tests.experiments.e_pipeline import LaneAStructureProposal
 
     # a scripted proposal that changes nothing -> the identical render ->
@@ -2625,13 +2811,14 @@ def test_ledger_is_the_single_open_closed_source() -> None:
 
 @e5_skip
 def test_run_e5_deduped_repair_does_not_reopen_in_open_findings(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The same ledger defect re-observed in a later round under a NEW
     finding id is deduplicated against the repaired entry and must NOT
     appear in open_findings (the old raw-finding-id scan made the lane
     permanently un-finishable). The scripted reviewer already emits a fresh
     finding id per round with the same ledger key + observation class."""
+    _force_scripted_builder_attribution(monkeypatch)
     _run_dir, _terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
@@ -2657,6 +2844,7 @@ def test_run_e5_accepted_region_recheck_fails_closed_on_missing_evidence(
     candidate back — missing evidence is never treated as no regression.
     Deterministic measurements are faked so the loop deterministically
     reaches the round-2 recheck with a prior accepted region."""
+    _force_scripted_builder_attribution(monkeypatch)
     real_controller = e.MeasureController
     call_counts: dict[str, int] = {}
     first_request_id: list[str] = []

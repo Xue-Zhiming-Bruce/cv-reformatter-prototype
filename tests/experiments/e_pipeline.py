@@ -1737,9 +1737,10 @@ class AttributionRecord(EvidenceModel):
         "measurement_failure",
         "not_measurable",
         "no_defect",
+        "unresolved",
     ]
     hypothesis_status: Literal["confirmed", "rejected", "unresolved", "not_tested"]
-    repair_owner: Literal["builder", "investigator", "reviewer", "none"]
+    repair_owner: Literal["builder", "binding", "renderer", "investigator", "reviewer", "none"]
     evidence: list[str] = Field(default_factory=list)
     reason: str
 
@@ -4666,7 +4667,7 @@ class LiveAttributionHypothesis(EvidenceModel):
         "not_measurable",
     ]
     hypothesis_status: Literal["confirmed", "rejected", "unresolved"]
-    repair_owner: Literal["builder", "investigator", "reviewer", "none"]
+    repair_owner: Literal["builder", "binding", "renderer", "investigator", "reviewer", "none"]
     reason: str
     evidence_ids: list[str] = Field(default_factory=list)
 
@@ -6760,6 +6761,8 @@ def _e5_builder_evidence_package(
     last_rejection: str | None = None,
     target_images: list[Path] | None = None,
     current_render_images: list[Path] | None = None,
+    selected_attribution: AttributionRecord | None = None,
+    action_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """One representation-neutral Builder evidence package.
 
@@ -6796,6 +6799,10 @@ def _e5_builder_evidence_package(
             {"name": image.name, "sha256": _sha256_file(image)}
             for image in current_render_images or []
         ],
+        "selected_attribution": (
+            selected_attribution.model_dump(mode="json") if selected_attribution else None
+        ),
+        "action_fingerprint": action_fingerprint,
     }
 
 
@@ -6845,6 +6852,8 @@ def _e5_builder_candidate_record(
     validation: dict[str, Any],
     outcome: str,
     reason: str,
+    attribution: AttributionRecord | None = None,
+    action_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Local audit record for one parsed typed Builder output."""
     return {
@@ -6858,6 +6867,8 @@ def _e5_builder_candidate_record(
         "candidate_render_version": None,
         "outcome": outcome,
         "reason": reason,
+        "trigger_attribution": attribution.model_dump(mode="json") if attribution else None,
+        "action_fingerprint": action_fingerprint,
         "artifact": f"builder_candidate_{attempt:02d}.json",
     }
 
@@ -6865,8 +6876,12 @@ def _e5_builder_candidate_record(
 def _next_e5_repair_finding(
     actionable: list[DefectFinding],
     measured: dict[str, tuple[MeasurementResult, MeasurementRequest]],
+    attributions: list[AttributionRecord],
     fingerprints: list[str],
-) -> tuple[tuple[DefectFinding, MeasurementResult, MeasurementRequest, str] | None, bool]:
+) -> tuple[
+    tuple[DefectFinding, MeasurementResult, MeasurementRequest, AttributionRecord, str] | None,
+    bool,
+]:
     """Return the first measured, material, not-yet-executed action.
 
     The boolean says repairable findings existed but every fingerprint was
@@ -6877,11 +6892,85 @@ def _next_e5_repair_finding(
         result, bound = measured[finding.finding_id]
         if result.status != "confirmed" or abs(result.delta_pt or 0.0) <= E2_IMPROVEMENT_TOLERANCE_PT:
             continue
+        attribution = next(
+            (
+                item
+                for item in reversed(attributions)
+                if item.finding_id == finding.finding_id
+                and item.render_version == finding.render_version
+                and item.measurement_request_id == bound.request_id
+                and item.hypothesis_status == "confirmed"
+                and item.repair_owner == "builder"
+            ),
+            None,
+        )
+        if attribution is None:
+            continue
         repairable_seen = True
         fingerprint = f"{finding.region}:{finding.suspected_dimension}:{round(result.delta_pt or 0, 3)}"
         if fingerprint not in fingerprints:
-            return (finding, result, bound, fingerprint), False
+            return (finding, result, bound, attribution, fingerprint), False
     return None, repairable_seen
+
+
+def _e5_attribution_batches(
+    actionable: list[DefectFinding],
+    measured: dict[str, tuple[MeasurementResult, MeasurementRequest]],
+) -> list[list[DefectFinding]]:
+    """Batch every non-no-defect finding for live causal attribution."""
+    groups: dict[str, list[DefectFinding]] = {}
+    for finding in actionable:
+        result, _ = measured[finding.finding_id]
+        if result.status == "confirmed" and abs(result.delta_pt or 0.0) <= E2_IMPROVEMENT_TOLERANCE_PT:
+            continue
+        groups.setdefault(finding.region, []).append(finding)
+    return [part[i : i + 3] for part in groups.values() for i in range(0, len(part), 3)]
+
+
+def _e5_default_attribution(
+    finding: DefectFinding,
+    result: MeasurementResult,
+    request: MeasurementRequest,
+) -> AttributionRecord:
+    """Explicit non-live/fallback state without inventing a causal owner."""
+    if result.status == "confirmed" and result.delta_pt is not None:
+        if abs(result.delta_pt) <= E2_IMPROVEMENT_TOLERANCE_PT:
+            return AttributionRecord(
+                finding_id=finding.finding_id,
+                render_version=finding.render_version,
+                measurement_request_id=request.request_id,
+                attribution="no_defect",
+                hypothesis_status="rejected",
+                repair_owner="none",
+                evidence=[result.request_id],
+                reason="measured role gap matches the target within the documented tolerance",
+            )
+        return AttributionRecord(
+            finding_id=finding.finding_id,
+            render_version=finding.render_version,
+            measurement_request_id=request.request_id,
+            attribution="unresolved",
+            hypothesis_status="unresolved",
+            repair_owner="reviewer",
+            evidence=[result.request_id],
+            reason=(
+                "the measured final-PDF role gap differs beyond tolerance, but the "
+                "measurement alone does not establish the owning layer"
+            ),
+        )
+    return AttributionRecord(
+        finding_id=finding.finding_id,
+        render_version=finding.render_version,
+        measurement_request_id=request.request_id,
+        attribution="not_measurable",
+        hypothesis_status="unresolved",
+        repair_owner="binding",
+        evidence=[result.request_id],
+        reason=(
+            "the semantic measurement intent did not bind to final-PDF objects this "
+            "round; the finding stays open for re-verification"
+        ),
+    )
 
 
 def _builder_reserve_intact(budget: RunBudget) -> bool:
@@ -7935,6 +8024,8 @@ def run_e5(
             validation: dict[str, Any],
             outcome: str,
             reason: str,
+            attribution: AttributionRecord | None = None,
+            action_fingerprint: str | None = None,
         ) -> int:
             attempt = len(builder_candidates) + 1
             record = _e5_builder_candidate_record(
@@ -7946,6 +8037,8 @@ def run_e5(
                 validation=validation,
                 outcome=outcome,
                 reason=reason,
+                attribution=attribution,
+                action_fingerprint=action_fingerprint,
             )
             builder_candidates.append(record)
             (lane_dir / record["artifact"]).write_text(
@@ -8405,43 +8498,7 @@ def run_e5(
         def attribute(
             finding: DefectFinding, result: MeasurementResult, request: MeasurementRequest
         ) -> AttributionRecord:
-            if result.status == "confirmed" and result.delta_pt is not None:
-                if abs(result.delta_pt) <= E2_IMPROVEMENT_TOLERANCE_PT:
-                    attribution = AttributionRecord(
-                        finding_id=finding.finding_id,
-                        render_version=finding.render_version,
-                        measurement_request_id=request.request_id,
-                        attribution="no_defect",
-                        hypothesis_status="rejected",
-                        repair_owner="none",
-                        evidence=[result.request_id],
-                        reason="measured role gap matches the target within the documented tolerance",
-                    )
-                else:
-                    attribution = AttributionRecord(
-                        finding_id=finding.finding_id,
-                        render_version=finding.render_version,
-                        measurement_request_id=request.request_id,
-                        attribution="template_compilation",
-                        hypothesis_status="confirmed",
-                        repair_owner="builder",
-                        evidence=[result.request_id],
-                        reason="the measured final-PDF role gap differs beyond the documented tolerance",
-                    )
-            else:
-                attribution = AttributionRecord(
-                    finding_id=finding.finding_id,
-                    render_version=finding.render_version,
-                    measurement_request_id=request.request_id,
-                    attribution="not_measurable",
-                    hypothesis_status="unresolved",
-                    repair_owner="reviewer",
-                    evidence=[result.request_id],
-                    reason=(
-                        "the semantic measurement intent did not bind to final-PDF "
-                        "objects this round; the finding stays open for re-verification"
-                    ),
-                )
+            attribution = _e5_default_attribution(finding, result, request)
             attributions.append(attribution)
             # Single source of defect state: the attribution (and its
             # measurement request) is written back to the owning ledger
@@ -8708,9 +8765,10 @@ def run_e5(
                         carried_open_used = True  # one bounded carried-open re-measure
                     actionable.append(finding)
     
-                # Bind -> measure -> attribute (batched where unbound & severe).
+                # Bind -> measure -> attribute. Live causal attribution covers
+                # every non-no-defect finding; no finding is skipped merely
+                # because another finding in the round was unbound.
                 measured: dict[str, tuple[MeasurementResult, MeasurementRequest]] = {}
-                unbound_batch: list[DefectFinding] = []
                 for finding in actionable:
                     counter["request"] += 1
                     request_id = f"measure-l{lane}-{counter['request']:03d}"
@@ -8721,18 +8779,10 @@ def run_e5(
                     measurement_results.append(result)
                     measured[finding.finding_id] = (result, bound)
                     ledger.entries[_ledger_key(finding)].last_measured_version = current_version.version_id
-                    if result.status != "confirmed" and finding.severity == "high":
-                        unbound_batch.append(finding)
-                if live and unbound_batch and _builder_reserve_intact(lane_budget):
+                batches = _e5_attribution_batches(actionable, measured)
+                if live and batches and _builder_reserve_intact(lane_budget):
                     pod.render_pdf = current_pdf
-                    groups: dict[str, list[DefectFinding]] = {}
-                    for finding in unbound_batch:
-                        groups.setdefault(finding.region, []).append(finding)
-                # bounded batch size: <=3 findings per attribution call
-                    bounded_groups: list[list[DefectFinding]] = []
-                    for part in groups.values():
-                        bounded_groups.extend(part[i : i + 3] for i in range(0, len(part), 3))
-                    for group in bounded_groups:
+                    for group in batches:
                         try:
                             hypotheses = _live_attribution_batch(
                                 pod, lane_budget, trace,
@@ -8764,23 +8814,39 @@ def run_e5(
                             break
                         except Exception as error:
                             escalate(f"attribution_live_call_failed:{type(error).__name__}: {str(error)[:150]}")
-                else:
-                    for finding in actionable:
+                attributed_keys = {
+                    (item.finding_id, item.render_version)
+                    for item in attributions
+                }
+                for finding in actionable:
+                    if (finding.finding_id, finding.render_version) not in attributed_keys:
                         result, bound = measured[finding.finding_id]
                         attribute(finding, result, bound)
     
                 # Builder opportunity: skip already-executed fingerprints and
                 # use the next measured, material finding in review order.
                 repair_finding, all_repairable_repeated = _next_e5_repair_finding(
-                    actionable, measured, fingerprints
+                    actionable, measured, attributions, fingerprints
                 )
                 if repair_finding is None and all_repairable_repeated:
                     escalate("stalled_no_new_action")
                     break
                 if repair_finding is None:
-                    escalate(f"round{round_no}:no_repairable_bound_finding_continue_review")
+                    actionable_keys = {
+                        (finding.finding_id, finding.render_version) for finding in actionable
+                    }
+                    awaiting = any(
+                        (item.finding_id, item.render_version) in actionable_keys
+                        and item.attribution != "no_defect"
+                        for item in attributions
+                    )
+                    escalate(
+                        "awaiting_attribution_or_other_owner"
+                        if awaiting
+                        else f"round{round_no}:no_repairable_bound_finding_continue_review"
+                    )
                     continue
-                finding, result, bound, fingerprint = repair_finding
+                finding, result, bound, attribution, fingerprint = repair_finding
                 current_render_images = _overview_pngs(
                     current_pdf, lane_dir, f"builder_render_r{round_no}"
                 )
@@ -8796,6 +8862,8 @@ def run_e5(
                     last_rejection=lane_state.get("last_rejection"),
                     target_images=shared_target_images,
                     current_render_images=current_render_images,
+                    selected_attribution=attribution,
+                    action_fingerprint=fingerprint,
                 )
                 (lane_dir / f"builder_evidence_round_{round_no:02d}.json").write_text(
                     json.dumps(
@@ -8827,6 +8895,8 @@ def run_e5(
                             validation={"passed": validation_error is None, "error": validation_error},
                             outcome="validator_rejected" if validation_error else "validated",
                             reason=validation_error or "typed proposal accepted by the shell validator",
+                            attribution=attribution,
+                            action_fingerprint=fingerprint,
                         )
                         if validation_error:
                             repair_attempts.append({"finding": finding.finding_id, "region": finding.region, "rejected": validation_error, "round": round_no})
@@ -8866,6 +8936,8 @@ def run_e5(
                                 validation=validation,
                                 outcome="validator_rejected",
                                 reason=str(error),
+                                attribution=attribution,
+                                action_fingerprint=fingerprint,
                             )
                             lane_state["last_rejection"] = str(error)[:280]
                             repair_attempts.append({"finding": finding.finding_id, "region": finding.region, "rejected": str(error)[:300], "round": round_no})
@@ -8878,6 +8950,8 @@ def run_e5(
                             validation=validation,
                             outcome="validated",
                             reason="typed template accepted by the shell validator",
+                            attribution=attribution,
+                            action_fingerprint=fingerprint,
                         )
                         repair_attempts.append(
                             {"finding": finding.finding_id, "region": finding.region,
