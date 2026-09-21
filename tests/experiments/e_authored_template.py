@@ -32,13 +32,22 @@ Hard safety boundary enforced by `validate_authored_template`:
   attributes at all (the template loads no external assets of any kind);
 - no target-person literals and no candidate facts hardcoded into the
   HTML/CSS (candidate values enter ONLY through slot filling);
-- the reusable record carries NO free-text rationale field, and metadata
-  is restricted: `evidence_refs` accept only typed `ev.<kind>.<n>` evidence
-  IDs, `expected_measurements` only restricted measurement identifiers,
-  and slot descriptions a fixed bounded charset. The remaining literal
-  person-fact gate over template text is a HEURISTIC (word-list based): it
-  cannot reliably catch numbers, short words, or non-English facts, so the
-  metadata channel is narrowed by construction, not provably closed;
+- NO comments in the reusable artifact (HTML `<!-- -->` and CSS `/* */`
+  are rejected — a comment is free persistent text with no rendering
+  value), and no CSS `content:` property (fixed visible text outside the
+  typed slot channel);
+- the reusable record carries NO free-text metadata at all: no rationale,
+  no pagination prose, no region lists, no expected measurements, no slot
+  descriptions. `evidence_refs` is the only metadata field, and it must
+  contain ONLY evidence IDs the shell actually issued (membership is
+  checked at validation time, not string shape).
+
+  HONEST LIMIT: these closures remove the direct, persistent free-text
+  fields. The authored HTML/CSS representation itself still carries
+  inherent steganographic risk (encoding, spacing, attribute tricks, or
+  presentation choices that no string gate enumerates); the shell does NOT
+  claim the authored channel is theoretically closed — only that the known
+  direct text channels are;
 - every slot token in the HTML must be a declared slot/collection.
 
 Candidate-value encoding (deterministic fill): every scalar CandidateDocument
@@ -91,26 +100,25 @@ _FORBIDDEN_PATTERNS = (
     ("@import", "CSS import"),
     ("data:", "data URL"),
     ("url(", "CSS url() function"),
+    ("<!--", "html comment (free persistent text)"),
+    ("/*", "css comment (free persistent text)"),
 )
+# CSS `content:` injects fixed visible text outside the typed slot channel;
+# the lookbehind avoids false positives on `justify-content:`-style
+# properties. Checked as a regex, not a substring.
+_CSS_CONTENT_RE = re.compile(r"(?<![\w-])content\s*:", re.IGNORECASE)
 _EVENT_HANDLER_RE = re.compile(r"\son[a-z]+\s*=", re.IGNORECASE)
 _REMOTE_URL_RE = re.compile(r"(?:https?:)?//[^\s\"'><)]+", re.IGNORECASE)
 _ATTR_URL_RE = re.compile(r"\b(?:src|href)\s*=", re.IGNORECASE)
 _EVAL_RE = re.compile(r"\b(?:eval|fetch|xmlhttprequest)\b", re.IGNORECASE)
 
-# Typed evidence IDs are the shell pod's own vocabulary (`EvidenceStore._next_id`
-# -> `ev.<kind>.<seq>`); anything else (free text, prose, person facts) is
-# rejected at construction.
+# Evidence refs must be members of the SHELL-ISSUED evidence id vocabulary
+# (`EvidenceStore._next_id` -> `ev.<kind>.<seq>`). The string shape below is
+# only the first filter; validate_authored_template also requires every ref
+# to be an id the shell actually recorded (`known_evidence_ids`).
 _EVIDENCE_ID_RE = re.compile(
     r"^ev\.(page_overview|region_crop|adobe_element|local_measurement|coverage_audit)\.[0-9]+$"
 )
-# Measurement identifiers are restricted to lowercase method ids (the
-# MeasurementRequest metric vocabulary), optionally with a bounded variant
-# suffix — never arbitrary prose or person facts.
-_MEASUREMENT_ID_RE = re.compile(r"^[a-z][a-z0-9_]*(/[0-9]+)?(:[a-z0-9_\-]+)*$")
-# Slot descriptions are FIXED bounded descriptions: a small charset, no
-# braces, no non-ASCII — they cannot carry free text, numbers-heavy person
-# facts, or non-English content.
-_SLOT_DESCRIPTION_RE = re.compile(r"^[A-Za-z0-9 .,'()/:_-]{0,200}$")
 
 # Generic resume presentation vocabulary that may legitimately appear in a
 # reusable template (never a target-person fact): section labels, months,
@@ -151,7 +159,9 @@ _TEMPLATE_GENERIC_VOCABULARY = {
 
 
 class AuthoredSlot(EvidenceModel):
-    """One declared typed slot: what value category may be bound here."""
+    """One declared typed slot: what value category may be bound here. No
+    free-text description field: token/category/repeating/required carry the
+    entire declaration."""
 
     token: str
     category: Literal[
@@ -160,49 +170,36 @@ class AuthoredSlot(EvidenceModel):
     ]
     repeating: bool = False
     required: bool = False
-    description: str = Field(default="", pattern=_SLOT_DESCRIPTION_RE.pattern)
 
 
 class AuthoredTemplateCandidate(EvidenceModel):
     """A LIVE Builder's authored template candidate (E5 Lane B).
 
     The HTML carries only typed slot tokens; candidate values enter at
-    render time through the shell's deterministic fill. The model may
-    express pagination expectations and evidence references, never
-    candidate or target person text."""
+    render time through the shell's deterministic fill. The record carries
+    NO free-text metadata: repeating/optional structure is expressed by the
+    HTML each-regions and the slot declarations themselves, pagination is
+    rendered and measured (never declared), and measurement explanations
+    live in the run trace. `evidence_refs` is the single metadata field and
+    must cite only shell-issued evidence ids."""
 
     template_id: str = Field(pattern=r"^[a-z0-9_-]+$")
     html: str
     css: str = ""
     slots: list[AuthoredSlot]
-    repeating_regions: list[str] = Field(default_factory=list)
-    optional_regions: list[str] = Field(default_factory=list)
-    pagination_expectation: str = ""
     evidence_refs: list[str] = Field(default_factory=list)
-    expected_measurements: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def metadata_is_restricted(self) -> "AuthoredTemplateCandidate":
-        """Fail closed on non-typed metadata: `evidence_refs` accept ONLY
-        typed `ev.<kind>.<n>` evidence IDs; `expected_measurements` ONLY
-        restricted measurement identifiers. There is deliberately NO
-        free-text rationale field on the reusable record — prose belongs in
-        the run trace, never in the reusable template artifact."""
+    def evidence_refs_are_typed(self) -> "AuthoredTemplateCandidate":
+        """First filter (string shape): only `ev.<kind>.<n>` ids pass.
+        Membership in the shell's actually-issued ids is enforced by
+        `validate_authored_template` (fail closed)."""
         bad_refs = [ref for ref in self.evidence_refs if not _EVIDENCE_ID_RE.match(ref)]
         if bad_refs:
             raise ValueError(
                 "evidence_refs must be typed ev.<kind>.<n> evidence IDs "
                 f"(page_overview|region_crop|adobe_element|local_measurement|"
                 f"coverage_audit): {bad_refs[:3]}"
-            )
-        bad_measurements = [
-            item for item in self.expected_measurements
-            if not _MEASUREMENT_ID_RE.match(item)
-        ]
-        if bad_measurements:
-            raise ValueError(
-                "expected_measurements must be restricted measurement "
-                f"identifiers, not free text: {bad_measurements[:3]}"
             )
         return self
 
@@ -240,11 +237,17 @@ def validate_authored_template(
     *,
     target_pdf: Path,
     render_candidate: CandidateDocument | None = None,
+    known_evidence_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Enforce the full Lane B safety boundary BEFORE anything is written or
     rendered. Raises ``ValueError`` with every violation; returns the
     validation report on success. Unknown fields fail at model construction
-    (pydantic ``extra="forbid"``)."""
+    (pydantic ``extra="forbid"``).
+
+    `known_evidence_ids`: the evidence ids the shell actually issued. Every
+    `evidence_refs` entry must be a MEMBER of that set — a string that only
+    LOOKS like `ev.<kind>.<n>` is rejected. When no known-id set is
+    provided, any non-empty evidence_refs fails closed."""
     payload = candidate.html + "\n" + candidate.css
     # Normalize harmless token spellings FIRST (same as the fill), so marker
     # spelling variants do not create false violations.
@@ -262,6 +265,11 @@ def validate_authored_template(
         violations.append("forbidden content: src/href asset reference")
     if _EVAL_RE.search(payload):
         violations.append("forbidden content: executable/network API reference")
+    if _CSS_CONTENT_RE.search(payload):
+        violations.append(
+            "forbidden content: css content property (fixed visible text "
+            "outside the slot channel)"
+        )
 
     # Slot declaration closure: tokens OUTSIDE each-regions must be the two
     # header slots (declared by category); tokens INSIDE a region must be
@@ -293,18 +301,33 @@ def validate_authored_template(
             violations.append(f"each-region {name!r} has no declared slot")
     declared = {slot.token: slot for slot in candidate.slots}
 
+    # Evidence refs must cite SHELL-ISSUED evidence ids (membership, not
+    # string shape). Without a known-id set, any ref fails closed.
+    if candidate.evidence_refs:
+        if not known_evidence_ids:
+            violations.append(
+                "evidence_refs provided but the shell issued no known evidence ids "
+                f"(fail closed): {candidate.evidence_refs[:3]}"
+            )
+        else:
+            unknown_refs = [
+                ref for ref in candidate.evidence_refs if ref not in known_evidence_ids
+            ]
+            if unknown_refs:
+                violations.append(
+                    "evidence_refs cite ids the shell never issued: "
+                    + ", ".join(unknown_refs[:6])
+                )
+
     # Target-person literal check: no target word (outside the generic
-    # vocabulary) may appear as fixed template text or in the restricted
-    # metadata fields. ponytail: a word-list HEURISTIC — it cannot reliably
-    # catch numbers, short words, or non-English person facts; the channel
-    # is primarily narrowed by construction (typed IDs, bounded descriptions,
-    # no free-text rationale field), and this gate is a second layer, not a
-    # proof that the channel is closed.
+    # vocabulary) may appear as fixed template text (including evidence-ref
+    # ids, which are typed and cannot carry person text anyway).
+    # ponytail: a word-list HEURISTIC — it cannot reliably catch numbers,
+    # short words, or non-English person facts; the direct persistent
+    # free-text FIELDS are closed (see the module docstring), but the
+    # authored-code channel itself is NOT proven closed.
     target_words = _target_person_words(target_pdf)
-    metadata_text = " ".join(
-        [*candidate.evidence_refs, *candidate.expected_measurements]
-        + [slot.description for slot in candidate.slots]
-    )
+    metadata_text = " ".join(candidate.evidence_refs)
     static_words = {
         word.casefold()
         for word in re.findall(
@@ -710,8 +733,4 @@ SCRIPTED_AUTHORED_TEMPLATE = AuthoredTemplateCandidate(
         AuthoredSlot(token="each:certifications", category="certifications", repeating=True),
         AuthoredSlot(token="each:additional", category="additional", repeating=True),
     ],
-    repeating_regions=["summary", "experience", "education", "skills", "languages",
-                       "certifications", "additional"],
-    optional_regions=["certifications", "languages", "additional"],
-    pagination_expectation="single-column flow; natural page breaks",
 )

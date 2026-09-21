@@ -968,7 +968,9 @@ no live call, no product contract/ADR change.
    (word-list based): it cannot reliably catch phone numbers/dates, short
    names, abbreviated company names, non-English facts, or Adobe-unextracted
    target text — tests document these gaps. The channel is narrowed by
-   construction; it is never described as closed.
+   construction; it is never described as closed. (Superseded by the
+   third round below: the unused metadata fields were DELETED entirely and
+   `evidence_refs` became shell-membership-checked.)
 
 Offline verification: `tests/experiments` lane 434 passed / 2 skipped;
 broad offline lane 905 passed / 5 failed — the SAME 5 pre-existing
@@ -1036,3 +1038,69 @@ live call, no product contract/ADR change.
 Offline verification: see the pytest outputs under
 `tests/test_results/pytest/` referenced by this round's delivery note.
 Protected files re-verified byte-identical after the round.
+
+---
+
+# E5 third correctness round (2026-09-22, owner-authorized work order: ledger
+# single source, fail-closed recheck, active-unpromoted artifact, metadata
+# deletion, source-identity wording)
+
+Status: `Proposed experiment record; not an approved product architecture or
+roadmap item`. Closes four base-correctness findings remaining after commit
+93bde22; no layout-capability expansion, no live call, no Lane A/B
+re-comparison, no product contract/ADR/roadmap change.
+
+1. **DefectLedger is the single open/closed source (fixed + tested)**:
+   `_lane_terminal` no longer scans raw finding ids against
+   `resolved_measurements` (a deduplicated re-observation of an already
+   repaired defect under a NEW finding id permanently blocked
+   `ready_for_owner_review`). `open_findings` now comes from
+   `_open_ledger_finding_ids` (repaired/resolved = closed). Attribution is
+   written back to the owning ledger entry (`attribution`,
+   `measurement_request_id`, status) on the deterministic path AND the live
+   batch path; a confirmed measurement WITHIN tolerance (`no_defect`) closes
+   the entry as `resolved`; a reopened entry binds the LATEST finding id and
+   clears its stale attribution/measurement state. No second defect tracker
+   was added.
+2. **Accepted-region recheck fails closed (fixed + tested)**: `held` now
+   requires `repeat.status == "confirmed"`, all four measured values
+   present, and no error growth beyond prior + tolerance. evidence_missing /
+   unmeasurable / vanished anchors record an explicit reason in `rechecks`
+   and roll the candidate back.
+3. **Owner artifact is never a rolled-back attempt (fixed + tested)**:
+   `_selected_lane_artifact` resolution is now best → defect-level promoted
+   → the lane's ACTIVE version (`ACTIVE UNPROMOTED VERSION`, files
+   `lane_*_active_unpromoted.*`) → LATEST ATTEMPT only when no active
+   version exists. Owner package, comparison, lane REPORT, page labels, and
+   probe selection all reference the same selected active version; a
+   rolled-back candidate is immutable history, never the lane's output.
+4. **Unused Lane B free-text metadata deleted (fixed + tested)**:
+   `AuthoredSlot.description`, `repeating_regions`, `optional_regions`,
+   `pagination_expectation`, and `expected_measurements` are removed from
+   the reusable record (old fields fail via `extra="forbid"`); repeating/
+   optional structure is expressed by the HTML each-regions and slot
+   declarations, pagination is rendered and measured, explanations stay in
+   the trace. `evidence_refs` remains the single metadata field and must be
+   a MEMBER of the shell's actually-issued evidence ids
+   (`known_evidence_ids` at validation; string shape alone is not enough).
+   HTML `<!-- -->` comments, CSS `/* */` comments, and the CSS `content:`
+   property are rejected as hidden persistent text. HONEST LIMIT recorded:
+   these closures remove the known direct persistent free-text channels;
+   the authored HTML/CSS representation itself still carries inherent
+   steganographic risk that no string gate enumerates — the shell does NOT
+   claim the authored channel is theoretically closed.
+5. **Source-identity wording corrected (no framework added)**: the identity
+   is `selected_critical_source_drift_detection` — it detects a mid-run
+   change to the registered files; it does NOT cover transitive
+   dependencies and is NOT a proof of exact source identity. An exact
+   binding additionally requires starting from a committed HEAD with no
+   uncommitted changes to the running code — a recorded condition for the
+   next authorized live run (not exercised this round).
+
+Offline verification: `tests/experiments/test_e_pipeline.py` 104 passed;
+`tests/experiments` lane 447 passed / 2 skipped; broad offline lane 918
+passed / 5 failed — the SAME 5 pre-existing `tests/unit/test_mock_api.py`
+failures documented since E3. Pytest outputs:
+`tests/test_results/pytest/20260921T07*Z_e5_third_correctness_*.txt`.
+Protected files re-verified byte-identical: `D_PIPELINE_PROPOSAL.md`
+(`eabf6a11…`), `unused.docx` (`584cb925…`).

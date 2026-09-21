@@ -6525,13 +6525,12 @@ E5_LANE_B_BUILDER_INSTRUCTIONS = (
     "You are the Lane B Builder of a resume-layout experiment.\n"
     "Representation: a constrained AUTHORED HTML/CSS template with typed\n"
     "candidate slots. You output ONE typed AuthoredTemplateCandidate:\n"
-    "HTML (slot tokens only, no values), CSS, declared typed slots, declared\n"
-    "repeating/optional regions, and pagination expectation. There is NO\n"
-    "free-text rationale field; evidence_refs accept ONLY typed\n"
-    "ev.<kind>.<n> evidence IDs (page_overview|region_crop|adobe_element|\n"
-    "local_measurement|coverage_audit); expected_measurements accept ONLY\n"
-    "restricted measurement identifiers (no prose, no person facts). Slot\n"
-    "vocabulary (exactly these tokens):\n"
+    "HTML (slot tokens only, no values), CSS, and declared typed slots.\n"
+    "There are NO free-text metadata fields (no rationale, no region lists,\n"
+    "no pagination prose, no expected measurements, no slot descriptions).\n"
+    "evidence_refs must be LEFT EMPTY unless the shell gave you specific\n"
+    "evidence ids to cite; every cited id must be one the shell issued.\n"
+    "Slot vocabulary (exactly these tokens):\n"
     "{{candidate:name}}, {{candidate:contact}}, and repeating regions\n"
     "{{each:summary}}/{{each:experience}}/{{each:education}}/{{each:skills}}/"
     "{{each:languages}}/{{each:certifications}}/{{each:additional}} closed\n"
@@ -6541,12 +6540,13 @@ E5_LANE_B_BUILDER_INSTRUCTIONS = (
     "regions render nothing). Long content must not disappear.\n"
     "The shell REJECTS: JavaScript, event handlers, iframe/object/embed/\n"
     "form/video/audio/canvas, remote or network URLs, src/href attributes,\n"
-    "CSS imports, url() functions, data: URLs, any target-person literal,\n"
-    "any hardcoded candidate fact, and any undeclared slot token.\n"
+    "CSS imports, url() functions, data: URLs, HTML or CSS comments, the\n"
+    "CSS content: property, any target-person literal, any hardcoded\n"
+    "candidate fact, and any undeclared slot token.\n"
     "You never see or edit candidate values; the shell fills your slots from\n"
     "the reviewed candidate render context. You never approve delivery.\n"
     "Base the design on the target page images and the structure draft you\n"
-    "are given; measure claims belong in expected_measurements."
+    "are given."
 )
 
 E5_ATTRIBUTION_INSTRUCTIONS = (
@@ -6625,13 +6625,50 @@ class DefectLedger:
             return entry, "new"
         existing.last_seen_version = finding.render_version
         if _observation_class(finding.observation) != existing.observation_class:
-            # the finding CHANGED after repair: reopen with the new class
+            # the finding CHANGED after repair: reopen with the new class,
+            # bound to the LATEST finding id; the stale attribution and
+            # measurement binding no longer describe this defect and are
+            # cleared (never silently inherited).
             existing.observation_class = _observation_class(finding.observation)
+            existing.finding_id = finding.finding_id
+            existing.attribution = None
+            existing.measurement_request_id = None
             existing.status = "open"
             return existing, "reopened"
         if resolved:
             existing.status = "resolved"
         return existing, "dedup"
+
+
+# The ONLY open/closed source for E5 findings is the ledger entry status.
+# repaired/resolved are CLOSED; open/attributed/regressed are NOT closed.
+E5_LEDGER_CLOSED_STATUSES = frozenset({"repaired", "resolved"})
+
+
+def _open_ledger_finding_ids(entries: list["E5LedgerEntry"]) -> list[str]:
+    """Open findings = the current finding id of every ledger entry whose
+    status is not closed. Raw finding ids are NEVER scanned directly — a
+    deduplicated re-observation of an already-repaired defect must not
+    resurrect the defect as open under a new id."""
+    return [entry.finding_id for entry in entries if entry.status not in E5_LEDGER_CLOSED_STATUSES]
+
+
+def _record_ledger_attribution(
+    ledger: "DefectLedger",
+    finding: "DefectFinding",
+    attribution: AttributionRecord,
+    request_id: str,
+) -> None:
+    """Write an attribution back to the owning ledger entry (single source of
+    defect state): the attribution record, the measurement request id, and
+    the status. A confirmed measurement WITHIN tolerance (`no_defect`) closes
+    the entry as resolved; every other attribution leaves it not-closed."""
+    entry = ledger.entries.get(_ledger_key(finding))
+    if entry is None:
+        return
+    entry.attribution = attribution
+    entry.measurement_request_id = request_id
+    entry.status = "resolved" if attribution.attribution == "no_defect" else "attributed"
 
 
 class E5LaneASection(EvidenceModel):
@@ -7311,11 +7348,14 @@ E5_SOURCE_FILES = (
 
 
 def _experiment_source_hashes() -> dict[str, str]:
-    """SHA-256 of the critical DIRECT runtime sources this E5 run executes
-    (the entry module's direct local imports plus the shared gate/binding
-    modules). Recorded in run_config.json BEFORE the first live call so a
-    run is bindable to its exact source. This is a selected direct-runtime
-    set, NOT a claim about every transitive source file."""
+    """SHA-256 of the selected critical DIRECT runtime sources this E5 run
+    executes (the entry module's direct local imports plus the shared
+    gate/binding modules), recorded in run_config.json BEFORE the first live
+    call. This is SELECTED CRITICAL-SOURCE DRIFT DETECTION: it detects a
+    mid-run change to the registered files. It does NOT cover transitive
+    dependencies and is NOT a proof of exact source identity — an exact
+    binding additionally requires starting from a committed HEAD with no
+    uncommitted changes to the running code."""
     return {name: _sha256_file(ROOT / name) for name in E5_SOURCE_FILES}
 
 
@@ -7451,13 +7491,16 @@ def _freeze_e5_config(
         "starting_commit": commit,
         "source_hashes": {
             **_source_identity(),
-            "basis": "critical_direct_runtime_sources",
+            "basis": "selected_critical_source_drift_detection",
             "recorded_before_first_live_call": True,
             "note": (
-                "SHA-256 + tracked-diff hash of the critical DIRECT runtime "
-                "sources this run executes (a selected direct set, not a "
-                "claim about every source file); a mid-run change marks the "
-                "run `source_changed` and NOT source_identity_stable"
+                "SHA-256 + tracked-diff hash of SELECTED critical direct "
+                "runtime sources (drift detection only; NOT an exact source "
+                "identity — transitive dependencies are not covered, and an "
+                "exact binding additionally requires a committed HEAD with "
+                "no uncommitted changes to the running code); a mid-run "
+                "change marks the run `source_changed` and NOT "
+                "source_identity_stable"
             ),
         },
         "live": live,
@@ -7593,6 +7636,24 @@ def run_e5(
     page_height = _page_pt_size(target_pdf, 1)[1]
     region_spans = _region_spans_from_draft(draft, page_height)
 
+    def _known_evidence_ids() -> set[str]:
+        """The evidence ids the shell ACTUALLY issued (pod access records +
+        the shared draft's cited refs). Authored-template evidence_refs must
+        be members of this set — string shape alone is never enough."""
+        ids: set[str] = set()
+        for record in getattr(pod, "records", []) or []:
+            record_id = (
+                record.get("evidence_id")
+                if isinstance(record, dict)
+                else getattr(record, "evidence_id", None)
+            )
+            if record_id:
+                ids.add(record_id)
+        for claim in draft.structure:
+            for ref in claim.evidence:
+                ids.add(ref.evidence_id)
+        return ids
+
     candidate = candidate_resume_E()
     # Generic header-overflow disposition (E3 shell transition, reused for
     # the main candidate AND every content-shape probe): the compiled
@@ -7709,10 +7770,10 @@ def run_e5(
             trace.add(agent="shell", phase="loop", action="strategy_escalation", note=strategy)
 
         def _lane_terminal(lane_id: str, forced: str | None = None) -> E5LaneRecord:
-            open_ids = [
-                finding.finding_id for finding in findings
-                if finding.finding_id not in resolved_measurements
-            ]
+            # The ledger is the ONLY open/closed source: a deduplicated
+            # re-observation of an already-repaired/resolved defect must not
+            # resurrect it as open under a new finding id.
+            open_ids = _open_ledger_finding_ids(list(ledger.entries.values()))
             # Best-valid selection FIRST: the content-shape probes must run
             # against the EXACT SELECTED representation (the best-valid
             # render's proposal/template). With no best-valid render, the
@@ -7805,6 +7866,7 @@ def run_e5(
                             selected_representation,
                             target_pdf=target_pdf,
                             render_candidate=probe_candidate,
+                            known_evidence_ids=_known_evidence_ids(),
                         )
                         fill = fill_authored_template(selected_representation, probe_candidate)
                         doc = build_authored_document(selected_representation, fill, page_size)
@@ -7974,7 +8036,12 @@ def run_e5(
             ) -> tuple[RenderVersion, Path, dict[str, Any]]:
                 lane_budget.spend_tool("render_and_checkpoint")
                 template = template or lane_state["template"]
-                validate_authored_template(template, target_pdf=target_pdf, render_candidate=candidate)
+                validate_authored_template(
+                    template,
+                    target_pdf=target_pdf,
+                    render_candidate=candidate,
+                    known_evidence_ids=_known_evidence_ids(),
+                )
                 fill = fill_authored_template(template, candidate)
                 index = len(versions) + 1
                 doc = build_authored_document(template, fill, page_size)
@@ -8130,6 +8197,10 @@ def run_e5(
                     ),
                 )
             attributions.append(attribution)
+            # Single source of defect state: the attribution (and its
+            # measurement request) is written back to the owning ledger
+            # entry; a no_defect measurement closes the entry as resolved.
+            _record_ledger_attribution(ledger, finding, attribution, request.request_id)
             trace.add(
                 agent="attribution_investigator", phase="attribute", action="attribution",
                 output=attribution.model_dump(mode="json"),
@@ -8137,17 +8208,45 @@ def run_e5(
             return attribution
 
         def accepted_regions_hold(candidate_pdf: Path) -> tuple[bool, list[dict[str, Any]]]:
+            """FAIL CLOSED accepted-region recheck: an accepted region is held
+            ONLY when the identical re-measurement is CONFIRMED on the
+            candidate PDF with all measured values present and the error did
+            not grow beyond the prior error + tolerance. Any evidence_missing
+            / unmeasurable / vanished anchor / missing value means the
+            candidate CANNOT be verified to hold the region -> not held."""
             rechecks: list[dict[str, Any]] = []
             for finding_id, (request, prior) in resolved_measurements.items():
                 repeat = MeasureController(pod, lane_budget, trace).execute(
                     request.model_copy(), current_pdf=candidate_pdf
                 )
+                values_present = (
+                    repeat.current_value_pt is not None
+                    and repeat.target_value_pt is not None
+                    and prior.current_value_pt is not None
+                    and prior.target_value_pt is not None
+                )
                 held = (
-                    repeat.current_value_pt is None or prior.current_value_pt is None
-                    or abs(repeat.current_value_pt - repeat.target_value_pt)
+                    repeat.status == "confirmed"
+                    and values_present
+                    and abs(repeat.current_value_pt - repeat.target_value_pt)
                     <= abs(prior.current_value_pt - prior.target_value_pt) + E2_IMPROVEMENT_TOLERANCE_PT
                 )
-                rechecks.append({"finding": finding_id, "held": held})
+                reason = None
+                if not held:
+                    if repeat.status != "confirmed":
+                        reason = f"re-measurement not confirmed on the candidate PDF (status={repeat.status})"
+                    elif not values_present:
+                        reason = "re-measurement left measured values missing (vanished anchor / evidence gap)"
+                    else:
+                        reason = "accepted region error grew beyond the prior error + tolerance"
+                rechecks.append(
+                    {
+                        "finding": finding_id,
+                        "held": held,
+                        "status": repeat.status,
+                        **({"reason": reason} if reason else {}),
+                    }
+                )
                 if not held:
                     return False, rechecks
             return True, rechecks
@@ -8368,6 +8467,10 @@ def run_e5(
                                     reason=hypothesis.reason,
                                 )
                                 attributions.append(attribution)
+                                _record_ledger_attribution(
+                                    ledger, finding, attribution,
+                                    measured[finding.finding_id][1].request_id,
+                                )
                                 trace.add(
                                     agent="attribution_investigator", phase="attribute",
                                     action="live_attribution", output=attribution.model_dump(mode="json"),
@@ -8460,7 +8563,12 @@ def run_e5(
     
                             template = _scripted_lane_b_template(_base_template, finding, result)
                         try:
-                            validate_authored_template(template, target_pdf=target_pdf, render_candidate=candidate)
+                            validate_authored_template(
+                                template,
+                                target_pdf=target_pdf,
+                                render_candidate=candidate,
+                                known_evidence_ids=_known_evidence_ids(),
+                            )
                         except ValueError as error:
                             lane_state["last_rejection"] = str(error)[:280]
                             repair_attempts.append({"finding": finding.finding_id, "region": finding.region, "rejected": str(error)[:300], "round": round_no})
@@ -8538,7 +8646,9 @@ def run_e5(
                 else:
                     lane_state["active_template"] = template
                 resolved_measurements[finding.finding_id] = (bound, repeat_result)
-                ledger.entries[_ledger_key(finding)].status = "repaired"
+                repaired_entry = ledger.entries[_ledger_key(finding)]
+                repaired_entry.status = "repaired"
+                repaired_entry.measurement_request_id = repeat_result.request_id
                 trace.add(
                     agent="shell", phase="repair", action="promoted",
                     output={"version": candidate_version.version_id, "rechecks": rechecks},
@@ -8709,10 +8819,13 @@ def _selected_lane_artifact(
 
     - ``BEST`` — only a real hard-gate-valid best render;
     - ``ACTIVE DEFECT-LEVEL VERSION`` — the defect-level promoted active
-      render when no hard-gate-valid best exists (local improvement state,
-      explicitly NOT best);
-    - ``LATEST ATTEMPT`` — a lane with neither; the artifact shown is the
-      latest attempt only.
+      render (local improvement state, explicitly NOT best);
+    - ``ACTIVE UNPROMOTED VERSION`` — the lane's current ACTIVE render when
+      it never earned promotion (never BEST, never a rejected attempt);
+    - ``LATEST ATTEMPT`` — only when NO active version exists at all.
+
+    A rolled-back candidate is never selected: it is immutable history, not
+    the lane's current output.
     """
     def _stem(version_id: str) -> tuple[RenderVersion | None, str]:
         for index, version in enumerate(lane.render_versions):
@@ -8728,6 +8841,10 @@ def _selected_lane_artifact(
         version, stem = _stem(lane.best_defect_level_version)
         if version is not None:
             return version, stem, "ACTIVE DEFECT-LEVEL VERSION"
+    if lane.active_render_version:
+        version, stem = _stem(lane.active_render_version)
+        if version is not None:
+            return version, stem, "ACTIVE UNPROMOTED VERSION"
     if lane.render_versions:
         return lane.render_versions[-1], f"render_{len(lane.render_versions)}", "LATEST ATTEMPT"
     return None, "", "LATEST ATTEMPT"
@@ -8810,8 +8927,9 @@ def _write_e5_comparison(
 - This report declares NO winner; the owner decides from `owner_review/`.
 - BEST labels mark a real best-valid render; ACTIVE DEFECT-LEVEL VERSION
   marks a defect-level promoted active render when no hard-gate-valid best
-  exists (a local improvement, never BEST); LATEST ATTEMPT means the lane
-  produced neither and the artifact shown is the latest attempt only.
+  exists (a local improvement, never BEST); ACTIVE UNPROMOTED VERSION marks
+  the lane's current active render that never earned promotion; a
+  rolled-back attempt is never shown as the lane's output.
 
 | lane | terminal | best render | findings | confirmed | builder calls | improving repairs | tokens in/out | elapsed s |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -8873,6 +8991,7 @@ def _write_e5_owner_package(
     _LABEL_KIND = {
         "BEST": "best",
         "ACTIVE DEFECT-LEVEL VERSION": "active_defect_level",
+        "ACTIVE UNPROMOTED VERSION": "active_unpromoted",
         "LATEST ATTEMPT": "latest_attempt",
     }
     for lane_id, (version, lane_pdf, label) in lane_selected.items():
@@ -8924,6 +9043,13 @@ def _write_e5_owner_package(
                 f"active defect-level version `{lane.best_defect_level_version}` is shown "
                 "as ACTIVE DEFECT-LEVEL VERSION (a local improvement, never BEST)"
             )
+        if lane.active_render_version:
+            return (
+                f"- Lane {lane_id.upper()}: no best-valid render exists; the active "
+                f"version `{lane.active_render_version}` is shown as ACTIVE "
+                "UNPROMOTED VERSION — a rolled-back attempt is never shown as the "
+                "lane's current output, never labeled BEST"
+            )
         return (
             f"- Lane {lane_id.upper()} best render: NONE — no best-valid render "
             "exists; the package shows the latest attempt (LATEST ATTEMPT), "
@@ -8948,8 +9074,11 @@ def _write_e5_owner_package(
 - `lane_*_active_defect_level.html/.pdf` — a lane's defect-level promoted
   active version when NO hard-gate-valid best exists (a local improvement,
   explicitly NOT BEST);
+- `lane_*_active_unpromoted.html/.pdf` — a lane's current ACTIVE render that
+  never earned promotion (no rollback attempt is ever shown as the lane's
+  current output);
 - `lane_*_latest_attempt.html/.pdf` — latest attempt for a lane with NO
-  best-valid render and no defect-level active version (explicitly not BEST);
+  active version at all (explicitly not BEST);
 - `lane_*_content_shape_probes.json` — short/medium/long probe outcomes;
   probes marked diagnostic ran on a latest attempt and are NOT promotion
   evidence;

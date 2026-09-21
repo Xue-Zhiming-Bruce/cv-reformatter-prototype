@@ -1857,11 +1857,12 @@ def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
 
 
 @e5_skip
-def test_run_e5_owner_package_labels_latest_attempt_when_no_best(tmp_path: Path) -> None:
-    """Without a best-valid render, the owner package shows the LATEST
-    ATTEMPT (named and labeled as such), the REPORT states no best-valid
-    render exists, and BEST never appears for that lane; with a best render,
-    the package copies exactly the best version's artifact."""
+def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path) -> None:
+    """Without a best-valid render (and no defect-level promotion), the
+    owner package shows the lane's ACTIVE version as ACTIVE UNPROMOTED
+    VERSION — never a rolled-back attempt; BEST never appears for that lane;
+    with a best render, the package copies exactly the best version's
+    artifact."""
     run_dir, _terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=1,
     )
@@ -1874,8 +1875,19 @@ def test_run_e5_owner_package_labels_latest_attempt_when_no_best(tmp_path: Path)
             assert (package / f"lane_{lane_id}_active_defect_level.pdf").exists()
             assert not (package / f"lane_{lane_id}_latest_attempt.pdf").exists()
         elif lane["best_render_version"] is None:
-            assert (package / f"lane_{lane_id}_latest_attempt.pdf").exists()
+            # the ACTIVE version is shown, never the (possibly rolled-back)
+            # latest attempt
+            assert (package / f"lane_{lane_id}_active_unpromoted.pdf").exists()
             assert not (package / f"lane_{lane_id}_best.pdf").exists()
+            active_index = next(
+                index + 1
+                for index, v in enumerate(lane["render_versions"])
+                if v["version_id"] == lane["active_render_version"]
+            )
+            copied = package / f"lane_{lane_id}_active_unpromoted.pdf"
+            assert e._sha256_file(copied) == e._sha256_file(
+                run_dir / f"lane_{lane_id}" / f"render_{active_index}.pdf"
+            )
     if any(l["best_render_version"] is None for l in lanes.values()):
         report = (package / "REPORT.md").read_text(encoding="utf-8")
         assert "no best-valid render exists" in report
@@ -1899,6 +1911,8 @@ def test_run_e5_owner_package_labels_latest_attempt_when_no_best(tmp_path: Path)
             assert row["render_label"] == "BEST"
         elif lane_record.get("best_defect_level_version"):
             assert row["render_label"] == "ACTIVE DEFECT-LEVEL VERSION"
+        elif lane_record.get("active_render_version"):
+            assert row["render_label"] == "ACTIVE UNPROMOTED VERSION"
         else:
             assert row["render_label"] == "LATEST ATTEMPT"
         selected = next(
@@ -1971,7 +1985,7 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     config = json.loads((run_dir / "run_config.json").read_text())
     hashes = config["source_hashes"]
     assert hashes["recorded_before_first_live_call"] is True
-    assert hashes["basis"] == "critical_direct_runtime_sources"
+    assert hashes["basis"] == "selected_critical_source_drift_detection"
     # the registered set covers the ACTUAL direct runtime dependencies
     for name in e.E5_SOURCE_FILES:
         assert hashes["files"][name] == e._sha256_file(e.ROOT / name), name
@@ -2287,47 +2301,307 @@ def test_candidate_token_syntax_fails_closed_in_every_slot_region() -> None:
 
 
 def test_lane_b_metadata_fields_are_restricted_not_free_text() -> None:
-    """`evidence_refs` accept ONLY typed ev.<kind>.<n> IDs,
-    `expected_measurements` ONLY restricted identifiers, slot descriptions a
-    fixed bounded charset; there is NO free-text rationale field. The
-    remaining literal person-fact gate is a HEURISTIC: numbers, short words,
-    and non-English text are NOT reliably caught (documented gap, not a
-    closed channel)."""
+    """The reusable authored-template record carries NO unused free-text
+    metadata: description, repeating_regions, optional_regions,
+    pagination_expectation, and expected_measurements are DELETED (old
+    fields fail via extra="forbid"); evidence_refs must be members of the
+    shell's actually-issued evidence ids; HTML/CSS comments and the CSS
+    content: property are rejected. The literal person-fact gate stays a
+    documented HEURISTIC — the authored-code channel is NOT proven closed."""
     base = _base_authored_template()
-    assert "rationale" not in at.AuthoredTemplateCandidate.model_fields
+    for field in (
+        "rationale", "description", "repeating_regions", "optional_regions",
+        "pagination_expectation", "expected_measurements",
+    ):
+        assert field not in at.AuthoredTemplateCandidate.model_fields, field
+    assert "description" not in at.AuthoredSlot.model_fields
 
-    def _with(**updates):
+    # old metadata fields are rejected by extra="forbid", not silently ignored
+    for old_field, value in (
+        ("rationale", "prose"),
+        ("repeating_regions", ["summary"]),
+        ("optional_regions", ["languages"]),
+        ("pagination_expectation", "single page"),
+        ("expected_measurements", ["role_gap"]),
+    ):
         data = base.model_dump(mode="python")
-        data.update(updates)
-        return at.AuthoredTemplateCandidate.model_validate(data)
+        data[old_field] = value
+        with pytest.raises(ValueError):
+            at.AuthoredTemplateCandidate.model_validate(data)
+    data = base.model_dump(mode="python")
+    data["slots"] = [*base.slots, {"token": "x", "category": "summary", "description": "prose"}]
+    with pytest.raises(ValueError):
+        at.AuthoredTemplateCandidate.model_validate(data)
 
-    # non-evidence-ID refs fail closed
+    # non-evidence-ID refs fail closed at construction
+    def _with(**updates):
+        payload = base.model_dump(mode="python")
+        payload.update(updates)
+        return at.AuthoredTemplateCandidate.model_validate(payload)
+
     with pytest.raises(ValueError, match="evidence_refs must be typed"):
         _with(evidence_refs=["the candidate's phone number"])
     with pytest.raises(ValueError, match="evidence_refs must be typed"):
         _with(evidence_refs=["overview.001"])
-    # typed IDs are accepted
-    _with(evidence_refs=["ev.page_overview.001", "ev.adobe_element.007"])
-    # prose person facts in expected_measurements fail closed
-    with pytest.raises(ValueError, match="expected_measurements must be restricted"):
-        _with(expected_measurements=["John Doe works at Acme"])
-    _with(expected_measurements=["role_gap", "content_gate_missing_pdf/1"])
-    # slot descriptions are bounded: braces and non-ASCII fail construction
-    with pytest.raises(ValueError):
-        _with(slots=[
-            *base.slots,
-            at.AuthoredSlot(token="x", category="summary", description="bad {{desc}}"),
-        ])
-    with pytest.raises(ValueError):
-        _with(slots=[
-            *base.slots,
-            at.AuthoredSlot(token="x", category="summary", description="非英文描述"),
-        ])
+    plausible = _with(evidence_refs=["ev.page_overview.001"])
+
+    # a string that merely LOOKS like an evidence id is rejected unless the
+    # shell actually issued it (membership, not shape)
+    with pytest.raises(ValueError, match="shell never issued|no known evidence ids"):
+        at.validate_authored_template(plausible, target_pdf=RESUME_I)
+    with pytest.raises(ValueError, match="shell never issued"):
+        at.validate_authored_template(
+            plausible, target_pdf=RESUME_I,
+            known_evidence_ids={"ev.region_crop.002"},
+        )
+    report = at.validate_authored_template(
+        plausible, target_pdf=RESUME_I,
+        known_evidence_ids={"ev.page_overview.001", "ev.region_crop.002"},
+    )
+    assert report["passed"] is True
+
+    # comments and CSS content: are rejected as hidden persistent text
+    for payload, label in (
+        ("<!-- hidden note -->", "html comment"),
+        ("/* hidden note */", "css comment"),
+        (".x::before { content: 'CANDNAME'; }", "css content property"),
+    ):
+        probe = base.model_copy(
+            update={"css": base.css} if "content:" in payload or "/*" in payload
+            else {"html": base.html}
+        )
+        if "content:" in payload or "/*" in payload:
+            probe = base.model_copy(update={"css": base.css + "\n" + payload})
+        else:
+            probe = base.model_copy(update={"html": base.html + "\n" + payload})
+        with pytest.raises(ValueError, match="authored template rejected"):
+            at.validate_authored_template(probe, target_pdf=RESUME_I)
+
     # HEURISTIC ceiling, documented by test: the literal gate alone does not
-    # catch numbers, short words, or non-English person facts in template
-    # text — the channel is narrowed by construction (typed fields), never
-    # claimed closed.
-    number_probe = base.model_copy(update={"html": base.html + "\n<!-- 555-0199 -->"})
+    # catch numbers, short words, or non-English person facts inside markup
+    # TEXT — the direct persistent free-text FIELDS are closed, but the
+    # authored-code channel is not proven closed.
+    number_probe = base.model_copy(update={"html": base.html + "\n<span>555-0199</span>"})
     assert at.validate_authored_template(number_probe, target_pdf=RESUME_I)["passed"]
-    non_english_probe = base.model_copy(update={"html": base.html + "\n<!-- 王小明 北京大学 -->"})
+    non_english_probe = base.model_copy(update={"html": base.html + "\n<span>王小明 北京大学</span>"})
     assert at.validate_authored_template(non_english_probe, target_pdf=RESUME_I)["passed"]
+
+
+# --- E5 third correctness round: ledger as the single open/closed source,
+# --- fail-closed accepted-region recheck, active-unpromoted owner artifact --
+
+
+def _finding(vid: str, *, finding_id: str, region: str = "section.05",
+             dimension: str = "role_gap", observation: str = "gap looks larger") -> e.DefectFinding:
+    return e.DefectFinding(
+        finding_id=finding_id,
+        target_version="target-resume_I-v1",
+        render_version=vid,
+        page=1,
+        region=region,
+        observation=observation,
+        suspected_dimension=dimension,
+        requested_measurement=e.MeasurementRequest(
+            request_id=f"measure-{finding_id}", metric="role_gap", page=1,
+            region_id=region, intent="vertical gap between the first two entry heads",
+        ),
+        severity="medium",
+        confidence=0.6,
+        reviewer="scripted",
+    )
+
+
+def test_ledger_is_the_single_open_closed_source() -> None:
+    """open/closed is decided ONLY by ledger entry status: repaired/resolved
+    are closed, open/attributed/regressed are not; a deduplicated
+    re-observation under a NEW finding id must not reopen a repaired defect;
+    a CHANGED observation reopens bound to the latest finding id with the
+    stale attribution cleared."""
+    ledger = e.DefectLedger()
+    f1 = _finding("v1", finding_id="f1")
+    entry, action = ledger.observe(f1)
+    assert action == "new" and entry.status == "open"
+    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == ["f1"]
+    # confirmed within tolerance (no_defect) closes the entry as resolved
+    attribution = e.AttributionRecord(
+        finding_id="f1", render_version="v1",
+        measurement_request_id="measure-f1",
+        attribution="no_defect", hypothesis_status="rejected",
+        repair_owner="none", evidence=["measure-f1"], reason="within tolerance",
+    )
+    e._record_ledger_attribution(ledger, f1, attribution, "measure-f1")
+    assert entry.status == "resolved"
+    assert entry.attribution is attribution
+    assert entry.measurement_request_id == "measure-f1"
+    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == []
+    # the SAME defect re-observed under a NEW finding id: dedup, still closed
+    f2 = _finding("v2", finding_id="f2")
+    entry, action = ledger.observe(f2)
+    assert action == "dedup"
+    assert entry.status == "resolved"
+    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == []
+    # a changed observation REOPENS: latest finding id, stale state cleared
+    f3 = _finding("v3", finding_id="f3", observation="the heading moved below the rule now")
+    entry, action = ledger.observe(f3)
+    assert action == "reopened"
+    assert entry.status == "open"
+    assert entry.finding_id == "f3"
+    assert entry.attribution is None
+    assert entry.measurement_request_id is None
+    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == ["f3"]
+    # every status other than repaired/resolved stays open
+    entry.status = "regressed"
+    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == ["f3"]
+    entry.status = "repaired"
+    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == []
+
+
+@e5_skip
+def test_run_e5_deduped_repair_does_not_reopen_in_open_findings(
+    tmp_path: Path,
+) -> None:
+    """The same ledger defect re-observed in a later round under a NEW
+    finding id is deduplicated against the repaired entry and must NOT
+    appear in open_findings (the old raw-finding-id scan made the lane
+    permanently un-finishable). The scripted reviewer already emits a fresh
+    finding id per round with the same ledger key + observation class."""
+    _run_dir, _terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
+    )
+    lane = record["lanes"]["b"]
+    finding_ids = [f["finding_id"] for f in lane["findings"]]
+    assert len(finding_ids) >= 2, "the same defect was re-observed in round 2"
+    assert len(finding_ids) == len(set(finding_ids)), "each round emits a new finding id"
+    assert len(lane["ledger"]) == 1, "both observations deduplicate to ONE ledger entry"
+    entry = lane["ledger"][0]
+    assert entry["status"] in {"repaired", "resolved"}
+    # the repaired defect is closed despite the second finding id
+    assert not set(finding_ids) & set(lane["open_findings"]), (
+        "a deduplicated re-observation of a repaired defect reappeared as open"
+    )
+
+
+@e5_skip
+def test_run_e5_accepted_region_recheck_fails_closed_on_missing_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An accepted-region recheck whose re-measurement cannot be confirmed
+    (vanished anchor / evidence_missing) must FAIL the hold and roll the
+    candidate back — missing evidence is never treated as no regression.
+    Deterministic measurements are faked so the loop deterministically
+    reaches the round-2 recheck with a prior accepted region."""
+    real_controller = e.MeasureController
+    call_counts: dict[str, int] = {}
+    first_request_id: list[str] = []
+
+    class ScriptedMeasurements(real_controller):
+        """Round 1: 30.0 -> 25.0 (improves, promotes). Round 2: 20.0 -> 15.0
+        (improves) — then the round-1 accepted-region RECHECK (third call for
+        the round-1 request id) returns evidence_missing."""
+
+        def execute(self, request, *, current_pdf):
+            key = request.request_id
+            if not first_request_id:
+                first_request_id.append(key)
+            call_counts[key] = call_counts.get(key, 0) + 1
+            count = call_counts[key]
+            if key == first_request_id[0]:
+                scripted = {1: (30.0, 0.0), 2: (25.0, 0.0)}
+            else:
+                scripted = {1: (20.0, 0.0), 2: (15.0, 0.0)}
+            if count in scripted:
+                current, target = scripted[count]
+                return e.MeasurementResult(
+                    request_id=request.request_id,
+                    status="confirmed",
+                    current_value_pt=current,
+                    target_value_pt=target,
+                    delta_pt=current - target,
+                    method="role_gap/scripted-test",
+                )
+            return e.MeasurementResult(
+                request_id=request.request_id,
+                status="evidence_missing",
+                reason="the accepted-region anchor vanished from the candidate PDF",
+                method="role_gap/scripted-test",
+            )
+
+    class DimensionShiftReviewer(e.ScriptedReviewer):
+        # a distinct dimension per round keeps the ledger keys (and repair
+        # fingerprints) distinct so round 2 executes a real repair while the
+        # round-1 accepted region is rechecked
+        def run(self, *args, **kwargs):
+            findings = super().run(*args, **kwargs)
+            finding_id = kwargs.get("finding_id", "")
+            return [
+                f.model_copy(update={"suspected_dimension": f"role_gap::{finding_id}"})
+                for f in findings
+            ]
+
+    monkeypatch.setattr(e, "MeasureController", ScriptedMeasurements)
+    monkeypatch.setattr(e, "ScriptedReviewer", DimensionShiftReviewer)
+    _run_dir, _terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
+    )
+    lane = record["lanes"]["b"]
+    assert any(
+        "accepted_region_regressed_rolled_back" in s
+        for s in lane["attempted_strategies"]
+    ), lane["attempted_strategies"]
+    promoted_ids = {v["version_id"] for v in lane["render_versions"] if v["promoted"]}
+    # the round-1 promotion stands; the round-2 candidate was rolled back
+    assert len(promoted_ids) == 1
+    assert lane["active_render_version"] in promoted_ids
+    assert lane["render_versions"][-1]["version_id"] not in promoted_ids
+    best = lane["best_render_version"]
+    assert best is None or best in promoted_ids
+
+
+def test_owner_package_shows_active_unpromoted_never_rolled_back(tmp_path: Path) -> None:
+    """With no best and no defect-level version, the owner package resolves
+    to the lane's ACTIVE render (ACTIVE UNPROMOTED VERSION) — never the
+    rolled-back last attempt — and copies that version's actual bytes."""
+    out_dir = tmp_path / "pkg"
+    lane_dir = out_dir / "lane_a"
+    lane_dir.mkdir(parents=True)
+    v1_pdf = lane_dir / "render_1.pdf"
+    v2_pdf = lane_dir / "render_2.pdf"
+    v1_pdf.write_bytes(b"%PDF-1.4 active v1")
+    v2_pdf.write_bytes(b"%PDF-1.4 rolled-back v2")
+    versions = [
+        e.RenderVersion(
+            version_id="v1", html_sha256="h1", pdf_sha256=e._sha256_file(v1_pdf),
+            page_count=1, hard_gates_passed=False, promoted=False, note="active initial",
+        ),
+        e.RenderVersion(
+            version_id="v2", html_sha256="h2", pdf_sha256=e._sha256_file(v2_pdf),
+            page_count=1, hard_gates_passed=False, promoted=False, note="rolled back",
+        ),
+    ]
+    lane = e.E5LaneRecord(
+        lane="a", representation="lane A", render_versions=versions,
+        best_render_version=None,
+        best_defect_level_version=None,
+        active_render_version="v1",
+    )
+    version, stem, label = e._selected_lane_artifact(lane)
+    assert label == "ACTIVE UNPROMOTED VERSION"
+    assert version.version_id == "v1" and stem == "render_1"
+    record = e.E5LoopRecord(
+        target_id="t", target_sha256="0" * 64, lanes={"a": lane},
+        summary={"terminal_state": "budget_exhausted"},
+    )
+    package = e._write_e5_owner_package(out_dir, RESUME_I, record)
+    copied = package / "lane_a_active_unpromoted.pdf"
+    assert copied.exists()
+    assert copied.read_bytes() == v1_pdf.read_bytes(), (
+        "the package must copy the ACTIVE version, never the rolled-back last attempt"
+    )
+    assert not (package / "lane_a_latest_attempt.pdf").exists()
+    assert not (package / "lane_a_best.pdf").exists()
+    report = (package / "REPORT.md").read_text(encoding="utf-8")
+    assert "ACTIVE UNPROMOTED VERSION" in report
+    row = e._write_e5_comparison(out_dir, record, {"run_id": out_dir.name})
+    comparison = json.loads((out_dir / "comparison_report.json").read_text())
+    assert comparison["lanes"][0]["render_label"] == "ACTIVE UNPROMOTED VERSION"
+    assert comparison["lanes"][0]["selected_version"] == "v1"
