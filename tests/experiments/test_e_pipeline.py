@@ -1273,7 +1273,7 @@ def test_measurement_binding_resolves_against_actual_final_pdf_objects(tmp_path:
     """Phase 0: binding resolves the semantic intent into REAL final-PDF
     objects (render anchors come from the render's own entry-head rows)."""
     run_dir, _terminal, record = e.run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1, probe_render=False,
+        RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
     )
     lane = record["lanes"]["a"]
     confirmed = [r for r in lane["measurement_results"] if r["status"] == "confirmed"]
@@ -1413,7 +1413,7 @@ def test_lane_a_proposal_cites_only_known_state_nodes() -> None:
 @e5_skip
 def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
     run_dir, terminal, record = e.run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1, probe_render=False,
+        RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
     )
     assert terminal in {"ready_for_owner_review", "budget_exhausted"}
     lane = record["lanes"]["a"]
@@ -1427,7 +1427,7 @@ def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
 @e5_skip
 def test_run_e5_offline_lane_b_authored_template_loop(tmp_path: Path) -> None:
     run_dir, terminal, record = e.run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1, probe_render=False,
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     assert terminal in {"ready_for_owner_review", "budget_exhausted"}
     lane = record["lanes"]["b"]
@@ -1511,7 +1511,7 @@ def test_authored_rendering_uses_a_network_disabled_chrome_environment() -> None
 @e5_skip
 def test_run_e5_repeats_the_identical_measurement_after_repair(tmp_path: Path) -> None:
     _run_dir, _terminal, record = e.run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2, probe_render=False,
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
     lane = record["lanes"]["b"]
     results = lane["measurement_results"]
@@ -1522,7 +1522,7 @@ def test_run_e5_repeats_the_identical_measurement_after_repair(tmp_path: Path) -
 @e5_skip
 def test_run_e5_rolls_back_regressions_and_records_the_ledger(tmp_path: Path) -> None:
     run_dir, terminal, record = e.run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=2, probe_render=False,
+        RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=2,
     )
     for lane_id, lane in record["lanes"].items():
         assert lane["ledger"], "the persistent defect ledger is empty"
@@ -1537,7 +1537,7 @@ def test_run_e5_budget_exhaustion_preserves_resumable_best_valid_state(tmp_path:
     tiny = RunBudget(max_model_requests=1, max_tool_calls=8)
     run_dir, terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
-        probe_render=False, budget=tiny,
+        budget=tiny,
     )
     assert terminal == "budget_exhausted"
     state = json.loads((run_dir / "e5_state.json").read_text())
@@ -1556,7 +1556,7 @@ def test_neither_lane_can_emit_an_unsupported_terminal_state() -> None:
 @e5_skip
 def test_run_e5_prompts_never_carry_rubric_answers(tmp_path: Path) -> None:
     run_dir, _terminal, _record = e.run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1, probe_render=False,
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     prompts = (run_dir / "prompts.json").read_text(encoding="utf-8")
     config = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
@@ -1578,3 +1578,427 @@ def test_owner_acceptance_is_never_inferred() -> None:
 
     with pytest.raises(ValidationError):
         e.E5LaneRecord(lane="b", representation="x", terminal_state="delivered")
+
+
+# --- E5 correctness round: injection, rollback, budgets, probes, reports ----
+
+
+def test_lane_b_candidate_text_cannot_inject_html() -> None:
+    """P0: every scalar CandidateDocument text is HTML-escaped at fill time;
+    candidate values are text nodes only — `<li>`/`<br>` markup comes from
+    the shell, and no candidate-supplied element, event attribute, closing
+    tag, or entity survives as markup."""
+    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+
+    malicious = CandidateDocument(
+        candidate_id="malicious_probe",
+        leaves=[
+            CandidateLeaf(
+                leaf_id="header.name", kind="header_field", slot="name",
+                text="<script>alert('x')</script>",
+            ),
+            CandidateLeaf(
+                leaf_id="header.email", kind="header_field", slot="envelope",
+                text='"><img src=x onerror=alert(1)>',
+            ),
+            CandidateLeaf(
+                leaf_id="summary.p1", kind="summary_paragraph", source="summary",
+                text="&<script>closing</script>\"'",
+            ),
+            CandidateLeaf(
+                leaf_id="work.e1", kind="work_entry", source="work_experience",
+                text="<b>bold entry</b>",
+            ),
+            CandidateLeaf(
+                leaf_id="work.e1.m1", kind="entry_meta", source="work_experience",
+                parent_leaf_id="work.e1", text="2020 & < 2021 >",
+            ),
+            CandidateLeaf(
+                leaf_id="work.e1.b1", kind="work_bullet", source="work_experience",
+                parent_leaf_id="work.e1", text="</p><script>x</script>",
+            ),
+            CandidateLeaf(
+                leaf_id="skills.g1", kind="skill_group", source="skills",
+                text="<i>italic skill</i>",
+            ),
+        ],
+    )
+    fill = at.fill_authored_template(_base_authored_template(), malicious)
+    lowered = fill.html_filled.lower()
+    # No candidate-supplied element or event attribute survives as markup
+    # (an escaped value may contain the TEXT "onerror", but never inside a
+    # real tag).
+    assert "<script" not in lowered
+    assert "<img" not in lowered
+    assert "<b>" not in lowered and "<i>" not in lowered
+    # The hostile text IS present, escaped (output encoding, not rewriting).
+    assert "&lt;script&gt;" in fill.html_filled
+    assert "&lt;/p&gt;" in fill.html_filled
+    assert "&amp;" in fill.html_filled
+    assert "&lt;b&gt;bold entry&lt;/b&gt;" in fill.html_filled
+    # Shell-generated list markup exists and its content is escaped.
+    assert "<li>&lt;/p&gt;&lt;script&gt;x&lt;/script&gt;</li>" in fill.html_filled
+    # The assembled standalone document keeps the same property.
+    doc = at.build_authored_document(_base_authored_template(), fill, (595.276, 841.89))
+    assert "<script" not in doc.lower()
+
+
+def test_lane_b_candidate_values_are_never_rescanned_as_slot_syntax() -> None:
+    """One substitution pass: a candidate value carrying `{{...}}` cannot
+    inject slot tokens; the fill fails closed on the residual-token check."""
+    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+
+    hostile = CandidateDocument(
+        candidate_id="token_probe",
+        leaves=[
+            CandidateLeaf(
+                leaf_id="header.name", kind="header_field", slot="name",
+                text="{{item_bullets}}",
+            ),
+            CandidateLeaf(
+                leaf_id="summary.p1", kind="summary_paragraph", source="summary",
+                text="plain summary",
+            ),
+        ],
+    )
+    with pytest.raises(ValueError, match="unfilled slot tokens"):
+        at.fill_authored_template(_base_authored_template(), hostile)
+
+
+@e2_skip
+def test_measurement_tool_budget_consumed_once_per_measurement(tmp_path: Path) -> None:
+    """The MeasureController is the SINGLE tool-budget consumer for a
+    deterministic measurement: one execute -> exactly one tool call."""
+    raw_path = tmp_path / "adobe_raw.json"
+    raw_path.write_text(
+        json.dumps(json.loads((TARGET_F_CACHE / "adobe_raw.json").read_text())),
+        encoding="utf-8",
+    )
+    pod = e.DualSourcePod(TARGET_F, raw_path, tmp_path, render_pdf=None)
+    budget = e.RunBudget(max_model_requests=4, max_tool_calls=48)
+    trace = e.RunTrace(tmp_path)
+    controller = e.MeasureController(pod, budget, trace)
+    request = e.MeasurementRequest(
+        request_id="measure-budget-001", metric="role_gap", page=1,
+        from_text="ImageCaptioningSystem", to_text="SentimentAnalysisAPI",
+        render_from_text="ImageCaptioningSystem", render_to_text="SentimentAnalysisAPI",
+    )
+    controller.execute(request, current_pdf=TARGET_F)
+    assert budget.tool_calls == 1
+    assert budget.calls_by_tool["compare_pdf_geometry"] == 1
+
+
+@e5_skip
+def test_run_e5_measurement_tool_count_matches_actual_measurements(tmp_path: Path) -> None:
+    """No caller-side double consumption: the lane's compare_pdf_geometry
+    tool count equals the number of actual measurement records traced by the
+    MeasureController (one trace record per deterministic measurement)."""
+    _run_dir, _terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
+    )
+    trace = json.loads((tmp_path / "run" / "lane_b" / "trace.json").read_text())
+    measured = [
+        entry for entry in trace
+        if entry.get("agent") == "measure_controller" and entry.get("action") == "measurement"
+    ]
+    spent = record["lanes"]["b"]["budget_state"]["calls_by_tool"].get("compare_pdf_geometry", 0)
+    assert spent == len(measured) > 0
+
+
+def test_best_valid_version_selection_follows_explicit_rule() -> None:
+    """Explicit rule: latest PROMOTED version wins; without any promotion,
+    the latest hard-gate-valid version; never `versions[-1]`, never the
+    first valid one."""
+    def version(vid: str, *, gates: bool, promoted: bool = False) -> e.RenderVersion:
+        return e.RenderVersion(
+            version_id=vid, html_sha256="h", pdf_sha256="p",
+            page_count=1, hard_gates_passed=gates, promoted=promoted, note="",
+        )
+
+    v1 = version("v1", gates=True)
+    v2 = version("v2", gates=False)
+    v3 = version("v3", gates=True, promoted=True)
+    assert e._best_valid_version_id([v1, v2, v3]) == "v3"
+    # a later hard-gate-valid but NOT promoted version never displaces the
+    # promoted one
+    v4 = version("v4", gates=True)
+    assert e._best_valid_version_id([v1, v2, v3, v4]) == "v3"
+    # no promotion: the LATEST hard-gate-valid, not the first
+    assert e._best_valid_version_id([v1, v2]) == "v1"
+    v1_late = version("v1", gates=True)
+    v5 = version("v5", gates=True)
+    assert e._best_valid_version_id([v1_late, v2, v5]) == "v5"
+    # nothing valid: None (no best-valid render exists)
+    assert e._best_valid_version_id([version("v1", gates=False)]) is None
+    # a rolled-back candidate never masquerades as best
+    v6 = version("v6", gates=True)
+    assert e._best_valid_version_id([version("v1", gates=False), v6], excluded={"v6"}) is None
+    v7 = version("v7", gates=True)
+    assert e._best_valid_version_id([v6, v7], excluded={"v6"}) == "v7"
+
+
+@e5_skip
+def test_run_e5_rejected_render_stays_in_history_and_next_round_uses_old_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rollback: a rejected (non-improving) candidate render stays in the
+    immutable history un-promoted, the active version stays the pre-repair
+    render, and the NEXT round's reviewer/measurement read the OLD active
+    PDF — never `versions[-1]`."""
+    def non_improving_template(base, finding, result):
+        # a repair that changes nothing -> identical measurement -> rollback
+        return base.model_copy(update={"template_id": base.template_id + "-r"})
+
+    monkeypatch.setattr(e, "_scripted_lane_b_template", non_improving_template)
+    run_dir, terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
+    )
+    lane = record["lanes"]["b"]
+    assert terminal == "budget_exhausted"
+    # the rejected candidate render is preserved in history, un-promoted
+    assert len(lane["render_versions"]) >= 2
+    assert all(not v["promoted"] for v in lane["render_versions"])
+    rolled_back_id = lane["render_versions"][-1]["version_id"]
+    assert any("rolled_back" in s for s in lane["attempted_strategies"])
+    # the active version stayed the pre-repair render
+    assert lane["active_render_version"] == lane["render_versions"][0]["version_id"]
+    assert lane["active_render_version"] != rolled_back_id
+    # the NEXT round's finding cites the OLD active version (not the
+    # rejected candidate), proving the round read the old active PDF
+    post_rollback_findings = [
+        f for f in lane["findings"]
+        if f["render_version"] == lane["active_render_version"]
+    ]
+    assert len(post_rollback_findings) >= 2, "the next round did not re-review the old active version"
+    assert not any(f["render_version"] == rolled_back_id for f in lane["findings"][1:])
+    # the best selection is explicit and honest: the rolled-back candidate
+    # never becomes best; the pre-repair active render (gate-valid, never
+    # rejected) is the best available version
+    assert lane["best_render_version"] == lane["active_render_version"]
+    assert lane["best_render_version"] != rolled_back_id
+
+
+@e5_skip
+def test_run_e5_promoted_render_becomes_active_and_best_matches_artifact(
+    tmp_path: Path,
+) -> None:
+    """Promotion: the shell promotes only a verified improvement; the
+    promoted render becomes the active version, the explicit best-valid
+    selection resolves to it, and the best ID matches the actual artifact
+    bytes on disk."""
+    run_dir, _terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
+    )
+    lane = record["lanes"]["b"]
+    assert lane["best_render_version"] is not None, "the scripted improvement must promote"
+    promoted = next(
+        v for v in lane["render_versions"]
+        if v["version_id"] == lane["best_render_version"]
+    )
+    assert promoted["promoted"] and promoted["hard_gates_passed"]
+    assert lane["active_render_version"] == lane["best_render_version"]
+    index = lane["render_versions"].index(promoted) + 1
+    pdf_path = run_dir / "lane_b" / f"render_{index}.pdf"
+    assert pdf_path.exists()
+    assert e._sha256_file(pdf_path) == promoted["pdf_sha256"], (
+        "the best ID must resolve to the actual artifact bytes"
+    )
+    # the NEXT round (after promotion) reads the promoted active version
+    post_findings = [f for f in lane["findings"] if f["render_version"] == promoted["version_id"]]
+    assert post_findings
+
+
+@e5_skip
+def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
+    tmp_path: Path,
+) -> None:
+    """Content-shape probes run the REAL chain (binding -> HTML -> Chrome
+    PDF -> accounting/presence/blank/determinism/privacy gates) against the
+    EXACT selected representation — recorded by id, with real PDF
+    artifacts — never a default-state or string-fill-only claim."""
+    run_dir, _terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=1,
+    )
+    for lane_id, expected_token in (("a", "proposal"), ("b", "template")):
+        lane = record["lanes"][lane_id]
+        probes = json.loads(
+            (run_dir / f"lane_{lane_id}" / "content_shape_probes.json").read_text()
+        )
+        assert probes["_probe_mode"] in {"promotion_evidence", "diagnostic"}
+        assert probes["_selected_version"] in {
+            v["version_id"] for v in lane["render_versions"]
+        }
+        for profile in ("short", "medium", "long"):
+            entry = probes[profile]
+            assert entry["representation"], f"lane {lane_id}: probe must name its representation"
+            assert entry["pdf"], f"lane {lane_id}/{profile}: probe must record its PDF"
+            probe_pdf = run_dir / f"lane_{lane_id}" / entry["pdf"]
+            assert probe_pdf.exists() and probe_pdf.stat().st_size > 0
+            assert entry["passed"] is True, f"lane {lane_id}/{profile}: {entry.get('gates') or entry.get('error')}"
+            assert set(entry["gates"]) >= {
+                "no_blank_page", "deterministic_render", "privacy_gate",
+            }
+        # the selected representation's identity matches the active/best
+        # version's recorded representation (not a default scripted fixture)
+        selected_id = probes["_selected_version"]
+        # the probes run against the best-valid representation; only a
+        # diagnostic probe (no best-valid) runs against the latest attempt
+        if lane["best_render_version"] is not None:
+            assert selected_id == lane["best_render_version"]
+        else:
+            assert selected_id == lane["render_versions"][-1]["version_id"]
+
+
+@e5_skip
+def test_run_e5_owner_package_labels_latest_attempt_when_no_best(tmp_path: Path) -> None:
+    """Without a best-valid render, the owner package shows the LATEST
+    ATTEMPT (named and labeled as such), the REPORT states no best-valid
+    render exists, and BEST never appears for that lane; with a best render,
+    the package copies exactly the best version's artifact."""
+    run_dir, _terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=1,
+    )
+    package = run_dir / "owner_review"
+    lanes = record["lanes"]
+    if lanes["a"]["best_render_version"] is None:
+        assert (package / "lane_a_latest_attempt.pdf").exists()
+        assert not (package / "lane_a_best.pdf").exists()
+        report = (package / "REPORT.md").read_text(encoding="utf-8")
+        assert "no best-valid render exists" in report
+    if lanes["b"]["best_render_version"] is not None:
+        best_index = next(
+            index + 1
+            for index, v in enumerate(lanes["b"]["render_versions"])
+            if v["version_id"] == lanes["b"]["best_render_version"]
+        )
+        copied = package / "lane_b_best.pdf"
+        assert copied.exists()
+        assert e._sha256_file(copied) == e._sha256_file(
+            run_dir / "lane_b" / f"render_{best_index}.pdf"
+        )
+    # the comparison report labels every lane accurately and takes the page
+    # count from the SELECTED artifact
+    comparison = json.loads((run_dir / "comparison_report.json").read_text())
+    for row in comparison["lanes"]:
+        lane_record = lanes[row["lane"]]
+        if lane_record["best_render_version"] is None:
+            assert row["render_label"] == "LATEST ATTEMPT"
+        else:
+            assert row["render_label"] == "BEST"
+        selected = next(
+            v for v in lane_record["render_versions"]
+            if v["version_id"] == row["selected_version"]
+        )
+        assert row["selected_pages"] == selected["page_count"]
+        # not measured in this run: recorded as not_evaluated, never 0
+        assert row["target_specific_code"] is None
+        assert row["target_specific_code_status"] == "not_evaluated"
+
+
+@e5_skip
+def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -> None:
+    """The owner package resolves artifacts through best_render_version —
+    a best render that is NOT the last version must be copied, never
+    silently replaced by `render_versions[-1]`."""
+    # build a record whose best is v1 of two versions, with real artifacts
+    target = RESUME_I
+    out_dir = tmp_path / "pkg"
+    out_dir.mkdir()
+    lane_dir = out_dir / "lane_a"
+    lane_dir.mkdir()
+    from tests.experiments.e_pipeline import RenderVersion, E5LaneRecord, E5LoopRecord
+
+    v1_pdf = lane_dir / "render_1.pdf"
+    v2_pdf = lane_dir / "render_2.pdf"
+    v1_pdf.write_bytes(b"%PDF-1.4 best")
+    v2_pdf.write_bytes(b"%PDF-1.4 latest")
+    versions = [
+        RenderVersion(
+            version_id="render-resume_I-laneA-v1", html_sha256="h1",
+            pdf_sha256=e._sha256_file(v1_pdf), page_count=2,
+            hard_gates_passed=True, promoted=True, note="best",
+        ),
+        RenderVersion(
+            version_id="render-resume_I-laneA-v2", html_sha256="h2",
+            pdf_sha256=e._sha256_file(v2_pdf), page_count=2,
+            hard_gates_passed=True, promoted=False, note="latest",
+        ),
+    ]
+    lane = E5LaneRecord(
+        lane="a", representation="lane A", render_versions=versions,
+        best_render_version="render-resume_I-laneA-v1",
+        active_render_version="render-resume_I-laneA-v1",
+    )
+    record = E5LoopRecord(
+        target_id="target-resume_I-v1", target_sha256="0" * 64, lanes={"a": lane},
+        summary={"terminal_state": "budget_exhausted"},
+    )
+    package = e._write_e5_owner_package(out_dir, target, record)
+    best = package / "lane_a_best.pdf"
+    assert best.exists()
+    assert best.read_bytes() == v1_pdf.read_bytes(), (
+        "the package must copy the BEST version, not the last render"
+    )
+    assert not (package / "lane_a_latest_attempt.pdf").exists()
+
+
+@e5_skip
+def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) -> None:
+    """The run config records SHA-256 of every experiment source file BEFORE
+    the first live call; the change detector flags any drift (a drifted run
+    records source_changed and is never canonical)."""
+    run_dir, _terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
+    )
+    config = json.loads((run_dir / "run_config.json").read_text())
+    hashes = config["source_hashes"]
+    assert hashes["recorded_before_first_live_call"] is True
+    for name in (
+        "tests/experiments/e_pipeline.py",
+        "tests/experiments/e_authored_template.py",
+        "tests/experiments/c2_plan.py",
+        "tests/experiments/c2_html.py",
+    ):
+        assert hashes["files"][name] == e._sha256_file(e.ROOT / name)
+    assert record["summary"]["source_changed"] is False
+    assert record["summary"]["canonical"] is True
+    # any drift between frozen hashes and current source is detected
+    drifted = json.loads(json.dumps(config))
+    drifted["source_hashes"]["files"]["tests/experiments/e_pipeline.py"] = "0" * 64
+    assert e._source_hashes_changed(drifted) is True
+    # a config WITHOUT source hashes (e.g. the pre-fix canonical run) is
+    # reported as changed/not-bindable, never silently trusted
+    assert e._source_hashes_changed({"starting_commit": "x"}) is True
+
+
+def test_summarize_e5_state_reads_one_run_only() -> None:
+    """The deterministic ledger summarizer reads a single e5_state.json and
+    reports exactly that run's numbers (no cross-run splicing possible)."""
+    from tests.experiments.e_pipeline import E5LaneRecord, E5LoopRecord, summarize_e5_state
+    import tempfile
+
+    lane = E5LaneRecord(
+        lane="a", representation="lane A",
+        best_render_version=None, active_render_version="v1",
+        summary={
+            "total_findings": 7, "confirmed_measurements": 5,
+            "unbound_measurements": 1, "builder_calls": 2,
+            "promoted_versions": 0, "probe_mode": "diagnostic",
+        },
+    )
+    record = E5LoopRecord(
+        target_id="t", target_sha256="0" * 64, lanes={"a": lane},
+        summary={"terminal_state": "budget_exhausted", "source_changed": False},
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp) / "e_pipeline_e5_test"
+        run_dir.mkdir()
+        (run_dir / "e5_state.json").write_text(record.model_dump_json())
+        summary = summarize_e5_state(run_dir / "e5_state.json")
+    assert summary["run_id"] == "e_pipeline_e5_test"
+    lane_summary = summary["lanes"]["a"]
+    assert lane_summary["findings"] == 7
+    assert lane_summary["confirmed_measurements"] == 5
+    assert lane_summary["builder_calls"] == 2
+    assert lane_summary["best_render_version"] is None
+    assert summary["source_changed"] is False

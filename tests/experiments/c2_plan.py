@@ -1578,6 +1578,20 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         )
 
     # -- ownership closure ------------------------------------------------------
+    # Routed header leaves render under their `unroutable.{slot}` identity in
+    # the header-overflow node (see above); they are owned, just not under
+    # their original leaf id, so they must not be counted as duplicated.
+    routed_header_leaves = sum(
+        1
+        for leaf in candidate.leaves
+        if leaf.kind == "header_field"
+        and leaf.leaf_id not in used_header_leaves
+        and leaf.slot in {
+            record.slot
+            for record in candidate.unroutable
+            if record.disposition == "render"
+        }
+    )
     for leaf in candidate.leaves:
         if leaf.kind == "header_field" or leaf.leaf_id in ledger:
             continue
@@ -1591,7 +1605,9 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         )
     if unhomed:
         failures.append(f"{len(unhomed)} candidate leaf(s) have no rendered destination")
-    duplicated = len(candidate.leaves) - len(ledger) - len(unhomed)
+    duplicated = (
+        len(candidate.leaves) - len(ledger) - len(unhomed) - routed_header_leaves
+    )
     if duplicated > 0:
         failures.append(f"{duplicated} candidate leaf(s) consumed more than once")
 

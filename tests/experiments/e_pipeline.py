@@ -6668,6 +6668,7 @@ class E5LaneRecord(EvidenceModel):
     representation: str
     render_versions: list[RenderVersion] = Field(default_factory=list)
     best_render_version: str | None = None
+    active_render_version: str | None = None
     findings: list[DefectFinding] = Field(default_factory=list)
     measurement_results: list[MeasurementResult] = Field(default_factory=list)
     attributions: list[AttributionRecord] = Field(default_factory=list)
@@ -6703,6 +6704,30 @@ def _builder_reserve_intact(budget: RunBudget) -> bool:
     the lane budget still covers the Builder reserve (diagnosis must not eat
     the budget before the Builder can act)."""
     return budget.remaining_model_requests() > E5_BUILDER_RESERVE_REQUESTS
+
+
+def _best_valid_version_id(
+    versions: list[RenderVersion], excluded: set[str] | None = None
+) -> str | None:
+    """Explicit best-valid selection rule (never 'first promoted' and never
+    'first hard-gate-valid', and never `versions[-1]`):
+
+    1. the LATEST promoted version — promotion happens only in the shell
+       after the identical re-measurement improved, all candidate-safety
+       gates stayed green, and no accepted region regressed, so the latest
+       promoted version is the best verified state;
+    2. otherwise the LATEST hard-gate-valid version that was never explicitly
+       ROLLED BACK (a rolled-back candidate was rejected as the lane's
+       active state and must not masquerade as best);
+    3. otherwise None (no best-valid render exists)."""
+    excluded = excluded or set()
+    for version in reversed(versions):
+        if version.promoted:
+            return version.version_id
+    for version in reversed(versions):
+        if version.hard_gates_passed and version.version_id not in excluded:
+            return version.version_id
+    return None
 
 
 def _bind_role_gap_anchors(
@@ -6944,13 +6969,114 @@ def _review_scope_payload(
     }
 
 
+def _apply_header_overflow_disposition(candidate: Any, state: Any) -> Any:
+    """Generic E3 shell transition, shared by the main render and every
+    content-shape probe: header fields with no measured home in the compiled
+    state route through the EXPLICIT candidate-only header-overflow node
+    (nothing silently dropped, nothing invented)."""
+    from tests.experiments.c2_candidates import UnroutableContent
+
+    header_slots_in_state = {
+        slot for node in state.nodes if node.kind == "header_row" for slot in node.slots
+    }
+    unhomed = [
+        leaf for leaf in candidate.leaves
+        if leaf.kind == "header_field" and leaf.slot not in header_slots_in_state
+    ]
+    if not unhomed:
+        return candidate
+    return candidate.model_copy(
+        update={
+            "unroutable": [
+                *candidate.unroutable,
+                *(
+                    UnroutableContent(
+                        text=leaf.text or "",
+                        reason=(
+                            "the compiled target header region carries no measured "
+                            f"row with slot {leaf.slot!r}; routes through the explicit "
+                            "candidate-only header-overflow node"
+                        ),
+                        slot=leaf.slot,
+                    )
+                    for leaf in unhomed
+                ),
+            ]
+        }
+    )
+
+
+_PROBE_ROLE_ORDER = (
+    "summary", "skills", "languages", "work_experience", "education",
+    "certifications", "additional_details",
+)
+_PROBE_ROLE_KIND = {
+    "summary": "paragraph",
+    "work_experience": "entries",
+    "education": "entries",
+    "skills": "item_list",
+    "languages": "item_list",
+    "certifications": "item_list",
+    "additional_details": "item_list",
+}
+# A headingless item_list section is invalid by contract; the shell labels
+# the appended candidate-only section with the generic role label (the same
+# presentation the role name carries everywhere; never a target string).
+_PROBE_ROLE_HEADING = {
+    "skills": "SKILLS", "languages": "LANGUAGES", "certifications": "CERTIFICATIONS",
+    "additional_details": "ADDITIONAL",
+}
+
+
+def _sectioned_probe_candidate(fixture: Any) -> Any:
+    """Deterministic shell promotion of a bare C2-0a structural fixture into
+    a sectioned render context, so the Lane A probe can run the REAL
+    plan -> HTML -> Chrome PDF chain with the same routing rules
+    `run_flow_probe` validates (generic role -> content-kind mapping; no
+    target-specific identifier, no candidate text change).
+
+    `additional_section` containers are structural only: the plan's mapped
+    item-list merge consumes top-level item leaves, so the shell flattens
+    the container (children re-parented as top-level items) — the same
+    top-level-item shape every candidate render context uses."""
+    from tests.experiments.c2_candidates import CandidateSection
+
+    flattened: list[Any] = []
+    for leaf in fixture.leaves:
+        if leaf.kind == "additional_section":
+            for child in fixture.leaves:
+                if child.parent_leaf_id == leaf.leaf_id:
+                    flattened.append(child.model_copy(update={"parent_leaf_id": None}))
+        else:
+            flattened.append(leaf)
+    fixture = fixture.model_copy(update={"leaves": flattened})
+    sections = []
+    for role in _PROBE_ROLE_ORDER:
+        leaves = [leaf for leaf in fixture.leaves if leaf.source == role]
+        if not leaves:
+            continue
+        sections.append(
+            CandidateSection(
+                section_id=role,
+                heading=_PROBE_ROLE_HEADING.get(role),
+                source=role,
+                content_kind=_PROBE_ROLE_KIND[role],
+                leaf_ids=[leaf.leaf_id for leaf in leaves],
+            )
+        )
+    return fixture.model_copy(update={"sections": sections})
+
+
 def _probe_candidate_with_text(fixture: Any) -> Any:
-    """Independent content-shape probe WITH deterministic synthetic values
-    (the canonical C2 fixtures carry structure only). Synthetic placeholder
-    text is authorized probe content — never a target or candidate fact."""
+    """Independent content-shape probe with deterministic synthetic values
+    (the canonical C2 fixtures carry structure only). Values are unique per
+    leaf and carry NO section/identifier words, so the privacy gate's
+    line-granularity check cannot trip on the probe's own placeholder text.
+    Synthetic placeholder text is authorized probe content — never a target
+    or candidate fact."""
     leaves = [
-        leaf.model_copy(update={"text": f"probe {leaf.leaf_id} verbatim value"})
-        for leaf in fixture.leaves
+        leaf.model_copy(update={"text": f"probe value {index:03d}"})
+        for index, leaf in enumerate(fixture.leaves, 1)
     ]
     return fixture.model_copy(update={"leaves": leaves})
 
@@ -7133,6 +7259,34 @@ def _live_attribution_batch(
     return list(run_result.output)
 
 
+E5_SOURCE_FILES = (
+    "tests/experiments/e_pipeline.py",
+    "tests/experiments/e_authored_template.py",
+    "tests/experiments/c2_plan.py",
+    "tests/experiments/c2_html.py",
+    # prompts/config source: every E5 prompt constant + freeze logic lives in
+    # e_pipeline.py; the pinned Chrome/export environment in c_pipeline.py.
+    "tests/experiments/c_pipeline.py",
+)
+
+
+def _experiment_source_hashes() -> dict[str, str]:
+    """SHA-256 of every experiment source file whose behavior this run
+    depends on. Recorded in run_config.json BEFORE the first live call so a
+    run is bindable to its exact source, not just a starting commit."""
+    return {name: _sha256_file(ROOT / name) for name in E5_SOURCE_FILES}
+
+
+def _source_hashes_changed(config: dict[str, Any]) -> bool:
+    """True when the current source hashes differ from the frozen config's
+    (the run then records `source_changed` and must not be treated as
+    canonical)."""
+    frozen = config.get("source_hashes")
+    if not isinstance(frozen, dict) or not isinstance(frozen.get("files"), dict):
+        return True
+    return frozen["files"] != _experiment_source_hashes()
+
+
 def _freeze_e5_config(
     out_dir: Path,
     *,
@@ -7208,6 +7362,15 @@ def _freeze_e5_config(
         ],
         "evaluation_rubric_reference": {**rubric_reference, "not_given_to_agents": True},
         "starting_commit": commit,
+        "source_hashes": {
+            "files": _experiment_source_hashes(),
+            "recorded_before_first_live_call": True,
+            "note": (
+                "exact SHA-256 of every experiment source file this run "
+                "executes; a mid-run change marks the run `source_changed` "
+                "(never canonical)"
+            ),
+        },
         "live": live,
         "provider_pricing": pricing or {"status": "unavailable", "estimate": None},
     }
@@ -7228,7 +7391,6 @@ def run_e5(
     lanes: tuple[str, ...] = ("a", "b"),
     max_repair_rounds: int = E5_MAX_REPAIR_ROUNDS,
     budget: RunBudget | None = None,
-    probe_render: bool = True,
     pricing: dict[str, Any] | None = None,
 ) -> tuple[Path, str, dict[str, Any]]:
     """E5: controlled comparison of TWO Builder representations on Resume I
@@ -7237,14 +7399,15 @@ def run_e5(
 
     Normal exits: ``ready_for_owner_review`` and ``budget_exhausted`` (never
     success, never `unsupported`, never owner acceptance). Operational aborts
-    describe the failed operation only."""
+    describe the failed operation only. Content-shape probes always run
+    against the SELECTED representation (the best-valid render's proposal/
+    template, or diagnostic probes on the latest attempt when no best-valid
+    render exists)."""
     from tests.experiments.a_pipeline import build_format_summary
     from tests.experiments.c2_candidates import (
-        UnroutableContent,
         candidate_resume_E,
         independent_candidate_fixtures,
     )
-    from tests.experiments.c2_pipeline import run_flow_probe
     from tests.experiments.c2_plan import compile_render_plan
     from tests.experiments.c2_html import render_html
     from tests.experiments import c2_renderer as c2r
@@ -7342,35 +7505,10 @@ def run_e5(
     region_spans = _region_spans_from_draft(draft, page_height)
 
     candidate = candidate_resume_E()
-    # Generic header-overflow disposition (E3 shell transition, reused): the
-    # compiled two-column state hosts the contact rows inside section content.
-    header_slots_in_state = {
-        slot for node in state.nodes if node.kind == "header_row" for slot in node.slots
-    }
-    unhomed_header_fields = [
-        leaf for leaf in candidate.leaves
-        if leaf.kind == "header_field" and leaf.slot not in header_slots_in_state
-    ]
-    if unhomed_header_fields:
-        candidate = candidate.model_copy(
-            update={
-                "unroutable": [
-                    *candidate.unroutable,
-                    *(
-                        UnroutableContent(
-                            text=leaf.text or "",
-                            reason=(
-                                "the compiled target header region carries no measured "
-                                f"row with slot {leaf.slot!r}; routes through the explicit "
-                                "candidate-only header-overflow node"
-                            ),
-                            slot=leaf.slot,
-                        )
-                        for leaf in unhomed_header_fields
-                    ),
-                ]
-            }
-        )
+    # Generic header-overflow disposition (E3 shell transition, reused for
+    # the main candidate AND every content-shape probe): the compiled
+    # two-column state hosts the contact rows inside section content.
+    candidate = _apply_header_overflow_disposition(candidate, state)
     frozen_dir = RUNS / "c_pipeline_D_to_E_20260910T195515Z"
     if not (frozen_dir / "target.pdf").exists():
         return abort("frozen_c1_baseline", FileNotFoundError(str(frozen_dir / "target.pdf")))
@@ -7443,6 +7581,16 @@ def run_e5(
         trace = RunTrace(lane_dir)
         trace.add(agent="shell", phase="e0", action="lane_started", output={"lane": lane, "live": live})
         versions: list[RenderVersion] = []
+        # Explicit ACTIVE version (E5 rollback fix): the lane always reads,
+        # reviews and measures the active version — never `versions[-1]`.
+        # A rejected candidate render stays in `versions` as immutable
+        # history but never becomes active; only a shell promotion does.
+        active_index = 0
+        pdf_by_version: dict[str, Path] = {}
+        # version_id -> the EXACT representation (proposal/template) that
+        # produced it; probes must use the selected one, never the default
+        # state or a scripted fixture.
+        representation_by_version: dict[str, Any] = {}
         findings: list[DefectFinding] = []
         measurement_results: list[MeasurementResult] = []
         attributions: list[AttributionRecord] = []
@@ -7450,6 +7598,7 @@ def run_e5(
         attempted_strategies: list[str] = []
         fingerprints: list[str] = []
         resolved_measurements: dict[str, tuple[MeasurementRequest, MeasurementResult]] = {}
+        rolled_back_versions: set[str] = set()
         ledger = DefectLedger()
         pages_reviewed: set[int] = set()
         counter = {"finding": 0, "request": 0}
@@ -7467,38 +7616,131 @@ def run_e5(
                 finding.finding_id for finding in findings
                 if finding.finding_id not in resolved_measurements
             ]
-            probes_ok = True
-            probe_report: dict[str, Any] = {}
-            template_used = lane_state.get("template")
+            # Best-valid selection FIRST: the content-shape probes must run
+            # against the EXACT SELECTED representation (the best-valid
+            # render's proposal/template). With no best-valid render, the
+            # latest attempt gets DIAGNOSTIC probes only — never promotion
+            # evidence.
+            best_version_id = _best_valid_version_id(versions, excluded=rolled_back_versions)
+            active_version_id = versions[active_index].version_id if versions else None
+            best_version = next((v for v in versions if v.version_id == best_version_id), None)
+            diagnostic_probes = best_version_id is None
+            selected_id = best_version_id or (versions[-1].version_id if versions else None)
+            selected_representation = representation_by_version.get(selected_id)
+            probes_ok = bool(versions) and selected_id is not None
+            probe_report: dict[str, Any] = {
+                "_selected_version": selected_id,
+                "_probe_mode": "diagnostic" if diagnostic_probes else "promotion_evidence",
+            }
             for profile, fixture in independent_candidate_fixtures().items():
+                probe_candidate = _probe_candidate_with_text(fixture)
+                if lane == "a":
+                    probe_candidate = _sectioned_probe_candidate(probe_candidate)
+                entry: dict[str, Any] = {
+                    "passed": False,
+                    "diagnostic": diagnostic_probes,
+                    "representation": (
+                        selected_representation.proposal_id
+                        if lane == "a" and selected_representation is not None
+                        else (
+                            selected_representation.template_id
+                            if selected_representation is not None
+                            else None
+                        )
+                    ),
+                }
+                probe_report[profile] = entry
                 try:
+                    index = next(
+                        (i + 1 for i, v in enumerate(versions) if v.version_id == selected_id), 0
+                    )
+                    probe_html_path = lane_dir / f"probe_{profile}.html"
+                    probe_pdf_path = lane_dir / f"probe_{profile}.pdf"
+                    probe_pdf_second = lane_dir / f"probe_{profile}_second.pdf"
                     if lane == "a":
-                        probe = run_flow_probe(state, fixture)
-                        probe_report[profile] = probe
-                        probes_ok = probes_ok and bool(probe.get("passed"))
-                    elif template_used is not None:
-                        probe_candidate = _probe_candidate_with_text(fixture)
-                        fill = fill_authored_template(template_used, probe_candidate)
-                        probe_report[profile] = {
-                            "accounting_passed": not fill.missing_leaves,
-                            "missing_leaves": fill.missing_leaves[:8],
-                            "leaf_count": len(probe_candidate.leaves),
+                        # Real chain with the SELECTED proposal: candidate
+                        # binding (incl. the shared header-overflow shell
+                        # transition) -> compile -> HTML -> Chrome PDF -> gates.
+                        probe_plan_candidate = _apply_header_overflow_disposition(
+                            probe_candidate, state
+                        )
+                        plan = _apply_lane_a_structure(
+                            compile_render_plan(state, probe_plan_candidate), selected_representation
+                        )
+                        if plan.status == "failed":
+                            raise RuntimeError(f"probe plan failed: {plan.failures[:3]}")
+                        html = render_html(state, plan)
+                        probe_html_path.write_text(html, encoding="utf-8")
+                        _export_pinned_html_to_pdf(probe_html_path, probe_pdf_path, environment)
+                        _export_pinned_html_to_pdf(probe_html_path, probe_pdf_second, environment)
+                        pages = _render_pages(probe_pdf_path, lane_dir, f"probe_{profile}")
+                        second_pages = _render_pages(probe_pdf_second, lane_dir, f"probe_{profile}_second")
+                        content = c2r.content_gate(plan, html, probe_pdf_path)
+                        gates = {
+                            "content_gate": content["passed"],
+                            "candidate_content_accounting": c2r.candidate_accounting_gate(
+                                plan, content
+                            )["passed"],
+                            "privacy_gate": c2r.privacy_gate(
+                                plan, privacy_baseline, html, probe_pdf_path
+                            )["passed"],
+                            "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
+                            "deterministic_render": (
+                                all(
+                                    c2r._sha256(left) == c2r._sha256(right)
+                                    for left, right in zip(pages, second_pages)
+                                )
+                                and c2r._line_stability(probe_pdf_path, probe_pdf_second)["passed"]
+                            ),
                         }
-                        probes_ok = probes_ok and not fill.missing_leaves
                     else:
-                        probes_ok = False
+                        if selected_representation is None:
+                            raise RuntimeError("no selected authored template to probe")
+                        # Real chain with the SELECTED template: validation ->
+                        # fill -> document -> network-disabled Chrome -> gates.
+                        validate_authored_template(
+                            selected_representation,
+                            target_pdf=target_pdf,
+                            render_candidate=probe_candidate,
+                        )
+                        fill = fill_authored_template(selected_representation, probe_candidate)
+                        doc = build_authored_document(selected_representation, fill, page_size)
+                        probe_html_path.write_text(doc, encoding="utf-8")
+                        net_env = authored_network_disabled_environment()
+                        _export_pinned_html_to_pdf(probe_html_path, probe_pdf_path, net_env)
+                        _export_pinned_html_to_pdf(probe_html_path, probe_pdf_second, net_env)
+                        pages = _render_pages(probe_pdf_path, lane_dir, f"probe_{profile}")
+                        second_pages = _render_pages(probe_pdf_second, lane_dir, f"probe_{profile}_second")
+                        gates = {
+                            "candidate_content_accounting": not fill.missing_leaves,
+                            "pdf_presence_gate": authored_pdf_presence_gate(
+                                fill, probe_candidate, probe_pdf_path
+                            )["passed"],
+                            "privacy_gate": authored_privacy_gate(
+                                doc, probe_pdf_path, privacy_baseline, labels=set()
+                            )["passed"],
+                            "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
+                            "deterministic_render": (
+                                all(
+                                    c2r._sha256(left) == c2r._sha256(right)
+                                    for left, right in zip(pages, second_pages)
+                                )
+                                and c2r._line_stability(probe_pdf_path, probe_pdf_second)["passed"]
+                            ),
+                            "template_safety": True,  # validation raises otherwise
+                        }
+                    entry["gates"] = gates
+                    entry["pages"] = len(pages)
+                    entry["html"] = probe_html_path.name
+                    entry["pdf"] = probe_pdf_path.name
+                    entry["passed"] = all(gates.values())
                 except Exception as error:  # a probe failure is recorded, never a crash
-                    probe_report[profile] = {"passed": False, "error": str(error)[:200]}
-                    probes_ok = False
+                    entry["error"] = str(error)[:200]
+                probes_ok = probes_ok and bool(entry.get("passed"))
             (lane_dir / "content_shape_probes.json").write_text(
                 json.dumps(probe_report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            best_version_id = next(
-                (v.version_id for v in versions if v.promoted),
-                next((v.version_id for v in versions if v.hard_gates_passed), None),
-            )
-            best_version = next((v for v in versions if v.version_id == best_version_id), None)
             expected_pages = set(range(1, (target_frozen.page_count or 1) + 1))
             terminal = (
                 "ready_for_owner_review"
@@ -7523,6 +7765,7 @@ def run_e5(
                 ),
                 render_versions=versions,
                 best_render_version=best_version_id,
+                active_render_version=active_version_id,
                 findings=findings,
                 measurement_results=measurement_results,
                 attributions=attributions,
@@ -7538,6 +7781,8 @@ def run_e5(
                 summary={
                     "total_findings": len(findings),
                     "best_render_version": best_version_id,
+                    "active_render_version": active_version_id,
+                    "probe_mode": probe_report.get("_probe_mode"),
                     "promoted_versions": len([v for v in versions if v.promoted]),
                     "confirmed_measurements": len([r for r in measurement_results if r.status == "confirmed"]),
                     "unbound_measurements": len([r for r in measurement_results if r.status == "evidence_missing"]),
@@ -7607,6 +7852,8 @@ def run_e5(
                     note=note,
                 )
                 versions.append(version)
+                pdf_by_version[version.version_id] = pdf_path
+                representation_by_version[version.version_id] = proposal
                 lane_state["plan"] = plan
                 lane_state["last_gates"] = gates
                 store.register_version(version.version_id, pdf_path, note)
@@ -7671,6 +7918,8 @@ def run_e5(
                     note=note,
                 )
                 versions.append(version)
+                pdf_by_version[version.version_id] = pdf_path
+                representation_by_version[version.version_id] = template
                 lane_state["last_gates"] = gates
                 store.register_version(version.version_id, pdf_path, note)
                 (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
@@ -7717,12 +7966,10 @@ def run_e5(
                     note=bound.reason, persist_output=True,
                 )
                 return bound, finding.requested_measurement
-            lane_budget.spend_tool("compare_pdf_geometry")
+            # MeasureController.execute is the SINGLE tool-budget consumer for
+            # a deterministic measurement (one compare_pdf_geometry per call,
+            # one trace record). Callers never spend or re-trace it.
             result = MeasureController(pod, lane_budget, trace).execute(bound, current_pdf=pdf)
-            trace.add(
-                agent="measure_controller", phase="measure", action="measurement",
-                tool="compare_pdf_geometry", output=result.model_dump(mode="json"), persist_output=True,
-            )
             return result, bound
 
         def attribute(
@@ -7811,6 +8058,7 @@ def run_e5(
                     }
                     proposal = _live_lane_a_builder(lane_budget, trace, payload=payload, proposal_id="lane-a-r1")
                 lane_state["proposal"] = proposal
+                lane_state["active_proposal"] = proposal
                 version, pdf, gates = render_version(initial_note, proposal)
             else:
                 template = None
@@ -7832,6 +8080,7 @@ def run_e5(
 
                     template = SCRIPTED_AUTHORED_TEMPLATE
                 lane_state["template"] = template
+                lane_state["active_template"] = template
                 version, pdf, gates = render_version(initial_note, template)
         except CheckpointBudgetExceeded:
             escalate("builder_initial_budget_exhausted")
@@ -7850,8 +8099,11 @@ def run_e5(
                 if lane_budget.remaining_model_requests() < 1:
                     trace.add(agent="shell", phase="loop", action="budget_exhausted", note="before review")
                     break
-                current_version = versions[-1]
-                current_pdf = lane_dir / f"render_{len(versions)}.pdf"
+                # The round reviews/measures the ACTIVE version (the last
+                # PROMOTED render, or the initial render before any
+                # promotion) — never the newest render in history.
+                current_version = versions[active_index]
+                current_pdf = pdf_by_version[current_version.version_id]
                 changed_regions: list[str] = [
                     entry["region"] for entry in repair_attempts[-1:] if entry.get("region")
                 ]
@@ -8104,6 +8356,7 @@ def run_e5(
                     continue
                 lane_budget.repair_attempt_count += 1
                 fingerprints.append(fingerprint)  # records the EXECUTED action
+                candidate_index = len(versions) - 1  # the candidate's history index
                 trace.add(agent="builder", phase="repair", action="proposal", note=f"round {round_no}", persist_output=True)
                 # Re-measure FIRST: the IDENTICAL request, changing only the version.
                 counter["request"] += 1
@@ -8118,6 +8371,7 @@ def run_e5(
                     < abs(result.current_value_pt - result.target_value_pt)
                 )
                 if not improved:
+                    rolled_back_versions.add(candidate_version.version_id)
                     attempted_strategies.append(f"round{round_no}:{finding.finding_id}:non_improving_rolled_back")
                     trace.add(agent="shell", phase="repair", action="rolled_back", note="non-improving repair")
                     continue
@@ -8127,15 +8381,25 @@ def run_e5(
                           "no_blank_page", "deterministic_render")
                 )
                 if not all(candidate_gates.get(gate) for gate in gate_keys):
+                    rolled_back_versions.add(candidate_version.version_id)
                     attempted_strategies.append(f"round{round_no}:{finding.finding_id}:repair_failed_gates_rolled_back")
                     trace.add(agent="shell", phase="repair", action="rolled_back", note="candidate-safety gate failed")
                     continue
                 holds, rechecks = accepted_regions_hold(candidate_pdf)
                 if not holds:
+                    rolled_back_versions.add(candidate_version.version_id)
                     attempted_strategies.append(f"round{round_no}:{finding.finding_id}:accepted_region_regressed_rolled_back")
                     trace.add(agent="shell", phase="repair", action="rolled_back", note="accepted region regressed")
                     continue
-                versions[-1] = candidate_version.model_copy(update={"promoted": True})
+                # PROMOTION (shell-only): the candidate becomes the new ACTIVE
+                # version; the rejected candidates before it stay in the
+                # immutable history and are never implicitly selected again.
+                versions[candidate_index] = candidate_version.model_copy(update={"promoted": True})
+                active_index = candidate_index
+                if lane == "a":
+                    lane_state["active_proposal"] = proposal
+                else:
+                    lane_state["active_template"] = template
                 resolved_measurements[finding.finding_id] = (bound, repeat_result)
                 ledger.entries[_ledger_key(finding)].status = "repaired"
                 trace.add(
@@ -8164,6 +8428,9 @@ def run_e5(
         if lane_records and all(r.terminal_state == "ready_for_owner_review" for r in lane_records.values())
         else "budget_exhausted"
     )
+    # Source identity check: if any frozen source file changed mid-run, the
+    # run records `source_changed` and must not be treated as canonical.
+    source_changed = _source_hashes_changed(config)
     loop_record = E5LoopRecord(
         target_id=target_id,
         target_sha256=target_frozen.target_sha256,
@@ -8176,6 +8443,8 @@ def run_e5(
             "live": live,
             "elapsed_seconds": round(time.time() - started, 1),
             "lanes": {lane: r.terminal_state for lane, r in lane_records.items()},
+            "source_changed": source_changed,
+            "canonical": not source_changed,
         },
     )
     (out_dir / "e5_state.json").write_text(
@@ -8206,10 +8475,16 @@ def _write_e5_lane_report_md(lane_id: str, record: E5LaneRecord) -> str:
         f"| `{e.finding_id}` | {e.status} | {e.first_seen_version} -> {e.last_seen_version} |"
         for e in record.ledger
     ) or "| - | - | - |"
+    probes_note = (
+        "DIAGNOSTIC probes on the latest attempt (no best-valid render; NOT "
+        "promotion evidence)" if record.summary.get("probe_mode") == "diagnostic"
+        else "promotion-evidence probes against the selected best-valid representation"
+    )
     return f"""# Pipeline E5 Lane {lane_id.upper()} — {record.representation}
 
 - Terminal state: **{record.terminal_state}** (never owner acceptance)
-- Best render: `{record.best_render_version}`
+- Best render: `{record.best_render_version or 'NONE — no best-valid render exists'}`
+- Active render: `{record.active_render_version}`
 - Findings: {record.summary.get('total_findings')}; confirmed measurements:
   {record.summary.get('confirmed_measurements')}; unbound:
   {record.summary.get('unbound_measurements')}
@@ -8218,7 +8493,7 @@ def _write_e5_lane_report_md(lane_id: str, record: E5LaneRecord) -> str:
   {record.summary.get('attribution_calls')}
 - Tokens (live): {record.budget_state.get('usage', {}).get('input_tokens', 0)}/
   {record.budget_state.get('usage', {}).get('output_tokens', 0)}
-- Probes passed: {record.content_shape_probes_passed}
+- Probes: {record.content_shape_probes_passed} — {probes_note}
 
 ## Render versions
 
@@ -8243,6 +8518,63 @@ convergence. The owner reviews the actual files and decides.
 """
 
 
+def summarize_e5_state(e5_state_path: Path) -> dict[str, Any]:
+    """Deterministic summary of ONE E5 run from its `e5_state.json` (the
+    ledger/report data source): every reported number is read from that
+    single run record, so reports can never splice findings, measurements,
+    calls, probes or costs from different runs. Companion helper for
+    `E_PIPELINE_PREP.md` and run reports."""
+    state = json.loads(Path(e5_state_path).read_text(encoding="utf-8"))
+    lanes: dict[str, Any] = {}
+    for lane_id, lane in state.get("lanes", {}).items():
+        summary = lane.get("summary", {})
+        budget_state = lane.get("budget_state", {})
+        lanes[lane_id] = {
+            "terminal_state": lane.get("terminal_state"),
+            "best_render_version": lane.get("best_render_version"),
+            "active_render_version": lane.get("active_render_version"),
+            "render_versions": len(lane.get("render_versions", [])),
+            "promoted_versions": summary.get("promoted_versions"),
+            "findings": summary.get("total_findings"),
+            "confirmed_measurements": summary.get("confirmed_measurements"),
+            "unbound_measurements": summary.get("unbound_measurements"),
+            "builder_calls": summary.get("builder_calls"),
+            "reviewer_calls": summary.get("reviewer_calls"),
+            "attribution_calls": summary.get("attribution_calls"),
+            "model_calls": budget_state.get("model_request_count"),
+            "model_calls_by_mode": budget_state.get("calls_by_mode"),
+            "tool_calls": budget_state.get("tool_call_count"),
+            "tool_calls_by_tool": budget_state.get("calls_by_tool"),
+            "input_tokens": budget_state.get("usage", {}).get("input_tokens", 0),
+            "output_tokens": budget_state.get("usage", {}).get("output_tokens", 0),
+            "probes_passed": lane.get("content_shape_probes_passed"),
+            "probe_mode": summary.get("probe_mode"),
+        }
+    return {
+        "run_id": Path(e5_state_path).parent.name,
+        "source": str(e5_state_path),
+        "terminal_state": state.get("summary", {}).get("terminal_state"),
+        "source_changed": state.get("summary", {}).get("source_changed"),
+        "canonical": state.get("summary", {}).get("canonical"),
+        "lanes": lanes,
+    }
+
+
+def _selected_lane_artifact(lane: "E5LaneRecord") -> tuple[RenderVersion | None, str, bool]:
+    """Resolve the owner-facing lane artifact through `best_render_version`
+    (never `len(render_versions)` / `versions[-1]`). Returns
+    (version, file stem, is_best): only a real best-valid render is labeled
+    BEST; without one, the latest attempt stands in and must be labeled
+    LATEST ATTEMPT everywhere (report + comparison columns)."""
+    if lane.best_render_version:
+        for index, version in enumerate(lane.render_versions):
+            if version.version_id == lane.best_render_version:
+                return version, f"render_{index + 1}", True
+    if lane.render_versions:
+        return lane.render_versions[-1], f"render_{len(lane.render_versions)}", False
+    return None, "", False
+
+
 def _write_e5_comparison(
     out_dir: Path, record: E5LoopRecord, config: dict[str, Any]
 ) -> None:
@@ -8251,12 +8583,19 @@ def _write_e5_comparison(
     rows = []
     for lane_id, lane in record.lanes.items():
         summary = lane.summary
+        # Page count comes from the SELECTED artifact (best-valid render, or
+        # the clearly-labeled latest attempt when none exists) — never from
+        # `render_versions[-1]` silently.
+        selected, _stem, is_best = _selected_lane_artifact(lane)
         rows.append(
             {
                 "lane": lane_id,
                 "representation": lane.representation,
                 "terminal_state": lane.terminal_state,
                 "best_render": lane.best_render_version,
+                "render_label": "BEST" if is_best else "LATEST ATTEMPT",
+                "selected_version": selected.version_id if selected else None,
+                "selected_pages": selected.page_count if selected else None,
                 "findings": summary.get("total_findings"),
                 "confirmed_measurements": summary.get("confirmed_measurements"),
                 "measurement_binding_failures": summary.get("unbound_measurements"),
@@ -8264,14 +8603,17 @@ def _write_e5_comparison(
                 "builder_calls": summary.get("builder_calls"),
                 "improving_repairs": summary.get("promoted_versions"),
                 "rollbacks": len([s for s in lane.attempted_strategies if "rolled_back" in s]),
-                "pages": (lane.render_versions[-1].page_count if lane.render_versions else None),
                 "probes_passed": lane.content_shape_probes_passed,
+                "probe_mode": summary.get("probe_mode"),
                 "input_tokens": lane.budget_state.get("usage", {}).get("input_tokens", 0),
                 "output_tokens": lane.budget_state.get("usage", {}).get("output_tokens", 0),
                 "tool_calls": lane.budget_state.get("tool_call_count"),
                 "elapsed_seconds": summary.get("elapsed_seconds"),
                 "estimated_provider_cost": summary.get("estimated_provider_cost"),
-                "target_specific_code": 0,
+                # Not measured in this run: recorded as not_evaluated, never
+                # as a zero (a zero would claim a measurement that never ran).
+                "target_specific_code": None,
+                "target_specific_code_status": "not_evaluated",
                 "shared_backend_code": {
                     "lane_a": "c2_plan.SectionPlan rail fields + c2_html rail branch",
                     "lane_b": "tests/experiments/e_authored_template.py",
@@ -8281,6 +8623,7 @@ def _write_e5_comparison(
     comparison = {
         "run_id": record.summary.get("run_id", out_dir.name),
         "frozen_config": config.get("run_id"),
+        "source_changed": record.summary.get("source_changed"),
         "lanes": rows,
         "decision": (
             "Automated metrics declare NO winner (plan §13). The owner compares "
@@ -8292,10 +8635,10 @@ def _write_e5_comparison(
         encoding="utf-8",
     )
     table = "\n".join(
-        f"| {row['lane']} | {row['terminal_state']} | {row['best_render']} | "
-        f"{row['findings']} | {row['confirmed_measurements']} | {row['builder_calls']} | "
-        f"{row['improving_repairs']} | {row['input_tokens']}/{row['output_tokens']} | "
-        f"{row['elapsed_seconds']} |"
+        f"| {row['lane']} | {row['terminal_state']} | {row['best_render'] or 'none'} "
+        f"({row['render_label']}) | {row['findings']} | {row['confirmed_measurements']} | "
+        f"{row['builder_calls']} | {row['improving_repairs']} | "
+        f"{row['input_tokens']}/{row['output_tokens']} | {row['elapsed_seconds']} |"
         for row in rows
     )
     (out_dir / "COMPARISON.md").write_text(
@@ -8305,6 +8648,9 @@ def _write_e5_comparison(
 - Question: which Builder representation gives the Agent a practical path
   toward convergence WITHOUT target-specific backend code?
 - This report declares NO winner; the owner decides from `owner_review/`.
+- BEST labels mark a real best-valid render; LATEST ATTEMPT means the lane
+  produced NO best-valid render and the artifact shown is the latest
+  attempt only.
 
 | lane | terminal | best render | findings | confirmed | builder calls | improving repairs | tokens in/out | elapsed s |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -8335,10 +8681,16 @@ def _write_e5_owner_package(
     page_count = len(target_pages)
     e4_dir = RUNS / E5_RUNS_E4_BASELINE
     e4_pdf = e4_dir / "render_2.pdf"
-    lane_pdfs: dict[str, Path] = {}
+    # Resolve each lane's artifact through best_render_version; without a
+    # best-valid render the latest attempt stands in, clearly labeled.
+    lane_selected: dict[str, tuple[RenderVersion | None, Path, bool]] = {}
     for lane_id, lane in record.lanes.items():
-        index = len(lane.render_versions)
-        lane_pdfs[lane_id] = out_dir / f"lane_{lane_id}" / f"render_{index}.pdf"
+        version, stem, is_best = _selected_lane_artifact(lane)
+        stem_path = (out_dir / f"lane_{lane_id}" / f"{stem}.pdf") if stem else None
+        lane_selected[lane_id] = (version, stem_path, is_best) if stem_path else (None, None, False)
+    lane_pdfs: dict[str, Path] = {
+        lane_id: paths[1] for lane_id, paths in lane_selected.items() if paths[1]
+    }
     for page in range(1, page_count + 1):
         columns: list[tuple[str, Path | None]] = [("TARGET", target_pages[page - 1])]
         if (e4_dir / f"render_2_page_{page}.png").exists():
@@ -8348,20 +8700,25 @@ def _write_e5_owner_package(
             if e4_pages:
                 columns.append(("E4 BEST v2", e4_pages[min(page, len(e4_pages)) - 1]))
         for lane_id, lane_pdf in lane_pdfs.items():
-            lane_page = out_dir / f"lane_{lane_id}" / f"render_{page if page <= len(record.lanes[lane_id].render_versions) else 1}_page_{page}.png"
+            lane_page = out_dir / f"lane_{lane_id}" / f"{lane_pdf.stem}_page_{page}.png"
             if lane_page.exists():
-                columns.append((f"LANE {lane_id.upper()} BEST", lane_page))
+                label = (
+                    f"LANE {lane_id.upper()} BEST" if lane_selected[lane_id][2]
+                    else f"LANE {lane_id.upper()} LATEST ATTEMPT"
+                )
+                columns.append((label, lane_page))
         if len(columns) >= 2:
             _side_by_side(columns, package / f"comparison_page_{page}.png")
-    # Best lane artifacts (copies; originals immutable).
-    for lane_id, lane in record.lanes.items():
-        index = len(lane.render_versions)
-        lane_pdf = out_dir / f"lane_{lane_id}" / f"render_{index}.pdf"
-        lane_html = out_dir / f"lane_{lane_id}" / f"render_{index}.html"
-        if lane_pdf.exists():
-            shutil.copy2(lane_pdf, package / f"lane_{lane_id}_best.pdf")
+    # Selected lane artifacts (copies; originals immutable). The filename and
+    # every label distinguish a real BEST render from a latest attempt.
+    for lane_id, (version, lane_pdf, is_best) in lane_selected.items():
+        if lane_pdf is None:
+            continue
+        kind = "best" if is_best else "latest_attempt"
+        lane_html = out_dir / f"lane_{lane_id}" / f"{lane_pdf.stem}.html"
+        shutil.copy2(lane_pdf, package / f"lane_{lane_id}_{kind}.pdf")
         if lane_html.exists():
-            shutil.copy2(lane_html, package / f"lane_{lane_id}_best.html")
+            shutil.copy2(lane_html, package / f"lane_{lane_id}_{kind}.html")
     # Probe outputs.
     for lane_id in record.lanes:
         probes = out_dir / f"lane_{lane_id}" / "content_shape_probes.json"
@@ -8394,18 +8751,35 @@ def _write_e5_owner_package(
         for lane_id, lane in record.lanes.items()
         for fid in (lane.open_findings or [])
     ) or "- none recorded"
+    def _best_line(lane_id: str, lane: E5LaneRecord) -> str:
+        if lane.best_render_version:
+            return f"- Lane {lane_id.upper()} best render: `{lane.best_render_version}`"
+        return (
+            f"- Lane {lane_id.upper()} best render: NONE — no best-valid render "
+            "exists; the package shows the latest attempt (LATEST ATTEMPT), "
+            "never labeled BEST"
+        )
+
+    best_lines = "\n".join(
+        _best_line(lane_id, lane) for lane_id, lane in record.lanes.items()
+    )
     (package / "REPORT.md").write_text(
         f"""# Pipeline E5 owner-review package — {out_dir.name}
 
 - Terminal state: **{record.summary.get('terminal_state')}** (NEVER owner acceptance)
-- Best Lane A render: `{record.lanes.get('a', E5LaneRecord(lane='a', representation='')).best_render_version}`
-- Best Lane B render: `{record.lanes.get('b', E5LaneRecord(lane='b', representation='')).best_render_version}`
+{best_lines}
 
 ## Contents
 
 - `comparison_page_N.png` — TARGET | E4 best baseline | Lane A | Lane B, per page;
-- `lane_*_best.html/.pdf` — each lane's best available render;
-- `lane_*_content_shape_probes.json` — short/long/missing-field probe outcomes;
+  a column labeled LANE X LATEST ATTEMPT is NOT a best-valid render;
+- `lane_*_best.html/.pdf` — each lane's best-valid render (only present when
+  a best-valid render exists);
+- `lane_*_latest_attempt.html/.pdf` — latest attempt for a lane with NO
+  best-valid render (explicitly not BEST);
+- `lane_*_content_shape_probes.json` — short/medium/long probe outcomes;
+  probes marked diagnostic ran on a latest attempt and are NOT promotion
+  evidence;
 - `cost_summary.json` — usage + verified pricing record (no invented price);
 - remaining material differences below; iteration histories in lane dirs.
 
