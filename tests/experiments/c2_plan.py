@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from pathlib import Path
 
@@ -282,6 +282,23 @@ class SectionPlan(StateModel):
     # "title_row" renders the entry meta column beside the FIRST title line's
     # row only, letting the remaining head lines span the whole entry width.
     entry_meta_placement: Literal["title_row"] | None = None
+    # Pipeline E5 Lane A reusable two-rail primitives (provider-neutral;
+    # None = historical single-column rendering, so every existing C2/E lane
+    # renders byte-identical). The heading renders in a LEFT LABEL RAIL and
+    # the section content in the remaining content rail — the generic
+    # sidebar-label presentation primitive, expressed ONLY as these typed
+    # neutral fields (no target identifier, no fixed coordinates).
+    rail_heading: bool | None = None
+    rail_label_width_pt: float | None = None
+    rail_label_align: Literal["left", "right"] | None = None
+
+    @model_validator(mode="after")
+    def rail_fields_complete(self) -> "SectionPlan":
+        if self.rail_heading and not self.rail_label_width_pt:
+            raise ValueError("rail_heading requires rail_label_width_pt")
+        if not self.rail_heading and (self.rail_label_width_pt or self.rail_label_align):
+            raise ValueError("rail width/align require rail_heading")
+        return self
 
 
 class C2RenderPlan(StateModel):

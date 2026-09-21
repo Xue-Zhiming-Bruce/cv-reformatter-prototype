@@ -111,6 +111,7 @@ import argparse
 import copy as _copy
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -1649,17 +1650,38 @@ class MeasurementRequest(EvidenceModel):
     differ), so each side carries its own verbatim line-prefix anchor pair:
     `from_text`/`to_text` on the TARGET, `render_from_text`/`render_to_text`
     on the CURRENT render (plan §9 rule 3: match semantic roles, never row N
-    to row N)."""
+    to row N).
+
+    Phase 0 (E5): the Reviewer is no longer required to invent exact verbatim
+    PDF text prefixes from an image. A request may instead carry a SEMANTIC
+    measurement `intent`; the deterministic binding step
+    (`_bind_role_gap_anchors`) resolves that intent against the actual
+    final-PDF objects. A Reviewer OCR mismatch therefore never becomes an
+    automatic measurement_failure: binding either resolves real anchors or
+    records `evidence_missing` for re-verification."""
 
     request_id: str
     metric: Literal["role_gap"]
     page: int = Field(ge=1)
-    from_text: str = Field(min_length=1)
-    to_text: str = Field(min_length=1)
-    render_from_text: str = Field(min_length=1)
-    render_to_text: str = Field(min_length=1)
+    from_text: str = ""
+    to_text: str = ""
+    render_from_text: str = ""
+    render_to_text: str = ""
     units: Literal["pt"] = "pt"
     region_id: str | None = None
+    intent: str | None = None
+
+    @model_validator(mode="after")
+    def anchors_or_intent(self) -> "MeasurementRequest":
+        has_anchors = all(
+            (self.from_text, self.to_text, self.render_from_text, self.render_to_text)
+        )
+        if not has_anchors and not self.intent:
+            raise ValueError(
+                "a measurement request needs either all four role anchors or a "
+                "semantic measurement intent (Phase 0)"
+            )
+        return self
 
 
 class MeasurementResult(EvidenceModel):
@@ -1885,11 +1907,14 @@ def _live_reviewer_findings(
     id_prefix: str | None = None,
     instructions: str = REVIEWER_INSTRUCTIONS,
     visual_model: bool = False,
+    message: str | None = None,
 ) -> list[DefectFinding]:
     """One bounded live reviewer request over the side-by-side crop/overview.
     Requires explicit authorization (never called offline). E4: one agent run
     is a bounded call (per-call request limit); findings ids are re-assigned by
-    the shell so the model can never forge them."""
+    the shell so the model can never forge them. E5 Phase 0: `message`
+    overrides the default prompt text (semantic measurement intent instead of
+    verbatim OCR anchors)."""
     from pydantic_ai import Agent, BinaryContent
 
     from tests.experiments.d_pipeline import _live_model
@@ -1905,6 +1930,7 @@ def _live_reviewer_findings(
         raise CheckpointBudgetExceeded("budget exhausted before visual reviewer")
     result = agent.run_sync(
         [
+            (message or (
             "Compare the TARGET and RENDER images for this page. Report localized "
             "observation-first findings across the WHOLE document region by region "
             "(not only one known defect). Each finding must carry the exact "
@@ -1914,7 +1940,7 @@ def _live_reviewer_findings(
             "anchors are verbatim line prefixes of the render PDF. Separate what you "
             "SEE from what you SUSPECT: proposed_cause is a hypothesis only. You "
             "never approve delivery and never decide the root cause.\nNode inventory:\n"
-            + node_inventory,
+            + node_inventory)),
             *[BinaryContent(data=image.read_bytes(), media_type="image/png") for image in page_images],
         ],
         usage_limits=_call_limits(budget, E4_REVIEWER_MAX_REQUESTS),
@@ -1993,13 +2019,14 @@ def _role_gap_from_rows(
 ) -> float | None:
     """Page-local top distance between two verbatim line-prefix anchors.
     Semantic ROLE matching: first line whose joined text starts with the
-    anchor; never row N to row N."""
+    anchor; never row N to row N. Case-insensitive (the authored-template
+    lane may render text-transform:uppercase; Phase 0)."""
     tops: dict[str, float] = {}
     for row in rows:
-        text = row["text"]
-        if text.startswith(from_text) and from_text not in tops:
+        text = " ".join(row["text"].split()).casefold()
+        if text.startswith(from_text.casefold()) and from_text not in tops:
             tops[from_text] = row["top"]
-        if text.startswith(to_text) and to_text not in tops:
+        if text.startswith(to_text.casefold()) and to_text not in tops:
             tops[to_text] = row["top"]
     if from_text not in tops or to_text not in tops:
         return None
@@ -3344,6 +3371,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--e2", action="store_true", help="run the E2 See/Measure/Attribute/Repair loop (plan §8)")
     parser.add_argument("--e3", action="store_true", help="run the E3 Resume I walkthrough (plan §11; offline)")
     parser.add_argument("--e4", action="store_true", help="run the E4 live-agent Resume I convergence trial (plan §11/§14)")
+    parser.add_argument("--e5", action="store_true", help="run the E5 Builder-representation comparison (lanes A and B)")
+    parser.add_argument("--lane", choices=["a", "b", "both"], default="both", help="E5 lane restriction")
     parser.add_argument("--decide", type=Path, default=None)
     parser.add_argument("--decision", choices=["accept", "reject"], default=None)
     args = parser.parse_args(argv)
@@ -3397,6 +3426,22 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "Waiting for the owner is a resumable pause, not success or failure; "
             "'delivered' is reserved for the explicit owner decision."
+        )
+        return 0
+
+    if args.e5:
+        run_dir, terminal, record = run_e5(
+            args.target, args.out, live=args.live,
+            lanes=(args.lane,) if args.lane in ("a", "b") else ("a", "b"),
+        )
+        print(f"E5 run {run_dir.name}: terminal state {terminal}")
+        print(
+            f"  lanes={list(record.get('lanes', {}).keys())} "
+            f"budget={record.get('budget_state')}"
+        )
+        print(
+            "This is a Builder-representation comparison; automated metrics "
+            "declare no winner. The owner reviews owner_review/ and decides."
         )
         return 0
 
@@ -4364,7 +4409,8 @@ def _live_model_settings() -> dict[str, Any]:
     structured outputs; recorded in the frozen run config)."""
     return {
         "temperature": E4_TEMPERATURE,
-        "max_tokens": 8192,  # the provider default output cap truncated typed outputs
+        "max_tokens": 16384,  # the provider default output cap truncated typed outputs
+        # (and the authored-template lane needs more still — Phase 0 E5)
         "extra_body": {"thinking": {"type": "disabled"}},
     }
 
@@ -6420,6 +6466,1970 @@ or shareable artifact.
         encoding="utf-8",
     )
 
+# ===========================================================================
+# E5 — Builder representation comparison (Phase 0 loop fixes + Lane A / Lane B)
+# ===========================================================================
+
+E5_SCHEMA_VERSION = "pipeline-e-e5-state/1"
+E5_LANE_MAX_MODEL_REQUESTS = 24
+E5_LANE_MAX_TOOL_CALLS = 120
+E5_MAX_REPAIR_ROUNDS = 4
+# Phase 0: a meaningful part of every lane's budget is RESERVED for Builder
+# calls and rerenders; diagnosis must not consume the run before the Builder
+# can act (attribution is skipped while the reserve is not covered).
+E5_BUILDER_RESERVE_REQUESTS = 6
+E5_REVIEWER_MAX_REQUESTS = 4
+E5_BUILDER_MAX_REQUESTS = 4
+E5_ATTRIBUTION_MAX_REQUESTS = 8
+E5_RUNS_E4_BASELINE = "e_pipeline_e4_20260920T134946Z"  # E4 best render baseline
+E5_SHARED_DRAFT_SOURCE = "e_pipeline_e4_20260920T134946Z/structure_draft.json"
+
+E5_REVIEWER_INSTRUCTIONS = (
+    "You are the independent Visual Reviewer of a resume-layout experiment.\n"
+    "You inspect the TARGET and the RENDERED page images you are given. You\n"
+    "report LOCALIZED visible differences only.\n"
+    "Phase 0 (E5): you report a SEMANTIC measurement intent, never exact\n"
+    "verbatim PDF text anchors. Set the measurement request's `intent` to a\n"
+    "plain-language description of WHAT to measure (which two elements, which\n"
+    "property) — the shell resolves it against the actual final-PDF objects.\n"
+    "You do NOT need to read exact text strings out of the image; leaving the\n"
+    "four anchor fields empty is correct.\n"
+    "Hard boundaries: you never decide the root cause layer; `proposed_cause`\n"
+    "is a hypothesis for verification, never a verdict. You never approve\n"
+    "delivery. You never modify anything. Every finding binds the exact\n"
+    "target and render version strings you were given and carries one typed\n"
+    "measurement request with `intent` set.\n"
+    "Target person facts are diagnostic evidence only; they never become\n"
+    "candidate content."
+)
+
+E5_LANE_A_BUILDER_INSTRUCTIONS = (
+    "You are the Lane A Builder of a resume-layout experiment.\n"
+    "Representation: a provider-neutral STRUCTURED LAYOUT interpreted by a\n"
+    "FIXED renderer. You output ONLY typed, validated structure primitives —\n"
+    "never executable code, never CSS, never candidate text. Allowed\n"
+    "reusable primitives per section: heading_in_rail (the section heading\n"
+    "renders in a left label rail beside its content), rail_label_width_pt\n"
+    "(the label-rail column width), rail_label_align (left/right), and\n"
+    "entry_meta_placement='title_row' (the entry meta column shares the\n"
+    "first title line's row). Unknown or invalid fields fail validation.\n"
+    "Hard boundaries: candidate facts are NEVER editable and never appear in\n"
+    "your output; target person strings never appear in your output; no\n"
+    "target-specific identifiers (no target hash, filename, or person\n"
+    "branch). You never approve delivery. Base every primitive value on the\n"
+    "evidence-linked structure draft and the recorded measurements you are\n"
+    "given."
+)
+
+E5_LANE_B_BUILDER_INSTRUCTIONS = (
+    "You are the Lane B Builder of a resume-layout experiment.\n"
+    "Representation: a constrained AUTHORED HTML/CSS template with typed\n"
+    "candidate slots. You output ONE typed AuthoredTemplateCandidate:\n"
+    "HTML (slot tokens only, no values), CSS, declared typed slots, declared\n"
+    "repeating/optional regions, pagination expectation, evidence refs, and\n"
+    "rationale. Slot vocabulary (exactly these tokens):\n"
+    "{{candidate:name}}, {{candidate:contact}}, and repeating regions\n"
+    "{{each:summary}}/{{each:experience}}/{{each:education}}/{{each:skills}}/"
+    "{{each:languages}}/{{each:certifications}}/{{each:additional}} closed\n"
+    "with {{/each}}; inside a region use {{item}}, {{item_head}},\n"
+    "{{item_detail}}, {{item_meta}}, {{item_bullets}}, {{item_text}}.\n"
+    "Missing optional fields must not leave broken visual artifacts (empty\n"
+    "regions render nothing). Long content must not disappear.\n"
+    "The shell REJECTS: JavaScript, event handlers, iframe/object/embed/\n"
+    "form/video/audio/canvas, remote or network URLs, src/href attributes,\n"
+    "CSS imports, url() functions, data: URLs, any target-person literal,\n"
+    "any hardcoded candidate fact, and any undeclared slot token.\n"
+    "You never see or edit candidate values; the shell fills your slots from\n"
+    "the reviewed candidate render context. You never approve delivery.\n"
+    "Base the design on the target page images and the structure draft you\n"
+    "are given; measure claims belong in expected_measurements."
+)
+
+E5_ATTRIBUTION_INSTRUCTIONS = (
+    "You are the independent Attribution Investigator of a resume-layout\n"
+    "experiment. For each finding (IN THE GIVEN ORDER) trace the chain: raw\n"
+    "target evidence -> structure -> template slot -> candidate binding ->\n"
+    "render plan -> DOM/CSS -> actual final PDF object. Return ONE typed\n"
+    "hypothesis PER FINDING, in the SAME order as the findings list. The\n"
+    "reviewer's proposed_cause is a hypothesis that may be wrong; verify from\n"
+    "evidence. You may replace the causal hypothesis but never delete the\n"
+    "observation, and you never promote or repair anything."
+)
+
+
+class E5LedgerEntry(EvidenceModel):
+    """One persistent defect-ledger record (Phase 0): deduplicated by the
+    stable key `target_version | region | dimension | observation_class`.
+    Re-observing an unchanged finding with unchanged evidence never reruns
+    full attribution; a CHANGED observation reopens the entry."""
+
+    ledger_key: str
+    finding_id: str
+    first_seen_version: str
+    last_seen_version: str
+    status: Literal["open", "attributed", "repaired", "resolved", "regressed"]
+    attribution: AttributionRecord | None = None
+    measurement_request_id: str | None = None
+    observation_class: str = ""
+    last_measured_version: str = ""
+
+
+def _observation_class(observation: str) -> str:
+    """Stable semantic observation class: the observation's first normalized
+    words (NOT verbatim OCR text — Phase 0)."""
+    words = re.findall(r"[a-z]+", observation.casefold())
+    return " ".join(words[:8])
+
+
+def _ledger_key(finding: DefectFinding) -> str:
+    """Stable dedup key: target version + structural region + visual
+    dimension (the observation CLASS is tracked separately so a changed
+    finding REOPENS instead of forking a new key)."""
+    return "|".join(
+        (finding.target_version, finding.region, finding.suspected_dimension)
+    )
+
+
+class DefectLedger:
+    """Persistent defect ledger (Phase 0). `observe` returns one of:
+    'new' (first observation), 'dedup' (unchanged finding; existing
+    attribution/measurement reused), or 'reopened' (the finding CHANGED after
+    a repair — new observation class)."""
+
+    def __init__(self) -> None:
+        self.entries: dict[str, E5LedgerEntry] = {}
+
+    def observe(
+        self,
+        finding: DefectFinding,
+        *,
+        resolved: bool = False,
+    ) -> tuple[E5LedgerEntry, str]:
+        key = _ledger_key(finding)
+        existing = self.entries.get(key)
+        if existing is None:
+            entry = E5LedgerEntry(
+                ledger_key=key,
+                finding_id=finding.finding_id,
+                first_seen_version=finding.render_version,
+                last_seen_version=finding.render_version,
+                status="resolved" if resolved else "open",
+                observation_class=_observation_class(finding.observation),
+                last_measured_version=finding.render_version,
+            )
+            self.entries[key] = entry
+            return entry, "new"
+        existing.last_seen_version = finding.render_version
+        if _observation_class(finding.observation) != existing.observation_class:
+            # the finding CHANGED after repair: reopen with the new class
+            existing.observation_class = _observation_class(finding.observation)
+            existing.status = "open"
+            return existing, "reopened"
+        if resolved:
+            existing.status = "resolved"
+        return existing, "dedup"
+
+
+class E5LaneASection(EvidenceModel):
+    """Lane A reusable primitives for ONE section (provider-neutral; the
+    fixed renderer interprets them). No target identifiers, no coordinates
+    outside the declared rail width, no candidate text."""
+
+    section_node_id: str
+    heading_in_rail: bool = False
+    rail_label_width_pt: float | None = Field(default=None, ge=20.0, le=400.0)
+    rail_label_align: Literal["left", "right"] | None = None
+    entry_meta_placement: Literal["title_row"] | None = None
+    @model_validator(mode="after")
+    def rail_fields_complete(self) -> "E5LaneASection":
+        if self.heading_in_rail and not self.rail_label_width_pt:
+            raise ValueError("heading_in_rail requires rail_label_width_pt")
+        if not self.heading_in_rail and (self.rail_label_width_pt or self.rail_label_align):
+            raise ValueError("rail width/align require heading_in_rail")
+        return self
+
+
+class LaneAStructureProposal(EvidenceModel):
+    """The Lane A Builder's typed structure proposal (validated; unknown or
+    invalid fields fail validation at construction — `extra="forbid"`)."""
+
+    proposal_id: str = Field(pattern=r"^[a-z0-9_-]+$")
+    sections: list[E5LaneASection]
+    rationale: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
+    expected_measurements: list[str] = Field(default_factory=list)
+    agent: Literal["scripted", "llm"]
+
+
+class E5LaneRecord(EvidenceModel):
+    """One lane's resumable E5 state."""
+
+    lane: Literal["a", "b"]
+    representation: str
+    render_versions: list[RenderVersion] = Field(default_factory=list)
+    best_render_version: str | None = None
+    findings: list[DefectFinding] = Field(default_factory=list)
+    measurement_results: list[MeasurementResult] = Field(default_factory=list)
+    attributions: list[AttributionRecord] = Field(default_factory=list)
+    repair_attempts: list[dict[str, Any]] = Field(default_factory=list)
+    attempted_strategies: list[str] = Field(default_factory=list)
+    action_fingerprints: list[str] = Field(default_factory=list)
+    ledger: list[E5LedgerEntry] = Field(default_factory=list)
+    open_findings: list[str] = Field(default_factory=list)
+    content_shape_probes_passed: bool = False
+    pages_reviewed: list[int] = Field(default_factory=list)
+    terminal_state: Literal["ready_for_owner_review", "budget_exhausted", "operational_abort"] = (
+        "budget_exhausted"
+    )
+    budget_state: dict[str, Any] = Field(default_factory=dict)
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class E5LoopRecord(EvidenceModel):
+    """The E5 run record: per-lane state, frozen inputs, comparison metrics."""
+
+    schema_version: Literal["pipeline-e-e5-state/1"] = E5_SCHEMA_VERSION
+    target_id: str
+    target_sha256: str
+    lanes: dict[str, E5LaneRecord] = Field(default_factory=dict)
+    budget_state: dict[str, Any] = Field(default_factory=dict)
+    started_at: str = ""
+    finished_at: str = ""
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+def _builder_reserve_intact(budget: RunBudget) -> bool:
+    """Phase 0 Builder budget reservation: live attribution may only run when
+    the lane budget still covers the Builder reserve (diagnosis must not eat
+    the budget before the Builder can act)."""
+    return budget.remaining_model_requests() > E5_BUILDER_RESERVE_REQUESTS
+
+
+def _bind_role_gap_anchors(
+    request: MeasurementRequest,
+    *,
+    target_pdf: Path,
+    current_pdf: Path,
+    region_span: tuple[float, float] | None,
+    render_leaf_texts: list[str],
+) -> MeasurementRequest | MeasurementResult:
+    """Phase 0 measurement binding: resolve a SEMANTIC measurement intent
+    into actual final-PDF objects (exact line-prefix anchors on BOTH sides).
+    The render side binds against the render's own candidate entry-head
+    texts; the target side binds against the target's measured content rows
+    within the region span. A Reviewer OCR mismatch never becomes an
+    automatic measurement_failure: an unresolvable intent returns
+    `evidence_missing` for re-verification, with the binding method recorded."""
+    render_rows = _pdf_line_rows(current_pdf, request.page)
+
+    def _norm_row(text: str) -> str:
+        return re.sub(r"\s+", " ", text).strip().casefold()
+
+    prefixes = [
+        _norm_row(text)[:12]
+        for text in render_leaf_texts
+        if text and len(text.strip()) >= 6
+    ]
+    render_anchors: list[str] = []
+    for row in render_rows:
+        row_text = _norm_row(row["text"])
+        for prefix in prefixes:
+            if row_text.startswith(prefix) and prefix not in render_anchors:
+                render_anchors.append(prefix)
+                break
+        if len(render_anchors) == 2:
+            break
+    if len(render_anchors) < 2:
+        return MeasurementResult(
+            request_id=request.request_id,
+            status="evidence_missing",
+            reason=(
+                "the semantic intent could not be bound to two render entry-head "
+                "rows in the final PDF (binding, not OCR, decides)"
+            ),
+            method="role_gap_binding/1",
+            warnings=["binding resolves the Reviewer's semantic intent against actual PDF rows"],
+        )
+    target_rows = _pdf_line_rows(target_pdf, request.page)
+    if region_span is not None:
+        span_top, span_bottom = region_span
+        target_rows = [
+            row for row in target_rows if span_top < row["top"] < span_bottom
+        ]
+    # ponytail: target entry heads = the first two non-bullet rows below the
+    # section rule (dates/meta rows carry digits; bullets carry the marker);
+    # a dedicated head classifier is the upgrade if this misbinds.
+    head_rows = [
+        row for row in target_rows
+        if not row["text"].startswith("\u2022")
+        and not row["text"].startswith("\u2022")
+        and any(character.isalpha() for character in row["text"])
+    ]
+    if len(head_rows) < 2:
+        return MeasurementResult(
+            request_id=request.request_id,
+            status="evidence_missing",
+            reason="the region's target content rows could not yield two head anchors",
+            method="role_gap_binding/1",
+            warnings=["binding resolves the Reviewer's semantic intent against actual PDF rows"],
+        )
+    return request.model_copy(
+        update={
+            "from_text": _norm_row(head_rows[0]["text"])[:16],
+            "to_text": _norm_row(head_rows[1]["text"])[:16],
+            "render_from_text": render_anchors[0],
+            "render_to_text": render_anchors[1],
+        }
+    )
+
+
+def _region_spans_from_draft(draft: TargetStructureDraft, page_height: float) -> dict[str, tuple[int, float, float]]:
+    """node_id -> (page, top, bottom) from the draft's measured section
+    boundary claims (each cites its sidebar label row + rule bbox)."""
+    claims = []
+    for claim in draft.structure:
+        if claim.relation != "section_boundary":
+            continue
+        rule_top = None
+        page_number = None
+        for ref in claim.evidence:
+            if ref.bbox_pt and len(ref.bbox_pt) == 4 and ref.page_number is not None:
+                page_number = ref.page_number
+                if ref.bbox_pt[1] > 0 or ref.bbox_pt[3] > ref.bbox_pt[1]:
+                    rule_top = float(ref.bbox_pt[1])
+        if page_number is not None:
+            claims.append((page_number, rule_top, claim.child))
+    spans: dict[str, tuple[int, float, float]] = {}
+    by_page: dict[int, list[tuple[float, str]]] = {}
+    for page_number, rule_top, child in claims:
+        by_page.setdefault(page_number, []).append((rule_top, child))
+    for page_number, rows in by_page.items():
+        rows.sort()
+        for index, (rule_top, child) in enumerate(rows):
+            bottom = rows[index + 1][0] if index + 1 < len(rows) else page_height
+            spans[child] = (page_number, rule_top + 1.0, bottom)
+    return spans
+
+
+def _apply_lane_a_structure(plan: Any, proposal: LaneAStructureProposal | None) -> Any:
+    """Map the Lane A typed primitives onto the compiled plan (the fixed
+    renderer interprets them; unknown section ids fail validation)."""
+    if proposal is None:
+        return plan
+    updated_sections = []
+    for section in plan.sections:
+        match = next(
+            (item for item in proposal.sections if item.section_node_id == section.node_id),
+            None,
+        )
+        if match is not None:
+            section = section.model_copy(
+                update={
+                    "rail_heading": match.heading_in_rail or None,
+                    "rail_label_width_pt": match.rail_label_width_pt,
+                    "rail_label_align": match.rail_label_align,
+                    "entry_meta_placement": match.entry_meta_placement,
+                }
+            )
+        updated_sections.append(section)
+    updated_appended = []
+    for section in plan.appended_sections:
+        match = next(
+            (item for item in proposal.sections if item.section_node_id == section.node_id),
+            None,
+        )
+        if match is not None:
+            section = section.model_copy(
+                update={
+                    "rail_heading": match.heading_in_rail or None,
+                    "rail_label_width_pt": match.rail_label_width_pt,
+                    "rail_label_align": match.rail_label_align,
+                    "entry_meta_placement": match.entry_meta_placement,
+                }
+            )
+        updated_appended.append(section)
+    # The compiled plan is a SUBSET of the state's sections (contentless
+    # sections render nothing); primitives for plan-absent sections are
+    # recorded, not applied. Unknown state ids are rejected earlier by
+    # `_validate_lane_a_proposal` (against the state node vocabulary).
+    proposed_ids = {item.section_node_id for item in proposal.sections}
+    skipped = sorted(
+        proposed_ids - {s.node_id for s in [*updated_sections, *updated_appended]}
+    )
+    notes = [*plan.notes, *(
+        f"lane A structure proposal cites {node_id!r}, which has no compiled plan section (skipped)"
+        for node_id in skipped
+    )]
+    return plan.model_copy(
+        update={"sections": updated_sections, "appended_sections": updated_appended, "notes": notes}
+    )
+
+
+def _validate_lane_a_proposal(
+    proposal: LaneAStructureProposal, state: Any
+) -> str | None:
+    """Shell-side Lane A validation: section ids must exist in the compiled
+    state; no candidate text may appear anywhere in the proposal (candidate
+    facts are never editable); rail widths are bounded by the model."""
+    known = {node.node_id for node in state.nodes}
+    unknown = [item.section_node_id for item in proposal.sections if item.section_node_id not in known]
+    if unknown:
+        return f"proposal cites unknown state nodes: {unknown}"
+    payload = proposal.model_dump_json()
+    for leaf in getattr(state, "candidate_texts", []) or []:
+        if leaf and leaf in payload:  # candidate facts can never enter (defensive)
+            return "proposal carries candidate text"
+    return None
+
+
+def _scripted_lane_a_proposal(state: Any, derived: dict[str, Any]) -> LaneAStructureProposal:
+    """Offline verification-path Lane A Builder: rails every mapped section
+    using the GENERIC two-column derivation's measured rail extent (never a
+    target constant)."""
+    rules = derived.get("sidebar_rules") or {}
+    widths = [
+        float(rule["x1_pt"]) - float(rule["x0_pt"])
+        for rule in rules.values()
+        if rule.get("x1_pt") and rule.get("x0_pt")
+    ]
+    rail_width = round(sum(widths) / len(widths), 3) if widths else 110.0
+    sections = [
+        E5LaneASection(
+            section_node_id=node.node_id,
+            heading_in_rail=node.kind == "section",
+            rail_label_width_pt=round(rail_width, 3) if node.kind == "section" else None,
+            rail_label_align="right" if node.kind == "section" else None,
+        )
+        for node in state.nodes
+        if node.kind == "section"
+    ]
+    return LaneAStructureProposal(
+        proposal_id="scripted-rail-1",
+        sections=sections,
+        rationale="scripted two-rail interpretation of the measured sidebar family",
+        agent="scripted",
+    )
+
+
+def _scripted_lane_b_template(base: AuthoredTemplateCandidate, finding: DefectFinding, result: MeasurementResult) -> AuthoredTemplateCandidate:
+    """Offline verification-path Lane B Builder: one bounded deterministic
+    template mutation for the measured defect class (entry-gap compression)."""
+    css = base.css
+    if result.delta_pt is not None and result.delta_pt > 0 and "margin-top: 6pt" in css:
+        css = css.replace("margin-top: 6pt", f"margin-top: {max(1.0, 6.0 - abs(result.delta_pt) / 2):.1f}pt")
+    return base.model_copy(update={"template_id": base.template_id + "-r", "css": css})
+
+
+def _review_scope_payload(
+    round_no: int, changed_regions: list[str], findings: list["DefectFinding"]
+) -> dict[str, Any]:
+    """Phase 0 review scope (E5 work order): round 1 reviews the whole
+    document; later rounds focus on changed regions, dependent regions, and
+    unresolved findings with ONE bounded global sweep — the Reviewer never
+    regenerates the entire defect list after a local change."""
+    return {
+        "round": round_no,
+        "whole_document": round_no == 1,
+        "changed_regions": list(changed_regions),
+        "open_findings": [
+            {"region": finding.region, "dimension": finding.suspected_dimension}
+            for finding in findings
+        ],
+        "instruction": (
+            "Round 1: whole-document review. Later rounds: focus on the "
+            "changed regions and their dependent regions, restate only "
+            "unresolved findings, and run ONE bounded global sweep — do "
+            "NOT regenerate the entire defect list."
+        ),
+    }
+
+
+def _probe_candidate_with_text(fixture: Any) -> Any:
+    """Independent content-shape probe WITH deterministic synthetic values
+    (the canonical C2 fixtures carry structure only). Synthetic placeholder
+    text is authorized probe content — never a target or candidate fact."""
+    leaves = [
+        leaf.model_copy(update={"text": f"probe {leaf.leaf_id} verbatim value"})
+        for leaf in fixture.leaves
+    ]
+    return fixture.model_copy(update={"leaves": leaves})
+
+
+def _estimate_lane_cost(
+    record: "E5LaneRecord", pricing: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Provider accounting (E5 work order): raw usage is always recorded;
+    a cost estimate exists ONLY when verified official pricing was supplied
+    in the frozen config. No price is ever invented."""
+    usage = record.budget_state.get("usage", {})
+    raw = {
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "live_model_calls": record.budget_state.get("calls_by_mode", {}).get("live", 0),
+    }
+    if not pricing or not pricing.get("verified"):
+        return {**raw, "estimated_cost_usd": None, "pricing_source": None,
+                "note": "exact billing unavailable; raw usage preserved"}
+    in_price = pricing.get("input_per_million_usd")
+    out_price = pricing.get("output_per_million_usd")
+    if in_price is None or out_price is None:
+        return {**raw, "estimated_cost_usd": None, "pricing_source": pricing.get("source_url")}
+    estimate = (
+        raw["input_tokens"] / 1_000_000 * in_price
+        + raw["output_tokens"] / 1_000_000 * out_price
+    )
+    return {
+        **raw,
+        "estimated_cost_usd": round(estimate, 4),
+        "pricing_source": pricing.get("source_url"),
+        "assumptions": pricing.get("assumptions"),
+    }
+
+
+def _lane_a_builder_call_count(budget: RunBudget) -> int:
+    return budget.calls_by_agent.get("lane_a_builder", 0)
+
+
+def _with_connection_retry(call, *, trace: RunTrace, what: str, attempts: int = 3):
+    """Bounded retry for transient provider Connection errors (observed on
+    long multimodal review calls); every retry is traced, and a persistent
+    failure escalates as before — never silent, never unbounded."""
+    import time as _time
+
+    last: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except Exception as error:  # noqa: BLE001 - retried only when transient
+            if "connection" not in str(error).casefold():
+                raise
+            last = error
+            trace.add(
+                agent="shell", phase="loop", action="connection_retry",
+                note=f"{what}: attempt {attempt} failed ({str(error)[:120]})",
+            )
+            _time.sleep(10)
+    assert last is not None
+    raise last
+
+
+def _live_lane_a_builder(
+    budget: RunBudget,
+    trace: RunTrace,
+    *,
+    payload: dict[str, Any],
+    proposal_id: str,
+) -> LaneAStructureProposal:
+    """The LIVE Lane A Builder: one bounded request that outputs the typed
+    provider-neutral structure primitives. The shell validates, applies and
+    renders — the agent never promotes anything."""
+    from pydantic_ai import Agent
+
+    from tests.experiments.d_pipeline import _live_model
+
+    if budget.remaining_model_requests() < 1:
+        raise CheckpointBudgetExceeded("budget exhausted before lane A builder")
+    agent = Agent(
+        _live_model(),
+        output_type=LaneAStructureProposal,
+        name="lane_a_builder",
+        instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
+    )
+    run_result = _with_connection_retry(
+        lambda: agent.run_sync(
+            json.dumps(payload, ensure_ascii=False, indent=1),
+            usage_limits=_call_limits(budget, E5_BUILDER_MAX_REQUESTS),
+            model_settings=_live_model_settings(),
+        ),
+        trace=trace, what="lane A builder",
+    )
+    _record_usage(budget, trace, "lane_a_builder", "build", run_result)
+    proposal = run_result.output
+    return proposal.model_copy(update={"proposal_id": proposal_id, "agent": "llm"})
+
+
+def _live_lane_b_builder(
+    budget: RunBudget,
+    trace: RunTrace,
+    *,
+    payload: dict[str, Any],
+    images: list[Any],
+    template_id: str,
+) -> AuthoredTemplateCandidate:
+    """The LIVE Lane B Builder: one bounded request over target + current
+    render images that authors the constrained HTML/CSS template candidate.
+    The shell validates the safety boundary and fills typed slots — the agent
+    never touches candidate values or the filesystem."""
+    from pydantic_ai import Agent, BinaryContent
+
+    from tests.experiments.d_pipeline import _live_model
+    from tests.experiments.e_authored_template import AuthoredTemplateCandidate
+
+    if budget.remaining_model_requests() < 1:
+        raise CheckpointBudgetExceeded("budget exhausted before lane B builder")
+    agent = Agent(
+        _live_model(),
+        output_type=AuthoredTemplateCandidate,
+        name="lane_b_builder",
+        instructions=E5_LANE_B_BUILDER_INSTRUCTIONS,
+    )
+    run_result = _with_connection_retry(
+        lambda: agent.run_sync(
+            [
+                json.dumps(payload, ensure_ascii=False, indent=1),
+                *[BinaryContent(data=image.read_bytes(), media_type="image/png") for image in images],
+            ],
+            usage_limits=_call_limits(budget, E5_BUILDER_MAX_REQUESTS),
+            model_settings=_live_model_settings(),
+        ),
+        trace=trace, what="lane B builder",
+    )
+    _record_usage(budget, trace, "lane_b_builder", "build", run_result)
+    template = run_result.output
+    return template.model_copy(update={"template_id": template_id})
+
+
+def _live_attribution_batch(
+    pod: "DualSourcePod",
+    budget: RunBudget,
+    trace: RunTrace,
+    *,
+    findings: list[DefectFinding],
+    results: list[MeasurementResult],
+) -> list[LiveAttributionHypothesis]:
+    """Phase 0 batched live attribution: findings that share the same region
+    (and likely owning layer) are traced in ONE bounded call, ordered like
+    the input findings list."""
+    from pydantic_ai import Agent
+
+    from tests.experiments.d_pipeline import _live_model
+
+    if budget.remaining_model_requests() < 1:
+        raise CheckpointBudgetExceeded("budget exhausted before attribution batch")
+    tools = _pod_tools(pod, budget, trace, agent_name="attribution_investigator")
+    tools.append(_traced_render_words(pod, budget, trace))
+    agent = Agent(
+        _live_model(),
+        output_type=list[LiveAttributionHypothesis],
+        name="attribution_investigator",
+        instructions=E5_ATTRIBUTION_INSTRUCTIONS,
+        tools=tools,
+    )
+    payload = {
+        "findings": [finding.model_dump(mode="json") for finding in findings],
+        "measurements": [result.model_dump(mode="json") for result in results],
+        "target_description": pod.describe_target(),
+        "budget_note": (
+            "ONE bounded agent run for this whole batch; decide from the "
+            "evidence you already have plus at most a few tool calls."
+        ),
+    }
+    run_result = agent.run_sync(
+        json.dumps(payload, ensure_ascii=False, indent=1),
+        usage_limits=_call_limits(budget, E5_ATTRIBUTION_MAX_REQUESTS),
+        model_settings=_live_model_settings(),
+    )
+    _record_usage(budget, trace, "attribution_investigator", "attribute_batch", run_result)
+    return list(run_result.output)
+
+
+def _freeze_e5_config(
+    out_dir: Path,
+    *,
+    target_id: str,
+    target_frozen: FrozenCase,
+    lanes: tuple[str, ...],
+    max_repair_rounds: int,
+    live: bool,
+    prompts: dict[str, str],
+    rubric_reference: dict[str, Any],
+    candidate_sha256: str,
+    shared_draft_ref: dict[str, Any],
+    pricing: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Frozen BEFORE the first live call (E5 work order): shared target/
+    candidate/evidence/model/prompts/budgets plus per-lane budgets. Model
+    NAMES only — never keys, URLs or tokens; rubric content never recorded."""
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+            cwd=Path(__file__).resolve().parents[2],
+        ).stdout.strip()
+    except Exception:
+        commit = "unknown"
+    config = {
+        "run_id": out_dir.name,
+        "frozen_before_first_live_call": True,
+        "target_id": target_id,
+        "target_sha256": target_frozen.target_sha256,
+        "adobe_json_sha256": target_frozen.adobe_json_sha256,
+        "candidate_input": {
+            "role": "reviewed render context (candidate_resume_E render content)",
+            "sha256": candidate_sha256,
+            "builder_boundary": "candidate facts are never editable by any agent",
+        },
+        "shared_structure_draft": shared_draft_ref,
+        "e4_best_render_baseline": {
+            "run_dir": E5_RUNS_E4_BASELINE,
+            "note": "E4 promoted best render (baseline render; NOT an accepted template)",
+        },
+        "model_configuration": _model_identity(),
+        "sampling": {"temperature": E4_TEMPERATURE},
+        "budgets": {
+            "per_lane": {
+                "max_model_requests": E5_LANE_MAX_MODEL_REQUESTS,
+                "max_tool_calls": E5_LANE_MAX_TOOL_CALLS,
+                "max_repair_rounds": max_repair_rounds,
+                "builder_reserve_model_requests": E5_BUILDER_RESERVE_REQUESTS,
+                "per_agent_run_max_requests": {
+                    "visual_reviewer": E5_REVIEWER_MAX_REQUESTS,
+                    "builder": E5_BUILDER_MAX_REQUESTS,
+                    "attribution_investigator": E5_ATTRIBUTION_MAX_REQUESTS,
+                },
+            },
+            "lanes": list(lanes),
+        },
+        "prompts": {
+            "sha256": {
+                name: hashlib.sha256(text.encode("utf-8")).hexdigest()
+                for name, text in prompts.items()
+            },
+            "note": "full frozen prompt texts persisted in prompts.json; agent-visible only",
+        },
+        "permitted_tools": [
+            "inspect_page_overview", "inspect_page_region", "inspect_adobe_json",
+            "measure_local_pdf", "audit_coverage", "measure_render_words",
+            "compare_pdf_geometry", "render_and_checkpoint",
+        ],
+        "lane_a_gates": list(CANDIDATE_FACT_GATES) + ["content_shapes_match_evidence"],
+        "lane_b_gates": [
+            "deterministic_render", "no_target_candidate_facts", "no_blank_page",
+            "candidate_content_accounting", "content_gate", "template_safety",
+        ],
+        "evaluation_rubric_reference": {**rubric_reference, "not_given_to_agents": True},
+        "starting_commit": commit,
+        "live": live,
+        "provider_pricing": pricing or {"status": "unavailable", "estimate": None},
+    }
+    (out_dir / "run_config.json").write_text(
+        json.dumps(config, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    (out_dir / "prompts.json").write_text(
+        json.dumps(prompts, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    return config
+
+
+def run_e5(
+    target_pdf: Path,
+    out_dir: Path | None = None,
+    *,
+    live: bool = False,
+    lanes: tuple[str, ...] = ("a", "b"),
+    max_repair_rounds: int = E5_MAX_REPAIR_ROUNDS,
+    budget: RunBudget | None = None,
+    probe_render: bool = True,
+    pricing: dict[str, Any] | None = None,
+) -> tuple[Path, str, dict[str, Any]]:
+    """E5: controlled comparison of TWO Builder representations on Resume I
+    (Phase 0 loop fixes + Lane A structured layout + Lane B authored
+    template). One runner, one shell, two fresh agent contexts.
+
+    Normal exits: ``ready_for_owner_review`` and ``budget_exhausted`` (never
+    success, never `unsupported`, never owner acceptance). Operational aborts
+    describe the failed operation only."""
+    from tests.experiments.a_pipeline import build_format_summary
+    from tests.experiments.c2_candidates import (
+        UnroutableContent,
+        candidate_resume_E,
+        independent_candidate_fixtures,
+    )
+    from tests.experiments.c2_pipeline import run_flow_probe
+    from tests.experiments.c2_plan import compile_render_plan
+    from tests.experiments.c2_html import render_html
+    from tests.experiments import c2_renderer as c2r
+    from tests.experiments.c2_state import state_bytes
+    from app.template_analysis.commercial.models import NormalizedLayoutEvidence
+    from tests.experiments.e_authored_template import (
+        authored_network_disabled_environment,
+        authored_pdf_presence_gate,
+        authored_privacy_gate,
+        build_authored_document,
+        fill_authored_template,
+        validate_authored_template,
+    )
+
+    started = time.time()
+    started_at = datetime.now(UTC).isoformat(timespec="seconds")
+    target_pdf = target_pdf.resolve()
+    if not target_pdf.exists():
+        raise RuntimeError(f"target PDF not found: {target_pdf}")
+    out_dir = out_dir or RUNS / datetime.now(UTC).strftime("e_pipeline_e5_%Y%m%dT%H%M%SZ")
+    out_dir.mkdir(parents=True, exist_ok=False)
+    budget = budget or RunBudget(
+        max_model_requests=E5_LANE_MAX_MODEL_REQUESTS * len(lanes),
+        max_tool_calls=E5_LANE_MAX_TOOL_CALLS * len(lanes),
+    )
+
+    def abort(operation: str, error: Exception) -> tuple[Path, str, dict[str, Any]]:
+        record = E5LoopRecord(target_id="unknown", target_sha256="0" * 64)
+        record.summary["terminal_state"] = "operational_abort"
+        record.summary["abort"] = {"operation": operation, "error": str(error)}
+        (out_dir / "e5_state.json").write_text(
+            json.dumps(record.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return out_dir, "operational_abort", record.model_dump(mode="json")
+
+    # -- 1. FREEZE shared inputs ------------------------------------------
+    target_cache_dir = RUNS / "target_cache" / _sha256_file(target_pdf)
+    raw_path = target_cache_dir / "adobe_raw.json"
+    normalized_path = target_cache_dir / "enriched_evidence.json"
+    if not raw_path.exists() or not normalized_path.exists():
+        return abort("target_evidence_cache", RuntimeError("no cached Adobe response for this target"))
+    (out_dir / "adobe_raw.json").write_text(
+        json.dumps(
+            redact_signed_urls(json.loads(raw_path.read_text(encoding="utf-8"))),
+            ensure_ascii=False, indent=1,
+        ),
+        encoding="utf-8",
+    )
+    assert_no_signed_strings((out_dir / "adobe_raw.json").read_text(encoding="utf-8"))
+    shutil.copy2(normalized_path, out_dir / "enriched_evidence.json")
+    target_frozen = freeze_cases(target_pdf, raw_path, role="frozen_blind", case_id=target_pdf.stem)
+    (out_dir / "frozen_case.json").write_text(target_frozen.model_dump_json(indent=2), encoding="utf-8")
+    target_id = f"target-{target_pdf.stem}-v1"
+    rubric_reference = {
+        "path": "tests/experiments/C2_RESUME_I_BLIND_STRUCTURE_AUDIT.md",
+        "sha256": _sha256_file(ROOT / "tests/experiments/C2_RESUME_I_BLIND_STRUCTURE_AUDIT.md"),
+    }
+
+    # -- 2. Shared compile basis + shared evidence-linked StructureDraft ----
+    try:
+        normalized = NormalizedLayoutEvidence.model_validate_json(
+            normalized_path.read_text(encoding="utf-8")
+        )
+    except Exception as error:
+        return abort("normalized_evidence_load", error)
+    pod = DualSourcePod(target_pdf, raw_path, out_dir, render_pdf=None, normalized=normalized)
+    try:
+        summary = build_format_summary(normalized, json.loads(raw_path.read_text(encoding="utf-8")), target_pdf)
+        state, derived = compile_two_column_state(target_pdf, summary, evidence=normalized)
+    except Exception as error:
+        return abort("compile_two_column_state", error)
+    (out_dir / "c2_layout_state.json").write_bytes(state_bytes(state))
+    _headings_scaffold, body_scaffold = compile_two_column_state_for_scaffold(target_pdf, summary)
+    bullet_tiers = _two_column_bullet_tiers(_pdf_lines_and_marks(target_pdf)[0], summary)
+
+    # The SAME evidence-linked StructureDraft is the common starting point for
+    # both lanes (E5 work order). The E4 run's validated draft is reused as a
+    # frozen shared input (path + sha recorded; content never regenerated).
+    draft_source = RUNS / E5_SHARED_DRAFT_SOURCE
+    if not draft_source.exists():
+        return abort(
+            "shared_structure_draft",
+            FileNotFoundError(f"the shared StructureDraft ({E5_SHARED_DRAFT_SOURCE}) is missing"),
+        )
+    draft = TargetStructureDraft.model_validate_json(draft_source.read_text(encoding="utf-8"))
+    (out_dir / "structure_draft.json").write_text(draft.model_dump_json(indent=2), encoding="utf-8")
+    shared_draft_ref = {
+        "source_run": E5_SHARED_DRAFT_SOURCE,
+        "sha256": _sha256_file(draft_source),
+        "claims": len(draft.structure),
+        "shared_by_lanes": True,
+    }
+    page_height = _page_pt_size(target_pdf, 1)[1]
+    region_spans = _region_spans_from_draft(draft, page_height)
+
+    candidate = candidate_resume_E()
+    # Generic header-overflow disposition (E3 shell transition, reused): the
+    # compiled two-column state hosts the contact rows inside section content.
+    header_slots_in_state = {
+        slot for node in state.nodes if node.kind == "header_row" for slot in node.slots
+    }
+    unhomed_header_fields = [
+        leaf for leaf in candidate.leaves
+        if leaf.kind == "header_field" and leaf.slot not in header_slots_in_state
+    ]
+    if unhomed_header_fields:
+        candidate = candidate.model_copy(
+            update={
+                "unroutable": [
+                    *candidate.unroutable,
+                    *(
+                        UnroutableContent(
+                            text=leaf.text or "",
+                            reason=(
+                                "the compiled target header region carries no measured "
+                                f"row with slot {leaf.slot!r}; routes through the explicit "
+                                "candidate-only header-overflow node"
+                            ),
+                            slot=leaf.slot,
+                        )
+                        for leaf in unhomed_header_fields
+                    ),
+                ]
+            }
+        )
+    frozen_dir = RUNS / "c_pipeline_D_to_E_20260910T195515Z"
+    if not (frozen_dir / "target.pdf").exists():
+        return abort("frozen_c1_baseline", FileNotFoundError(str(frozen_dir / "target.pdf")))
+    privacy_baseline = frozen_dir / "target.pdf"
+    environment = pinned_export_environment({})
+    candidate_sha256 = hashlib.sha256(
+        json.dumps(candidate.model_dump(mode="json"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+    config = _freeze_e5_config(
+        out_dir,
+        target_id=target_id,
+        target_frozen=target_frozen,
+        lanes=lanes,
+        max_repair_rounds=max_repair_rounds,
+        live=live,
+        prompts={
+            "visual_reviewer": E5_REVIEWER_INSTRUCTIONS,
+            "lane_a_builder": E5_LANE_A_BUILDER_INSTRUCTIONS,
+            "lane_b_builder": E5_LANE_B_BUILDER_INSTRUCTIONS,
+            "attribution_investigator": E5_ATTRIBUTION_INSTRUCTIONS,
+        },
+        rubric_reference=rubric_reference,
+        candidate_sha256=candidate_sha256,
+        shared_draft_ref=shared_draft_ref,
+        pricing=pricing,
+    )
+
+    store = EvidenceStore(out_dir, out_dir, base_html="<html><body></body></html>")
+    store.manifest["experiment"] = "e_pipeline_e5"
+    store.manifest["pipeline_phase"] = "e5"
+    store.register_version("structure_draft_v1", out_dir / "structure_draft.json", "shared evidence-linked draft")
+
+    # Scripted-reviewer rehearsal data for THIS target (same runtime rehearsal
+    # pattern as E3/E4, keyed by target id; Phase-0-style intent-only request).
+    mapped = [
+        node for node in state.nodes
+        if node.kind == "section" and node.binding
+        and node.binding.mapping_action == "map"
+        and "work_experience" in node.binding.sources
+    ]
+    if not mapped:
+        return abort("scripted_reviewer_region", RuntimeError("compiled state has no mapped work_experience section"))
+    entry_region = mapped[0].node_id
+    SCRIPTED_REGION_BY_TARGET[target_id] = entry_region
+    SCRIPTED_OBSERVATION_BY_TARGET[target_id] = (
+        "The vertical distance from the first dated entry head to the second "
+        "dated entry head appears larger than in the target."
+    )
+    SCRIPTED_REQUEST_BY_TARGET[target_id] = MeasurementRequest(
+        request_id="measure-pending",
+        metric="role_gap",
+        page=1,
+        region_id=entry_region,
+        intent="vertical gap between the first two dated entry heads inside this region",
+    )
+
+    lane_records: dict[str, E5LaneRecord] = {}
+
+    def _run_lane(lane: str) -> E5LaneRecord:
+        lane_dir = out_dir / f"lane_{lane}"
+        lane_dir.mkdir(exist_ok=True)
+        # The per-lane budget lives INSIDE the run budget (recorded in the
+        # frozen config; a smaller caller-provided budget is respected so a
+        # constrained run still exits budget_exhausted with resumable state).
+        lane_budget = RunBudget(
+            max_model_requests=min(E5_LANE_MAX_MODEL_REQUESTS, budget.remaining_model_requests()),
+            max_tool_calls=min(E5_LANE_MAX_TOOL_CALLS, budget.max_tool_calls),
+        )
+        trace = RunTrace(lane_dir)
+        trace.add(agent="shell", phase="e0", action="lane_started", output={"lane": lane, "live": live})
+        versions: list[RenderVersion] = []
+        findings: list[DefectFinding] = []
+        measurement_results: list[MeasurementResult] = []
+        attributions: list[AttributionRecord] = []
+        repair_attempts: list[dict[str, Any]] = []
+        attempted_strategies: list[str] = []
+        fingerprints: list[str] = []
+        resolved_measurements: dict[str, tuple[MeasurementRequest, MeasurementResult]] = {}
+        ledger = DefectLedger()
+        pages_reviewed: set[int] = set()
+        counter = {"finding": 0, "request": 0}
+        lane_state: dict[str, Any] = {
+            "proposal": None, "template": None, "plan": None, "last_gates": {},
+        }
+        page_size = _page_pt_size(target_pdf, 1)
+
+        def escalate(strategy: str) -> None:
+            attempted_strategies.append(strategy)
+            trace.add(agent="shell", phase="loop", action="strategy_escalation", note=strategy)
+
+        def _lane_terminal(lane_id: str, forced: str | None = None) -> E5LaneRecord:
+            open_ids = [
+                finding.finding_id for finding in findings
+                if finding.finding_id not in resolved_measurements
+            ]
+            probes_ok = True
+            probe_report: dict[str, Any] = {}
+            template_used = lane_state.get("template")
+            for profile, fixture in independent_candidate_fixtures().items():
+                try:
+                    if lane == "a":
+                        probe = run_flow_probe(state, fixture)
+                        probe_report[profile] = probe
+                        probes_ok = probes_ok and bool(probe.get("passed"))
+                    elif template_used is not None:
+                        probe_candidate = _probe_candidate_with_text(fixture)
+                        fill = fill_authored_template(template_used, probe_candidate)
+                        probe_report[profile] = {
+                            "accounting_passed": not fill.missing_leaves,
+                            "missing_leaves": fill.missing_leaves[:8],
+                            "leaf_count": len(probe_candidate.leaves),
+                        }
+                        probes_ok = probes_ok and not fill.missing_leaves
+                    else:
+                        probes_ok = False
+                except Exception as error:  # a probe failure is recorded, never a crash
+                    probe_report[profile] = {"passed": False, "error": str(error)[:200]}
+                    probes_ok = False
+            (lane_dir / "content_shape_probes.json").write_text(
+                json.dumps(probe_report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            best_version_id = next(
+                (v.version_id for v in versions if v.promoted),
+                next((v.version_id for v in versions if v.hard_gates_passed), None),
+            )
+            best_version = next((v for v in versions if v.version_id == best_version_id), None)
+            expected_pages = set(range(1, (target_frozen.page_count or 1) + 1))
+            terminal = (
+                "ready_for_owner_review"
+                if (
+                    best_version_id
+                    and best_version is not None
+                    and best_version.hard_gates_passed
+                    and not open_ids
+                    and probes_ok
+                    and pages_reviewed >= expected_pages
+                )
+                else "budget_exhausted"
+            )
+            if forced is not None:
+                terminal = forced
+            record = E5LaneRecord(
+                lane=lane_id,
+                representation=(
+                    "provider-neutral structured layout + fixed renderer (Lane A)"
+                    if lane_id == "a"
+                    else "constrained authored HTML/CSS template + typed slots (Lane B)"
+                ),
+                render_versions=versions,
+                best_render_version=best_version_id,
+                findings=findings,
+                measurement_results=measurement_results,
+                attributions=attributions,
+                repair_attempts=repair_attempts,
+                attempted_strategies=attempted_strategies,
+                action_fingerprints=fingerprints,
+                ledger=list(ledger.entries.values()),
+                open_findings=open_ids,
+                content_shape_probes_passed=probes_ok,
+                pages_reviewed=sorted(pages_reviewed),
+                terminal_state=terminal,
+                budget_state=lane_budget.to_json(),
+                summary={
+                    "total_findings": len(findings),
+                    "best_render_version": best_version_id,
+                    "promoted_versions": len([v for v in versions if v.promoted]),
+                    "confirmed_measurements": len([r for r in measurement_results if r.status == "confirmed"]),
+                    "unbound_measurements": len([r for r in measurement_results if r.status == "evidence_missing"]),
+                    "builder_calls": lane_budget.calls_by_agent.get(f"lane_{lane_id}_builder", 0),
+                    "reviewer_calls": lane_budget.calls_by_agent.get("visual_reviewer", 0),
+                    "attribution_calls": lane_budget.calls_by_agent.get("attribution_investigator", 0),
+                    "elapsed_seconds": None,
+                    "live": live,
+                },
+            )
+            (lane_dir / f"e5_lane_{lane_id}_state.json").write_text(
+                json.dumps(record.model_dump(mode="json"), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            (lane_dir / "REPORT.md").write_text(
+                _write_e5_lane_report_md(lane_id, record), encoding="utf-8"
+            )
+            trace.save()
+            return record
+
+        # --- render plumbing ---------------------------------------------
+        if lane == "a":
+            def render_version(
+                note: str, proposal: LaneAStructureProposal | None = None
+            ) -> tuple[RenderVersion, Path, dict[str, Any]]:
+                lane_budget.spend_tool("render_and_checkpoint")
+                plan = _apply_lane_a_structure(compile_render_plan(state, candidate), proposal)
+                if plan.status == "failed":
+                    raise RuntimeError(f"refusing to render a failed plan: {plan.failures[:3]}")
+                html = render_html(state, plan)
+                index = len(versions) + 1
+                html_path = lane_dir / f"render_{index}.html"
+                html_path.write_text(html, encoding="utf-8")
+                pdf_path = lane_dir / f"render_{index}.pdf"
+                _export_pinned_html_to_pdf(html_path, pdf_path, environment)
+                second = lane_dir / f"render_{index}_second.pdf"
+                _export_pinned_html_to_pdf(html_path, second, environment)
+                pages = _render_pages(pdf_path, lane_dir, f"render_{index}")
+                second_pages = _render_pages(second, lane_dir, f"render_{index}_second")
+                stability = c2r._line_stability(pdf_path, second)
+                content = c2r.content_gate(plan, html, pdf_path)
+                privacy = c2r.privacy_gate(plan, privacy_baseline, html, pdf_path)
+                structure_gate = c2r.structure_gate(plan, state, html, pdf_path)
+                blank = c2r.blank_page_gate(pdf_path)
+                accounting = c2r.candidate_accounting_gate(plan, content)
+                shape = c2r.content_shape_verification(
+                    state, plan, body_scaffold, bullet_tiers, html, summary, pdf_path
+                )
+                gates = {
+                    "deterministic_render": all(
+                        c2r._sha256(left) == c2r._sha256(right)
+                        for left, right in zip(pages, second_pages)
+                    ) and stability["passed"],
+                    "no_target_candidate_facts": privacy["passed"],
+                    "section_order_matches_state": structure_gate["section_order_matches_state"],
+                    "no_blank_page": blank["passed"],
+                    "candidate_content_accounting": accounting["passed"],
+                    "content_shapes_match_evidence": shape["passed"],
+                    "content_gate": content["passed"],
+                }
+                version = RenderVersion(
+                    version_id=f"render-{target_pdf.stem}-laneA-v{index}",
+                    html_sha256=_sha256_file(html_path),
+                    pdf_sha256=_sha256_file(pdf_path),
+                    page_count=len(pages),
+                    hard_gates_passed=all(gates.values()),
+                    note=note,
+                )
+                versions.append(version)
+                lane_state["plan"] = plan
+                lane_state["last_gates"] = gates
+                store.register_version(version.version_id, pdf_path, note)
+                (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
+                    json.dumps({"passed": version.hard_gates_passed, "gates": gates}, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                trace.add(agent="shell", phase="render", action="render_version", output=version.model_dump(mode="json"), note=note)
+                return version, pdf_path, gates
+        else:
+            def render_version(
+                note: str, template: AuthoredTemplateCandidate | None = None
+            ) -> tuple[RenderVersion, Path, dict[str, Any]]:
+                lane_budget.spend_tool("render_and_checkpoint")
+                template = template or lane_state["template"]
+                validate_authored_template(template, target_pdf=target_pdf, render_candidate=candidate)
+                fill = fill_authored_template(template, candidate)
+                index = len(versions) + 1
+                doc = build_authored_document(template, fill, page_size)
+                html_path = lane_dir / f"render_{index}.html"
+                html_path.write_text(doc, encoding="utf-8")
+                pdf_path = lane_dir / f"render_{index}.pdf"
+                net_env = authored_network_disabled_environment()
+                _export_pinned_html_to_pdf(html_path, pdf_path, net_env)
+                second = lane_dir / f"render_{index}_second.pdf"
+                _export_pinned_html_to_pdf(html_path, second, net_env)
+                pages = _render_pages(pdf_path, lane_dir, f"render_{index}")
+                second_pages = _render_pages(second, lane_dir, f"render_{index}_second")
+                stability = c2r._line_stability(pdf_path, second)
+                presence = authored_pdf_presence_gate(fill, candidate, pdf_path)
+                privacy_baseline_gate = authored_privacy_gate(doc, pdf_path, privacy_baseline, labels=set())
+                privacy_target_gate = authored_privacy_gate(
+                    doc, pdf_path, target_pdf,
+                    labels={
+                        claim.child for claim in draft.structure
+                        if claim.relation == "section_boundary" and claim.child
+                    }
+                    | {
+                        record["text"]
+                        for record in (derived.get("sidebar_labels") or [])
+                        if record.get("text")
+                    },
+                )
+                blank = c2r.blank_page_gate(pdf_path)
+                gates = {
+                    "deterministic_render": all(
+                        c2r._sha256(left) == c2r._sha256(right)
+                        for left, right in zip(pages, second_pages)
+                    ) and stability["passed"],
+                    "no_target_candidate_facts": privacy_baseline_gate["passed"] and privacy_target_gate["passed"],
+                    "no_blank_page": blank["passed"],
+                    "candidate_content_accounting": not fill.missing_leaves,
+                    "content_gate": presence["passed"],
+                    "template_safety": True,  # validation raises otherwise
+                }
+                version = RenderVersion(
+                    version_id=f"render-{target_pdf.stem}-laneB-v{index}",
+                    html_sha256=_sha256_file(html_path),
+                    pdf_sha256=_sha256_file(pdf_path),
+                    page_count=len(pages),
+                    hard_gates_passed=all(gates.values()),
+                    note=note,
+                )
+                versions.append(version)
+                lane_state["last_gates"] = gates
+                store.register_version(version.version_id, pdf_path, note)
+                (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
+                    json.dumps({"passed": version.hard_gates_passed, "gates": gates}, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                trace.add(agent="shell", phase="render", action="render_version", output=version.model_dump(mode="json"), note=note)
+                return version, pdf_path, gates
+
+        def render_leaf_texts(region_id: str | None) -> list[str]:
+            if lane == "a":
+                plan = lane_state.get("plan")
+                if plan is not None:
+                    plan_section = next(
+                        (s for s in [*plan.sections, *plan.appended_sections] if s.node_id == region_id),
+                        None,
+                    )
+                    if plan_section is not None and plan_section.entries:
+                        return [
+                            entry.title_lines[0].text
+                            for entry in plan_section.entries if entry.title_lines
+                        ]
+            # generic fallback: the candidate's own entry heads (same role)
+            return [
+                leaf.text or "" for leaf in candidate.leaves
+                if leaf.kind in {"work_entry", "education_entry"} and leaf.text
+            ][:4]
+
+        def execute_measurement(
+            finding: DefectFinding, pdf: Path, request_id: str
+        ) -> tuple[MeasurementResult, MeasurementRequest]:
+            span = region_spans.get(finding.region)
+            span_tuple = (span[1], span[2]) if span and span[0] == finding.page else None
+            bound = _bind_role_gap_anchors(
+                finding.requested_measurement.model_copy(update={"request_id": request_id}),
+                target_pdf=target_pdf,
+                current_pdf=pdf,
+                region_span=span_tuple,
+                render_leaf_texts=render_leaf_texts(finding.region),
+            )
+            if isinstance(bound, MeasurementResult):
+                trace.add(
+                    agent="measure_controller", phase="measure", action="binding_unresolved",
+                    note=bound.reason, persist_output=True,
+                )
+                return bound, finding.requested_measurement
+            lane_budget.spend_tool("compare_pdf_geometry")
+            result = MeasureController(pod, lane_budget, trace).execute(bound, current_pdf=pdf)
+            trace.add(
+                agent="measure_controller", phase="measure", action="measurement",
+                tool="compare_pdf_geometry", output=result.model_dump(mode="json"), persist_output=True,
+            )
+            return result, bound
+
+        def attribute(
+            finding: DefectFinding, result: MeasurementResult, request: MeasurementRequest
+        ) -> AttributionRecord:
+            if result.status == "confirmed" and result.delta_pt is not None:
+                if abs(result.delta_pt) <= E2_IMPROVEMENT_TOLERANCE_PT:
+                    attribution = AttributionRecord(
+                        finding_id=finding.finding_id,
+                        render_version=finding.render_version,
+                        measurement_request_id=request.request_id,
+                        attribution="no_defect",
+                        hypothesis_status="rejected",
+                        repair_owner="none",
+                        evidence=[result.request_id],
+                        reason="measured role gap matches the target within the documented tolerance",
+                    )
+                else:
+                    attribution = AttributionRecord(
+                        finding_id=finding.finding_id,
+                        render_version=finding.render_version,
+                        measurement_request_id=request.request_id,
+                        attribution="template_compilation",
+                        hypothesis_status="confirmed",
+                        repair_owner="builder",
+                        evidence=[result.request_id],
+                        reason="the measured final-PDF role gap differs beyond the documented tolerance",
+                    )
+            else:
+                attribution = AttributionRecord(
+                    finding_id=finding.finding_id,
+                    render_version=finding.render_version,
+                    measurement_request_id=request.request_id,
+                    attribution="not_measurable",
+                    hypothesis_status="unresolved",
+                    repair_owner="reviewer",
+                    evidence=[result.request_id],
+                    reason=(
+                        "the semantic measurement intent did not bind to final-PDF "
+                        "objects this round; the finding stays open for re-verification"
+                    ),
+                )
+            attributions.append(attribution)
+            trace.add(
+                agent="attribution_investigator", phase="attribute", action="attribution",
+                output=attribution.model_dump(mode="json"),
+            )
+            return attribution
+
+        def accepted_regions_hold(candidate_pdf: Path) -> tuple[bool, list[dict[str, Any]]]:
+            rechecks: list[dict[str, Any]] = []
+            for finding_id, (request, prior) in resolved_measurements.items():
+                repeat = MeasureController(pod, lane_budget, trace).execute(
+                    request.model_copy(), current_pdf=candidate_pdf
+                )
+                held = (
+                    repeat.current_value_pt is None or prior.current_value_pt is None
+                    or abs(repeat.current_value_pt - repeat.target_value_pt)
+                    <= abs(prior.current_value_pt - prior.target_value_pt) + E2_IMPROVEMENT_TOLERANCE_PT
+                )
+                rechecks.append({"finding": finding_id, "held": held})
+                if not held:
+                    return False, rechecks
+            return True, rechecks
+
+        # --- 3. Initial Builder output (representation under test) ---------
+        initial_note = f"lane {lane} initial render ({'authored template' if lane == 'b' else 'structured layout'})"
+        try:
+            if lane == "a":
+                proposal = None
+                if live:
+                    payload = {
+                        "state_sections": [
+                            {
+                                "node_id": n.node_id,
+                                "kind": n.kind,
+                                "sources": (getattr(n.binding, "sources", None) if n.binding else None),
+                            }
+                            for n in state.nodes if n.kind == "section"
+                        ],
+                        "measured_rail_evidence": {
+                            "sidebar_rules": derived.get("sidebar_rules"),
+                            "sidebar_labels_sample": (derived.get("sidebar_labels") or [])[:6],
+                        },
+                        "constraint": "typed primitives only; no candidate or target person text",
+                    }
+                    proposal = _live_lane_a_builder(lane_budget, trace, payload=payload, proposal_id="lane-a-r1")
+                lane_state["proposal"] = proposal
+                version, pdf, gates = render_version(initial_note, proposal)
+            else:
+                template = None
+                if live:
+                    target_images = _overview_pngs(target_pdf, lane_dir, "builder_target")
+                    payload = {
+                        "structure_draft_claims": [
+                            {"child": c.child, "statement": c.statement} for c in draft.structure
+                        ],
+                        "page_size_pt": list(page_size),
+                        "slot_vocabulary_note": "see instructions; the shell fills slots, you never write values",
+                        "budget_note": "ONE bounded agent run; return the complete typed template",
+                    }
+                    template = _live_lane_b_builder(
+                        lane_budget, trace, payload=payload, images=target_images, template_id="lane-b-r1"
+                    )
+                else:
+                    from tests.experiments.e_authored_template import SCRIPTED_AUTHORED_TEMPLATE
+
+                    template = SCRIPTED_AUTHORED_TEMPLATE
+                lane_state["template"] = template
+                version, pdf, gates = render_version(initial_note, template)
+        except CheckpointBudgetExceeded:
+            escalate("builder_initial_budget_exhausted")
+            return _lane_terminal(lane, "budget_exhausted")
+        except Exception as error:
+            import traceback as _tb
+            detail = _tb.format_exc()[-600:]
+            lane_state["last_rejection"] = f"initial render failed: {str(error)[:200]}"
+            trace.add(agent="shell", phase="builder", action="initial_failed", note=str(error)[:200], output={"traceback": detail}, persist_output=True)
+            escalate(f"lane_builder_initial_failed:{type(error).__name__}")
+            return _lane_terminal(lane, "budget_exhausted")
+
+        # --- 4. See -> Measure -> Attribute -> Repair -> Re-render loop -----
+        for round_no in range(1, max_repair_rounds + 2):
+            try:
+                if lane_budget.remaining_model_requests() < 1:
+                    trace.add(agent="shell", phase="loop", action="budget_exhausted", note="before review")
+                    break
+                current_version = versions[-1]
+                current_pdf = lane_dir / f"render_{len(versions)}.pdf"
+                changed_regions: list[str] = [
+                    entry["region"] for entry in repair_attempts[-1:] if entry.get("region")
+                ]
+                findings_new: list[DefectFinding] = []
+                try:
+                    if live:
+                        target_overviews = _overview_pngs(target_pdf, out_dir, f"review_target_l{lane}_{round_no}")
+                        render_overviews = _overview_pngs(current_pdf, out_dir, f"review_render_l{lane}_{round_no}")
+                        scope = _review_scope_payload(round_no, changed_regions, findings)
+                        counter["finding"] += 1
+                        node_inventory = json.dumps(
+                            {
+                                "state_nodes": [
+                                    {"node_id": n.node_id, "kind": n.kind} for n in state.nodes
+                                ],
+                                "review_scope": scope,
+                            },
+                            ensure_ascii=False,
+                        )
+                        # Bounded images per call: one PAGE per reviewer call
+                        # (target overview + render overview), merged across pages.
+                        for page_index, target_page in enumerate(target_overviews, 1):
+                            lane_images = [target_page]
+                            if page_index <= len(render_overviews):
+                                lane_images.append(render_overviews[page_index - 1])
+                            counter["finding"] += 1
+                            findings_new.extend(_with_connection_retry(
+                                lambda lane_images=lane_images, page_index=page_index: _live_reviewer_findings(
+                                    lane_images,
+                                    finding_id=f"finding-l{lane}-r{round_no}-p{page_index}",
+                                    target_version=target_id,
+                                    render_version=current_version.version_id,
+                                    page=page_index,
+                                    node_inventory=node_inventory,
+                                    budget=lane_budget,
+                                    trace=trace,
+                                    id_prefix=f"finding-l{lane}-r{round_no}-p{page_index}",
+                                    instructions=E5_REVIEWER_INSTRUCTIONS,
+                                    visual_model=True,
+                                    message=(
+                                        "Compare the TARGET and RENDER images for this page. Review scope: "
+                                        + json.dumps(scope, ensure_ascii=False)
+                                        + "\nReport observation-first findings with SEMANTIC measurement "
+                                        "intents (leave the four anchor fields empty, set `intent`). "
+                                        "Findings must carry exact versions and a region id from the "
+                                        "node inventory. proposed_cause is a hypothesis only."
+                                    ),
+                                ),
+                                trace=trace, what=f"visual reviewer page {page_index}",
+                            ))
+                            pages_reviewed.add(page_index)
+                    else:
+                        counter["finding"] += 1
+                        prompt = f"TARGET {target_frozen.case_id} RENDER {current_version.version_id} page 1."
+                        findings_new = ScriptedReviewer().run(
+                            prompt,
+                            finding_id=f"finding-l{lane}-r{round_no}",
+                            target_version=target_id,
+                            render_version=current_version.version_id,
+                            page=1,
+                            budget=lane_budget,
+                            trace=trace,
+                            target_id=target_id,
+                        )
+                        pages_reviewed.add(1)
+                except CheckpointBudgetExceeded:
+                    escalate("reviewer_budget_exhausted")
+                    break
+                except Exception as error:
+                    import traceback as _tb2
+                    trace.add(
+                        agent="shell", phase="loop", action="reviewer_failed",
+                        output={"traceback": _tb2.format_exc()[-4000:]}, persist_output=True,
+                    )
+                    escalate(f"reviewer_live_call_failed:{type(error).__name__}: {str(error)[:200]}")
+                    break
+                findings_new = _validate_finding_versions(findings_new, target_id, current_version.version_id)
+                findings.extend(findings_new)
+    
+                # Ledger dedup BEFORE attribution (Phase 0).
+                actionable: list[DefectFinding] = []
+                carried_open_used = False
+                for finding in findings_new:
+                    resolved = finding.finding_id in resolved_measurements
+                    entry, action = ledger.observe(finding, resolved=resolved)
+                    trace.add(
+                        agent="shell", phase="ledger", action=action,
+                        output={"key": entry.ledger_key, "finding": finding.finding_id},
+                    )
+                    if action == "dedup" and entry.status in {"resolved", "repaired", "attributed"}:
+                        continue  # unchanged finding with unchanged evidence: no re-attribution
+                    if action == "dedup":
+                        if entry.last_measured_version == current_version.version_id:
+                            continue  # already measured on THIS render version
+                        if finding.region not in changed_regions or carried_open_used:
+                            continue  # unchanged region: the stored measurement stays the record
+                        carried_open_used = True  # one bounded carried-open re-measure
+                    actionable.append(finding)
+    
+                # Bind -> measure -> attribute (batched where unbound & severe).
+                measured: dict[str, tuple[MeasurementResult, MeasurementRequest]] = {}
+                unbound_batch: list[DefectFinding] = []
+                for finding in actionable:
+                    counter["request"] += 1
+                    request_id = f"measure-l{lane}-{counter['request']:03d}"
+                    result, bound = execute_measurement(finding, current_pdf, request_id)
+                    measurement_results.append(result)
+                    measured[finding.finding_id] = (result, bound)
+                    ledger.entries[_ledger_key(finding)].last_measured_version = current_version.version_id
+                    if result.status != "confirmed" and finding.severity == "high":
+                        unbound_batch.append(finding)
+                if live and unbound_batch and _builder_reserve_intact(lane_budget):
+                    pod.render_pdf = current_pdf
+                    groups: dict[str, list[DefectFinding]] = {}
+                    for finding in unbound_batch:
+                        groups.setdefault(finding.region, []).append(finding)
+                # bounded batch size: <=3 findings per attribution call
+                    bounded_groups: list[list[DefectFinding]] = []
+                    for part in groups.values():
+                        bounded_groups.extend(part[i : i + 3] for i in range(0, len(part), 3))
+                    for group in bounded_groups:
+                        try:
+                            hypotheses = _live_attribution_batch(
+                                pod, lane_budget, trace,
+                                findings=group,
+                                results=[measured[f.finding_id][0] for f in group],
+                            )
+                            for finding, hypothesis in zip(group, hypotheses):
+                                attribution = AttributionRecord(
+                                    finding_id=finding.finding_id,
+                                    render_version=finding.render_version,
+                                    measurement_request_id=measured[finding.finding_id][1].request_id,
+                                    attribution=hypothesis.attribution,
+                                    hypothesis_status=hypothesis.hypothesis_status,
+                                    repair_owner=hypothesis.repair_owner,
+                                    evidence=[measured[finding.finding_id][1].request_id, *hypothesis.evidence_ids],
+                                    reason=hypothesis.reason,
+                                )
+                                attributions.append(attribution)
+                                trace.add(
+                                    agent="attribution_investigator", phase="attribute",
+                                    action="live_attribution", output=attribution.model_dump(mode="json"),
+                                )
+                        except CheckpointBudgetExceeded:
+                            escalate("attribution_budget_exhausted")
+                            break
+                        except Exception as error:
+                            escalate(f"attribution_live_call_failed:{type(error).__name__}: {str(error)[:150]}")
+                else:
+                    for finding in actionable:
+                        result, bound = measured[finding.finding_id]
+                        attribute(finding, result, bound)
+    
+                # Builder opportunity: repair the FIRST attributable bound finding.
+                repair_finding = None
+                for finding in actionable:
+                    result, bound = measured[finding.finding_id]
+                    if result.status == "confirmed" and abs(result.delta_pt or 0.0) > E2_IMPROVEMENT_TOLERANCE_PT:
+                        repair_finding = (finding, result, bound)
+                        break
+                if repair_finding is None:
+                    escalate(f"round{round_no}:no_repairable_bound_finding_continue_review")
+                    continue
+                finding, result, bound = repair_finding
+                fingerprint = f"{finding.region}:{finding.suspected_dimension}:{round(result.delta_pt or 0, 3)}"
+                if fingerprint in fingerprints:
+                    escalate(f"round{round_no}:{finding.finding_id}:repeated_action_change_strategy")
+                    continue
+                try:
+                    if lane == "a":
+                        if live:
+                            payload = {
+                                "round": round_no,
+                                "finding": finding.model_dump(mode="json"),
+                                "measurement": result.model_dump(mode="json"),
+                                "current_gates": lane_state["last_gates"],
+                                "state_sections": [
+                                    {"node_id": n.node_id, "kind": n.kind}
+                                    for n in state.nodes if n.kind == "section"
+                                ],
+                                "constraint": "typed primitives only; candidate/target person text never appears",
+                            }
+                            proposal = _live_lane_a_builder(
+                                lane_budget, trace, payload=payload, proposal_id=f"lane-a-r{round_no + 1}"
+                            )
+                        else:
+                            proposal = _scripted_lane_a_proposal(state, derived)
+                        validation_error = _validate_lane_a_proposal(proposal, state)
+                        if validation_error:
+                            repair_attempts.append({"finding": finding.finding_id, "region": finding.region, "rejected": validation_error, "round": round_no})
+                            trace.add(agent="shell", phase="repair", action="rejected", note=validation_error)
+                            continue
+                        repair_attempts.append(
+                            {"finding": finding.finding_id, "region": finding.region, "round": round_no,
+                             "agent": proposal.agent, "sections": len(proposal.sections)}
+                        )
+                        candidate_version, candidate_pdf, candidate_gates = render_version(
+                            f"lane A repair round {round_no} for {finding.finding_id}", proposal
+                        )
+                    else:
+                        if live:
+                            target_images = _overview_pngs(target_pdf, lane_dir, f"builder_target_r{round_no}")
+                            render_images = _overview_pngs(current_pdf, lane_dir, f"builder_render_r{round_no}")
+                            payload = {
+                                "round": round_no,
+                                "findings": [
+                                    {"region": f.region, "observation": f.observation, "dimension": f.suspected_dimension}
+                                    for f in actionable
+                                ],
+                                "measurements": [
+                                    result.model_dump(mode="json")
+                                    for _, (result, _) in measured.items()
+                                ],
+                                "current_gates": lane_state["last_gates"],
+                                "last_rejection": lane_state.get("last_rejection"),
+                                "marker_rule": (
+                                    "every {{each:<collection>}} MUST have one matching {{/each}}; "
+                                    "unbalanced or stray markers are rejected"
+                                ),
+                                "budget_note": "ONE bounded agent run; return the complete revised template",
+                            }
+                            template = _live_lane_b_builder(
+                                lane_budget, trace, payload=payload,
+                                images=[*target_images, *render_images],
+                                template_id=f"lane-b-r{round_no + 1}",
+                            )
+                        else:
+                            from tests.experiments.e_authored_template import SCRIPTED_AUTHORED_TEMPLATE as _base_template
+    
+                            template = _scripted_lane_b_template(_base_template, finding, result)
+                        try:
+                            validate_authored_template(template, target_pdf=target_pdf, render_candidate=candidate)
+                        except ValueError as error:
+                            lane_state["last_rejection"] = str(error)[:280]
+                            repair_attempts.append({"finding": finding.finding_id, "region": finding.region, "rejected": str(error)[:300], "round": round_no})
+                            trace.add(agent="shell", phase="repair", action="rejected", note=str(error)[:300])
+                            continue
+                        repair_attempts.append(
+                            {"finding": finding.finding_id, "region": finding.region,
+                             "round": round_no, "template": template.template_id}
+                        )
+                        candidate_version, candidate_pdf, candidate_gates = render_version(
+                            f"lane B repair round {round_no} for {finding.finding_id}", template
+                        )
+                except CheckpointBudgetExceeded:
+                    escalate("builder_budget_exhausted")
+                    break
+                except Exception as error:
+                    escalate(f"repair_render_failed:{type(error).__name__}: {str(error)[:150]}")
+                    continue
+                lane_budget.repair_attempt_count += 1
+                fingerprints.append(fingerprint)  # records the EXECUTED action
+                trace.add(agent="builder", phase="repair", action="proposal", note=f"round {round_no}", persist_output=True)
+                # Re-measure FIRST: the IDENTICAL request, changing only the version.
+                counter["request"] += 1
+                repeat_id = bound.request_id
+                repeat_result, _ = execute_measurement(finding, candidate_pdf, repeat_id)
+                measurement_results.append(repeat_result)
+                improved = (
+                    repeat_result.current_value_pt is not None
+                    and result.current_value_pt is not None
+                    and repeat_result.target_value_pt is not None
+                    and abs(repeat_result.current_value_pt - repeat_result.target_value_pt)
+                    < abs(result.current_value_pt - result.target_value_pt)
+                )
+                if not improved:
+                    attempted_strategies.append(f"round{round_no}:{finding.finding_id}:non_improving_rolled_back")
+                    trace.add(agent="shell", phase="repair", action="rolled_back", note="non-improving repair")
+                    continue
+                gate_keys = (
+                    CANDIDATE_FACT_GATES if lane == "a"
+                    else ("content_gate", "candidate_content_accounting", "no_target_candidate_facts",
+                          "no_blank_page", "deterministic_render")
+                )
+                if not all(candidate_gates.get(gate) for gate in gate_keys):
+                    attempted_strategies.append(f"round{round_no}:{finding.finding_id}:repair_failed_gates_rolled_back")
+                    trace.add(agent="shell", phase="repair", action="rolled_back", note="candidate-safety gate failed")
+                    continue
+                holds, rechecks = accepted_regions_hold(candidate_pdf)
+                if not holds:
+                    attempted_strategies.append(f"round{round_no}:{finding.finding_id}:accepted_region_regressed_rolled_back")
+                    trace.add(agent="shell", phase="repair", action="rolled_back", note="accepted region regressed")
+                    continue
+                versions[-1] = candidate_version.model_copy(update={"promoted": True})
+                resolved_measurements[finding.finding_id] = (bound, repeat_result)
+                ledger.entries[_ledger_key(finding)].status = "repaired"
+                trace.add(
+                    agent="shell", phase="repair", action="promoted",
+                    output={"version": candidate_version.version_id, "rechecks": rechecks},
+                    persist_output=True,
+                )
+    
+            except (CheckpointBudgetExceeded, BudgetExhausted) as budget_error:
+                escalate("loop_tool_budget_exhausted")
+                trace.add(agent="shell", phase="loop", action="budget_exhausted", note=str(budget_error)[:200])
+                break
+        return _lane_terminal(lane)
+
+    # -- 5. Run the lanes (fresh contexts; lane B never sees lane A output) --
+    for lane in lanes:
+        started_lane = time.time()
+        record = _run_lane(lane)
+        record.summary["elapsed_seconds"] = round(time.time() - started_lane, 1)
+        record.summary["estimated_provider_cost"] = _estimate_lane_cost(record, pricing)
+        lane_records[lane] = record
+
+    # -- 6. Terminal state + comparison + owner package ----------------------
+    overall_terminal = (
+        "ready_for_owner_review"
+        if lane_records and all(r.terminal_state == "ready_for_owner_review" for r in lane_records.values())
+        else "budget_exhausted"
+    )
+    loop_record = E5LoopRecord(
+        target_id=target_id,
+        target_sha256=target_frozen.target_sha256,
+        lanes={lane: rec for lane, rec in lane_records.items()},
+        budget_state=budget.to_json(),
+        started_at=started_at,
+        finished_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        summary={
+            "terminal_state": overall_terminal,
+            "live": live,
+            "elapsed_seconds": round(time.time() - started, 1),
+            "lanes": {lane: r.terminal_state for lane, r in lane_records.items()},
+        },
+    )
+    (out_dir / "e5_state.json").write_text(
+        json.dumps(loop_record.model_dump(mode="json"), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    store.record_state(overall_terminal, f"lanes={ {k: v.terminal_state for k, v in lane_records.items()} }")
+    (out_dir / "manifest.json").write_text(
+        json.dumps(store.manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    _write_e5_comparison(out_dir, loop_record, config)
+    try:
+        _write_e5_owner_package(out_dir, target_pdf, loop_record)
+    except Exception as error:
+        (out_dir / "owner_package_failed.txt").write_text(str(error), encoding="utf-8")
+    return out_dir, overall_terminal, loop_record.model_dump(mode="json")
+
+
+def _write_e5_lane_report_md(lane_id: str, record: E5LaneRecord) -> str:
+    versions_table = "\n".join(
+        f"| `{v.version_id}` | {v.hard_gates_passed} | {v.promoted} | {v.note} |"
+        for v in record.render_versions
+    ) or "| - | - | - | - |"
+    findings_table = "\n".join(
+        f"| `{f.finding_id}` | {f.region} | {f.suspected_dimension} | {f.observation[:70]} |"
+        for f in record.findings
+    ) or "| - | - | - | - |"
+    ledger_table = "\n".join(
+        f"| `{e.finding_id}` | {e.status} | {e.first_seen_version} -> {e.last_seen_version} |"
+        for e in record.ledger
+    ) or "| - | - | - |"
+    return f"""# Pipeline E5 Lane {lane_id.upper()} — {record.representation}
+
+- Terminal state: **{record.terminal_state}** (never owner acceptance)
+- Best render: `{record.best_render_version}`
+- Findings: {record.summary.get('total_findings')}; confirmed measurements:
+  {record.summary.get('confirmed_measurements')}; unbound:
+  {record.summary.get('unbound_measurements')}
+- Builder calls: {record.summary.get('builder_calls')}; reviewer:
+  {record.summary.get('reviewer_calls')}; attribution:
+  {record.summary.get('attribution_calls')}
+- Tokens (live): {record.budget_state.get('usage', {}).get('input_tokens', 0)}/
+  {record.budget_state.get('usage', {}).get('output_tokens', 0)}
+- Probes passed: {record.content_shape_probes_passed}
+
+## Render versions
+
+| version | gates | promoted | note |
+| --- | --- | --- | --- |
+{versions_table}
+
+## Findings
+
+| finding | region | dimension | observation |
+| --- | --- | --- | --- |
+{findings_table}
+
+## Defect ledger (Phase 0)
+
+| finding | status | seen |
+| --- | --- | --- |
+{ledger_table}
+
+This is an experiment record; automated metrics declare no winner and no
+convergence. The owner reviews the actual files and decides.
+"""
+
+
+def _write_e5_comparison(
+    out_dir: Path, record: E5LoopRecord, config: dict[str, Any]
+) -> None:
+    """The lane comparison report: NO aggregate similarity percentage, NO
+    automated winner declaration — comparable counts + recorded costs only."""
+    rows = []
+    for lane_id, lane in record.lanes.items():
+        summary = lane.summary
+        rows.append(
+            {
+                "lane": lane_id,
+                "representation": lane.representation,
+                "terminal_state": lane.terminal_state,
+                "best_render": lane.best_render_version,
+                "findings": summary.get("total_findings"),
+                "confirmed_measurements": summary.get("confirmed_measurements"),
+                "measurement_binding_failures": summary.get("unbound_measurements"),
+                "attribution_calls": summary.get("attribution_calls"),
+                "builder_calls": summary.get("builder_calls"),
+                "improving_repairs": summary.get("promoted_versions"),
+                "rollbacks": len([s for s in lane.attempted_strategies if "rolled_back" in s]),
+                "pages": (lane.render_versions[-1].page_count if lane.render_versions else None),
+                "probes_passed": lane.content_shape_probes_passed,
+                "input_tokens": lane.budget_state.get("usage", {}).get("input_tokens", 0),
+                "output_tokens": lane.budget_state.get("usage", {}).get("output_tokens", 0),
+                "tool_calls": lane.budget_state.get("tool_call_count"),
+                "elapsed_seconds": summary.get("elapsed_seconds"),
+                "estimated_provider_cost": summary.get("estimated_provider_cost"),
+                "target_specific_code": 0,
+                "shared_backend_code": {
+                    "lane_a": "c2_plan.SectionPlan rail fields + c2_html rail branch",
+                    "lane_b": "tests/experiments/e_authored_template.py",
+                }.get("lane_a" if lane_id == "a" else "lane_b"),
+            }
+        )
+    comparison = {
+        "run_id": record.summary.get("run_id", out_dir.name),
+        "frozen_config": config.get("run_id"),
+        "lanes": rows,
+        "decision": (
+            "Automated metrics declare NO winner (plan §13). The owner compares "
+            "the owner_review/ artifacts visually and decides."
+        ),
+    }
+    (out_dir / "comparison_report.json").write_text(
+        json.dumps(comparison, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    table = "\n".join(
+        f"| {row['lane']} | {row['terminal_state']} | {row['best_render']} | "
+        f"{row['findings']} | {row['confirmed_measurements']} | {row['builder_calls']} | "
+        f"{row['improving_repairs']} | {row['input_tokens']}/{row['output_tokens']} | "
+        f"{row['elapsed_seconds']} |"
+        for row in rows
+    )
+    (out_dir / "COMPARISON.md").write_text(
+        f"""# Pipeline E5 Builder-representation comparison — {out_dir.name}
+
+- Terminal state: **{record.summary.get('terminal_state')}**
+- Question: which Builder representation gives the Agent a practical path
+  toward convergence WITHOUT target-specific backend code?
+- This report declares NO winner; the owner decides from `owner_review/`.
+
+| lane | terminal | best render | findings | confirmed | builder calls | improving repairs | tokens in/out | elapsed s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+{table}
+
+## Non-claims
+
+- No Pipeline E convergence claim; no Resume I acceptance; NO T-v1 creation.
+- No aggregate similarity percentage; metrics declare nothing (plan §13).
+- Owner visual preference is an owner-only input; it is NOT inferred here.
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_e5_owner_package(
+    out_dir: Path, target_pdf: Path, record: E5LoopRecord
+) -> Path:
+    """The safe owner-review package (E5 work order): Resume I target, the E4
+    best-render baseline, and each lane's best render side by side per page,
+    plus probe outputs, costs, remaining differences, and the non-claims."""
+    from app.ingestion.pdf_reader import read_pdf_text
+    from tests.experiments import c2_renderer as c2r
+
+    package = out_dir / "owner_review"
+    package.mkdir(exist_ok=True)
+    target_pages = _render_pages(target_pdf, out_dir, "owner_target")
+    page_count = len(target_pages)
+    e4_dir = RUNS / E5_RUNS_E4_BASELINE
+    e4_pdf = e4_dir / "render_2.pdf"
+    lane_pdfs: dict[str, Path] = {}
+    for lane_id, lane in record.lanes.items():
+        index = len(lane.render_versions)
+        lane_pdfs[lane_id] = out_dir / f"lane_{lane_id}" / f"render_{index}.pdf"
+    for page in range(1, page_count + 1):
+        columns: list[tuple[str, Path | None]] = [("TARGET", target_pages[page - 1])]
+        if (e4_dir / f"render_2_page_{page}.png").exists():
+            columns.append(("E4 BEST v2", e4_dir / f"render_2_page_{page}.png"))
+        elif (e4_pdf := e4_dir / "render_2.pdf").exists():
+            e4_pages = _render_pages(e4_pdf, out_dir, f"owner_e4_p{page}")
+            if e4_pages:
+                columns.append(("E4 BEST v2", e4_pages[min(page, len(e4_pages)) - 1]))
+        for lane_id, lane_pdf in lane_pdfs.items():
+            lane_page = out_dir / f"lane_{lane_id}" / f"render_{page if page <= len(record.lanes[lane_id].render_versions) else 1}_page_{page}.png"
+            if lane_page.exists():
+                columns.append((f"LANE {lane_id.upper()} BEST", lane_page))
+        if len(columns) >= 2:
+            _side_by_side(columns, package / f"comparison_page_{page}.png")
+    # Best lane artifacts (copies; originals immutable).
+    for lane_id, lane in record.lanes.items():
+        index = len(lane.render_versions)
+        lane_pdf = out_dir / f"lane_{lane_id}" / f"render_{index}.pdf"
+        lane_html = out_dir / f"lane_{lane_id}" / f"render_{index}.html"
+        if lane_pdf.exists():
+            shutil.copy2(lane_pdf, package / f"lane_{lane_id}_best.pdf")
+        if lane_html.exists():
+            shutil.copy2(lane_html, package / f"lane_{lane_id}_best.html")
+    # Probe outputs.
+    for lane_id in record.lanes:
+        probes = out_dir / f"lane_{lane_id}" / "content_shape_probes.json"
+        if probes.exists():
+            shutil.copy2(probes, package / f"lane_{lane_id}_content_shape_probes.json")
+    cost = {
+        lane_id: {
+            "tokens_in": lane.budget_state.get("usage", {}).get("input_tokens", 0),
+            "tokens_out": lane.budget_state.get("usage", {}).get("output_tokens", 0),
+            "live_calls": lane.budget_state.get("calls_by_mode", {}).get("live", 0),
+            "tool_calls": lane.budget_state.get("tool_call_count"),
+            "estimated_cost": lane.summary.get("estimated_provider_cost"),
+        }
+        for lane_id, lane in record.lanes.items()
+    }
+    (package / "cost_summary.json").write_text(
+        json.dumps(
+            {
+                "pricing_source": (out_dir / "run_config.json").exists()
+                and json.loads((out_dir / "run_config.json").read_text(encoding="utf-8")).get("provider_pricing"),
+                "per_lane": cost,
+                "note": "raw usage preserved; no price invented when billing is not verifiable",
+            },
+            ensure_ascii=False, indent=2, sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    remaining = "\n".join(
+        f"- lane {lane_id} `{fid}`: {next((f.observation for f in lane.findings if f.finding_id == fid), fid)}"
+        for lane_id, lane in record.lanes.items()
+        for fid in (lane.open_findings or [])
+    ) or "- none recorded"
+    (package / "REPORT.md").write_text(
+        f"""# Pipeline E5 owner-review package — {out_dir.name}
+
+- Terminal state: **{record.summary.get('terminal_state')}** (NEVER owner acceptance)
+- Best Lane A render: `{record.lanes.get('a', E5LaneRecord(lane='a', representation='')).best_render_version}`
+- Best Lane B render: `{record.lanes.get('b', E5LaneRecord(lane='b', representation='')).best_render_version}`
+
+## Contents
+
+- `comparison_page_N.png` — TARGET | E4 best baseline | Lane A | Lane B, per page;
+- `lane_*_best.html/.pdf` — each lane's best available render;
+- `lane_*_content_shape_probes.json` — short/long/missing-field probe outcomes;
+- `cost_summary.json` — usage + verified pricing record (no invented price);
+- remaining material differences below; iteration histories in lane dirs.
+
+## Remaining material differences (open findings)
+
+{remaining}
+
+## Non-claims
+
+- This package is NOT a delivery and creates NO T-v1 record.
+- No convergence claim and no representation winner is declared.
+- No signed provider URLs, credentials, environment data, or rubric answers
+  entered this package.
+""",
+        encoding="utf-8",
+    )
+    for path in sorted(package.rglob("*")):
+        if path.is_file():
+            try:
+                payload = path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            assert_no_signed_strings(payload)
+    return package
 
 if __name__ == "__main__":
     raise SystemExit(main())

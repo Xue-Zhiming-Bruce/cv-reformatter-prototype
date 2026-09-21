@@ -1224,3 +1224,357 @@ def test_promotion_requires_shell_not_any_agent(tmp_path: Path) -> None:
     assert finding_agents <= {"visual_reviewer"}
     assert proposal_agents == {"builder"}
     assert promotion_agents <= {"shell"}
+
+import re
+
+import tests.experiments.e_authored_template as at
+
+# ===========================================================================
+# E5 — Phase 0 loop fixes + Builder representation comparison (Lane A / Lane B)
+# Offline only: no Chrome requirement beyond the same offline lane as E3/E4,
+# no live provider call.
+# ===========================================================================
+
+e5_skip = pytest.mark.skipif(
+    not (
+        RESUME_I.exists()
+        and (ROOT / "tests/experiments/runs/target_cache").exists()
+        and (ROOT / "tests/experiments/runs/e_pipeline_e4_20260920T134946Z/structure_draft.json").exists()
+    ),
+    reason="authorized Resume I corpus, target cache, and shared E4 draft are not present",
+)
+
+
+def _base_authored_template() -> "at.AuthoredTemplateCandidate":
+    from tests.experiments.e_authored_template import SCRIPTED_AUTHORED_TEMPLATE
+
+    return SCRIPTED_AUTHORED_TEMPLATE.model_copy(deep=True)
+
+
+def test_measurement_request_accepts_semantic_intent_without_anchors() -> None:
+    """Phase 0: the Reviewer reports a semantic measurement intent; exact
+    verbatim PDF text anchors are no longer required."""
+    request = e.MeasurementRequest(
+        request_id="measure-pending",
+        metric="role_gap",
+        page=1,
+        region_id="section.04",
+        intent="vertical gap between the first two dated entry heads",
+    )
+    assert request.intent
+    assert not request.from_text
+    with pytest.raises(ValueError):
+        e.MeasurementRequest(
+            request_id="measure-pending", metric="role_gap", page=1,
+        )  # neither anchors nor intent
+
+
+def test_measurement_binding_resolves_against_actual_final_pdf_objects(tmp_path: Path) -> None:
+    """Phase 0: binding resolves the semantic intent into REAL final-PDF
+    objects (render anchors come from the render's own entry-head rows)."""
+    run_dir, _terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1, probe_render=False,
+    )
+    lane = record["lanes"]["a"]
+    confirmed = [r for r in lane["measurement_results"] if r["status"] == "confirmed"]
+    assert confirmed, "binding produced no confirmed measurement on the actual final PDF"
+    # The bound request recorded real anchors in the trace (binding step).
+    trace = json.loads((run_dir / "lane_a" / "trace.json").read_text())
+    binding_notes = [entry for entry in trace if entry.get("action") == "measurement"]
+    assert binding_notes
+
+
+def test_stable_duplicate_findings_are_deduplicated_before_attribution() -> None:
+    finding = e.DefectFinding(
+        finding_id="finding-001",
+        target_version="target-resume_I-v1",
+        render_version="render-v1",
+        page=1,
+        region="section.04",
+        observation="The gap between the first two entry heads is larger than the target.",
+        suspected_dimension="role_gap",
+        requested_measurement=e.MeasurementRequest(
+            request_id="measure-pending", metric="role_gap", page=1, intent="entry head gap",
+        ),
+        severity="high",
+        confidence=0.6,
+        reviewer="scripted",
+    )
+    ledger = e.DefectLedger()
+    entry, action = ledger.observe(finding)
+    assert action == "new"
+    # Re-observation of the same defect (same region/dimension/class) is a
+    # dedup — no new ledger entry, no re-attribution.
+    repeat = finding.model_copy(update={"finding_id": "finding-002", "render_version": "render-v2"})
+    entry2, action2 = ledger.observe(repeat)
+    assert action2 == "dedup"
+    assert entry2 is entry
+    assert entry2.last_seen_version == "render-v2"
+    assert len(ledger.entries) == 1
+
+
+def test_changed_findings_reopen_in_the_ledger() -> None:
+    finding = e.DefectFinding(
+        finding_id="finding-001",
+        target_version="target-resume_I-v1",
+        render_version="render-v2",
+        page=1,
+        region="section.04",
+        observation="The gap between the first two entry heads is larger than the target.",
+        suspected_dimension="role_gap",
+        requested_measurement=e.MeasurementRequest(
+            request_id="m", metric="role_gap", page=1, intent="entry head gap",
+        ),
+        severity="high",
+        confidence=0.6,
+        reviewer="scripted",
+    )
+    ledger = e.DefectLedger()
+    ledger.observe(finding)
+    changed = finding.model_copy(
+        update={"render_version": "render-v3", "observation": "The entry head text now overlaps the meta column."}
+    )
+    entry, action = ledger.observe(changed)
+    assert action == "reopened"
+    assert entry.status == "open"
+
+
+def test_later_review_rounds_focus_on_changed_regions() -> None:
+    round1 = e._review_scope_payload(1, [], [])
+    round2 = e._review_scope_payload(2, ["section.04"], [])
+    assert round1["whole_document"] is True
+    assert round2["whole_document"] is False
+    assert round2["changed_regions"] == ["section.04"]
+    assert "NOT regenerate the entire defect list" in round2["instruction"]
+
+
+def test_live_builder_budget_is_reserved() -> None:
+    assert e.E5_BUILDER_RESERVE_REQUESTS > 0
+    exhausted_to_reserve = RunBudget(max_model_requests=e.E5_BUILDER_RESERVE_REQUESTS, max_tool_calls=10)
+    assert exhausted_to_reserve.remaining_model_requests() == e.E5_BUILDER_RESERVE_REQUESTS
+    assert e._builder_reserve_intact(exhausted_to_reserve) is False
+    healthy = RunBudget(max_model_requests=e.E5_BUILDER_RESERVE_REQUESTS + 1, max_tool_calls=10)
+    assert e._builder_reserve_intact(healthy) is True
+
+
+def test_lane_a_rejects_target_specific_identifiers_and_invalid_fields() -> None:
+    # Unknown fields fail validation (pydantic extra=forbid).
+    with pytest.raises(ValueError):
+        e.LaneAStructureProposal.model_validate(
+            {
+                "proposal_id": "p1", "agent": "scripted", "sections": [],
+                "target_hash": "af6b9234",
+            }
+        )
+    with pytest.raises(ValueError):
+        e.E5LaneASection.model_validate(
+            {"section_node_id": "section.01", "heading_in_rail": True,
+             "rail_label_width_pt": 90.0, "resume_i_heading": "EXPERIENCE"}
+        )
+    with pytest.raises(ValueError):
+        e.E5LaneASection.model_validate(
+            {"section_node_id": "section.01", "heading_in_rail": True}
+        )  # rail_heading without width is invalid
+
+
+def test_lane_a_proposal_cites_only_known_state_nodes() -> None:
+    from tests.experiments.a_pipeline import build_format_summary
+    from app.template_analysis.commercial.models import NormalizedLayoutEvidence
+
+    normalized_path = (
+        ROOT / "tests/experiments/runs/c2_resume_i_blind_20260917T115551Z/enriched_evidence.json"
+    )
+    raw_path = (
+        ROOT / "tests/experiments/runs/c2_resume_i_blind_20260917T115551Z/adobe_raw.json"
+    )
+    if not (normalized_path.exists() and raw_path.exists()):
+        pytest.skip("cached Resume I evidence not present")
+    normalized = NormalizedLayoutEvidence.model_validate_json(normalized_path.read_text(encoding="utf-8"))
+    summary = build_format_summary(normalized, json.loads(raw_path.read_text(encoding="utf-8")), RESUME_I)
+    state, _derived = e.compile_two_column_state(RESUME_I, summary, evidence=normalized)
+    proposal = e.LaneAStructureProposal(
+        proposal_id="p1",
+        sections=[e.E5LaneASection(section_node_id="section.99", heading_in_rail=True, rail_label_width_pt=90.0)],
+        agent="scripted",
+    )
+    assert e._validate_lane_a_proposal(proposal, state) is not None
+    valid = e.LaneAStructureProposal(
+        proposal_id="p2",
+        sections=[e.E5LaneASection(section_node_id=node.node_id, heading_in_rail=True, rail_label_width_pt=90.0)
+                  for node in state.nodes if node.kind == "section"] or
+                 [e.E5LaneASection(section_node_id=state.nodes[0].node_id, heading_in_rail=False)],
+        agent="scripted",
+    )
+    # every proposed id must exist in the compiled state
+    known = {node.node_id for node in state.nodes}
+    assert all(item.section_node_id in known for item in valid.sections)
+
+
+@e5_skip
+def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
+    run_dir, terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1, probe_render=False,
+    )
+    assert terminal in {"ready_for_owner_review", "budget_exhausted"}
+    lane = record["lanes"]["a"]
+    assert lane["terminal_state"] == terminal
+    assert lane["content_shape_probes_passed"] is True
+    # the led cycle persisted resumable state
+    assert (run_dir / "lane_a" / "e5_lane_a_state.json").exists()
+    assert (run_dir / "comparison_report.json").exists()
+
+
+@e5_skip
+def test_run_e5_offline_lane_b_authored_template_loop(tmp_path: Path) -> None:
+    run_dir, terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1, probe_render=False,
+    )
+    assert terminal in {"ready_for_owner_review", "budget_exhausted"}
+    lane = record["lanes"]["b"]
+    assert lane["render_versions"], "the authored template rendered at least one version"
+    assert lane["content_shape_probes_passed"] is True
+    # The authored render chain ran through Chrome with network disabled.
+    trace = json.loads((run_dir / "lane_b" / "trace.json").read_text())
+    renders = [entry for entry in trace if entry.get("action") == "render_version"]
+    assert renders
+
+
+def test_lane_b_rejects_unsafe_content_and_undeclared_slots(tmp_path: Path) -> None:
+    base = _base_authored_template()
+    ok = at.validate_authored_template(base, target_pdf=RESUME_I)
+    assert ok["passed"]
+    violations = {
+        "<script>alert(1)</script>": "javascript element",
+        "<div onclick=\"x()\">y</div>": "event handler",
+        "background: url(https://x.example/a.png);": "remote url",
+        "@import 'x.css';": "css import",
+        "<iframe src=\"x\"></iframe>": "unsafe element",
+        "{{undeclared:token}}": "undeclared slot",
+    }
+    for payload, label in violations.items():
+        candidate = base.model_copy(update={"html": base.html + "\n" + payload})
+        with pytest.raises(ValueError, match="authored template rejected"):
+            at.validate_authored_template(candidate, target_pdf=RESUME_I)
+
+
+def test_lane_b_rejects_target_person_literals() -> None:
+    base = _base_authored_template()
+    from app.ingestion.pdf_reader import read_pdf_text
+
+    target_words = re.findall(r"[A-Za-z]{5,}", read_pdf_text(RESUME_I))
+    outside_vocab = [
+        word for word in target_words
+        if word.casefold() not in at._TEMPLATE_GENERIC_VOCABULARY
+    ]
+    assert outside_vocab, "expected at least one distinctive target word to guard"
+    injected = base.model_copy(update={"html": base.html + f"\n<!-- {outside_vocab[0]} -->"})
+    with pytest.raises(ValueError, match="target-person literals"):
+        at.validate_authored_template(injected, target_pdf=RESUME_I)
+
+
+def test_lane_b_candidate_facts_come_only_from_the_render_context(tmp_path: Path) -> None:
+    base = _base_authored_template()
+    # A template that hardcodes a candidate fact is rejected.
+    hardcoded = base.model_copy(update={"html": base.html + "\n<span>example@example.com</span>"})
+    from tests.experiments.c2_candidates import candidate_resume_E
+
+    with pytest.raises(ValueError, match="candidate facts"):
+        at.validate_authored_template(hardcoded, target_pdf=RESUME_I, render_candidate=candidate_resume_E())
+    # The fill reads ONLY the candidate render context: two different
+    # candidates produce different values through the same template.
+    from tests.experiments.c2_candidates import independent_candidate_fixtures
+
+    fill_a = at.fill_authored_template(base, candidate_resume_E())
+    fixture = at.fill_authored_template(base, e._probe_candidate_with_text(independent_candidate_fixtures()["short"]))
+    assert fill_a.html_filled != fixture.html_filled
+    assert "example@example.com" in fill_a.html_filled
+
+
+def test_authored_accounting_is_complete_and_fails_on_missing_leaves() -> None:
+    from tests.experiments.c2_candidates import candidate_resume_E
+
+    base = _base_authored_template()
+    fill = at.fill_authored_template(base, candidate_resume_E())
+    assert not fill.missing_leaves, f"accounting incomplete: {fill.missing_leaves}"
+    # Drop the education region: the education leaves go missing -> gate fails.
+    stripped = re.sub(r"\{\{each:education\}\}.*?\{\{/each\}\}", "", base.html, flags=re.DOTALL)
+    broken = base.model_copy(update={"html": stripped})
+    fill2 = at.fill_authored_template(broken, candidate_resume_E())
+    assert any(leaf_id.startswith("education") for leaf_id in fill2.missing_leaves)
+
+
+def test_authored_rendering_uses_a_network_disabled_chrome_environment() -> None:
+    environment = at.authored_network_disabled_environment()
+    assert any("--host-resolver-rules=MAP * ~NOTFOUND" in flag for flag in environment["flags"])
+
+
+@e5_skip
+def test_run_e5_repeats_the_identical_measurement_after_repair(tmp_path: Path) -> None:
+    _run_dir, _terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2, probe_render=False,
+    )
+    lane = record["lanes"]["b"]
+    results = lane["measurement_results"]
+    request_ids = [r["request_id"] for r in results]
+    assert len(request_ids) != len(set(request_ids)), "the identical request was not repeated after repair"
+
+
+@e5_skip
+def test_run_e5_rolls_back_regressions_and_records_the_ledger(tmp_path: Path) -> None:
+    run_dir, terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=2, probe_render=False,
+    )
+    for lane_id, lane in record["lanes"].items():
+        assert lane["ledger"], "the persistent defect ledger is empty"
+        # repairs either promote or roll back — never silently persist
+        for attempt in lane["repair_attempts"]:
+            assert attempt.get("finding")
+    assert terminal in {"ready_for_owner_review", "budget_exhausted"}
+
+
+@e5_skip
+def test_run_e5_budget_exhaustion_preserves_resumable_best_valid_state(tmp_path: Path) -> None:
+    tiny = RunBudget(max_model_requests=1, max_tool_calls=8)
+    run_dir, terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
+        probe_render=False, budget=tiny,
+    )
+    assert terminal == "budget_exhausted"
+    state = json.loads((run_dir / "e5_state.json").read_text())
+    lane = state["lanes"]["b"]
+    assert lane["budget_state"]["max_model_requests"] == 1
+    # no terminal state may ever claim success or unsupported
+    assert terminal != "unsupported"
+    assert "unsupported" not in json.dumps(record)
+
+
+def test_neither_lane_can_emit_an_unsupported_terminal_state() -> None:
+    with pytest.raises(ValueError):
+        e.E5LaneRecord(lane="a", representation="x", terminal_state="unsupported")
+
+
+@e5_skip
+def test_run_e5_prompts_never_carry_rubric_answers(tmp_path: Path) -> None:
+    run_dir, _terminal, _record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1, probe_render=False,
+    )
+    prompts = (run_dir / "prompts.json").read_text(encoding="utf-8")
+    config = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
+    assert config["evaluation_rubric_reference"]["not_given_to_agents"] is True
+    rubric = (
+        ROOT / "tests/experiments/C2_RESUME_I_BLIND_STRUCTURE_AUDIT.md"
+    ).read_text(encoding="utf-8")
+    rubric_lines = [
+        line.strip() for line in rubric.splitlines()
+        if len(line.strip()) > 40 and not line.strip().startswith("#")
+    ]
+    assert rubric_lines
+    for line in rubric_lines[:20]:
+        assert line not in prompts, "rubric answer text leaked into agent prompts"
+
+
+def test_owner_acceptance_is_never_inferred() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        e.E5LaneRecord(lane="b", representation="x", terminal_state="delivered")

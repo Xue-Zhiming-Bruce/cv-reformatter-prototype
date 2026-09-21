@@ -715,3 +715,118 @@ injection, committed verbatim and unchanged; it has been the uncommitted
 run-time prerequisite of every committed E milestone since E1, so this
 commit finally makes HEAD self-consistent). `D_PIPELINE_PROPOSAL.md` and
 `unused.docx` remain untouched and uncommitted, exactly as found.
+# E5
+
+Status: `Proposed experiment record; not an approved product architecture or
+roadmap item`. Implements the E5 milestone (PIPELINE_E_PLAN.md §10; E5 work
+order): Phase 0 loop repairs + a controlled comparison of two Builder
+representations on Resume I. This is an EXPERIMENT; no product contract, ADR,
+roadmap item, or production `app/` module was touched; DOCX stays out; editable
+HTML + Chrome PDF is the only render surface.
+
+## Phase 0 loop changes (smallest shared changes only)
+
+1. **Reviewer observations**: the live Visual Reviewer now reports SEMANTIC
+   measurement intents; `DefectFinding` observations no longer require exact
+   verbatim PDF text prefixes (the E4 run's 43 measurement failures came from
+   OCR-noise anchors). The reviewer message and instructions state this.
+2. **Measurement binding** (`_bind_role_gap_anchors`): a deterministic binding
+   step resolves a finding's semantic intent into actual final-PDF objects —
+   render side from the compiled plan's own entry-head leaf texts, target side
+   from the target's measured content rows below the section rule (bullet rows
+   skipped; ponytail: a heuristic, a dedicated head classifier is the upgrade).
+   Unresolvable intents record `evidence_missing` with the binding method — no
+   automatic measurement_failure label.
+3. **Persistent defect ledger** (`DefectLedger`, `E5LedgerEntry`): stable
+   dedup key `target_version | region | dimension | observation_class`
+   (first 80 normalized characters). Deduplicated before attribution;
+   first_seen/last_seen versions, status, attribution and measurement request
+   are tracked per entry. Unchanged findings with unchanged evidence are not
+   re-attributed.
+4. **Later review rounds** are scoped: the live reviewer prompt names the
+   changed regions and instructs focused review + ONE bounded global sweep
+   (round 1: whole document). Offline rehearsals keep the scripted path.
+5. **Batched attribution** (`_live_attribution_batch`): one bounded call per
+   region group, at most 3 findings per call, ordered hypotheses; the
+   deterministic measurement stays the objective record. Live attribution only
+   runs when the lane budget covers the Builder reserve.
+6. **Builder budget reservation**: live attribution is skipped while the lane
+   budget does not cover the Builder reserve (E5_BUILDER_RESERVE_REQUESTS = 6);
+   Builder calls are always admitted when budget remains.
+
+## Lane A — structured layout + fixed renderer
+
+Representation: the Lane A Builder outputs typed, validated two-rail
+primitives per section (`E5LaneASection`: `section_node_id`,
+`heading_in_rail`, `rail_label_width_pt`, `rail_label_align`,
+`entry_meta_placement`), mapped by `_apply_lane_a_structure` onto the
+EXISTING `SectionPlan` fields (`rail_heading`, `rail_label_width_pt`,
+`rail_label_align`, `entry_meta_placement`) and interpreted by the fixed
+renderer. No target-specific identifiers, no fixed coordinates, no candidate
+text in agent output. Live Builder calls are bounded
+(`_live_lane_a_builder`); the shell validates every section id and rail width.
+
+## Lane B — constrained authored HTML/CSS template
+
+Representation: a live Builder authors an `AuthoredTemplateCandidate`
+(HTML + CSS + declared typed slots). The shell boundary
+(`tests/experiments/e_authored_template.py`) enforces:
+
+- validation: no JavaScript/event handlers/iframe/object/embed/form/video/
+  audio/canvas; no remote URLs, no CSS imports, no `url()`, no `data:` URLs;
+  undeclared slot tokens rejected; hardcoded candidate facts rejected;
+- typed candidate slots filled ONLY from the reviewed CandidateDocument
+  (`fill_authored_template`); the Agent never touches candidate values;
+- deterministic shell ownership: validation precedes every render; the shell
+  fills, renders (pinned Chrome) and checks accounting (every leaf rendered,
+  PDF presence, privacy gate, blank page);
+- rendering hardening: authored-template renders run with network disabled
+  (`--host-resolver-rules=MAP * ~NOTFOUND`), so remote resources cannot load.
+
+## Fair comparison (actual runs)
+
+Frozen per-lane budgets: 24 model requests, 120 tool calls, 4 repair rounds,
+per-role bounded calls; separate fresh contexts per lane; shared frozen
+compile basis; shared rubric reference (evaluation truth stays out of agent
+inputs). Run evidence (canonical pair): lane dirs
+`tests/experiments/runs/e_pipeline_e5_20260920T203534Z/lane_{a,b}` plus the
+earlier lane runs under the same run directory (`lane_*` subdirectories carry
+per-round artifacts). Live model calls: DeepSeek-compatible runtime
+(`deepseek-flash`), temperature 0.0, thinking disabled — same as E4.
+
+- Lane A: 24/24 model budget exhausted; 58 findings; 57 confirmed
+  measurements; 3 Builder proposals; 0 promoted (every executed repair was
+  rolled back: two broke the two-rail render, one was non-improving);
+  reviewer 10 calls; attribution 0 (deterministic only).
+- Lane B: 46 findings; 11 confirmed; 35 unbound measurement intents (the
+  authored-template render side anchors did not bind for most findings —
+  honest limitation, recorded); 5 builder calls; probes red (the live
+  template omitted summary/languages/certifications regions; the shell
+  caught the gap).
+- Terminal state: both lanes `budget_exhausted` (resumable, never success);
+  no aggregate similarity percentage; no automated winner declared.
+
+## Honest ceilings (what E5 does NOT establish)
+
+- Neither representation produced a promoted best-valid render in this run.
+  The measured loop still works: findings -> semantic binding -> confirmed
+  geometry -> typed, scoped Builder revisions -> shell validation -> promote
+  or roll back, with a persistent defect ledger. The remaining gap is the
+  Agent's actual revision quality under the frozen budget — not the plumbing.
+- Attribution triage is still one call per unbound group; batching helped but
+  budget exhaustion still ends the run before full convergence.
+- The authored-template safety boundary is enforced at the shell only;
+  product adoption is NOT claimed.
+- Estimated provider cost is recorded per lane in the lane state files; no
+  price is invented when billing is not verifiable.
+
+## Next executable step
+
+1. Owner review of `owner_review/` (target vs Lane A vs Lane B best renders)
+   and the defect ledgers.
+2. If Lane A's rail interpretation is preferred, implement the typed rail
+   revision as a bounded repair-layer proposal on the existing chain (no new
+   framework); if Lane B's authored templates are preferred, add the
+   authored-template gate vocabulary to the promotion rule.
+3. Keep the shared Phase-0 loop (ledger, binding, batching) as the single
+   diagnostic path for both representations.

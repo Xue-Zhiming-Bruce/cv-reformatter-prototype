@@ -295,12 +295,38 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
             else (f' data-section-role="{_esc(section_plan.source_role or "")}"' if section_plan.source_role else "")
         )
         heading_id = section_plan.node_id
+        # Pipeline E5 Lane A two-rail rendering (generic primitives; the
+        # heading lives in a left label-rail column, the section content in
+        # the content rail). Rule x-extent margins are skipped: the grid
+        # column owns the label rail width, and the measured rule renders as
+        # the heading's border within the label cell.
+        rail = bool(section_plan.rail_heading and section_plan.rail_label_width_pt)
+        rail_rule = (
+            {key: value for key, value in rule_payload.items() if key not in ("x0_pt", "x1_pt")}
+            if rail and rule_payload
+            else rule_payload
+        )
         if not section_plan.empty:
             parts.append(f'  <section class="c2-section" data-node-id="{_esc(heading_id)}"{candidate_only_attr}>')
+            if rail:
+                align = (
+                    f" text-align: {section_plan.rail_label_align};"
+                    if section_plan.rail_label_align
+                    else ""
+                )
+                parts.append(
+                    f'    <div class="c2-rail" style="display:grid;'
+                    f"grid-template-columns:{_pt(section_plan.rail_label_width_pt)}pt 1fr;"
+                    f'column-gap:12pt;">'
+                )
+                parts.append(f'      <div class="c2-rail-label" style="{align}">')
             if not (section_plan.candidate_only and section_plan.source_heading is None):
                 # Headingless appended sections embed their heading in the content
                 # line itself (e.g. D's "SUMMARY — ..."); never invent an h2 label.
-                parts.append(_heading_html(section_plan, rule_payload, page))
+                parts.append(_heading_html(section_plan, rail_rule, page))
+            if rail:
+                parts.append("      </div>")
+                parts.append('      <div class="c2-rail-content">')
         if section_plan.content_kind == "paragraph":
             for line in section_plan.paragraph_lines:
                 parts.append(
@@ -314,7 +340,7 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
         if section_plan.content_kind in {"entries", "composite"}:
             indent = (
                 round(section_plan.base_x0_pt - state.page.margin_left_pt, 3)
-                if section_plan.base_x0_pt is not None
+                if section_plan.base_x0_pt is not None and not rail
                 else None
             )
             title_class = _class_for(section_plan.title_style_id)
@@ -455,8 +481,10 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                 None,
             )
             if grid is not None:
-                base_indent = round(
-                    (section_plan.base_x0_pt or page.margin_left_pt) - page.margin_left_pt, 3
+                base_indent = (
+                    round((section_plan.base_x0_pt or page.margin_left_pt) - page.margin_left_pt, 3)
+                    if not rail
+                    else 0.0
                 )
                 right_edge = page.width_pt - page.margin_right_pt
                 splits = [*grid.column_splits_x_pt, right_edge]
@@ -515,6 +543,9 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                     f'style="{table_style}">\n' + "\n".join(row_parts) + "\n    </div>"
                 )
         if not section_plan.empty:
+            if rail:
+                parts.append("      </div>")  # c2-rail-content
+                parts.append("    </div>")  # c2-rail grid
             parts.append("  </section>")
 
     for section_plan in plan.sections:
