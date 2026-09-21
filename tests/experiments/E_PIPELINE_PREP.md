@@ -1106,3 +1106,129 @@ and tests/test_results/pytest/20260921T080632Z_e5_third_correctness_offline_expe
 and tests/test_results/pytest/20260921T081215Z_e5_third_correctness_broad_offline.txt.
 Protected files re-verified byte-identical: `D_PIPELINE_PROPOSAL.md`
 (`eabf6a11…`), `unused.docx` (`584cb925…`).
+
+---
+
+# E5 live representation comparison (2026-09-21, owner-authorized work order)
+
+Status: `Proposed experiment record; not an approved product architecture or
+roadmap item`. One new controlled double-lane live run plus one recorded
+operational failure. All numbers below come from the run's own
+`run_config.json` / `e5_state.json` / `trace.json` (single-run; no cross-run
+splicing). Price is NOT consulted; raw usage only, cost null.
+
+## Operational failure (run `e_pipeline_e5_20260921T091721Z`, NOT a lane result)
+
+- Starting commit `98ae486…` (config commit), live, lanes a+b. Both lanes
+  completed the initial live Builder call and render, then EVERY Visual
+  Reviewer live call failed (`ModelAPIError: Connection error`) after the
+  existing bounded 3-attempt retry, in both lanes.
+- Root cause (verified post-run, read-only): the owner-configured visual
+  endpoint (`VISUAL_API_BASE`/`VISUAL_API_KEY`/`A_PIPELINE_VISUAL_MODEL` in
+  the worktree `.env`) is UNREACHABLE — TLS handshake timed out 2/2 attempts,
+  control host `api.deepseek.com` completed TLS in 0.5 s. This is the same
+  "verified-unavailable" state recorded in the E4 ledger. The Reviewer role
+  routes through `_live_visual_model()`, which used the configured (broken)
+  endpoint; the Builder roles used `deepseek-flash` and succeeded.
+- Recorded as operational failure; NOT interpreted as a Lane result; no
+  artifacts reinterpreted; the run directory is preserved as-is.
+
+## The comparison run: `e_pipeline_e5_20260921T094707Z`
+
+Mitigation (disclosed deviation, owner decision point below): the run was
+launched with the three visual-override variables set EMPTY in the subprocess
+environment only — owner `.env` untouched, zero code changes — so
+`_live_visual_model()` fell back to the existing approved `deepseek-flash`
+runtime path (the same path used for the image-bearing Reviewer in the
+canonical E4 and E5 runs). Recorded here because it was not explicitly
+pre-authorized in the work order.
+
+- Frozen before first live call: starting commit `98ae486…`; target
+  `af6b9234…`; Adobe `f1909346…`; candidate `e0b9c4e9…`; shared draft
+  `01785932…` (31 claims, `e_pipeline_e4_20260920T134946Z`); model
+  `deepseek-flash`, temperature 0.0; budgets per lane 400 model requests /
+  2000 tool calls / 8 repair rounds / builder reserve 40; per-run caps
+  reviewer 4 / builder 4 / attribution 8 (unchanged); prompts hashed in
+  `prompts.json`; rubric path+hash, `not_given_to_agents: true`;
+  `provider_pricing: unavailable/null`. New UTC run directory; no old run
+  touched. `source_identity_stable: true` (runtime code committed; the
+  owner's `D_PIPELINE_PROPOSAL.md` edit is outside the registered source set
+  and untouched throughout).
+- Window 09:47:07Z → 10:01:13Z. Terminal: `budget_exhausted` — the ROUND
+  safety ceiling (9 review rounds) ended both lanes, NOT the model budget
+  (Lane A used 39/400 live requests, Lane B 31/400).
+
+| number | Lane A | Lane B |
+| --- | --- | --- |
+| render versions | 3 (v1 active; v2, v3 repair attempts rolled back) | 2 (v1 active; v2 repair attempt rolled back) |
+| promoted / best-valid / defect-level | 0 / none / none | 0 / none / none |
+| findings (raw) | 131 | 202 |
+| measurements (confirmed / unbound) | 115 (111 / 4) | 201 (189 / 12) |
+| attributions recorded | 104 | 164 |
+| live model calls (builder / reviewer / attribution) | 39 (4 / 18 / 17) | 31 (3 / 18 / 10) |
+| tool calls | 132 | 249 |
+| tokens in/out | 1,475,650 / 37,272 | 481,294 / 57,220 |
+| elapsed s | 331.0 | 513.1 |
+| repair attempts executed / rolled back | 2 / 2 | 1 / 1 (+1 validator rejection, round 7: authored CSS `content:` property — shell boundary, recorded) |
+| executed repairs' repeated identical measurement | improved 147.2 → 121.0 pt and 147.2 → 121.0 pt (measures la-001, la-102) | improved 157.9 → 137.5 pt (measure lb-001) |
+| content-shape probes (selected representation, diagnostic mode) | short/medium/long PASS on `lane-a-r1` | short/medium/long FAIL on `lane-b-r1` (privacy + pdf presence) |
+| open ledger findings | 12 | 14 |
+
+### Observed gate facts (per-version `hard_gates_*.json`)
+
+- Lane A v1 (ACTIVE): ALL candidate-fact gates green; only
+  `content_shapes_match_evidence` red — the known layout-state/1
+  representation ceiling, same as E3/E4. Repairs v2/v3 additionally broke
+  `content_gate` + `candidate_content_accounting` (Builder revision errors)
+  and were rolled back by the shell.
+- Lane B v1 (ACTIVE): `content_gate` red (candidate leaves absent from the
+  final PDF; the owner package shows several sections rendering headings
+  with empty content areas) and `no_target_candidate_facts` red. The privacy
+  failure was re-verified read-only: the Builder AUTHORED section labels
+  (`SUMMARY`, `EXPERIENCE`, `EDUCATION`, `CERTIFICATIONS`) into the template,
+  which collide line-for-line with the C1 baseline target's all-caps label
+  lines under the line-granularity gate. This is the authored-free-text-label
+  representation interacting with the privacy boundary — not an orchestration
+  bug and not a provider failure; whether generic section labels should be
+  excluded for the baseline gate (as they are for the Resume I gate) is an
+  owner boundary decision, NOT changed this round.
+- Rounds 2–8 (Lane A): the same header finding re-observed with an unchanged
+  fingerprint was rejected 7× (`repeated_action_change_strategy`) — honest
+  escalation-without-progress record. Lane B: 4 attribution batch calls hit
+  the per-call request limit (recorded escalations; deterministic measurement
+  stayed the objective record).
+
+### Valid-comparison conditions (work order §四): ALL 15 MET
+
+1 `source_identity_stable=true`; 2 both initial live Builder calls done;
+3 real HTML + Chrome PDF both; 4 Reviewer entered both (18 calls each);
+5 both target pages reviewed every round (`pages_reviewed [1,2]`); 6 real
+final-PDF measurement both; 7 attribution both (batch calls; B's limit
+exhaustions recorded, never faked); 8 real repair Builder opportunity both
+(A 2 executed, B 1 executed + 1 validator-rejected); 9 identical measurement
+repeated after every executed repair (request ids reused verbatim); 10
+promotion/rollback shell-only; 11 probes ran on the SELECTED active
+representation (diagnostic mode, recorded); 12 owner-package lane artifacts
+byte-identical to the lane active version (sha256 verified); 13
+content/safety/privacy/accounting gates executed every render; 14 separate
+agent contexts (fresh agents per call, separate lane dirs, no cross-lane
+output); 15 identical ceilings, neither lane budget-truncated (ended on the
+round ceiling). Classification discipline: representation ceiling = Lane A's
+`content_shapes_match_evidence` (schema cannot express the two-rail sidebar
+presentation) and Lane B's authored-label/privacy-gate collision; Builder
+output errors = the fact-breaking repairs (rolled back); validator refusal =
+Lane B round 7 CSS `content:`; provider failure = the first run's visual
+endpoint (operational). No categories were merged.
+
+### Non-claims
+
+No convergence, no winner, no owner acceptance, no T-v1, no generalization
+claim, no product/ADR change, no `ready_for_owner_review` (terminal is
+`budget_exhausted` at the round ceiling). Automated metrics declare nothing.
+
+Owner review package (local):
+`/private/tmp/cv-converter-c2/tests/experiments/runs/e_pipeline_e5_20260921T094707Z/owner_review/`
+(TARGET | E4 baseline | Lane A active | Lane B active per page; lane
+HTML/PDF; probe reports; cost summary with null pricing; remaining open
+findings; non-claims). Signed-URL/credential scan over the run directory:
+clean.
