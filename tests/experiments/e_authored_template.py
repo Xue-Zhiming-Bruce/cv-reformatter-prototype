@@ -23,6 +23,20 @@ Slot vocabulary (declared, typed, shell-filled — no template engine):
   `{{item_detail}}`, `{{item_meta}}`, `{{item_bullets}}`.
 - Missing optional content renders empty; no conditional syntax exists.
 
+Presentation labels (owner decision 2026-09-21):
+
+- `{{label:<label_id>}}` renders ONE shell-issued presentation label (the
+  measured section heading). The id must be a member of the shell-owned
+  catalog passed to validation/fill; the TEXT always comes from the catalog,
+  is HTML-escaped by the shell, and is inserted in a SECOND pass after every
+  candidate slot is resolved — so a label value can never be re-parsed as a
+  candidate slot, markup, or template syntax.
+- The Builder can only REFERENCE ids: a fixed visible text node is rejected
+  outright, even when its words are generic resume vocabulary.
+- HONEST LIMIT: the direct visible-text channel is closed, but the authored
+  HTML/CSS representation still carries inherent steganographic risk
+  (encoding, spacing, attribute choices) that no string gate enumerates.
+
 Hard safety boundary enforced by `validate_authored_template`:
 
 - no JavaScript, no event handlers, no executable or embeddable content
@@ -71,7 +85,7 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from tests.experiments.c2_candidates import CandidateDocument
-from tests.experiments.e_pipeline import EvidenceModel
+from tests.experiments.e_pipeline import EvidenceModel, PresentationLabel
 
 # ---------------------------------------------------------------------------
 # Typed slot vocabulary
@@ -86,6 +100,10 @@ ITEM_TOKENS = ("item", "item_head", "item_detail", "item_meta", "item_bullets", 
 
 _EACH_RE = re.compile(r"\{\{each:([a-z_]+)\}\}(.*?)\{\{/each\}\}", re.DOTALL)
 _TOKEN_RE = re.compile(r"\{\{([a-z_:]+)\}\}")
+# Presentation-label marker: the ONLY channel for fixed visible template text.
+# The label id is shell-issued (`e_pipeline._presentation_label_catalog`); the
+# Builder may reference an id but can never submit the text it renders.
+_LABEL_MARKER_RE = re.compile(r"\{\{label:([a-z0-9_.\-]+)\}\}")
 _FORBIDDEN_PATTERNS = (
     ("<script", "javascript element"),
     ("javascript:", "javascript URL"),
@@ -122,10 +140,13 @@ _EVIDENCE_ID_RE = re.compile(
     r"^ev\.(page_overview|region_crop|adobe_element|local_measurement|coverage_audit)\.[0-9]+$"
 )
 
-# Generic resume presentation vocabulary that may legitimately appear in a
-# reusable template (never a target-person fact): section labels, months,
-# contact labels, boilerplate. Every OTHER word that appears verbatim in the
-# target document is treated as a target-person literal.
+# Generic resume presentation vocabulary. DIAGNOSTIC ONLY (owner decision
+# 2026-09-21): it is used to decide which target words are 'person facts' for
+# the heuristic literal diagnostic below. It is NOT an authorization for the
+# Builder to write visible text — every fixed visible text node is now
+# rejected by `validate_authored_template`, whether or not its words are in
+# this list. Fixed visible text may only enter through `{{label:<id>}}` with a
+# shell-issued id.
 _TEMPLATE_GENERIC_VOCABULARY = {
     "summary", "profile", "experience", "education", "skills", "languages",
     "certifications", "certification", "projects", "achievements", "awards",
@@ -224,6 +245,26 @@ def _occurrences(haystack: str, needle: str) -> int:
     return len(re.findall(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack))
 
 
+def _label_index(labels: list[PresentationLabel] | None) -> dict[str, PresentationLabel]:
+    """Shell-issued label id -> entry. A duplicated id is ambiguous (two
+    texts for one marker) and fails closed."""
+    index: dict[str, PresentationLabel] = {}
+    for label in labels or []:
+        if label.label_id in index:
+            raise ValueError(
+                f"ambiguous presentation label id in the catalog: {label.label_id!r}"
+            )
+        index[label.label_id] = label
+    return index
+
+
+def presentation_label_markers(html: str) -> list[str]:
+    """The presentation-label ids one template references (normalized
+    spellings), in document order — the shell records which labels a lane
+    actually referenced."""
+    return _LABEL_MARKER_RE.findall(_normalize_slot_markers(html))
+
+
 def _target_person_words(target_pdf: Path) -> set[str]:
     """Distinctive words of the TARGET document (>=4 letters) minus the
     generic template vocabulary. These are presentation-diagnostic evidence
@@ -240,6 +281,7 @@ def validate_authored_template(
     target_pdf: Path,
     render_candidate: CandidateDocument | None = None,
     known_evidence_ids: set[str] | None = None,
+    labels: list[PresentationLabel] | None = None,
 ) -> dict[str, Any]:
     """Enforce the full Lane B safety boundary BEFORE anything is written or
     rendered. Raises ``ValueError`` with every violation; returns the
@@ -249,13 +291,47 @@ def validate_authored_template(
     `known_evidence_ids`: the evidence ids the shell actually issued. Every
     `evidence_refs` entry must be a MEMBER of that set — a string that only
     LOOKS like `ev.<kind>.<n>` is rejected. When no known-id set is
-    provided, any non-empty evidence_refs fails closed."""
-    payload = candidate.html + "\n" + candidate.css
-    # Normalize harmless token spellings FIRST (same as the fill), so marker
-    # spelling variants do not create false violations.
+    provided, any non-empty evidence_refs fails closed.
+
+    `labels`: the SHELL-OWNED presentation-label catalog. A `{{label:<id>}}`
+    marker must name a catalog member (an unlisted id fails closed), and the
+    direct fixed-visible-text channel is closed: after removing slot markers
+    and label markers, no visible text node may carry an alphanumeric
+    character. Tag/class/attribute names and CSS are not visible text and are
+    unaffected."""
+    from tests.experiments.c2_renderer import _html_text
+
     normalized_html = _normalize_slot_markers(candidate.html)
     payload = normalized_html + "\n" + candidate.css
+    label_index = _label_index(labels)
     violations: list[str] = []
+    unknown_markers = sorted(
+        {
+            marker
+            for marker in _LABEL_MARKER_RE.findall(normalized_html)
+            if marker not in label_index
+        }
+    )
+    if unknown_markers:
+        violations.append(
+            "unknown presentation label marker (the shell issues label ids): "
+            + ", ".join(repr(marker) for marker in unknown_markers[:6])
+        )
+    # Direct fixed-visible-text closure: strip the declared slot markers and
+    # the presentation-label markers, then the remaining VISIBLE text must be
+    # whitespace/punctuation only. A rejected word cannot be "authorized" by
+    # the generic vocabulary — only a shell-issued label id can carry text.
+    marker_free_html = _TOKEN_RE.sub(
+        " ", _LABEL_MARKER_RE.sub(" ", normalized_html)
+    )
+    marker_free_html = re.sub(r"\{\{\s*/\s*each\s*\}\}", " ", marker_free_html)
+    visible_text, _empty_sections = _html_text(marker_free_html)
+    if any(character.isalnum() for character in visible_text):
+        violations.append(
+            "fixed visible text outside the presentation-label channel: "
+            f"{visible_text[:120]!r} (use {{{{label:<label_id>}}}} with a "
+            "shell-issued label id)"
+        )
     for pattern, label in _FORBIDDEN_PATTERNS:
         if pattern.casefold() in payload.casefold():
             violations.append(f"forbidden content: {label} ({pattern!r})")
@@ -321,13 +397,9 @@ def validate_authored_template(
                     + ", ".join(unknown_refs[:6])
                 )
 
-    # Target-person literal check: no target word (outside the generic
-    # vocabulary) may appear as fixed template text (including evidence-ref
-    # ids, which are typed and cannot carry person text anyway).
-    # ponytail: a word-list HEURISTIC — it cannot reliably catch numbers,
-    # short words, or non-English person facts; the direct persistent
-    # free-text FIELDS are closed (see the module docstring), but the
-    # authored-code channel itself is NOT proven closed.
+    # Target-person literal check: DIAGNOSTIC ONLY (the fixed-visible-text
+    # closure above already rejects every literal text node; this list only
+    # names which target words a rejected template used).
     target_words = _target_person_words(target_pdf)
     metadata_text = " ".join(candidate.evidence_refs)
     static_words = {
@@ -367,10 +439,12 @@ def validate_authored_template(
         "passed": True,
         "declared_slots": sorted(declared),
         "collections_used": sorted(set(opened)),
+        "presentation_labels": sorted(label_index),
         "checks": [
             "no_javascript", "no_event_handlers", "no_remote_urls", "no_css_imports",
             "no_data_urls", "no_unsafe_elements", "no_target_person_literals",
             "no_candidate_facts", "declared_slots_only",
+            "no_fixed_visible_text", "known_presentation_labels_only",
         ],
     }
 
@@ -509,23 +583,49 @@ class AuthoredFillResult(EvidenceModel):
 
 
 def _normalize_slot_markers(html: str) -> str:
-    """Canonical slot-marker form: tolerate whitespace inside braces, an
-    `each <name>` (space) variant, and spaced closers. The fill and the
-    safety validation share this one normalization."""
+    """Canonical marker form: tolerate whitespace inside braces, an
+    `each <name>` (space) variant, spaced closers, and spaced label markers.
+    The fill and the safety validation share this one normalization."""
     html = re.sub(r"\{\{\s*([a-zA-Z_:]+)\s*\}\}", r"{{\1}}", html)
     html = re.sub(r"\{\{\s*each\s+([a-z_]+)\s*\}\}", r"{{each:\1}}", html)
     html = re.sub(r"\{\{\s*/\s*each\s*\}\}", "{{/each}}", html)
+    html = re.sub(
+        r"\{\{\s*label\s*:\s*([a-z0-9_.\-]+)\s*\}\}", r"{{label:\1}}", html
+    )
     return html
 
 
 def fill_authored_template(
-    template: AuthoredTemplateCandidate, candidate: CandidateDocument
+    template: AuthoredTemplateCandidate,
+    candidate: CandidateDocument,
+    labels: list[PresentationLabel] | None = None,
 ) -> AuthoredFillResult:
-    """Fill declared slot tokens with verbatim candidate values. Candidate
-    facts are read, never edited; the template text itself is never used as a
-    value source. Returns per-leaf occurrence counts for the accounting gate."""
+    """Fill declared slot tokens with verbatim candidate values and
+    presentation-label markers with the CATALOG's text. Candidate facts come
+    only from the reviewed CandidateDocument; label text comes only from the
+    shell-owned catalog — the two channels never mix. Returns per-leaf
+    occurrence counts for the accounting gate."""
+    label_index = _label_index(labels)
     values = render_context_values(candidate)
     html = _normalize_slot_markers(template.html)
+
+    # Presentation labels resolve to opaque PLACEHOLDERS first and are
+    # substituted LAST: a label's text therefore can never be re-parsed as a
+    # candidate slot, another marker, or markup. An unlisted id fails closed.
+    placeholders: dict[str, str] = {}
+
+    def _sub_label(match: re.Match[str]) -> str:
+        label = label_index.get(match.group(1))
+        if label is None:
+            raise ValueError(
+                "unfilled presentation label marker (label id not issued by "
+                f"the shell, fail closed): {match.group(1)!r}"
+            )
+        token = f"\x00label{len(placeholders)}\x00"
+        placeholders[token] = _esc(label.text)
+        return token
+
+    html = _LABEL_MARKER_RE.sub(_sub_label, html)
 
     def _substitute_simple(match: re.Match[str]) -> str:
         token = match.group(1).replace(":", "_")
@@ -558,15 +658,21 @@ def fill_authored_template(
 
     html = _EACH_RE.sub(_fill_region, html)
     # Fail closed on ANY residual `{{...}}`: either an unfilled template
-    # token or a candidate's own literal text containing brace syntax. The
-    # broad pattern (not just lowercase slot tokens) catches values like
-    # `{{Foo}}`/`{{ x }}` that the slot grammar would not match.
+    # token, a malformed/unknown label marker, or a candidate's own literal
+    # text containing brace syntax. The broad pattern (not just lowercase
+    # slot tokens) catches values like `{{Foo}}`/`{{ x }}` that the slot
+    # grammar would not match. Label placeholders carry no braces, so an
+    # inserted label value can never reach this check.
     residual = re.findall(r"\{\{.*?\}\}", html, flags=re.DOTALL)
     if residual:
         raise ValueError(
             f"unfilled slot tokens remain after fill (fail closed; candidate "
             f"values are never stripped or rewritten): {residual[:6]}"
         )
+    # Insert the (HTML-escaped) label texts LAST: nothing above can re-parse
+    # them, and no marker can remain afterwards.
+    for token, value in placeholders.items():
+        html = html.replace(token, value)
 
     # Accounting: every candidate leaf is consumed by exactly one region
     # instance BY CONSTRUCTION (recorded per leaf); its verbatim value must
@@ -661,7 +767,12 @@ def authored_privacy_gate(
         checked.append({"line": line, "hit": hit})
         if hit:
             leaked.append(line)
-    return {"passed": not leaked, "leaked_target_lines": leaked, "checked_target_lines": checked}
+    return {
+        "passed": not leaked,
+        "leaked_target_lines": leaked,
+        "checked_target_lines": checked,
+        "excluded_labels": sorted(excluded),
+    }
 
 
 def authored_pdf_presence_gate(

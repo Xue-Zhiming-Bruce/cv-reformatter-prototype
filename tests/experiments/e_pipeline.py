@@ -6547,6 +6547,12 @@ E5_LANE_B_BUILDER_INSTRUCTIONS = (
     "CSS imports, url() functions, data: URLs, HTML or CSS comments, the\n"
     "CSS content: property, any target-person literal, any hardcoded\n"
     "candidate fact, and any undeclared slot token.\n"
+    "Fixed visible TEXT is not allowed at all: no letter or digit may appear\n"
+    "as a literal text node (HTML tag/class/attribute names and CSS are\n"
+    "fine). The only visible fixed text you may render is a presentation\n"
+    "label, referenced as {{label:<label_id>}} using a label_id from the\n"
+    "shell's presentation_labels catalog in your evidence package; the shell\n"
+    "owns the text and escapes it. An id you were not given is rejected.\n"
     "You never see or edit candidate values; the shell fills your slots from\n"
     "the reviewed candidate render context. You never approve delivery.\n"
     "Base the design on the target page images and the structure draft you\n"
@@ -6752,6 +6758,122 @@ class E5LoopRecord(EvidenceModel):
     summary: dict[str, Any] = Field(default_factory=dict)
 
 
+PRESENTATION_LABEL_KINDS = ("section_heading",)
+
+
+class PresentationLabel(EvidenceModel):
+    """One SHELL-ISSUED presentation label (owner decision 2026-09-21): fixed
+    visible template text that is allowed because it is display structure
+    taken from target evidence, never a target-person fact. The Builder can
+    only REFERENCE ``label_id`` — it can never submit label text."""
+
+    label_id: str
+    text: str
+    kind: Literal["section_heading"]
+    evidence_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def label_is_typed_and_evidence_backed(self) -> "PresentationLabel":
+        if not self.text.strip():
+            raise ValueError("presentation label requires non-empty text")
+        if not self.evidence_ids or not all(ref.strip() for ref in self.evidence_ids):
+            raise ValueError(
+                "presentation label requires at least one target evidence id"
+            )
+        if self.kind not in PRESENTATION_LABEL_KINDS:
+            raise ValueError(f"unknown presentation label kind: {self.kind!r}")
+        return self
+
+
+def _presentation_label_catalog(derived: dict[str, Any]) -> list[PresentationLabel]:
+    """Build the ONE shell-owned label catalog both lanes share, from the
+    measured sidebar-label evidence that already feeds the StructureDraft and
+    both lanes' Builder evidence package.
+
+    Deliberately minimal: ``section_heading`` is the only label type with
+    reliable target structure evidence today (the measured, clustered
+    sidebar-label headings). Contact ``field_label`` entries are NOT
+    implemented — the two-column compile records those rows as a capability
+    gap, so emitting them would fabricate evidence. No Resume-I title list,
+    no file-name/hash branch, no target-person text: the text is exactly what
+    the measurement returned. A duplicate measured id fails closed."""
+    catalog: list[PresentationLabel] = []
+    seen: set[str] = set()
+    for record in derived.get("sidebar_labels") or []:
+        page = int(record["page"])
+        top = float(record["top"])
+        label_id = f"label.section.p{page}.top{top:.1f}"
+        if label_id in seen:
+            raise ValueError(
+                f"duplicate presentation label id from the measurement: {label_id!r}"
+            )
+        seen.add(label_id)
+        catalog.append(
+            PresentationLabel(
+                label_id=label_id,
+                text=str(record.get("text") or ""),
+                kind="section_heading",
+                evidence_ids=[f"local_pdf.sidebar_label.p{page}.top{top:.1f}"],
+            )
+        )
+    return catalog
+
+
+def _e5_label_semantics(
+    gate: dict[str, Any], catalog: list[PresentationLabel]
+) -> dict[str, Any]:
+    """Whether one lane's privacy gate judged presentation labels from the
+    SAME shell-owned catalog the other lane uses. `symmetric` means the gate
+    excluded ONLY catalog labels (no lane-local classification, and — when
+    the catalog is non-empty — it excluded something at all: the old empty
+    `labels=set()` asymmetry fails this). A lane may legitimately exclude a
+    SUBSET of the catalog (Lane A only renders its plan's sections); those
+    catalog labels are reported in `catalog_texts_never_excluded` instead of
+    being treated as a failure."""
+    from tests.experiments.c2_renderer import _norm
+
+    excluded = {_norm(item) for item in (gate.get("excluded_labels") or [])}
+    catalog_texts = {_norm(label.text) for label in catalog}
+    outside_catalog = sorted(excluded - catalog_texts)
+    return {
+        "catalog_label_ids": [label.label_id for label in catalog],
+        "symmetric": not outside_catalog and bool(excluded or not catalog_texts),
+        "excluded_labels": sorted(excluded),
+        "excluded_outside_catalog": outside_catalog,
+        "catalog_texts_never_excluded": sorted(catalog_texts - excluded),
+    }
+
+
+def _presentation_label_listing(
+    catalog: list[PresentationLabel], lane_references: dict[str, list[str]]
+) -> dict[str, Any]:
+    """The owner-visible label listing (label_id / text / kind / evidence /
+    which lanes referenced it). Audit material only — it does NOT mean the
+    owner accepted T-v1."""
+    return {
+        "schema_version": "e5-presentation-labels/1",
+        "note": (
+            "shell-issued presentation labels: fixed visible template text taken "
+            "from target evidence. Audit material only; this is NOT an acceptance "
+            "of T-v1 and no lane is declared a winner."
+        ),
+        "labels": [
+            {
+                "label_id": label.label_id,
+                "text": label.text,
+                "kind": label.kind,
+                "evidence_ids": label.evidence_ids,
+                "referenced_by_lanes": sorted(
+                    lane_id
+                    for lane_id, refs in lane_references.items()
+                    if label.label_id in set(refs)
+                ),
+            }
+            for label in catalog
+        ],
+    }
+
+
 def _e5_builder_evidence_package(
     *,
     draft: TargetStructureDraft,
@@ -6767,15 +6889,21 @@ def _e5_builder_evidence_package(
     current_render_images: list[Path] | None = None,
     selected_attribution: AttributionRecord | None = None,
     action_fingerprint: str | None = None,
+    presentation_labels: list[PresentationLabel] | None = None,
 ) -> dict[str, Any]:
     """One representation-neutral Builder evidence package.
 
     Both lanes receive this exact data shape and the same target images. Only
     their output schema/instructions differ. Repair calls additionally receive
-    the current render images outside this JSON package.
+    the current render images outside this JSON package. `presentation_labels`
+    is the SAME shell-owned catalog for both lanes: the only visible fixed
+    text a template may carry, referenceable by `label_id` only.
     """
     return {
         "schema_version": "e5-builder-evidence/1",
+        "presentation_labels": [
+            label.model_dump(mode="json") for label in presentation_labels or []
+        ],
         "structure_draft": draft.model_dump(mode="json"),
         "underlying_evidence_summary": {
             "page_size_pt": list(page_size),
@@ -7898,6 +8026,7 @@ def run_e5(
         authored_privacy_gate,
         build_authored_document,
         fill_authored_template,
+        presentation_label_markers,
         validate_authored_template,
     )
 
@@ -7959,6 +8088,16 @@ def run_e5(
         state, derived = compile_two_column_state(target_pdf, summary, evidence=normalized)
     except Exception as error:
         return abort("compile_two_column_state", error)
+    # ONE shell-owned presentation-label catalog for BOTH lanes (owner decision
+    # 2026-09-21): built from the same measured sidebar-label evidence the two
+    # lanes already share. Lane A renders those labels from the render plan,
+    # Lane B can only reference `{{label:<label_id>}}`; both privacy gates and
+    # the owner listing reference THIS catalog, never a lane-local set.
+    try:
+        label_catalog = _presentation_label_catalog(derived)
+    except Exception as error:
+        return abort("presentation_label_catalog", error)
+    label_texts = {label.text for label in label_catalog}
     (out_dir / "c2_layout_state.json").write_bytes(state_bytes(state))
     _headings_scaffold, body_scaffold = compile_two_column_state_for_scaffold(target_pdf, summary)
     bullet_tiers = _two_column_bullet_tiers(_pdf_lines_and_marks(target_pdf)[0], summary)
@@ -8046,6 +8185,7 @@ def run_e5(
         derived=derived,
         page_size=page_size,
         target_images=shared_target_images,
+        presentation_labels=label_catalog,
     )
     initial_builder_evidence_path = out_dir / "builder_evidence_initial.json"
     initial_builder_evidence_path.write_text(
@@ -8114,6 +8254,12 @@ def run_e5(
         # candidate never overwrites the active state.
         plan_by_version: dict[str, Any] = {}
         gates_by_version: dict[str, dict[str, Any]] = {}
+        # Per-version answer to "did the privacy gate exclude exactly the
+        # shared shell-owned label catalog?" — derived, never lane-specific.
+        label_symmetry_by_version: dict[str, bool] = {}
+        # Presentation labels THIS lane actually referenced (Lane A: rendered
+        # plan labels; Lane B: template label markers).
+        referenced_labels: set[str] = set()
         # The region of the last PROMOTED repair (the only state that scopes
         # the next review round; rejected attempts never do).
         last_promoted_region: str | None = None
@@ -8271,8 +8417,11 @@ def run_e5(
                             target_pdf=target_pdf,
                             render_candidate=probe_candidate,
                             known_evidence_ids=_known_evidence_ids(),
+                            labels=label_catalog,
                         )
-                        fill = fill_authored_template(selected_representation, probe_candidate)
+                        fill = fill_authored_template(
+                            selected_representation, probe_candidate, labels=label_catalog
+                        )
                         doc = build_authored_document(selected_representation, fill, page_size)
                         probe_html_path.write_text(doc, encoding="utf-8")
                         net_env = authored_network_disabled_environment()
@@ -8286,7 +8435,7 @@ def run_e5(
                                 fill, probe_candidate, probe_pdf_path
                             )["passed"],
                             "privacy_gate": authored_privacy_gate(
-                                doc, probe_pdf_path, privacy_baseline, labels=set()
+                                doc, probe_pdf_path, privacy_baseline, labels=label_texts
                             )["passed"],
                             "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
                             "deterministic_render": (
@@ -8364,8 +8513,11 @@ def run_e5(
                     "methodology_classification": _e5_gate_classification(
                         lane_id,
                         gates_by_version.get(active_version_id, {}),
-                        privacy_labels_symmetric=lane_id != "b",
+                        privacy_labels_symmetric=label_symmetry_by_version.get(
+                            active_version_id or "", True
+                        ),
                     ),
+                    "presentation_labels_referenced": sorted(referenced_labels),
                     "elapsed_seconds": None,
                     "live": live,
                 },
@@ -8420,6 +8572,22 @@ def run_e5(
                     "content_shapes_match_evidence": shape["passed"],
                     "content_gate": content["passed"],
                 }
+                # Lane A renders the plan labels; map them back to the SHARED
+                # catalog so the audit uses the same label semantics as Lane B.
+                plan_label_texts = {
+                    c2r._norm(section.label)
+                    for section in [*plan.sections, *plan.appended_sections]
+                }
+                label_semantics = _e5_label_semantics(privacy, label_catalog)
+                label_symmetry_by_version[f"render-{target_pdf.stem}-laneA-v{index}"] = bool(
+                    label_semantics["symmetric"]
+                )
+                referenced_labels.update(
+                    label.label_id
+                    for label in label_catalog
+                    if c2r._norm(label.text) in plan_label_texts
+                )
+                privacy = {**privacy, "label_semantics": label_semantics}
                 gate_details = {
                     "deterministic_render": {
                         "passed": gates["deterministic_render"],
@@ -8469,8 +8637,9 @@ def run_e5(
                     target_pdf=target_pdf,
                     render_candidate=candidate,
                     known_evidence_ids=_known_evidence_ids(),
+                    labels=label_catalog,
                 )
-                fill = fill_authored_template(template, candidate)
+                fill = fill_authored_template(template, candidate, labels=label_catalog)
                 index = len(versions) + 1
                 doc = build_authored_document(template, fill, page_size)
                 html_path = lane_dir / f"render_{index}.html"
@@ -8484,19 +8653,18 @@ def run_e5(
                 second_pages = _render_pages(second, lane_dir, f"render_{index}_second")
                 stability = c2r._line_stability(pdf_path, second)
                 presence = authored_pdf_presence_gate(fill, candidate, pdf_path)
-                privacy_baseline_gate = authored_privacy_gate(doc, pdf_path, privacy_baseline, labels=set())
-                privacy_target_gate = authored_privacy_gate(
-                    doc, pdf_path, target_pdf,
-                    labels={
-                        claim.child for claim in draft.structure
-                        if claim.relation == "section_boundary" and claim.child
-                    }
-                    | {
-                        record["text"]
-                        for record in (derived.get("sidebar_labels") or [])
-                        if record.get("text")
-                    },
+                privacy_baseline_gate = authored_privacy_gate(
+                    doc, pdf_path, privacy_baseline, labels=label_texts
                 )
+                # Both gates exclude the SAME shell-owned catalog (the old
+                # lane-local set + empty baseline labels manufactured the
+                # asymmetry): a legitimate catalog label can never be reported
+                # as a leaked target line on one side only.
+                privacy_target_gate = authored_privacy_gate(
+                    doc, pdf_path, target_pdf, labels=label_texts
+                )
+                label_semantics = _e5_label_semantics(privacy_target_gate, label_catalog)
+                referenced_labels.update(presentation_label_markers(template.html))
                 blank = c2r.blank_page_gate(pdf_path)
                 gates = {
                     "deterministic_render": all(
@@ -8520,7 +8688,8 @@ def run_e5(
                         "passed": gates["no_target_candidate_facts"],
                         "baseline": privacy_baseline_gate,
                         "target": privacy_target_gate,
-                        "label_semantics_symmetric": False,
+                        "label_semantics_symmetric": label_semantics["symmetric"],
+                        "label_semantics": label_semantics,
                     },
                     "no_blank_page": blank,
                     "candidate_content_accounting": {
@@ -8543,6 +8712,9 @@ def run_e5(
                 pdf_by_version[version.version_id] = pdf_path
                 representation_by_version[version.version_id] = template
                 gates_by_version[version.version_id] = gates
+                label_symmetry_by_version[version.version_id] = bool(
+                    label_semantics["symmetric"]
+                )
                 store.register_version(version.version_id, pdf_path, note)
                 (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
                     json.dumps(
@@ -8724,6 +8896,7 @@ def run_e5(
                         target_pdf=target_pdf,
                         render_candidate=candidate,
                         known_evidence_ids=_known_evidence_ids(),
+                        labels=label_catalog,
                     )
                     validation_error = None
                 except ValueError as error:
@@ -8986,6 +9159,7 @@ def run_e5(
                     current_render_images=current_render_images,
                     selected_attribution=attribution,
                     action_fingerprint=fingerprint,
+                    presentation_labels=label_catalog,
                 )
                 (lane_dir / f"builder_evidence_round_{round_no:02d}.json").write_text(
                     json.dumps(
@@ -9048,6 +9222,7 @@ def run_e5(
                                 target_pdf=target_pdf,
                                 render_candidate=candidate,
                                 known_evidence_ids=_known_evidence_ids(),
+                                labels=label_catalog,
                             )
                         except ValueError as error:
                             validation = {"passed": False, "error": str(error)}
@@ -9239,7 +9414,7 @@ def run_e5(
     )
     _write_e5_comparison(out_dir, loop_record, config)
     try:
-        _write_e5_owner_package(out_dir, target_pdf, loop_record)
+        _write_e5_owner_package(out_dir, target_pdf, loop_record, label_catalog)
     except Exception as error:
         (out_dir / "owner_package_failed.txt").write_text(str(error), encoding="utf-8")
     return out_dir, overall_terminal, loop_record.model_dump(mode="json")
@@ -9480,11 +9655,15 @@ def _write_e5_comparison(
 
 
 def _write_e5_owner_package(
-    out_dir: Path, target_pdf: Path, record: E5LoopRecord
+    out_dir: Path,
+    target_pdf: Path,
+    record: E5LoopRecord,
+    presentation_labels: list[PresentationLabel] | None = None,
 ) -> Path:
     """The safe owner-review package (E5 work order): Resume I target, the E4
     best-render baseline, and each lane's best render side by side per page,
-    plus probe outputs, costs, remaining differences, and the non-claims."""
+    plus probe outputs, costs, the shell-issued presentation-label table,
+    remaining differences, and the non-claims."""
     from app.ingestion.pdf_reader import read_pdf_text
     from tests.experiments import c2_renderer as c2r
 
@@ -9593,6 +9772,34 @@ def _write_e5_owner_package(
     best_lines = "\n".join(
         _best_line(lane_id, lane) for lane_id, lane in record.lanes.items()
     )
+    # Presentation-label catalog: written into the run dir AND the package,
+    # with the label table in the report. Audit material only — it is NOT an
+    # acceptance of T-v1 and declares no winner.
+    label_listing = _presentation_label_listing(
+        presentation_labels or [],
+        {
+            lane_id: list((lane.summary or {}).get("presentation_labels_referenced") or [])
+            for lane_id, lane in record.lanes.items()
+        },
+    )
+    (out_dir / "presentation_labels.json").write_text(
+        json.dumps(label_listing, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (package / "presentation_labels.json").write_text(
+        json.dumps(label_listing, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    label_rows = "\n".join(
+        "| `{}` | {} | {} | {} | {} |".format(
+            entry["label_id"],
+            entry["text"],
+            entry["kind"],
+            ", ".join(entry["evidence_ids"]),
+            ", ".join(entry["referenced_by_lanes"]) or "(none)",
+        )
+        for entry in label_listing["labels"]
+    ) or "| (no shell-issued presentation labels) | | | | |"
     (package / "REPORT.md").write_text(
         f"""# Pipeline E5 owner-review package — {out_dir.name}
 
@@ -9617,7 +9824,22 @@ def _write_e5_owner_package(
   probes marked diagnostic ran on a latest attempt and are NOT promotion
   evidence;
 - `cost_summary.json` — usage + verified pricing record (no invented price);
+- `presentation_labels.json` — the complete shell-issued presentation-label
+  catalog (label_id, text, kind, target evidence id, which lanes referenced
+  it); the same table is below; it is audit material, NOT an acceptance of
+  T-v1;
 - remaining material differences below; iteration histories in lane dirs.
+
+## Presentation labels (shell-issued; audit material, not an acceptance)
+
+Fixed visible template text may only enter through these shell-issued label
+ids. The Builder references an id; the shell owns the text. Target-person
+facts, contact data, dates, employers, schools, roles, and any text that is
+not classified presentation structure are NOT in this table.
+
+| label_id | text | kind | evidence | referenced by lanes |
+| --- | --- | --- | --- | --- |
+{label_rows}
 
 ## Remaining material differences (open findings)
 

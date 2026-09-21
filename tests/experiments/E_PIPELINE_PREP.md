@@ -1310,28 +1310,57 @@ separate:
 - the current gate does not verify the rail;
 - whether the schema can express the target rail remains `unverified`.
 
-Lane B's baseline privacy failure is now classified
-`gate_false_positive_or_boundary_unresolved`, because Lane A excludes typed
-RenderPlan presentation labels while Lane B passed an empty label set for the
-baseline and a different label set for Resume I. It is not evidence of a Lane
-B representation ceiling.
+Lane B's baseline privacy failure is no longer classified from an empty label
+set: both Lane B gates (baseline and target) now exclude the SAME shell-owned
+presentation-label catalog, and the audit records the result
+(`label_semantics`: `symmetric`, `excluded_outside_catalog`,
+`catalog_texts_never_excluded`) per render version. Lane A still derives its
+exclusion set from the RenderPlan (renderer unchanged); the audit verifies that
+this set is catalog-backed (`excluded_outside_catalog == []`) instead of
+assuming symmetry.
 
-## Owner decision still required: typed presentation labels
+## Owner decision implemented: typed presentation labels
 
-The smallest symmetric option is a typed `PresentationLabel` inventory shared
-by both lanes. Only labels declared by the validated representation may be
-excluded: Lane A would derive them from validated RenderPlan section labels;
-Lane B would have to declare the equivalent bounded label records separately
-from authored HTML/CSS. The shell would accept a label only when it maps to a
-known StructureDraft/state section role and matches measured heading evidence;
-arbitrary template text, target body lines, contacts, employers, dates, and
-candidate values would remain checked. Both privacy gates would consume the
-same typed inventory and matching rules.
+Owner decision 2026-09-21: the template MAY use presentation labels, but only
+shell-issued ones. Implemented as the smallest symmetric mechanism:
 
-This is an architecture/privacy boundary choice, so it is proposed here but
-not implemented. No new live comparison should run before the owner decides
-whether presentation-label exclusion is allowed and approves the exact typed
-source.
+- **Catalog** (`e_pipeline.PresentationLabel`): `label_id`, `text`, `kind`,
+  `evidence_ids`. `kind` is `section_heading` ONLY — the one label type with
+  reliable target structure evidence (`compile_two_column_state` measured
+  sidebar-label headings). No Resume-I title list, no file-name/hash branch,
+  no target-person text. A `field_label` kind is deliberately NOT implemented:
+  the two-column compile records the contact label/value rows as a capability
+  gap, so emitting `field_label` entries would fabricate evidence. Empty text,
+  empty evidence, an unknown kind, or a duplicate measured id fails closed at
+  record construction.
+- **Builder channel**: `{{label:<label_id>}}`. The Builder can only reference
+  an id from the catalog in its evidence package; the shell owns the text,
+  HTML-escapes it, and inserts it in a SECOND pass after every candidate slot
+  is resolved (a label value can never be re-parsed as a slot, markup, or
+  template syntax). An unknown/unissued id fails closed at validation and at
+  fill; a malformed marker fails closed at the residual-token check.
+- **Direct fixed visible text is closed**: after removing slot markers and
+  label markers, no visible text node may carry an alphanumeric character.
+  `EXPERIENCE` written literally in HTML is rejected even though it is generic
+  resume vocabulary — `_TEMPLATE_GENERIC_VOCABULARY` is now DIAGNOSTIC ONLY and
+  no longer authorizes any visible text. Tag/class/attribute names and CSS are
+  unaffected (not visible text).
+- **Candidate facts** still enter only through reviewed `CandidateDocument`
+  slots; the label catalog and the candidate slots are separate sources.
+  CSS `content:`, comments, JavaScript, remote URLs, and `src`/`href` stay
+  forbidden.
+- **Owner visibility**: `out_dir/presentation_labels.json` and the copy in
+  `owner_review/presentation_labels.json` list label_id / text / kind /
+  evidence id / which lanes referenced it; `owner_review/REPORT.md` carries
+  the same table. This is audit material — it is NOT an acceptance of T-v1 and
+  declares no winner.
+
+Honest limits: `field_label` is unimplemented (see above); Lane A's exclusion
+source stays the unmodified renderer gate, verified against the catalog by the
+audit rather than replaced; and the authored HTML/CSS channel still carries
+inherent steganographic risk (encoding, spacing, attribute choices) that no
+string gate enumerates. The direct visible-text channel is closed; the
+steganographic channel is NOT claimed closed.
 
 ## Repeated-action stop
 

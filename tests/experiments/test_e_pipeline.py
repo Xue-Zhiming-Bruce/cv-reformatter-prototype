@@ -2418,6 +2418,32 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
     if any(l["best_render_version"] is None for l in lanes.values()):
         report = (package / "REPORT.md").read_text(encoding="utf-8")
         assert "no best-valid render exists" in report
+    # The shell-issued presentation-label catalog is part of the run dir AND
+    # the owner package; the report table lists exactly the catalog.
+    listing = json.loads((package / "presentation_labels.json").read_text(encoding="utf-8"))
+    assert listing["schema_version"] == "e5-presentation-labels/1"
+    assert json.loads((run_dir / "presentation_labels.json").read_text(encoding="utf-8")) == listing
+    assert listing["labels"], "expected measured Resume-I section-heading labels"
+    package_report = (package / "REPORT.md").read_text(encoding="utf-8")
+    for entry in listing["labels"]:
+        assert entry["kind"] == "section_heading"
+        assert entry["evidence_ids"]
+        assert set(entry["referenced_by_lanes"]) <= {"a", "b"}
+        assert f"`{entry['label_id']}`" in package_report
+    # Both lanes' privacy gates excluded EXACTLY that catalog (no lane-local
+    # set, no empty-label asymmetry).
+    for lane_id, lane in lanes.items():
+        active = lane["active_render_version"]
+        if not active:
+            continue
+        detail = json.loads(
+            (run_dir / f"lane_{lane_id}" / f"hard_gates_{active}.json").read_text(encoding="utf-8")
+        )
+        semantics = detail["details"]["no_target_candidate_facts"]["label_semantics"]
+        assert semantics["symmetric"] is True, (lane_id, semantics)
+        assert semantics["catalog_label_ids"] == [
+            entry["label_id"] for entry in listing["labels"]
+        ]
     if lanes["b"]["best_render_version"] is not None:
         best_index = next(
             index + 1
@@ -2905,14 +2931,265 @@ def test_lane_b_metadata_fields_are_restricted_not_free_text() -> None:
         with pytest.raises(ValueError, match="authored template rejected"):
             at.validate_authored_template(probe, target_pdf=RESUME_I)
 
-    # HEURISTIC ceiling, documented by test: the literal gate alone does not
-    # catch numbers, short words, or non-English person facts inside markup
-    # TEXT — the direct persistent free-text FIELDS are closed, but the
-    # authored-code channel is not proven closed.
+    # document text — see the fixed-visible-text closure above.
+    # FIXED-VISIBLE-TEXT CLOSURE (owner decision 2026-09-21): a literal text
+    # node is rejected whether or not its words are in the generic resume
+    # vocabulary, and numbers / non-English facts are rejected too (the
+    # earlier word-list heuristic could not catch those). Fixed visible text
+    # may only enter through a shell-issued presentation-label marker.
     number_probe = base.model_copy(update={"html": base.html + "\n<span>555-0199</span>"})
-    assert at.validate_authored_template(number_probe, target_pdf=RESUME_I)["passed"]
+    with pytest.raises(ValueError, match="fixed visible text"):
+        at.validate_authored_template(number_probe, target_pdf=RESUME_I)
     non_english_probe = base.model_copy(update={"html": base.html + "\n<span>王小明 北京大学</span>"})
-    assert at.validate_authored_template(non_english_probe, target_pdf=RESUME_I)["passed"]
+    with pytest.raises(ValueError, match="fixed visible text"):
+        at.validate_authored_template(non_english_probe, target_pdf=RESUME_I)
+    generic_word_probe = base.model_copy(update={"html": base.html + "\n<div>EXPERIENCE</div>"})
+    with pytest.raises(ValueError, match="fixed visible text"):
+        at.validate_authored_template(generic_word_probe, target_pdf=RESUME_I)
+
+
+# --- Owner decision 2026-09-21: shell-issued presentation labels ---------
+
+
+def _minimal_template(html: str) -> at.AuthoredTemplateCandidate:
+    return at.AuthoredTemplateCandidate(
+        template_id="label-probe",
+        html=html,
+        css="body { font-size: 10pt; }",
+        slots=[at.AuthoredSlot(category="candidate_name", required=True)],
+    )
+
+
+def _presentation_labels() -> list[e.PresentationLabel]:
+    return [
+        e.PresentationLabel(
+            label_id="label.section.p1.top221.5",
+            text="EXPERIENCE",
+            kind="section_heading",
+            evidence_ids=["local_pdf.sidebar_label.p1.top221.5"],
+        )
+    ]
+
+
+def test_authored_template_rejects_direct_fixed_visible_text() -> None:
+    for literal in (
+        "<div class=\"rsv-head\">EXPERIENCE</div>",
+        "<span>555-0199</span>",
+        "<span>王小明</span>",
+        "<p>Summary</p>",
+    ):
+        with pytest.raises(ValueError, match="fixed visible text"):
+            at.validate_authored_template(
+                _minimal_template(literal), target_pdf=RESUME_I,
+                labels=_presentation_labels(),
+            )
+
+
+def test_authored_template_accepts_known_presentation_label_marker() -> None:
+    report = at.validate_authored_template(
+        _minimal_template("{{label:label.section.p1.top221.5}}"),
+        target_pdf=RESUME_I,
+        labels=_presentation_labels(),
+    )
+    assert report["passed"] is True
+    assert report["presentation_labels"] == ["label.section.p1.top221.5"]
+    # the marker-free visible text is empty: the SAME wording as literal text
+    # is rejected above, so only the shell-owned id channel carries text
+    assert "no_fixed_visible_text" in report["checks"]
+
+
+def test_authored_template_rejects_unknown_presentation_label_marker() -> None:
+    with pytest.raises(ValueError, match="unknown presentation label marker"):
+        at.validate_authored_template(
+            _minimal_template("{{label:label.section.p9.top999.0}}"),
+            target_pdf=RESUME_I,
+            labels=_presentation_labels(),
+        )
+    # without a catalog EVERY marker is unissued (fail closed by default)
+    with pytest.raises(ValueError, match="unknown presentation label marker"):
+        at.validate_authored_template(
+            _minimal_template("{{label:label.section.p1.top221.5}}"),
+            target_pdf=RESUME_I,
+        )
+
+
+def test_presentation_label_requires_typed_target_evidence() -> None:
+    with pytest.raises(ValueError, match="at least one target evidence id"):
+        e.PresentationLabel(label_id="l1", text="EXPERIENCE", kind="section_heading")
+    with pytest.raises(ValueError, match="at least one target evidence id"):
+        e.PresentationLabel(
+            label_id="l1", text="EXPERIENCE", kind="section_heading", evidence_ids=[" "]
+        )
+    with pytest.raises(ValueError, match="non-empty text"):
+        e.PresentationLabel(
+            label_id="l1", text=" ", kind="section_heading", evidence_ids=["local_pdf.x"]
+        )
+    # an unimplemented kind is not silently accepted
+    with pytest.raises(ValueError):
+        e.PresentationLabel(
+            label_id="l1", text="Email", kind="field_label", evidence_ids=["local_pdf.x"]
+        )
+
+
+def test_presentation_labels_come_only_from_measured_evidence() -> None:
+    # no measured sidebar evidence -> NO label exists (nothing is invented
+    # from the target document, its file name, or a hardcoded title list)
+    assert e._presentation_label_catalog({}) == []
+    assert e._presentation_label_catalog({"sidebar_labels": []}) == []
+    catalog = e._presentation_label_catalog(
+        {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
+    )
+    assert [
+        (label.label_id, label.text, label.kind, label.evidence_ids)
+        for label in catalog
+    ] == [
+        (
+            "label.section.p1.top221.5",
+            "EXPERIENCE",
+            "section_heading",
+            ["local_pdf.sidebar_label.p1.top221.5"],
+        )
+    ]
+    # a target-person fact is not a label source: with no measurement there is
+    # no label, so the marker cannot resolve even though the words exist in HTML
+    with pytest.raises(ValueError, match="unknown presentation label marker"):
+        at.validate_authored_template(
+            _minimal_template("{{label:label.section.p1.top221.5}}"),
+            target_pdf=RESUME_I,
+            labels=[],
+        )
+    with pytest.raises(ValueError, match="non-empty text"):
+        e._presentation_label_catalog(
+            {"sidebar_labels": [{"page": 1, "top": 1.0, "text": "   "}]}
+        )
+    with pytest.raises(ValueError, match="duplicate presentation label id"):
+        e._presentation_label_catalog(
+            {
+                "sidebar_labels": [
+                    {"page": 1, "top": 1.0, "text": "A"},
+                    {"page": 1, "top": 1.0, "text": "B"},
+                ]
+            }
+        )
+
+
+def test_presentation_label_text_is_escaped_and_never_reparsed() -> None:
+    from tests.experiments.c2_candidates import candidate_resume_E
+
+    candidate = candidate_resume_E()
+    catalog = [
+        e.PresentationLabel(
+            label_id="label.section.p1.top1.0",
+            text="{{candidate:name}} <b>X</b> & Y",
+            kind="section_heading",
+            evidence_ids=["local_pdf.sidebar_label.p1.top1.0"],
+        )
+    ]
+    fill = at.fill_authored_template(
+        _minimal_template("{{label:label.section.p1.top1.0}}"), candidate, labels=catalog
+    )
+    assert "&lt;b&gt;X&lt;/b&gt;" in fill.html_filled
+    assert "&amp; Y" in fill.html_filled
+    assert "<b>" not in fill.html_filled
+    # inserted AFTER slot resolution: it stays literal text and is never
+    # re-parsed as a candidate slot or markup
+    assert "{{candidate:name}}" in fill.html_filled
+    name = next(
+        leaf.text
+        for leaf in candidate.leaves
+        if leaf.kind == "header_field" and leaf.slot == "name"
+    )
+    assert name not in fill.html_filled
+
+
+def test_label_marker_and_candidate_slot_fill_from_their_own_sources() -> None:
+    from tests.experiments.c2_candidates import candidate_resume_E
+
+    candidate = candidate_resume_E()
+    name = next(
+        leaf.text
+        for leaf in candidate.leaves
+        if leaf.kind == "header_field" and leaf.slot == "name"
+    )
+    template = _minimal_template("{{label:label.section.p1.top221.5}}|{{candidate:name}}")
+    assert "EXPERIENCE" not in template.html  # the text is NOT in the template
+    fill = at.fill_authored_template(template, candidate, labels=_presentation_labels())
+    assert "EXPERIENCE" in fill.html_filled  # ... it comes from the catalog
+    assert name in fill.html_filled  # candidate value from CandidateDocument only
+
+
+def test_residual_or_malformed_label_marker_fails_closed() -> None:
+    from tests.experiments.c2_candidates import candidate_resume_E
+
+    malformed = _minimal_template("{{label:NOT_A_CATALOG_ID}}")
+    with pytest.raises(ValueError, match="fixed visible text"):
+        at.validate_authored_template(
+            malformed, target_pdf=RESUME_I, labels=_presentation_labels()
+        )
+    with pytest.raises(ValueError, match="unfilled slot tokens remain"):
+        at.fill_authored_template(malformed, candidate_resume_E(), labels=_presentation_labels())
+    unissued = _minimal_template("{{label:label.section.p9.top999.0}}")
+    with pytest.raises(ValueError, match="not issued"):
+        at.fill_authored_template(unissued, candidate_resume_E(), labels=_presentation_labels())
+
+
+def test_lane_gates_share_one_shell_owned_label_catalog() -> None:
+    catalog = e._presentation_label_catalog(
+        {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
+    )
+    # both lanes' gates exclude only catalog labels -> symmetric
+    lane_a = e._e5_label_semantics({"excluded_labels": ["experience"]}, catalog)
+    lane_b = e._e5_label_semantics({"excluded_labels": ["EXPERIENCE"]}, catalog)
+    assert lane_a["symmetric"] is True and lane_b["symmetric"] is True
+    assert lane_a["catalog_label_ids"] == lane_b["catalog_label_ids"]
+    # the old Lane B probe asymmetry (empty labels next to a non-empty catalog)
+    assert e._e5_label_semantics({"excluded_labels": []}, catalog)["symmetric"] is False
+    # a hand-built / lane-local set is REPORTED, never silently asymmetric
+    hand_built = e._e5_label_semantics({"excluded_labels": ["section.01"]}, catalog)
+    assert hand_built["symmetric"] is False
+    assert hand_built["excluded_outside_catalog"] == ["section.01"]
+    assert hand_built["catalog_texts_never_excluded"] == ["experience"]
+    # a lane rendering only SOME catalog labels (the Lane A plan subset) stays
+    # symmetric, with the honest remainder reported
+    two = e._presentation_label_catalog(
+        {
+            "sidebar_labels": [
+                {"page": 1, "top": 221.5, "text": "EXPERIENCE"},
+                {"page": 1, "top": 309.9, "text": "EDUCATION"},
+            ]
+        }
+    )
+    subset = e._e5_label_semantics({"excluded_labels": ["experience"]}, two)
+    assert subset["symmetric"] is True
+    assert subset["catalog_texts_never_excluded"] == ["education"]
+    # the Lane B gate reports its exclusions so the audit can compare them
+    from tests.experiments.e_authored_template import authored_privacy_gate
+
+    gate = authored_privacy_gate(
+        "<html><body></body></html>", RESUME_I, RESUME_I, labels={"EXPERIENCE"}
+    )
+    assert gate["excluded_labels"] == ["experience"]
+
+
+def test_owner_package_label_listing_matches_the_catalog() -> None:
+    catalog = e._presentation_label_catalog(
+        {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
+    )
+    listing = e._presentation_label_listing(
+        catalog, {"a": ["label.section.p1.top221.5"], "b": []}
+    )
+    assert listing["schema_version"] == "e5-presentation-labels/1"
+    assert listing["labels"] == [
+        {
+            "label_id": "label.section.p1.top221.5",
+            "text": "EXPERIENCE",
+            "kind": "section_heading",
+            "evidence_ids": ["local_pdf.sidebar_label.p1.top221.5"],
+            "referenced_by_lanes": ["a"],
+        }
+    ]
+    assert "NOT an acceptance" in listing["note"]
+    assert e._presentation_label_listing([], {"a": [], "b": []})["labels"] == []
 
 
 # --- E5 third correctness round: ledger as the single open/closed source,
