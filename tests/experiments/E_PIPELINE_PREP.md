@@ -1392,3 +1392,50 @@ repairable fingerprints are repeats, the lane records
 `stalled_no_new_action` and stops instead of repeating Reviewer/Attribution or
 calling Builder again. This is a normal `budget_exhausted`/resumable outcome,
 never `unsupported`.
+
+# E5 fourth correctness round (2026-09-22, owner-authorized work order:
+# presentation-label approval bound to target and catalog identity)
+
+The 2026-09-21 mechanism above had three defects: it hardcoded the nine
+Resume-I title texts into generic run code
+(`OWNER_APPROVED_PRESENTATION_LABEL_TEXTS`), matched approval by label TEXT
+globally, and therefore let the same wording in ANOTHER target inherit the
+old target's approval. The owner approved the MECHANISM only — never those
+nine concrete labels in this work order — so the constant was a fabricated
+"owner already approved" claim. Replaced by the smallest identity-bound
+input, with no new service/registry/CLI framework:
+
+- **Proposed catalog stays evidence-only**: `_presentation_label_catalog`
+  now marks EVERY measured entry `proposed`, always. The shell never
+  approves anything by itself.
+- **Typed approval input** `PresentationLabelApproval` (`EvidenceModel`,
+  `extra="forbid"`): `target_sha256`, `catalog_sha256`,
+  `approved_label_ids` (non-empty, unique, pattern-validated hex sha256).
+  No text/kind/evidence field exists on the model, so approval cannot
+  submit or override label content.
+- **Catalog identity** `presentation_label_catalog_sha256`: canonical JSON
+  (labels sorted by `label_id`, object keys sorted, UTF-8, SHA-256) over
+  label_id / text / kind / evidence_ids. `status` is EXCLUDED (status comes
+  from approval, not evidence). Any text/kind/evidence change invalidates
+  every previously issued approval.
+- **Validation** `_apply_presentation_label_approval`: `approval=None`
+  (the `run_e5` default) means ZERO approved labels. Otherwise
+  `target_sha256` must equal the run's exact target PDF hash and
+  `catalog_sha256` must equal the proposed catalog's identity hash; unknown
+  ids fail closed. The approved view is a projection of catalog entries
+  (content copied from the catalog); the catalog itself stays proposed.
+- **Same flow as before downstream**: Builder evidence, authored-template
+  validation, fill, and the ONE common `authored_privacy_gate` for both
+  lanes receive ONLY the approved view; proposed labels never render and
+  are never privacy-excluded (exact-set symmetry kept; Lane A's
+  plan-derived gate remains diagnostic-only).
+- **Owner package**: `presentation_labels.json` and `REPORT.md` now also
+  record `target_sha256`, `catalog_sha256`, `approval_provided`,
+  `approval_validated`, `approved_label_ids`, `proposed_label_ids` per
+  label's text/kind/evidence/status. Without an approval the package shows
+  every label `proposed` and zero approved ids — no "owner-approved"
+  wording is produced.
+- **No approval artifact exists yet**: the owner has NOT approved any
+  concrete label id in this work order. The next live E5 run therefore
+  still needs an explicit `PresentationLabelApproval` (passed as the
+  `presentation_label_approval` run_e5 parameter; no CLI flag was added).

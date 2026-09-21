@@ -2431,7 +2431,14 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
         assert entry["evidence_ids"]
         assert set(entry["referenced_by_lanes"]) <= {"a", "b"}
         assert f"`{entry['label_id']}`" in package_report
-    assert listing["approved_label_ids"], "Resume-I labels are owner-approved"
+    # default: NO approval was supplied to run_e5, so the owner package shows
+    # the full proposed catalog and ZERO approved ids — never an inferred
+    # "owner-approved" claim
+    assert listing["approved_label_ids"] == []
+    assert listing["proposed_label_ids"] == [entry["label_id"] for entry in listing["labels"]]
+    assert listing["approval_provided"] is False and listing["approval_validated"] is False
+    assert listing["target_sha256"] and listing["catalog_sha256"]
+    assert "owner approval provided: False" in package_report
     # Both lanes ran the COMMON gate with the SAME owner-approved set, so the
     # exclusion sets are identical (an exact set match, not a subset).
     for lane_id, lane in lanes.items():
@@ -3062,7 +3069,7 @@ def test_presentation_labels_come_only_from_measured_evidence() -> None:
             "label.section.p1.top221.5",
             "EXPERIENCE",
             "section_heading",
-            "approved",
+            "proposed",
             ["local_pdf.sidebar_label.p1.top221.5"],
         )
     ]
@@ -3091,8 +3098,9 @@ def test_presentation_labels_come_only_from_measured_evidence() -> None:
 
 def test_measurement_alone_never_approves_a_label() -> None:
     """P0: measurement proves provenance, NOT that a short sidebar line is a
-    presentation label rather than a person fact. An unapproved entry must
-    stay non-renderable and must not enter any privacy exclusion set."""
+    presentation label rather than a person fact. The catalog is purely
+    evidence-derived: EVERY entry stays `proposed`, and only a typed owner
+    approval (target-bound) can flip ids into the approved view."""
     from tests.experiments.c2_candidates import candidate_resume_E
 
     catalog = e._presentation_label_catalog(
@@ -3105,24 +3113,21 @@ def test_measurement_alone_never_approves_a_label() -> None:
             ]
         }
     )
-    assert [label.status for label in catalog] == [
-        "proposed",
-        "proposed",
-        "proposed",
-        "approved",
-    ]
-    approved = e._approved_presentation_labels(catalog)
-    assert [label.text for label in approved] == ["EXPERIENCE"]
+    assert [label.status for label in catalog] == ["proposed"] * 4
+    # no approval -> zero approved labels: nothing renderable, nothing
+    # privacy-excluded
+    approved = e._approved_presentation_labels(
+        e._apply_presentation_label_approval(catalog, None, target_sha256="a" * 64)
+    )
+    assert approved == []
     # every proposed entry is non-renderable: its id is not issued to the
     # template boundary, so a marker for it fails closed
     for label in catalog:
-        if label.status == "approved":
-            continue
         with pytest.raises(ValueError, match="unknown presentation label marker"):
             at.validate_authored_template(
                 _minimal_template(f"{{{{label:{label.label_id}}}}}"),
                 target_pdf=RESUME_I,
-                labels=approved,
+                labels=[],
             )
         # ... and the boundary refuses a proposed entry outright
         with pytest.raises(ValueError, match="not owner-approved"):
@@ -3134,6 +3139,188 @@ def test_measurement_alone_never_approves_a_label() -> None:
     # an unapproved label text is never in the privacy exclusion set
     approved_texts = {label.text for label in approved}
     assert "JOHN SMITH" not in approved_texts and "MIT" not in approved_texts
+
+
+def _catalog_one() -> list[e.PresentationLabel]:
+    return e._presentation_label_catalog(
+        {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
+    )
+
+
+def _approval_for(
+    catalog: list[e.PresentationLabel],
+    ids: list[str],
+    *,
+    target_sha256: str = "a" * 64,
+    catalog_sha256: str | None = None,
+) -> e.PresentationLabelApproval:
+    return e.PresentationLabelApproval(
+        target_sha256=target_sha256,
+        catalog_sha256=catalog_sha256
+        if catalog_sha256 is not None
+        else e.presentation_label_catalog_sha256(catalog),
+        approved_label_ids=ids,
+    )
+
+
+def test_valid_approval_projects_only_the_approved_ids() -> None:
+    catalog = _catalog_one()
+    approved = e._apply_presentation_label_approval(
+        catalog,
+        _approval_for(catalog, ["label.section.p1.top221.5"]),
+        target_sha256="a" * 64,
+    )
+    assert [label.label_id for label in approved] == ["label.section.p1.top221.5"]
+    assert [label.status for label in approved] == ["approved"]
+    # approval cannot submit or rewrite content: the view copies the catalog
+    source = catalog[0]
+    view = approved[0]
+    assert (view.text, view.kind, view.evidence_ids) == (
+        source.text,
+        source.kind,
+        source.evidence_ids,
+    )
+    # the PROPOSED catalog itself is never mutated by an approval
+    assert [label.status for label in catalog] == ["proposed"]
+    # partial approval: only the listed ids enter the view
+    two = e._presentation_label_catalog(
+        {
+            "sidebar_labels": [
+                {"page": 1, "top": 221.5, "text": "EXPERIENCE"},
+                {"page": 1, "top": 309.9, "text": "EDUCATION"},
+            ]
+        }
+    )
+    approved = e._apply_presentation_label_approval(
+        two,
+        _approval_for(two, ["label.section.p1.top309.9"]),
+        target_sha256="a" * 64,
+    )
+    assert [label.label_id for label in approved] == ["label.section.p1.top309.9"]
+
+
+def test_approval_fails_closed_on_identity_mismatch() -> None:
+    from pydantic import ValidationError
+
+    catalog = _catalog_one()
+    # wrong target sha
+    with pytest.raises(ValueError, match="target_sha256 does not match"):
+        e._apply_presentation_label_approval(
+            catalog,
+            _approval_for(catalog, ["label.section.p1.top221.5"], target_sha256="b" * 64),
+            target_sha256="a" * 64,
+        )
+    # wrong catalog sha (any content change invalidates the old approval)
+    with pytest.raises(ValueError, match="catalog_sha256 does not match"):
+        e._apply_presentation_label_approval(
+            catalog,
+            _approval_for(catalog, ["label.section.p1.top221.5"], catalog_sha256="c" * 64),
+            target_sha256="a" * 64,
+        )
+    # unknown label id
+    with pytest.raises(ValueError, match="unknown label ids"):
+        e._apply_presentation_label_approval(
+            catalog,
+            _approval_for(catalog, ["label.section.p9.top999.0"]),
+            target_sha256="a" * 64,
+        )
+    # empty and duplicate ids are rejected at the model boundary
+    with pytest.raises(ValueError, match="at least one label id"):
+        _approval_for(catalog, [])
+    with pytest.raises(ValueError, match="must be unique"):
+        _approval_for(catalog, ["label.section.p1.top221.5", "label.section.p1.top221.5"])
+    with pytest.raises(ValueError, match="must be non-empty"):
+        _approval_for(catalog, [" "])
+    # sha256 shape is enforced
+    with pytest.raises(ValidationError):
+        e.PresentationLabelApproval(
+            target_sha256="not-a-hash",
+            catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+            approved_label_ids=["label.section.p1.top221.5"],
+        )
+    # the approval model carries NO content fields (extra="forbid")
+    with pytest.raises(ValidationError):
+        e.PresentationLabelApproval(
+            target_sha256="a" * 64,
+            catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+            approved_label_ids=["label.section.p1.top221.5"],
+            text="INVENTED",  # type: ignore[call-arg]
+        )
+
+
+def test_same_text_in_another_target_does_not_inherit_approval() -> None:
+    # target A: EXPERIENCE measured at page 1; owner approves it THERE
+    catalog_a = _catalog_one()
+    approval = _approval_for(
+        catalog_a, ["label.section.p1.top221.5"], target_sha256="a" * 64
+    )
+    assert e._apply_presentation_label_approval(
+        catalog_a, approval, target_sha256="a" * 64
+    )
+    # target B measures the SAME wording at the SAME geometry: identical label
+    # id and identical catalog content hash — but the TARGET differs, so the
+    # approval must NOT carry over (the binding is the target, not the words)
+    catalog_b = e._presentation_label_catalog(
+        {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
+    )
+    assert e.presentation_label_catalog_sha256(catalog_b) == e.presentation_label_catalog_sha256(catalog_a)
+    with pytest.raises(ValueError, match="target_sha256 does not match"):
+        e._apply_presentation_label_approval(
+            catalog_b, approval, target_sha256="b" * 64
+        )
+    # different target, different measured geometry: catalog identity differs too
+    catalog_c = e._presentation_label_catalog(
+        {"sidebar_labels": [{"page": 2, "top": 199.0, "text": "EXPERIENCE"}]}
+    )
+    with pytest.raises(ValueError, match="target_sha256 does not match"):
+        e._apply_presentation_label_approval(
+            catalog_c, approval, target_sha256="b" * 64
+        )
+
+
+def test_catalog_content_change_invalidates_old_approval() -> None:
+    catalog = _catalog_one()
+    approval = _approval_for(catalog, ["label.section.p1.top221.5"])
+    assert e._apply_presentation_label_approval(catalog, approval, target_sha256="a" * 64)
+    # a text change changes the catalog identity -> the SAME approval fails
+    # (note: whitespace-only changes are normalized away by the model, so a
+    # REAL wording change is what invalidates approval)
+    changed_text = e._presentation_label_catalog(
+        {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EMPLOYMENT"}]}
+    )
+    assert e.presentation_label_catalog_sha256(changed_text) != approval.catalog_sha256
+    with pytest.raises(ValueError, match="catalog_sha256 does not match"):
+        e._apply_presentation_label_approval(changed_text, approval, target_sha256="a" * 64)
+    # an evidence change does the same (evidence_ids are part of the identity)
+    changed_evidence = [
+        label.model_copy(update={"evidence_ids": ["local_pdf.other"]}) for label in catalog
+    ]
+    assert e.presentation_label_catalog_sha256(changed_evidence) != approval.catalog_sha256
+    with pytest.raises(ValueError, match="catalog_sha256 does not match"):
+        e._apply_presentation_label_approval(changed_evidence, approval, target_sha256="a" * 64)
+
+
+def test_catalog_hash_is_deterministic_and_excludes_status() -> None:
+    catalog = _catalog_one()
+    flip = [label.model_copy(update={"status": "approved"}) for label in catalog]
+    # status is approval state, not evidence: it is NOT part of the identity
+    assert e.presentation_label_catalog_sha256(catalog) == e.presentation_label_catalog_sha256(flip)
+    assert e.presentation_label_catalog_sha256(catalog) == e.presentation_label_catalog_sha256(
+        list(reversed(catalog))
+    )
+
+
+def test_source_has_no_hardcoded_resume_i_approval_list() -> None:
+    """The nine Resume-I titles must NOT exist as an owner-approval constant:
+    approval is an owner input, never a source-code constant."""
+    source = Path(e.__file__).read_text(encoding="utf-8")
+    assert "OWNER_APPROVED_PRESENTATION_LABEL_TEXTS" not in source
+    assert "_owner_approved_label_text" not in source
+    for title in (
+        "CONTACT INFO", "ABOUT ME", "ACHIEVEMENTS",
+        "PUBLICATIONS", "CONFERENCES", "REFERENCES",
+    ):
+        assert title not in source, f"hardcoded Resume-I approval text: {title!r}"
 
 
 def test_presentation_label_text_is_escaped_and_never_reparsed() -> None:
@@ -3201,7 +3388,14 @@ def test_lane_gates_share_one_shell_owned_label_catalog() -> None:
     catalog = e._presentation_label_catalog(
         {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
     )
-    approved = e._approved_presentation_labels(catalog)
+    approval = e.PresentationLabelApproval(
+        target_sha256="a" * 64,
+        catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+        approved_label_ids=["label.section.p1.top221.5"],
+    )
+    approved = e._apply_presentation_label_approval(
+        catalog, approval, target_sha256="a" * 64
+    )
     # both lanes run the common gate with the approved set -> exact equality
     lane_a = e._e5_label_semantics({"excluded_labels": ["experience"]}, approved)
     lane_b = e._e5_label_semantics({"excluded_labels": ["EXPERIENCE"]}, approved)
@@ -3217,9 +3411,16 @@ def test_lane_gates_share_one_shell_owned_label_catalog() -> None:
             ]
         }
     )
-    subset = e._e5_label_semantics(
-        {"excluded_labels": ["experience"]}, e._approved_presentation_labels(two)
+    two_approved = e._apply_presentation_label_approval(
+        two,
+        e.PresentationLabelApproval(
+            target_sha256="a" * 64,
+            catalog_sha256=e.presentation_label_catalog_sha256(two),
+            approved_label_ids=["label.section.p1.top221.5", "label.section.p1.top309.9"],
+        ),
+        target_sha256="a" * 64,
     )
+    subset = e._e5_label_semantics({"excluded_labels": ["experience"]}, two_approved)
     assert subset["symmetric"] is False
     assert subset["approved_texts_never_excluded"] == ["education"]
     # the old Lane B probe asymmetry (empty labels) and a hand-built set both
@@ -3248,9 +3449,39 @@ def test_owner_package_label_listing_matches_the_catalog() -> None:
         }
     )
     listing = e._presentation_label_listing(
-        catalog, {"a": ["label.section.p1.top221.5"], "b": []}
+        catalog,
+        {"a": ["label.section.p1.top221.5"], "b": []},
+        target_sha256="a" * 64,
+        catalog_sha256=e.presentation_label_catalog_sha256(catalog),
     )
+    # no approval input -> EVERYTHING is proposed, zero approved ids
     assert listing["schema_version"] == "e5-presentation-labels/1"
+    assert listing["target_sha256"] == "a" * 64
+    assert listing["catalog_sha256"] == e.presentation_label_catalog_sha256(catalog)
+    assert listing["approval_provided"] is None
+    assert listing["approved_label_ids"] == []
+    assert listing["proposed_label_ids"] == ["label.section.p1.top221.5", "label.section.p1.top309.9"]
+    assert [(entry["label_id"], entry["status"]) for entry in listing["labels"]] == [
+        ("label.section.p1.top221.5", "proposed"),
+        ("label.section.p1.top309.9", "proposed"),
+    ]
+    assert listing["labels"][0]["text"] == "EXPERIENCE"
+    assert listing["labels"][0]["evidence_ids"] == ["local_pdf.sidebar_label.p1.top221.5"]
+    assert listing["labels"][0]["referenced_by_lanes"] == ["a"]
+    assert "NOT an acceptance" in listing["note"]
+    assert "NOT renderable" in listing["note"]
+    assert "target_sha256" in listing["note"]
+    # with a VALIDATED owner approval the listing distinguishes approved from
+    # proposed; content still comes from the catalog
+    listing = e._presentation_label_listing(
+        catalog,
+        {"a": ["label.section.p1.top221.5"], "b": []},
+        ["label.section.p1.top221.5"],
+        target_sha256="a" * 64,
+        catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+        approval_provided=True,
+        approval_validated=True,
+    )
     assert listing["approved_label_ids"] == ["label.section.p1.top221.5"]
     assert listing["proposed_label_ids"] == ["label.section.p1.top309.9"]
     assert listing["labels"] == [
@@ -3271,8 +3502,6 @@ def test_owner_package_label_listing_matches_the_catalog() -> None:
             "referenced_by_lanes": [],
         },
     ]
-    assert "NOT an acceptance" in listing["note"]
-    assert "NOT renderable" in listing["note"]
     assert e._presentation_label_listing([], {"a": [], "b": []})["labels"] == []
 
 

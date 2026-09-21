@@ -6760,29 +6760,6 @@ class E5LoopRecord(EvidenceModel):
 
 PRESENTATION_LABEL_KINDS = ("section_heading",)
 
-# OWNER DECISION 2026-09-21 (explicit one-off approval): the presentation
-# labels the owner approved for RENDERING and for PRIVACY EXCLUSION.
-#
-# A measured sidebar short line is only a PROPOSAL. Geometry proves where the
-# text came from, never that it is a presentation label rather than a name,
-# school, employer, or job title — so `_presentation_label_catalog` marks
-# every entry `proposed` by default and flips it to `approved` ONLY when its
-# normalized text is listed here. Unapproved entries stay non-renderable
-# (their ids are not issued to the template boundary) and are NOT excluded
-# from the privacy gate, so rendering one fails closed as a leak. Any new or
-# changed label text needs a NEW explicit owner approval.
-OWNER_APPROVED_PRESENTATION_LABEL_TEXTS: tuple[str, ...] = (
-    "CONTACT INFO",
-    "ABOUT ME",
-    "EXPERIENCE",
-    "EDUCATION",
-    "ACHIEVEMENTS",
-    "PUBLICATIONS",
-    "CONFERENCES",
-    "SKILLS",
-    "REFERENCES",
-)
-
 
 class PresentationLabel(EvidenceModel):
     """One shell-PROPOSED presentation label (owner decision 2026-09-21):
@@ -6809,23 +6786,17 @@ class PresentationLabel(EvidenceModel):
         return self
 
 
-def _owner_approved_label_text(text: str) -> bool:
-    """Explicit owner approval lookup (normalized). Geometry NEVER approves."""
-    from tests.experiments.c2_renderer import _norm
-
-    return _norm(text) in {
-        _norm(item) for item in OWNER_APPROVED_PRESENTATION_LABEL_TEXTS
-    }
-
-
 def _presentation_label_catalog(derived: dict[str, Any]) -> list[PresentationLabel]:
     """PROPOSE presentation labels from the measured sidebar-label evidence
     that already feeds the StructureDraft and both lanes' evidence package.
 
-    Every entry is `proposed` unless its text carries an EXPLICIT owner
-    approval (see OWNER_APPROVED_PRESENTATION_LABEL_TEXTS). Measurement only
-    establishes provenance, not label-vs-person-fact classification, so an
-    unapproved entry must never become renderable or privacy-excluded.
+    Every entry is `proposed` and stays proposed: the catalog is purely
+    evidence-derived and NEVER approves anything by itself. Approval is an
+    owner INPUT (`PresentationLabelApproval`) bound to this exact target and
+    this exact catalog identity — not a property the shell can infer from
+    text, file name, or hash. Measurement only establishes provenance, not
+    label-vs-person-fact classification, so an unapproved entry must never
+    become renderable or privacy-excluded.
 
     Deliberately minimal: ``section_heading`` is the only label type with
     reliable target structure evidence today. Contact ``field_label`` entries
@@ -6850,20 +6821,101 @@ def _presentation_label_catalog(derived: dict[str, Any]) -> list[PresentationLab
                 label_id=label_id,
                 text=text,
                 kind="section_heading",
-                status=(
-                    "approved" if _owner_approved_label_text(text) else "proposed"
-                ),
                 evidence_ids=[f"local_pdf.sidebar_label.p{page}.top{top:.1f}"],
             )
         )
     return catalog
 
 
+class PresentationLabelApproval(EvidenceModel):
+    """OWNER APPROVAL INPUT for ONE proposed presentation-label catalog of
+    ONE target (owner-approved mechanism 2026-09-22; the owner has NOT yet
+    approved any concrete label). Approval is identity-bound, never inferred:
+
+    - ``target_sha256`` must equal the SHA-256 of the run's exact target PDF;
+    - ``catalog_sha256`` must equal the canonical identity hash of the
+      evidence-derived proposed catalog (label_id/text/kind/evidence_ids);
+    - ``approved_label_ids`` must be non-empty, unique, and every id must
+      exist in that proposed catalog.
+
+    The model carries NO text, kind, or evidence: approval can never submit
+    or override label content. The same wording in another target yields a
+    different target/catalog identity, so approval cannot be inherited."""
+
+    target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    catalog_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    approved_label_ids: list[str]
+
+    @model_validator(mode="after")
+    def ids_nonempty_and_unique(self) -> "PresentationLabelApproval":
+        if not self.approved_label_ids:
+            raise ValueError("presentation-label approval requires at least one label id")
+        if any(not label_id.strip() for label_id in self.approved_label_ids):
+            raise ValueError("presentation-label approval label ids must be non-empty")
+        if len(set(self.approved_label_ids)) != len(self.approved_label_ids):
+            raise ValueError("presentation-label approval label ids must be unique")
+        return self
+
+
+def presentation_label_catalog_sha256(catalog: list[PresentationLabel]) -> str:
+    """Deterministic identity of the EVIDENCE-DERIVED proposed catalog:
+    canonical JSON (labels sorted by label_id, object keys sorted, UTF-8) over
+    label_id / text / kind / evidence_ids. `status` is deliberately EXCLUDED:
+    status comes from the owner approval, not from the evidence."""
+    payload = [
+        {
+            "label_id": label.label_id,
+            "text": label.text,
+            "kind": label.kind,
+            "evidence_ids": list(label.evidence_ids),
+        }
+        for label in sorted(catalog, key=lambda label: label.label_id)
+    ]
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _apply_presentation_label_approval(
+    catalog: list[PresentationLabel],
+    approval: PresentationLabelApproval | None,
+    *,
+    target_sha256: str,
+) -> list[PresentationLabel]:
+    """Validate an owner approval against THIS run's target and the proposed
+    catalog, and project the approved view (the approved ids' entries with
+    status flipped to `approved`; content is copied from the catalog, never
+    from the approval). ``approval=None`` is the default and means ZERO
+    approved labels. Any identity mismatch (target, catalog, or label id)
+    fails closed."""
+    if approval is None:
+        return []
+    if approval.target_sha256 != target_sha256:
+        raise ValueError(
+            "presentation-label approval target_sha256 does not match the current target"
+        )
+    if approval.catalog_sha256 != presentation_label_catalog_sha256(catalog):
+        raise ValueError(
+            "presentation-label approval catalog_sha256 does not match the current proposed catalog"
+        )
+    known = {label.label_id: label for label in catalog}
+    unknown = [label_id for label_id in approval.approved_label_ids if label_id not in known]
+    if unknown:
+        raise ValueError(
+            f"presentation-label approval references unknown label ids: {unknown}"
+        )
+    return [
+        known[label_id].model_copy(update={"status": "approved"})
+        for label_id in approval.approved_label_ids
+    ]
+
+
 def _approved_presentation_labels(
     catalog: list[PresentationLabel],
 ) -> list[PresentationLabel]:
-    """The ONLY renderable labels: owner-approved entries. A proposed entry is
-    deliberately excluded (non-renderable, and not privacy-excluded)."""
+    """The ONLY renderable labels: the approved view of a validated approval.
+    A proposed entry is deliberately excluded (non-renderable, and not
+    privacy-excluded)."""
     return [label for label in catalog if label.status == "approved"]
 
 
@@ -6888,33 +6940,50 @@ def _e5_label_semantics(
 
 
 def _presentation_label_listing(
-    catalog: list[PresentationLabel], lane_references: dict[str, list[str]]
+    catalog: list[PresentationLabel],
+    lane_references: dict[str, list[str]],
+    approved_label_ids: list[str] | None = None,
+    *,
+    target_sha256: str | None = None,
+    catalog_sha256: str | None = None,
+    approval_provided: bool | None = None,
+    approval_validated: bool | None = None,
 ) -> dict[str, Any]:
     """The owner-visible label listing (label_id / text / kind / status /
-    evidence / which lanes referenced it). `proposed` entries are listed for
-    review but are NOT renderable. Audit material only — it does NOT mean the
-    owner accepted T-v1."""
+    evidence / which lanes referenced it). Status comes from the owner-supplied
+    ``approved_label_ids`` (the validated approved view); shell catalog entries
+    are always proposed. `proposed` entries are listed for review but are NOT
+    renderable. Audit material only — it does NOT mean the owner accepted
+    T-v1."""
+    approved: set[str] = set(approved_label_ids or [])
     return {
         "schema_version": "e5-presentation-labels/1",
         "note": (
             "shell-proposed presentation labels taken from target evidence. Only "
-            "owner-approved entries are renderable and privacy-excluded; proposed "
-            "entries await explicit owner approval and are NOT renderable. Audit "
-            "material only: this is NOT an acceptance of T-v1 and no lane is "
-            "declared a winner."
+            "owner-approved entries (a typed approval bound to target_sha256 + "
+            "catalog_sha256 + label ids) are renderable and privacy-excluded; "
+            "proposed entries await explicit owner approval and are NOT "
+            "renderable. Audit material only: this is NOT an acceptance of T-v1 "
+            "and no lane is declared a winner."
         ),
+        "target_sha256": target_sha256,
+        "catalog_sha256": catalog_sha256,
+        "approval_provided": approval_provided,
+        "approval_validated": approval_validated,
         "approved_label_ids": [
-            label.label_id for label in catalog if label.status == "approved"
+            label.label_id for label in catalog if label.label_id in approved
         ],
         "proposed_label_ids": [
-            label.label_id for label in catalog if label.status == "proposed"
+            label.label_id for label in catalog if label.label_id not in approved
         ],
         "labels": [
             {
                 "label_id": label.label_id,
                 "text": label.text,
                 "kind": label.kind,
-                "status": label.status,
+                "status": (
+                    "approved" if label.label_id in approved else label.status
+                ),
                 "evidence_ids": label.evidence_ids,
                 "referenced_by_lanes": sorted(
                     lane_id
@@ -8052,6 +8121,7 @@ def run_e5(
     max_repair_rounds: int = E5_MAX_REPAIR_ROUNDS,
     budget: RunBudget | None = None,
     pricing: dict[str, Any] | None = None,
+    presentation_label_approval: PresentationLabelApproval | None = None,
 ) -> tuple[Path, str, dict[str, Any]]:
     """E5: controlled comparison of TWO Builder representations on Resume I
     (Phase 0 loop fixes + Lane A structured layout + Lane B authored
@@ -8088,6 +8158,7 @@ def run_e5(
     target_pdf = target_pdf.resolve()
     if not target_pdf.exists():
         raise RuntimeError(f"target PDF not found: {target_pdf}")
+    target_sha256 = _sha256_file(target_pdf)
     out_dir = out_dir or RUNS / datetime.now(UTC).strftime("e_pipeline_e5_%Y%m%dT%H%M%SZ")
     out_dir.mkdir(parents=True, exist_ok=False)
     budget = budget or RunBudget(
@@ -8106,7 +8177,7 @@ def run_e5(
         return out_dir, "operational_abort", record.model_dump(mode="json")
 
     # -- 1. FREEZE shared inputs ------------------------------------------
-    target_cache_dir = RUNS / "target_cache" / _sha256_file(target_pdf)
+    target_cache_dir = RUNS / "target_cache" / target_sha256
     raw_path = target_cache_dir / "adobe_raw.json"
     normalized_path = target_cache_dir / "enriched_evidence.json"
     if not raw_path.exists() or not normalized_path.exists():
@@ -8150,12 +8221,25 @@ def run_e5(
         label_catalog = _presentation_label_catalog(derived)
     except Exception as error:
         return abort("presentation_label_catalog", error)
+    catalog_sha256 = presentation_label_catalog_sha256(label_catalog)
+    # Approval is an owner INPUT, never an inference: the proposed catalog
+    # stays all-proposed unless the owner supplied a typed approval bound to
+    # THIS target's sha256 and THIS catalog's canonical identity. Without it
+    # (the default), NOTHING is renderable and nothing is privacy-excluded.
+    try:
+        approved_label_catalog = _apply_presentation_label_approval(
+            label_catalog,
+            presentation_label_approval,
+            target_sha256=target_sha256,
+        )
+    except Exception as error:
+        return abort("presentation_label_approval", error)
+    approval_provided = presentation_label_approval is not None
     # Only owner-approved entries are renderable and privacy-excluded. The
     # proposed remainder stays visible in the owner listing but can never be
     # rendered: its ids are never issued to the template boundary, and its
     # text is never excluded from the privacy gate (so rendering it fails
     # closed as a leak instead of being silently tolerated).
-    approved_label_catalog = _approved_presentation_labels(label_catalog)
     approved_label_texts = {label.text for label in approved_label_catalog}
     (out_dir / "c2_layout_state.json").write_bytes(state_bytes(state))
     _headings_scaffold, body_scaffold = compile_two_column_state_for_scaffold(target_pdf, summary)
@@ -9487,6 +9571,19 @@ def run_e5(
             "lanes": {lane: r.terminal_state for lane, r in lane_records.items()},
             "source_changed": source_changed,
             "source_identity_stable": not source_changed,
+            "presentation_label_approval": {
+                "target_sha256": target_sha256,
+                "catalog_sha256": catalog_sha256,
+                "approval_provided": approval_provided,
+                "approval_validated": approval_provided,
+                "approved_label_ids": [
+                    label.label_id for label in approved_label_catalog
+                ],
+                "proposed_label_ids": [
+                    label.label_id for label in label_catalog
+                    if label.label_id not in {a.label_id for a in approved_label_catalog}
+                ],
+            },
         },
     )
     (out_dir / "e5_state.json").write_text(
@@ -9498,7 +9595,19 @@ def run_e5(
     )
     _write_e5_comparison(out_dir, loop_record, config)
     try:
-        _write_e5_owner_package(out_dir, target_pdf, loop_record, label_catalog)
+        _write_e5_owner_package(
+            out_dir,
+            target_pdf,
+            loop_record,
+            label_catalog,
+            approved_label_ids=[label.label_id for label in approved_label_catalog],
+            target_sha256=target_sha256,
+            catalog_sha256=catalog_sha256,
+            # an invalid approval aborts before the package exists, so any
+            # package that reached this point validated a provided approval
+            approval_provided=approval_provided,
+            approval_validated=approval_provided,
+        )
     except Exception as error:
         (out_dir / "owner_package_failed.txt").write_text(str(error), encoding="utf-8")
     return out_dir, overall_terminal, loop_record.model_dump(mode="json")
@@ -9743,6 +9852,12 @@ def _write_e5_owner_package(
     target_pdf: Path,
     record: E5LoopRecord,
     presentation_labels: list[PresentationLabel] | None = None,
+    *,
+    approved_label_ids: list[str] | None = None,
+    target_sha256: str | None = None,
+    catalog_sha256: str | None = None,
+    approval_provided: bool | None = None,
+    approval_validated: bool | None = None,
 ) -> Path:
     """The safe owner-review package (E5 work order): Resume I target, the E4
     best-render baseline, and each lane's best render side by side per page,
@@ -9865,6 +9980,11 @@ def _write_e5_owner_package(
             lane_id: list((lane.summary or {}).get("presentation_labels_referenced") or [])
             for lane_id, lane in record.lanes.items()
         },
+        approved_label_ids,
+        target_sha256=target_sha256,
+        catalog_sha256=catalog_sha256,
+        approval_provided=approval_provided,
+        approval_validated=approval_validated,
     )
     (out_dir / "presentation_labels.json").write_text(
         json.dumps(label_listing, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -9920,13 +10040,20 @@ def _write_e5_owner_package(
 ## Presentation labels (owner-approved vs proposed; audit material)
 
 Fixed visible template text may only enter through an OWNER-APPROVED label id.
-The Builder references an id; the shell owns the text. Measurement only
-PROPOSES an entry — it never approves one, because provenance does not prove
-that a short target line is a presentation label rather than a name, school,
-employer, or job title. `proposed` entries are listed for review but are NOT
-renderable and are NOT excluded from the privacy gate. Target-person facts,
-contact data, dates, employers, schools, roles, and any text that is not
-classified presentation structure are NOT approved.
+Approval is a typed owner INPUT bound to the exact target (`target_sha256`),
+the exact proposed catalog identity (`catalog_sha256`), and explicit label
+ids — it is never inferred from label text, so the same wording in another
+target is NOT approved. The Builder references an id; the shell owns the text.
+Measurement only PROPOSES an entry — it never approves one, because provenance
+does not prove that a short target line is a presentation label rather than a
+name, school, employer, or job title. `proposed` entries are listed for review
+but are NOT renderable and are NOT excluded from the privacy gate.
+Target-person facts, contact data, dates, employers, schools, roles, and any
+text that is not classified presentation structure are NOT approved.
+
+- target_sha256: `{target_sha256}`
+- catalog_sha256 (proposed-catalog identity): `{catalog_sha256}`
+- owner approval provided: {approval_provided} · validated: {approval_validated}
 
 Approved: {approved_count} · proposed (awaiting
 owner approval): {proposed_count}
