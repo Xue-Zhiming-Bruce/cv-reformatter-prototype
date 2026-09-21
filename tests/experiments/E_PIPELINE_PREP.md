@@ -748,7 +748,11 @@ HTML + Chrome PDF is the only render surface.
    changed regions and instructs focused review + ONE bounded global sweep
    (round 1: whole document). Offline rehearsals keep the scripted path.
 5. **Batched attribution** (`_live_attribution_batch`): one bounded call per
-   region group, at most 3 findings per call, ordered hypotheses; the
+   region group, at most 3 findings per call. Every hypothesis carries the
+   `finding_id` it explains and `_bind_live_attribution_batch` binds it BY
+   IDENTITY (list order is irrelevant); an empty/missing/duplicate/foreign
+   finding_id, or a batch finding with no hypothesis, rejects the whole batch
+   and the findings fall through to the deterministic attribution. The
    deterministic measurement stays the objective record. Live attribution only
    runs when the lane budget covers the Builder reserve.
 6. **Builder budget reservation**: live attribution is skipped while the lane

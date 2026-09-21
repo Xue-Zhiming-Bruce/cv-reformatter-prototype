@@ -1634,6 +1634,181 @@ def test_only_current_confirmed_builder_attribution_selects_builder() -> None:
     assert selected is not None and selected[3] is current
 
 
+def _live_hypothesis(
+    finding_id: str,
+    *,
+    attribution: str = "template_compilation",
+    status: str = "confirmed",
+    owner: str = "builder",
+) -> e.LiveAttributionHypothesis:
+    return e.LiveAttributionHypothesis(
+        finding_id=finding_id,
+        attribution=attribution,
+        hypothesis_status=status,
+        repair_owner=owner,
+        reason="test hypothesis",
+        evidence_ids=["ev-1"],
+    )
+
+
+def test_live_attribution_binds_by_finding_id_not_position() -> None:
+    first = _e5_finding("f1", "experience", "gap")
+    second = _e5_finding("f2", "header", "gap")
+    bound = e._bind_live_attribution_batch(
+        [first, second],
+        [
+            _live_hypothesis("f2", attribution="renderer", owner="renderer"),
+            _live_hypothesis("f1"),
+        ],
+    )
+    assert [(finding.finding_id, hypothesis.finding_id) for finding, hypothesis in bound] == [
+        ("f1", "f1"),
+        ("f2", "f2"),
+    ]
+    assert bound[0][1].repair_owner == "builder"
+    assert bound[1][1].repair_owner == "renderer"
+
+
+def test_live_attribution_missing_finding_fails_closed() -> None:
+    first = _e5_finding("f1", "experience", "gap")
+    second = _e5_finding("f2", "header", "gap")
+    with pytest.raises(e.LiveAttributionBindingError, match="no hypothesis returned"):
+        e._bind_live_attribution_batch([first, second], [_live_hypothesis("f1")])
+
+
+def test_live_attribution_duplicate_finding_fails_closed() -> None:
+    first = _e5_finding("f1", "experience", "gap")
+    second = _e5_finding("f2", "header", "gap")
+    with pytest.raises(e.LiveAttributionBindingError, match="duplicate hypothesis"):
+        e._bind_live_attribution_batch(
+            [first, second], [_live_hypothesis("f1"), _live_hypothesis("f1")]
+        )
+
+
+def test_live_attribution_foreign_or_empty_id_fails_closed() -> None:
+    first = _e5_finding("f1", "experience", "gap")
+    with pytest.raises(e.LiveAttributionBindingError, match="outside the batch"):
+        e._bind_live_attribution_batch([first], [_live_hypothesis("f9")])
+    with pytest.raises(e.LiveAttributionBindingError, match="without a finding_id"):
+        e._bind_live_attribution_batch([first], [_live_hypothesis("")])
+
+
+@pytest.mark.parametrize(
+    ("attribution", "status"),
+    [
+        ("renderer", "confirmed"),
+        ("candidate_binding", "confirmed"),
+        ("render_plan", "confirmed"),
+        ("measurement_failure", "unresolved"),
+        ("template_compilation", "unresolved"),
+        ("template_compilation", "rejected"),
+    ],
+)
+def test_contradictory_builder_claim_never_reaches_builder(
+    attribution: str, status: str
+) -> None:
+    finding = _e5_finding("f1", "experience", "gap")
+    record = e._e5_live_attribution_record(
+        finding,
+        _live_hypothesis("f1", attribution=attribution, status=status, owner="builder"),
+        "measure-f1",
+    )
+    assert record.repair_owner == "reviewer"
+    assert record.hypothesis_status == "unresolved"
+    assert record.attribution == "unresolved"
+    assert f"attribution={attribution!r}" in record.reason
+    measured = {
+        "f1": (
+            e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
+            finding.requested_measurement,
+        ),
+    }
+    selected, stalled = e._next_e5_repair_finding([finding], measured, [record], [])
+    assert selected is None and stalled is False
+
+
+def test_consistent_builder_claim_is_recorded_and_selects_builder() -> None:
+    finding = _e5_finding("f1", "experience", "gap")
+    record = e._e5_live_attribution_record(finding, _live_hypothesis("f1"), "measure-f1")
+    assert (record.attribution, record.hypothesis_status, record.repair_owner) == (
+        "template_compilation",
+        "confirmed",
+        "builder",
+    )
+    assert record.finding_id == finding.finding_id
+    assert record.render_version == finding.render_version
+    assert record.measurement_request_id == "measure-f1"
+    assert record.evidence == ["measure-f1", "ev-1"]
+    measured = {
+        "f1": (
+            e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
+            finding.requested_measurement,
+        ),
+    }
+    selected, stalled = e._next_e5_repair_finding([finding], measured, [record], [])
+    assert stalled is False
+    assert selected is not None and selected[3] is record
+
+
+def test_old_measurement_attribution_does_not_satisfy_new_measurement() -> None:
+    finding = _e5_finding("f1", "experience", "gap")
+    measured = {
+        "f1": (
+            e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
+            finding.requested_measurement,
+        ),
+    }
+    stale = e._e5_live_attribution_record(finding, _live_hypothesis("f1"), "measure-old")
+    assert stale.render_version == finding.render_version
+    assert e._e5_findings_needing_fallback_attribution([finding], measured, [stale]) == [
+        finding
+    ]
+    current = e._e5_live_attribution_record(finding, _live_hypothesis("f1"), "measure-f1")
+    assert e._e5_findings_needing_fallback_attribution(
+        [finding], measured, [stale, current]
+    ) == []
+
+
+def test_valid_full_batch_with_reordered_hypotheses_still_enters_the_flow() -> None:
+    first = _e5_finding("f1", "experience", "gap")
+    second = _e5_finding("f2", "header", "gap")
+
+    class State:
+        nodes = []
+
+    measured = {
+        "f1": (
+            e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
+            first.requested_measurement,
+        ),
+        "f2": (
+            e.MeasurementResult(request_id="m2", status="confirmed", delta_pt=4.0),
+            second.requested_measurement,
+        ),
+    }
+    bound = e._bind_live_attribution_batch(
+        [first, second],
+        [
+            _live_hypothesis("f2", attribution="renderer", owner="renderer"),
+            _live_hypothesis("f1"),
+        ],
+    )
+    records = [
+        e._e5_live_attribution_record(
+            finding, hypothesis, measured[finding.finding_id][1].request_id
+        )
+        for finding, hypothesis in bound
+    ]
+    assert e._e5_findings_needing_fallback_attribution(
+        [first, second], measured, records
+    ) == []
+    selected, stalled = e._next_e5_repair_finding(
+        [first, second], measured, records, []
+    )
+    assert stalled is False
+    assert selected is not None and selected[0].finding_id == "f1"
+
+
 def test_gate_classification_does_not_overclaim_representation_or_privacy() -> None:
     lane_a = e._e5_gate_classification(
         "a", {"content_shapes_match_evidence": False}, privacy_labels_symmetric=True

@@ -4653,9 +4653,12 @@ class LiveBuilderRepair(EvidenceModel):
 
 
 class LiveAttributionHypothesis(EvidenceModel):
-    """The live Attribution Investigator's typed hypothesis; the shell binds
-    the exact finding/render/measurement versions and records it."""
+    """The live Attribution Investigator's typed hypothesis. The hypothesis
+    states WHICH finding it explains (``finding_id``); the shell binds the
+    exact finding/render/measurement versions BY IDENTITY, never by list
+    position, validates the builder-ownership semantics, and records it."""
 
+    finding_id: str
     attribution: Literal[
         "target_evidence_missing",
         "target_understanding",
@@ -5585,15 +5588,10 @@ def run_e4(
                     pod, budget, trace, finding=finding, result=result
                 )
                 if hypothesis is not None:
-                    attribution = AttributionRecord(
-                        finding_id=finding.finding_id,
-                        render_version=finding.render_version,
-                        measurement_request_id=request.request_id,
-                        attribution=hypothesis.attribution,
-                        hypothesis_status=hypothesis.hypothesis_status,
-                        repair_owner=hypothesis.repair_owner,
-                        evidence=[result.request_id, *hypothesis.evidence_ids],
-                        reason=hypothesis.reason,
+                    # The same single conversion + ownership validation as the
+                    # E5 batched path (one rule, one place).
+                    attribution = _e5_live_attribution_record(
+                        finding, hypothesis, request.request_id
                     )
                     trace.add(
                         agent="attribution_investigator", phase="attribute", action="live_attribution",
@@ -6557,13 +6555,19 @@ E5_LANE_B_BUILDER_INSTRUCTIONS = (
 
 E5_ATTRIBUTION_INSTRUCTIONS = (
     "You are the independent Attribution Investigator of a resume-layout\n"
-    "experiment. For each finding (IN THE GIVEN ORDER) trace the chain: raw\n"
-    "target evidence -> structure -> template slot -> candidate binding ->\n"
-    "render plan -> DOM/CSS -> actual final PDF object. Return ONE typed\n"
-    "hypothesis PER FINDING, in the SAME order as the findings list. The\n"
+    "experiment. For each finding trace the chain: raw target evidence ->\n"
+    "structure -> template slot -> candidate binding -> render plan ->\n"
+    "DOM/CSS -> actual final PDF object. Return ONE typed hypothesis PER\n"
+    "FINDING and set finding_id to that finding's EXACT id. Order does not\n"
+    "matter because the shell binds by finding_id, but a missing, empty,\n"
+    "duplicated, or foreign finding_id is rejected and adds nothing. The\n"
     "reviewer's proposed_cause is a hypothesis that may be wrong; verify from\n"
     "evidence. You may replace the causal hypothesis but never delete the\n"
-    "observation, and you never promote or repair anything."
+    "observation, and you never promote or repair anything.\n"
+    "Builder ownership is only valid for a confirmed compilation defect: use\n"
+    "attribution='template_compilation' with hypothesis_status='confirmed' and\n"
+    "repair_owner='builder'. Any other repair_owner='builder' claim is\n"
+    "contradictory and is retained as unresolved/reviewer."
 )
 
 
@@ -6971,6 +6975,117 @@ def _e5_default_attribution(
             "round; the finding stays open for re-verification"
         ),
     )
+
+
+class LiveAttributionBindingError(ValueError):
+    """The live attribution batch did not return exactly ONE hypothesis per
+    batch finding id. The shell fails closed: no positional fallback, no
+    guessing, no auto-fill."""
+
+
+def _bind_live_attribution_batch(
+    findings: list[DefectFinding],
+    hypotheses: list[LiveAttributionHypothesis],
+) -> list[tuple[DefectFinding, LiveAttributionHypothesis]]:
+    """Bind each live hypothesis to its finding BY ``finding_id``.
+
+    Fail closed on an empty/missing/duplicate/foreign finding_id, or on a
+    batch finding with no returned hypothesis — a batch whose counts merely
+    look equal is rejected too, because the identity SET must be equal.
+    Reordering the same identity set is valid and changes nothing."""
+    expected = [finding.finding_id for finding in findings]
+    if len(set(expected)) != len(expected):
+        raise LiveAttributionBindingError(f"batch findings carry duplicate ids: {expected}")
+    known = set(expected)
+    by_id: dict[str, LiveAttributionHypothesis] = {}
+    for hypothesis in hypotheses:
+        finding_id = (hypothesis.finding_id or "").strip()
+        if not finding_id:
+            raise LiveAttributionBindingError("hypothesis without a finding_id")
+        if finding_id not in known:
+            raise LiveAttributionBindingError(
+                f"hypothesis for finding id {finding_id!r} outside the batch {expected}"
+            )
+        if finding_id in by_id:
+            raise LiveAttributionBindingError(
+                f"duplicate hypothesis for finding id {finding_id!r}"
+            )
+        by_id[finding_id] = hypothesis
+    unreturned = [finding_id for finding_id in expected if finding_id not in by_id]
+    if unreturned:
+        raise LiveAttributionBindingError(
+            f"no hypothesis returned for finding id(s) {unreturned}"
+        )
+    return [(finding, by_id[finding.finding_id]) for finding in findings]
+
+
+# The ONLY legal builder-owned attribution (observed in the deterministic
+# _e5_default_attribution / run_e4 / run_e5 conversions): the Builder may only
+# change the compilation/plan layer, so builder ownership requires a CONFIRMED
+# template_compilation attribution. Any other triple claiming the Builder would
+# hand a binding/renderer/evidence-owned defect to the Builder.
+BUILDER_OWNED_ATTRIBUTION: tuple[str, str] = ("template_compilation", "confirmed")
+
+
+def _e5_live_attribution_record(
+    finding: DefectFinding,
+    hypothesis: LiveAttributionHypothesis,
+    request_id: str,
+) -> AttributionRecord:
+    """The SINGLE live-hypothesis -> ``AttributionRecord`` conversion (E4
+    single-finding and E5 batched paths). The finding/render/measurement
+    identity ALWAYS comes from the shell-bound finding and the current
+    request, never from the model. A contradictory builder claim is retained
+    as unresolved/reviewer with the original triple recorded, so the Builder
+    can never receive it."""
+    attribution = hypothesis.attribution
+    status = hypothesis.hypothesis_status
+    owner = hypothesis.repair_owner
+    reason = hypothesis.reason
+    if owner == "builder" and (attribution, status) != BUILDER_OWNED_ATTRIBUTION:
+        reason = (
+            "rejected contradictory live attribution "
+            f"(attribution={attribution!r}, hypothesis_status={status!r}, "
+            "repair_owner='builder'): builder ownership requires "
+            f"attribution={BUILDER_OWNED_ATTRIBUTION[0]!r} with "
+            f"hypothesis_status={BUILDER_OWNED_ATTRIBUTION[1]!r}; retained as "
+            f"unresolved/reviewer. Model reason: {hypothesis.reason}"
+        )
+        attribution, status, owner = "unresolved", "unresolved", "reviewer"
+    return AttributionRecord(
+        finding_id=finding.finding_id,
+        render_version=finding.render_version,
+        measurement_request_id=request_id,
+        attribution=attribution,
+        hypothesis_status=status,
+        repair_owner=owner,
+        evidence=[request_id, *hypothesis.evidence_ids],
+        reason=reason,
+    )
+
+
+def _e5_findings_needing_fallback_attribution(
+    actionable: list[DefectFinding],
+    measured: dict[str, tuple[MeasurementResult, MeasurementRequest]],
+    attributions: list[AttributionRecord],
+) -> list[DefectFinding]:
+    """Findings with no attribution for the CURRENT identity
+    ``finding_id + render_version + measurement_request_id``. An older
+    measurement's attribution NEVER satisfies a new measurement."""
+    attributed_keys = {
+        (item.finding_id, item.render_version, item.measurement_request_id)
+        for item in attributions
+    }
+    return [
+        finding
+        for finding in actionable
+        if (
+            finding.finding_id,
+            finding.render_version,
+            measured[finding.finding_id][1].request_id,
+        )
+        not in attributed_keys
+    ]
 
 
 def _builder_reserve_intact(budget: RunBudget) -> bool:
@@ -8789,21 +8904,18 @@ def run_e5(
                                 findings=group,
                                 results=[measured[f.finding_id][0] for f in group],
                             )
-                            for finding, hypothesis in zip(group, hypotheses):
-                                attribution = AttributionRecord(
-                                    finding_id=finding.finding_id,
-                                    render_version=finding.render_version,
-                                    measurement_request_id=measured[finding.finding_id][1].request_id,
-                                    attribution=hypothesis.attribution,
-                                    hypothesis_status=hypothesis.hypothesis_status,
-                                    repair_owner=hypothesis.repair_owner,
-                                    evidence=[measured[finding.finding_id][1].request_id, *hypothesis.evidence_ids],
-                                    reason=hypothesis.reason,
+                            # Identity binding, never list position: a swapped,
+                            # missing, duplicated, or foreign finding_id rejects
+                            # the WHOLE batch (it contributes nothing).
+                            bound_hypotheses = _bind_live_attribution_batch(group, hypotheses)
+                            for finding, hypothesis in bound_hypotheses:
+                                request_id = measured[finding.finding_id][1].request_id
+                                attribution = _e5_live_attribution_record(
+                                    finding, hypothesis, request_id
                                 )
                                 attributions.append(attribution)
                                 _record_ledger_attribution(
-                                    ledger, finding, attribution,
-                                    measured[finding.finding_id][1].request_id,
+                                    ledger, finding, attribution, request_id,
                                 )
                                 trace.add(
                                     agent="attribution_investigator", phase="attribute",
@@ -8812,16 +8924,26 @@ def run_e5(
                         except CheckpointBudgetExceeded:
                             escalate("attribution_budget_exhausted")
                             break
+                        except LiveAttributionBindingError as error:
+                            # Fail closed WITH an auditable reason: the batch's
+                            # findings fall through to the deterministic
+                            # attribution instead of a positional guess.
+                            escalate(f"attribution_batch_binding_rejected:{error}")
+                            trace.add(
+                                agent="shell", phase="attribute",
+                                action="attribution_batch_binding_rejected",
+                                output={
+                                    "batch_findings": [item.finding_id for item in group],
+                                    "reason": str(error),
+                                },
+                            )
                         except Exception as error:
                             escalate(f"attribution_live_call_failed:{type(error).__name__}: {str(error)[:150]}")
-                attributed_keys = {
-                    (item.finding_id, item.render_version)
-                    for item in attributions
-                }
-                for finding in actionable:
-                    if (finding.finding_id, finding.render_version) not in attributed_keys:
-                        result, bound = measured[finding.finding_id]
-                        attribute(finding, result, bound)
+                for finding in _e5_findings_needing_fallback_attribution(
+                    actionable, measured, attributions
+                ):
+                    result, bound = measured[finding.finding_id]
+                    attribute(finding, result, bound)
     
                 # Builder opportunity: skip already-executed fingerprints and
                 # use the next measured, material finding in review order.
