@@ -2427,11 +2427,13 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
     package_report = (package / "REPORT.md").read_text(encoding="utf-8")
     for entry in listing["labels"]:
         assert entry["kind"] == "section_heading"
+        assert entry["status"] in {"approved", "proposed"}
         assert entry["evidence_ids"]
         assert set(entry["referenced_by_lanes"]) <= {"a", "b"}
         assert f"`{entry['label_id']}`" in package_report
-    # Both lanes' privacy gates excluded EXACTLY that catalog (no lane-local
-    # set, no empty-label asymmetry).
+    assert listing["approved_label_ids"], "Resume-I labels are owner-approved"
+    # Both lanes ran the COMMON gate with the SAME owner-approved set, so the
+    # exclusion sets are identical (an exact set match, not a subset).
     for lane_id, lane in lanes.items():
         active = lane["active_render_version"]
         if not active:
@@ -2441,9 +2443,15 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
         )
         semantics = detail["details"]["no_target_candidate_facts"]["label_semantics"]
         assert semantics["symmetric"] is True, (lane_id, semantics)
-        assert semantics["catalog_label_ids"] == [
-            entry["label_id"] for entry in listing["labels"]
-        ]
+        assert semantics["approved_label_ids"] == listing["approved_label_ids"]
+        assert semantics["excluded_outside_approved"] == []
+        assert semantics["approved_texts_never_excluded"] == []
+        assert semantics["excluded_labels"] == sorted(
+            entry["text"].casefold() for entry in listing["labels"] if entry["status"] == "approved"
+        )
+        # the plan-derived renderer gate is diagnostic-only for Lane A
+        if lane_id == "a":
+            assert "plan_derived_privacy_gate" in detail["details"]["no_target_candidate_facts"]
     if lanes["b"]["best_render_version"] is not None:
         best_index = next(
             index + 1
@@ -2966,6 +2974,7 @@ def _presentation_labels() -> list[e.PresentationLabel]:
             label_id="label.section.p1.top221.5",
             text="EXPERIENCE",
             kind="section_heading",
+            status="approved",
             evidence_ids=["local_pdf.sidebar_label.p1.top221.5"],
         )
     ]
@@ -3040,13 +3049,20 @@ def test_presentation_labels_come_only_from_measured_evidence() -> None:
         {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
     )
     assert [
-        (label.label_id, label.text, label.kind, label.evidence_ids)
+        (
+            label.label_id,
+            label.text,
+            label.kind,
+            label.status,
+            label.evidence_ids,
+        )
         for label in catalog
     ] == [
         (
             "label.section.p1.top221.5",
             "EXPERIENCE",
             "section_heading",
+            "approved",
             ["local_pdf.sidebar_label.p1.top221.5"],
         )
     ]
@@ -3073,6 +3089,53 @@ def test_presentation_labels_come_only_from_measured_evidence() -> None:
         )
 
 
+def test_measurement_alone_never_approves_a_label() -> None:
+    """P0: measurement proves provenance, NOT that a short sidebar line is a
+    presentation label rather than a person fact. An unapproved entry must
+    stay non-renderable and must not enter any privacy exclusion set."""
+    from tests.experiments.c2_candidates import candidate_resume_E
+
+    catalog = e._presentation_label_catalog(
+        {
+            "sidebar_labels": [
+                {"page": 1, "top": 1.0, "text": "JOHN SMITH"},
+                {"page": 1, "top": 2.0, "text": "MIT"},
+                {"page": 1, "top": 3.0, "text": "DATA SCIENTIST"},
+                {"page": 1, "top": 4.0, "text": "EXPERIENCE"},
+            ]
+        }
+    )
+    assert [label.status for label in catalog] == [
+        "proposed",
+        "proposed",
+        "proposed",
+        "approved",
+    ]
+    approved = e._approved_presentation_labels(catalog)
+    assert [label.text for label in approved] == ["EXPERIENCE"]
+    # every proposed entry is non-renderable: its id is not issued to the
+    # template boundary, so a marker for it fails closed
+    for label in catalog:
+        if label.status == "approved":
+            continue
+        with pytest.raises(ValueError, match="unknown presentation label marker"):
+            at.validate_authored_template(
+                _minimal_template(f"{{{{label:{label.label_id}}}}}"),
+                target_pdf=RESUME_I,
+                labels=approved,
+            )
+        # ... and the boundary refuses a proposed entry outright
+        with pytest.raises(ValueError, match="not owner-approved"):
+            at.fill_authored_template(
+                _minimal_template(f"{{{{label:{label.label_id}}}}}"),
+                candidate_resume_E(),
+                labels=[label],
+            )
+    # an unapproved label text is never in the privacy exclusion set
+    approved_texts = {label.text for label in approved}
+    assert "JOHN SMITH" not in approved_texts and "MIT" not in approved_texts
+
+
 def test_presentation_label_text_is_escaped_and_never_reparsed() -> None:
     from tests.experiments.c2_candidates import candidate_resume_E
 
@@ -3082,6 +3145,7 @@ def test_presentation_label_text_is_escaped_and_never_reparsed() -> None:
             label_id="label.section.p1.top1.0",
             text="{{candidate:name}} <b>X</b> & Y",
             kind="section_heading",
+            status="approved",
             evidence_ids=["local_pdf.sidebar_label.p1.top1.0"],
         )
     ]
@@ -3137,20 +3201,14 @@ def test_lane_gates_share_one_shell_owned_label_catalog() -> None:
     catalog = e._presentation_label_catalog(
         {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
     )
-    # both lanes' gates exclude only catalog labels -> symmetric
-    lane_a = e._e5_label_semantics({"excluded_labels": ["experience"]}, catalog)
-    lane_b = e._e5_label_semantics({"excluded_labels": ["EXPERIENCE"]}, catalog)
+    approved = e._approved_presentation_labels(catalog)
+    # both lanes run the common gate with the approved set -> exact equality
+    lane_a = e._e5_label_semantics({"excluded_labels": ["experience"]}, approved)
+    lane_b = e._e5_label_semantics({"excluded_labels": ["EXPERIENCE"]}, approved)
     assert lane_a["symmetric"] is True and lane_b["symmetric"] is True
-    assert lane_a["catalog_label_ids"] == lane_b["catalog_label_ids"]
-    # the old Lane B probe asymmetry (empty labels next to a non-empty catalog)
-    assert e._e5_label_semantics({"excluded_labels": []}, catalog)["symmetric"] is False
-    # a hand-built / lane-local set is REPORTED, never silently asymmetric
-    hand_built = e._e5_label_semantics({"excluded_labels": ["section.01"]}, catalog)
-    assert hand_built["symmetric"] is False
-    assert hand_built["excluded_outside_catalog"] == ["section.01"]
-    assert hand_built["catalog_texts_never_excluded"] == ["experience"]
-    # a lane rendering only SOME catalog labels (the Lane A plan subset) stays
-    # symmetric, with the honest remainder reported
+    assert lane_a["approved_label_ids"] == lane_b["approved_label_ids"]
+    # P1: a SUBSET is not symmetry — a plan-derived 4-of-9 exclusion must NOT
+    # be reported as symmetric
     two = e._presentation_label_catalog(
         {
             "sidebar_labels": [
@@ -3159,9 +3217,18 @@ def test_lane_gates_share_one_shell_owned_label_catalog() -> None:
             ]
         }
     )
-    subset = e._e5_label_semantics({"excluded_labels": ["experience"]}, two)
-    assert subset["symmetric"] is True
-    assert subset["catalog_texts_never_excluded"] == ["education"]
+    subset = e._e5_label_semantics(
+        {"excluded_labels": ["experience"]}, e._approved_presentation_labels(two)
+    )
+    assert subset["symmetric"] is False
+    assert subset["approved_texts_never_excluded"] == ["education"]
+    # the old Lane B probe asymmetry (empty labels) and a hand-built set both
+    # fail the exact-equality check
+    assert e._e5_label_semantics({"excluded_labels": []}, approved)["symmetric"] is False
+    hand_built = e._e5_label_semantics({"excluded_labels": ["section.01"]}, approved)
+    assert hand_built["symmetric"] is False
+    assert hand_built["excluded_outside_approved"] == ["section.01"]
+    assert hand_built["approved_texts_never_excluded"] == ["experience"]
     # the Lane B gate reports its exclusions so the audit can compare them
     from tests.experiments.e_authored_template import authored_privacy_gate
 
@@ -3173,22 +3240,39 @@ def test_lane_gates_share_one_shell_owned_label_catalog() -> None:
 
 def test_owner_package_label_listing_matches_the_catalog() -> None:
     catalog = e._presentation_label_catalog(
-        {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
+        {
+            "sidebar_labels": [
+                {"page": 1, "top": 221.5, "text": "EXPERIENCE"},
+                {"page": 1, "top": 309.9, "text": "JOHN SMITH"},
+            ]
+        }
     )
     listing = e._presentation_label_listing(
         catalog, {"a": ["label.section.p1.top221.5"], "b": []}
     )
     assert listing["schema_version"] == "e5-presentation-labels/1"
+    assert listing["approved_label_ids"] == ["label.section.p1.top221.5"]
+    assert listing["proposed_label_ids"] == ["label.section.p1.top309.9"]
     assert listing["labels"] == [
         {
             "label_id": "label.section.p1.top221.5",
             "text": "EXPERIENCE",
             "kind": "section_heading",
+            "status": "approved",
             "evidence_ids": ["local_pdf.sidebar_label.p1.top221.5"],
             "referenced_by_lanes": ["a"],
-        }
+        },
+        {
+            "label_id": "label.section.p1.top309.9",
+            "text": "JOHN SMITH",
+            "kind": "section_heading",
+            "status": "proposed",
+            "evidence_ids": ["local_pdf.sidebar_label.p1.top309.9"],
+            "referenced_by_lanes": [],
+        },
     ]
     assert "NOT an acceptance" in listing["note"]
+    assert "NOT renderable" in listing["note"]
     assert e._presentation_label_listing([], {"a": [], "b": []})["labels"] == []
 
 

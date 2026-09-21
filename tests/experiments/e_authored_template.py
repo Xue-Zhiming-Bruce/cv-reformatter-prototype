@@ -25,9 +25,11 @@ Slot vocabulary (declared, typed, shell-filled — no template engine):
 
 Presentation labels (owner decision 2026-09-21):
 
-- `{{label:<label_id>}}` renders ONE shell-issued presentation label (the
-  measured section heading). The id must be a member of the shell-owned
-  catalog passed to validation/fill; the TEXT always comes from the catalog,
+- `{{label:<label_id>}}` renders ONE owner-approved presentation label (the
+  measured section heading). The id must be a member of the owner-approved
+  subset of the shell-owned catalog passed to validation/fill; a `proposed`
+  label (measured but not yet explicitly approved by the owner) is NOT
+  renderable and fails closed. The TEXT always comes from the catalog,
   is HTML-escaped by the shell, and is inserted in a SECOND pass after every
   candidate slot is resolved — so a label value can never be re-parsed as a
   candidate slot, markup, or template syntax.
@@ -246,10 +248,16 @@ def _occurrences(haystack: str, needle: str) -> int:
 
 
 def _label_index(labels: list[PresentationLabel] | None) -> dict[str, PresentationLabel]:
-    """Shell-issued label id -> entry. A duplicated id is ambiguous (two
-    texts for one marker) and fails closed."""
+    """Shell-approved label id -> entry. A `proposed` entry is NOT renderable
+    (only an explicit owner approval makes a label usable), and a duplicated
+    id is ambiguous (two texts for one marker). Both fail closed."""
     index: dict[str, PresentationLabel] = {}
     for label in labels or []:
+        if label.status != "approved":
+            raise ValueError(
+                f"presentation label {label.label_id!r} is not owner-approved "
+                "(proposed labels are not renderable)"
+            )
         if label.label_id in index:
             raise ValueError(
                 f"ambiguous presentation label id in the catalog: {label.label_id!r}"

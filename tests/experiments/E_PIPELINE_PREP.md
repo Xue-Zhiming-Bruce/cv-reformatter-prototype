@@ -1322,17 +1322,25 @@ assuming symmetry.
 ## Owner decision implemented: typed presentation labels
 
 Owner decision 2026-09-21: the template MAY use presentation labels, but only
-shell-issued ones. Implemented as the smallest symmetric mechanism:
+owner-approved shell-issued ones. Implemented as the smallest mechanism that
+keeps approval separate from measurement:
 
 - **Catalog** (`e_pipeline.PresentationLabel`): `label_id`, `text`, `kind`,
-  `evidence_ids`. `kind` is `section_heading` ONLY — the one label type with
-  reliable target structure evidence (`compile_two_column_state` measured
-  sidebar-label headings). No Resume-I title list, no file-name/hash branch,
-  no target-person text. A `field_label` kind is deliberately NOT implemented:
-  the two-column compile records the contact label/value rows as a capability
-  gap, so emitting `field_label` entries would fabricate evidence. Empty text,
-  empty evidence, an unknown kind, or a duplicate measured id fails closed at
-  record construction.
+  `status`, `evidence_ids`. Measurement PROPOSES entries and marks them
+  `proposed`; an entry becomes `approved` (renderable) ONLY when its
+  normalized text is in the explicit
+  `OWNER_APPROVED_PRESENTATION_LABEL_TEXTS` owner decision recorded in
+  `e_pipeline.py`. Geometry proves provenance, never that a short sidebar line
+  is a presentation label rather than a name, school, employer, or job title —
+  so an unapproved entry stays non-renderable (its id is never issued to the
+  template boundary) and is never excluded from the privacy gate (rendering it
+  therefore fails closed as a leak). `kind` is `section_heading` ONLY — the one
+  label type with reliable target structure evidence
+  (`compile_two_column_state` measured sidebar-label headings). A `field_label`
+  kind is deliberately NOT implemented: the two-column compile records the
+  contact label/value rows as a capability gap, so emitting `field_label`
+  entries would fabricate evidence. Empty text, empty evidence, an unknown
+  kind, or a duplicate measured id fails closed at record construction.
 - **Builder channel**: `{{label:<label_id>}}`. The Builder can only reference
   an id from the catalog in its evidence package; the shell owns the text,
   HTML-escapes it, and inserts it in a SECOND pass after every candidate slot
@@ -1349,18 +1357,31 @@ shell-issued ones. Implemented as the smallest symmetric mechanism:
   slots; the label catalog and the candidate slots are separate sources.
   CSS `content:`, comments, JavaScript, remote URLs, and `src`/`href` stay
   forbidden.
+- **Two lanes, ONE gate**: both lanes run the same `authored_privacy_gate`
+  with the same owner-approved label text set against the same target, so the
+  two lanes' privacy decisions are directly comparable. `label_semantics`
+  records `symmetric` as an EXACT set match (`excluded_labels == approved`) —
+  a subset is NOT symmetric. Lane A's previous plan-derived renderer gate is
+  retained in `gate_details` as `plan_derived_privacy_gate`, DIAGNOSTIC ONLY:
+  it is no longer the privacy decision and can no longer make Lane A look
+  symmetric while excluding fewer labels.
 - **Owner visibility**: `out_dir/presentation_labels.json` and the copy in
   `owner_review/presentation_labels.json` list label_id / text / kind /
-  evidence id / which lanes referenced it; `owner_review/REPORT.md` carries
-  the same table. This is audit material — it is NOT an acceptance of T-v1 and
-  declares no winner.
+  status / evidence id / which lanes referenced it, plus the approved and
+  proposed id sets; `owner_review/REPORT.md` carries the same table with the
+  approved/proposed counts. This is audit material — it is NOT an acceptance
+  of T-v1 and declares no winner.
 
-Honest limits: `field_label` is unimplemented (see above); Lane A's exclusion
-source stays the unmodified renderer gate, verified against the catalog by the
-audit rather than replaced; and the authored HTML/CSS channel still carries
-inherent steganographic risk (encoding, spacing, attribute choices) that no
-string gate enumerates. The direct visible-text channel is closed; the
-steganographic channel is NOT claimed closed.
+Honest limits: `field_label` is unimplemented (see above); the owner-approved
+text list is an explicit one-off decision, so any new or changed label text
+needs a new owner approval before it can render; and the authored HTML/CSS
+channel still carries inherent steganographic risk (encoding, spacing,
+attribute choices) that no string gate enumerates. The direct visible-text
+channel is closed; the steganographic channel is NOT claimed closed.
+
+Known residual: `_TEMPLATE_GENERIC_VOCABULARY` is still present but is now
+DIAGNOSTIC ONLY (it no longer authorizes any visible text); removing it is a
+follow-up cleanup, not a correctness dependency.
 
 ## Repeated-action stop
 

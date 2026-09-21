@@ -6760,16 +6760,40 @@ class E5LoopRecord(EvidenceModel):
 
 PRESENTATION_LABEL_KINDS = ("section_heading",)
 
+# OWNER DECISION 2026-09-21 (explicit one-off approval): the presentation
+# labels the owner approved for RENDERING and for PRIVACY EXCLUSION.
+#
+# A measured sidebar short line is only a PROPOSAL. Geometry proves where the
+# text came from, never that it is a presentation label rather than a name,
+# school, employer, or job title — so `_presentation_label_catalog` marks
+# every entry `proposed` by default and flips it to `approved` ONLY when its
+# normalized text is listed here. Unapproved entries stay non-renderable
+# (their ids are not issued to the template boundary) and are NOT excluded
+# from the privacy gate, so rendering one fails closed as a leak. Any new or
+# changed label text needs a NEW explicit owner approval.
+OWNER_APPROVED_PRESENTATION_LABEL_TEXTS: tuple[str, ...] = (
+    "CONTACT INFO",
+    "ABOUT ME",
+    "EXPERIENCE",
+    "EDUCATION",
+    "ACHIEVEMENTS",
+    "PUBLICATIONS",
+    "CONFERENCES",
+    "SKILLS",
+    "REFERENCES",
+)
+
 
 class PresentationLabel(EvidenceModel):
-    """One SHELL-ISSUED presentation label (owner decision 2026-09-21): fixed
-    visible template text that is allowed because it is display structure
-    taken from target evidence, never a target-person fact. The Builder can
-    only REFERENCE ``label_id`` — it can never submit label text."""
+    """One shell-PROPOSED presentation label (owner decision 2026-09-21):
+    fixed visible template text taken from target structure evidence. The
+    Builder can only REFERENCE an ``approved`` ``label_id`` — it can never
+    submit label text, and a `proposed` entry is not renderable at all."""
 
     label_id: str
     text: str
     kind: Literal["section_heading"]
+    status: Literal["proposed", "approved"] = "proposed"
     evidence_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -6785,18 +6809,30 @@ class PresentationLabel(EvidenceModel):
         return self
 
 
+def _owner_approved_label_text(text: str) -> bool:
+    """Explicit owner approval lookup (normalized). Geometry NEVER approves."""
+    from tests.experiments.c2_renderer import _norm
+
+    return _norm(text) in {
+        _norm(item) for item in OWNER_APPROVED_PRESENTATION_LABEL_TEXTS
+    }
+
+
 def _presentation_label_catalog(derived: dict[str, Any]) -> list[PresentationLabel]:
-    """Build the ONE shell-owned label catalog both lanes share, from the
-    measured sidebar-label evidence that already feeds the StructureDraft and
-    both lanes' Builder evidence package.
+    """PROPOSE presentation labels from the measured sidebar-label evidence
+    that already feeds the StructureDraft and both lanes' evidence package.
+
+    Every entry is `proposed` unless its text carries an EXPLICIT owner
+    approval (see OWNER_APPROVED_PRESENTATION_LABEL_TEXTS). Measurement only
+    establishes provenance, not label-vs-person-fact classification, so an
+    unapproved entry must never become renderable or privacy-excluded.
 
     Deliberately minimal: ``section_heading`` is the only label type with
-    reliable target structure evidence today (the measured, clustered
-    sidebar-label headings). Contact ``field_label`` entries are NOT
-    implemented — the two-column compile records those rows as a capability
-    gap, so emitting them would fabricate evidence. No Resume-I title list,
-    no file-name/hash branch, no target-person text: the text is exactly what
-    the measurement returned. A duplicate measured id fails closed."""
+    reliable target structure evidence today. Contact ``field_label`` entries
+    are NOT implemented — the two-column compile records those rows as a
+    capability gap, so emitting them would fabricate evidence. No file-name or
+    hash branch: the text is exactly what the measurement returned. A
+    duplicate measured id fails closed."""
     catalog: list[PresentationLabel] = []
     seen: set[str] = set()
     for record in derived.get("sidebar_labels") or []:
@@ -6808,60 +6844,77 @@ def _presentation_label_catalog(derived: dict[str, Any]) -> list[PresentationLab
                 f"duplicate presentation label id from the measurement: {label_id!r}"
             )
         seen.add(label_id)
+        text = str(record.get("text") or "")
         catalog.append(
             PresentationLabel(
                 label_id=label_id,
-                text=str(record.get("text") or ""),
+                text=text,
                 kind="section_heading",
+                status=(
+                    "approved" if _owner_approved_label_text(text) else "proposed"
+                ),
                 evidence_ids=[f"local_pdf.sidebar_label.p{page}.top{top:.1f}"],
             )
         )
     return catalog
 
 
+def _approved_presentation_labels(
+    catalog: list[PresentationLabel],
+) -> list[PresentationLabel]:
+    """The ONLY renderable labels: owner-approved entries. A proposed entry is
+    deliberately excluded (non-renderable, and not privacy-excluded)."""
+    return [label for label in catalog if label.status == "approved"]
+
+
 def _e5_label_semantics(
-    gate: dict[str, Any], catalog: list[PresentationLabel]
+    gate: dict[str, Any], approved: list[PresentationLabel]
 ) -> dict[str, Any]:
-    """Whether one lane's privacy gate judged presentation labels from the
-    SAME shell-owned catalog the other lane uses. `symmetric` means the gate
-    excluded ONLY catalog labels (no lane-local classification, and — when
-    the catalog is non-empty — it excluded something at all: the old empty
-    `labels=set()` asymmetry fails this). A lane may legitimately exclude a
-    SUBSET of the catalog (Lane A only renders its plan's sections); those
-    catalog labels are reported in `catalog_texts_never_excluded` instead of
-    being treated as a failure."""
+    """Whether this lane's privacy gate excluded EXACTLY the owner-approved
+    label set. Both lanes run the SAME common gate with the SAME approved set,
+    so a subset (e.g. Lane A's plan-derived labels) is NOT symmetric — the two
+    lanes' privacy decisions must be identical to be comparable."""
     from tests.experiments.c2_renderer import _norm
 
     excluded = {_norm(item) for item in (gate.get("excluded_labels") or [])}
-    catalog_texts = {_norm(label.text) for label in catalog}
-    outside_catalog = sorted(excluded - catalog_texts)
+    approved_texts = {_norm(label.text) for label in approved}
     return {
-        "catalog_label_ids": [label.label_id for label in catalog],
-        "symmetric": not outside_catalog and bool(excluded or not catalog_texts),
+        "approved_label_ids": [label.label_id for label in approved],
+        "symmetric": excluded == approved_texts,
         "excluded_labels": sorted(excluded),
-        "excluded_outside_catalog": outside_catalog,
-        "catalog_texts_never_excluded": sorted(catalog_texts - excluded),
+        "excluded_outside_approved": sorted(excluded - approved_texts),
+        "approved_texts_never_excluded": sorted(approved_texts - excluded),
     }
 
 
 def _presentation_label_listing(
     catalog: list[PresentationLabel], lane_references: dict[str, list[str]]
 ) -> dict[str, Any]:
-    """The owner-visible label listing (label_id / text / kind / evidence /
-    which lanes referenced it). Audit material only — it does NOT mean the
+    """The owner-visible label listing (label_id / text / kind / status /
+    evidence / which lanes referenced it). `proposed` entries are listed for
+    review but are NOT renderable. Audit material only — it does NOT mean the
     owner accepted T-v1."""
     return {
         "schema_version": "e5-presentation-labels/1",
         "note": (
-            "shell-issued presentation labels: fixed visible template text taken "
-            "from target evidence. Audit material only; this is NOT an acceptance "
-            "of T-v1 and no lane is declared a winner."
+            "shell-proposed presentation labels taken from target evidence. Only "
+            "owner-approved entries are renderable and privacy-excluded; proposed "
+            "entries await explicit owner approval and are NOT renderable. Audit "
+            "material only: this is NOT an acceptance of T-v1 and no lane is "
+            "declared a winner."
         ),
+        "approved_label_ids": [
+            label.label_id for label in catalog if label.status == "approved"
+        ],
+        "proposed_label_ids": [
+            label.label_id for label in catalog if label.status == "proposed"
+        ],
         "labels": [
             {
                 "label_id": label.label_id,
                 "text": label.text,
                 "kind": label.kind,
+                "status": label.status,
                 "evidence_ids": label.evidence_ids,
                 "referenced_by_lanes": sorted(
                     lane_id
@@ -8097,7 +8150,13 @@ def run_e5(
         label_catalog = _presentation_label_catalog(derived)
     except Exception as error:
         return abort("presentation_label_catalog", error)
-    label_texts = {label.text for label in label_catalog}
+    # Only owner-approved entries are renderable and privacy-excluded. The
+    # proposed remainder stays visible in the owner listing but can never be
+    # rendered: its ids are never issued to the template boundary, and its
+    # text is never excluded from the privacy gate (so rendering it fails
+    # closed as a leak instead of being silently tolerated).
+    approved_label_catalog = _approved_presentation_labels(label_catalog)
+    approved_label_texts = {label.text for label in approved_label_catalog}
     (out_dir / "c2_layout_state.json").write_bytes(state_bytes(state))
     _headings_scaffold, body_scaffold = compile_two_column_state_for_scaffold(target_pdf, summary)
     bullet_tiers = _two_column_bullet_tiers(_pdf_lines_and_marks(target_pdf)[0], summary)
@@ -8185,7 +8244,7 @@ def run_e5(
         derived=derived,
         page_size=page_size,
         target_images=shared_target_images,
-        presentation_labels=label_catalog,
+        presentation_labels=approved_label_catalog,
     )
     initial_builder_evidence_path = out_dir / "builder_evidence_initial.json"
     initial_builder_evidence_path.write_text(
@@ -8395,8 +8454,11 @@ def run_e5(
                             "candidate_content_accounting": c2r.candidate_accounting_gate(
                                 plan, content
                             )["passed"],
-                            "privacy_gate": c2r.privacy_gate(
-                                plan, privacy_baseline, html, probe_pdf_path
+                            # The same COMMON privacy gate with the same
+                            # owner-approved label set as the main renders.
+                            "privacy_gate": authored_privacy_gate(
+                                html, probe_pdf_path, target_pdf,
+                                labels=approved_label_texts,
                             )["passed"],
                             "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
                             "deterministic_render": (
@@ -8417,10 +8479,11 @@ def run_e5(
                             target_pdf=target_pdf,
                             render_candidate=probe_candidate,
                             known_evidence_ids=_known_evidence_ids(),
-                            labels=label_catalog,
+                            labels=approved_label_catalog,
                         )
                         fill = fill_authored_template(
-                            selected_representation, probe_candidate, labels=label_catalog
+                            selected_representation, probe_candidate,
+                            labels=approved_label_catalog,
                         )
                         doc = build_authored_document(selected_representation, fill, page_size)
                         probe_html_path.write_text(doc, encoding="utf-8")
@@ -8435,7 +8498,8 @@ def run_e5(
                                 fill, probe_candidate, probe_pdf_path
                             )["passed"],
                             "privacy_gate": authored_privacy_gate(
-                                doc, probe_pdf_path, privacy_baseline, labels=label_texts
+                                doc, probe_pdf_path, target_pdf,
+                                labels=approved_label_texts,
                             )["passed"],
                             "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
                             "deterministic_render": (
@@ -8553,7 +8617,16 @@ def run_e5(
                 second_pages = _render_pages(second, lane_dir, f"render_{index}_second")
                 stability = c2r._line_stability(pdf_path, second)
                 content = c2r.content_gate(plan, html, pdf_path)
+                # DIAGNOSTIC ONLY (see gate_details): the renderer gate keeps
+                # excluding plan-derived labels; the privacy DECISION is the
+                # common gate below.
                 privacy = c2r.privacy_gate(plan, privacy_baseline, html, pdf_path)
+                # The ONE common privacy gate: identical function and identical
+                # owner-approved label set for BOTH lanes, so the two lanes'
+                # privacy decisions are directly comparable.
+                common_privacy = authored_privacy_gate(
+                    html, pdf_path, target_pdf, labels=approved_label_texts
+                )
                 structure_gate = c2r.structure_gate(plan, state, html, pdf_path)
                 blank = c2r.blank_page_gate(pdf_path)
                 accounting = c2r.candidate_accounting_gate(plan, content)
@@ -8565,29 +8638,30 @@ def run_e5(
                         c2r._sha256(left) == c2r._sha256(right)
                         for left, right in zip(pages, second_pages)
                     ) and stability["passed"],
-                    "no_target_candidate_facts": privacy["passed"],
+                    # The COMMON privacy decision: the same gate function and
+                    # the same owner-approved label set Lane B uses.
+                    "no_target_candidate_facts": common_privacy["passed"],
                     "section_order_matches_state": structure_gate["section_order_matches_state"],
                     "no_blank_page": blank["passed"],
                     "candidate_content_accounting": accounting["passed"],
                     "content_shapes_match_evidence": shape["passed"],
                     "content_gate": content["passed"],
                 }
-                # Lane A renders the plan labels; map them back to the SHARED
-                # catalog so the audit uses the same label semantics as Lane B.
-                plan_label_texts = {
-                    c2r._norm(section.label)
-                    for section in [*plan.sections, *plan.appended_sections]
-                }
-                label_semantics = _e5_label_semantics(privacy, label_catalog)
+                label_semantics = _e5_label_semantics(
+                    common_privacy, approved_label_catalog
+                )
                 label_symmetry_by_version[f"render-{target_pdf.stem}-laneA-v{index}"] = bool(
                     label_semantics["symmetric"]
                 )
                 referenced_labels.update(
                     label.label_id
                     for label in label_catalog
-                    if c2r._norm(label.text) in plan_label_texts
+                    if c2r._norm(label.text)
+                    in {
+                        c2r._norm(section.label)
+                        for section in [*plan.sections, *plan.appended_sections]
+                    }
                 )
-                privacy = {**privacy, "label_semantics": label_semantics}
                 gate_details = {
                     "deterministic_render": {
                         "passed": gates["deterministic_render"],
@@ -8595,7 +8669,14 @@ def run_e5(
                         "second_page_hashes": [c2r._sha256(page) for page in second_pages],
                         "line_stability": stability,
                     },
-                    "no_target_candidate_facts": privacy,
+                    "no_target_candidate_facts": {
+                        **common_privacy,
+                        "label_semantics": label_semantics,
+                        # DIAGNOSTIC ONLY: the renderer gate keeps excluding
+                        # plan-derived labels; it is no longer the privacy
+                        # decision and never used to claim symmetry.
+                        "plan_derived_privacy_gate": privacy,
+                    },
                     "section_order_matches_state": structure_gate,
                     "no_blank_page": blank,
                     "candidate_content_accounting": accounting,
@@ -8637,9 +8718,11 @@ def run_e5(
                     target_pdf=target_pdf,
                     render_candidate=candidate,
                     known_evidence_ids=_known_evidence_ids(),
-                    labels=label_catalog,
+                    labels=approved_label_catalog,
                 )
-                fill = fill_authored_template(template, candidate, labels=label_catalog)
+                fill = fill_authored_template(
+                    template, candidate, labels=approved_label_catalog
+                )
                 index = len(versions) + 1
                 doc = build_authored_document(template, fill, page_size)
                 html_path = lane_dir / f"render_{index}.html"
@@ -8653,25 +8736,28 @@ def run_e5(
                 second_pages = _render_pages(second, lane_dir, f"render_{index}_second")
                 stability = c2r._line_stability(pdf_path, second)
                 presence = authored_pdf_presence_gate(fill, candidate, pdf_path)
-                privacy_baseline_gate = authored_privacy_gate(
-                    doc, pdf_path, privacy_baseline, labels=label_texts
+                # The SAME common gate Lane A runs: identical gate function and
+                # identical owner-approved label set, so both lanes' privacy
+                # decisions are directly comparable.
+                common_privacy = authored_privacy_gate(
+                    doc, pdf_path, target_pdf, labels=approved_label_texts
                 )
-                # Both gates exclude the SAME shell-owned catalog (the old
-                # lane-local set + empty baseline labels manufactured the
-                # asymmetry): a legitimate catalog label can never be reported
-                # as a leaked target line on one side only.
-                privacy_target_gate = authored_privacy_gate(
-                    doc, pdf_path, target_pdf, labels=label_texts
+                label_semantics = _e5_label_semantics(
+                    common_privacy, approved_label_catalog
                 )
-                label_semantics = _e5_label_semantics(privacy_target_gate, label_catalog)
                 referenced_labels.update(presentation_label_markers(template.html))
+                # DIAGNOSTIC ONLY: the frozen-target copy gate under the same
+                # approved label set (not the privacy decision).
+                privacy_baseline_gate = authored_privacy_gate(
+                    doc, pdf_path, privacy_baseline, labels=approved_label_texts
+                )
                 blank = c2r.blank_page_gate(pdf_path)
                 gates = {
                     "deterministic_render": all(
                         c2r._sha256(left) == c2r._sha256(right)
                         for left, right in zip(pages, second_pages)
                     ) and stability["passed"],
-                    "no_target_candidate_facts": privacy_baseline_gate["passed"] and privacy_target_gate["passed"],
+                    "no_target_candidate_facts": common_privacy["passed"],
                     "no_blank_page": blank["passed"],
                     "candidate_content_accounting": not fill.missing_leaves,
                     "content_gate": presence["passed"],
@@ -8685,11 +8771,9 @@ def run_e5(
                         "line_stability": stability,
                     },
                     "no_target_candidate_facts": {
-                        "passed": gates["no_target_candidate_facts"],
-                        "baseline": privacy_baseline_gate,
-                        "target": privacy_target_gate,
-                        "label_semantics_symmetric": label_semantics["symmetric"],
+                        **common_privacy,
                         "label_semantics": label_semantics,
+                        "frozen_target_privacy_gate": privacy_baseline_gate,
                     },
                     "no_blank_page": blank,
                     "candidate_content_accounting": {
@@ -8896,7 +8980,7 @@ def run_e5(
                         target_pdf=target_pdf,
                         render_candidate=candidate,
                         known_evidence_ids=_known_evidence_ids(),
-                        labels=label_catalog,
+                        labels=approved_label_catalog,
                     )
                     validation_error = None
                 except ValueError as error:
@@ -9159,7 +9243,7 @@ def run_e5(
                     current_render_images=current_render_images,
                     selected_attribution=attribution,
                     action_fingerprint=fingerprint,
-                    presentation_labels=label_catalog,
+                    presentation_labels=approved_label_catalog,
                 )
                 (lane_dir / f"builder_evidence_round_{round_no:02d}.json").write_text(
                     json.dumps(
@@ -9222,7 +9306,7 @@ def run_e5(
                                 target_pdf=target_pdf,
                                 render_candidate=candidate,
                                 known_evidence_ids=_known_evidence_ids(),
-                                labels=label_catalog,
+                                labels=approved_label_catalog,
                             )
                         except ValueError as error:
                             validation = {"passed": False, "error": str(error)}
@@ -9790,16 +9874,19 @@ def _write_e5_owner_package(
         json.dumps(label_listing, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    approved_count = len(label_listing["approved_label_ids"])
+    proposed_count = len(label_listing["proposed_label_ids"])
     label_rows = "\n".join(
-        "| `{}` | {} | {} | {} | {} |".format(
+        "| `{}` | {} | {} | {} | {} | {} |".format(
             entry["label_id"],
             entry["text"],
             entry["kind"],
+            entry["status"],
             ", ".join(entry["evidence_ids"]),
             ", ".join(entry["referenced_by_lanes"]) or "(none)",
         )
         for entry in label_listing["labels"]
-    ) or "| (no shell-issued presentation labels) | | | | |"
+    ) or "| (no measured presentation labels) | | | | | |"
     (package / "REPORT.md").write_text(
         f"""# Pipeline E5 owner-review package — {out_dir.name}
 
@@ -9830,15 +9917,22 @@ def _write_e5_owner_package(
   T-v1;
 - remaining material differences below; iteration histories in lane dirs.
 
-## Presentation labels (shell-issued; audit material, not an acceptance)
+## Presentation labels (owner-approved vs proposed; audit material)
 
-Fixed visible template text may only enter through these shell-issued label
-ids. The Builder references an id; the shell owns the text. Target-person
-facts, contact data, dates, employers, schools, roles, and any text that is
-not classified presentation structure are NOT in this table.
+Fixed visible template text may only enter through an OWNER-APPROVED label id.
+The Builder references an id; the shell owns the text. Measurement only
+PROPOSES an entry — it never approves one, because provenance does not prove
+that a short target line is a presentation label rather than a name, school,
+employer, or job title. `proposed` entries are listed for review but are NOT
+renderable and are NOT excluded from the privacy gate. Target-person facts,
+contact data, dates, employers, schools, roles, and any text that is not
+classified presentation structure are NOT approved.
 
-| label_id | text | kind | evidence | referenced by lanes |
-| --- | --- | --- | --- | --- |
+Approved: {approved_count} · proposed (awaiting
+owner approval): {proposed_count}
+
+| label_id | text | kind | status | evidence | referenced by lanes |
+| --- | --- | --- | --- | --- | --- |
 {label_rows}
 
 ## Remaining material differences (open findings)
