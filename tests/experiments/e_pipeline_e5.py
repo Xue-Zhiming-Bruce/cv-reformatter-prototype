@@ -35,6 +35,7 @@ from tests.experiments.c_pipeline import _pdf_lines_and_marks, pinned_export_env
 from tests.experiments.e_pipeline_common import (
     AttributionRecord,
     CANDIDATE_FACT_GATES,
+    CandidateBindingLineage,
     DefectFinding,
     DualSourcePod,
     E4_TEMPERATURE,
@@ -49,6 +50,7 @@ from tests.experiments.e_pipeline_common import (
     TargetStructureDraft,
     _call_limits,
     _e5_agent_audit_record,
+    _e5_candidate_binding_lineage,
     _e5_live_attribution_record,
     _live_model_settings,
     _model_identity,
@@ -186,8 +188,32 @@ E5_ATTRIBUTION_INSTRUCTIONS = (
     "Builder ownership is only valid for a confirmed compilation defect: use\n"
     "attribution='template_compilation' with hypothesis_status='confirmed' and\n"
     "repair_owner='builder'. Any other repair_owner='builder' claim is\n"
-    "contradictory and is retained as unresolved/reviewer."
+    "contradictory and is retained as unresolved/reviewer.\n"
+    "PRODUCT CONTRACT: the target supplies the PRESENTATION and the candidate\n"
+    "supplies the FACTS. The target person's name, contact details, employers\n"
+    "and history are target evidence, never the expected content of the\n"
+    "render. Target-person text differing from the candidate's text is the\n"
+    "contract, NOT a defect: never propose rebinding a different target\n"
+    "person, never ask for target-person facts to be copied into the\n"
+    "candidate, and never claim attribution='candidate_binding' on the ground\n"
+    "that the two people's values differ. candidate_binding is confirmed only\n"
+    "by deterministic shell lineage proof — a rendered leaf identity the\n"
+    "registered candidate does not have, a value substituted under a\n"
+    "candidate leaf's identity, or a leaf owned under a destination that is\n"
+    "not its own slot; the shell rejects any other confirmed candidate_binding\n"
+    "claim and fails closed. A STRUCTURAL presentation difference (a missing\n"
+    "label/value row, rule, or column) belongs to the presentation layer:\
+"
+    "attribute it to the template/plan/renderer, or record it as a\n"
+    "representation capability gap when the shell's representation cannot\n"
+    "express that structure — never to candidate binding."
 )
+
+# Shell gates whose RED state is a DECLARED representation capability gap (the
+# gate verifier cannot express/verify the structure it covers). A structural
+# presentation difference under one of these is recorded as a representation
+# capability gap and may never be disguised as a candidate-binding defect.
+E5_REPRESENTATION_CEILING_GATES = ("content_shapes_match_evidence",)
 
 
 class E5LedgerEntry(EvidenceModel):
@@ -353,6 +379,10 @@ class E5LaneRecord(EvidenceModel):
     # hard-gate-valid best.
     best_defect_level_version: str | None = None
     active_render_version: str | None = None
+    # QUARANTINED REPAIR BASE: the last repairable-but-not-passing candidate the
+    # next Builder repairs FROM. It is never promoted, never best, and never the
+    # lane's owner-facing output (see `_selected_lane_artifact`).
+    quarantined_repair_base: str | None = None
     findings: list[DefectFinding] = Field(default_factory=list)
     measurement_results: list[MeasurementResult] = Field(default_factory=list)
     attributions: list[AttributionRecord] = Field(default_factory=list)
@@ -731,6 +761,15 @@ def _e5_builder_candidate_record(
 # are re-eligible in later rounds by the same priority order.
 E5_MAX_ROUND_ATTRIBUTION_FINDINGS = 3
 
+# A hard-gate failure on one of these is NEVER quarantinable: the candidate is
+# unsafe (target-person facts leaked into the output, authored-template safety
+# failed) or untrustworthy. Every other gate failure (content/PDF presence,
+# candidate-content accounting, pagination, blank pages, section order, the
+# declared Lane A representation ceiling) is a PRESENTATION defect that may keep
+# being repaired from the quarantined candidate — but a quarantined candidate is
+# never promoted, never best, and never the lane's owner-facing output.
+E5_NON_QUARANTINABLE_GATES = ("no_target_candidate_facts", "template_safety")
+
 
 def _e5_review_this_round(reviewed_render_fingerprints: set[str], pdf_sha256: str) -> bool:
     """Review scheduling gate (2026-09-22 owner correction): the fingerprint
@@ -828,6 +867,51 @@ def _e5_gate_repair_items(
     return items
 
 
+def _e5_quarantine_eligibility(
+    candidate_version: RenderVersion,
+    candidate_gates: dict[str, Any],
+    *,
+    representation: Any | None,
+    binding_lineage: CandidateBindingLineage | None,
+    candidate_audit: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    """MAY this hard-gate-red candidate become the NEXT repair base?
+
+    Only a *repairable but not passing* candidate may: every safety gate green,
+    its own representation identity verifiable, and its own leaf lineage free of
+    any deterministic candidate-binding contradiction (rewritten or
+    unknown-origin candidate facts fail closed). Nothing is relaxed here — a
+    quarantined candidate is never promoted, never best, and never the lane's
+    owner-facing output; it is only the representation the next Builder edits."""
+    unsafe = [
+        gate for gate in E5_NON_QUARANTINABLE_GATES
+        if candidate_gates.get(gate) is not True
+    ]
+    if unsafe:
+        return False, f"non-quarantinable safety gate(s) failed: {unsafe}"
+    if representation is None:
+        return False, "the candidate's representation identity is not recorded for this version"
+    if (
+        not candidate_audit
+        or candidate_audit.get("candidate_render_version") != candidate_version.version_id
+    ):
+        return False, (
+            "the builder-candidate audit does not bind this render version to "
+            "its validated input"
+        )
+    if binding_lineage is None or binding_lineage.render_version != candidate_version.version_id:
+        return False, "no candidate-leaf lineage audit is bound to this render version"
+    if binding_lineage.proofs:
+        return False, (
+            "deterministic candidate-binding lineage contradiction(s) recorded: "
+            + ", ".join(f"{proof.kind}:{proof.leaf_id}" for proof in binding_lineage.proofs)
+        )
+    return True, (
+        "repairable-but-not-passing candidate: safety gates green, representation "
+        "identity verified, candidate leaf lineage clean"
+    )
+
+
 def _e5_select_round_work(
     actionable: list[DefectFinding],
     gate_findings: list[DefectFinding],
@@ -890,7 +974,17 @@ def _next_e5_repair_finding(
         if attribution is None:
             continue
         repairable_seen = True
-        fingerprint = f"{finding.region}:{finding.suspected_dimension}:{round(result.delta_pt or 0, 3)}"
+        # The repair BASE version is part of the action identity (owner work
+        # order 2026-09-22): the identical action on the SAME input version is
+        # still deduplicated, while continuing the remaining defects on a NEW
+        # quarantined repair version is never mistaken for a repeat of the old
+        # action. The base comes from the finding's own bound version, so a
+        # reviewer finding (active version) and a hard-gate input (quarantined
+        # repair base) can never collide.
+        fingerprint = (
+            f"{finding.render_version}:{finding.region}:"
+            f"{finding.suspected_dimension}:{round(result.delta_pt or 0, 3)}"
+        )
         if fingerprint not in fingerprints:
             return (finding, result, bound, attribution, fingerprint), False
     return None, repairable_seen
@@ -2219,12 +2313,26 @@ def run_e5(
         # Per-version answer to "did the privacy gate exclude exactly the
         # shared shell-owned label catalog?" — derived, never lane-specific.
         label_symmetry_by_version: dict[str, bool] = {}
+        # version_id -> the shell's deterministic candidate-binding lineage
+        # audit for that render (the ONLY evidence that may confirm a
+        # `candidate_binding` attribution, and one input to quarantine
+        # eligibility). Built once per render from that version's own leaf
+        # ledger, never from the target document.
+        binding_lineage_by_version: dict[str, CandidateBindingLineage] = {}
         # Presentation labels THIS lane actually referenced (Lane A: rendered
         # plan labels; Lane B: template label markers).
         referenced_labels: set[str] = set()
         # The region of the last PROMOTED repair (the only state that scopes
         # the next review round; rejected attempts never do).
         last_promoted_region: str | None = None
+        # QUARANTINED REPAIR BASE (owner work order 2026-09-22): the history
+        # index of the last repairable-but-not-passing candidate. It is NOT a
+        # second state machine — it reuses the existing version map, builder-
+        # candidate audit, gate records, action fingerprints and rollback: it is
+        # only "which representation the next Builder edits", while
+        # `active_index` stays the reviewer/measurement/promotion/owner-package
+        # scope. Cleared on promotion.
+        quarantine_index: int | None = None
         findings: list[DefectFinding] = []
         measurement_results: list[MeasurementResult] = []
         attributions: list[AttributionRecord] = []
@@ -2290,9 +2398,21 @@ def run_e5(
             # against the EXACT SELECTED representation (the best-valid
             # render's proposal/template). With no best-valid render, the
             # latest attempt gets DIAGNOSTIC probes only — never promotion
+            # evidence. A QUARANTINED repair base is excluded exactly like a
+            # rolled-back attempt: it was never promoted and may never be
+            # selected as a render, a best, or a probe basis.
+            excluded_versions = set(rolled_back_versions)
+            if quarantine_index is not None:
+                excluded_versions.add(versions[quarantine_index].version_id)
+            # Best-valid selection FIRST: the content-shape probes must run
+            # against the EXACT SELECTED representation (the best-valid
+            # render's proposal/template). With no best-valid render, the
+            # latest attempt gets DIAGNOSTIC probes only — never promotion
             # evidence.
-            best_version_id = _best_valid_version_id(versions, excluded=rolled_back_versions)
-            defect_version_id = _best_defect_level_version_id(versions, excluded=rolled_back_versions)
+            best_version_id = _best_valid_version_id(versions, excluded=excluded_versions)
+            defect_version_id = _best_defect_level_version_id(
+                versions, excluded=excluded_versions
+            )
             active_version_id = versions[active_index].version_id if versions else None
             best_version = next((v for v in versions if v.version_id == best_version_id), None)
             diagnostic_probes = best_version_id is None
@@ -2452,6 +2572,11 @@ def run_e5(
                 best_render_version=best_version_id,
                 best_defect_level_version=defect_version_id,
                 active_render_version=active_version_id,
+                quarantined_repair_base=(
+                    versions[quarantine_index].version_id
+                    if quarantine_index is not None
+                    else None
+                ),
                 findings=findings,
                 measurement_results=measurement_results,
                 attributions=attributions,
@@ -2470,6 +2595,11 @@ def run_e5(
                     "best_render_version": best_version_id,
                     "best_defect_level_version": defect_version_id,
                     "active_render_version": active_version_id,
+                    "quarantined_repair_base": (
+                        versions[quarantine_index].version_id
+                        if quarantine_index is not None
+                        else None
+                    ),
                     "probe_mode": probe_report.get("_probe_mode"),
                     "promoted_versions": len([v for v in versions if v.promoted]),
                     "confirmed_measurements": len([r for r in measurement_results if r.status == "confirmed"]),
@@ -2600,6 +2730,15 @@ def run_e5(
                 plan_by_version[version.version_id] = plan
                 gates_by_version[version.version_id] = gates
                 gate_details_by_version[version.version_id] = gate_details
+                binding_lineage_by_version[version.version_id] = _e5_candidate_binding_lineage(
+                    candidate,
+                    version.version_id,
+                    content.get("leaf_records") or {},
+                    representation_ceiling_gates=[
+                        name for name in E5_REPRESENTATION_CEILING_GATES
+                        if gates.get(name) is False
+                    ],
+                )
                 store.register_version(version.version_id, pdf_path, note)
                 (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
                     json.dumps(
@@ -2701,6 +2840,11 @@ def run_e5(
                 representation_by_version[version.version_id] = template
                 gates_by_version[version.version_id] = gates
                 gate_details_by_version[version.version_id] = gate_details
+                binding_lineage_by_version[version.version_id] = _e5_candidate_binding_lineage(
+                    candidate,
+                    version.version_id,
+                    {leaf_id: {} for leaf_id in fill.leaf_counts},
+                )
                 label_symmetry_by_version[version.version_id] = bool(
                     label_semantics["symmetric"]
                 )
@@ -2974,6 +3118,21 @@ def run_e5(
                 current_plan = plan_by_version.get(current_version.version_id)
                 current_gates = gates_by_version.get(current_version.version_id, {})
                 current_gate_details = gate_details_by_version.get(current_version.version_id, {})
+                # The repair base is the quarantined candidate when one exists
+                # (its own representation/version/gates/missing leaves), and
+                # the ACTIVE version otherwise. Reviewer, measurement binding,
+                # promotion and the owner package always resolve against the
+                # ACTIVE version; the only thing that may look at the quarantine
+                # is the hard-gate repair input and the Builder payload that
+                # continues fixing it.
+                repair_base_version = (
+                    versions[quarantine_index] if quarantine_index is not None else current_version
+                )
+                repair_base_gates = gates_by_version.get(repair_base_version.version_id, {})
+                repair_base_details = gate_details_by_version.get(repair_base_version.version_id, {})
+                repair_scope_versions = {
+                    current_version.version_id, repair_base_version.version_id,
+                }
                 # The next round's changed-region scope comes ONLY from the
                 # last PROMOTED repair: a rejected/rolled-back attempt is
                 # immutable history (diagnostic), never review scope.
@@ -3113,10 +3272,10 @@ def run_e5(
                 gate_items: list[
                     tuple[DefectFinding, MeasurementResult, MeasurementRequest, AttributionRecord]
                 ] = []
-                if current_version.version_id not in gate_repair_versions_seen:
-                    gate_repair_versions_seen.add(current_version.version_id)
+                if repair_base_version.version_id not in gate_repair_versions_seen:
+                    gate_repair_versions_seen.add(repair_base_version.version_id)
                     gate_items = _e5_gate_repair_items(
-                        lane, target_id, current_version.version_id, current_gate_details
+                        lane, target_id, repair_base_version.version_id, repair_base_details
                     )
                 for gate_finding, gate_result, gate_request, gate_attribution in gate_items:
                     findings_by_id[gate_finding.finding_id] = gate_finding
@@ -3169,12 +3328,12 @@ def run_e5(
                 pre_scan_candidates = [
                     finding
                     for finding, _result, _bound in measured_by_finding.values()
-                    if finding.render_version == current_version.version_id
+                    if finding.render_version in repair_scope_versions
                 ]
                 pre_scan_measured = {
                     finding.finding_id: (result, bound)
                     for finding, result, bound in measured_by_finding.values()
-                    if finding.render_version == current_version.version_id
+                    if finding.render_version in repair_scope_versions
                 }
                 pre_repair, _pre_repeated = _next_e5_repair_finding(
                     pre_scan_candidates, pre_scan_measured, attributions, fingerprints
@@ -3255,7 +3414,12 @@ def run_e5(
                             for finding, hypothesis in bound_hypotheses:
                                 request_id = measured[finding.finding_id][1].request_id
                                 attribution = _e5_live_attribution_record(
-                                    finding, hypothesis, request_id
+                                    finding,
+                                    hypothesis,
+                                    request_id,
+                                    lineage=binding_lineage_by_version.get(
+                                        finding.render_version
+                                    ),
                                 )
                                 attributions.append(attribution)
                                 _record_ledger_attribution(
@@ -3298,12 +3462,12 @@ def run_e5(
                 scan_candidates = [
                     finding
                     for finding, _result, _bound in measured_by_finding.values()
-                    if finding.render_version == current_version.version_id
+                    if finding.render_version in repair_scope_versions
                 ]
                 scan_measured = {
                     finding.finding_id: (result, bound)
                     for finding, result, bound in measured_by_finding.values()
-                    if finding.render_version == current_version.version_id
+                    if finding.render_version in repair_scope_versions
                 }
                 repair_finding, all_repairable_repeated = _next_e5_repair_finding(
                     scan_candidates, scan_measured, attributions, fingerprints
@@ -3334,18 +3498,25 @@ def run_e5(
                     )
                     continue
                 finding, result, bound, attribution, fingerprint = repair_finding
+                # The Builder repairs the REPAIR BASE: with a quarantine that is
+                # the quarantined candidate's own render images, and its own
+                # representation/render version/gates are bound in the payload
+                # below. Without a quarantine the base IS the active version, so
+                # this is the pre-existing behavior unchanged.
                 current_render_images = _overview_pngs(
-                    current_pdf, lane_dir, f"builder_render_r{round_no}"
+                    pdf_by_version[repair_base_version.version_id],
+                    lane_dir,
+                    f"builder_render_r{round_no}",
                 )
                 repair_builder_evidence = _e5_builder_evidence_package(
                     draft=draft,
                     state=state,
                     derived=derived,
                     page_size=page_size,
-                    current_render_version=current_version.version_id,
+                    current_render_version=repair_base_version.version_id,
                     findings=scan_candidates,
                     measurements=[scan_measured[item.finding_id][0] for item in scan_candidates],
-                    current_gates=current_gates,
+                    current_gates=repair_base_gates,
                     last_rejection=lane_state.get("last_rejection"),
                     target_images=shared_target_images,
                     current_render_images=current_render_images,
@@ -3376,7 +3547,7 @@ def run_e5(
                                     agent="lane_a_builder",
                                     phase="repair",
                                     round_no=round_no,
-                                    render_version=current_version.version_id,
+                                    render_version=repair_base_version.version_id,
                                     finding_ids=(finding.finding_id,),
                                     measurement_ids=(bound.request_id,),
                                     instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
@@ -3392,7 +3563,7 @@ def run_e5(
                         candidate_audit_index = record_builder_candidate(
                             proposal,
                             stage="repair",
-                            input_render_version=current_version.version_id,
+                            input_render_version=repair_base_version.version_id,
                             validation={"passed": validation_error is None, "error": validation_error},
                             outcome="validator_rejected" if validation_error else "validated",
                             reason=validation_error or "typed proposal accepted by the shell validator",
@@ -3420,7 +3591,7 @@ def run_e5(
                                     agent="lane_b_builder",
                                     phase="repair",
                                     round_no=round_no,
-                                    render_version=current_version.version_id,
+                                    render_version=repair_base_version.version_id,
                                     finding_ids=(finding.finding_id,),
                                     measurement_ids=(bound.request_id,),
                                     instructions=E5_LANE_B_BUILDER_INSTRUCTIONS,
@@ -3432,8 +3603,18 @@ def run_e5(
                             )
                         else:
                             from tests.experiments.e_authored_template import SCRIPTED_AUTHORED_TEMPLATE as _base_template
-    
-                            template = _scripted_lane_b_template(_base_template, finding, result)
+
+                            # The offline Builder continues from the REPAIR BASE's
+                            # own representation (the quarantined candidate when
+                            # one exists), never from a fixed fixture.
+                            template = _scripted_lane_b_template(
+                                representation_by_version.get(
+                                    repair_base_version.version_id
+                                )
+                                or _base_template,
+                                finding,
+                                result,
+                            )
                         try:
                             validation = validate_authored_template(
                                 template,
@@ -3447,7 +3628,7 @@ def run_e5(
                             candidate_audit_index = record_builder_candidate(
                                 template,
                                 stage="repair",
-                                input_render_version=current_version.version_id,
+                                input_render_version=repair_base_version.version_id,
                                 validation=validation,
                                 outcome="validator_rejected",
                                 reason=str(error),
@@ -3461,7 +3642,7 @@ def run_e5(
                         candidate_audit_index = record_builder_candidate(
                             template,
                             stage="repair",
-                            input_render_version=current_version.version_id,
+                            input_render_version=repair_base_version.version_id,
                             validation=validation,
                             outcome="validated",
                             reason="typed template accepted by the shell validator",
@@ -3499,10 +3680,13 @@ def run_e5(
                 candidate_index = len(versions) - 1  # the candidate's history index
                 trace.add(
                     agent="builder", phase="repair", action="proposal",
-                    note=f"round {round_no}", persist_output=True,
+                    note=f"round {round_no} on repair base {repair_base_version.version_id}",
+                    persist_output=True,
                     output={
-                        "current_version": current_version.version_id,
-                        "current_gates": current_gates,
+                        "current_version": repair_base_version.version_id,
+                        "active_version": current_version.version_id,
+                        "quarantined": quarantine_index is not None,
+                        "current_gates": repair_base_gates,
                     },
                 )
                 # Re-measure FIRST: the IDENTICAL request, changing only the version.
@@ -3567,15 +3751,55 @@ def run_e5(
                     else ("content_gate", "candidate_content_accounting", "no_target_candidate_facts",
                           "no_blank_page", "deterministic_render")
                 )
-                if not all(candidate_gates.get(gate) for gate in gate_keys):
+                failing_gates = [
+                    gate for gate in gate_keys if candidate_gates.get(gate) is not True
+                ]
+                # A red candidate is no longer thrown away wholesale: the shell
+                # decides between an unsafe REJECTION and a QUARANTINED repair
+                # base. The decision is deterministic and uses existing evidence
+                # only (gate records, builder-candidate audit, the per-version
+                # candidate-binding lineage audit).
+                quarantinable, quarantine_reason = (
+                    _e5_quarantine_eligibility(
+                        candidate_version,
+                        candidate_gates,
+                        representation=representation_by_version.get(
+                            candidate_version.version_id
+                        ),
+                        binding_lineage=binding_lineage_by_version.get(
+                            candidate_version.version_id
+                        ),
+                        candidate_audit=(
+                            builder_candidates[candidate_audit_index]
+                            if candidate_audit_index is not None
+                            else None
+                        ),
+                    )
+                    if failing_gates
+                    else (False, "candidate passed every hard gate")
+                )
+                if failing_gates and not quarantinable:
                     rolled_back_versions.add(candidate_version.version_id)
                     update_builder_candidate(
                         candidate_audit_index,
                         outcome="rolled_back",
-                        reason="candidate-safety gates failed",
+                        reason=f"not quarantinable: {quarantine_reason}",
                     )
-                    attempted_strategies.append(f"round{round_no}:{finding.finding_id}:repair_failed_gates_rolled_back")
-                    trace.add(agent="shell", phase="repair", action="rolled_back", note="candidate-safety gate failed")
+                    attempted_strategies.append(
+                        f"round{round_no}:{finding.finding_id}:rejected_not_quarantinable_rolled_back"
+                    )
+                    # The rollback note names the ACTUAL failing gates (the old
+                    # blanket "candidate-safety gate failed" mislabeled a pure
+                    # content-gate failure as a safety failure).
+                    trace.add(
+                        agent="shell", phase="repair", action="rolled_back",
+                        output={
+                            "candidate_version": candidate_version.version_id,
+                            "failing_gates": failing_gates,
+                            "reason": quarantine_reason,
+                        },
+                        note=f"not quarantinable: failing gates {failing_gates}; {quarantine_reason}",
+                    )
                     continue
                 holds, rechecks = accepted_regions_hold(candidate_pdf)
                 if not holds:
@@ -3588,9 +3812,48 @@ def run_e5(
                     attempted_strategies.append(f"round{round_no}:{finding.finding_id}:accepted_region_regressed_rolled_back")
                     trace.add(agent="shell", phase="repair", action="rolled_back", note="accepted region regressed")
                     continue
+                if failing_gates:
+                    # QUARANTINE (owner work order 2026-09-22): the candidate is
+                    # repairable but not passing. It becomes the NEXT repair
+                    # base ONLY — never promoted, never best, never the lane's
+                    # owner-facing output; `active_index` still points at the
+                    # accepted active version.
+                    previous_base = (
+                        versions[quarantine_index].version_id
+                        if quarantine_index is not None
+                        else current_version.version_id
+                    )
+                    quarantine_index = candidate_index
+                    update_builder_candidate(
+                        candidate_audit_index,
+                        outcome="quarantined",
+                        reason=f"repairable-but-not-passing: {quarantine_reason}",
+                    )
+                    attempted_strategies.append(
+                        f"round{round_no}:{finding.finding_id}:quarantined_repair_base"
+                    )
+                    trace.add(
+                        agent="shell", phase="repair", action="quarantined",
+                        output={
+                            "candidate_version": candidate_version.version_id,
+                            "previous_repair_base": previous_base,
+                            "active_version": current_version.version_id,
+                            "failing_gates": failing_gates,
+                            "reason": quarantine_reason,
+                        },
+                        note=(
+                            f"quarantined repair base {candidate_version.version_id} "
+                            f"(failing gates {failing_gates}); active version "
+                            f"{current_version.version_id} unchanged"
+                        ),
+                        persist_output=True,
+                    )
+                    continue
                 # PROMOTION (shell-only): the candidate becomes the new ACTIVE
                 # version; the rejected candidates before it stay in the
-                # immutable history and are never implicitly selected again.
+                # immutable history and are never implicitly selected again. A
+                # promoted version supersedes any quarantined repair base.
+                quarantine_index = None
                 versions[candidate_index] = candidate_version.model_copy(update={"promoted": True})
                 update_builder_candidate(
                     candidate_audit_index,
@@ -3718,6 +3981,8 @@ def _write_e5_lane_report_md(lane_id: str, record: E5LaneRecord) -> str:
 - Best render: `{record.best_render_version or 'NONE — no best-valid render exists'}`
 - Active render: `{record.active_render_version}`
 - Defect-level promoted (never BEST): `{record.best_defect_level_version or 'none'}`
+- Quarantined repair base (the next Builder's input; never promoted, never
+  BEST, never the lane's output): `{record.quarantined_repair_base or 'none'}`
 - Findings: {record.summary.get('total_findings')}; confirmed measurements:
   {record.summary.get('confirmed_measurements')}; unbound:
   {record.summary.get('unbound_measurements')}
@@ -3853,6 +4118,7 @@ def _write_e5_comparison(
                 "best_render": lane.best_render_version,
                 "best_defect_level_version": lane.best_defect_level_version,
                 "active_render": lane.active_render_version,
+                "quarantined_repair_base": lane.quarantined_repair_base,
                 "render_label": label,
                 "selected_version": selected.version_id if selected else None,
                 "selected_pages": selected.page_count if selected else None,
@@ -4037,12 +4303,20 @@ def _write_e5_owner_package(
                 "as ACTIVE DEFECT-LEVEL VERSION (a local improvement, never BEST)"
             )
         if lane.active_render_version:
-            return (
+            line = (
                 f"- Lane {lane_id.upper()}: no best-valid render exists; the active "
                 f"version `{lane.active_render_version}` is shown as ACTIVE "
                 "UNPROMOTED VERSION — a rolled-back attempt is never shown as the "
                 "lane's current output, never labeled BEST"
             )
+            if lane.quarantined_repair_base:
+                line += (
+                    f". A quarantined repairable-but-not-passing candidate "
+                    f"(`{lane.quarantined_repair_base}`) exists as the next "
+                    "Builder's repair base only: it is never promoted, never "
+                    "labeled BEST, and is NOT shown as the lane's current output"
+                )
+            return line
         return (
             f"- Lane {lane_id.upper()} best render: NONE — no best-valid render "
             "exists; the package shows the latest attempt (LATEST ATTEMPT), "

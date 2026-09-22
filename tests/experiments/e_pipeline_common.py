@@ -31,7 +31,7 @@ import json
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, Mapping, NamedTuple, Sequence
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from tests.experiments.a_pipeline import ROOT, _render_pages
@@ -1565,18 +1565,209 @@ class PresentationLabel(EvidenceModel):
 # hand a binding/renderer/evidence-owned defect to the Builder.
 BUILDER_OWNED_ATTRIBUTION: tuple[str, str] = ("template_compilation", "confirmed")
 
+# ---------------------------------------------------------------------------
+# Candidate-binding lineage proof (owner work order 2026-09-22)
+# ---------------------------------------------------------------------------
+#
+# `candidate_binding` is the ONE attribution whose repair means "bind a
+# different candidate value", so it must never be confirmed from a model's
+# reading of differing WORDS. The product contract renders the TARGET's
+# presentation with the CANDIDATE's facts: target-person text differing from
+# candidate text is the contract, not a defect. A binding defect exists only
+# when the render's OWN leaf lineage contradicts the REGISTERED candidate
+# document — a leaf identity the candidate does not have, a value substituted
+# under a candidate leaf's identity, or a leaf owned under a destination that
+# is not its own. Only those deterministic, typed facts may confirm it; absent
+# them the shell fails closed. The target document is never an input, so no
+# name/text blacklist decides this.
+CANDIDATE_BINDING_PROOF_KINDS = (
+    "foreign_leaf_identity",
+    "leaf_value_substituted",
+    "leaf_destination_mismatch",
+)
+
+# The documented candidate-only synthetic ledger identity for an unroutable
+# record with no bound candidate leaf (see `compile_render_plan`): a real
+# shell-issued identity, never a foreign candidate leaf.
+_CANDIDATE_SYNTHETIC_IDENTITY_PREFIX = "unroutable."
+
+
+def _e5_text_identity(text: Any) -> str:
+    """Whitespace/case-insensitive text identity for lineage comparison."""
+    return " ".join(str(text or "").split()).casefold()
+
+
+class CandidateBindingProof(EvidenceModel):
+    """ONE deterministic lineage contradiction between a render version's own
+    leaf lineage and the registered candidate document."""
+
+    kind: Literal[
+        "foreign_leaf_identity",
+        "leaf_value_substituted",
+        "leaf_destination_mismatch",
+    ]
+    leaf_id: str
+    declared: str = ""
+    observed: str = ""
+    detail: str
+
+
+class CandidateBindingLineage(EvidenceModel):
+    """The shell's per-render-version candidate-binding audit: what the render
+    actually bound, resolved against the REGISTERED candidate document.
+    ``proofs`` is the ONLY thing that may confirm a `candidate_binding`
+    attribution; ``representation_ceiling_gates`` records the shell gates that
+    are red on this version and whose failure IS the recorded representation
+    capability gap covering a structural presentation difference (so a
+    presentation gap is never disguised as a binding defect)."""
+
+    render_version: str
+    checked_leaf_records: int = 0
+    resolved_leaves: int = 0
+    proofs: list[CandidateBindingProof] = Field(default_factory=list)
+    representation_ceiling_gates: list[str] = Field(default_factory=list)
+
+
+def _e5_candidate_binding_lineage(
+    candidate: Any,
+    render_version: str,
+    leaf_lineage: Mapping[str, Mapping[str, Any]],
+    *,
+    representation_ceiling_gates: Sequence[str] = (),
+) -> CandidateBindingLineage:
+    """Deterministic candidate-binding detection for ONE render version.
+
+    ``leaf_lineage`` is the render version's OWN shell-produced leaf ledger
+    (Lane A: `content_gate.leaf_records`; Lane B: `candidate_content_
+    accounting.leaf_counts`), keyed by leaf id and carrying the value/
+    destination the render actually bound where the lane records them.
+
+    The TARGET document is never read here: target-person text differing from
+    candidate text is the product contract, so it can never produce or refute
+    a proof. Only a contradiction inside the render proves binding; anything
+    unverifiable stays unproven (fail closed)."""
+    by_id = {
+        str(getattr(leaf, "leaf_id", "")): leaf
+        for leaf in (getattr(candidate, "leaves", None) or [])
+    }
+    proofs: list[CandidateBindingProof] = []
+    resolved = 0
+    for leaf_id, record in (leaf_lineage or {}).items():
+        leaf = by_id.get(leaf_id)
+        if leaf is None:
+            if leaf_id.startswith(_CANDIDATE_SYNTHETIC_IDENTITY_PREFIX):
+                continue  # documented candidate-only synthetic identity
+            proofs.append(
+                CandidateBindingProof(
+                    kind="foreign_leaf_identity",
+                    leaf_id=leaf_id,
+                    declared="a registered candidate leaf id",
+                    observed=leaf_id,
+                    detail=(
+                        "the render claims a leaf identity the registered "
+                        "candidate document does not have"
+                    ),
+                )
+            )
+            continue
+        resolved += 1
+        recorded_text = record.get("text")
+        own_text = getattr(leaf, "text", None)
+        if recorded_text is not None and _e5_text_identity(recorded_text) != _e5_text_identity(own_text):
+            proofs.append(
+                CandidateBindingProof(
+                    kind="leaf_value_substituted",
+                    leaf_id=leaf_id,
+                    declared=_e5_text_identity(own_text)[:120],
+                    observed=_e5_text_identity(recorded_text)[:120],
+                    detail=(
+                        "the value bound under this candidate leaf id is not "
+                        "the registered candidate leaf's own value"
+                    ),
+                )
+            )
+            continue
+        destination = record.get("destination")
+        slot = getattr(leaf, "slot", None)
+        if slot and destination and str(destination).rsplit(".", 1)[-1] != slot:
+            proofs.append(
+                CandidateBindingProof(
+                    kind="leaf_destination_mismatch",
+                    leaf_id=leaf_id,
+                    declared=str(slot),
+                    observed=str(destination),
+                    detail=(
+                        "the leaf was owned under a destination that is not "
+                        "its own candidate slot"
+                    ),
+                )
+            )
+    return CandidateBindingLineage(
+        render_version=render_version,
+        checked_leaf_records=len(leaf_lineage or {}),
+        resolved_leaves=resolved,
+        proofs=proofs,
+        representation_ceiling_gates=list(representation_ceiling_gates),
+    )
+
+
+def _candidate_binding_rejection_reason(
+    hypothesis: LiveAttributionHypothesis,
+    lineage: CandidateBindingLineage | None,
+    finding: DefectFinding,
+) -> str:
+    """The auditable, deterministic reason an unproven `candidate_binding`
+    claim is retained as unresolved/reviewer instead of confirmed. Built from
+    the shell's typed lineage facts only — never from a name/text scan."""
+    parts = [
+        "rejected unproven candidate_binding claim: the target's presentation "
+        "carries the candidate's facts, so a target person's text differing "
+        "from the candidate's text is the product contract and can never "
+        "confirm a binding defect; candidate_binding requires deterministic "
+        "lineage proof (a leaf identity the registered candidate does not "
+        "have, a value substituted under a candidate leaf's identity, or a "
+        "leaf owned under a destination that is not its own) and none was "
+        "recorded; retained as unresolved/reviewer"
+    ]
+    if lineage is None or lineage.render_version != finding.render_version:
+        parts.append(
+            "no candidate-leaf lineage audit is bound to render version "
+            f"{finding.render_version!r}"
+        )
+    else:
+        parts.append(
+            "the render's own lineage resolved "
+            f"{lineage.resolved_leaves}/{lineage.checked_leaf_records} "
+            "rendered leaf record(s) to the registered candidate document "
+            "with no contradiction"
+        )
+        if lineage.representation_ceiling_gates:
+            parts.append(
+                "the shell's recorded representation ceiling ("
+                + ", ".join(lineage.representation_ceiling_gates)
+                + ") covers this presentation structure: recorded as a "
+                "representation capability gap, never candidate binding"
+            )
+    parts.append(f"Model reason: {hypothesis.reason}")
+    return "; ".join(parts)
+
 
 def _e5_live_attribution_record(
     finding: DefectFinding,
     hypothesis: LiveAttributionHypothesis,
     request_id: str,
+    lineage: CandidateBindingLineage | None = None,
 ) -> AttributionRecord:
     """The SINGLE live-hypothesis -> ``AttributionRecord`` conversion (E4
     single-finding and E5 batched paths). The finding/render/measurement
     identity ALWAYS comes from the shell-bound finding and the current
     request, never from the model. A contradictory builder claim is retained
     as unresolved/reviewer with the original triple recorded, so the Builder
-    can never receive it."""
+    can never receive it. A CONFIRMED `candidate_binding` claim additionally
+    requires deterministic shell lineage proof bound to the finding's own
+    render version (``lineage``); without it the claim fails closed to
+    unresolved/reviewer, because target-person text differing from candidate
+    text is the product contract, not a binding defect."""
     attribution = hypothesis.attribution
     status = hypothesis.hypothesis_status
     owner = hypothesis.repair_owner
@@ -1591,6 +1782,15 @@ def _e5_live_attribution_record(
             f"unresolved/reviewer. Model reason: {hypothesis.reason}"
         )
         attribution, status, owner = "unresolved", "unresolved", "reviewer"
+    elif attribution == "candidate_binding" and status == "confirmed":
+        proven = (
+            lineage is not None
+            and lineage.render_version == finding.render_version
+            and bool(lineage.proofs)
+        )
+        if not proven:
+            reason = _candidate_binding_rejection_reason(hypothesis, lineage, finding)
+            attribution, status, owner = "unresolved", "unresolved", "reviewer"
     return AttributionRecord(
         finding_id=finding.finding_id,
         render_version=finding.render_version,

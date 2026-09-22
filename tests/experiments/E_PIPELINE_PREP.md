@@ -1880,3 +1880,94 @@ No new live comparison is claimed. The next prerequisite is a one-request
 visual smoke using the owner-selected `deepseek-flash`; only a successful
 image-aware response plus a non-withheld audit record justifies another full
 Lane A/B run.
+
+## Owner work order 2026-09-22 — candidate-binding boundary and quarantined repair
+
+Source of the work: the live run `e_pipeline_e5_20260922T090821Z` (frozen
+`deepseek-flash` vision + text, 447,922 lane-A input tokens, no promoted
+version) exposed two loop defects. Both are recorded here as observed
+evidence, not as a lane result; no winner is declared and no new live
+comparison was started.
+
+### Observed defects and root causes
+
+1. **`candidate_binding` was confirmed from differing WORDS.** Lane A produced
+   three confirmed `candidate_binding` records
+   (`finding-la-r1-p1.01`, `.02`, `.04`) whose recorded reasons argue from
+   "the target is `LEWIS VERSTAPPEN`, the render is `Daniel Phang`", and `.04`
+   asked to re-bind "the correct candidate for resume_I". Root cause:
+   `_e5_live_attribution_record` validated only the contradictory-builder-owner
+   rule; no shell code ever checked a binding claim against lineage (grep:
+   `candidate_binding` appeared only in the two `Literal` declarations). The
+   product contract renders the TARGET's presentation with the CANDIDATE's
+   facts, so differing values between the two people can never be a defect.
+
+2. **A repairable red candidate was discarded.** Lane B's `v2` reduced the
+   missing candidate leaves from 5 to 4 and passed every safety gate
+   (`no_target_candidate_facts`, `template_safety`, `deterministic_render`,
+   `no_blank_page`, accounting), failing only `content_gate`. It was rolled
+   back; the next round re-derived the same gate repair input from `v1` with
+   the same action fingerprint and stopped as `stalled_no_new_action`, so only
+   ONE repair ever executed. Root cause: the outcome set was
+   {promote, rollback}; there was no tier between "accepted" and "rejected", so
+   a safe partial improvement could not be repaired further.
+
+### Corrections (no gate relaxed, no second state machine)
+
+- The single live-hypothesis conversion now requires deterministic shell leaf
+  lineage for a CONFIRMED `candidate_binding`; without it the claim fails closed
+  to `unresolved`/`reviewer`. Proof kinds are exactly: a rendered leaf identity
+  the registered candidate does not have, a value substituted under a candidate
+  leaf's identity, or a leaf owned under a destination that is not its own
+  slot. The TARGET document is never an input, so no name/text blacklist
+  decides it; the documented candidate-only synthetic `unroutable.<slot>`
+  identity is not a foreign leaf.
+- The per-version lineage audit is built once inside `render_version` from that
+  version's own ledger (Lane A `content_gate.leaf_records`; Lane B
+  `candidate_content_accounting.leaf_counts`) and is also the quarantine
+  eligibility input.
+- A repairable-but-not-passing candidate becomes the QUARANTINED repair base:
+  the next Builder's payload binds that version's representation, render
+  version, hard gates, missing leaves and render images, and the action
+  fingerprint includes the repair-base version. `active_index` still points at
+  the accepted active version, so the reviewer, measurement, promotion and the
+  owner package keep resolving against it, and the quarantine is excluded from
+  best / defect-level / probe selection exactly like a rolled-back attempt.
+  Only a version passing every gate is promoted; the quarantine is cleared on
+  promotion. Unsafe failures (target-person fact leak, authored-template
+  safety), unverifiable representation identity, a builder-candidate audit that
+  does not bind the version, and any recorded binding contradiction are
+  rejected, never quarantined.
+- The rollback note now names the ACTUAL failing gates (the previous blanket
+  "candidate-safety gate failed" mislabeled a pure `content_gate` failure).
+
+### Focused verification (no external model, no live provider, no C1/C2 suite)
+
+`tests/test_results/pytest/20260922T111544Z_e5_binding_and_quarantine_repair.txt`
+— 69 explicit node IDs in `tests/experiments/test_e5_pipeline.py` (78 cases):
+**78 passed**. New coverage: the differing-text boundary, all three proof
+kinds, fail-closed without/stale lineage, the CONTACT-INFO structure case
+routed to the recorded representation ceiling, a real leaf→wrong-slot mapping
+still confirmable, the quarantine eligibility matrix, the version-bound action
+fingerprint, and two real Lane B loop runs (v2 red → quarantine → v3 green →
+promote; and a never-passing sequence where the owner package keeps showing
+`v1`).
+
+### Honest ceilings (owner decision may still be required)
+
+- The Builder payload contract does not carry the PREVIOUS representation
+  artifact for either lane (the live Builder re-emits a full
+  proposal/template each round). Quarantine continuity is therefore bound
+  through version identity + gates + missing leaves + render images, not by
+  handing the model its own previous artifact. Carrying it would expand the
+  Builder contract and is left to the owner.
+- Lane A's `content_shapes_match_evidence` gate cannot verify rail geometry, so
+  a structural presentation difference under it is recorded as a
+  representation capability gap; whether a rail-aware Lane A representation is
+  worth adding is an owner decision.
+- The shared conversion change also applies to the legacy E4 live attribution
+  path (`e_pipeline_legacy.py`), which passes no lineage and therefore now
+  fails closed for confirmed `candidate_binding` too. No E4/E5 test asserted
+  such a record.
+- The three live `candidate_binding` records and the Lane B quarantine
+  continuation can only be confirmed end-to-end by a NEXT live run.

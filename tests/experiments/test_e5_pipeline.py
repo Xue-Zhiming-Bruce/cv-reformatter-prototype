@@ -848,7 +848,7 @@ def test_repeated_fingerprint_uses_the_next_repairable_finding() -> None:
     selected, stalled = e._next_e5_repair_finding(
         [first, second], measured,
         [_e5_attribution(first), _e5_attribution(second)],
-        ["header:gap:8.0"],
+        [f"{first.render_version}:header:gap:8.0"],
     )
     assert stalled is False
     assert selected is not None and selected[0].finding_id == "f2"
@@ -860,7 +860,8 @@ def test_all_repeated_fingerprints_stop_as_stalled() -> None:
         "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
     }
     selected, stalled = e._next_e5_repair_finding(
-        [finding], measured, [_e5_attribution(finding)], ["header:gap:8.0"]
+        [finding], measured, [_e5_attribution(finding)],
+        [f"{finding.render_version}:header:gap:8.0"],
     )
     assert selected is None
     assert stalled is True
@@ -3192,3 +3193,519 @@ def test_authored_slot_carries_no_token_and_no_free_text() -> None:
 
     fill = at.fill_authored_template(base, _candidate_resume_E())
     assert not fill.missing_leaves
+
+
+# ===========================================================================
+# E5 owner work order 2026-09-22 — fix 1: the candidate-binding boundary
+#
+# The product contract renders the TARGET's presentation with the CANDIDATE's
+# facts: a target person's text differing from the candidate's text is the
+# contract, NOT a defect. A confirmed `candidate_binding` attribution must
+# therefore be backed by deterministic shell leaf lineage, never by the
+# model's reading of differing words. The evidence replayed here is the live
+# run `e_pipeline_e5_20260922T090821Z`, whose three confirmed
+# `candidate_binding` records (finding-la-r1-p1.01/.02/.04) argued exactly
+# from "the target is LEWIS VERSTAPPEN, the render is Daniel Phang" and even
+# proposed re-binding "the correct candidate for resume_I" — the wrong
+# direction.
+# ===========================================================================
+
+
+def _e5_lineage_candidate():
+    """A small typed candidate for deterministic lineage probes."""
+    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+
+    return CandidateDocument(
+        candidate_id="lineage_probe",
+        leaves=[
+            CandidateLeaf(
+                leaf_id="header.name", kind="header_field", slot="name",
+                text="Alex Example",
+            ),
+            CandidateLeaf(
+                leaf_id="header.envelope", kind="header_field", slot="envelope",
+                text="alex@example.com",
+            ),
+            CandidateLeaf(
+                leaf_id="work.e1", kind="work_entry", source="work_experience",
+                text="Acme Corp",
+            ),
+        ],
+    )
+
+
+def _e5_clean_lineage_records() -> dict[str, dict[str, object]]:
+    return {
+        "header.name": {"destination": "header.01.name", "text": "Alex Example"},
+        "header.envelope": {
+            "destination": "header_overflow.envelope", "text": "alex@example.com",
+        },
+        "work.e1": {"destination": "section.02.entry", "text": "Acme Corp"},
+        # the documented candidate-only synthetic unroutable identity
+        "unroutable.location": {"destination": "header_overflow.location"},
+    }
+
+
+def _e5_clean_lineage(render_version: str = "render-v1") -> "e5.CandidateBindingLineage":
+    return e5._e5_candidate_binding_lineage(
+        _e5_lineage_candidate(), render_version, _e5_clean_lineage_records()
+    )
+
+
+def test_differing_target_and_candidate_text_is_never_a_lineage_proof() -> None:
+    """The core boundary: a render that binds the REGISTERED candidate's own
+    leaves — however different from the target person — produces no proof, and
+    the candidate-only synthetic unroutable identity is not a foreign leaf."""
+    lineage = _e5_clean_lineage()
+    assert lineage.proofs == []
+    assert lineage.checked_leaf_records == 4
+    assert lineage.resolved_leaves == 3
+
+
+def test_lineage_proofs_cover_every_deterministic_binding_contradiction() -> None:
+    """The three — and only the three — deterministic forms: a leaf identity the
+    candidate does not have, a value substituted under a candidate leaf's
+    identity, and a leaf owned under a destination that is not its own slot."""
+    candidate = _e5_lineage_candidate()
+    foreign = e5._e5_candidate_binding_lineage(
+        candidate, "v",
+        {**_e5_clean_lineage_records(), "work.e9": {"text": "Someone Else"}},
+    )
+    assert [proof.kind for proof in foreign.proofs] == ["foreign_leaf_identity"]
+    assert foreign.proofs[0].leaf_id == "work.e9"
+
+    substituted = e5._e5_candidate_binding_lineage(
+        candidate, "v",
+        {**_e5_clean_lineage_records(),
+         "header.name": {"destination": "header.01.name", "text": "Lewis Verstappen"}},
+    )
+    assert [proof.kind for proof in substituted.proofs] == ["leaf_value_substituted"]
+
+    mismatched = e5._e5_candidate_binding_lineage(
+        candidate, "v",
+        {**_e5_clean_lineage_records(),
+         "header.envelope": {"destination": "header.01.name", "text": "alex@example.com"}},
+    )
+    assert [proof.kind for proof in mismatched.proofs] == ["leaf_destination_mismatch"]
+    assert mismatched.proofs[0].declared == "envelope"
+    assert mismatched.proofs[0].observed == "header.01.name"
+
+
+def test_target_person_text_differs_from_candidate_never_confirms_candidate_binding() -> None:
+    """Live regression (finding-la-r1-p1.01/.02): the target's name block and the
+    render's name block hold different people. That is the product contract, so
+    the claim stays unresolved/reviewer and never reaches a binding owner."""
+    finding = _e5_finding("finding-la-r1-p1.01", "header_name_block", "typography")
+    record = e._e5_live_attribution_record(
+        finding,
+        _live_hypothesis(
+            finding.finding_id, attribution="candidate_binding", owner="binding",
+        ),
+        "measure-la-001",
+        lineage=_e5_clean_lineage(finding.render_version),
+    )
+    assert (record.attribution, record.hypothesis_status, record.repair_owner) == (
+        "unresolved", "unresolved", "reviewer",
+    )
+    assert "product contract" in record.reason
+    assert "deterministic lineage proof" in record.reason
+    assert "3/4" in record.reason, "the shell's own resolved leaf count must be recorded"
+
+
+def test_differing_target_work_history_does_not_trigger_rebind() -> None:
+    """A target EXPERIENCE entry differs from the candidate's employers: still no
+    rebind. The finding stays open (never hidden as `no_defect`) and the Builder
+    never receives it."""
+    finding = _e5_finding("finding-la-r1-p2.01", "experience_section", "content_structure")
+    record = e._e5_live_attribution_record(
+        finding,
+        _live_hypothesis(
+            finding.finding_id, attribution="candidate_binding", owner="binding",
+        ),
+        "measure-la-006",
+        lineage=_e5_clean_lineage(finding.render_version),
+    )
+    assert record.repair_owner != "binding"
+    assert record.attribution != "no_defect", "a real observation is never closed by a rejected hypothesis"
+    measured = {
+        finding.finding_id: (
+            e.MeasurementResult(request_id="m", status="confirmed", delta_pt=12.0),
+            finding.requested_measurement,
+        ),
+    }
+    selected, stalled = e._next_e5_repair_finding([finding], measured, [record], [])
+    assert selected is None and stalled is False, "a rebind claim must never become a Builder action"
+
+
+def test_real_leaf_to_wrong_slot_mapping_is_still_confirmed_as_binding() -> None:
+    """The boundary must not make a REAL binding defect unrepairable: a
+    deterministically constructed candidate leaf owned under a foreign slot is
+    still confirmed as `candidate_binding`."""
+    finding = _e5_finding("finding-real-binding", "contact_info_block", "content_structure")
+    lineage = e5._e5_candidate_binding_lineage(
+        _e5_lineage_candidate(), finding.render_version,
+        {**_e5_clean_lineage_records(),
+         "header.envelope": {"destination": "header.01.name", "text": "alex@example.com"}},
+    )
+    record = e._e5_live_attribution_record(
+        finding,
+        _live_hypothesis(
+            finding.finding_id, attribution="candidate_binding", owner="binding",
+        ),
+        "measure-real",
+        lineage=lineage,
+    )
+    assert (record.attribution, record.hypothesis_status, record.repair_owner) == (
+        "candidate_binding", "confirmed", "binding",
+    )
+
+
+def test_contact_structure_gap_is_not_attributed_to_candidate_replacement() -> None:
+    """Live regression (finding-la-r1-p1.04): the CONTACT INFO block's missing
+    label/value rows and rules are a PRESENTATION structure difference. Target
+    values differing from the candidate's are not evidence of a wrong candidate;
+    the shell's recorded representation ceiling is the honest record."""
+    finding = _e5_finding("finding-la-r1-p1.04", "contact_info_block", "content_structure")
+    lineage = e5._e5_candidate_binding_lineage(
+        _e5_lineage_candidate(), finding.render_version,
+        _e5_clean_lineage_records(),
+        representation_ceiling_gates=["content_shapes_match_evidence"],
+    )
+    record = e._e5_live_attribution_record(
+        finding,
+        _live_hypothesis(
+            finding.finding_id, attribution="candidate_binding", owner="binding",
+        ),
+        "measure-la-005",
+        lineage=lineage,
+    )
+    assert record.repair_owner != "binding"
+    assert "representation ceiling" in record.reason
+    assert "content_shapes_match_evidence" in record.reason
+    assert "representation capability gap" in record.reason
+
+
+def test_missing_or_stale_lineage_audit_fails_closed() -> None:
+    """No audit, or an audit bound to ANOTHER render version, can never confirm a
+    binding claim: the shell fails closed instead of guessing."""
+    finding = _e5_finding("f1", "header_name_block", "typography")
+    hypothesis = _live_hypothesis(
+        "f1", attribution="candidate_binding", owner="binding",
+    )
+    absent = e._e5_live_attribution_record(finding, hypothesis, "m", lineage=None)
+    stale = e._e5_live_attribution_record(
+        finding, hypothesis, "m", lineage=_e5_clean_lineage("render-other")
+    )
+    for record in (absent, stale):
+        assert (record.attribution, record.repair_owner) == ("unresolved", "reviewer")
+    assert "no candidate-leaf lineage audit" in absent.reason
+    assert "no candidate-leaf lineage audit" in stale.reason
+
+
+def test_builder_never_receives_a_rebind_or_target_copy_repair() -> None:
+    """Requirement boundary: the conversion can never hand the Builder a
+    `candidate_binding` defect (so no Builder payload can ever ask for a rebind
+    or for target-person facts to be copied), and the live attribution prompt
+    states the product contract the shell now enforces deterministically."""
+    finding = _e5_finding("f1", "header_name_block", "typography")
+    for owner in ("binding", "builder", "renderer", "none", "reviewer"):
+        record = e._e5_live_attribution_record(
+            finding,
+            _live_hypothesis("f1", attribution="candidate_binding", owner=owner),
+            "m",
+            lineage=_e5_clean_lineage(finding.render_version),
+        )
+        assert record.repair_owner != "builder"
+        assert not (record.attribution == "candidate_binding" and record.repair_owner == "binding")
+    prompt = e5.E5_ATTRIBUTION_INSTRUCTIONS
+    assert "PRODUCT CONTRACT" in prompt
+    assert "never propose rebinding a different target" in prompt
+    assert "representation capability gap" in prompt
+
+
+def test_live_lane_a_render_lineage_is_clean_in_the_recorded_run() -> None:
+    """Highest-fidelity regression evidence: replay the LIVE run's recorded
+    Lane A leaf ledger against the real reviewed candidate. It resolves cleanly,
+    which is exactly why the three `candidate_binding` confirmations were wrong.
+    Skips when the (git-ignored) run artifacts are absent."""
+    run_dir = ROOT / "tests/experiments/runs/e_pipeline_e5_20260922T090821Z/lane_a"
+    gates_path = run_dir / "hard_gates_render-resume_I-laneA-v1.json"
+    target_path = TARGET_F_CACHE
+    if not gates_path.exists() or not target_path.exists():
+        pytest.skip("recorded live E5 run artifacts are not present in this checkout")
+    from tests.experiments.c2_candidates import candidate_resume_E
+
+    details = json.loads(gates_path.read_text(encoding="utf-8"))["details"]
+    lineage = e5._e5_candidate_binding_lineage(
+        candidate_resume_E(),
+        "render-resume_I-laneA-v1",
+        details["content_gate"]["leaf_records"],
+        representation_ceiling_gates=[
+            name for name in e5.E5_REPRESENTATION_CEILING_GATES
+            if details.get(name, {}).get("passed") is False
+        ],
+    )
+    assert lineage.proofs == [], "the recorded live render bound no foreign or mis-slotted leaf"
+    assert lineage.resolved_leaves == lineage.checked_leaf_records - 1, (
+        "only the documented candidate-only synthetic unroutable identity is unresolvable"
+    )
+    assert lineage.representation_ceiling_gates == ["content_shapes_match_evidence"]
+
+
+# ===========================================================================
+# E5 owner work order 2026-09-22 — fix 2: the quarantined repair branch
+#
+# Live regression (`e_pipeline_e5_20260922T090821Z` Lane B): v2 reduced the
+# missing leaves 5 -> 4 and passed every safety gate, but a red `content_gate`
+# rolled it back and discarded it. The next round re-derived the SAME gate
+# repair input from v1 (same action fingerprint) and stopped as
+# `stalled_no_new_action` — so only ONE repair ever happened and no cumulative
+# repair process existed. A quarantined repair base fixes that WITHOUT relaxing
+# any gate: it is never promoted, never best, never the owner-facing output.
+# ===========================================================================
+
+
+def _e5_quarantine_gates(**overrides: bool) -> dict[str, bool]:
+    gates = {
+        "content_gate": False,
+        "candidate_content_accounting": True,
+        "no_target_candidate_facts": True,
+        "no_blank_page": True,
+        "deterministic_render": True,
+        "template_safety": True,
+    }
+    return {**gates, **overrides}
+
+
+def _e5_quarantine_case(
+    version_id: str = "render-q-v2", **kwargs
+) -> tuple[bool, str]:
+    version = e.RenderVersion(
+        version_id=version_id, html_sha256="h", pdf_sha256="p", page_count=1,
+        hard_gates_passed=False,
+    )
+    return e5._e5_quarantine_eligibility(
+        version,
+        kwargs.pop("gates", _e5_quarantine_gates()),
+        representation=kwargs.pop("representation", "validated-representation"),
+        binding_lineage=kwargs.pop("binding_lineage", _e5_clean_lineage(version_id)),
+        candidate_audit=kwargs.pop(
+            "candidate_audit", {"candidate_render_version": version_id}
+        ),
+    )
+
+
+def test_repairable_but_not_passing_candidate_becomes_a_quarantine_base() -> None:
+    """A content/PDF-presence failure with every safety gate green is repairable
+    in quarantine — the live Lane B v2 situation."""
+    eligible, reason = _e5_quarantine_case()
+    assert eligible is True
+    assert "repairable-but-not-passing" in reason
+
+
+@pytest.mark.parametrize(
+    "gate",
+    ["no_target_candidate_facts", "template_safety"],
+)
+def test_unsafe_candidate_can_never_become_a_repair_base(gate: str) -> None:
+    """A target-person fact leak or an authored-template safety failure is a
+    REJECTION, never a repair base."""
+    eligible, reason = _e5_quarantine_case(gates=_e5_quarantine_gates(**{gate: False}))
+    assert eligible is False
+    assert gate in reason
+
+
+def test_unverifiable_identity_or_dirty_lineage_can_never_be_a_repair_base() -> None:
+    """Requirement: an unverifiable representation identity, a builder-candidate
+    audit that does not bind the version, a missing lineage audit, or rewritten /
+    unknown-origin candidate facts all fail closed."""
+    assert _e5_quarantine_case(representation=None)[0] is False
+    assert _e5_quarantine_case(candidate_audit={"candidate_render_version": "other"})[0] is False
+    assert _e5_quarantine_case(binding_lineage=None)[0] is False
+    dirty = e5._e5_candidate_binding_lineage(
+        _e5_lineage_candidate(), "render-q-v2",
+        {**_e5_clean_lineage_records(), "work.e9": {"text": "Someone Else"}},
+    )
+    eligible, reason = _e5_quarantine_case(binding_lineage=dirty)
+    assert eligible is False
+    assert "lineage contradiction" in reason
+
+
+def test_action_fingerprint_binds_the_repair_base_version() -> None:
+    """The same action on the SAME input version is still deduplicated, while the
+    identical remaining defect on a NEW quarantined repair version is a different
+    action — so cumulative repair can continue instead of stalling."""
+    finding = _e5_finding("f1", "content_gate", "hard_gate_content")
+    result = e.MeasurementResult(
+        request_id="m", status="confirmed", target_value_pt=0.0,
+        current_value_pt=4.0, delta_pt=4.0,
+    )
+    measured = {finding.finding_id: (result, finding.requested_measurement)}
+    executed = [f"{finding.render_version}:content_gate:hard_gate_content:4.0"]
+    selected, stalled = e._next_e5_repair_finding(
+        [finding], measured, [_e5_attribution(finding)], executed
+    )
+    assert selected is None and stalled is True
+
+    quarantined = finding.model_copy(
+        update={"finding_id": "f2", "render_version": "render-q-v2"}
+    )
+    measured_q = {"f2": (result, quarantined.requested_measurement)}
+    selected_q, _stalled_q = e._next_e5_repair_finding(
+        [quarantined], measured_q, [_e5_attribution(quarantined)], executed
+    )
+    assert selected_q is not None
+    assert selected_q[4] == "render-q-v2:content_gate:hard_gate_content:4.0"
+
+
+def _inject_scripted_content_gate_failures(
+    monkeypatch: pytest.MonkeyPatch, missing_counts: list[int]
+) -> None:
+    """Inject a scripted red `content_gate` sequence for successive Lane B
+    renders (0 = the real, genuinely green gate). This drives the quarantine
+    CONTROL FLOW with the exact evidence shape the live run produced
+    (`missing_pdf_leaves` = real candidate leaf ids); it does not pretend a real
+    render defect was reproduced. `run_e5` imports the gate function locally, so
+    the SOURCE module attribute is patched."""
+    real = at.authored_pdf_presence_gate
+    pending = list(missing_counts)
+
+    def wrapper(fill, candidate, pdf):
+        result = real(fill, candidate, pdf)
+        if pending:
+            count = pending.pop(0)
+            if count:
+                result = {
+                    **result,
+                    "passed": False,
+                    "missing_pdf_leaves": [
+                        leaf.leaf_id for leaf in candidate.leaves
+                    ][:count],
+                }
+        return result
+
+    monkeypatch.setattr(at, "authored_pdf_presence_gate", wrapper)
+
+
+@e5_skip
+def test_run_e5_repairs_from_the_quarantined_candidate_and_promotes_only_the_green_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """active v1 -> v2 red content gate (safe) -> quarantine -> the NEXT Builder
+    binds v2 as its repair base and produces v3 -> only v3 (all gates green) is
+    promoted. v2 is never promoted, never the lane's output, never best."""
+    _force_scripted_builder_attribution(monkeypatch)
+    _inject_scripted_content_gate_failures(monkeypatch, [0, 4, 0])
+    run_dir, _terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
+    )
+    lane = record["lanes"]["b"]
+    versions = lane["render_versions"]
+    assert len(versions) >= 3, "the quarantined candidate was not repaired further"
+    v1, v2, v3 = versions[0], versions[1], versions[2]
+    assert v1["hard_gates_passed"] is True
+    assert v2["hard_gates_passed"] is False and v2["promoted"] is False
+    assert v3["hard_gates_passed"] is True and v3["promoted"] is True
+    assert lane["active_render_version"] == v3["version_id"]
+    assert lane["best_render_version"] == v3["version_id"]
+    # v2 was quarantined, not rolled back, and was carried as the repair base
+    assert any("quarantined_repair_base" in s for s in lane["attempted_strategies"])
+    assert not any("rolled_back" in s for s in lane["attempted_strategies"])
+    # the quarantine was cleared once a version passed every gate
+    assert lane["quarantined_repair_base"] is None
+
+    trace = json.loads((run_dir / "lane_b" / "trace.json").read_text())
+    quarantined = [entry for entry in trace if entry.get("action") == "quarantined"]
+    assert quarantined
+    quarantine_output = json.loads(
+        (run_dir / "lane_b" / quarantined[0]["output_artifact"]).read_text()
+    )
+    assert quarantine_output["candidate_version"] == v2["version_id"]
+    assert quarantine_output["active_version"] == v1["version_id"]
+    assert quarantine_output["failing_gates"] == ["content_gate"]
+    # the Builder that produced v3 DECLARED v2 as its input (payload + trace),
+    # while the reviewer kept reading the ACTIVE v1
+    evidence_files = sorted(
+        (run_dir / "lane_b").glob("builder_evidence_round_*.json")
+    )
+    payload = json.loads(evidence_files[-1].read_text())
+    assert payload["current_render_version"] == v2["version_id"], "the Builder did not repair from v2"
+    assert payload["current_gates"] == json.loads(
+        (run_dir / "lane_b" / f"hard_gates_{v2['version_id']}.json").read_text()
+    )["gates"]
+    # the quarantined candidate's OWN missing leaves are the repair input
+    gate_finding = next(
+        f for f in payload["findings"] if f["region"] == "content_gate"
+    )
+    assert gate_finding["render_version"] == v2["version_id"]
+    assert "4 candidate leaves missing" in gate_finding["observation"]
+    proposals = [
+        entry for entry in trace
+        if entry.get("agent") == "builder" and entry.get("action") == "proposal"
+    ]
+    repair_proposal = json.loads(
+        (run_dir / "lane_b" / proposals[-1]["output_artifact"]).read_text()
+    )
+    assert repair_proposal["current_version"] == v2["version_id"]
+    assert repair_proposal["active_version"] == v1["version_id"]
+    assert repair_proposal["quarantined"] is True
+    # the builder-candidate audit binds the repair base version too
+    audit = next(
+        entry for entry in lane["builder_candidates"]
+        if entry.get("candidate_render_version") == v2["version_id"]
+    )
+    assert audit["outcome"] == "quarantined"
+    assert audit["input_render_version"] == v1["version_id"]
+    assert any(
+        entry.get("candidate_render_version") == v3["version_id"]
+        and entry.get("outcome") == "promoted"
+        for entry in lane["builder_candidates"]
+    )
+    # Only the shell's OWN gate-derived repair input may cite the quarantined
+    # version; every reviewer finding still cites the ACTIVE version.
+    reviewer_findings = [
+        f for f in lane["findings"] if not f["finding_id"].startswith("gate-")
+    ]
+    assert reviewer_findings
+    assert not any(f["render_version"] == v2["version_id"] for f in reviewer_findings)
+    assert {f["render_version"] for f in reviewer_findings} <= {
+        v1["version_id"], v3["version_id"],
+    }, "the reviewer must only ever cite an ACTIVE version"
+
+
+@e5_skip
+def test_run_e5_owner_package_shows_the_active_version_while_repair_stays_quarantined(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When no candidate ever passes, the active version stays v1 and the owner
+    package shows v1 as ACTIVE UNPROMOTED VERSION — a quarantined repair base is
+    never presented as the lane's output."""
+    _force_scripted_builder_attribution(monkeypatch)
+    # The live Lane B shape: the very FIRST render is red too (v1 had 5 missing
+    # leaves), so no hard-gate-valid version ever exists.
+    _inject_scripted_content_gate_failures(monkeypatch, [5, 4, 3, 2, 1])
+    run_dir, _terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=3,
+    )
+    lane = record["lanes"]["b"]
+    versions = lane["render_versions"]
+    assert len(versions) >= 3, "the quarantined candidate was not repaired further"
+    assert versions[-1]["hard_gates_passed"] is False, "the injected sequence must stay red"
+    assert lane["active_render_version"] == versions[0]["version_id"]
+    assert lane["best_render_version"] is None
+    assert lane["best_defect_level_version"] is None
+    assert all(not v["promoted"] for v in versions)
+    assert lane["quarantined_repair_base"] == versions[-1]["version_id"]
+
+    package = run_dir / "owner_review"
+    assert (package / "lane_b_active_unpromoted.pdf").exists()
+    assert e._sha256_file(package / "lane_b_active_unpromoted.pdf") == e._sha256_file(
+        run_dir / "lane_b" / "render_1.pdf"
+    )
+    assert not (package / "lane_b_best.pdf").exists()
+    report = (package / "REPORT.md").read_text(encoding="utf-8")
+    assert "ACTIVE UNPROMOTED VERSION" in report
+    assert "quarantined repairable-but-not-passing candidate" in report
+    assert "never promoted, never labeled BEST" in report
+    lane_report = (run_dir / "lane_b" / "REPORT.md").read_text(encoding="utf-8")
+    assert "Quarantined repair base" in lane_report
