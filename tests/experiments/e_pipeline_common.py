@@ -1729,7 +1729,9 @@ def _e5_agent_audit_record(
     usage = None
     if run_result is not None:
         try:
-            usage = run_result.usage()
+            usage = run_result.usage
+            if callable(usage):
+                usage = usage()
             usage = {
                 "input_tokens": getattr(usage, "input_tokens", None),
                 "output_tokens": getattr(usage, "output_tokens", None),

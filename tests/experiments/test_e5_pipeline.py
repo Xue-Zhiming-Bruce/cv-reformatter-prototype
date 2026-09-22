@@ -413,7 +413,7 @@ def _audit_spec(**overrides: Any) -> e.E5AgentAuditSpec:
 
 
 class _FakeRunResult:
-    """Fake AgentRunResult: exposes all_messages()/usage() like the real one."""
+    """Fake AgentRunResult: exposes current PydanticAI's usage property."""
 
     def __init__(self, messages: list[Any]) -> None:
         self._messages = messages
@@ -421,6 +421,7 @@ class _FakeRunResult:
     def all_messages(self) -> list[Any]:
         return list(self._messages)
 
+    @property
     def usage(self) -> Any:
         from types import SimpleNamespace
 
