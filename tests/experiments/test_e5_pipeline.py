@@ -323,6 +323,48 @@ def test_hard_gate_repair_inputs_never_convert_uncertain_or_lane_a_gates() -> No
     assert e._e5_gate_repair_items("b", "t", "v1", green) == []
 
 
+@e5_skip
+def test_reviewer_failure_does_not_starve_shell_confirmed_gate_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Reviewer outage is recorded, but an existing shell-confirmed Lane B
+    content defect still reaches the Builder without a fabricated visual finding."""
+    base = _base_authored_template()
+    stripped = re.sub(
+        r"\{\{each:education\}\}.*?\{\{/each\}\}", "", base.html, flags=re.DOTALL
+    )
+    broken = base.model_copy(update={"html": stripped})
+    builder_payloads: list[dict] = []
+
+    def lane_b_builder(_budget, _trace, *, payload, images, template_id, audit=None):
+        builder_payloads.append(payload)
+        candidate = broken if len(builder_payloads) == 1 else base
+        return candidate.model_copy(update={"template_id": template_id})
+
+    def reviewer_failure(*_args, **_kwargs):
+        raise RuntimeError("Connection error")
+
+    monkeypatch.setattr(e5, "_live_lane_b_builder", lane_b_builder)
+    monkeypatch.setattr(e5, "_live_reviewer_findings", reviewer_failure)
+    monkeypatch.setattr(e5, "_with_connection_retry", lambda call, **_kwargs: call())
+
+    run_dir, _terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=True, lanes=("b",), max_repair_rounds=1,
+    )
+    lane = record["lanes"]["b"]
+    assert len(builder_payloads) >= 2, "initial build plus hard-gate repair"
+    assert lane["repair_attempts"]
+    assert any(item["stage"] == "repair" for item in lane["builder_candidates"])
+    actions = [
+        entry["action"]
+        for entry in json.loads((run_dir / "lane_b" / "trace.json").read_text())
+    ]
+    assert "reviewer_failed" in actions
+    assert not lane["findings"] or all(
+        finding["reviewer"] == "scripted" for finding in lane["findings"]
+    )
+
+
 def test_review_gate_full_review_once_per_render_fingerprint() -> None:
     """Review fingerprint = FINAL-PDF sha256 (owner correction 2026-09-22):
     same version id/hash -> one review; a DIFFERENT version id with the SAME
@@ -484,7 +526,13 @@ def test_agent_audit_reference_less_image_is_hashed_and_marked_redacted(
     """An image whose call site supplied NO reference is still auditable: the
     bytes are dropped, the media type and the SHA-256 of the ACTUAL bytes are
     kept, and the record says explicitly that the reference is missing."""
-    messages = _audit_messages(tmp_image=b"raw png bytes")
+    from pydantic_ai.messages import ModelMessagesTypeAdapter
+
+    raw_image = b"\xfb\xff"  # serializes as base64url ``-_8=`` (not standard base64)
+    messages = _audit_messages(tmp_image=raw_image)
+    serialized = json.loads(ModelMessagesTypeAdapter.dump_json(messages))
+    encoded = serialized[0]["parts"][0]["content"][1]["data"]
+    assert "-" in encoded or "_" in encoded
     trace = e.RunTrace(tmp_path)
     e._e5_agent_audit_record(
         trace, _audit_spec(image_refs=()),
@@ -496,7 +544,7 @@ def test_agent_audit_reference_less_image_is_hashed_and_marked_redacted(
     image = record["messages"][0]["parts"][0]["content"][1]
     assert image["redacted"] is True
     assert image["media_type"] == "image/png"
-    assert image["sha256"] == hashlib.sha256(b"raw png bytes").hexdigest()
+    assert image["sha256"] == hashlib.sha256(raw_image).hexdigest()
     assert "path" not in image
     assert '"data"' not in json.dumps(record)
 

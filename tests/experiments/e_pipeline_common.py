@@ -1675,7 +1675,9 @@ def _e5_serialize_agent_messages(
                 )
                 used += 1
                 media_type = node.get("media_type")
-                digest = hashlib.sha256(base64.b64decode(node["data"])).hexdigest()
+                encoded = node["data"]
+                encoded += "=" * (-len(encoded) % 4)
+                digest = hashlib.sha256(base64.urlsafe_b64decode(encoded)).hexdigest()
                 node.clear()
                 node.update(
                     {

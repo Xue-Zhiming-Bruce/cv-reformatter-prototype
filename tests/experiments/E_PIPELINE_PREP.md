@@ -1828,3 +1828,55 @@ reachable from any test and neither a cause of the six failures:
 
 They are outside this round's scope ("fix the six failures + the audit warning +
 169 green") so they were left untouched and are recorded here for the owner.
+
+# E5 ninth-round follow-up and live operational failure (2026-09-22)
+
+Status: `Proposed experiment record; not a canonical Lane A/B comparison and
+not an approved product architecture change`.
+
+Commit `deb4b98` closed the two latent legacy abort defects recorded above:
+E2 now returns a typed operational-abort record instead of calling the missing
+`_empty_record`, and E3 tool-budget exhaustion records an escalation and exits
+`budget_exhausted` instead of calling an out-of-scope `escalate`. The same
+commit made the agent-message secret check cover the complete JSONL record
+(messages, instructions and provider error), with a safe withheld record on
+failure. Focused tests passed; no provider call was made.
+
+The owner-authorized live run
+`tests/experiments/runs/e_pipeline_e5_20260922T075536Z/` started from
+`deb4b98`, used the matching nine-label owner approval, and froze identical
+target/candidate/evidence for both lanes. It is an OPERATIONAL FAILURE, not a
+representation comparison: both initial Builders and renders completed, but
+the configured `qwen3-vl-plus` Reviewer failed every request with a connection
+error, so no visual finding, attribution or visual repair loop ran. The model
+budget was not the cause (each lane used 1/400 requests).
+
+That run also exposed two concrete code defects:
+
+1. PydanticAI serializes real `BinaryContent` using the URL-safe base64
+   alphabet. Standard `base64.b64decode` rejected image-bearing messages, so
+   every live audit record was safely but unhelpfully withheld.
+2. `reviewer_failed` exited the round before the existing shell-confirmed Lane
+   B hard-gate repair inputs were constructed. The deterministic content gate
+   already had sufficient builder-owned evidence and must not depend on a
+   visual-provider connection.
+
+The follow-up correction uses `urlsafe_b64decode` with padding normalization,
+keeps a failed review fingerprint eligible for a future review, and lets the
+existing hard-gate Builder-first path continue without fabricating a visual
+finding. Exercising that formerly unreachable path also found and fixed a
+version-binding error: hard-gate remeasurement now reads the candidate
+version's `gate_details_by_version`, not the boolean gate map.
+
+Focused verification only (no external model and no broad/C1/C2 suite):
+
+- real adapter base64url audit cases: passed with warnings-as-errors;
+- Reviewer-success and Reviewer-failure scheduling, hard-gate conversion and
+  agent audit selection: 11 passed;
+- the Reviewer-failure Lane B run performed an initial build plus a
+  shell-confirmed hard-gate repair, with no fabricated visual finding.
+
+No new live comparison is claimed. The next prerequisite is a one-request
+visual smoke using the owner-selected `deepseek-flash`; only a successful
+image-aware response plus a non-withheld audit record justifies another full
+Lane A/B run.

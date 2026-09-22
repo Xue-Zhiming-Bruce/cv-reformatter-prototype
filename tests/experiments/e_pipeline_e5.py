@@ -3009,6 +3009,7 @@ def run_e5(
                         ),
                     },
                 )
+                reviewer_failed = False
                 try:
                     if live and run_review:
                         target_overviews = _overview_pngs(target_pdf, out_dir, f"review_target_l{lane}_{round_no}")
@@ -3096,8 +3097,8 @@ def run_e5(
                         output={"traceback": _tb2.format_exc()[-4000:]}, persist_output=True,
                     )
                     escalate(f"reviewer_live_call_failed:{type(error).__name__}: {str(error)[:200]}")
-                    break
-                if run_review:
+                    reviewer_failed = True
+                if run_review and not reviewer_failed:
                     reviewed_render_fingerprints.add(render_fingerprint)
                 findings_new = _validate_finding_versions(findings_new, target_id, current_version.version_id)
                 findings.extend(findings_new)
@@ -3511,7 +3512,12 @@ def run_e5(
                 counter["request"] += 1
                 repeat_id = bound.request_id
                 if finding.suspected_dimension == "hard_gate_content":
-                    candidate_gate_details = candidate_gates.get(finding.region) or {}
+                    candidate_gate_details = (
+                        gate_details_by_version.get(candidate_version.version_id, {}).get(
+                            finding.region
+                        )
+                        or {}
+                    )
                     candidate_missing = len(
                         candidate_gate_details.get(
                             "missing_pdf_leaves"
