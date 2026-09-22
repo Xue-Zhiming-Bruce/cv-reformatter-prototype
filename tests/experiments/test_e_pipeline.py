@@ -456,11 +456,166 @@ PIPELINE_E_SOURCE_FILES = (
 )
 
 
-def _pipeline_e_source() -> str:
+# Every target-specific literal the original substring scans looked for: the
+# nine Resume-I section titles measured on the walkthrough target, plus the
+# target's own body wording and the target person's surname. They are EVIDENCE,
+# never source constants: the shell measures them per target and only an owner
+# approval may make a presentation label renderable.
+_TARGET_SECTION_TITLES = (
+    "CONTACT INFO",
+    "ABOUT ME",
+    "EXPERIENCE",
+    "EDUCATION",
+    "ACHIEVEMENTS",
+    "PUBLICATIONS",
+    "CONFERENCES",
+    "SKILLS",
+    "REFERENCES",
+)
+_TARGET_SPECIFIC_LITERALS = (
+    *_TARGET_SECTION_TITLES,
+    "JOB TITLE",
+    "VERSTAPPEN",
+)
+# A binding whose NAME claims to own approval / label / title data.
+_APPROVAL_NAME_MARKERS = ("APPROV", "LABEL", "TITLE")
+_FORBIDDEN_APPROVAL_NAMES = frozenset(
+    {"OWNER_APPROVED_PRESENTATION_LABEL_TEXTS", "_owner_approved_label_text"}
+)
+
+
+def _identifier_names(tree: Any) -> set[str]:
+    """Every identifier NAME the module binds or mentions (not string text)."""
+    import ast
+
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.keyword) and node.arg:
+            names.add(node.arg)
+        elif isinstance(node, ast.alias):
+            names.add(node.asname or node.name)
+    return names
+
+
+def _scan_source_for_hardcoded_target_data(
+    filename: str, source: str
+) -> dict[str, list[str]]:
+    """Semantic replacement for the old `title not in source` substring scan.
+
+    The substring scan flagged the words "FILE REFERENCES" inside an unrelated
+    agent-message-audit docstring as the Resume-I title `REFERENCES`. This
+    check looks at what the source DOES with a target-specific literal instead
+    of whether the character sequence occurs anywhere:
+
+    - `hardcoded_literal_collections` — a list/tuple/set/dict literal in
+      executable data holding TWO OR MORE distinct target literals (a generic
+      role-name map that happens to reuse one title word is NOT a target list);
+    - `hardcoded_literal_scalars` — a target literal used as a scalar constant
+      value (`NAME = "REFERENCES"`);
+    - `hardcoded_literal_approvals` — a target literal reachable from a value
+      bound to an approval / label / title constant, scalar or collection, e.g.
+      `OWNER_APPROVED_... = ("SKILLS",)`;
+    - `executable_target_name_literals` — a real string constant naming the
+      walkthrough target (comments and docstrings are not code data);
+    - `forbidden_names` — a binding using a forbidden approval-constant name.
+
+    Docstrings, comments, log/error prose and f-strings are not executable
+    DATA and never match — while a re-introduced hardcoded target list still
+    does."""
+    import ast
+
+    literals = set(_TARGET_SPECIFIC_LITERALS)
+    findings: dict[str, list[str]] = {
+        "hardcoded_literal_collections": [],
+        "hardcoded_literal_scalars": [],
+        "hardcoded_literal_approvals": [],
+        "executable_target_name_literals": [],
+        "forbidden_names": [],
+    }
+
+    def literal_of(node: Any) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            text = node.value.strip()
+            return text if text in literals else None
+        return None
+
+    def in_value(value: Any) -> list[str]:
+        return sorted({t for sub in ast.walk(value) if (t := literal_of(sub))})
+
+    tree = ast.parse(source, filename=filename)
+    if _FORBIDDEN_APPROVAL_NAMES & _identifier_names(tree):
+        findings["forbidden_names"].append(filename)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            hit = sorted({t for element in node.elts if (t := literal_of(element))})
+            if len(hit) >= 2:
+                findings["hardcoded_literal_collections"].append(
+                    f"{filename}:{node.lineno}: {hit}"
+                )
+        elif isinstance(node, ast.Dict):
+            hit = sorted(
+                {t for element in (*node.keys, *node.values) if (t := literal_of(element))}
+            )
+            if len(hit) >= 2:
+                findings["hardcoded_literal_collections"].append(
+                    f"{filename}:{node.lineno}: {hit}"
+                )
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = [t.id for t in targets if isinstance(t, ast.Name)]
+            if not names or node.value is None:
+                continue
+            scalar = literal_of(node.value)
+            if scalar is not None:
+                findings["hardcoded_literal_scalars"].append(
+                    f"{filename}:{node.lineno}: {names[0]} = {scalar!r}"
+                )
+            claims_approval = any(
+                any(marker in name.upper() for marker in _APPROVAL_NAME_MARKERS)
+                for name in names
+            )
+            if claims_approval:
+                hit = in_value(node.value)
+                if hit:
+                    findings["hardcoded_literal_approvals"].append(
+                        f"{filename}:{node.lineno}: {hit}"
+                    )
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and "resume_I" in node.value
+        ):
+            findings["executable_target_name_literals"].append(
+                f"{filename}:{node.lineno}: {node.value[:60]!r}"
+            )
+    return findings
+
+
+def _pipeline_e_semantic_findings() -> dict[str, list[str]]:
+    """`_scan_source_for_hardcoded_target_data` over every Pipeline E runtime
+    module (the pre-split single-file scan surface)."""
+    findings: dict[str, list[str]] = {
+        "hardcoded_literal_collections": [],
+        "hardcoded_literal_scalars": [],
+        "hardcoded_literal_approvals": [],
+        "executable_target_name_literals": [],
+        "forbidden_names": [],
+    }
     base = Path(__file__).resolve().parents[0]
-    return "".join(
-        (base / name).read_text(encoding="utf-8") for name in PIPELINE_E_SOURCE_FILES
-    )
+    for filename in PIPELINE_E_SOURCE_FILES:
+        for key, hits in _scan_source_for_hardcoded_target_data(
+            filename, (base / filename).read_text(encoding="utf-8")
+        ).items():
+            findings[key].extend(hits)
+    return findings
 
 
 # ===========================================================================
@@ -867,20 +1022,13 @@ def test_run_e3_walkthrough_records_the_loop_trajectory(tmp_path: Path) -> None:
 
 @e3_skip
 def test_run_e3_no_target_specific_rules(tmp_path: Path) -> None:
-    """The E3 shell derives structure from evidence; no Resume-I string,
-    heading, or coordinate may appear as a module-level constant, branch
-    condition, or literal in the Pipeline E runtime source (the scripted
+    """The E3 shell derives structure from evidence: no Resume-I title, target
+    name, or approval constant may exist as EXECUTABLE DATA (the scripted
     reviewer scenario records are runtime data keyed by the target id, not
-    production rules)."""
-    source = _pipeline_e_source()
-    for leaked in ("CONTACT INFO", "ACHIEVEMENTS", "REFERENCES", "JOB TITLE", "ABOUT ME"):
-        assert leaked not in source, leaked
-    # No target-name branch anywhere in the module (comment mentions of the
-    # walkthrough case are provenance, never conditions or constants).
-    for line in source.splitlines():
-        if "resume_I" in line:
-            stripped = line.strip()
-            assert stripped.startswith("#"), f"target-name code (not comment): {stripped}"
+    production rules). Semantic AST check — a docstring, comment or audit
+    sentence that merely CONTAINS a title word is not code data."""
+    findings = _pipeline_e_semantic_findings()
+    assert not any(findings.values()), findings
 
 
 @e3_skip
@@ -1232,14 +1380,46 @@ def test_run_e4_promotion_rechecks_accepted_regions(tmp_path: Path) -> None:
 
 @e4_skip
 def test_run_e4_no_target_specific_rules() -> None:
-    source = _pipeline_e_source()
-    for leaked in ("CONTACT INFO", "ACHIEVEMENTS", "REFERENCES", "JOB TITLE", "ABOUT ME",
-                   "CONFERENCES", "PUBLICATIONS", "VERSTAPPEN"):
-        assert leaked not in source, leaked
-    for line in source.splitlines():
-        if "resume_I" in line:
-            stripped = line.strip()
-            assert stripped.startswith("#"), f"target-name code (not comment): {stripped}"
+    findings = _pipeline_e_semantic_findings()
+    assert not any(findings.values()), findings
+
+
+def test_hardcoded_target_data_scan_catches_data_but_not_prose() -> None:
+    """Minimal positive/negative check for the semantic scan that replaced the
+    old substring scan.
+
+    NEGATIVE (why the substring scan had to go): a docstring/comment/audit
+    sentence containing the word REFERENCES is prose, not data.
+    POSITIVE (what must still be caught): a real hardcoded Resume-I title
+    list, and a title bound to an approval/label constant."""
+    prose = '''
+"""Images become FILE REFERENCES (relative path, sha256, media type)."""
+# the target lists REFERENCES and SKILLS as section headings
+MESSAGE = "see the REFERENCES section"
+F"""verdict for {name}: JOB TITLE"""
+'''
+    assert not any(_scan_source_for_hardcoded_target_data("prose.py", prose).values())
+
+    # a real hardcoded target list is still caught
+    title_list = 'INHERITED_SECTION_TITLES = ("CONTACT INFO", "EXPERIENCE", "REFERENCES")\n'
+    findings = _scan_source_for_hardcoded_target_data("titles.py", title_list)
+    assert findings["hardcoded_literal_collections"], findings
+    assert any("REFERENCES" in entry for entry in findings["hardcoded_literal_collections"])
+
+    # a single target literal as a scalar constant is caught
+    findings = _scan_source_for_hardcoded_target_data("scalar.py", 'NAME = "VERSTAPPEN"\n')
+    assert findings["hardcoded_literal_scalars"], findings
+
+    # a single-element approval tuple is caught via the approval-name rule
+    approval = 'OWNER_APPROVED_PRESENTATION_LABEL_TEXTS = ("SKILLS",)\n'
+    findings = _scan_source_for_hardcoded_target_data("one.py", approval)
+    assert findings["hardcoded_literal_approvals"], findings
+
+    # a generic role-name map that happens to reuse ONE title word is not a
+    # fixed target-title list and must not be flagged
+    generic = '_PROBE_ROLE_HEADING = {"skills": "SKILLS", "languages": "LANGUAGES"}\n'
+    findings = _scan_source_for_hardcoded_target_data("generic.py", generic)
+    assert not any(findings.values()), findings
 
 
 def test_promotion_requires_shell_not_any_agent(tmp_path: Path) -> None:

@@ -1662,3 +1662,169 @@ Pytest outputs: `tests/test_results/pytest/<ts>_e5_split_*.txt`,
 files re-verified 13/13 against HEAD.
 
 Not yet done: no live run was performed, so the split is verified offline only.
+
+# E5 eighth round (2026-09-22, owner work order: close the post-split correctness gaps)
+
+Status: `Proposed experiment record; not an approved product architecture or
+roadmap item`. Correctness fixes only. No live comparison, no feature, no
+schema, no new runner, no module split, no gate relaxation. No C1/C2 run.
+
+Start state: branch `experiment/pipeline-c2`, HEAD `ec73a48`, status exactly
+` M D_PIPELINE_PROPOSAL.md` + `?? unused.docx`; C2 13 files 13/13 at HEAD.
+
+## The six failures and their real causes
+
+### 1. `run_e5` never reached either live Builder (`KeyError: 'a'`)
+
+TWO independent causes, both pre-existing (`bef8b9c`), neither a split artifact:
+
+1. `_e5_image_refs` and `_e5_audit` were defined INSIDE the nested helper
+   `_known_evidence_ids` — and after its `return`, so unreachable there — while
+   every call site is in the sibling nested helper `_run_lane`. The names were
+   therefore module GLOBAL names for `_run_lane` and raised `NameError`. Found
+   mechanically with `symtable` (free/global analysis), not by guessing; the
+   same defect exists in the pre-split monolith.
+   Fix: `_e5_image_refs` moved into `run_e5`'s scope; `_e5_audit` (which closes
+   over `lane`) moved into `_run_lane`'s scope. Bodies unchanged.
+2. The two test stubs declared `(budget, trace, *, payload, images, id)` but the
+   production call sites pass `audit=<E5AgentAuditSpec>` since `bef8b9c`, so the
+   call raised `TypeError` (masked as `lane_builder_initial_failed:TypeError`).
+   The test seam had drifted from the production signature.
+   Fix: stubs accept `audit` and assert it is the lane's `E5AgentAuditSpec`.
+
+### 2 and 3. Lane A content-shape probes failed `privacy_gate`
+
+Exact evidence (`authored_privacy_gate` re-run over the generated artifacts):
+
+- lane A `render_1.html` leaked `['EXPERIENCE', 'EDUCATION', 'SKILLS']`;
+- lane A `probe_{short,medium,long}.html` leaked
+  `['EXPERIENCE', 'EDUCATION', 'ACHIEVEMENTS', 'SKILLS']`;
+- lane B: no leak in any render or probe.
+
+These are the target's own MEASURED section headings (`presentation_labels.json`
+lists all nine as `status: proposed` with
+`local_pdf.sidebar_label.*` evidence, and marks EXPERIENCE / EDUCATION /
+ACHIEVEMENTS / SKILLS as `referenced_by_lanes: ["a"]`). They are presentation
+labels, not target-person facts, and they are NOT owner-approved.
+
+The gate is therefore CORRECT, not a false positive: Lane A renders the compiled
+plan, whose section headings come from the target evidence, and the owner
+decision (0c8fc09/b2c24c9, documented in `run_e5`) is explicit that a proposed
+label "can never be rendered ... its text is never excluded from the privacy
+gate (so rendering it fails closed as a leak instead of being silently
+tolerated)". Without an approval, every lane A render fails closed, no
+best-valid version exists, and the probes stay diagnostic.
+
+Fix: the two tests now supply the owner input the gate requires —
+`_approval_for_real_target()`, a `PresentationLabelApproval` bound to the
+target's sha256 and to the catalog the SHELL measures from that target's sidebar
+evidence (same derivation `run_e5` uses). Nothing is hardcoded and no
+Resume-I-specific rule, allowlist, fixed heading or target-hash branch was
+added; no gate was relaxed. With the real approval, lane A probes pass all
+gates (`probes_passed: True`), while `content_shapes_match_evidence` still fails
+identically on the main render (the documented template-representation
+ceiling), so the lane still ends `budget_exhausted` with a defect-level active
+version and no best-valid promotion.
+
+### 4, 5, 6. The three source-scan tests
+
+Root cause: the naive `title not in source` substring gate. The sixth round
+(`bef8b9c`) added the agent-audit docstring sentence
+"Images become FILE REFERENCES (relative path, sha256, media type, page,
+target/render role)" — the substring `REFERENCES` inside "FILE REFERENCES" was
+read as the Resume-I section title `REFERENCES`, so all three tests went red on
+`bef8b9c` and stayed red through the split.
+
+Fix: the scan is now SEMANTIC (`ast`), not textual. Findings, per Pipeline E
+runtime module:
+
+- `hardcoded_literal_collections` — a list/tuple/set/dict literal in executable
+  data holding TWO OR MORE distinct target literals (the eight/eight title
+  strings, plus the target body wording `JOB TITLE` and the surname
+  `VERSTAPPEN` that the original scans also covered);
+- `hardcoded_literal_scalars` — a target literal used as a scalar constant
+  value (`NAME = "REFERENCES"`);
+- `hardcoded_literal_approvals` — a target literal reachable from a value bound
+  to an approval / label / title constant, scalar or collection
+  (`OWNER_APPROVED_... = ("SKILLS",)`);
+- `executable_target_name_literals` — a real string constant naming the
+  walkthrough target (replaces the old "any line mentioning resume_I must be a
+  comment" line scan);
+- `forbidden_names` — a binding using a forbidden approval-constant name.
+
+Docstrings, comments, log/error prose and f-strings are not executable data and
+never match. A minimal positive/negative test
+(`test_hardcoded_target_data_scan_catches_data_but_not_prose`) pins both sides:
+prose containing "FILE REFERENCES", a comment naming REFERENCES/SKILLS, a
+message string and an f-string pass; a three-title list, a scalar `VERSTAPPEN`
+constant and a one-element approval tuple are caught; a generic role-name map
+that reuses only the word `SKILLS` (`_PROBE_ROLE_HEADING`) is correctly NOT a
+target list. The docstring that caused the false positive was rewritten as part
+of the serializer fix, NOT to make the scan pass — the negative case proves the
+old wording would now pass anyway.
+
+## Agent-message audit serialization (warnings)
+
+The old `_e5_serialize_agent_messages` replaced `BinaryContent` parts with plain
+dicts INSIDE the typed message dataclasses (`dataclasses.replace`) and only then
+called `ModelMessagesTypeAdapter.dump_json()`. The injected dict violated the
+typed union and pydantic emitted `UserWarning: Pydantic serializer warnings:
+PydanticSerializationUnexpectedValue(...)` — the tests were green while
+printing warnings.
+
+New implementation, in the order the owner prescribed:
+
+1. `ModelMessagesTypeAdapter.dump_json(messages)` over the ORIGINAL typed
+   objects, then `json.loads` — no substitute object is ever built, so role,
+   `part_kind`, tool call/return identity, retry prompts, timestamps and order
+   are exactly what PydanticAI recorded, and no warning is emitted;
+2. recursive replacement, in the ALREADY SERIALIZED plain data tree, of every
+   `{"kind": "binary", "data": <base64>}` node by an auditable reference: the
+   call site's run-relative path / page / role when available, the media type,
+   and the SHA-256 of the ACTUAL bytes (base64-decoded to hash, then discarded).
+   With no call-site reference the record keeps the media type and hash and adds
+   an explicit `"redacted": true` flag instead of inventing a path.
+
+URL / file-id content is text and is deliberately left in place — it is what the
+existing signed-URL/secret check covers; only `kind == "binary"` carries bytes.
+No second message schema, no `RedactedBinaryContent`-style substitute. The
+weird no-warning path was verified directly: the old implementation RAISES
+`UserWarning` under `warnings.simplefilter("error")`, the new one does not
+(`..._e2_agent_audit_before_after_evidence.txt`).
+
+## Verification
+
+| Step | Command | Result |
+| --- | --- | --- |
+| 1 | the six failing node IDs | **6 passed** |
+| 2 | `-k agent_audit -W error::UserWarning` | **7 passed** |
+| 3 | `pytest test_e_pipeline.py test_e5_pipeline.py` | **169 passed, 0 failed** |
+
+Collection is 169 (was 167): two tests were ADDED by this round's requirements —
+`test_agent_audit_reference_less_image_is_hashed_and_marked_redacted` (the
+reference-less image rule) and
+`test_hardcoded_target_data_scan_catches_data_but_not_prose` (the scan's
+positive/negative pin). No test was deleted, skipped or converted to an
+expected failure.
+
+No external network: the only `live=True` test passes with every non-loopback
+`socket.connect` blocked (`..._e2_live_true_no_external_network.txt`), all three
+live seams are stubbed, and `tests/experiments/runs/` still holds the same 656
+entries with no new directory. Offline Chrome is the tests' own pinned export
+path (pre-existing).
+
+## Found but NOT fixed (owner decision required)
+
+The same `symtable` sweep reports two further pre-existing latent `NameError`s
+in `e_pipeline_legacy.py`, both present in the pre-split monolith, neither
+reachable from any test and neither a cause of the six failures:
+
+- `run_e2` -> `abort()` calls `_empty_record("unknown", budget)`, a name that is
+  not defined anywhere in the repository (the E2 early-abort path would raise
+  `NameError` instead of returning an operational-abort record);
+- `run_e3` calls `escalate(...)` (e.g.
+  `run_e3.escalate("investigator_budget_exhausted")`), but `escalate` is defined
+  only inside `run_e4` (the E3 escalation paths would raise `NameError`).
+
+They are outside this round's scope ("fix the six failures + the audit warning +
+169 green") so they were left untouched and are recorded here for the owner.

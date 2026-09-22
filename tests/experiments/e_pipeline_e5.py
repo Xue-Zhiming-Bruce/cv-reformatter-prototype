@@ -2038,53 +2038,28 @@ def run_e5(
                 ids.add(ref.evidence_id)
         return ids
 
-        def _e5_image_refs(
-            paths: list[Any], role: str, *, first_page: int = 1
-        ) -> tuple[dict[str, Any], ...]:
-            """Image audit references in the EXACT user-content order: file
-            path relative to the run dir, sha256, page number, target/render
-            role — NEVER image bytes."""
-            refs: list[dict[str, Any]] = []
-            for index, path in enumerate(paths, first_page):
-                path = Path(path)
-                refs.append(
-                    {
-                        "path": (
-                            path.relative_to(out_dir).as_posix()
-                            if path.is_relative_to(out_dir)
-                            else path.name
-                        ),
-                        "page": index,
-                        "role": role,
-                        "sha256": _sha256_file(path),
-                    }
-                )
-            return tuple(refs)
-
-        def _e5_audit(
-            *,
-            agent: str,
-            phase: str,
-            round_no: int | None,
-            render_version: str | None,
-            finding_ids: tuple[str, ...] = (),
-            measurement_ids: tuple[str, ...] = (),
-            instructions: str,
-            image_refs: tuple[dict[str, Any], ...] = (),
-        ) -> E5AgentAuditSpec:
-            return E5AgentAuditSpec(
-                agent=agent,
-                lane=lane,
-                phase=phase,
-                round_no=round_no,
-                target_version=target_id,
-                render_version=render_version,
-                finding_ids=finding_ids,
-                measurement_ids=measurement_ids,
-                model=None,
-                instructions=instructions,
-                image_refs=image_refs,
+    def _e5_image_refs(
+        paths: list[Any], role: str, *, first_page: int = 1
+    ) -> tuple[dict[str, Any], ...]:
+        """Image audit references in the EXACT user-content order: file
+        path relative to the run dir, sha256, page number, target/render
+        role — NEVER image bytes."""
+        refs: list[dict[str, Any]] = []
+        for index, path in enumerate(paths, first_page):
+            path = Path(path)
+            refs.append(
+                {
+                    "path": (
+                        path.relative_to(out_dir).as_posix()
+                        if path.is_relative_to(out_dir)
+                        else path.name
+                    ),
+                    "page": index,
+                    "role": role,
+                    "sha256": _sha256_file(path),
+                }
             )
+        return tuple(refs)
 
     candidate = candidate_resume_E()
     # Generic header-overflow disposition (E3 shell transition, reused for
@@ -2183,6 +2158,31 @@ def run_e5(
     lane_records: dict[str, E5LaneRecord] = {}
 
     def _run_lane(lane: str) -> E5LaneRecord:
+        def _e5_audit(
+            *,
+            agent: str,
+            phase: str,
+            round_no: int | None,
+            render_version: str | None,
+            finding_ids: tuple[str, ...] = (),
+            measurement_ids: tuple[str, ...] = (),
+            instructions: str,
+            image_refs: tuple[dict[str, Any], ...] = (),
+        ) -> E5AgentAuditSpec:
+            return E5AgentAuditSpec(
+                agent=agent,
+                lane=lane,
+                phase=phase,
+                round_no=round_no,
+                target_version=target_id,
+                render_version=render_version,
+                finding_ids=finding_ids,
+                measurement_ids=measurement_ids,
+                model=None,
+                instructions=instructions,
+                image_refs=image_refs,
+            )
+
         lane_dir = out_dir / f"lane_{lane}"
         lane_dir.mkdir(exist_ok=True)
         # The per-lane budget lives INSIDE the run budget (recorded in the

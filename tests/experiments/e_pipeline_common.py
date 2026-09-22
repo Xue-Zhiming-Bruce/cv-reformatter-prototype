@@ -1631,45 +1631,69 @@ def _e5_serialize_agent_messages(
     """Serialize the FULL model-visible request/provider-response sequence
     with the installed PydanticAI ``ModelMessagesTypeAdapter`` (the complete
     conversation, including tool calls/results and validation-retry prompts).
-    Images become FILE REFERENCES (relative path, sha256, media type, page,
-    target/render role) — never base64. Model internals are not recorded.
-    No credential/authorization/environment value can appear here because the
-    messages contain model content only; the caller still runs the
-    signed-URL/secret check over the final text and fails closed."""
-    from pydantic_ai.messages import BinaryContent, ModelMessagesTypeAdapter
-    from dataclasses import replace as _dc_replace
 
-    replaced: list[Any] = []
-    ref_index = 0
-    for message in messages:
-        new_parts = []
-        changed = False
-        for part in getattr(message, "parts", None) or []:
-            content = getattr(part, "content", None)
-            if isinstance(content, list):
-                new_content = []
-                for element in content:
-                    if isinstance(element, BinaryContent):
-                        ref = dict(image_refs[ref_index]) if ref_index < len(image_refs) else {
-                            "note": "image reference not provided by the call site"
-                        }
-                        ref_index += 1
-                        new_content.append(
-                            {
-                                **ref,
-                                "kind": "image_reference",
-                                "media_type": element.media_type,
-                                "sha256": hashlib.sha256(element.data).hexdigest(),
-                            }
-                        )
-                        changed = True
-                    else:
-                        new_content.append(element)
-                if changed:
-                    part = _dc_replace(part, content=new_content)
-            new_parts.append(part)
-        replaced.append(_dc_replace(message, parts=new_parts) if changed else message)
-    return ModelMessagesTypeAdapter.dump_json(replaced).decode("utf-8")
+    Two SEPARATE steps, in this order:
+
+    1. the LEGITIMATE typed messages are serialized by the official adapter —
+       never by a hand-built substitute object, so the recorded role/part
+       types, tool identity, retry prompts and ordering stay exactly as
+       PydanticAI produced them and no serialization warning is emitted;
+    2. only in the ALREADY SERIALIZED plain data tree is every binary payload
+       (``kind == "binary"``) replaced by an auditable reference: the call
+       site's run-relative path/page/role when available, the media type, and
+       the SHA-256 of the ACTUAL bytes (base64-decoded to hash, then
+       discarded). Images are NEVER kept as base64 or any large binary.
+
+    URL/file-id content is text and is deliberately left in place: it is
+    covered by the caller's signed-URL/secret check. Model internals are not
+    recorded. No credential/authorization/environment value can appear here
+    because the messages contain model content only; the caller still runs the
+    signed-URL/secret check over the final text and fails closed."""
+    import base64
+
+    from pydantic_ai.messages import ModelMessagesTypeAdapter
+
+    # Step 1: official adapter over the ORIGINAL typed objects.
+    serialized = json.loads(ModelMessagesTypeAdapter.dump_json(messages))
+
+    # Step 2: replace binary payloads in the plain data tree, in the same
+    # order the call site listed its image references.
+    refs = list(image_refs)
+    used = 0
+
+    def _redact(node: Any) -> None:
+        nonlocal used
+        if isinstance(node, dict):
+            if node.get("kind") == "binary" and isinstance(node.get("data"), str):
+                ref = (
+                    dict(refs[used])
+                    if used < len(refs)
+                    else {
+                        "redacted": True,
+                        "note": "image reference not provided by the call site",
+                    }
+                )
+                used += 1
+                media_type = node.get("media_type")
+                digest = hashlib.sha256(base64.b64decode(node["data"])).hexdigest()
+                node.clear()
+                node.update(
+                    {
+                        **ref,
+                        "kind": "image_reference",
+                        "media_type": media_type,
+                        "sha256": digest,
+                    }
+                )
+                return
+            for value in node.values():
+                _redact(value)
+        elif isinstance(node, list):
+            for item in node:
+                _redact(item)
+
+    _redact(serialized)
+    return json.dumps(serialized, ensure_ascii=False)
 
 
 def _e5_agent_audit_record(

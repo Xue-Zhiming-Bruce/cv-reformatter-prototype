@@ -33,7 +33,7 @@ from tests.experiments.test_e_pipeline import (
     ROOT,
     TARGET_F,
     TARGET_F_CACHE,
-    _pipeline_e_source,
+    _pipeline_e_semantic_findings,
     e2_skip,
 )
 
@@ -454,10 +454,20 @@ def test_agent_audit_success_keeps_full_history_and_redacts_images(tmp_path: Pat
     # image never embedded as base64: the reference replaces the bytes
     text = lines[0]
     assert '"data"' not in text
+    # full ORDER preserved: message kinds, part kinds, and the position of the
+    # image inside the user content (text, image)
+    assert [m["kind"] for m in record["messages"]] == [
+        "request", "response", "request", "response",
+    ]
+    assert [p["part_kind"] for m in record["messages"] for p in m["parts"]] == [
+        "user-prompt", "tool-call", "tool-return", "retry-prompt", "text",
+    ]
+    assert record["messages"][0]["parts"][0]["content"][0] == "review this page"
     assert record["messages"][0]["parts"][0]["content"][1]["sha256"] == hashlib.sha256(
         b"raw png bytes"
     ).hexdigest()
     assert record["messages"][0]["parts"][0]["content"][1]["path"] == "review_target_page_1.png"
+    assert record["messages"][0]["parts"][0]["content"][1]["media_type"] == "image/png"
     # call_id = lane prefix + the persisted trace artifact name; the trace
     # entry is joinable by that artifact name and binds the call identity
     artifact_name = call_id.split("-", 1)[1]
@@ -466,6 +476,29 @@ def test_agent_audit_success_keeps_full_history_and_redacts_images(tmp_path: Pat
     assert json.loads(artifact.read_text(encoding="utf-8"))["call_id"] == call_id
     assert trace.entries[-1]["output_artifact"] == artifact_name
     assert trace.entries[-1]["action"] == "agent_call"
+
+
+def test_agent_audit_reference_less_image_is_hashed_and_marked_redacted(
+    tmp_path: Path,
+) -> None:
+    """An image whose call site supplied NO reference is still auditable: the
+    bytes are dropped, the media type and the SHA-256 of the ACTUAL bytes are
+    kept, and the record says explicitly that the reference is missing."""
+    messages = _audit_messages(tmp_image=b"raw png bytes")
+    trace = e.RunTrace(tmp_path)
+    e._e5_agent_audit_record(
+        trace, _audit_spec(image_refs=()),
+        input_messages=messages, run_result=_FakeRunResult(messages), error=None,
+    )
+    record = json.loads(
+        (tmp_path / "agent_messages.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    image = record["messages"][0]["parts"][0]["content"][1]
+    assert image["redacted"] is True
+    assert image["media_type"] == "image/png"
+    assert image["sha256"] == hashlib.sha256(b"raw png bytes").hexdigest()
+    assert "path" not in image
+    assert '"data"' not in json.dumps(record)
 
 
 def test_agent_audit_keeps_validation_retry_and_tool_traffic(tmp_path: Path) -> None:
@@ -632,11 +665,15 @@ def test_builder_entries_receive_identical_initial_payload_and_image_hashes(
             "image_hashes": [hashlib.sha256(image.read_bytes()).hexdigest() for image in images],
         }
 
-    def lane_a_builder(_budget, _trace, *, payload, images, proposal_id):
+    def lane_a_builder(_budget, _trace, *, payload, images, proposal_id, audit=None):
+        # the production call site passes the agent-message audit spec: the
+        # seam must match the real signature or the builder is never reached
+        assert isinstance(audit, e.E5AgentAuditSpec) and audit.lane == "a", audit
         capture("a", payload, images)
         return e.LaneAStructureProposal(proposal_id=proposal_id, sections=[], agent="llm")
 
-    def lane_b_builder(_budget, _trace, *, payload, images, template_id):
+    def lane_b_builder(_budget, _trace, *, payload, images, template_id, audit=None):
+        assert isinstance(audit, e.E5AgentAuditSpec) and audit.lane == "b", audit
         capture("b", payload, images)
         return _base_authored_template().model_copy(update={"template_id": template_id})
 
@@ -1129,6 +1166,7 @@ def test_lane_a_proposal_cites_only_known_state_nodes() -> None:
 def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
     run_dir, terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
+        presentation_label_approval=_approval_for_real_target(),
     )
     assert terminal in {"ready_for_owner_review", "budget_exhausted"}
     lane = record["lanes"]["a"]
@@ -1583,6 +1621,7 @@ def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
     artifacts — never a default-state or string-fill-only claim."""
     run_dir, _terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=1,
+        presentation_label_approval=_approval_for_real_target(),
     )
     for lane_id, expected_token in (("a", "proposal"), ("b", "template")):
         lane = record["lanes"][lane_id]
@@ -2412,6 +2451,42 @@ def _approval_for(
     )
 
 
+def _approval_for_real_target(target: Path = RESUME_I) -> e.PresentationLabelApproval:
+    """The owner input the presentation-label gate REQUIRES for a real run.
+
+    Lane A renders the compiled plan, and the plan's section headings come from
+    the target evidence — so without an approval bound to this target and this
+    measured catalog, the shared privacy gate fails closed by design
+    (`run_e5`: an unapproved label "can never be rendered ... so rendering it
+    fails closed as a leak"). Lane B never renders them, which is why only
+    lane A needs the approval to reach a promotable state.
+
+    Nothing is hardcoded: the approved ids are the ids the SHELL measures from
+    this target's sidebar evidence, via the same derivation `run_e5` uses, so
+    this helper can never smuggle a target-specific rule into production.
+    Approving the whole measured catalog is the honest default: every entry is
+    a measured section heading, and approval only decides which of them may be
+    rendered and therefore excluded from the privacy gate."""
+    from app.template_analysis.commercial.models import NormalizedLayoutEvidence
+
+    from tests.experiments.a_pipeline import build_format_summary
+
+    target = target.resolve()
+    cache = ROOT / "tests/experiments/runs/target_cache" / e._sha256_file(target)
+    raw = json.loads((cache / "adobe_raw.json").read_text(encoding="utf-8"))
+    normalized = NormalizedLayoutEvidence.model_validate_json(
+        (cache / "enriched_evidence.json").read_text(encoding="utf-8")
+    )
+    summary = build_format_summary(normalized, raw, target)
+    _state, derived = e.compile_two_column_state(target, summary, evidence=normalized)
+    catalog = e._presentation_label_catalog(derived)
+    return e.PresentationLabelApproval(
+        target_sha256=e._sha256_file(target),
+        catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+        approved_label_ids=[label.label_id for label in catalog],
+    )
+
+
 def test_valid_approval_projects_only_the_approved_ids() -> None:
     catalog = _catalog_one()
     approved = e._apply_presentation_label_approval(
@@ -2617,17 +2692,13 @@ def test_catalog_hash_is_deterministic_and_excludes_status() -> None:
 
 
 def test_source_has_no_hardcoded_resume_i_approval_list() -> None:
-    """The nine Resume-I titles must NOT exist as an owner-approval constant:
-    approval is an owner input, never a source-code constant. Scans every
-    Pipeline E runtime module (the pre-split scan surface)."""
-    source = _pipeline_e_source()
-    assert "OWNER_APPROVED_PRESENTATION_LABEL_TEXTS" not in source
-    assert "_owner_approved_label_text" not in source
-    for title in (
-        "CONTACT INFO", "ABOUT ME", "ACHIEVEMENTS",
-        "PUBLICATIONS", "CONFERENCES", "REFERENCES",
-    ):
-        assert title not in source, f"hardcoded Resume-I approval text: {title!r}"
+    """The nine Resume-I titles must NOT exist as owner-approval DATA: approval
+    is an owner input read from evidence at run time, never a source-code
+    constant. Semantic AST check over every Pipeline E runtime module (the
+    pre-split scan surface) — prose that merely contains a title word is not
+    data."""
+    findings = _pipeline_e_semantic_findings()
+    assert not any(findings.values()), findings
 
 
 def test_presentation_label_text_is_escaped_and_never_reparsed() -> None:
