@@ -1357,6 +1357,182 @@ def test_live_builder_budget_is_reserved() -> None:
     assert e._builder_reserve_intact(healthy) is True
 
 
+# --- repair-starvation scheduling (2026-09-21 owner work order) -------------
+
+
+def test_same_render_paraphrase_does_not_reopen_the_ledger() -> None:
+    """A reviewer PARAPHRASING the same defect on the SAME render must NOT
+    reopen the entry (which would clear its attribution and re-trigger
+    measurement/attribution on an unchanged render — the 110-reopen loop).
+    Reopen is reserved for a changed observation on a NEW render version."""
+    finding = _e5_finding("f1", "section.04", "role_gap")
+    original_class = e._observation_class(finding.observation)
+    ledger = e.DefectLedger()
+    entry, action = ledger.observe(finding)
+    assert action == "new"
+    e._record_ledger_attribution(
+        ledger, finding,
+        e.AttributionRecord(
+            finding_id="f1", render_version="render-v1",
+            measurement_request_id="measure-f1",
+            attribution="unresolved", hypothesis_status="unresolved",
+            repair_owner="reviewer", evidence=["measure-f1"], reason="r",
+        ),
+        "measure-f1",
+    )
+    assert entry.status == "attributed" and entry.attribution is not None
+    # SAME render, reworded observation: dedup, attribution PRESERVED
+    paraphrase = finding.model_copy(
+        update={"finding_id": "f2", "observation": "entry heads look wider apart now than target"}
+    )
+    entry2, action2 = ledger.observe(paraphrase)
+    assert action2 == "dedup"
+    assert entry2.status == "attributed" and entry2.attribution is not None
+    assert entry2.observation_class == original_class  # stored evidence stands
+    # NEW render + changed observation: the finding genuinely changed -> reopen
+    changed = finding.model_copy(
+        update={"finding_id": "f3", "render_version": "render-v2",
+                "observation": "The entry head text now overlaps the meta column."}
+    )
+    entry3, action3 = ledger.observe(changed)
+    assert action3 == "reopened" and entry3.status == "open" and entry3.attribution is None
+
+
+def test_round_work_cap_bounds_attribution_backlog() -> None:
+    """100 open findings can only send at most 3 findings into one round's
+    attribution backlog; the rest are returned as deferred (never lost)."""
+    findings = [_e5_finding(f"f{i}", f"region.{i:03d}", "role_gap") for i in range(100)]
+    selected, deferred = e._e5_select_round_work(findings, [], [])
+    assert len(selected) == e.E5_MAX_ROUND_ATTRIBUTION_FINDINGS == 3
+    assert len(deferred) == 97
+    assert set(f.finding_id for f in selected) != set(f.finding_id for f in deferred)
+    assert selected[0].finding_id == "f0"  # review order preserved
+
+
+def test_deferred_findings_stay_open_and_reeligible() -> None:
+    """Deferred is scheduling state, NOT closure: a deferred finding stays in
+    the open-findings view and is re-selected in a later round."""
+    findings = [_e5_finding(f"f{i}", f"region.{i}", "role_gap") for i in range(5)]
+    selected, deferred = e._e5_select_round_work(findings, [], [])
+    assert [f.finding_id for f in selected] == ["f0", "f1", "f2"]
+    # a later round re-selects the deferred ones under the same rule
+    later_selected, later_deferred = e._e5_select_round_work([], [], deferred)
+    assert [f.finding_id for f in later_selected] == ["f3", "f4"]
+    assert later_deferred == []
+
+
+def test_one_failed_attribution_does_not_block_an_attributed_defect() -> None:
+    """An attribution that exhausted its per-run request cap is recorded as
+    unresolved/reviewer (deferred); it does NOT stop another already-confirmed,
+    builder-owned defect from reaching the Builder."""
+    blocked = _e5_finding("f1", "region.01", "role_gap")
+    repairable = _e5_finding("f2", "region.02", "role_gap")
+    attributions = [
+        e.AttributionRecord(
+            finding_id="f1", render_version="render-v1",
+            measurement_request_id="measure-f1",
+            attribution="unresolved", hypothesis_status="unresolved",
+            repair_owner="reviewer", evidence=["measure-f1"],
+            reason="live attribution failed (per-run request limit); recorded unresolved",
+        ),
+        _e5_attribution(repairable),
+    ]
+    measured = {
+        "f1": (e.MeasurementResult(request_id="measure-f1", status="confirmed", delta_pt=9.0), blocked.requested_measurement),
+        "f2": (e.MeasurementResult(request_id="measure-f2", status="confirmed", delta_pt=5.0), repairable.requested_measurement),
+    }
+    selected, stalled = e._next_e5_repair_finding(
+        [blocked, repairable], measured, attributions, []
+    )
+    assert selected is not None and selected[0].finding_id == "f2"
+
+
+def test_builder_called_before_full_ledger_is_attributed() -> None:
+    """The Builder does NOT wait for every open finding to be attributed: one
+    confirmed builder-owned defect bound to the active version is enough."""
+    open_f1 = _e5_finding("f1", "region.01", "role_gap")
+    open_f2 = _e5_finding("f2", "region.02", "role_gap")
+    repairable = _e5_finding("f3", "region.03", "role_gap")
+    attributions = [_e5_attribution(repairable)]  # ONLY f3 is attributed
+    measured = {
+        "f3": (e.MeasurementResult(request_id="measure-f3", status="confirmed", delta_pt=7.0), repairable.requested_measurement),
+    }
+    selected, stalled = e._next_e5_repair_finding(
+        [repairable], measured, attributions, []
+    )
+    assert selected is not None and selected[0].finding_id == "f3" and stalled is False
+    # f1/f2 were never attributed — the Builder was still called for f3
+    assert [a.finding_id for a in attributions] == ["f3"]
+
+
+def test_hard_gate_failure_enters_repair_with_gate_evidence() -> None:
+    """A candidate-content hard-gate failure with recorded missing leaves is
+    converted to a BUILDER-OWNED repair input from the shell's OWN gate
+    evidence (template_compilation/confirmed) — no live attribution needed —
+    and it reaches the Builder before any visual defect."""
+    gates = {
+        "content_gate": {"passed": False, "missing_pdf_leaves": ["header.name", "work.e1.b1"]},
+        "candidate_content_accounting": {"passed": True, "missing_leaves": []},
+    }
+    items = e._e5_gate_repair_items("b", "target-resume_I-v1", "render-v1", gates)
+    assert len(items) == 1
+    finding, result, request, attribution = items[0]
+    assert finding.region == "content_gate"
+    assert finding.suspected_dimension == "hard_gate_content"
+    assert finding.render_version == "render-v1"
+    assert result.status == "confirmed" and result.delta_pt == 2.0
+    assert result.method == "content_gate_missing_pdf/1"
+    assert request.request_id.startswith("gate-content_gate-")
+    assert (
+        attribution.attribution,
+        attribution.hypothesis_status,
+        attribution.repair_owner,
+    ) == ("template_compilation", "confirmed", "builder")
+    # gate evidence becomes a repair candidate AHEAD of visual defects
+    visual = _e5_finding("v1", "region.09", "role_gap")
+    measured = {
+        finding.finding_id: (result, request),
+        "v1": (e.MeasurementResult(request_id="m", status="confirmed", delta_pt=6.0), visual.requested_measurement),
+    }
+    selected, stalled = e._next_e5_repair_finding(
+        [finding, visual], measured, [attribution, _e5_attribution(visual)], []
+    )
+    assert selected is not None and selected[0].finding_id == finding.finding_id
+
+
+def test_hard_gate_repair_inputs_never_convert_uncertain_or_lane_a_gates() -> None:
+    """Privacy failures and root-cause-uncertain gate failures are NEVER
+    turned into repair inputs (fail closed, gate stays red); Lane A's
+    content-shape failure is the declared representation ceiling."""
+    privacy = {"no_target_candidate_facts": {"passed": False, "excluded_labels": []}}
+    assert e._e5_gate_repair_items("b", "t", "v1", privacy) == []
+    shapes = {"content_shapes_match_evidence": {"passed": False, "rows": []}}
+    assert e._e5_gate_repair_items("a", "t", "v1", shapes) == []
+    # a green gate yields no repair input
+    green = {"content_gate": {"passed": True, "missing_pdf_leaves": []}}
+    assert e._e5_gate_repair_items("b", "t", "v1", green) == []
+
+
+def test_review_gate_full_review_once_per_render_fingerprint() -> None:
+    """No new render -> NO review this round; a promoted render is reviewed
+    (scoped) once; re-reviewing the SAME fingerprint is refused."""
+    reviewed: set[str] = set()
+    assert e._e5_review_this_round(reviewed, "render-v1") is True
+    reviewed.add("render-v1")
+    assert e._e5_review_this_round(reviewed, "render-v1") is False
+    assert e._e5_review_this_round(reviewed, "render-v2") is True
+
+
+def test_round_scheduling_is_lane_agnostic() -> None:
+    """Both lanes run the SAME bounded selection (one shared function, one
+    shared cap) and the same repair-scan rule."""
+    findings = [_e5_finding(f"f{i}", f"region.{i}", "role_gap") for i in range(6)]
+    for _lane in ("a", "b"):
+        selected, deferred = e._e5_select_round_work(findings, [], [])
+        assert len(selected) == e.E5_MAX_ROUND_ATTRIBUTION_FINDINGS
+        assert len(deferred) == 3
+
+
 def test_lane_a_rejects_target_specific_identifiers_and_invalid_fields() -> None:
     # Unknown fields fail validation (pydantic extra=forbid).
     with pytest.raises(ValueError):

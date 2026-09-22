@@ -6579,15 +6579,19 @@ E5_ATTRIBUTION_INSTRUCTIONS = (
 
 class E5LedgerEntry(EvidenceModel):
     """One persistent defect-ledger record (Phase 0): deduplicated by the
-    stable key `target_version | region | dimension | observation_class`.
-    Re-observing an unchanged finding with unchanged evidence never reruns
-    full attribution; a CHANGED observation reopens the entry."""
+    stable key `target_version | region | dimension`. Re-observing an
+    unchanged finding never reruns full attribution; an observation that
+    CHANGED on a NEW render version reopens the entry. `deferred` marks an
+    open finding deliberately not selected this round (scheduling), never a
+    closure: deferred entries stay open and are re-eligible."""
 
     ledger_key: str
     finding_id: str
     first_seen_version: str
     last_seen_version: str
-    status: Literal["open", "attributed", "repaired", "resolved", "regressed"]
+    status: Literal[
+        "open", "attributed", "repaired", "resolved", "regressed", "deferred"
+    ]
     attribution: AttributionRecord | None = None
     measurement_request_id: str | None = None
     observation_class: str = ""
@@ -6639,8 +6643,17 @@ class DefectLedger:
             )
             self.entries[key] = entry
             return entry, "new"
+        previous_version = existing.last_seen_version
         existing.last_seen_version = finding.render_version
-        if _observation_class(finding.observation) != existing.observation_class:
+        # A changed observation REOPENS only when the RENDER changed: the
+        # reopen semantics mean "the defect changed after a repair". The
+        # reviewer paraphrasing the SAME defect on the SAME render is a dedup
+        # — the stored attribution/measurement stay valid; reopening here
+        # would loop re-measurement/re-attribution on an unchanged render.
+        if (
+            _observation_class(finding.observation) != existing.observation_class
+            and previous_version != finding.render_version
+        ):
             # the finding CHANGED after repair: reopen with the new class,
             # bound to the LATEST finding id; the stale attribution and
             # measurement binding no longer describe this defect and are
@@ -7125,6 +7138,136 @@ def _e5_builder_candidate_record(
         "action_fingerprint": action_fingerprint,
         "artifact": f"builder_candidate_{attempt:02d}.json",
     }
+
+
+# Repair-round scheduling (2026-09-21 owner work order, repair starvation):
+# one repair round attributes at most this many findings; unselected open
+# findings stay in the ledger as `deferred` (never lost, never resolved) and
+# are re-eligible in later rounds by the same priority order.
+E5_MAX_ROUND_ATTRIBUTION_FINDINGS = 3
+
+
+def _e5_review_this_round(reviewed_versions: set[str], current_version_id: str) -> bool:
+    """Review scheduling gate: a render fingerprint is FULLY reviewed at most
+    once (repair-starvation fix). No new render -> NO review this round; a
+    promoted render is reviewed once (scoped to changed regions by the round
+    scope). Both lanes run the SAME gate."""
+    return current_version_id not in reviewed_versions
+
+
+def _e5_gate_repair_items(
+    lane: str,
+    target_id: str,
+    render_version: str,
+    current_gates: dict[str, Any],
+) -> list[tuple[DefectFinding, MeasurementResult, MeasurementRequest, AttributionRecord]]:
+    """Deterministic repair inputs derived from EXISTING hard-gate evidence
+    (2026-09-21 owner work order: a candidate-accounting/content hard-gate
+    failure must not wait behind the visual attribution backlog).
+
+    Only failures whose recorded gate evidence identifies a BUILDER-owned
+    content defect are converted: Lane B's `content_gate` /
+    `candidate_content_accounting` missing-leaf sets (the authored template
+    decides which leaves render). The gate evidence is reused verbatim: the
+    existing `content_gate_missing_pdf/1` measurement channel semantics
+    (target baseline 0) and an explicit `AttributionRecord`
+    (template_compilation / confirmed / builder) — no second defect,
+    attribution, or state model. Privacy failures and root-cause-uncertain
+    gate failures (e.g. Lane A's declared content-shape representation
+    ceiling) are NEVER converted and the gate stays red."""
+    if lane != "b":
+        return []
+    items: list[tuple[DefectFinding, MeasurementResult, MeasurementRequest, AttributionRecord]] = []
+    for gate_name, missing_key in (
+        ("content_gate", "missing_pdf_leaves"),
+        ("candidate_content_accounting", "missing_leaves"),
+    ):
+        details = current_gates.get(gate_name) or {}
+        missing = [str(item) for item in (details.get(missing_key) or [])]
+        if details.get("passed") is not False or not missing:
+            continue
+        request_id = f"gate-{gate_name}-{render_version}"
+        request = MeasurementRequest(
+            request_id=request_id,
+            metric="role_gap",
+            page=1,
+            intent=(
+                f"verbatim presence of the candidate leaves recorded missing by "
+                f"the {gate_name} gate in the final PDF text"
+            ),
+        )
+        finding = DefectFinding(
+            finding_id=f"gate-{gate_name}-{render_version}",
+            target_version=target_id,
+            render_version=render_version,
+            page=1,
+            region=gate_name,
+            observation=(
+                f"{gate_name} failed on this render: {len(missing)} candidate "
+                f"leaves missing from the final PDF ({', '.join(missing[:6])})"
+            ),
+            suspected_dimension="hard_gate_content",
+            requested_measurement=request,
+            severity="high",
+            confidence=1.0,
+            reviewer="scripted",
+        )
+        result = MeasurementResult(
+            request_id=request_id,
+            status="confirmed",
+            target_value_pt=0.0,
+            current_value_pt=float(len(missing)),
+            delta_pt=float(len(missing)),
+            method="content_gate_missing_pdf/1",
+            warnings=[
+                "repair input derived from the shell's OWN gate record, not from "
+                "a reviewer claim; the same gate is re-measured on any candidate",
+            ],
+        )
+        attribution = AttributionRecord(
+            finding_id=finding.finding_id,
+            render_version=render_version,
+            measurement_request_id=request_id,
+            attribution="template_compilation",
+            hypothesis_status="confirmed",
+            repair_owner="builder",
+            evidence=[request_id],
+            reason=(
+                f"the {gate_name} hard gate failed with recorded missing leaves; "
+                "the authored template owns which leaves render, so the repair "
+                "input is builder-owned WITHOUT live attribution"
+            ),
+        )
+        items.append((finding, result, request, attribution))
+    return items
+
+
+def _e5_select_round_work(
+    actionable: list[DefectFinding],
+    gate_findings: list[DefectFinding],
+    deferred_candidates: list[DefectFinding],
+    *,
+    limit: int = E5_MAX_ROUND_ATTRIBUTION_FINDINGS,
+) -> tuple[list[DefectFinding], list[DefectFinding]]:
+    """Bounded per-round scheduling (repair starvation fix):
+
+    1. hard-gate-derived repair inputs first (they are pre-attributed; the
+       run loop normally consumes them via the Builder-first scan and passes
+       an empty list here);
+    2. this round's NEW findings in review order;
+    3. previously deferred open findings (oldest first).
+
+    At most ``limit`` findings enter this round's attribution backlog; the
+    rest stay in the ledger as `deferred` (open, never lost, re-eligible).
+    The SAME function is used by BOTH lanes."""
+    ordered: list[DefectFinding] = []
+    seen: set[str] = set()
+    for finding in [*gate_findings, *actionable, *deferred_candidates]:
+        if finding.finding_id in seen:
+            continue
+        seen.add(finding.finding_id)
+        ordered.append(finding)
+    return ordered[:limit], ordered[limit:]
 
 
 def _next_e5_repair_finding(
@@ -8422,6 +8565,10 @@ def run_e5(
         # candidate never overwrites the active state.
         plan_by_version: dict[str, Any] = {}
         gates_by_version: dict[str, dict[str, Any]] = {}
+        # version_id -> the RICH gate details (missing-leaf sets, per-gate
+        # rows) — the repair-input derivation reuses THIS evidence verbatim;
+        # `gates_by_version` holds only the boolean decisions.
+        gate_details_by_version: dict[str, dict[str, Any]] = {}
         # Per-version answer to "did the privacy gate exclude exactly the
         # shared shell-owned label catalog?" — derived, never lane-specific.
         label_symmetry_by_version: dict[str, bool] = {}
@@ -8805,6 +8952,7 @@ def run_e5(
                 representation_by_version[version.version_id] = proposal
                 plan_by_version[version.version_id] = plan
                 gates_by_version[version.version_id] = gates
+                gate_details_by_version[version.version_id] = gate_details
                 store.register_version(version.version_id, pdf_path, note)
                 (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
                     json.dumps(
@@ -8905,6 +9053,7 @@ def run_e5(
                 pdf_by_version[version.version_id] = pdf_path
                 representation_by_version[version.version_id] = template
                 gates_by_version[version.version_id] = gates
+                gate_details_by_version[version.version_id] = gate_details
                 label_symmetry_by_version[version.version_id] = bool(
                     label_semantics["symmetric"]
                 )
@@ -9132,6 +9281,17 @@ def run_e5(
             return _lane_terminal(lane, "budget_exhausted")
 
         # --- 4. See -> Measure -> Attribute -> Repair -> Re-render loop -----
+        # Scheduling state (repair-starvation fix, 2026-09-21 owner work order):
+        # a render fingerprint is fully reviewed AT MOST ONCE; each round's
+        # attribution backlog is bounded; the Builder is called as soon as a
+        # confirmed, attributed, builder-owned defect bound to the ACTIVE
+        # version exists — it never waits for the whole open-findings ledger.
+        reviewed_versions: set[str] = set()
+        gate_repair_versions_seen: set[str] = set()
+        findings_by_id: dict[str, DefectFinding] = {}
+        # finding_id -> (finding, result, bound) for every measurement taken on
+        # any version; the repair scan filters by the ACTIVE version.
+        measured_by_finding: dict[str, tuple[DefectFinding, MeasurementResult, MeasurementRequest]] = {}
         for round_no in range(1, max_repair_rounds + 2):
             try:
                 if lane_budget.remaining_model_requests() < 1:
@@ -9144,6 +9304,7 @@ def run_e5(
                 current_pdf = pdf_by_version[current_version.version_id]
                 current_plan = plan_by_version.get(current_version.version_id)
                 current_gates = gates_by_version.get(current_version.version_id, {})
+                current_gate_details = gate_details_by_version.get(current_version.version_id, {})
                 # The next round's changed-region scope comes ONLY from the
                 # last PROMOTED repair: a rejected/rolled-back attempt is
                 # immutable history (diagnostic), never review scope.
@@ -9151,8 +9312,14 @@ def run_e5(
                     [last_promoted_region] if last_promoted_region else []
                 )
                 findings_new: list[DefectFinding] = []
+                # SCHEDULING GATE: the SAME render fingerprint gets at most ONE
+                # full Reviewer pass. With no new render there is NO review
+                # this round: the round works on the bounded deferred backlog
+                # or calls the Builder for an already-attributed repair
+                # candidate — it never re-reviews an unchanged render.
+                run_review = current_version.version_id not in reviewed_versions
                 try:
-                    if live:
+                    if live and run_review:
                         target_overviews = _overview_pngs(target_pdf, out_dir, f"review_target_l{lane}_{round_no}")
                         render_overviews = _overview_pngs(current_pdf, out_dir, f"review_render_l{lane}_{round_no}")
                         scope = _review_scope_payload(round_no, changed_regions, findings)
@@ -9223,8 +9390,41 @@ def run_e5(
                     )
                     escalate(f"reviewer_live_call_failed:{type(error).__name__}: {str(error)[:200]}")
                     break
+                if run_review:
+                    reviewed_versions.add(current_version.version_id)
                 findings_new = _validate_finding_versions(findings_new, target_id, current_version.version_id)
                 findings.extend(findings_new)
+                for finding in findings_new:
+                    findings_by_id[finding.finding_id] = finding
+
+                # Hard-gate-derived builder-owned repair inputs: recorded ONCE
+                # per render version, from the shell's OWN gate evidence, and
+                # pre-attributed (no live attribution needed). A
+                # candidate-accounting/content failure enters repair BEFORE
+                # any visual attribution backlog (owner work order §四).
+                gate_items: list[
+                    tuple[DefectFinding, MeasurementResult, MeasurementRequest, AttributionRecord]
+                ] = []
+                if current_version.version_id not in gate_repair_versions_seen:
+                    gate_repair_versions_seen.add(current_version.version_id)
+                    gate_items = _e5_gate_repair_items(
+                        lane, target_id, current_version.version_id, current_gate_details
+                    )
+                for gate_finding, gate_result, gate_request, gate_attribution in gate_items:
+                    findings_by_id[gate_finding.finding_id] = gate_finding
+                    findings.append(gate_finding)
+                    measured_by_finding[gate_finding.finding_id] = (
+                        gate_finding, gate_result, gate_request,
+                    )
+                    entry, action = ledger.observe(gate_finding)
+                    trace.add(
+                        agent="shell", phase="ledger", action=action,
+                        output={"key": entry.ledger_key, "finding": gate_finding.finding_id},
+                    )
+                    attributions.append(gate_attribution)
+                    _record_ledger_attribution(
+                        ledger, gate_finding, gate_attribution, gate_request.request_id,
+                    )
     
                 # Ledger dedup BEFORE attribution (Phase 0).
                 actionable: list[DefectFinding] = []
@@ -9246,11 +9446,69 @@ def run_e5(
                         carried_open_used = True  # one bounded carried-open re-measure
                     actionable.append(finding)
     
-                # Bind -> measure -> attribute. Live causal attribution covers
-                # every non-no-defect finding; no finding is skipped merely
-                # because another finding in the round was unbound.
+                # Bounded per-round scheduling: this round's new findings
+                # first, then previously deferred open findings; at most
+                # E5_MAX_ROUND_ATTRIBUTION_FINDINGS enter this round's
+                # attribution backlog. The rest stay in the ledger as
+                # `deferred` — open, never lost, re-eligible in later rounds
+                # under the SAME rule (both lanes run this identical logic).
+                # Builder FIRST (scheduling guarantee, owner work order §三.6):
+                # if a confirmed, attributed, builder-owned defect bound to the
+                # ACTIVE version already exists (e.g. attributed in an earlier
+                # round, or a hard-gate repair input), the Builder is called
+                # THIS ROUND — before any full review and before the
+                # attribution backlog expands by even one finding.
+                pre_scan_candidates = [
+                    finding
+                    for finding, _result, _bound in measured_by_finding.values()
+                    if finding.render_version == current_version.version_id
+                ]
+                pre_scan_measured = {
+                    finding.finding_id: (result, bound)
+                    for finding, result, bound in measured_by_finding.values()
+                    if finding.render_version == current_version.version_id
+                }
+                pre_repair, _pre_repeated = _next_e5_repair_finding(
+                    pre_scan_candidates, pre_scan_measured, attributions, fingerprints
+                )
+                skip_attribution = pre_repair is not None
+
+                deferred_candidates: list[DefectFinding] = [
+                    findings_by_id[entry.finding_id]
+                    for entry in ledger.entries.values()
+                    if entry.status == "deferred"
+                    and entry.finding_id in findings_by_id
+                    and findings_by_id[entry.finding_id].render_version
+                    == current_version.version_id
+                ]
+                if skip_attribution:
+                    selected, deferred_now = [], []
+                else:
+                    # Gate repair inputs do NOT enter the round backlog: they
+                    # are pre-attributed and reached the pre-repair scan above
+                    # (the Builder-first guarantee); the bounded cap is for
+                    # reviewer findings.
+                    selected, deferred_now = _e5_select_round_work(
+                        actionable, [], deferred_candidates
+                    )
+                for deferred_finding in deferred_now:
+                    entry = ledger.entries.get(_ledger_key(deferred_finding))
+                    if entry is None or entry.status != "open":
+                        continue
+                    entry.status = "deferred"
+                    trace.add(
+                        agent="shell", phase="ledger", action="deferred",
+                        output={"finding": deferred_finding.finding_id},
+                        note=(
+                            f"not selected this round (cap "
+                            f"{E5_MAX_ROUND_ATTRIBUTION_FINDINGS}); stays open and "
+                            "re-eligible"
+                        ),
+                    )
+
+                # Bind -> measure -> attribute for the SELECTED findings only.
                 measured: dict[str, tuple[MeasurementResult, MeasurementRequest]] = {}
-                for finding in actionable:
+                for finding in selected:
                     counter["request"] += 1
                     request_id = f"measure-l{lane}-{counter['request']:03d}"
                     result, bound = execute_measurement(
@@ -9259,8 +9517,9 @@ def run_e5(
                     )
                     measurement_results.append(result)
                     measured[finding.finding_id] = (result, bound)
+                    measured_by_finding[finding.finding_id] = (finding, result, bound)
                     ledger.entries[_ledger_key(finding)].last_measured_version = current_version.version_id
-                batches = _e5_attribution_batches(actionable, measured)
+                batches = _e5_attribution_batches(selected, measured)
                 if live and batches and _builder_reserve_intact(lane_budget):
                     pod.render_pdf = current_pdf
                     for group in batches:
@@ -9306,28 +9565,49 @@ def run_e5(
                         except Exception as error:
                             escalate(f"attribution_live_call_failed:{type(error).__name__}: {str(error)[:150]}")
                 for finding in _e5_findings_needing_fallback_attribution(
-                    actionable, measured, attributions
+                    selected, measured, attributions
                 ):
                     result, bound = measured[finding.finding_id]
                     attribute(finding, result, bound)
-    
-                # Builder opportunity: skip already-executed fingerprints and
-                # use the next measured, material finding in review order.
+
+                # Builder opportunity (SCHEDULING GUARANTEE): the scan covers
+                # EVERY defect bound to the ACTIVE version — this round's and
+                # previously attributed ones — so the Builder is called as
+                # soon as ONE confirmed, attributed, builder-owned defect
+                # exists. It never waits for the whole open-findings ledger,
+                # and never waits for another full review.
+                scan_candidates = [
+                    finding
+                    for finding, _result, _bound in measured_by_finding.values()
+                    if finding.render_version == current_version.version_id
+                ]
+                scan_measured = {
+                    finding.finding_id: (result, bound)
+                    for finding, result, bound in measured_by_finding.values()
+                    if finding.render_version == current_version.version_id
+                }
                 repair_finding, all_repairable_repeated = _next_e5_repair_finding(
-                    actionable, measured, attributions, fingerprints
+                    scan_candidates, scan_measured, attributions, fingerprints
                 )
                 if repair_finding is None and all_repairable_repeated:
                     escalate("stalled_no_new_action")
                     break
                 if repair_finding is None:
                     actionable_keys = {
-                        (finding.finding_id, finding.render_version) for finding in actionable
+                        (finding.finding_id, finding.render_version) for finding in scan_candidates
                     }
                     awaiting = any(
                         (item.finding_id, item.render_version) in actionable_keys
                         and item.attribution != "no_defect"
                         for item in attributions
                     )
+                    # Termination (no infinite no-op rounds): with no new
+                    # render, no review, and no pending backlog work, another
+                    # round would deterministically repeat this state.
+                    work_this_round = bool(findings_new) or bool(selected) or bool(gate_items)
+                    if not work_this_round:
+                        escalate(f"round{round_no}:no_new_render_no_pending_work")
+                        break
                     escalate(
                         "awaiting_attribution_or_other_owner"
                         if awaiting
@@ -9344,8 +9624,8 @@ def run_e5(
                     derived=derived,
                     page_size=page_size,
                     current_render_version=current_version.version_id,
-                    findings=actionable,
-                    measurements=[measured[item.finding_id][0] for item in actionable],
+                    findings=scan_candidates,
+                    measurements=[scan_measured[item.finding_id][0] for item in scan_candidates],
                     current_gates=current_gates,
                     last_rejection=lane_state.get("last_rejection"),
                     target_images=shared_target_images,
@@ -9481,13 +9761,39 @@ def run_e5(
                     },
                 )
                 # Re-measure FIRST: the IDENTICAL request, changing only the version.
+                # A hard-gate repair input re-measures the SAME shell gate on
+                # the candidate (the gate already re-ran during the candidate
+                # render); no reviewer measurement channel is invented.
                 counter["request"] += 1
                 repeat_id = bound.request_id
-                repeat_result, _ = execute_measurement(
-                    finding, candidate_pdf, repeat_id,
-                    plan=plan_by_version.get(candidate_version.version_id),
-                    render_version=candidate_version.version_id,
-                )
+                if finding.suspected_dimension == "hard_gate_content":
+                    candidate_gate_details = candidate_gates.get(finding.region) or {}
+                    candidate_missing = len(
+                        candidate_gate_details.get(
+                            "missing_pdf_leaves"
+                            if finding.region == "content_gate"
+                            else "missing_leaves"
+                        )
+                        or []
+                    )
+                    repeat_result = MeasurementResult(
+                        request_id=repeat_id,
+                        status="confirmed",
+                        target_value_pt=0.0,
+                        current_value_pt=float(candidate_missing),
+                        delta_pt=float(candidate_missing),
+                        method="content_gate_missing_pdf/1",
+                        warnings=[
+                            "the identical hard-gate record re-measured on the "
+                            "candidate render (target baseline 0)"
+                        ],
+                    )
+                else:
+                    repeat_result, _ = execute_measurement(
+                        finding, candidate_pdf, repeat_id,
+                        plan=plan_by_version.get(candidate_version.version_id),
+                        render_version=candidate_version.version_id,
+                    )
                 measurement_results.append(repeat_result)
                 improved = (
                     repeat_result.current_value_pt is not None

@@ -1445,3 +1445,57 @@ input, with no new service/registry/CLI framework:
   concrete label id in this work order. The next live E5 run therefore
   still needs an explicit `PresentationLabelApproval` (passed as the
   `presentation_label_approval` run_e5 parameter; no CLI flag was added).
+
+# E5 fifth correctness round (2026-09-22, owner work order: repair starvation)
+
+Evidence run `e_pipeline_e5_20260921T192533Z` (live, both lanes
+budget_exhausted with ZERO builder repairs) exposed the starvation chain:
+
+1. the round loop re-ran a FULL review of the same active render every round
+   (no render-fingerprint gate), producing ~130 raw findings per lane;
+2. `DefectLedger.observe` REOPENED an entry whenever the observation class
+   changed — but the reviewer rephrasing the SAME defect on the SAME render
+   changed the class 110×, clearing attributions and re-triggering
+   measurement/attribution (trace counters: 110 reopened / 123 re-bindings);
+3. every live attribution batch ran per-finding with a per-run 8-request
+   limit; `UsageLimitExceeded` escalated ~50×/lane without ever deferring the
+   finding, and the Builder was never reached (repair_attempts=0) although
+   reserve-40 remained uncovered budget-wise;
+4. hard-gate failures (Lane B content_gate missing leaves; Lane A's declared
+   content-shape ceiling) waited behind the visual backlog.
+
+Fixes (all in the committed E5 loop, no new framework/schema):
+
+- **Review gate**: a render fingerprint is fully reviewed AT MOST ONCE
+  (`_e5_review_this_round` + `reviewed_versions`); with no new render the
+  round works on the deferred backlog or calls the Builder — it never
+  re-reviews an unchanged render; a promoted render is reviewed once (scoped
+  to changed regions by the existing round scope).
+- **Reopen rule**: an observation change REOPENS only when the render
+  version changed (`DefectLedger.observe`). Same-render paraphrase is a
+  dedup — the stored attribution/measurement stand.
+- **Bounded backlog**: each round sends at most
+  `E5_MAX_ROUND_ATTRIBUTION_FINDINGS = 3` findings into attribution
+  (`_e5_select_round_work`); unselected open findings are marked `deferred`
+  in the ledger (new status literal; open, never lost, re-eligible). The
+  SAME selection runs for both lanes.
+- **Builder-first scheduling**: the repair scan covers EVERY defect bound to
+  the ACTIVE version (carried over from earlier rounds + this round's); if
+  one confirmed/attributed/builder-owned defect exists, the Builder is
+  called BEFORE any full review and before the backlog expands by even one
+  finding. When no review, no backlog work, and no repair is possible, the
+  round terminates (`no_new_render_no_pending_work`) instead of looping.
+- **Hard-gate repair inputs**: Lane B's content_gate /
+  candidate_content_accounting failures with recorded missing-leaf sets
+  become builder-owned repair inputs built VERBATIM from the existing gate
+  evidence (existing `content_gate_missing_pdf/1` semantics + an explicit
+  `AttributionRecord` template_compilation/confirmed; the same gate is
+  re-measured on the candidate render). Privacy failures and root-cause-
+  uncertain failures (Lane A's declared content-shape representation
+  ceiling) are NEVER converted and the gate stays red.
+- Attribution cap exhaustion keeps the recorded fallback attribution
+  (unresolved/reviewer) and never retried the same finding on the same
+  render (dedup no longer defeated by reopen).
+
+Budgets are UNCHANGED (no model-budget increase, no raised per-run limits).
+Not yet live-verified: the repaired scheduling has run offline only.
