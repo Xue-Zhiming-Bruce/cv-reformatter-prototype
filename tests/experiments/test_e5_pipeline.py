@@ -26,12 +26,14 @@ import pytest
 
 import tests.experiments.e_authored_template as at
 import tests.experiments.e_pipeline as e
+import tests.experiments.e_pipeline_e5 as e5
 from tests.experiments.d_pipeline import RunBudget
 from tests.experiments.test_e_pipeline import (
     RESUME_I,
     ROOT,
     TARGET_F,
     TARGET_F_CACHE,
+    _pipeline_e_source,
     e2_skip,
 )
 
@@ -638,9 +640,9 @@ def test_builder_entries_receive_identical_initial_payload_and_image_hashes(
         capture("b", payload, images)
         return _base_authored_template().model_copy(update={"template_id": template_id})
 
-    monkeypatch.setattr(e, "_live_lane_a_builder", lane_a_builder)
-    monkeypatch.setattr(e, "_live_lane_b_builder", lane_b_builder)
-    monkeypatch.setattr(e, "_live_reviewer_findings", lambda *args, **kwargs: [])
+    monkeypatch.setattr(e5, "_live_lane_a_builder", lane_a_builder)
+    monkeypatch.setattr(e5, "_live_lane_b_builder", lane_b_builder)
+    monkeypatch.setattr(e5, "_live_reviewer_findings", lambda *args, **kwargs: [])
     e.run_e5(
         RESUME_I, tmp_path / "run", live=True, lanes=("a", "b"), max_repair_rounds=0,
     )
@@ -737,7 +739,7 @@ def _force_scripted_builder_attribution(monkeypatch: pytest.MonkeyPatch) -> None
             return _e5_attribution(finding, request_id=request.request_id)
         return default(finding, result, request)
 
-    monkeypatch.setattr(e, "_e5_default_attribution", scripted)
+    monkeypatch.setattr(e5, "_e5_default_attribution", scripted)
 
 
 def test_repeated_fingerprint_uses_the_next_repairable_finding() -> None:
@@ -1179,7 +1181,7 @@ def test_validator_rejected_builder_candidate_is_auditable_but_never_active(
             update={"template_id": base.template_id + "-rejected", "css": base.css + ".x::before { content: 'x'; }"}
         )
 
-    monkeypatch.setattr(e, "_scripted_lane_b_template", rejected_template)
+    monkeypatch.setattr(e5, "_scripted_lane_b_template", rejected_template)
     run_dir, _terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
@@ -1511,7 +1513,7 @@ def test_run_e5_rejected_render_stays_in_history_and_next_round_uses_old_active(
         # a repair that changes nothing -> identical measurement -> rollback
         return base.model_copy(update={"template_id": base.template_id + "-r"})
 
-    monkeypatch.setattr(e, "_scripted_lane_b_template", non_improving_template)
+    monkeypatch.setattr(e5, "_scripted_lane_b_template", non_improving_template)
     run_dir, terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
@@ -1932,8 +1934,8 @@ def test_run_e5_rollback_binds_next_round_to_the_active_version(
                 for f in findings
             ]
 
-    monkeypatch.setattr(e, "_scripted_lane_a_proposal", non_improving_proposal)
-    monkeypatch.setattr(e, "ScriptedReviewer", RoundDistinctReviewer)
+    monkeypatch.setattr(e5, "_scripted_lane_a_proposal", non_improving_proposal)
+    monkeypatch.setattr(e5, "ScriptedReviewer", RoundDistinctReviewer)
     run_dir, terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=2,
     )
@@ -2363,8 +2365,8 @@ def test_measurement_alone_never_approves_a_label() -> None:
     assert [label.status for label in catalog] == ["proposed"] * 4
     # no approval -> zero approved labels: nothing renderable, nothing
     # privacy-excluded
-    approved = e._approved_presentation_labels(
-        e._apply_presentation_label_approval(catalog, None, target_sha256="a" * 64)
+    approved = e._apply_presentation_label_approval(
+        catalog, None, target_sha256="a" * 64
     )
     assert approved == []
     # every proposed entry is non-renderable: its id is not issued to the
@@ -2616,8 +2618,9 @@ def test_catalog_hash_is_deterministic_and_excludes_status() -> None:
 
 def test_source_has_no_hardcoded_resume_i_approval_list() -> None:
     """The nine Resume-I titles must NOT exist as an owner-approval constant:
-    approval is an owner input, never a source-code constant."""
-    source = Path(e.__file__).read_text(encoding="utf-8")
+    approval is an owner input, never a source-code constant. Scans every
+    Pipeline E runtime module (the pre-split scan surface)."""
+    source = _pipeline_e_source()
     assert "OWNER_APPROVED_PRESENTATION_LABEL_TEXTS" not in source
     assert "_owner_approved_label_text" not in source
     for title in (
@@ -2962,8 +2965,8 @@ def test_run_e5_accepted_region_recheck_fails_closed_on_missing_evidence(
                 for f in findings
             ]
 
-    monkeypatch.setattr(e, "MeasureController", ScriptedMeasurements)
-    monkeypatch.setattr(e, "ScriptedReviewer", DimensionShiftReviewer)
+    monkeypatch.setattr(e5, "MeasureController", ScriptedMeasurements)
+    monkeypatch.setattr(e5, "ScriptedReviewer", DimensionShiftReviewer)
     _run_dir, _terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )

@@ -3,7 +3,8 @@
 Owner-authorized E5 milestone (PIPELINE_E_PLAN.md §10 second strategy;
 E5 work order). Not part of the active product architecture and not an
 approved roadmap item. This module is called ONLY by the existing Pipeline E
-runner (`e_pipeline.run_e5`); it is not a second runner and owns no
+runner (`e_pipeline_e5.run_e5`, reached through the `e_pipeline` compat
+facade); it is not a second runner and owns no
 workflow of its own.
 
 What it is: the smallest deterministic boundary around a LIVE Builder's
@@ -87,7 +88,7 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from tests.experiments.c2_candidates import CandidateDocument
-from tests.experiments.e_pipeline import EvidenceModel, PresentationLabel
+from tests.experiments.e_pipeline_common import EvidenceModel, PresentationLabel
 
 # ---------------------------------------------------------------------------
 # Typed slot vocabulary
@@ -103,7 +104,7 @@ ITEM_TOKENS = ("item", "item_head", "item_detail", "item_meta", "item_bullets", 
 _EACH_RE = re.compile(r"\{\{each:([a-z_]+)\}\}(.*?)\{\{/each\}\}", re.DOTALL)
 _TOKEN_RE = re.compile(r"\{\{([a-z_:]+)\}\}")
 # Presentation-label marker: the ONLY channel for fixed visible template text.
-# The label id is shell-issued (`e_pipeline._presentation_label_catalog`); the
+# The label id is shell-issued (`e_pipeline_e5._presentation_label_catalog`); the
 # Builder may reference an id but can never submit the text it renders.
 _LABEL_MARKER_RE = re.compile(r"\{\{label:([a-z0-9_.\-]+)\}\}")
 _FORBIDDEN_PATTERNS = (

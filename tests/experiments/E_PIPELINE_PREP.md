@@ -1544,3 +1544,121 @@ lane's `RunTrace` out_dir and existing trace.
 
 E2–E4 behavior is unchanged: the audit parameter is optional and only E5
 call sites pass it.
+
+# E5 seventh round (2026-09-22, owner work order: behaviour-neutral module split)
+
+Status: `Proposed experiment record; not an approved product architecture or
+roadmap item`. File/module boundary work ONLY. No feature, algorithm, budget,
+prompt, schema, gate, privacy, terminal-state or artifact change; no live
+call; no C1/C2 run.
+
+## Actual boundaries (chosen from the measured import graph)
+
+The pre-split single module was 10,803 lines holding E1-E5 plus the shared
+evidence/measurement layer, live-call plumbing, reports and the owner package.
+The measured cross-region graph (AST-level, per top-level statement) showed
+BOTH directions of E2<->E4<->E5 dependence, so a plain per-stage split would
+have produced cycles. The split therefore follows the real dependency seam:
+
+| Module | Lines (after) | Owns |
+| --- | --- | --- |
+| `e_pipeline_common.py` | 1,770 | the LEAF: `EvidenceModel` family, the E2 measurement/finding/attribution/render-version records shared by E3-E5, the Lane B `PresentationLabel` contract, `EvidencePod`/`DualSourcePod`, E0 frozen inputs, shared live-model plumbing (`_call_limits`, `_live_model_settings`, `_live_visual_model`, `_model_identity`), `_pod_tools`, the agent-call message audit, and the single live-hypothesis -> `AttributionRecord` conversion |
+| `e_pipeline_legacy.py` | 4,796 | E1, E2, E3, E4 stages and their reports; imports only DOWNWARD |
+| `e_pipeline_e5.py` | 4,160 | E5 constants/prompts, presentation-label approval logic, `DefectLedger`, Lane A/B schemas and builders, repair scheduling, `run_e5`, source identity, lane/comparison/owner-package reports |
+| `e_pipeline.py` | 341 | thin compat facade: import list + `main()` (the ONLY function) + `if __name__` |
+
+Graph: `e_pipeline` -> {common, legacy, e5}; `e5` -> {common, legacy};
+`legacy` -> common; `common` -> nothing local. No deferred/bottom-of-module
+bidirectional import exists; each module imports standalone in a FRESH
+interpreter (verified for all five modules).
+
+`e_authored_template.py` now imports `EvidenceModel` / `PresentationLabel` from
+`e_pipeline_common` (the true owner) instead of the compat facade.
+
+## Compatibility
+
+All 89 externally used names still resolve from `tests.experiments.e_pipeline`
+(including `run_e1`-`run_e5`, `PresentationLabelApproval`, every record/model
+type and the private seams), the CLI flags/defaults/help output and the
+per-stage dispatch are unchanged, and the facade holds no second copy of any
+implementation (verified: no name is defined in more than one module).
+
+Content preservation was verified mechanically: of the 212 non-import
+top-level statements in the original module, 210 appear BYTE-IDENTICALLY in
+exactly one new module; the only two exceptions are the module docstring
+(reworded/extended in the facade) and `E5_SOURCE_FILES` (deliberately
+extended). The 20 original import statements were re-derived per module rather
+than copied.
+
+Test split (`c1: split Pipeline E5 tests by stage`): `test_e_pipeline.py` keeps
+the common/E1-E4 tests and OWNS the shared fixtures; `test_e5_pipeline.py`
+holds every E5/Lane A/B/presentation-label/agent-audit/repair-scheduling test
+and imports those fixtures (`ROOT`, `RESUME_I`, `TARGET_F`, `TARGET_F_CACHE`,
+`e2_skip`) instead of duplicating them. Collection is unchanged: 167 tests
+(62 old file + 105 new file). No new runner, workflow or artifact directory.
+
+Required test changes caused by the split (not semantic weakenings):
+
+1. E5 test monkeypatch seams (`_live_lane_a_builder`, `_live_lane_b_builder`,
+   `_live_reviewer_findings`, `_e5_default_attribution`,
+   `_scripted_lane_b_template`, `_scripted_lane_a_proposal`,
+   `ScriptedReviewer`, `MeasureController`) now patch
+   `tests.experiments.e_pipeline_e5` — the module that OWNS them and whose
+   globals `run_e5` resolves. Patching the facade would silently stop the seam
+   from taking effect.
+2. The three "no target-specific rules / no hardcoded approval list" tests
+   read source files; they now read ALL FOUR Pipeline E runtime modules via
+   `_pipeline_e_source()`, so the scanned surface is unchanged by the split.
+
+Dead code deleted (confirmed zero callers): `_lane_a_builder_call_count`, and
+the test-only `_approved_presentation_labels`; the test that used the latter
+now asserts through the real production entry
+`_apply_presentation_label_approval`.
+
+`E5_SOURCE_FILES` now registers all four Pipeline E runtime modules (replacing
+the single `e_pipeline.py` entry) instead of one.
+
+## Verification and honest result
+
+Pre-split baseline was measured by swapping the `bef8b9c` sources into place
+(then restoring from a verified backup — `git restore`/`stash`/`checkout` were
+NOT used). Result for the full E5+common set:
+
+| | pre-split (`bef8b9c`, one file) | post-split |
+| --- | --- | --- |
+| collected | 167 | 167 (62 + 105) |
+| passed | 161 | 161 |
+| failed | 6 | 6 |
+
+The SAME six tests fail with the SAME signatures before and after, so the split
+preserves behaviour exactly:
+
+- `test_builder_entries_receive_identical_initial_payload_and_image_hashes`
+  (`KeyError: 'a'` — the stubbed live builders are never reached),
+- `test_run_e5_offline_lane_a_runs_the_fixed_loop` (`content_shape_probes_passed`
+  False),
+- `test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs`
+  (`lane a/short` -> `privacy_gate: False`),
+- `test_run_e3_no_target_specific_rules`, `test_run_e4_no_target_specific_rules`,
+  `test_source_has_no_hardcoded_resume_i_approval_list`.
+
+The last three are a PRE-EXISTING false positive introduced by the sixth round
+(`bef8b9c`): the agent-message-audit docstring contains the literal text
+"FILE REFERENCES (relative path, sha256, ...)", and the naive
+`title not in source` substring gate treats the Resume-I title `REFERENCES`
+as a hardcoded approval/target string. They are red at `bef8b9c` for the same
+reason and are NOT touched here (out of scope for a behaviour-neutral split;
+fixing the gate is deferred).
+
+Focused regression selection from the old file (E1-E4 import/CLI/shared
+contract): `21 passed`. Compatibility checks: fresh-interpreter import of each
+module, `--help` + per-stage dispatch (stubbed `run_*`), 89/89 compat names,
+and an import under disabled `socket.connect`/`subprocess` proving import
+performs no provider call, no Chrome launch and no run.
+
+Pytest outputs: `tests/test_results/pytest/<ts>_e5_split_*.txt`,
+`<ts>_e5_split_compat_checks.txt`. Protected files re-verified byte-identical
+(`D_PIPELINE_PROPOSAL.md` `eabf6a11…`, `unused.docx` `584cb925…`); the C2 13
+files re-verified 13/13 against HEAD.
+
+Not yet done: no live run was performed, so the split is verified offline only.

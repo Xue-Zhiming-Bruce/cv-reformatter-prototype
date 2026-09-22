@@ -442,6 +442,27 @@ def _access_records(run_dir: Path) -> list[dict]:
     return manifest["evidence_access"]["records"]
 
 
+# The whole Pipeline E runtime source, as one string.
+#
+# Split 2026-09-22: this used to be the single `e_pipeline.py` monolith, so
+# the "no target-specific rules / no hardcoded approval list" assertions below
+# scanned it directly. The same source now lives in four runtime modules; the
+# tests read all four so the scanned surface is unchanged by the file split.
+PIPELINE_E_SOURCE_FILES = (
+    "e_pipeline.py",
+    "e_pipeline_common.py",
+    "e_pipeline_legacy.py",
+    "e_pipeline_e5.py",
+)
+
+
+def _pipeline_e_source() -> str:
+    base = Path(__file__).resolve().parents[0]
+    return "".join(
+        (base / name).read_text(encoding="utf-8") for name in PIPELINE_E_SOURCE_FILES
+    )
+
+
 # ===========================================================================
 # E2 — See -> Measure -> Attribute -> Repair -> Re-render (PIPELINE_E_PLAN.md §8)
 # ===========================================================================
@@ -848,9 +869,10 @@ def test_run_e3_walkthrough_records_the_loop_trajectory(tmp_path: Path) -> None:
 def test_run_e3_no_target_specific_rules(tmp_path: Path) -> None:
     """The E3 shell derives structure from evidence; no Resume-I string,
     heading, or coordinate may appear as a module-level constant, branch
-    condition, or literal in e_pipeline.py (the scripted reviewer scenario
-    records are runtime data keyed by the target id, not production rules)."""
-    source = (Path(__file__).resolve().parents[0] / "e_pipeline.py").read_text()
+    condition, or literal in the Pipeline E runtime source (the scripted
+    reviewer scenario records are runtime data keyed by the target id, not
+    production rules)."""
+    source = _pipeline_e_source()
     for leaked in ("CONTACT INFO", "ACHIEVEMENTS", "REFERENCES", "JOB TITLE", "ABOUT ME"):
         assert leaked not in source, leaked
     # No target-name branch anywhere in the module (comment mentions of the
@@ -1210,7 +1232,7 @@ def test_run_e4_promotion_rechecks_accepted_regions(tmp_path: Path) -> None:
 
 @e4_skip
 def test_run_e4_no_target_specific_rules() -> None:
-    source = (Path(__file__).resolve().parents[0] / "e_pipeline.py").read_text()
+    source = _pipeline_e_source()
     for leaked in ("CONTACT INFO", "ACHIEVEMENTS", "REFERENCES", "JOB TITLE", "ABOUT ME",
                    "CONFERENCES", "PUBLICATIONS", "VERSTAPPEN"):
         assert leaked not in source, leaked
