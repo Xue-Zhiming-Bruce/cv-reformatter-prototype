@@ -136,7 +136,9 @@ E5_LANE_A_BUILDER_INSTRUCTIONS = (
     "target-specific identifiers (no target hash, filename, or person\n"
     "branch). You never approve delivery. Base every primitive value on the\n"
     "evidence-linked structure draft and the recorded measurements you are\n"
-    "given."
+    "given. On repair calls, `current_representation` is the exact validated\n"
+    "proposal that produced the repair-base render; modify it and return one\n"
+    "complete replacement proposal. It is null only for the initial build."
 )
 
 E5_LANE_B_BUILDER_INSTRUCTIONS = (
@@ -171,7 +173,10 @@ E5_LANE_B_BUILDER_INSTRUCTIONS = (
     "You never see or edit candidate values; the shell fills your slots from\n"
     "the reviewed candidate render context. You never approve delivery.\n"
     "Base the design on the target page images and the structure draft you\n"
-    "are given."
+    "are given. On repair calls, `current_representation` is the exact\n"
+    "validated template that produced the repair-base render; modify it and\n"
+    "return one complete replacement template. It is null only for the\n"
+    "initial build."
 )
 
 E5_ATTRIBUTION_INSTRUCTIONS = (
@@ -637,6 +642,7 @@ def _e5_builder_evidence_package(
     last_rejection: str | None = None,
     target_images: list[Path] | None = None,
     current_render_images: list[Path] | None = None,
+    current_representation: Any | None = None,
     selected_attribution: AttributionRecord | None = None,
     action_fingerprint: str | None = None,
     presentation_labels: list[PresentationLabel] | None = None,
@@ -645,12 +651,13 @@ def _e5_builder_evidence_package(
 
     Both lanes receive this exact data shape and the same target images. Only
     their output schema/instructions differ. Repair calls additionally receive
-    the current render images outside this JSON package. `presentation_labels`
-    is the SAME shell-owned catalog for both lanes: the only visible fixed
-    text a template may carry, referenceable by `label_id` only.
+    the current render images outside this JSON package and the exact validated
+    representation that produced them. `presentation_labels` is the SAME
+    shell-owned catalog for both lanes: the only visible fixed text a template
+    may carry, referenceable by `label_id` only.
     """
     return {
-        "schema_version": "e5-builder-evidence/1",
+        "schema_version": "e5-builder-evidence/2",
         "presentation_labels": [
             label.model_dump(mode="json") for label in presentation_labels or []
         ],
@@ -681,6 +688,11 @@ def _e5_builder_evidence_package(
             {"name": image.name, "sha256": _sha256_file(image)}
             for image in current_render_images or []
         ],
+        "current_representation": (
+            current_representation.model_dump(mode="json")
+            if current_representation is not None
+            else None
+        ),
         "selected_attribution": (
             selected_attribution.model_dump(mode="json") if selected_attribution else None
         ),
@@ -3520,6 +3532,9 @@ def run_e5(
                     last_rejection=lane_state.get("last_rejection"),
                     target_images=shared_target_images,
                     current_render_images=current_render_images,
+                    current_representation=representation_by_version[
+                        repair_base_version.version_id
+                    ],
                     selected_attribution=attribution,
                     action_fingerprint=fingerprint,
                     presentation_labels=approved_label_catalog,

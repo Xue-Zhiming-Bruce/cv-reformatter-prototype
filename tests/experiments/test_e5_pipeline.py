@@ -747,7 +747,7 @@ def test_builder_entries_receive_identical_initial_payload_and_image_hashes(
     assert isinstance(payload, dict)
     assert payload["target_images"]
     assert [item["sha256"] for item in payload["target_images"]] == received["a"]["image_hashes"]
-    assert "representation" not in json.dumps(payload).casefold()
+    assert payload["current_representation"] is None
 
 
 def test_builder_evidence_package_is_representation_neutral() -> None:
@@ -782,8 +782,9 @@ def test_builder_evidence_package_is_representation_neutral() -> None:
         page_size=(612.0, 792.0),
     )
     assert package_a == package_b
+    assert package_a["schema_version"] == "e5-builder-evidence/2"
     assert package_a["structure_draft"] == draft.model_dump(mode="json")
-    assert "representation" not in json.dumps(package_a).casefold()
+    assert package_a["current_representation"] is None
 
 
 def _e5_finding(finding_id: str, region: str, dimension: str) -> e.DefectFinding:
@@ -898,6 +899,9 @@ def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
 
     finding = _e5_finding("f1", "experience", "gap")
     attribution = _e5_attribution(finding)
+    current_representation = e.LaneAStructureProposal(
+        proposal_id="lane-a-v2", sections=[], agent="llm"
+    )
     package = e._e5_builder_evidence_package(
         draft=e.TargetStructureDraft(
             target_id="target-v1",
@@ -910,12 +914,14 @@ def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
         derived={},
         page_size=(612.0, 792.0),
         current_render_version=finding.render_version,
+        current_representation=current_representation,
         findings=[finding],
         measurements=[e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0)],
         selected_attribution=attribution,
         action_fingerprint="experience:gap:8.0",
     )
     assert package["current_render_version"] == "render-v1"
+    assert package["current_representation"] == current_representation.model_dump(mode="json")
     assert package["selected_attribution"] == attribution.model_dump(mode="json")
     assert package["selected_attribution"]["finding_id"] == "f1"
     assert package["selected_attribution"]["measurement_request_id"] == "measure-f1"
@@ -3630,6 +3636,11 @@ def test_run_e5_repairs_from_the_quarantined_candidate_and_promotes_only_the_gre
     )
     payload = json.loads(evidence_files[-1].read_text())
     assert payload["current_render_version"] == v2["version_id"], "the Builder did not repair from v2"
+    quarantined_audit = next(
+        entry for entry in lane["builder_candidates"]
+        if entry.get("candidate_render_version") == v2["version_id"]
+    )
+    assert payload["current_representation"] == quarantined_audit["typed_candidate"]
     assert payload["current_gates"] == json.loads(
         (run_dir / "lane_b" / f"hard_gates_{v2['version_id']}.json").read_text()
     )["gates"]

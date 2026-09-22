@@ -1927,7 +1927,8 @@ comparison was started.
   `candidate_content_accounting.leaf_counts`) and is also the quarantine
   eligibility input.
 - A repairable-but-not-passing candidate becomes the QUARANTINED repair base:
-  the next Builder's payload binds that version's representation, render
+  the next Builder's payload carries that version's exact shell-validated
+  representation and binds its render
   version, hard gates, missing leaves and render images, and the action
   fingerprint includes the repair-base version. `active_index` still points at
   the accepted active version, so the reviewer, measurement, promotion and the
@@ -1955,12 +1956,11 @@ promote; and a never-passing sequence where the owner package keeps showing
 
 ### Honest ceilings (owner decision may still be required)
 
-- The Builder payload contract does not carry the PREVIOUS representation
-  artifact for either lane (the live Builder re-emits a full
-  proposal/template each round). Quarantine continuity is therefore bound
-  through version identity + gates + missing leaves + render images, not by
-  handing the model its own previous artifact. Carrying it would expand the
-  Builder contract and is left to the owner.
+- Owner follow-up closed the previous quarantine-continuity ceiling: repair
+  payloads now carry the exact validated Lane A proposal or Lane B template
+  from the repair-base version. The Builder edits that object and returns one
+  complete replacement; candidate values remain outside both representations.
+  This additive contract change is identified as `e5-builder-evidence/2`.
 - Lane A's `content_shapes_match_evidence` gate cannot verify rail geometry, so
   a structural presentation difference under it is recorded as a
   representation capability gap; whether a rail-aware Lane A representation is
