@@ -1514,13 +1514,19 @@ def test_hard_gate_repair_inputs_never_convert_uncertain_or_lane_a_gates() -> No
 
 
 def test_review_gate_full_review_once_per_render_fingerprint() -> None:
-    """No new render -> NO review this round; a promoted render is reviewed
-    (scoped) once; re-reviewing the SAME fingerprint is refused."""
+    """Review fingerprint = FINAL-PDF sha256 (owner correction 2026-09-22):
+    same version id/hash -> one review; a DIFFERENT version id with the SAME
+    pdf hash does NOT re-review; a new pdf hash may be reviewed once."""
     reviewed: set[str] = set()
-    assert e._e5_review_this_round(reviewed, "render-v1") is True
-    reviewed.add("render-v1")
-    assert e._e5_review_this_round(reviewed, "render-v1") is False
-    assert e._e5_review_this_round(reviewed, "render-v2") is True
+    assert e._e5_review_this_round(reviewed, "pdf-hash-a") is True
+    reviewed.add("pdf-hash-a")
+    assert e._e5_review_this_round(reviewed, "pdf-hash-a") is False
+    # different version id, same final PDF: same fingerprint, no re-review
+    assert e._e5_review_this_round(reviewed, "pdf-hash-a") is False
+    # new pdf hash -> scoped review allowed once
+    assert e._e5_review_this_round(reviewed, "pdf-hash-b") is True
+    reviewed.add("pdf-hash-b")
+    assert e._e5_review_this_round(reviewed, "pdf-hash-b") is False
 
 
 def test_round_scheduling_is_lane_agnostic() -> None:
@@ -1531,6 +1537,247 @@ def test_round_scheduling_is_lane_agnostic() -> None:
         selected, deferred = e._e5_select_round_work(findings, [], [])
         assert len(selected) == e.E5_MAX_ROUND_ATTRIBUTION_FINDINGS
         assert len(deferred) == 3
+
+
+# --- agent message audit (owner decision 2026-09-22) ------------------------
+
+
+def _audit_spec(**overrides: Any) -> e.E5AgentAuditSpec:
+    defaults = dict(
+        agent="visual_reviewer",
+        lane="a",
+        phase="review",
+        round_no=1,
+        target_version="target-v1",
+        render_version="render-v1",
+        finding_ids=("finding-1",),
+        measurement_ids=(),
+        model="fake-model",
+        instructions="You are the reviewer.",
+        image_refs=(),
+    )
+    defaults.update(overrides)
+    return e.E5AgentAuditSpec(**defaults)
+
+
+class _FakeRunResult:
+    """Fake AgentRunResult: exposes all_messages()/usage() like the real one."""
+
+    def __init__(self, messages: list[Any]) -> None:
+        self._messages = messages
+
+    def all_messages(self) -> list[Any]:
+        return list(self._messages)
+
+    def usage(self) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            input_tokens=10, output_tokens=2, requests=1, tool_calls=0
+        )
+
+
+def _audit_messages(tmp_image: Any) -> list[Any]:
+    """A realistic conversation: user prompt (text + image), a tool call,
+    its result, a validation RETRY prompt, and the final answer."""
+    from pydantic_ai.messages import (
+        BinaryContent,
+        ModelRequest,
+        ModelResponse,
+        RetryPromptPart,
+        TextPart,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
+    )
+
+    user = ModelRequest(
+        parts=[
+            UserPromptPart(
+                content=[
+                    "review this page",
+                    BinaryContent(data=tmp_image, media_type="image/png"),
+                ]
+            )
+        ]
+    )
+    call = ModelResponse(parts=[ToolCallPart(tool_name="tool", args={"a": 1}, tool_call_id="c1")])
+    tool_return = ModelRequest(
+        parts=[
+            ToolReturnPart(tool_name="tool", content="tool result", tool_call_id="c1"),
+            RetryPromptPart(content="fix the output schema"),
+        ]
+    )
+    answer = ModelResponse(parts=[TextPart(content="findings")])
+    return [user, call, tool_return, answer]
+
+
+def test_agent_audit_success_keeps_full_history_and_redacts_images(tmp_path: Path) -> None:
+    """A successful Agent call keeps the ENTIRE message history (user prompt,
+    provider response, tool call/result, validation retry) in the lane's
+    agent_messages.jsonl; images become path/hash references with NO base64;
+    the call_id matches the persisted trace artifact."""
+    import json
+
+    trace = e.RunTrace(tmp_path)
+    trace.add(agent="shell", phase="e0", action="lane_started")
+    image_ref = {
+        "path": "review_target_page_1.png", "page": 1, "role": "target",
+        "sha256": "0" * 64,
+    }
+    messages = _audit_messages(tmp_image=b"raw png bytes")
+    spec = _audit_spec(image_refs=(image_ref,))
+    call_id = e._e5_agent_audit_record(
+        trace, spec,
+        input_messages=messages,
+        run_result=_FakeRunResult(messages),
+        error=None,
+    )
+    lines = (tmp_path / "agent_messages.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["call_id"] == call_id
+    assert record["status"] == "success"
+    assert record["model"] == "fake-model"
+    assert record["instructions"] == "You are the reviewer."
+    assert record["usage"]["input_tokens"] == 10
+    # image never embedded as base64: the reference replaces the bytes
+    text = lines[0]
+    assert '"data"' not in text
+    assert record["messages"][0]["parts"][0]["content"][1]["sha256"] == hashlib.sha256(
+        b"raw png bytes"
+    ).hexdigest()
+    assert record["messages"][0]["parts"][0]["content"][1]["path"] == "review_target_page_1.png"
+    # call_id = lane prefix + the persisted trace artifact name; the trace
+    # entry is joinable by that artifact name and binds the call identity
+    artifact_name = call_id.split("-", 1)[1]
+    artifact = tmp_path / artifact_name
+    assert artifact.exists()
+    assert json.loads(artifact.read_text(encoding="utf-8"))["call_id"] == call_id
+    assert trace.entries[-1]["output_artifact"] == artifact_name
+    assert trace.entries[-1]["action"] == "agent_call"
+
+
+def test_agent_audit_keeps_validation_retry_and_tool_traffic(tmp_path: Path) -> None:
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        RetryPromptPart,
+        TextPart,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
+    )
+
+    messages = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        ModelResponse(parts=[ToolCallPart(tool_name="t", args={"a": 1}, tool_call_id="c1")]),
+        ModelRequest(parts=[ToolReturnPart(content="r", tool_name="t", tool_call_id="c1")]),
+        ModelRequest(parts=[RetryPromptPart(content="schema error")]),
+        ModelResponse(parts=[TextPart(content="ok")]),
+    ]
+    trace = e.RunTrace(tmp_path)
+    spec = _audit_spec(agent="attribution_investigator", phase="attribute")
+    e._e5_agent_audit_record(
+        trace, spec, input_messages=messages, run_result=_FakeRunResult(messages), error=None
+    )
+    import json
+
+    record = json.loads((tmp_path / "agent_messages.jsonl").read_text(encoding="utf-8"))
+    kinds = [part.get("part_kind") for m in record["messages"] for part in m["parts"]]
+    assert "tool-call" in kinds
+    assert "tool-return" in kinds
+    assert "retry-prompt" in kinds
+    assert record["agent"] == "attribution_investigator" and record["lane"] == "a"
+
+
+def test_agent_audit_failed_call_records_error_not_a_fake_response(tmp_path: Path) -> None:
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    messages = [ModelRequest(parts=[UserPromptPart(content="prompt")])]
+    trace = e.RunTrace(tmp_path)
+    spec = _audit_spec(agent="lane_b_builder", lane="b", phase="repair")
+    e._e5_agent_audit_record(
+        trace, spec, input_messages=messages, run_result=None,
+        error="UsageLimitExceeded: The next request would exceed the request_limit of 8.",
+    )
+    import json
+
+    record = json.loads((tmp_path / "agent_messages.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert record["status"] == "budget_exhausted"
+    assert "UsageLimitExceeded" in record["error"]
+    # only the ACTUAL request is saved; a provider response is never invented
+    assert record["messages"][0]["parts"][0]["content"] == "prompt"
+    assert len(record["messages"]) == 1 and record["usage"] is None
+    assert record["render_version"] == "render-v1" and record["lane"] == "b"
+
+
+def test_agent_audit_withholds_content_on_secret_or_signed_url(tmp_path: Path) -> None:
+    """A provider message carrying a signed URL / credential never enters the
+    artifact: the record is written WITHHELD with an explicit reason, and no
+    Authorization/env/signed-URL value lands on disk."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+
+    poisoned = [
+        ModelRequest(parts=[UserPromptPart(content="prompt")]),
+        ModelResponse(
+            parts=[TextPart(content="https://s3.amazonaws.com/x?X-Amz-Security-Token=SECRET")]
+        ),
+    ]
+    trace = e.RunTrace(tmp_path)
+    spec = _audit_spec()
+    e._e5_agent_audit_record(
+        trace, spec, input_messages=poisoned,
+        run_result=_FakeRunResult(poisoned), error=None,
+    )
+    import json
+
+    record = json.loads((tmp_path / "agent_messages.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert record["status"] == "withheld"
+    assert record["messages"] is None and "withhold_reason" in record
+    raw = (tmp_path / "agent_messages.jsonl").read_text(encoding="utf-8")
+    assert "X-Amz-Security-Token" not in raw and "SECRET" not in raw
+
+
+def test_agent_audit_lane_files_are_isolated(tmp_path: Path) -> None:
+    trace_a = e.RunTrace(tmp_path / "lane_a")
+    trace_b = e.RunTrace(tmp_path / "lane_b")
+    trace_a.out_dir.mkdir(); trace_b.out_dir.mkdir()
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    messages = [ModelRequest(parts=[UserPromptPart(content="x")])]
+    e._e5_agent_audit_record(
+        trace_a, _audit_spec(lane="a"), input_messages=messages,
+        run_result=_FakeRunResult(messages), error=None,
+    )
+    e._e5_agent_audit_record(
+        trace_b, _audit_spec(lane="b"), input_messages=messages,
+        run_result=None, error="Connection error.",
+    )
+    a_record = json.loads((tmp_path / "lane_a" / "agent_messages.jsonl").read_text())
+    b_record = json.loads((tmp_path / "lane_b" / "agent_messages.jsonl").read_text())
+    assert a_record["lane"] == "a" and b_record["lane"] == "b"
+    assert a_record["call_id"] != b_record["call_id"]
+    assert not (tmp_path / "agent_messages.jsonl").exists()
+
+
+def test_agent_audit_call_id_binds_trace_and_render_version(tmp_path: Path) -> None:
+    import json
+
+    trace = e.RunTrace(tmp_path)
+    trace.add(agent="shell", phase="loop", action="review_gate", output={"render_version": "render-v1"})
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    messages = [ModelRequest(parts=[UserPromptPart(content="p")])]
+    spec = _audit_spec(render_version="render-v1", phase="attribute", agent="attribution_investigator")
+    call_id = e._e5_agent_audit_record(
+        trace, spec, input_messages=messages, run_result=None, error="some error"
+    )
+    record = json.loads((tmp_path / "agent_messages.jsonl").read_text())
+    assert record["call_id"] == call_id
+    artifact = json.loads((tmp_path / call_id.split("-", 1)[1]).read_text())
+    assert artifact["call_id"] == call_id
+    assert record["render_version"] == "render-v1"
 
 
 def test_lane_a_rejects_target_specific_identifiers_and_invalid_fields() -> None:
@@ -2598,6 +2845,10 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
     # the lanes ran under (no approval was passed here; the measured target
     # and catalog identity are still frozen so a crash mid-run is auditable)
     run_config = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
+    # agent message audit files are lane-local ignored run artifacts and are
+    # NEVER copied into the owner package (owner decision 2026-09-22)
+    assert not (package / "agent_messages.jsonl").exists()
+    assert not any("agent_messages" in p.name for p in package.iterdir())
     assert run_config["presentation_label_approval"]["provided"] is False
     assert run_config["presentation_label_approval"]["validated"] is False
     assert run_config["presentation_label_approval"]["approved_label_ids"] == []

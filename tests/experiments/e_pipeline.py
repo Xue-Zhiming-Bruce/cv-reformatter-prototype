@@ -118,7 +118,7 @@ import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -1909,13 +1909,15 @@ def _live_reviewer_findings(
     instructions: str = REVIEWER_INSTRUCTIONS,
     visual_model: bool = False,
     message: str | None = None,
+    audit: E5AgentAuditSpec | None = None,
 ) -> list[DefectFinding]:
     """One bounded live reviewer request over the side-by-side crop/overview.
     Requires explicit authorization (never called offline). E4: one agent run
     is a bounded call (per-call request limit); findings ids are re-assigned by
     the shell so the model can never forge them. E5 Phase 0: `message`
     overrides the default prompt text (semantic measurement intent instead of
-    verbatim OCR anchors)."""
+    verbatim OCR anchors). ``audit`` records the full model-visible message
+    history (owner decision 2026-09-22; the E5 call sites pass it)."""
     from pydantic_ai import Agent, BinaryContent
 
     from tests.experiments.d_pipeline import _live_model
@@ -1929,24 +1931,40 @@ def _live_reviewer_findings(
     )
     if budget.remaining_model_requests() < 1:
         raise CheckpointBudgetExceeded("budget exhausted before visual reviewer")
-    result = agent.run_sync(
-        [
-            (message or (
-            "Compare the TARGET and RENDER images for this page. Report localized "
-            "observation-first findings across the WHOLE document region by region "
-            "(not only one known defect). Each finding must carry the exact "
-            f"target_version={target_version!r} render_version={render_version!r} "
-            f"page={page}, a region id from the node inventory, an observation, a "
-            "suspected dimension, and one typed measurement request whose text "
-            "anchors are verbatim line prefixes of the render PDF. Separate what you "
-            "SEE from what you SUSPECT: proposed_cause is a hypothesis only. You "
-            "never approve delivery and never decide the root cause.\nNode inventory:\n"
-            + node_inventory)),
-            *[BinaryContent(data=image.read_bytes(), media_type="image/png") for image in page_images],
-        ],
-        usage_limits=_call_limits(budget, E4_REVIEWER_MAX_REQUESTS),
-        model_settings=_live_model_settings(),
-    )
+    user_messages = [
+        (message or (
+        "Compare the TARGET and RENDER images for this page. Report localized "
+        "observation-first findings across the WHOLE document region by region "
+        "(not only one known defect). Each finding must carry the exact "
+        f"target_version={target_version!r} render_version={render_version!r} "
+        f"page={page}, a region id from the node inventory, an observation, a "
+        "suspected dimension, and one typed measurement request whose text "
+        "anchors are verbatim line prefixes of the render PDF. Separate what you "
+        "SEE from what you SUSPECT: proposed_cause is a hypothesis only. You "
+        "never approve delivery and never decide the root cause.\nNode inventory:\n"
+        + node_inventory)),
+        *[BinaryContent(data=image.read_bytes(), media_type="image/png") for image in page_images],
+    ]
+    model_name = getattr(getattr(agent, "model", None), "model_name", None)
+    try:
+        result = agent.run_sync(
+            user_messages,
+            usage_limits=_call_limits(budget, E4_REVIEWER_MAX_REQUESTS),
+            model_settings=_live_model_settings(),
+        )
+    except Exception as error:
+        if audit is not None:
+            _e5_agent_audit_record(
+                trace, audit, input_messages=user_messages,
+                run_result=None, error=f"{type(error).__name__}: {error}",
+                model_name=model_name,
+            )
+        raise
+    if audit is not None:
+        _e5_agent_audit_record(
+            trace, audit, input_messages=user_messages, run_result=result, error=None,
+            model_name=model_name,
+        )
     _record_usage(budget, trace, "visual_reviewer", "review", result)
     prefix = id_prefix or finding_id
     for index, finding in enumerate(result.output, 1):
@@ -7147,12 +7165,13 @@ def _e5_builder_candidate_record(
 E5_MAX_ROUND_ATTRIBUTION_FINDINGS = 3
 
 
-def _e5_review_this_round(reviewed_versions: set[str], current_version_id: str) -> bool:
-    """Review scheduling gate: a render fingerprint is FULLY reviewed at most
-    once (repair-starvation fix). No new render -> NO review this round; a
-    promoted render is reviewed once (scoped to changed regions by the round
-    scope). Both lanes run the SAME gate."""
-    return current_version_id not in reviewed_versions
+def _e5_review_this_round(reviewed_render_fingerprints: set[str], pdf_sha256: str) -> bool:
+    """Review scheduling gate (2026-09-22 owner correction): the fingerprint
+    is the FINAL PDF's sha256, not the version id. One fingerprint is FULLY
+    reviewed at most once — no new render -> NO review this round; a promoted
+    render with a new PDF hash is reviewed once (scoped to changed regions by
+    the round scope). Both lanes run the SAME gate."""
+    return pdf_sha256 not in reviewed_render_fingerprints
 
 
 def _e5_gate_repair_items(
@@ -7930,6 +7949,173 @@ def _with_connection_retry(call, *, trace: RunTrace, what: str, attempts: int = 
     raise last
 
 
+# --- E5 agent-call message audit (owner decision 2026-09-22: keep the
+# model-visible request and provider-returned message history) ---------------
+
+
+class E5AgentAuditSpec(NamedTuple):
+    """Per-call audit identity for ONE live agent invocation. Written to the
+    lane's ignored `agent_messages.jsonl` together with the serialized
+    model-visible message history; never copied into the owner package."""
+
+    agent: str
+    lane: str | None
+    phase: str
+    round_no: int | None
+    target_version: str
+    render_version: str | None
+    finding_ids: tuple[str, ...]
+    measurement_ids: tuple[str, ...]
+    model: str | None
+    instructions: str
+    image_refs: tuple[dict[str, Any], ...]
+
+
+def _e5_serialize_agent_messages(
+    messages: list[Any], image_refs: tuple[dict[str, Any], ...]
+) -> str:
+    """Serialize the FULL model-visible request/provider-response sequence
+    with the installed PydanticAI ``ModelMessagesTypeAdapter`` (the complete
+    conversation, including tool calls/results and validation-retry prompts).
+    Images become FILE REFERENCES (relative path, sha256, media type, page,
+    target/render role) — never base64. Model internals are not recorded.
+    No credential/authorization/environment value can appear here because the
+    messages contain model content only; the caller still runs the
+    signed-URL/secret check over the final text and fails closed."""
+    from pydantic_ai.messages import BinaryContent, ModelMessagesTypeAdapter
+    from dataclasses import replace as _dc_replace
+
+    replaced: list[Any] = []
+    ref_index = 0
+    for message in messages:
+        new_parts = []
+        changed = False
+        for part in getattr(message, "parts", None) or []:
+            content = getattr(part, "content", None)
+            if isinstance(content, list):
+                new_content = []
+                for element in content:
+                    if isinstance(element, BinaryContent):
+                        ref = dict(image_refs[ref_index]) if ref_index < len(image_refs) else {
+                            "note": "image reference not provided by the call site"
+                        }
+                        ref_index += 1
+                        new_content.append(
+                            {
+                                **ref,
+                                "kind": "image_reference",
+                                "media_type": element.media_type,
+                                "sha256": hashlib.sha256(element.data).hexdigest(),
+                            }
+                        )
+                        changed = True
+                    else:
+                        new_content.append(element)
+                if changed:
+                    part = _dc_replace(part, content=new_content)
+            new_parts.append(part)
+        replaced.append(_dc_replace(message, parts=new_parts) if changed else message)
+    return ModelMessagesTypeAdapter.dump_json(replaced).decode("utf-8")
+
+
+def _e5_agent_audit_record(
+    trace: RunTrace,
+    spec: E5AgentAuditSpec,
+    *,
+    input_messages: list[Any],
+    run_result: Any | None,
+    error: str | None,
+    model_name: str | None = None,
+) -> str:
+    """ONE JSONL line per Agent call in the lane's ignored
+    `agent_messages.jsonl` (owner decision 2026-09-22): stable call_id, full
+    call identity, model-visible user messages, provider-returned messages
+    (including validation-retry prompts and tool calls/results), usage, and
+    success/error status. Images are saved as path/hash references, never
+    base64. Credentials, env values, and signed URLs must not enter the
+    artifact: the signed-URL/secret check runs over the final text and, if it
+    fails, the message CONTENT is withheld behind an explicit
+    `secret_check_failed` record (never faked, never silently dropped).
+    The call_id is the persisted trace artifact name, so trace and audit
+    record are joinable."""
+    status = "success" if run_result is not None and error is None else "error"
+    if error is not None and "usagelimitexceeded" in error.casefold():
+        status = "budget_exhausted"
+    sequence = len(trace.entries) + 1
+    artifact_name = f"trace_{sequence:04d}_agent_call.json"
+    # call_id = lane prefix + the persisted trace artifact name: stable,
+    # unique across lanes, and directly joinable with the lane trace entry.
+    call_id = f"{spec.lane or 'shared'}-{artifact_name}"
+    usage = None
+    if run_result is not None:
+        try:
+            usage = run_result.usage()
+            usage = {
+                "input_tokens": getattr(usage, "input_tokens", None),
+                "output_tokens": getattr(usage, "output_tokens", None),
+                "requests": getattr(usage, "requests", None),
+                "tool_calls": getattr(usage, "tool_calls", None),
+            }
+        except Exception:
+            usage = None
+    meta = {
+        "call_id": call_id,
+        "agent": spec.agent,
+        "lane": spec.lane,
+        "phase": spec.phase,
+        "round": spec.round_no,
+        "target_version": spec.target_version,
+        "render_version": spec.render_version,
+        "finding_ids": list(spec.finding_ids),
+        "measurement_ids": list(spec.measurement_ids),
+        "model": model_name or spec.model,
+        "instructions": spec.instructions,
+        "usage": usage,
+        "status": status,
+        "error": error,
+        "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    try:
+        messages = (
+            run_result.all_messages() if run_result is not None else list(input_messages)
+        )
+        payload_text = _e5_serialize_agent_messages(messages, spec.image_refs)
+        assert_no_signed_strings(payload_text)
+        for forbidden in ("Authorization", "X-Amz-Security-Token", "api_key"):
+            assert forbidden not in payload_text, f"audit artifact contains {forbidden!r}"
+        record = {**meta, "messages": json.loads(payload_text)}
+    except Exception as withhold:
+        # Fail closed WITHOUT inventing a response: keep the identity record,
+        # withhold the message content, state exactly why.
+        record = {
+            **meta,
+            "messages": None,
+            "status": "withheld",
+            "error": error or str(withhold),
+            "withhold_reason": (
+                "message content withheld: serialization or secret/signed-URL "
+                f"check failed ({type(withhold).__name__})"
+            ),
+        }
+    (trace.out_dir / "agent_messages.jsonl").open("a", encoding="utf-8").write(
+        json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+    )
+    trace.add(
+        agent=spec.agent,
+        phase=spec.phase,
+        action="agent_call",
+        output={
+            "call_id": call_id,
+            "status": record["status"],
+            "model": spec.model,
+            "render_version": spec.render_version,
+            "finding_ids": list(spec.finding_ids),
+        },
+        persist_output=True,
+    )
+    return call_id
+
+
 def _live_lane_a_builder(
     budget: RunBudget,
     trace: RunTrace,
@@ -7937,10 +8123,12 @@ def _live_lane_a_builder(
     payload: dict[str, Any],
     images: list[Any],
     proposal_id: str,
+    audit: E5AgentAuditSpec | None = None,
 ) -> LaneAStructureProposal:
     """The LIVE Lane A Builder: one bounded request that outputs the typed
     provider-neutral structure primitives. The shell validates, applies and
-    renders — the agent never promotes anything."""
+    renders — the agent never promotes anything. ``audit`` records the full
+    model-visible message history (owner decision 2026-09-22)."""
     from pydantic_ai import Agent, BinaryContent
 
     from tests.experiments.d_pipeline import _live_model
@@ -7953,17 +8141,33 @@ def _live_lane_a_builder(
         name="lane_a_builder",
         instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
     )
-    run_result = _with_connection_retry(
-        lambda: agent.run_sync(
-            [
-                json.dumps(payload, ensure_ascii=False, indent=1),
-                *[BinaryContent(data=image.read_bytes(), media_type="image/png") for image in images],
-            ],
-            usage_limits=_call_limits(budget, E5_BUILDER_MAX_REQUESTS),
-            model_settings=_live_model_settings(),
-        ),
-        trace=trace, what="lane A builder",
-    )
+    user_messages = [
+        json.dumps(payload, ensure_ascii=False, indent=1),
+        *[BinaryContent(data=image.read_bytes(), media_type="image/png") for image in images],
+    ]
+    model_name = getattr(getattr(agent, "model", None), "model_name", None)
+    try:
+        run_result = _with_connection_retry(
+            lambda: agent.run_sync(
+                user_messages,
+                usage_limits=_call_limits(budget, E5_BUILDER_MAX_REQUESTS),
+                model_settings=_live_model_settings(),
+            ),
+            trace=trace, what="lane A builder",
+        )
+    except Exception as error:
+        if audit is not None:
+            _e5_agent_audit_record(
+                trace, audit, input_messages=user_messages,
+                run_result=None, error=f"{type(error).__name__}: {error}",
+                model_name=model_name,
+            )
+        raise
+    if audit is not None:
+        _e5_agent_audit_record(
+            trace, audit, input_messages=user_messages, run_result=run_result, error=None,
+            model_name=model_name,
+        )
     _record_usage(budget, trace, "lane_a_builder", "build", run_result)
     proposal = run_result.output
     return proposal.model_copy(update={"proposal_id": proposal_id, "agent": "llm"})
@@ -7976,11 +8180,13 @@ def _live_lane_b_builder(
     payload: dict[str, Any],
     images: list[Any],
     template_id: str,
+    audit: E5AgentAuditSpec | None = None,
 ) -> AuthoredTemplateCandidate:
     """The LIVE Lane B Builder: one bounded request over target + current
     render images that authors the constrained HTML/CSS template candidate.
     The shell validates the safety boundary and fills typed slots — the agent
-    never touches candidate values or the filesystem."""
+    never touches candidate values or the filesystem. ``audit`` records the
+    full model-visible message history (owner decision 2026-09-22)."""
     from pydantic_ai import Agent, BinaryContent
 
     from tests.experiments.d_pipeline import _live_model
@@ -7994,17 +8200,33 @@ def _live_lane_b_builder(
         name="lane_b_builder",
         instructions=E5_LANE_B_BUILDER_INSTRUCTIONS,
     )
-    run_result = _with_connection_retry(
-        lambda: agent.run_sync(
-            [
-                json.dumps(payload, ensure_ascii=False, indent=1),
-                *[BinaryContent(data=image.read_bytes(), media_type="image/png") for image in images],
-            ],
-            usage_limits=_call_limits(budget, E5_BUILDER_MAX_REQUESTS),
-            model_settings=_live_model_settings(),
-        ),
-        trace=trace, what="lane B builder",
-    )
+    user_messages = [
+        json.dumps(payload, ensure_ascii=False, indent=1),
+        *[BinaryContent(data=image.read_bytes(), media_type="image/png") for image in images],
+    ]
+    model_name = getattr(getattr(agent, "model", None), "model_name", None)
+    try:
+        run_result = _with_connection_retry(
+            lambda: agent.run_sync(
+                user_messages,
+                usage_limits=_call_limits(budget, E5_BUILDER_MAX_REQUESTS),
+                model_settings=_live_model_settings(),
+            ),
+            trace=trace, what="lane B builder",
+        )
+    except Exception as error:
+        if audit is not None:
+            _e5_agent_audit_record(
+                trace, audit, input_messages=user_messages,
+                run_result=None, error=f"{type(error).__name__}: {error}",
+                model_name=model_name,
+            )
+        raise
+    if audit is not None:
+        _e5_agent_audit_record(
+            trace, audit, input_messages=user_messages, run_result=run_result, error=None,
+            model_name=model_name,
+        )
     _record_usage(budget, trace, "lane_b_builder", "build", run_result)
     template = run_result.output
     return template.model_copy(update={"template_id": template_id})
@@ -8017,6 +8239,7 @@ def _live_attribution_batch(
     *,
     findings: list[DefectFinding],
     results: list[MeasurementResult],
+    audit: E5AgentAuditSpec | None = None,
 ) -> list[LiveAttributionHypothesis]:
     """Phase 0 batched live attribution: findings that share the same region
     (and likely owning layer) are traced in ONE bounded call, ordered like
@@ -8045,11 +8268,27 @@ def _live_attribution_batch(
             "evidence you already have plus at most a few tool calls."
         ),
     }
-    run_result = agent.run_sync(
-        json.dumps(payload, ensure_ascii=False, indent=1),
-        usage_limits=_call_limits(budget, E5_ATTRIBUTION_MAX_REQUESTS),
-        model_settings=_live_model_settings(),
-    )
+    user_messages = [json.dumps(payload, ensure_ascii=False, indent=1)]
+    model_name = getattr(getattr(agent, "model", None), "model_name", None)
+    try:
+        run_result = agent.run_sync(
+            user_messages,
+            usage_limits=_call_limits(budget, E5_ATTRIBUTION_MAX_REQUESTS),
+            model_settings=_live_model_settings(),
+        )
+    except Exception as error:
+        if audit is not None:
+            _e5_agent_audit_record(
+                trace, audit, input_messages=user_messages,
+                run_result=None, error=f"{type(error).__name__}: {error}",
+                model_name=model_name,
+            )
+        raise
+    if audit is not None:
+        _e5_agent_audit_record(
+            trace, audit, input_messages=user_messages, run_result=run_result, error=None,
+            model_name=model_name,
+        )
     _record_usage(budget, trace, "attribution_investigator", "attribute_batch", run_result)
     return list(run_result.output)
 
@@ -8438,6 +8677,54 @@ def run_e5(
             for ref in claim.evidence:
                 ids.add(ref.evidence_id)
         return ids
+
+        def _e5_image_refs(
+            paths: list[Any], role: str, *, first_page: int = 1
+        ) -> tuple[dict[str, Any], ...]:
+            """Image audit references in the EXACT user-content order: file
+            path relative to the run dir, sha256, page number, target/render
+            role — NEVER image bytes."""
+            refs: list[dict[str, Any]] = []
+            for index, path in enumerate(paths, first_page):
+                path = Path(path)
+                refs.append(
+                    {
+                        "path": (
+                            path.relative_to(out_dir).as_posix()
+                            if path.is_relative_to(out_dir)
+                            else path.name
+                        ),
+                        "page": index,
+                        "role": role,
+                        "sha256": _sha256_file(path),
+                    }
+                )
+            return tuple(refs)
+
+        def _e5_audit(
+            *,
+            agent: str,
+            phase: str,
+            round_no: int | None,
+            render_version: str | None,
+            finding_ids: tuple[str, ...] = (),
+            measurement_ids: tuple[str, ...] = (),
+            instructions: str,
+            image_refs: tuple[dict[str, Any], ...] = (),
+        ) -> E5AgentAuditSpec:
+            return E5AgentAuditSpec(
+                agent=agent,
+                lane=lane,
+                phase=phase,
+                round_no=round_no,
+                target_version=target_id,
+                render_version=render_version,
+                finding_ids=finding_ids,
+                measurement_ids=measurement_ids,
+                model=None,
+                instructions=instructions,
+                image_refs=image_refs,
+            )
 
     candidate = candidate_resume_E()
     # Generic header-overflow disposition (E3 shell transition, reused for
@@ -9196,6 +9483,14 @@ def run_e5(
                         payload=initial_builder_evidence,
                         images=shared_target_images,
                         proposal_id="lane-a-r1",
+                        audit=_e5_audit(
+                            agent="lane_a_builder",
+                            phase="initial",
+                            round_no=0,
+                            render_version=None,
+                            instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
+                            image_refs=_e5_image_refs(shared_target_images, "target"),
+                        ),
                     )
                     validation_error = _validate_lane_a_proposal(proposal, state)
                     candidate_audit_index = record_builder_candidate(
@@ -9227,6 +9522,14 @@ def run_e5(
                         payload=initial_builder_evidence,
                         images=shared_target_images,
                         template_id="lane-b-r1",
+                        audit=_e5_audit(
+                            agent="lane_b_builder",
+                            phase="initial",
+                            round_no=0,
+                            render_version=None,
+                            instructions=E5_LANE_B_BUILDER_INSTRUCTIONS,
+                            image_refs=_e5_image_refs(shared_target_images, "target"),
+                        ),
                     )
                 else:
                     from tests.experiments.e_authored_template import SCRIPTED_AUTHORED_TEMPLATE
@@ -9286,7 +9589,13 @@ def run_e5(
         # attribution backlog is bounded; the Builder is called as soon as a
         # confirmed, attributed, builder-owned defect bound to the ACTIVE
         # version exists — it never waits for the whole open-findings ledger.
-        reviewed_versions: set[str] = set()
+        # Review scheduling state: the fingerprint is the ACTIVE render's
+        # FINAL-PDF sha256 (owner correction 2026-09-22). version_id ->
+        # pdf hash is also recorded: two different version ids with the SAME
+        # hash do not re-review, and the SAME version_id can never map to a
+        # different PDF (conflict fails closed).
+        reviewed_render_fingerprints: set[str] = set()
+        version_pdf_hashes: dict[str, str] = {}
         gate_repair_versions_seen: set[str] = set()
         findings_by_id: dict[str, DefectFinding] = {}
         # finding_id -> (finding, result, bound) for every measurement taken on
@@ -9317,7 +9626,29 @@ def run_e5(
                 # this round: the round works on the bounded deferred backlog
                 # or calls the Builder for an already-attributed repair
                 # candidate — it never re-reviews an unchanged render.
-                run_review = current_version.version_id not in reviewed_versions
+                # Review gate: fingerprint = final-PDF sha256. A conflicting
+                # re-hash for a known version_id fails closed.
+                render_fingerprint = current_version.pdf_sha256
+                known_pdf_hash = version_pdf_hashes.get(current_version.version_id)
+                if known_pdf_hash is not None and known_pdf_hash != render_fingerprint:
+                    raise RuntimeError(
+                        f"render identity conflict: {current_version.version_id} "
+                        f"previously hashed {known_pdf_hash}, now {render_fingerprint}"
+                    )
+                version_pdf_hashes[current_version.version_id] = render_fingerprint
+                run_review = _e5_review_this_round(reviewed_render_fingerprints, render_fingerprint)
+                trace.add(
+                    agent="shell", phase="loop", action="review_gate",
+                    output={
+                        "render_version": current_version.version_id,
+                        "pdf_sha256": render_fingerprint,
+                        "review_executed": run_review,
+                        "skip_reason": (
+                            None if run_review
+                            else "same render pdf_sha256 already fully reviewed"
+                        ),
+                    },
+                )
                 try:
                     if live and run_review:
                         target_overviews = _overview_pngs(target_pdf, out_dir, f"review_target_l{lane}_{round_no}")
@@ -9353,6 +9684,22 @@ def run_e5(
                                     id_prefix=f"finding-l{lane}-r{round_no}-p{page_index}",
                                     instructions=E5_REVIEWER_INSTRUCTIONS,
                                     visual_model=True,
+                                    audit=_e5_audit(
+                                        agent="visual_reviewer",
+                                        phase="review",
+                                        round_no=round_no,
+                                        render_version=current_version.version_id,
+                                        finding_ids=(f"finding-l{lane}-r{round_no}-p{page_index}",),
+                                        instructions=E5_REVIEWER_INSTRUCTIONS,
+                                        image_refs=(
+                                            _e5_image_refs([target_page], "target", first_page=page_index)
+                                            + _e5_image_refs(
+                                                [lane_images[1]], "render", first_page=page_index
+                                            )
+                                            if len(lane_images) > 1
+                                            else _e5_image_refs([target_page], "target", first_page=page_index)
+                                        ),
+                                    ),
                                     message=(
                                         "Compare the TARGET and RENDER images for this page. Review scope: "
                                         + json.dumps(scope, ensure_ascii=False)
@@ -9391,7 +9738,7 @@ def run_e5(
                     escalate(f"reviewer_live_call_failed:{type(error).__name__}: {str(error)[:200]}")
                     break
                 if run_review:
-                    reviewed_versions.add(current_version.version_id)
+                    reviewed_render_fingerprints.add(render_fingerprint)
                 findings_new = _validate_finding_versions(findings_new, target_id, current_version.version_id)
                 findings.extend(findings_new)
                 for finding in findings_new:
@@ -9528,6 +9875,17 @@ def run_e5(
                                 pod, lane_budget, trace,
                                 findings=group,
                                 results=[measured[f.finding_id][0] for f in group],
+                                audit=_e5_audit(
+                                    agent="attribution_investigator",
+                                    phase="attribute",
+                                    round_no=round_no,
+                                    render_version=current_version.version_id,
+                                    finding_ids=tuple(item.finding_id for item in group),
+                                    measurement_ids=tuple(
+                                        measured[item.finding_id][1].request_id for item in group
+                                    ),
+                                    instructions=E5_ATTRIBUTION_INSTRUCTIONS,
+                                ),
                             )
                             # Identity binding, never list position: a swapped,
                             # missing, duplicated, or foreign finding_id rejects
@@ -9653,6 +10011,19 @@ def run_e5(
                                 payload=repair_builder_evidence,
                                 images=[*shared_target_images, *current_render_images],
                                 proposal_id=f"lane-a-r{round_no + 1}",
+                                audit=_e5_audit(
+                                    agent="lane_a_builder",
+                                    phase="repair",
+                                    round_no=round_no,
+                                    render_version=current_version.version_id,
+                                    finding_ids=(finding.finding_id,),
+                                    measurement_ids=(bound.request_id,),
+                                    instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
+                                    image_refs=(
+                                        _e5_image_refs(shared_target_images, "target")
+                                        + _e5_image_refs(current_render_images, "render")
+                                    ),
+                                ),
                             )
                         else:
                             proposal = _scripted_lane_a_proposal(state, derived)
@@ -9684,6 +10055,19 @@ def run_e5(
                                 lane_budget, trace, payload=repair_builder_evidence,
                                 images=[*shared_target_images, *current_render_images],
                                 template_id=f"lane-b-r{round_no + 1}",
+                                audit=_e5_audit(
+                                    agent="lane_b_builder",
+                                    phase="repair",
+                                    round_no=round_no,
+                                    render_version=current_version.version_id,
+                                    finding_ids=(finding.finding_id,),
+                                    measurement_ids=(bound.request_id,),
+                                    instructions=E5_LANE_B_BUILDER_INSTRUCTIONS,
+                                    image_refs=(
+                                        _e5_image_refs(shared_target_images, "target")
+                                        + _e5_image_refs(current_render_images, "render")
+                                    ),
+                                ),
                             )
                         else:
                             from tests.experiments.e_authored_template import SCRIPTED_AUTHORED_TEMPLATE as _base_template

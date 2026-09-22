@@ -1499,3 +1499,48 @@ Fixes (all in the committed E5 loop, no new framework/schema):
 
 Budgets are UNCHANGED (no model-budget increase, no raised per-run limits).
 Not yet live-verified: the repaired scheduling has run offline only.
+
+# E5 sixth round (2026-09-22, owner correction + agent message audit)
+
+Two gaps in 9ad4227 closed (owner work order):
+
+## Review fingerprint = final-PDF sha256
+
+`_e5_review_this_round` now gates on the ACTIVE render's FINAL-PDF sha256 —
+NOT the version id. The loop calls the helper (no second inline condition);
+each round records a `review_gate` trace event with render_version,
+pdf_sha256, whether review executed, and the skip reason. Two different
+version ids with the same final PDF hash do not re-review; a version_id
+whose recorded hash changes FAILS CLOSED. A new pdf hash permits the next
+(scoped) review once. Budgets unchanged.
+
+## Agent message audit (`agent_messages.jsonl`, lane-local)
+
+Owner decision implemented: model-visible request + provider-returned
+message history for EVERY E5 live Agent call (Lane A/B Builders initial and
+repair, Visual Reviewer, Attribution Investigator; E5 has no live Target
+Investigator — the shared StructureDraft is frozen from E4). Implementation
+uses the installed PydanticAI `ModelMessagesTypeAdapter` (complete
+conversation incl. tool calls/results and validation-retry prompts) — no
+HTTP proxy, SDK interception, or second tracing framework; it reuses each
+lane's `RunTrace` out_dir and existing trace.
+
+- one JSONL record per Agent call in `<lane_dir>/agent_messages.jsonl`;
+  records carry a stable `call_id` (= lane prefix + the persisted
+  `trace_NNNN_agent_call.json` artifact name, so trace and audit join),
+  agent/lane/phase/round, target/render versions, finding/measurement ids,
+  model name, instructions, usage, success/error/budget-exhausted status
+  and timestamp;
+- images become FILE REFERENCES (run-relative path, sha256, media type,
+  page, target/render role) — never base64, never page-image copies;
+- a failed call saves the actual request + error (a provider response is
+  never invented); no model internals are recorded;
+- the signed-URL/secret check runs over the final text and, if it fails,
+  the message CONTENT is withheld behind an explicit `withheld` record —
+  never silently dropped, never fabricated;
+- the audit files stay lane-local (two lanes' files are isolated); no
+  shared run-root file exists in E5 (no shared live Agent calls); the owner
+  package NEVER contains agent message files.
+
+E2–E4 behavior is unchanged: the audit parameter is optional and only E5
+call sites pass it.
