@@ -556,9 +556,7 @@ def test_agent_audit_failed_call_records_error_not_a_fake_response(tmp_path: Pat
 
 
 def test_agent_audit_withholds_content_on_secret_or_signed_url(tmp_path: Path) -> None:
-    """A provider message carrying a signed URL / credential never enters the
-    artifact: the record is written WITHHELD with an explicit reason, and no
-    Authorization/env/signed-URL value lands on disk."""
+    """A secret in messages, instructions, or an error never reaches disk."""
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
     poisoned = [
@@ -568,18 +566,30 @@ def test_agent_audit_withholds_content_on_secret_or_signed_url(tmp_path: Path) -
         ),
     ]
     trace = e.RunTrace(tmp_path)
-    spec = _audit_spec()
     e._e5_agent_audit_record(
-        trace, spec, input_messages=poisoned,
+        trace, _audit_spec(), input_messages=poisoned,
         run_result=_FakeRunResult(poisoned), error=None,
+    )
+    safe_messages = [ModelRequest(parts=[UserPromptPart(content="prompt")])]
+    e._e5_agent_audit_record(
+        trace,
+        _audit_spec(instructions="inspect https://x.test/?X-Amz-Signature=INSTRUCTION_SECRET"),
+        input_messages=safe_messages,
+        run_result=None,
+        error="provider failed at https://x.test/?X-Amz-Credential=ERROR_SECRET",
     )
     import json
 
-    record = json.loads((tmp_path / "agent_messages.jsonl").read_text(encoding="utf-8").splitlines()[0])
-    assert record["status"] == "withheld"
-    assert record["messages"] is None and "withhold_reason" in record
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "agent_messages.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(records) == 2
+    assert all(record["status"] == "withheld" for record in records)
+    assert all(record["messages"] is None and "withhold_reason" in record for record in records)
     raw = (tmp_path / "agent_messages.jsonl").read_text(encoding="utf-8")
-    assert "X-Amz-Security-Token" not in raw and "SECRET" not in raw
+    assert "X-Amz-" not in raw and "SECRET" not in raw
+    assert all(record["instructions"] is None and record["error"] is None for record in records)
 
 
 def test_agent_audit_lane_files_are_isolated(tmp_path: Path) -> None:
@@ -1166,7 +1176,7 @@ def test_lane_a_proposal_cites_only_known_state_nodes() -> None:
 def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
     run_dir, terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
-        presentation_label_approval=_approval_for_real_target(),
+        presentation_label_approval=_simulated_approval_for_test_target_catalog(),
     )
     assert terminal in {"ready_for_owner_review", "budget_exhausted"}
     lane = record["lanes"]["a"]
@@ -1621,7 +1631,7 @@ def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
     artifacts — never a default-state or string-fill-only claim."""
     run_dir, _terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=1,
-        presentation_label_approval=_approval_for_real_target(),
+        presentation_label_approval=_simulated_approval_for_test_target_catalog(),
     )
     for lane_id, expected_token in (("a", "proposal"), ("b", "template")):
         lane = record["lanes"][lane_id]
@@ -2451,8 +2461,10 @@ def _approval_for(
     )
 
 
-def _approval_for_real_target(target: Path = RESUME_I) -> e.PresentationLabelApproval:
-    """The owner input the presentation-label gate REQUIRES for a real run.
+def _simulated_approval_for_test_target_catalog(
+    target: Path = RESUME_I,
+) -> e.PresentationLabelApproval:
+    """Simulate owner approval so offline tests can exercise the approved path.
 
     Lane A renders the compiled plan, and the plan's section headings come from
     the target evidence — so without an approval bound to this target and this
@@ -2461,12 +2473,9 @@ def _approval_for_real_target(target: Path = RESUME_I) -> e.PresentationLabelApp
     fails closed as a leak"). Lane B never renders them, which is why only
     lane A needs the approval to reach a promotable state.
 
-    Nothing is hardcoded: the approved ids are the ids the SHELL measures from
-    this target's sidebar evidence, via the same derivation `run_e5` uses, so
-    this helper can never smuggle a target-specific rule into production.
-    Approving the whole measured catalog is the honest default: every entry is
-    a measured section heading, and approval only decides which of them may be
-    rendered and therefore excluded from the privacy gate."""
+    Nothing is hardcoded: the ids come from the same measured catalog `run_e5`
+    uses. This TEST FIXTURE is not evidence of an owner decision and must never
+    supply approval to a live run."""
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 
     from tests.experiments.a_pipeline import build_format_summary

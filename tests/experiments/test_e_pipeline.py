@@ -819,6 +819,22 @@ def test_run_e2_never_stops_on_stall_but_returns_budget_exhausted_when_budget_en
     assert "budget_state" in state and "attempted_strategies" in state
 
 
+def test_run_e2_operational_abort_returns_typed_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.experiments import e_pipeline_legacy as legacy
+
+    def fail_environment(_env: dict[str, str]) -> dict[str, str]:
+        raise RuntimeError("chrome unavailable")
+
+    monkeypatch.setattr(legacy, "pinned_export_environment", fail_environment)
+    run_dir, terminal, record = e.run_e2(TARGET_F, tmp_path / "run")
+    assert terminal == "operational_abort"
+    assert record["schema_version"] == "pipeline-e-e2-state/1"
+    assert record["summary"]["abort"]["operation"] == "pinned_chrome_environment"
+    assert json.loads((run_dir / "e2_state.json").read_text()) == record
+
+
 @e2_skip
 def test_run_e2_target_person_facts_cannot_enter_candidate_output(tmp_path: Path) -> None:
     run_dir, _terminal, record = e.run_e2(TARGET_F, tmp_path / "run")
@@ -1037,6 +1053,16 @@ def test_run_e3_operational_abort_never_classifies_unsupported(tmp_path: Path) -
     # operation, never 'unsupported'.
     with pytest.raises(RuntimeError, match="target PDF not found"):
         e.run_e3(tmp_path / "missing.pdf", tmp_path / "run")
+
+
+@e3_skip
+def test_run_e3_tool_budget_exhaustion_is_resumable(tmp_path: Path) -> None:
+    budget = e.RunBudget(max_model_requests=6, max_tool_calls=4)
+    _run_dir, terminal, record = e.run_e3(
+        TARGET_I, tmp_path / "run", budget=budget, max_repair_attempts=1,
+    )
+    assert terminal == "budget_exhausted"
+    assert any("tool_budget_exhausted" in item for item in record["attempted_strategies"])
 
 
 @e3_skip

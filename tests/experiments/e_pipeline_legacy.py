@@ -895,21 +895,21 @@ def run_e2(
 
     def abort(operation: str, error: Exception) -> tuple[Path, str, dict[str, Any]]:
         """Operational abort: describes the failed operation; never 'unsupported'."""
-        record = _empty_record("unknown", budget)
-        record["terminal_state"] = "operational_abort"
-        record["abort"] = {"operation": operation, "error": str(error)}
+        record = E2LoopRecord(target_id="unknown", budget_state=budget.to_json())
+        record.summary["terminal_state"] = "operational_abort"
+        record.summary["abort"] = {"operation": operation, "error": str(error)}
         store.manifest["terminal_state"] = "operational_abort"
-        store.manifest["abort"] = record["abort"]
+        store.manifest["abort"] = record.summary["abort"]
         trace.add(agent="shell", phase="operational", action="abort", note=f"{operation}: {error}")
         (out_dir / "e2_state.json").write_text(
-            json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
+            record.model_dump_json(indent=2), encoding="utf-8"
         )
         store.record_state("operational_abort", f"{operation}: {error}")
         (out_dir / "manifest.json").write_text(
             json.dumps(store.manifest, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         trace.save()
-        return out_dir, "operational_abort", record
+        return out_dir, "operational_abort", record.model_dump(mode="json")
 
     # 0. availability of the required local service (renderer) up front.
     try:
@@ -2370,6 +2370,10 @@ def run_e3(
     resolved_findings: set[str] = set()
     counter = {"finding": 0, "request": 0}
 
+    def escalate(strategy: str) -> None:
+        attempted_strategies.append(strategy)
+        trace.add(agent="shell", phase="loop", action="strategy_escalation", note=strategy)
+
     # Generic shell state transition (plan §14 escalation — no target-specific
     # rule): candidate header fields with no home in the compiled state route
     # through the EXISTING explicit header-overflow disposition. The record
@@ -2619,6 +2623,7 @@ def run_e3(
         return abort("render_version_1", error)
 
     # -- 6. Review -> Measure -> Attribute -> Repair -> Re-render loop -------
+    tool_budget_exhausted = False
     for attempt in range(1, max_repair_attempts + 1):
         if budget.remaining_model_requests() < 1:
             trace.add(agent="shell", phase="loop", action="budget_exhausted", note="before review")
@@ -2662,7 +2667,8 @@ def run_e3(
             except BudgetExhausted as error:
                 escalate(f"attempt{attempt}:{finding.finding_id}:tool_budget_exhausted")
                 trace.add(agent="shell", phase="loop", action="budget_exhausted", note=str(error))
-                raise CheckpointBudgetExceeded(str(error)) from error
+                tool_budget_exhausted = True
+                break
             if attribution.repair_owner != "builder":
                 attempted_strategies.append(
                     f"attempt{attempt}:{finding.finding_id}:{attribution.attribution}:remeasure_or_other_channel"
@@ -2736,9 +2742,15 @@ def run_e3(
             repeat_request = finding.requested_measurement.model_copy(
                 update={"request_id": result.request_id}  # IDENTICAL request id
             )
-            repeat_result = MeasureController(pod, budget, trace).execute(
-                repeat_request, current_pdf=candidate_pdf
-            )
+            try:
+                repeat_result = MeasureController(pod, budget, trace).execute(
+                    repeat_request, current_pdf=candidate_pdf
+                )
+            except BudgetExhausted as error:
+                escalate(f"attempt{attempt}:{finding.finding_id}:repeat_tool_budget_exhausted")
+                trace.add(agent="shell", phase="loop", action="budget_exhausted", note=str(error))
+                tool_budget_exhausted = True
+                break
             improved = (
                 repeat_result.current_value_pt is not None
                 and result.current_value_pt is not None
@@ -2764,6 +2776,8 @@ def run_e3(
                     f"attempt{attempt}:{finding.finding_id}:non_improving_rolled_back"
                 )
                 trace.add(agent="shell", phase="repair", action="rolled_back", note="non-improving repair")
+        if tool_budget_exhausted:
+            break
 
     # -- 7. Content-shape probes (canonical C2 independent fixtures) ---------
     shape_probes: dict[str, Any] = {}

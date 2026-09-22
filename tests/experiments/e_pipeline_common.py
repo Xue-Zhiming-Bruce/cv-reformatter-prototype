@@ -1758,22 +1758,25 @@ def _e5_agent_audit_record(
             run_result.all_messages() if run_result is not None else list(input_messages)
         )
         payload_text = _e5_serialize_agent_messages(messages, spec.image_refs)
-        assert_no_signed_strings(payload_text)
-        for forbidden in ("Authorization", "X-Amz-Security-Token", "api_key"):
-            assert forbidden not in payload_text, f"audit artifact contains {forbidden!r}"
         record = {**meta, "messages": json.loads(payload_text)}
+        record_text = json.dumps(record, ensure_ascii=False)
+        assert_no_signed_strings(record_text)
+        for forbidden in ("Authorization", "X-Amz-Security-Token", "api_key"):
+            assert forbidden not in record_text, f"audit artifact contains {forbidden!r}"
     except Exception as withhold:
-        # Fail closed WITHOUT inventing a response: keep the identity record,
-        # withhold the message content, state exactly why.
+        # Fail closed WITHOUT repeating potentially sensitive instructions,
+        # provider errors, or message content in the fallback record.
         record = {
             **meta,
+            "instructions": None,
             "messages": None,
             "status": "withheld",
-            "error": error or str(withhold),
+            "error": None,
             "withhold_reason": (
-                "message content withheld: serialization or secret/signed-URL "
-                f"check failed ({type(withhold).__name__})"
+                "audit content withheld: serialization or secret/signed-URL "
+                "check failed"
             ),
+            "withhold_exception_type": type(withhold).__name__,
         }
     (trace.out_dir / "agent_messages.jsonl").open("a", encoding="utf-8").write(
         json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
