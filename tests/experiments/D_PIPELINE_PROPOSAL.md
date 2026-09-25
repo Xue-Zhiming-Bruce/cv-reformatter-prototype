@@ -1,6 +1,6 @@
 # Pipeline D: Agentic Document Workflow Proposal
 
-Status: `Paused after accepted D1-0; Pipeline C2 evaluation is the next active experiment`
+Status: `Proposed; resumed for pre-template target-understanding design after accepted D1-0. No new implementation or product approval.`
 
 Date: September 14, 2026
 
@@ -720,3 +720,74 @@ The experiment should answer, rather than assume:
 
 Until those questions have measured answers, this remains an experiment and
 must not replace the active document-pipeline contract.
+
+## 14. Owner direction (2026-09-17): understand the target before building a template
+
+The next Pipeline D question is upstream of the D0/D1 repair loop: can an
+agent understand the structure of an unfamiliar target resume without
+template-specific production code? The earlier §12 sequencing pause is lifted
+for this **design and evaluation question**. D0, D0-R, and D1-0 remain bounded
+C1 repair/review evidence; they do not answer it. C2 remains an unaccepted
+experiment and a comparison source, not a route declared impossible by one
+unfamiliar target's failure. Do not start D1-1 through D1-4 or promote a
+renderer on the strength of this direction alone.
+
+### Target-understanding checkpoint (before candidate conversion)
+
+```text
+Target PDF + page images + raw Adobe response + normalized evidence
+-> evidence-coverage check
+-> target-understanding agent: inspect pages/regions, query raw elements,
+   propose and revise section/entry/group/inline-role relationships
+-> independently checked, evidence-linked target-structure draft
+-> template builder + render/review loop (later checkpoint)
+-> candidate conversion from a reviewed CandidateProfile (later checkpoint)
+```
+
+The orchestrator schedules bounded investigation and records each attempted
+structure version. An investigator may request page or region crops and raw
+Adobe elements; it must distinguish visible observations from role/ownership
+hypotheses, cite element IDs or image regions, and leave ambiguity unresolved.
+Measurement code owns coordinates, typography, rules, and evidence coverage.
+The model must not infer a complete structure from evidence known to be
+incomplete. In particular, Resume I's raw-to-normalized loss and its one
+raw-extraction miss are separate failure classes to report, not facts a larger
+context window can repair.
+
+The checkpoint output is a **target-structure draft**, not HTML, a render plan,
+or an approved reusable template. A target-content reconstruction may help
+diagnose structure and measurement, but stays an analysis artifact; it cannot
+be used to fill a candidate document. Reflow behavior for different candidate
+lengths is tested only when the builder compiles a reusable template.
+
+### Reviewer input and decision boundary
+
+For later rendered candidates, compare a full-page overview and matched
+target/generated region crops, accompanied by measured facts, provenance,
+and an overlay or difference map where useful. Because target and candidate
+wording differ, raw pixel differences alone cannot identify layout defects.
+The reviewer reports localized observations and hypotheses; measurable claims
+are checked by tools, content/privacy gates remain independent, and the owner
+judges the final visual result. Before using reviewer findings to drive an
+automatic repair loop, compare full pages, crops, and crops plus measured facts
+on a fixed set of known true defects and false accusations as proposed in §13
+of `PIPELINE_EVOLUTION_PROPOSAL.md`. Cropping is a candidate input technique,
+not an assumed solution.
+
+### Decision gate
+
+Evaluate the understanding checkpoint on target families frozen before
+inspection, with human-annotated section, entry, subgroup, and attribution
+truth. Resume I is a known diagnostic case, not the sole blind generalization
+test. Record evidence coverage, correct and incorrect role/ownership claims,
+unresolved cases, model/tool/time cost, and whether a new target required a
+production rule or renderer change. A confident wrong `ok` is a failure.
+Proceed to template building only when the structure is reviewable and its
+material uncertainties are resolved or explicitly marked unsupported. Stop
+the loop on exhausted budget, repeated unchanged hypotheses, missing source
+evidence, or contradictions that cannot be resolved from available inputs.
+
+Giving a VLM page images or raw target text, or storing renderer-specific
+template artifacts as product state, exceeds the current ADR 0001 / ADR 0006
+boundaries. This experiment proposal grants no production exception; those
+contracts require owner-approved revision before integration.

@@ -967,6 +967,23 @@ def freeze_cases(target_pdf: Path, adobe_json: Path, *, role: str, case_id: str)
 # --- E1 shell -----------------------------------------------------------------
 
 
+# Caller-input errors the agent-facing tool boundary returns instead of
+# raising. A page outside the document, or a request for a render that is not
+# bound at this checkpoint, is the MODEL's mistake against the shell's own
+# bounds: it must come back as a tool RESULT the model can correct inside the
+# same bounded agent run. Raising it tears down the whole agent run instead
+# (2026-09-23 live run `e_pipeline_e5_20260923T095557Z`: `ValueError: page 3
+# outside 1..2` lost 1 of 8 attribution runs). Anything that is not a caller
+# input error (rendering failures, type errors, missing artifacts) still raises
+# so a real defect is never disguised as a model mistake.
+RECOVERABLE_TOOL_ERRORS: tuple[type[Exception], ...] = (ValueError,)
+
+
+def _recoverable_tool_error(tool: str, error: Exception) -> dict[str, Any]:
+    """The bounded, agent-visible result of a recoverable tool-input error."""
+    return {"status": "error", "tool": tool, "error": str(error)[:200]}
+
+
 def _pod_tools(pod: EvidencePod, budget: RunBudget, trace: RunTrace, *, agent_name: str = "main_orchestrator") -> list[Any]:
     """The read-only evidence tools. Every call is budget-counted and traced.
 
@@ -977,7 +994,20 @@ def _pod_tools(pod: EvidencePod, budget: RunBudget, trace: RunTrace, *, agent_na
     def traced(kind: str, fn: Any) -> Any:
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             budget.spend_tool(fn.__name__)
-            result = fn(*args, **kwargs)
+            try:
+                result = fn(*args, **kwargs)
+            except RECOVERABLE_TOOL_ERRORS as error:
+                result = _recoverable_tool_error(fn.__name__, error)
+                trace.add(
+                    agent=agent_name,
+                    phase="target_understanding",
+                    action="tool_call",
+                    tool=fn.__name__,
+                    input=kwargs or {"args": [str(a)[:120] for a in args]},
+                    output=None,
+                    note=f"tool_error: {result['error']}",
+                )
+                return result
             small = isinstance(result, str) and len(result) < 400
             trace.add(
                 agent=agent_name,
@@ -1058,7 +1088,7 @@ class MeasurementRequest(EvidenceModel):
     records `evidence_missing` for re-verification."""
 
     request_id: str
-    metric: Literal["role_gap"]
+    metric: Literal["role_gap", "header_vertical_rule_geometry"]
     page: int = Field(ge=1)
     from_text: str = ""
     to_text: str = ""
@@ -1336,17 +1366,20 @@ def _call_limits(budget: RunBudget, max_requests: int) -> Any:
     )
 
 
-def _live_model_settings() -> dict[str, Any]:
-    """Frozen live sampling settings (Phase 0): temperature + structured-output
-    transport for the configured provider (the DeepSeek-compatible runtime's
-    thinking mode rejects tool_choice, so thinking is disabled for the typed
-    structured outputs; recorded in the frozen run config)."""
-    return {
+def _live_model_settings(*, thinking: bool = False) -> dict[str, Any]:
+    """Frozen live sampling settings; thinking stays opt-in because most E
+    roles still return typed output through a forced tool call."""
+    settings: dict[str, Any] = {
         "temperature": E4_TEMPERATURE,
         "max_tokens": 16384,  # the provider default output cap truncated typed outputs
         # (and the authored-template lane needs more still — Phase 0 E5)
-        "extra_body": {"thinking": {"type": "disabled"}},
+        "extra_body": {"thinking": {"type": "enabled" if thinking else "disabled"}},
     }
+    if thinking:
+        # Keep enough of the shared output budget for the complete HTML/CSS
+        # JSON; the first high-effort trial exhausted both output retries.
+        settings["openai_reasoning_effort"] = "low"
+    return settings
 
 
 def _live_visual_model() -> Any:

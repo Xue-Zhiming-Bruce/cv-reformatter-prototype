@@ -714,7 +714,7 @@ def build_authored_document(
 
     width_pt, height_pt = page_size
     page_css = (
-        f"@page {{ size: {width_pt:.3f}pt {height_pt:.3f}pt; margin: 36pt; }}\n"
+        f"@page {{ size: {width_pt:.3f}pt {height_pt:.3f}pt; margin: 0; }}\n"
         "* { box-sizing: border-box; margin: 0; padding: 0; }"
     )
     html = (

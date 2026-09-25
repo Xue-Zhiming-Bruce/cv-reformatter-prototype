@@ -51,6 +51,13 @@ from app.generation.followup_message_generator import generate_followup_message
 from app.generation.html_renderer import HtmlRenderingError, render_html
 from app.generation.render_plan import build_production_render_plan
 from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME, build_client_render_context
+from app.final_acceptance import (
+    FinalOutputAcceptance,
+    FinalOutputIdentity,
+    current_output_identity,
+    is_final_acceptance_current,
+    save_final_acceptance,
+)
 from app.ingestion.docx_reader import read_docx
 from app.ingestion.file_validator import CorruptedFileError, UnsupportedFileTypeError
 from app.ingestion.pdf_reader import CorruptedPdfError, EmptyPdfTextError, UnsupportedPdfTypeError, read_pdf_text
@@ -61,8 +68,10 @@ from app.profile_approval import (
     is_current_approved_profile,
     load_approved_profile_version,
     load_current_approved_profile,
+    load_profile_revision,
     profile_sha256,
     save_approved_profile,
+    save_profile_revision,
 )
 from app.storage.local_db import DEFAULT_DATABASE_PATH, LocalArtifactStore, LocalDatabaseError
 from app.template_analysis.docx_style_analyzer import (
@@ -233,6 +242,7 @@ class TargetFormatMetadata(BaseModel):
 
 class ProcessResponse(BaseModel):
     artifact_id: str
+    profile_revision_id: str
     profile: CandidateProfile
     ledger: LedgerSummary
     original_text: str
@@ -255,7 +265,11 @@ class GenerateRequest(BaseModel):
     #: Generation always renders from the persisted approved profile; a
     #: CandidateProfile supplied directly in the request is never accepted
     #: (the legacy ``profile`` field is ignored for backward compatibility).
+    profile_revision_id: str | None = None
+    # Transitional read only; remove after clients migrate to profile_revision_id.
     approved_profile_version_id: str | None = None
+    # Legacy request field is accepted but never used to override a revision.
+    profile: CandidateProfile | None = None
     client_display_rules: dict[str, DisplayRule] = Field(default_factory=dict)
     blind_profile: bool = False
     template_name: str = DEFAULT_TEMPLATE_NAME
@@ -282,6 +296,12 @@ class GenerateResponse(BaseModel):
     design_id: str | None = None
     template_version: str | None = None
     profile_sha256: str | None = None
+    profile_revision_id: str
+    layout_template_version: str
+    layout_spec_sha256: str
+    html_sha256: str
+    pdf_sha256: str
+    client_ready: bool = False
 
 
 class FollowupRequest(BaseModel):
@@ -314,6 +334,7 @@ class ArtifactMetadataResponse(BaseModel):
     needs_review_count: int | None = None
     missing_field_labels: list[str] = Field(default_factory=list)
     debug_artifacts: dict[str, str] = Field(default_factory=dict)
+    client_ready: bool = False
 
 
 class ArtifactListResponse(BaseModel):
@@ -325,7 +346,8 @@ class DesignRequestCreate(BaseModel):
     designer: str | None = None
     #: Immutable approved profile version the design must be built from. The
     #: extraction draft (candidate_profile.json) is never used implicitly.
-    approved_profile_version_id: str
+    profile_revision_id: str | None = None
+    approved_profile_version_id: str | None = None
 
 
 class ProfileApproveRequest(BaseModel):
@@ -341,6 +363,27 @@ class ProfileApproveResponse(BaseModel):
     source_draft_sha256: str
     approved_at: str
     reviewer_note: str | None = None
+
+
+class ProfileRevisionRequest(BaseModel):
+    profile: CandidateProfile
+
+
+class ProfileRevisionResponse(BaseModel):
+    profile_revision_id: str
+    artifact_id: str
+    schema_version: str
+    profile_sha256: str
+    source_draft_sha256: str
+    created_at: str
+
+
+class FinalAcceptanceRequest(FinalOutputIdentity):
+    reviewer_note: str | None = None
+
+
+class FinalAcceptanceResponse(FinalOutputAcceptance):
+    client_ready: bool = True
 
 
 class DesignResponse(BaseModel):
@@ -559,6 +602,13 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
     if original_pdf_preview_url:
         debug_artifacts["original_pdf_preview"] = str(artifact_dir / "original_resume_preview.pdf")
 
+    revision = save_profile_revision(
+        artifact_dir,
+        artifact_id=artifact_id,
+        profile=profile,
+        source_draft_sha256=draft_sha256(artifact_dir),
+    )
+
     try:
         _local_artifact_store().record_processed_resume(
             artifact_id=artifact_id,
@@ -575,6 +625,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
 
     return ProcessResponse(
         artifact_id=artifact_id,
+        profile_revision_id=revision.profile_revision_id,
         profile=profile,
         ledger=_build_ledger(profile),
         original_text=extracted_text,
@@ -849,6 +900,27 @@ def approve_profile(artifact_id: str, body: ProfileApproveRequest) -> ProfileApp
         source_draft_sha256=version.source_draft_sha256,
         approved_at=version.approved_at,
         reviewer_note=version.reviewer_note,
+    )
+
+
+@app.post(
+    "/api/artifacts/{artifact_id}/profiles/revisions",
+    response_model=ProfileRevisionResponse,
+)
+def create_profile_revision(
+    artifact_id: str, body: ProfileRevisionRequest
+) -> ProfileRevisionResponse:
+    """Persist an edited profile as an immutable revision without approval."""
+    legacy = approve_profile(
+        artifact_id, ProfileApproveRequest(profile=body.profile, reviewer_note=None)
+    )
+    return ProfileRevisionResponse(
+        profile_revision_id=legacy.profile_version_id,
+        artifact_id=legacy.artifact_id,
+        schema_version=legacy.schema_version,
+        profile_sha256=legacy.profile_sha256,
+        source_draft_sha256=legacy.source_draft_sha256,
+        created_at=legacy.approved_at,
     )
 
 
@@ -1157,21 +1229,18 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
                 },
             )
 
-    # Mandatory recruiter approval: every final generation path (built-in
-    # template, existing uploaded-target template, approved designer
-    # template) requires an artifact-scoped, current, non-superseded
-    # approved profile version. The persisted approved profile is the only
-    # candidate-data source; a profile supplied directly in the request is
-    # never accepted.
-    approved_profile = _require_approved_profile(
+    profile_revision_id = _requested_profile_revision_id(
+        request.profile_revision_id, request.approved_profile_version_id
+    )
+    profile_revision = _require_profile_revision(
         artifact_dir=artifact_dir,
         artifact_id=artifact_id,
-        approved_profile_version_id=request.approved_profile_version_id,
+        profile_revision_id=profile_revision_id,
     )
-    merged_profile = approved_profile.profile.model_copy(
+    merged_profile = profile_revision.profile.model_copy(
         update={
             "client_display_rules": {
-                **approved_profile.profile.client_display_rules,
+                **profile_revision.profile.client_display_rules,
                 **request.client_display_rules,
             }
         }
@@ -1222,7 +1291,8 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     design_profile_sha256: str | None = None
     if design_id is not None:
         design_state = _load_approved_design(
-            artifact_id, artifact_dir, design_id, reviewed_profile
+            artifact_id, artifact_dir, design_id, reviewed_profile,
+            profile_revision,
         )
         style_spec = load_layout_template_spec(
             design_dir_for(artifact_dir, design_id) / "layout_template_spec.json"
@@ -1287,8 +1357,8 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     normalized_document = _load_normalized_candidate_document(artifact_dir)
     effective_layout_spec = style_spec or built_in_layout_template_spec()
     production_render_plan = build_production_render_plan(
-        approved_profile_version_id=approved_profile.profile_version_id,
-        profile_sha256=approved_profile.profile_sha256,
+        approved_profile_version_id=profile_revision.profile_revision_id,
+        profile_sha256=profile_revision.profile_sha256,
         document=normalized_document,
         context=render_context,
         layout_spec=effective_layout_spec,
@@ -1311,9 +1381,9 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         target_format=target_format,
         profile_filename="generated_profile.json",
     )
-    debug_artifacts["approved_profile_version_id"] = (
-        request.approved_profile_version_id or ""
-    )
+    debug_artifacts["profile_revision_id"] = profile_revision.profile_revision_id
+    if request.approved_profile_version_id:
+        debug_artifacts["approved_profile_version_id"] = request.approved_profile_version_id
     render_plan_path = artifact_dir / "production_render_plan.json"
     _write_json(render_plan_path, production_render_plan.model_dump(mode="json"))
     debug_artifacts["production_render_plan"] = str(render_plan_path)
@@ -1321,6 +1391,9 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     _write_json(
         generation_metadata_path,
         {
+            "profile_revision_id": profile_revision.profile_revision_id,
+            "profile_sha256": profile_revision.profile_sha256,
+            "layout_template_version": effective_layout_spec.template_version,
             "layout_spec_sha256": production_render_plan.layout_spec_sha256,
             "layout_spec_filename": (
                 LAYOUT_SPEC_FILENAME if uses_uploaded_target else None
@@ -1397,7 +1470,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
                 if uses_uploaded_target else None
             ),
             coverage_ledger=build_source_coverage_ledger(
-                approved_profile.profile, normalized_document
+                profile_revision.profile, normalized_document
             ),
         )
     except (OSError, ValueError) as exc:
@@ -1505,6 +1578,9 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     except LocalDatabaseError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    output_identity = current_output_identity(artifact_dir)
+    client_ready = is_final_acceptance_current(artifact_dir)
+
     return GenerateResponse(
         artifact_id=artifact_id,
         html_surface_url=html_url,
@@ -1519,8 +1595,51 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         visual_comparison_artifact_urls=visual_comparison_artifact_urls,
         design_id=design_id,
         template_version=design_template_version,
-        profile_sha256=design_profile_sha256,
+        profile_sha256=profile_revision.profile_sha256,
+        profile_revision_id=profile_revision.profile_revision_id,
+        layout_template_version=output_identity.layout_template_version,
+        layout_spec_sha256=output_identity.layout_spec_sha256,
+        html_sha256=output_identity.html_sha256,
+        pdf_sha256=output_identity.pdf_sha256,
+        client_ready=client_ready,
     )
+
+
+@app.post(
+    "/api/artifacts/{artifact_id}/final-acceptance",
+    response_model=FinalAcceptanceResponse,
+)
+def accept_final_output(
+    artifact_id: str, body: FinalAcceptanceRequest
+) -> FinalAcceptanceResponse:
+    _require_artifact(artifact_id)
+    artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
+    try:
+        current = current_output_identity(artifact_dir)
+    except (OSError, KeyError, json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "final_output_unavailable",
+                "message": f"No complete generated preview is available: {exc}",
+            },
+        ) from exc
+    requested = FinalOutputIdentity.model_validate(
+        body.model_dump(exclude={"reviewer_note"})
+    )
+    if requested != current:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "final_acceptance_identity_mismatch",
+                "message": "The preview changed; review and accept the current HTML/PDF.",
+                "current": current.model_dump(mode="json"),
+            },
+        )
+    acceptance = save_final_acceptance(
+        artifact_dir, current, reviewer_note=body.reviewer_note
+    )
+    return FinalAcceptanceResponse(**acceptance.model_dump(), client_ready=True)
 
 
 @app.post("/api/followup", response_model=FollowupResponse)
@@ -1537,7 +1656,13 @@ def list_artifact_metadata(limit: int = 50) -> ArtifactListResponse:
         artifacts = _local_artifact_store().list_artifacts(limit=limit)
     except LocalDatabaseError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return ArtifactListResponse(artifacts=[ArtifactMetadataResponse.model_validate(item) for item in artifacts])
+    return ArtifactListResponse(artifacts=[
+        ArtifactMetadataResponse.model_validate({
+            **item,
+            "client_ready": is_final_acceptance_current(item["artifact_dir"]),
+        })
+        for item in artifacts
+    ])
 
 
 @app.get("/api/artifacts/{artifact_id}/metadata", response_model=ArtifactMetadataResponse)
@@ -1550,7 +1675,10 @@ def get_artifact_metadata(artifact_id: str) -> ArtifactMetadataResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if artifact is None:
         raise HTTPException(status_code=404, detail="Artifact metadata not found.")
-    return ArtifactMetadataResponse.model_validate(artifact)
+    return ArtifactMetadataResponse.model_validate({
+        **artifact,
+        "client_ready": is_final_acceptance_current(artifact["artifact_dir"]),
+    })
 
 
 @app.get("/api/artifacts/{artifact_id}/{filename}")

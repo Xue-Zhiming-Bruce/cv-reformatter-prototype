@@ -198,6 +198,8 @@ from tests.experiments.e_pipeline_e5 import (
     _e5_attribution_batches,
     _e5_builder_candidate_record,
     _e5_builder_evidence_package,
+    _e5_blocking_gates,
+    _e5_blocking_gates_passed,
     _e5_default_attribution,
     _e5_findings_needing_fallback_attribution,
     _e5_gate_classification,

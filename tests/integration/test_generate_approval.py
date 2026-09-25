@@ -77,6 +77,17 @@ def _approve_profile(
     return response.json()["profile_version_id"]
 
 
+def _save_profile_revision(
+    artifact_id: str, profile: CandidateProfile | None = None
+) -> dict[str, object]:
+    response = client.post(
+        f"/api/artifacts/{artifact_id}/profiles/revisions",
+        json={"profile": (profile or _profile()).model_dump(mode="json")},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def _make_artifact_with_approval(
     tmp_path: Path,
     artifact_id: str = "artifact_approved_1",
@@ -244,6 +255,106 @@ def test_generation_uses_persisted_approved_profile_not_request_profile(
     text = (artifact_dir / "candidate_profile.html").read_text(encoding="utf-8")
     assert "Approved Jane" in text
     assert "Untrusted Request Name" not in text
+
+
+def test_profile_revision_generates_preview_without_intermediate_approval(
+    tmp_path: Path,
+) -> None:
+    artifact_id = "artifact_revision_preview"
+    artifact_dir = tmp_path / "outputs" / artifact_id
+    artifact_dir.mkdir(parents=True)
+    draft = _profile(full_name="Revision Jane")
+    (artifact_dir / "candidate_profile.json").write_text(
+        json.dumps(draft.model_dump(mode="json")), encoding="utf-8"
+    )
+    revision = _save_profile_revision(artifact_id, draft)
+
+    response = client.post("/api/generate", json={
+        "artifact_id": artifact_id,
+        "profile_revision_id": revision["profile_revision_id"],
+        "profile": _profile(full_name="Request Override").model_dump(mode="json"),
+    })
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["profile_revision_id"] == revision["profile_revision_id"]
+    assert body["profile_sha256"] == revision["profile_sha256"]
+    assert body["client_ready"] is False
+    html = (artifact_dir / "candidate_profile.html").read_text(encoding="utf-8")
+    assert "Revision Jane" in html
+    assert "Request Override" not in html
+
+
+def test_final_acceptance_is_identity_bound_and_invalidates_on_revision_change(
+    tmp_path: Path,
+) -> None:
+    artifact_id = "artifact_final_acceptance"
+    artifact_dir = tmp_path / "outputs" / artifact_id
+    artifact_dir.mkdir(parents=True)
+    draft = _profile(full_name="Accepted Jane")
+    (artifact_dir / "candidate_profile.json").write_text(
+        json.dumps(draft.model_dump(mode="json")), encoding="utf-8"
+    )
+    first = _save_profile_revision(artifact_id, draft)
+    preview = client.post("/api/generate", json={
+        "artifact_id": artifact_id,
+        "profile_revision_id": first["profile_revision_id"],
+    })
+    assert preview.status_code == 200, preview.text
+    identities = preview.json()
+    acceptance = client.post(
+        f"/api/artifacts/{artifact_id}/final-acceptance",
+        json={
+            key: identities[key]
+            for key in (
+                "profile_revision_id", "profile_sha256",
+                "layout_template_version", "layout_spec_sha256",
+                "html_sha256", "pdf_sha256",
+            )
+        } | {"reviewer_note": "Owner accepted final output."},
+    )
+    assert acceptance.status_code == 200, acceptance.text
+    accepted = acceptance.json()
+    assert accepted["client_ready"] is True
+    assert accepted["accepted_at"]
+    assert accepted["reviewer_note"] == "Owner accepted final output."
+    assert client.get(f"/api/artifacts/{artifact_id}/metadata").json()["client_ready"] is True
+
+    second = _save_profile_revision(
+        artifact_id, _profile(full_name="Changed Revision Jane")
+    )
+    refreshed = client.post("/api/generate", json={
+        "artifact_id": artifact_id,
+        "profile_revision_id": second["profile_revision_id"],
+    })
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["client_ready"] is False
+    assert client.get(f"/api/artifacts/{artifact_id}/metadata").json()["client_ready"] is False
+
+
+def test_final_acceptance_rejects_stale_html_identity(tmp_path: Path) -> None:
+    artifact_id = "artifact_stale_acceptance"
+    artifact_dir = tmp_path / "outputs" / artifact_id
+    artifact_dir.mkdir(parents=True)
+    draft = _profile()
+    (artifact_dir / "candidate_profile.json").write_text(
+        json.dumps(draft.model_dump(mode="json")), encoding="utf-8"
+    )
+    revision = _save_profile_revision(artifact_id, draft)
+    preview = client.post("/api/generate", json={
+        "artifact_id": artifact_id,
+        "profile_revision_id": revision["profile_revision_id"],
+    }).json()
+    preview["html_sha256"] = "0" * 64
+    response = client.post(
+        f"/api/artifacts/{artifact_id}/final-acceptance",
+        json={key: preview[key] for key in (
+            "profile_revision_id", "profile_sha256", "layout_template_version",
+            "layout_spec_sha256", "html_sha256", "pdf_sha256",
+        )},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["error_code"] == "final_acceptance_identity_mismatch"
 
 
 def test_uploaded_target_generation_success_with_approved_profile(

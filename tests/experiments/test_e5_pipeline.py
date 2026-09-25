@@ -61,6 +61,18 @@ def _base_authored_template() -> "at.AuthoredTemplateCandidate":
     return SCRIPTED_AUTHORED_TEMPLATE.model_copy(deep=True)
 
 
+def test_lane_b_can_opt_into_thinking_without_changing_other_live_roles() -> None:
+    default = e5._live_model_settings()
+    thinking = e5._live_model_settings(thinking=True)
+    assert default["extra_body"]["thinking"]["type"] == "disabled"
+    assert "openai_reasoning_effort" not in default
+    assert thinking["extra_body"]["thinking"]["type"] == "enabled"
+    assert thinking["openai_reasoning_effort"] == "low"
+    assert "evidence_refs must be the empty list []" in e5.E5_LANE_B_BUILDER_INSTRUCTIONS
+    assert "source text owns" in e5.E5_LANE_B_BUILDER_INSTRUCTIONS
+    assert "page-spanning rail" in e5.E5_LANE_B_BUILDER_INSTRUCTIONS
+
+
 def test_measurement_request_accepts_semantic_intent_without_anchors() -> None:
     """Phase 0: the Reviewer reports a semantic measurement intent; exact
     verbatim PDF text anchors are no longer required."""
@@ -77,6 +89,36 @@ def test_measurement_request_accepts_semantic_intent_without_anchors() -> None:
         e.MeasurementRequest(
             request_id="measure-pending", metric="role_gap", page=1,
         )  # neither anchors nor intent
+
+
+def test_role_gap_binding_does_not_measure_an_unrelated_visual_dimension() -> None:
+    request = e.MeasurementRequest(
+        request_id="measure-header", metric="role_gap", page=1,
+        intent="compare the height of the vertical rule beside the name",
+    )
+    result = e5._bind_role_gap_anchors(
+        request,
+        target_pdf=Path("unused-target.pdf"),
+        current_pdf=Path("unused-render.pdf"),
+        region_span=None,
+        render_leaf_texts=[],
+    )
+    assert isinstance(result, e.MeasurementResult)
+    assert result.status == "not_measurable"
+
+    contact = request.model_copy(update={
+        "request_id": "measure-contact",
+        "intent": "measure the gap between the CONTACT INFO heading and its first contact entry",
+    })
+    contact_result = e5._bind_role_gap_anchors(
+        contact,
+        target_pdf=Path("unused-target.pdf"),
+        current_pdf=Path("unused-render.pdf"),
+        region_span=None,
+        render_leaf_texts=[],
+    )
+    assert isinstance(contact_result, e.MeasurementResult)
+    assert contact_result.status == "not_measurable"
 
 
 def test_measurement_binding_resolves_against_actual_final_pdf_objects(tmp_path: Path) -> None:
@@ -275,24 +317,27 @@ def test_builder_called_before_full_ledger_is_attributed() -> None:
     assert [a.finding_id for a in attributions] == ["f3"]
 
 
-def test_hard_gate_failure_enters_repair_with_gate_evidence() -> None:
-    """A candidate-content hard-gate failure with recorded missing leaves is
+def test_exact_candidate_accounting_failure_enters_repair_with_gate_evidence() -> None:
+    """An exact authored-slot accounting failure with recorded missing leaves is
     converted to a BUILDER-OWNED repair input from the shell's OWN gate
     evidence (template_compilation/confirmed) — no live attribution needed —
     and it reaches the Builder before any visual defect."""
     gates = {
         "content_gate": {"passed": False, "missing_pdf_leaves": ["header.name", "work.e1.b1"]},
-        "candidate_content_accounting": {"passed": True, "missing_leaves": []},
+        "candidate_content_accounting": {
+            "passed": False,
+            "missing_leaves": ["header.name", "work.e1.b1"],
+        },
     }
     items = e._e5_gate_repair_items("b", "target-resume_I-v1", "render-v1", gates)
     assert len(items) == 1
     finding, result, request, attribution = items[0]
-    assert finding.region == "content_gate"
+    assert finding.region == "candidate_content_accounting"
     assert finding.suspected_dimension == "hard_gate_content"
     assert finding.render_version == "render-v1"
     assert result.status == "confirmed" and result.delta_pt == 2.0
-    assert result.method == "content_gate_missing_pdf/1"
-    assert request.request_id.startswith("gate-content_gate-")
+    assert result.method == "candidate_content_accounting_missing/1"
+    assert request.request_id.startswith("gate-candidate_content_accounting-")
     assert (
         attribution.attribution,
         attribution.hypothesis_status,
@@ -321,6 +366,27 @@ def test_hard_gate_repair_inputs_never_convert_uncertain_or_lane_a_gates() -> No
     # a green gate yields no repair input
     green = {"content_gate": {"passed": True, "missing_pdf_leaves": []}}
     assert e._e5_gate_repair_items("b", "t", "v1", green) == []
+
+
+def test_lane_b_only_candidate_truth_and_privacy_are_render_gates() -> None:
+    gates = {
+        "candidate_content_accounting": True,
+        "no_target_candidate_facts": True,
+    }
+    details = {"diagnostics": {
+        "pdf_presence": {"passed": False},
+        "no_blank_page": {"passed": False},
+    }}
+    blocking = e._e5_blocking_gates("b")
+    record = e._e5_hard_gate_record(
+        "render-v1", gates, details, blocking_gates=blocking
+    )
+    assert record["passed"] is True
+    assert record["blocking_failures"] == []
+    assert record["diagnostic_warnings"] == ["pdf_presence", "no_blank_page"]
+    assert e._e5_blocking_gates_passed("b", gates) is True
+    gates["candidate_content_accounting"] = False
+    assert e._e5_blocking_gates_passed("b", gates) is False
 
 
 @e5_skip
@@ -717,6 +783,7 @@ def test_builder_entries_receive_identical_initial_payload_and_image_hashes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     received: dict[str, dict[str, object]] = {}
+    reviewer_messages: list[str] = []
 
     def capture(lane: str, payload: dict, images: list[Path]) -> None:
         received[lane] = {
@@ -738,7 +805,11 @@ def test_builder_entries_receive_identical_initial_payload_and_image_hashes(
 
     monkeypatch.setattr(e5, "_live_lane_a_builder", lane_a_builder)
     monkeypatch.setattr(e5, "_live_lane_b_builder", lane_b_builder)
-    monkeypatch.setattr(e5, "_live_reviewer_findings", lambda *args, **kwargs: [])
+    def reviewer(*_args, **kwargs):
+        reviewer_messages.append(kwargs["message"])
+        return []
+
+    monkeypatch.setattr(e5, "_live_reviewer_findings", reviewer)
     e.run_e5(
         RESUME_I, tmp_path / "run", live=True, lanes=("a", "b"), max_repair_rounds=0,
     )
@@ -748,6 +819,10 @@ def test_builder_entries_receive_identical_initial_payload_and_image_hashes(
     assert payload["target_images"]
     assert [item["sha256"] for item in payload["target_images"]] == received["a"]["image_hashes"]
     assert payload["current_representation"] is None
+    assert reviewer_messages
+    assert all("target_version" in message and "render_version" in message for message in reviewer_messages)
+    assert all("region_catalog" in message and "candidate_review_scope" in message for message in reviewer_messages)
+    assert all("Daniel Phang" not in message for message in reviewer_messages)
 
 
 def test_builder_evidence_package_is_representation_neutral() -> None:
@@ -893,6 +968,222 @@ def test_measurement_alone_never_confirms_template_compilation() -> None:
     assert attribution.repair_owner == "reviewer"
 
 
+def test_lane_b_routes_confirmed_presentation_residual_directly_to_builder() -> None:
+    finding = _e5_finding("f1", "experience", "gap")
+    attribution = e5._e5_lane_b_attribution(
+        finding,
+        e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
+        finding.requested_measurement,
+    )
+    assert (attribution.attribution, attribution.repair_owner) == (
+        "template_compilation", "builder",
+    )
+
+
+def test_reviewer_does_not_request_target_only_candidate_sections() -> None:
+    from tests.experiments.c2_candidates import candidate_resume_E
+
+    labels = [
+        e.PresentationLabel(
+            label_id=f"label-{index}", text=text, kind="section_heading",
+            status="approved", evidence_ids=[f"evidence-{index}"],
+        )
+        for index, text in enumerate(("EXPERIENCE", "PUBLICATIONS"), 1)
+    ]
+    scope = e5._candidate_review_scope(candidate_resume_E(), labels)
+    assert scope["target_labels_without_candidate_content"] == ["PUBLICATIONS"]
+    assert scope["available_leaf_kinds_by_role"]["skills"] == ["skill_group"]
+    assert scope["content_kinds_by_role"]["skills"] == ["item_list"]
+    assert scope["has_language_proficiency_entries"] is False
+    assert scope["skills_only_skill_group"] is True
+    valid = _e5_finding("f1", "experience", "alignment")
+    invalid = _e5_finding("f2", "publications", "content")
+    invalid = invalid.model_copy(update={
+        "observation": "The render is missing the PUBLICATIONS section from the target."
+    })
+    target_facts = _e5_finding("f3", "skills", "content_completeness").model_copy(update={
+        "observation": "The target's Klingon language entries are absent from the render."
+    })
+    assert e5._candidate_aware_findings([valid, invalid, target_facts], scope) == [valid]
+
+
+def test_candidate_shape_filter_keeps_real_skills_layout_and_page_local_residuals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.experiments.c2_candidates import candidate_resume_E
+
+    scope = e5._candidate_review_scope(candidate_resume_E(), [])
+    no_language_shape = _e5_finding("f1", "skills", "content_presence").model_copy(update={
+        "observation": "The target language proficiency dots are missing from Skills."
+    })
+    no_dot_rating_shape = _e5_finding("f1b", "skills", "structure").model_copy(update={
+        "observation": "The target has dot-rating glyphs and a Languages sub-block."
+    })
+    skill_layout = _e5_finding("f2", "skills", "spacing").model_copy(update={
+        "observation": "Candidate skill groups are rendered as an overly dense block."
+    })
+    global_missing = _e5_finding("f3", "education", "content_presence").model_copy(update={
+        "observation": "The render is missing the Education section."
+    })
+    page_local = _e5_finding("f4", "education", "pagination").model_copy(update={
+        "observation": (
+            "Education is on target page 1 but not current page 1; this may be a "
+            "pagination or layout-flow difference."
+        )
+    })
+    valid_composite = _e5_finding("f5", "experience", "alignment").model_copy(update={
+        "observation": (
+            "The EXPERIENCE heading is misaligned with its candidate content; "
+            "the target also shows ABOUT ME elsewhere."
+        )
+    })
+    bullet_layout = _e5_finding("f6", "experience", "typography").model_copy(update={
+        "observation": "A doubled bullet marker is present in the render but not present in the target."
+    })
+    assert e5._candidate_aware_findings(
+        [
+            no_language_shape, no_dot_rating_shape, skill_layout, global_missing, page_local,
+            valid_composite, bullet_layout,
+        ], scope
+    ) == [skill_layout, page_local, valid_composite, bullet_layout]
+    assert e5._candidate_boundary_filter_reason(no_language_shape, scope) == (
+        "candidate_content_shape_absent:language_proficiency"
+    )
+    assert e5._candidate_boundary_filter_reason(no_dot_rating_shape, scope) == (
+        "candidate_content_shape_absent:language_proficiency"
+    )
+    assert e5._candidate_boundary_filter_reason(global_missing, scope) == (
+        "page_local_global_missing_section_assertion"
+    )
+
+    entry_header_gap = _e5_finding("f7", "experience", "role_gap").model_copy(update={
+        "requested_measurement": e.MeasurementRequest(
+            request_id="entry-header-gap", metric="role_gap", page=1,
+            intent="measure the gap from the last bullet to the next entry header line",
+        )
+    })
+    monkeypatch.setattr(e5, "_pdf_line_rows", lambda *_args: [])
+    assert e5._bind_role_gap_anchors(
+        entry_header_gap.requested_measurement,
+        target_pdf=Path("unused-target.pdf"),
+        current_pdf=Path("unused-render.pdf"),
+        region_span=None,
+        render_leaf_texts=[],
+    ).status == "evidence_missing"
+
+
+def test_header_vertical_rule_metric_counts_additive_repairs(tmp_path: Path) -> None:
+    from reportlab.pdfgen import canvas
+
+    def make(path: Path, rules: list[tuple[float, float, float]]) -> Path:
+        document = canvas.Canvas(str(path), pagesize=(612, 792))
+        document.setFont("Helvetica-Bold", 20)
+        document.drawString(120, 700, "CANDIDATE NAME")
+        document.setLineWidth(1)
+        for x, y0, y1 in rules:
+            document.line(x, y0, x, y1)
+        document.save()
+        return path
+
+    target = make(tmp_path / "target.pdf", [(100, 725, 750), (100, 675, 695)])
+    before_pdf = make(tmp_path / "before.pdf", [(100, 675, 750)])
+    additive_pdf = make(tmp_path / "additive.pdf", [(100, 675, 750), (95, 725, 750)])
+    fixed_pdf = make(tmp_path / "fixed.pdf", [(100, 725, 750), (100, 675, 695)])
+    empty_pdf = make(tmp_path / "empty.pdf", [])
+    request = e.MeasurementRequest(
+        request_id="header-rule",
+        metric="header_vertical_rule_geometry",
+        page=1,
+        intent="compare the vertical rule geometry beside the header name",
+    )
+    before = e5._measure_header_vertical_rule_geometry(
+        request, target_pdf=target, current_pdf=before_pdf
+    )
+    additive = e5._measure_header_vertical_rule_geometry(
+        request, target_pdf=target, current_pdf=additive_pdf
+    )
+    fixed = e5._measure_header_vertical_rule_geometry(
+        request, target_pdf=target, current_pdf=fixed_pdf
+    )
+    empty = e5._measure_header_vertical_rule_geometry(
+        request, target_pdf=target, current_pdf=empty_pdf
+    )
+    assert before.current_evidence[0]["vertical_rule_count"] == 1
+    assert additive.current_evidence[0]["vertical_rule_count"] == 2
+    assert fixed.current_value_pt == 0
+    assert empty.status == "evidence_missing"
+    improved, reason = e5._measurement_improvement(before, additive)
+    assert improved is False
+    assert "retaining the original long" in reason
+    assert e5._measurement_improvement(before, fixed)[0] is True
+
+
+def test_header_vertical_rule_metric_rejects_unrelated_finding() -> None:
+    request = e.MeasurementRequest(
+        request_id="wrong-header-rule",
+        metric="header_vertical_rule_geometry",
+        page=1,
+        intent="compare contact typography",
+    )
+    result = e5._measure_header_vertical_rule_geometry(
+        request, target_pdf=Path("unused-target.pdf"), current_pdf=Path("unused-render.pdf")
+    )
+    assert result.status == "not_measurable"
+
+
+def test_header_vertical_rule_name_anchor_excludes_near_size_rail_heading(
+    tmp_path: Path,
+) -> None:
+    from reportlab.pdfgen import canvas
+
+    pdf = tmp_path / "small-name.pdf"
+    document = canvas.Canvas(str(pdf), pagesize=(612, 792))
+    document.setFont("Helvetica", 13)
+    document.drawString(190, 680, "Daniel Phang")
+    document.setFont("Helvetica-Bold", 12)
+    document.drawString(50, 590, "CONTACT INFO")
+    document.line(190, 705, 190, 730)
+    document.line(190, 640, 190, 665)
+    document.save()
+
+    evidence = e5._header_vertical_rule_evidence(
+        pdf, 1, name_text="Daniel Phang"
+    )
+    assert evidence is not None
+    assert evidence["name_anchor_source"] == "candidate_name_text"
+    assert evidence["name_region"]["x0"] >= 189
+    assert evidence["name_region"]["bottom"] < 150
+    assert evidence["vertical_rule_count"] == 2
+    context = e5._header_vertical_rule_target_context(pdf)
+    assert context is not None
+    assert context["preserve_separate_name_gap"] is True
+    assert context["forbidden_interpretation"] == (
+        "continuous_or_page_spanning_vertical_rail"
+    )
+
+
+def test_target_body_text_color_context_uses_character_volume(tmp_path: Path) -> None:
+    from reportlab.lib.colors import Color
+    from reportlab.pdfgen import canvas
+
+    pdf = tmp_path / "body-color.pdf"
+    document = canvas.Canvas(str(pdf), pagesize=(612, 792))
+    document.setFillColor(Color(0.4902, 0.57256, 0.63136))
+    document.setFont("Helvetica", 11)
+    document.drawString(60, 650, "ordinary body copy " * 8)
+    document.setFillColorRGB(0.2, 0.2, 0.2)
+    document.setFont("Helvetica-Bold", 23)
+    document.drawString(190, 700, "NAME")
+    document.save()
+
+    context = e5._target_body_text_color_context(pdf)
+    assert context is not None
+    assert context["dominant_color_hex"] == "#7d92a1"
+    assert context["scope"] == "ordinary_body_copy"
+    assert "header_name" in context["excluded_roles"]
+    assert "ordinary body copy only" in e5.E5_LANE_B_BUILDER_INSTRUCTIONS
+
+
 def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
     class State:
         nodes = []
@@ -926,6 +1217,62 @@ def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
     assert package["selected_attribution"]["finding_id"] == "f1"
     assert package["selected_attribution"]["measurement_request_id"] == "measure-f1"
     assert package["action_fingerprint"] == "experience:gap:8.0"
+
+    header_draft = e.TargetStructureDraft(
+        target_id="target-v1",
+        investigator="scripted",
+        structure=[
+            e.StructuralRelation(
+                claim_id="header-typography",
+                relation="reading_order",
+                statement=(
+                    "Header block uses a first line at 22.9pt, weight 600 and "
+                    "a second line at 14.9pt, weight 400."
+                ),
+                confidence=0.95,
+            )
+        ],
+        unresolved=[],
+        self_reported=e.SelfReportedStatus(status="partial"),
+    )
+    header_finding = finding.model_copy(update={
+        "region": "header_name",
+        "requested_measurement": e.MeasurementRequest(
+            request_id="header-rule",
+            metric="header_vertical_rule_geometry",
+            page=1,
+            intent="compare the vertical rule beside the header name",
+        ),
+    })
+    compact = e._e5_builder_evidence_package(
+        draft=header_draft,
+        state=State(), derived={}, page_size=(612.0, 792.0),
+        current_render_version=finding.render_version,
+        current_representation=current_representation,
+        findings=[header_finding],
+        measurements=[e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0)],
+        selected_attribution=attribution,
+        compact=True,
+    )
+    assert "structure_draft" not in compact
+    assert "underlying_evidence_summary" not in compact
+    assert "message_history" not in compact
+    context = compact["region_repair_context"]
+    assert context["target_name_typography"] == [
+        {"line": 1, "font_size_pt": 22.9, "font_weight": 600},
+        {"line": 2, "font_size_pt": 14.9, "font_weight": 400},
+    ]
+    assert context["allowed_changes"] == ["header_vertical_rule_dom_css"]
+    assert "current_name_font_size" in context["preserve_unless_measured"]
+    assert "unrelated_sections_and_layout" in context["preserve_unless_measured"]
+
+    other_region = e._e5_builder_evidence_package(
+        draft=header_draft,
+        state=State(), derived={}, page_size=(612.0, 792.0),
+        findings=[finding],
+        compact=True,
+    )
+    assert "region_repair_context" not in other_region
 
 
 @pytest.mark.parametrize("owner", ["renderer", "binding", "reviewer", "none"])
@@ -1160,11 +1507,16 @@ def test_gate_classification_does_not_overclaim_representation_or_privacy() -> N
 def test_gate_and_builder_candidate_audits_are_version_bound() -> None:
     gate_record = e._e5_hard_gate_record(
         "render-v2",
-        {"content_gate": False},
-        {"content_gate": {"missing_pdf_leaves": ["leaf.1"]}},
+        {"candidate_content_accounting": True},
+        {"diagnostics": {
+            "pdf_presence": {"passed": False, "missing_pdf_leaves": ["leaf.1"]}
+        }},
+        blocking_gates=("candidate_content_accounting",),
     )
     assert gate_record["render_version"] == "render-v2"
-    assert gate_record["details"]["content_gate"]["missing_pdf_leaves"] == ["leaf.1"]
+    assert gate_record["details"]["diagnostics"]["pdf_presence"][
+        "missing_pdf_leaves"
+    ] == ["leaf.1"]
     proposal = e.LaneAStructureProposal(proposal_id="p1", sections=[], agent="scripted")
     candidate_record = e._e5_builder_candidate_record(
         lane="a",
@@ -1234,9 +1586,13 @@ def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
         RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
         presentation_label_approval=_simulated_approval_for_test_target_catalog(),
     )
-    assert terminal in {"ready_for_owner_review", "budget_exhausted"}
+    # Terminal semantics (2026-09-23): `budget_exhausted` now means a
+    # configured ceiling WAS reached. An offline lane that simply runs out of
+    # actions stops as `stalled_no_new_action` instead of borrowing that label.
+    assert terminal in {"ready_for_owner_review", "budget_exhausted", "stalled_no_new_action"}
     lane = record["lanes"]["a"]
     assert lane["terminal_state"] == terminal
+    assert lane["terminal_reason"] or terminal == "ready_for_owner_review"
     assert lane["content_shape_probes_passed"] is True
     assert "awaiting_attribution_or_other_owner" in lane["attempted_strategies"]
     # the led cycle persisted resumable state
@@ -1262,17 +1618,21 @@ def test_run_e5_offline_lane_b_authored_template_loop(tmp_path: Path) -> None:
     )
     assert gate_record["render_version"] == initial_render_version
     assert set(gate_record["details"]) >= {
-        "content_gate",
         "candidate_content_accounting",
         "no_target_candidate_facts",
-        "deterministic_render",
-        "no_blank_page",
+        "diagnostics",
+    }
+    assert set(gate_record["details"]["diagnostics"]) == {
+        "pdf_presence", "no_blank_page",
     }
     assert lane["content_shape_probes_passed"] is True
     # The authored render chain ran through Chrome with network disabled.
     trace = json.loads((run_dir / "lane_b" / "trace.json").read_text())
     renders = [entry for entry in trace if entry.get("action") == "render_version"]
     assert renders
+    checkpoint = json.loads((run_dir / "lane_b" / "checkpoint.json").read_text())
+    assert checkpoint["phase"] == "terminal"
+    assert (run_dir / "lane_b" / "residuals.jsonl").exists()
 
 
 @e5_skip
@@ -1394,16 +1754,17 @@ def test_run_e5_rolls_back_regressions_and_records_the_ledger(tmp_path: Path) ->
 
 
 @e5_skip
-def test_run_e5_budget_exhaustion_preserves_resumable_best_valid_state(tmp_path: Path) -> None:
+def test_run_e5_tiny_repair_budget_still_returns_the_safety_valid_output(tmp_path: Path) -> None:
     tiny = RunBudget(max_model_requests=1, max_tool_calls=8)
     run_dir, terminal, record = e.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
         budget=tiny,
     )
-    assert terminal == "budget_exhausted"
+    assert terminal == "ready_for_owner_review"
     state = json.loads((run_dir / "e5_state.json").read_text())
     lane = state["lanes"]["b"]
     assert lane["budget_state"]["max_model_requests"] == 1
+    assert lane["best_render_version"]
     # no terminal state may ever claim success or unsupported
     assert terminal != "unsupported"
     assert "unsupported" not in json.dumps(record)
@@ -1622,7 +1983,10 @@ def test_run_e5_rejected_render_stays_in_history_and_next_round_uses_old_active(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
     lane = record["lanes"]["b"]
-    assert terminal == "budget_exhausted"
+    # Repair stagnation is recorded below, but it no longer suppresses the
+    # existing safety-valid PDF from owner review.
+    assert terminal == "ready_for_owner_review"
+    assert lane["terminal_reason"] == ""
     # the rejected candidate render is preserved in history, un-promoted
     assert len(lane["render_versions"]) >= 2
     assert all(not v["promoted"] for v in lane["render_versions"])
@@ -1705,9 +2069,10 @@ def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
             probe_pdf = run_dir / f"lane_{lane_id}" / entry["pdf"]
             assert probe_pdf.exists() and probe_pdf.stat().st_size > 0
             assert entry["passed"] is True, f"lane {lane_id}/{profile}: {entry.get('gates') or entry.get('error')}"
-            assert set(entry["gates"]) >= {
-                "no_blank_page", "deterministic_render", "privacy_gate",
-            }
+            assert set(entry["gates"]) >= {"no_blank_page", "privacy_gate"}
+            assert (
+                "deterministic_render" if lane_id == "a" else "pdf_presence"
+            ) in entry["gates"]
         # the selected representation's identity matches the active/best
         # version's recorded representation (not a default scripted fixture)
         selected_id = probes["_selected_version"]
@@ -3462,8 +3827,8 @@ def test_live_lane_a_render_lineage_is_clean_in_the_recorded_run() -> None:
 # E5 owner work order 2026-09-22 — fix 2: the quarantined repair branch
 #
 # Live regression (`e_pipeline_e5_20260922T090821Z` Lane B): v2 reduced the
-# missing leaves 5 -> 4 and passed every safety gate, but a red `content_gate`
-# rolled it back and discarded it. The next round re-derived the SAME gate
+# missing leaves 5 -> 4 but still failed candidate-content accounting, so it
+# was not promotable. The next round re-derived the SAME gate
 # repair input from v1 (same action fingerprint) and stopped as
 # `stalled_no_new_action` — so only ONE repair ever happened and no cumulative
 # repair process existed. A quarantined repair base fixes that WITHOUT relaxing
@@ -3473,12 +3838,8 @@ def test_live_lane_a_render_lineage_is_clean_in_the_recorded_run() -> None:
 
 def _e5_quarantine_gates(**overrides: bool) -> dict[str, bool]:
     gates = {
-        "content_gate": False,
-        "candidate_content_accounting": True,
+        "candidate_content_accounting": False,
         "no_target_candidate_facts": True,
-        "no_blank_page": True,
-        "deterministic_render": True,
-        "template_safety": True,
     }
     return {**gates, **overrides}
 
@@ -3502,21 +3863,18 @@ def _e5_quarantine_case(
 
 
 def test_repairable_but_not_passing_candidate_becomes_a_quarantine_base() -> None:
-    """A content/PDF-presence failure with every safety gate green is repairable
-    in quarantine — the live Lane B v2 situation."""
+    """A candidate-accounting failure with privacy green remains repairable."""
     eligible, reason = _e5_quarantine_case()
     assert eligible is True
     assert "repairable-but-not-passing" in reason
 
 
-@pytest.mark.parametrize(
-    "gate",
-    ["no_target_candidate_facts", "template_safety"],
-)
-def test_unsafe_candidate_can_never_become_a_repair_base(gate: str) -> None:
-    """A target-person fact leak or an authored-template safety failure is a
-    REJECTION, never a repair base."""
-    eligible, reason = _e5_quarantine_case(gates=_e5_quarantine_gates(**{gate: False}))
+def test_unsafe_candidate_can_never_become_a_repair_base() -> None:
+    """A target-person fact leak is a rejection, never a repair base."""
+    gate = "no_target_candidate_facts"
+    eligible, reason = _e5_quarantine_case(
+        gates=_e5_quarantine_gates(**{gate: False})
+    )
     assert eligible is False
     assert gate in reason
 
@@ -3541,13 +3899,15 @@ def test_action_fingerprint_binds_the_repair_base_version() -> None:
     """The same action on the SAME input version is still deduplicated, while the
     identical remaining defect on a NEW quarantined repair version is a different
     action — so cumulative repair can continue instead of stalling."""
-    finding = _e5_finding("f1", "content_gate", "hard_gate_content")
+    finding = _e5_finding("f1", "candidate_content_accounting", "hard_gate_content")
     result = e.MeasurementResult(
         request_id="m", status="confirmed", target_value_pt=0.0,
         current_value_pt=4.0, delta_pt=4.0,
     )
     measured = {finding.finding_id: (result, finding.requested_measurement)}
-    executed = [f"{finding.render_version}:content_gate:hard_gate_content:4.0"]
+    executed = [
+        f"{finding.render_version}:candidate_content_accounting:hard_gate_content:4.0"
+    ]
     selected, stalled = e._next_e5_repair_finding(
         [finding], measured, [_e5_attribution(finding)], executed
     )
@@ -3561,18 +3921,15 @@ def test_action_fingerprint_binds_the_repair_base_version() -> None:
         [quarantined], measured_q, [_e5_attribution(quarantined)], executed
     )
     assert selected_q is not None
-    assert selected_q[4] == "render-q-v2:content_gate:hard_gate_content:4.0"
+    assert selected_q[4] == (
+        "render-q-v2:candidate_content_accounting:hard_gate_content:4.0"
+    )
 
 
-def _inject_scripted_content_gate_failures(
+def _inject_scripted_pdf_presence_failures(
     monkeypatch: pytest.MonkeyPatch, missing_counts: list[int]
 ) -> None:
-    """Inject a scripted red `content_gate` sequence for successive Lane B
-    renders (0 = the real, genuinely green gate). This drives the quarantine
-    CONTROL FLOW with the exact evidence shape the live run produced
-    (`missing_pdf_leaves` = real candidate leaf ids); it does not pretend a real
-    render defect was reproduced. `run_e5` imports the gate function locally, so
-    the SOURCE module attribute is patched."""
+    """Inject PDF-presence diagnostic failures for Lane B renders."""
     real = at.authored_pdf_presence_gate
     pending = list(missing_counts)
 
@@ -3594,129 +3951,308 @@ def _inject_scripted_content_gate_failures(
 
 
 @e5_skip
-def test_run_e5_repairs_from_the_quarantined_candidate_and_promotes_only_the_green_one(
+def test_run_e5_pdf_presence_failure_is_diagnostic_and_owner_reviewable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """active v1 -> v2 red content gate (safe) -> quarantine -> the NEXT Builder
-    binds v2 as its repair base and produces v3 -> only v3 (all gates green) is
-    promoted. v2 is never promoted, never the lane's output, never best."""
-    _force_scripted_builder_attribution(monkeypatch)
-    _inject_scripted_content_gate_failures(monkeypatch, [0, 4, 0])
-    run_dir, _terminal, record = e.run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
+    """Flattened-PDF presence mismatches stay visible but do not suppress a
+    safety-valid authored output or fabricate a Builder repair."""
+    _inject_scripted_pdf_presence_failures(monkeypatch, [5])
+    run_dir, terminal, record = e.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=0,
     )
     lane = record["lanes"]["b"]
-    versions = lane["render_versions"]
-    assert len(versions) >= 3, "the quarantined candidate was not repaired further"
-    v1, v2, v3 = versions[0], versions[1], versions[2]
-    assert v1["hard_gates_passed"] is True
-    assert v2["hard_gates_passed"] is False and v2["promoted"] is False
-    assert v3["hard_gates_passed"] is True and v3["promoted"] is True
-    assert lane["active_render_version"] == v3["version_id"]
-    assert lane["best_render_version"] == v3["version_id"]
-    # v2 was quarantined, not rolled back, and was carried as the repair base
-    assert any("quarantined_repair_base" in s for s in lane["attempted_strategies"])
-    assert not any("rolled_back" in s for s in lane["attempted_strategies"])
-    # the quarantine was cleared once a version passed every gate
-    assert lane["quarantined_repair_base"] is None
+    version = lane["render_versions"][0]
+    assert terminal == "ready_for_owner_review"
+    assert version["hard_gates_passed"] is True
+    assert lane["best_render_version"] == version["version_id"]
+    assert lane["summary"]["diagnostic_warnings"] == ["pdf_presence"]
+    gate_record = json.loads(
+        (run_dir / "lane_b" / f"hard_gates_{version['version_id']}.json").read_text()
+    )
+    assert gate_record["passed"] is True
+    assert gate_record["blocking_failures"] == []
+    assert gate_record["diagnostic_warnings"] == ["pdf_presence"]
+    package = run_dir / "owner_review"
+    assert (package / "lane_b_best.pdf").exists()
+    assert "pdf_presence" in (run_dir / "lane_b" / "REPORT.md").read_text()
 
-    trace = json.loads((run_dir / "lane_b" / "trace.json").read_text())
-    quarantined = [entry for entry in trace if entry.get("action") == "quarantined"]
-    assert quarantined
-    quarantine_output = json.loads(
-        (run_dir / "lane_b" / quarantined[0]["output_artifact"]).read_text()
-    )
-    assert quarantine_output["candidate_version"] == v2["version_id"]
-    assert quarantine_output["active_version"] == v1["version_id"]
-    assert quarantine_output["failing_gates"] == ["content_gate"]
-    # the Builder that produced v3 DECLARED v2 as its input (payload + trace),
-    # while the reviewer kept reading the ACTIVE v1
-    evidence_files = sorted(
-        (run_dir / "lane_b").glob("builder_evidence_round_*.json")
-    )
-    payload = json.loads(evidence_files[-1].read_text())
-    assert payload["current_render_version"] == v2["version_id"], "the Builder did not repair from v2"
-    quarantined_audit = next(
-        entry for entry in lane["builder_candidates"]
-        if entry.get("candidate_render_version") == v2["version_id"]
-    )
-    assert payload["current_representation"] == quarantined_audit["typed_candidate"]
-    assert payload["current_gates"] == json.loads(
-        (run_dir / "lane_b" / f"hard_gates_{v2['version_id']}.json").read_text()
-    )["gates"]
-    # the quarantined candidate's OWN missing leaves are the repair input
-    gate_finding = next(
-        f for f in payload["findings"] if f["region"] == "content_gate"
-    )
-    assert gate_finding["render_version"] == v2["version_id"]
-    assert "4 candidate leaves missing" in gate_finding["observation"]
-    proposals = [
-        entry for entry in trace
-        if entry.get("agent") == "builder" and entry.get("action") == "proposal"
-    ]
-    repair_proposal = json.loads(
-        (run_dir / "lane_b" / proposals[-1]["output_artifact"]).read_text()
-    )
-    assert repair_proposal["current_version"] == v2["version_id"]
-    assert repair_proposal["active_version"] == v1["version_id"]
-    assert repair_proposal["quarantined"] is True
-    # the builder-candidate audit binds the repair base version too
-    audit = next(
-        entry for entry in lane["builder_candidates"]
-        if entry.get("candidate_render_version") == v2["version_id"]
-    )
-    assert audit["outcome"] == "quarantined"
-    assert audit["input_render_version"] == v1["version_id"]
-    assert any(
-        entry.get("candidate_render_version") == v3["version_id"]
-        and entry.get("outcome") == "promoted"
-        for entry in lane["builder_candidates"]
-    )
-    # Only the shell's OWN gate-derived repair input may cite the quarantined
-    # version; every reviewer finding still cites the ACTIVE version.
-    reviewer_findings = [
-        f for f in lane["findings"] if not f["finding_id"].startswith("gate-")
-    ]
-    assert reviewer_findings
-    assert not any(f["render_version"] == v2["version_id"] for f in reviewer_findings)
-    assert {f["render_version"] for f in reviewer_findings} <= {
-        v1["version_id"], v3["version_id"],
-    }, "the reviewer must only ever cite an ACTIVE version"
+
+# ===========================================================================
+# Owner work order 2026-09-23 — the agent-facing tool boundary
+#
+# A caller-input error (a page number outside the document, a render that is
+# not bound) is the MODEL's mistake against the shell's own bounds. Raising it
+# tears down the whole agent run instead of letting the model correct itself:
+# in live run `e_pipeline_e5_20260923T095557Z` one attribution run died with
+# `ValueError: page 3 outside 1..2` (1 of 8 lost, its findings left ownerless).
+# ===========================================================================
 
 
 @e5_skip
-def test_run_e5_owner_package_shows_the_active_version_while_repair_stays_quarantined(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When no candidate ever passes, the active version stays v1 and the owner
-    package shows v1 as ACTIVE UNPROMOTED VERSION — a quarantined repair base is
-    never presented as the lane's output."""
-    _force_scripted_builder_attribution(monkeypatch)
-    # The live Lane B shape: the very FIRST render is red too (v1 had 5 missing
-    # leaves), so no hard-gate-valid version ever exists.
-    _inject_scripted_content_gate_failures(monkeypatch, [5, 4, 3, 2, 1])
-    run_dir, _terminal, record = e.run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=3,
-    )
-    lane = record["lanes"]["b"]
-    versions = lane["render_versions"]
-    assert len(versions) >= 3, "the quarantined candidate was not repaired further"
-    assert versions[-1]["hard_gates_passed"] is False, "the injected sequence must stay red"
-    assert lane["active_render_version"] == versions[0]["version_id"]
-    assert lane["best_render_version"] is None
-    assert lane["best_defect_level_version"] is None
-    assert all(not v["promoted"] for v in versions)
-    assert lane["quarantined_repair_base"] == versions[-1]["version_id"]
+def test_recoverable_tool_input_error_returns_to_the_model(tmp_path: Path) -> None:
+    """A bad page comes back as a bounded tool RESULT (traced), and a real
+    defect still raises — the boundary must not swallow genuine failures."""
+    from tests.experiments.test_e_pipeline import _pod
 
-    package = run_dir / "owner_review"
-    assert (package / "lane_b_active_unpromoted.pdf").exists()
-    assert e._sha256_file(package / "lane_b_active_unpromoted.pdf") == e._sha256_file(
-        run_dir / "lane_b" / "render_1.pdf"
+    def pod_tools(pod: object, trace: object) -> dict[str, object]:
+        return {
+            tool.__name__: tool
+            for tool in e5._pod_tools(
+                pod, RunBudget(max_model_requests=10, max_tool_calls=10), trace
+            )
+        }
+
+    trace = e.RunTrace(tmp_path)
+    tools = pod_tools(_pod(tmp_path), trace)
+    result = tools["inspect_page_overview"](99)
+    assert isinstance(result, dict) and result["status"] == "error"
+    assert "outside 1.." in result["error"]
+    assert any("tool_error" in str(entry.get("note")) for entry in trace.entries)
+
+    def exploding_renderer(page_number: int, note: str = "") -> list[object]:
+        raise RuntimeError("the page renderer itself failed")
+
+    broken = _pod(tmp_path)
+    broken.inspect_page_overview = exploding_renderer  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="renderer itself failed"):
+        pod_tools(broken, e.RunTrace(tmp_path))["inspect_page_overview"](1)
+
+
+def test_e5_reviewer_message_carries_exact_scope_without_candidate_text() -> None:
+    from tests.experiments.c2_candidates import candidate_resume_E
+
+    candidate = candidate_resume_E()
+    message = e5._e5_reviewer_message(
+        target_version="target-exact-v1",
+        render_version="render-exact-v2",
+        page=2,
+        region_catalog=[{
+            "region_id": "section.03", "kind": "section",
+            "semantic_role": "work_experience", "source": ["work_experience"],
+            "page": 1,
+        }],
+        review_scope={"changed_regions": ["skills"], "open_findings": []},
+        candidate_review_scope=e5._candidate_review_scope(candidate, []),
+        lane="b",
+        deterministic_presentation_facts={"sidebar_label_alignment": "right"},
     )
-    assert not (package / "lane_b_best.pdf").exists()
-    report = (package / "REPORT.md").read_text(encoding="utf-8")
-    assert "ACTIVE UNPROMOTED VERSION" in report
-    assert "quarantined repairable-but-not-passing candidate" in report
-    assert "never promoted, never labeled BEST" in report
-    lane_report = (run_dir / "lane_b" / "REPORT.md").read_text(encoding="utf-8")
-    assert "Quarantined repair base" in lane_report
+    assert "target-exact-v1" in message and "render-exact-v2" in message
+    assert '"page": 2' in message
+    assert '"region_id": "section.03"' in message
+    assert "candidate_review_scope" in message
+    assert "constrained authored HTML/CSS" in message
+    assert candidate.leaves[0].text not in message
+
+
+def test_reviewer_receives_existing_deterministic_presentation_facts(monkeypatch) -> None:
+    monkeypatch.setattr(
+        e5, "_header_vertical_rule_target_context",
+        lambda _pdf: {"vertical_rule_count": 2, "preserve_separate_name_gap": True},
+    )
+    monkeypatch.setattr(
+        e5, "_target_body_text_color_context",
+        lambda pdf: {"dominant_color_hex": "#7d92a1" if pdf.name == "target.pdf" else "#111111"},
+    )
+    facts = e5._reviewer_presentation_facts(
+        Path("target.pdf"), Path("render.pdf"),
+        {"sidebar_labels": [{"x1": 153.57}, {"x1": 153.569}]},
+    )
+    assert facts["header_vertical_rule_target_context"]["vertical_rule_count"] == 2
+    assert facts["sidebar_labels"]["alignment"] == "right"
+    assert facts["sidebar_labels"]["max_right_edge_spread_pt"] == pytest.approx(0.001)
+    assert facts["target_ordinary_body_color"]["dominant_color_hex"] == "#7d92a1"
+    assert facts["current_render_ordinary_body_color"]["dominant_color_hex"] == "#111111"
+
+
+def test_lane_b_content_free_shape_and_footprint_contracts() -> None:
+    from tests.experiments.c2_candidates import candidate_resume_E
+
+    candidate = candidate_resume_E()
+    shape = e5._slot_shape_contract()
+    footprint = e5._candidate_layout_footprint(candidate)
+    serialized = json.dumps({"shape": shape, "footprint": footprint})
+    assert shape["candidate:name"]["atomic"] is True
+    assert shape["candidate:contact"]["shape"] == "flat_shell_joined_string"
+    assert shape["experience"]["item_head"] == "work_entry"
+    assert shape["experience"]["item_detail"] == "entry_detail"
+    assert shape["experience"]["item_meta"] == "entry_meta"
+    assert shape["experience"]["item_bullets"]["dom"] == "shell_generated_li"
+    assert shape["education"]["item_head"] == "education_entry"
+    assert shape["skills"]["item_text"] == "skill_children_only"
+    assert footprint["skills"]["entry_count"] == 2
+    assert set(footprint["skills"]["items"][0]) == {
+        "child_count", "bullet_count", "character_length", "length_band",
+    }
+    for leaf in candidate.leaves:
+        if leaf.text:
+            assert leaf.text not in serialized
+
+
+@e5_skip
+def test_initial_lane_b_context_is_candidate_compatible_and_compact(tmp_path: Path) -> None:
+    run_dir, _terminal, _record = e5.run_e5(
+        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=0,
+    )
+    payload = json.loads((run_dir / "builder_evidence_initial.json").read_text())
+    draft = payload["structure_draft"]
+    assert "evidence_used_by_id" not in draft
+    for target_only in ("ACHIEVEMENTS", "PUBLICATIONS", "CONFERENCES", "REFERENCES"):
+        assert target_only not in json.dumps(draft)
+    assert "filled/hollow dot" not in json.dumps(draft)
+    assert "4-column" not in json.dumps(draft)
+    assert payload["candidate_compatible_labels"]["ABOUT ME"] == "omit_entire_section"
+    assert "slot_shape_contract" in payload
+    assert "candidate_layout_footprint" in payload
+    assert len(json.dumps(payload).encode()) < 30_000
+
+
+def test_review_scope_open_findings_is_compact_and_complete() -> None:
+    finding = e.DefectFinding(
+        finding_id="finding-1", target_version="t", render_version="r", page=2,
+        region="skills", observation="Ordinary body copy is too dark.",
+        suspected_dimension="color",
+        requested_measurement=e.MeasurementRequest(
+            request_id="m", metric="role_gap", page=2,
+            intent="record the unsupported color observation",
+        ),
+        severity="medium", confidence=0.8, reviewer="scripted",
+    )
+    scope = e5._review_scope_payload(
+        2, ["skills"], [finding], ledger_statuses={"finding-1": "open"},
+        changed_pages=[2],
+    )
+    assert scope["changed_regions"] == ["skills"] and scope["affected_pages"] == [2]
+    assert scope["open_findings"] == [{
+        "finding_id": "finding-1", "page": 2, "region": "skills",
+        "suspected_dimension": "color",
+        "observation": "Ordinary body copy is too dark.", "status": "open",
+    }]
+    assert "message" not in json.dumps(scope).casefold()
+
+
+def test_reviewer_findings_must_bind_one_catalog_region_and_dimension() -> None:
+    valid = e.DefectFinding(
+        finding_id="f", target_version="t", render_version="r", page=1,
+        region="section.03", observation="The entry spacing is too large.",
+        suspected_dimension="role_spacing",
+        requested_measurement=e.MeasurementRequest(
+            request_id="m", metric="role_gap", page=1,
+            intent="record this non-measurable color residual",
+        ),
+        severity="medium", confidence=0.8, reviewer="scripted",
+    )
+    assert e5._validate_reviewer_regions([valid], {"section.03"}, 1) == [valid]
+    assert e5._validate_reviewer_regions(
+        [valid.model_copy(update={"region": "section.03/contact"})],
+        {"section.03", "contact"}, 1,
+    ) == []
+    assert e5._validate_reviewer_regions(
+        [valid.model_copy(update={"suspected_dimension": "color and alignment"})],
+        {"section.03"}, 1,
+    ) == []
+
+
+def test_accounting_repair_maps_missing_skills_to_real_region_and_page(monkeypatch) -> None:
+    from tests.experiments.c2_candidates import candidate_resume_E
+
+    candidate = candidate_resume_E()
+    monkeypatch.setattr(e5, "_candidate_role_page", lambda *_args: 2)
+    items = e5._e5_gate_repair_items(
+        "b", "t", "r", {
+            "candidate_content_accounting": {
+                "passed": False,
+                "missing_leaves": ["skills.languages", "skills.software"],
+            }
+        }, candidate=candidate, current_pdf=Path("render.pdf"),
+    )
+    finding = items[0][0]
+    assert finding.region == "skills"
+    assert finding.page == 2
+    assert finding.requested_measurement.page == 2
+
+
+def test_every_lane_b_repair_gets_a_minimal_boundary() -> None:
+    from tests.experiments.c2_candidates import candidate_resume_E
+
+    candidate = candidate_resume_E()
+    finding = e.DefectFinding(
+        finding_id="gate", target_version="t", render_version="r", page=2,
+        region="skills", observation="two leaves missing",
+        suspected_dimension="hard_gate_content",
+        requested_measurement=e.MeasurementRequest(
+            request_id="m", metric="role_gap", page=2, intent="missing leaves",
+        ),
+        severity="high", confidence=1.0, reviewer="scripted",
+    )
+    boundary = e5._lane_b_repair_boundary(
+        finding, candidate=candidate,
+        missing_leaf_ids=["skills.languages", "skills.software"],
+        body_color_context={"dominant_color_hex": "#7d92a1"},
+    )
+    assert boundary["selected_region"] == "skills"
+    assert boundary["affected_page"] == 2
+    assert boundary["allowed_changes"] == [
+        "bind the specified missing leaves through the correct existing slot token"
+    ]
+    assert boundary["missing_leaf_ids"] == ["skills.languages", "skills.software"]
+    for invariant in ("typography", "colors", "spacing", "header", "unrelated_sections_and_layout"):
+        assert invariant in boundary["preserve_unless_measured"]
+    assert "#7d92a1" in json.dumps(boundary)
+
+
+def test_authored_shell_uses_full_page_geometry_without_hidden_scale() -> None:
+    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+
+    template = _base_authored_template().model_copy(update={
+        "template_id": "full-page",
+        "html": '<main class="page">{{candidate:name}}</main>',
+        "css": ".page{width:595.276pt;padding:36pt;font-size:10pt}",
+        "slots": [at.AuthoredSlot(category="candidate_name", required=True)],
+    })
+    fill = at.fill_authored_template(template, CandidateDocument(
+        candidate_id="full-page",
+        leaves=[CandidateLeaf(
+            leaf_id="header.name", kind="header_field", slot="name", text="Synthetic Name",
+        )],
+    ))
+    doc = at.build_authored_document(template, fill, (595.276, 841.89))
+    assert "@page { size: 595.276pt 841.890pt; margin: 0; }" in doc
+    assert "font-size:10pt" in doc
+    assert "margin: 36pt" not in doc
+
+
+def test_authored_full_page_pdf_keeps_declared_size_and_font(tmp_path: Path) -> None:
+    import pdfplumber
+    from tests.experiments.a_pipeline import _export_pinned_html_to_pdf
+    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+
+    template = _base_authored_template().model_copy(update={
+        "template_id": "full-page-pdf",
+        "html": '<main class="page">{{candidate:name}}</main>',
+        "css": (
+            "html,body{width:595.276pt;height:841.890pt}"
+            ".page{width:595.276pt;height:841.890pt;padding:36pt;font-size:10pt}"
+        ),
+        "slots": [at.AuthoredSlot(category="candidate_name", required=True)],
+    })
+    candidate = CandidateDocument(
+        candidate_id="full-page-pdf",
+        leaves=[CandidateLeaf(
+            leaf_id="header.name", kind="header_field", slot="name", text="Synthetic Name",
+        )],
+    )
+    html_path = tmp_path / "full_page.html"
+    pdf_path = tmp_path / "full_page.pdf"
+    html_path.write_text(at.build_authored_document(
+        template, at.fill_authored_template(template, candidate), (595.276, 841.89),
+    ))
+    _export_pinned_html_to_pdf(
+        html_path, pdf_path, at.authored_network_disabled_environment()
+    )
+    with pdfplumber.open(pdf_path) as document:
+        assert (document.pages[0].width, document.pages[0].height) == pytest.approx(
+            (595.276, 841.89), abs=0.5
+        )
+        sizes = [float(char["size"]) for char in document.pages[0].chars]
+    assert sizes and max(sizes) == pytest.approx(10.0, abs=0.05)
+    assert max(sizes) != pytest.approx(8.79, abs=0.1)

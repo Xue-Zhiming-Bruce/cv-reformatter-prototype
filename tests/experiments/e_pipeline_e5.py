@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import shutil
 import subprocess
 import time
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -34,10 +36,10 @@ from tests.experiments.c_pipeline import _pdf_lines_and_marks, pinned_export_env
 
 from tests.experiments.e_pipeline_common import (
     AttributionRecord,
-    CANDIDATE_FACT_GATES,
     CandidateBindingLineage,
     DefectFinding,
     DualSourcePod,
+    E4_PER_CALL_MAX_TOOL_CALLS,
     E4_TEMPERATURE,
     E5AgentAuditSpec,
     EvidenceModel,
@@ -91,14 +93,25 @@ E5_SCHEMA_VERSION = "pipeline-e-e5-state/1"
 # retry bounds, and tool permission boundaries stay unchanged.
 E5_LANE_MAX_MODEL_REQUESTS = 400
 E5_LANE_MAX_TOOL_CALLS = 2000
-E5_MAX_REPAIR_ROUNDS = 8
+# E5 is route-finding, not production acceptance: one repair is enough to
+# observe whether each representation can understand and act on feedback.
+E5_MAX_REPAIR_ROUNDS = 1
 # Phase 0: a meaningful part of every lane's budget is RESERVED for Builder
 # calls and rerenders; diagnosis must not consume the run before the Builder
 # can act (attribution is skipped while the reserve is not covered).
 E5_BUILDER_RESERVE_REQUESTS = 40
 E5_REVIEWER_MAX_REQUESTS = 4
 E5_BUILDER_MAX_REQUESTS = 4
-E5_ATTRIBUTION_MAX_REQUESTS = 8
+# The attribution run's request ceiling is DERIVED from its own tool-call
+# envelope, not a flat constant: a batch may issue up to
+# `E4_PER_CALL_MAX_TOOL_CALLS` tool calls, needs one request after each, one
+# request per finding it must answer, and the opening request. The flat 8 this
+# replaces starved the loop: in the 2026-09-23 live run
+# `e_pipeline_e5_20260923T095557Z`, 3 of Lane A's 8 attribution runs died with
+# `UsageLimitExceeded: request_limit of 8`, leaving findings unresolved with no
+# owner — exactly the state that starves the Builder. Still bounded: the global
+# lane budget stays the real ceiling (`_call_limits` clamps to it).
+E5_ATTRIBUTION_MAX_REQUESTS = 8  # floor only; the batch envelope is derived below
 E5_RUNS_E4_BASELINE = "e_pipeline_e4_20260920T134946Z"  # E4 best render baseline
 E5_SHARED_DRAFT_SOURCE = "e_pipeline_e4_20260920T134946Z/structure_draft.json"
 
@@ -117,8 +130,17 @@ E5_REVIEWER_INSTRUCTIONS = (
     "delivery. You never modify anything. Every finding binds the exact\n"
     "target and render version strings you were given and carries one typed\n"
     "measurement request with `intent` set.\n"
-    "Target person facts are diagnostic evidence only; they never become\n"
-    "candidate content."
+    "Target person facts and values are diagnostic evidence only; they never\n"
+    "become candidate content. Compare layout, typography, spacing, alignment,\n"
+    "rules, colors, and structure only where the candidate inventory carries\n"
+    "the same content shape. If the target has a content shape absent from the\n"
+    "candidate inventory, do not request that it be copied or recreated. A\n"
+    "page-local review may say that a section appears on a different page, but\n"
+    "must never claim the whole document lacks a section from one page image.\n"
+    "Use metric='role_gap' only for entry/job/role spacing. Use\n"
+    "metric='header_vertical_rule_geometry' only for a clearly visible vertical\n"
+    "rule beside or through the name/header region. Other dimensions are valid\n"
+    "warnings but are not deterministically measurable in this experiment."
 )
 
 E5_LANE_A_BUILDER_INSTRUCTIONS = (
@@ -149,14 +171,24 @@ E5_LANE_B_BUILDER_INSTRUCTIONS = (
     "CATEGORY only (no token strings, no free-text fields).\n"
     "There are NO free-text metadata fields (no rationale, no region lists,\n"
     "no pagination prose, no expected measurements, no slot descriptions).\n"
-    "evidence_refs must be LEFT EMPTY unless the shell gave you specific\n"
-    "evidence ids to cite; every cited id must be one the shell issued.\n"
+    "For this E5 lane evidence_refs must be the empty list []. The shell\n"
+    "already persists the evidence package; do not copy its ids here.\n"
     "Slot vocabulary (exactly these tokens):\n"
     "{{candidate:name}}, {{candidate:contact}}, and repeating regions\n"
     "{{each:summary}}/{{each:experience}}/{{each:education}}/{{each:skills}}/"
     "{{each:languages}}/{{each:certifications}}/{{each:additional}} closed\n"
     "with {{/each}}; inside a region use {{item}}, {{item_head}},\n"
     "{{item_detail}}, {{item_meta}}, {{item_bullets}}, {{item_text}}.\n"
+    "`{{item_bullets}}` already expands to <li> nodes whose source text owns\n"
+    "its bullet glyph. Put it directly inside a <ul>, set list-style:none,\n"
+    "and NEVER add a native, background, image, or pseudo-element marker.\n"
+    "For header rules, preserve the measured target topology: separate rule\n"
+    "segments above and below a name must keep the name-height gap. NEVER\n"
+    "merge them into a continuous or page-spanning rail.\n"
+    "When `target_body_text_color_context` is present, use its measured\n"
+    "dominant_color_hex for ordinary body copy only. Do not use it to split\n"
+    "or reinterpret the atomic candidate:name slot, or to overwrite distinct\n"
+    "heading, name, or rule styles.\n"
     "Missing optional fields must not leave broken visual artifacts (empty\n"
     "regions render nothing). Long content must not disappear.\n"
     "The shell REJECTS: JavaScript, event handlers, iframe/object/embed/\n"
@@ -175,8 +207,10 @@ E5_LANE_B_BUILDER_INSTRUCTIONS = (
     "Base the design on the target page images and the structure draft you\n"
     "are given. On repair calls, `current_representation` is the exact\n"
     "validated template that produced the repair-base render; modify it and\n"
-    "return one complete replacement template. It is null only for the\n"
-    "initial build."
+    "return one complete replacement template. Obey any `region_repair_context`:\n"
+    "change only its allowed_changes, and preserve every listed neighboring\n"
+    "property unless a corresponding measurement/evidence authorizes that\n"
+    "change. It is null only for the initial build."
 )
 
 E5_ATTRIBUTION_INSTRUCTIONS = (
@@ -220,6 +254,32 @@ E5_ATTRIBUTION_INSTRUCTIONS = (
 # capability gap and may never be disguised as a candidate-binding defect.
 E5_REPRESENTATION_CEILING_GATES = ("content_shapes_match_evidence",)
 
+# What each lane's Builder can actually CHANGE. This is the ownership EVIDENCE:
+# a confirmed defect may only be attributed to a repair surface that exists, so
+# the attribution role must be told which one it is judging. Lane A's Builder
+# authors section-level structure primitives interpreted by a FIXED renderer;
+# Lane B's authors the whole constrained template.
+E5_LANE_REPAIR_SURFACE: dict[str, str] = {
+    "a": (
+        "Lane A — provider-neutral structured layout interpreted by a FIXED\n"
+        "renderer. The Builder can change ONLY these per-section primitives:\n"
+        "heading_in_rail, rail_label_width_pt, rail_label_align,\n"
+        "entry_meta_placement. It can NOT change the header block, the contact\n"
+        "rows, section rule geometry, or anything the fixed renderer does not\n"
+        "consume. A plan-level structural difference that those primitives CAN\n"
+        "express is a template_compilation defect owned by this Builder; a\n"
+        "difference they cannot express is the shell's representation\n"
+        "capability gap, owned by nobody the loop can call."
+    ),
+    "b": (
+        "Lane B — constrained authored HTML/CSS template with typed candidate\n"
+        "slots. The Builder owns the whole template, so which candidate leaves\n"
+        "render (and how) is template_compilation owned by this Builder;\n"
+        "no_target_candidate_facts failures are never builder-ownable. Template\n"
+        "safety is enforced before rendering by the authored-template validator."
+    ),
+}
+
 
 class E5LedgerEntry(EvidenceModel):
     """One persistent defect-ledger record (Phase 0): deduplicated by the
@@ -247,6 +307,233 @@ def _observation_class(observation: str) -> str:
     words (NOT verbatim OCR text — Phase 0)."""
     words = re.findall(r"[a-z]+", observation.casefold())
     return " ".join(words[:8])
+
+
+def _candidate_review_scope(candidate: Any, labels: list[PresentationLabel]) -> dict[str, Any]:
+    """Content-free Reviewer boundary: which presentation regions have
+    candidate content, and which target-only section labels must not be
+    requested as candidate sections."""
+    available = {section.source for section in candidate.sections}
+    if any(leaf.kind == "header_field" for leaf in candidate.leaves):
+        available.add("contact")
+    aliases = {
+        "contact": "contact", "contact info": "contact",
+        "about me": "summary", "profile": "summary", "summary": "summary",
+        "experience": "work_experience", "work experience": "work_experience",
+        "education": "education", "skills": "skills", "languages": "languages",
+        "certifications": "certifications",
+    }
+    candidate_headings = {
+        re.sub(r"[^a-z0-9]+", " ", (section.heading or "").casefold()).strip()
+        for section in candidate.sections if section.heading
+    }
+    unavailable = []
+    for label in labels:
+        if label.kind != "section_heading":
+            continue
+        normalized = re.sub(r"[^a-z0-9]+", " ", label.text.casefold()).strip()
+        role = aliases.get(normalized)
+        if normalized not in candidate_headings and (role is None or role not in available):
+            unavailable.append(label.text)
+    leaf_kinds_by_role: dict[str, set[str]] = {}
+    for leaf in candidate.leaves:
+        role = "contact" if leaf.kind == "header_field" else leaf.source
+        if role:
+            leaf_kinds_by_role.setdefault(role, set()).add(leaf.kind)
+    content_kinds_by_role: dict[str, set[str]] = {}
+    for section in candidate.sections:
+        content_kinds_by_role.setdefault(section.source, set()).add(section.content_kind)
+    return {
+        "available_section_roles": sorted(available),
+        "content_kinds_by_role": {
+            role: sorted(kinds) for role, kinds in sorted(content_kinds_by_role.items())
+        },
+        "available_leaf_kinds_by_role": {
+            role: sorted(kinds) for role, kinds in sorted(leaf_kinds_by_role.items())
+        },
+        "has_language_proficiency_entries": any(
+            leaf.kind == "language" for leaf in candidate.leaves
+        ),
+        "skills_only_skill_group": set(leaf_kinds_by_role.get("skills", ())) == {"skill_group"},
+        "target_labels_without_candidate_content": unavailable,
+    }
+
+
+def _slot_shape_contract() -> dict[str, Any]:
+    """Content-free description of the authored shell's existing bindings."""
+    return {
+        "candidate:name": {"type": "string", "atomic": True},
+        "candidate:contact": {
+            "type": "string", "shape": "flat_shell_joined_string",
+            "cannot_reconstruct": "label_value_table",
+        },
+        "experience": {
+            "item_head": "work_entry", "item_detail": "entry_detail",
+            "item_meta": "entry_meta",
+            "item_bullets": {
+                "leaf_kind": "work_bullet", "dom": "shell_generated_li",
+                "text_owns_bullet_glyph": True,
+            },
+        },
+        "education": {
+            "item_head": "education_entry", "item_detail": "entry_detail",
+            "item_meta": "entry_meta",
+        },
+        "skills": {
+            "item": "skill_group", "item_head": "skill_group",
+            "item_text": "skill_children_only",
+        },
+    }
+
+
+def _length_band(length: int) -> str:
+    return "short" if length < 80 else "medium" if length < 240 else "long"
+
+
+def _candidate_layout_footprint(candidate: Any) -> dict[str, Any]:
+    """Counts and lengths only; never candidate values."""
+    by_id = {leaf.leaf_id: leaf for leaf in candidate.leaves}
+    result: dict[str, Any] = {}
+    for section in candidate.sections:
+        section_leaves = [by_id[leaf_id] for leaf_id in section.leaf_ids]
+        roots = [leaf for leaf in section_leaves if leaf.parent_leaf_id is None]
+        items = []
+        for root in roots:
+            children = [leaf for leaf in section_leaves if leaf.parent_leaf_id == root.leaf_id]
+            length = sum(len(leaf.text or "") for leaf in [root, *children])
+            items.append({
+                "child_count": len(children),
+                "bullet_count": sum(child.kind == "work_bullet" for child in children),
+                "character_length": length,
+                "length_band": _length_band(length),
+            })
+        total = sum(item["character_length"] for item in items)
+        result[section.source] = {
+            "entry_count": len(roots), "items": items,
+            "total_character_length": total,
+            "may_cross_page": total > 1800 or len(roots) > 4,
+        }
+    return result
+
+
+def _candidate_compatible_labels(
+    labels: list[PresentationLabel], review_scope: dict[str, Any]
+) -> dict[str, str]:
+    unavailable = set(review_scope.get("target_labels_without_candidate_content", []))
+    aliases = {
+        "contact info": "contact", "about me": "summary", "profile": "summary",
+        "summary": "summary", "experience": "work_experience",
+        "work experience": "work_experience", "education": "education",
+        "skills": "skills", "languages": "languages",
+        "certifications": "certifications",
+    }
+    return {
+        label.text: (
+            "omit_entire_section" if label.text in unavailable
+            else aliases.get(label.text.casefold(), "candidate_compatible")
+        )
+        for label in labels if label.kind == "section_heading"
+    }
+
+
+def _candidate_boundary_filter_reason(
+    finding: DefectFinding, review_scope: dict[str, Any]
+) -> str | None:
+    text = re.sub(
+        r"[^a-z0-9]+", " ",
+        f"{finding.observation} {finding.requested_measurement.intent or ''}".casefold(),
+    ).strip()
+    missing = any(word in text for word in ("missing", "absent", "omitted", "not present", "lacks"))
+    region = re.sub(r"[^a-z0-9]+", " ", finding.region.casefold()).strip()
+    unavailable = [
+        re.sub(r"[^a-z0-9]+", " ", label.casefold()).strip()
+        for label in review_scope["target_labels_without_candidate_content"]
+    ]
+    if any(
+        label and label in text and (
+            label in region
+            or missing
+            or any(word in text for word in ("copy", "replicate", "populate"))
+        )
+        for label in unavailable
+    ):
+        return "target_section_without_candidate_content"
+
+    if any(term in text for term in ("first name", "last name", "split name", "two-line name")):
+        return "representation_limit:atomic_candidate_name"
+    if "contact" in text and any(
+        term in text for term in ("label value", "label/value", "contact table", "typed row")
+    ):
+        return "representation_limit:flat_candidate_contact"
+
+    dimension = finding.suspected_dimension.casefold()
+    if (
+        not review_scope.get("has_language_proficiency_entries")
+        and any(term in text for term in (
+            "language proficiency", "proficiency dot", "language entr", "languages sub block",
+            "dot rating", "dot glyph", "bulleted language", "klingon", "elvish",
+        ))
+    ):
+        return "candidate_content_shape_absent:language_proficiency"
+
+    # A page image proves page placement, not global document absence. Keep a
+    # page/pagination residual, but reject a global missing-section assertion.
+    available_names = [
+        *review_scope.get("available_section_roles", []),
+        *review_scope.get("available_candidate_headings", []),
+    ]
+    available_names = [
+        re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip().replace("_", " ")
+        for value in available_names
+    ]
+    page_local = any(term in text for term in (
+        "page ", "pagination", "page break", "flow", "moved", "appears later",
+        "position on this page", "current page",
+    ))
+    if missing and "section" in text and not page_local and any(
+        name and name in text for name in available_names
+    ):
+        return "page_local_global_missing_section_assertion"
+    if (
+        any(word in dimension for word in ("completeness", "content_presence", "facts"))
+        and missing
+    ):
+        return "target_person_content_presence"
+    if (
+        any(term in text for term in ("target person", "target candidate", "target s"))
+        and missing
+        and any(term in text for term in (
+            " fact", " value", " name", " language", " proficiency", " employer",
+            " school", " date", " contact", " text", " wording", " detail", " entr",
+        ))
+    ):
+        return "target_person_fact_or_value"
+    return None
+
+
+def _candidate_aware_findings(
+    findings: list[DefectFinding], review_scope: dict[str, Any]
+) -> list[DefectFinding]:
+    """Keep presentation residuals; remove candidate-boundary violations."""
+    return [
+        finding for finding in findings
+        if _candidate_boundary_filter_reason(finding, review_scope) is None
+    ]
+
+
+def _residual_type(finding: DefectFinding) -> str:
+    text = f"{finding.suspected_dimension} {finding.observation}".casefold()
+    for residual_type, words in (
+        ("spacing", ("gap", "spacing", "distance", "margin", "padding")),
+        ("alignment", ("align", "position", "anchor", "column")),
+        ("typography", ("font", "type", "weight", "size", "tracking", "leading")),
+        ("rule_or_shape", ("rule", "line", "border", "shape", "rail")),
+        ("color", ("color", "fill", "contrast")),
+        ("content_presence", ("missing", "absent", "omit", "content")),
+    ):
+        if any(word in text for word in words):
+            return residual_type
+    return "layout_other"
 
 
 def _ledger_key(finding: DefectFinding) -> str:
@@ -399,9 +686,25 @@ class E5LaneRecord(EvidenceModel):
     open_findings: list[str] = Field(default_factory=list)
     content_shape_probes_passed: bool = False
     pages_reviewed: list[int] = Field(default_factory=list)
-    terminal_state: Literal["ready_for_owner_review", "budget_exhausted", "operational_abort"] = (
-        "budget_exhausted"
-    )
+    # The lane's stop state. `budget_exhausted` is claimed ONLY when a
+    # configured ceiling was actually hit (model/tool requests, or the repair
+    # round budget); `stalled_no_new_action` is the distinct state for "the
+    # loop had nothing left to do" — every repairable action fingerprint was
+    # already executed. Before 2026-09-23 both were collapsed into
+    # `budget_exhausted`, so a stalled lane read as an exhausted one (live run
+    # `e_pipeline_e5_20260923T095557Z` Lane B stopped after 11 of 400 requests).
+    terminal_state: Literal[
+        "ready_for_owner_review",
+        "budget_exhausted",
+        "stalled_no_new_action",
+        "operational_abort",
+    ] = "budget_exhausted"
+    # WHICH ceiling or stall produced `terminal_state` (e.g.
+    # "repair_round_budget", "model_request_budget", "reviewer_budget",
+    # "attribution_budget", "builder_budget", "tool_call_budget",
+    # "stalled_no_new_action", "no_new_render_no_pending_work"). Empty for a
+    # lane that reached owner review.
+    terminal_reason: str = ""
     budget_state: dict[str, Any] = Field(default_factory=dict)
     summary: dict[str, Any] = Field(default_factory=dict)
 
@@ -629,6 +932,72 @@ def _presentation_label_listing(
     }
 
 
+def _candidate_compatible_draft(
+    draft: TargetStructureDraft, review_scope: dict[str, Any]
+) -> dict[str, Any]:
+    excluded = {
+        str(label).casefold()
+        for label in review_scope.get("target_labels_without_candidate_content", [])
+    }
+    def compatible(statement: str) -> bool:
+        text = statement.casefold()
+        if any(label in text for label in excluded):
+            return False
+        if review_scope.get("skills_only_skill_group") and any(
+            phrase in text for phrase in ("dot rating", "filled/hollow dot", "languages th")
+        ):
+            return False
+        if "contact info" in text and "table" in text and any(
+            word in text for word in ("label", " th ", " td ")
+        ):
+            return False
+        if "header block" in text and " above " in text:
+            return False
+        return True
+
+    structure = [
+        claim.model_dump(mode="json") for claim in draft.structure
+        if compatible(claim.statement)
+    ]
+    return {
+        "schema_version": draft.schema_version,
+        "target_id": draft.target_id,
+        "investigator": draft.investigator,
+        "structure": structure,
+        "unresolved": [],
+        "self_reported": draft.self_reported.model_dump(mode="json"),
+    }
+
+
+def _lane_b_repair_boundary(
+    finding: DefectFinding,
+    *,
+    candidate: Any,
+    missing_leaf_ids: list[str] | None = None,
+    body_color_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    missing = list(missing_leaf_ids or [])
+    by_id = {leaf.leaf_id: leaf for leaf in candidate.leaves}
+    kinds = sorted({by_id[leaf_id].kind for leaf_id in missing if leaf_id in by_id})
+    accounting = finding.suspected_dimension == "hard_gate_content"
+    return {
+        "selected_region": finding.region,
+        "affected_page": finding.page,
+        "allowed_changes": (
+            ["bind the specified missing leaves through the correct existing slot token"]
+            if accounting else [f"repair only {finding.region}:{finding.suspected_dimension}"]
+        ),
+        "preserve_unless_measured": [
+            "typography", "colors", "spacing", "header",
+            "unrelated_sections_and_layout",
+            {"ordinary_body_color": body_color_context} if body_color_context else {},
+        ],
+        "affected_leaf_kinds": kinds,
+        "missing_leaf_ids": missing,
+        "representation_limits": _slot_shape_contract(),
+    }
+
+
 def _e5_builder_evidence_package(
     *,
     draft: TargetStructureDraft,
@@ -646,6 +1015,13 @@ def _e5_builder_evidence_package(
     selected_attribution: AttributionRecord | None = None,
     action_fingerprint: str | None = None,
     presentation_labels: list[PresentationLabel] | None = None,
+    candidate_review_scope: dict[str, Any] | None = None,
+    candidate: Any | None = None,
+    initial_compact: bool = False,
+    candidate_compatible_labels: dict[str, str] | None = None,
+    body_color_context: dict[str, Any] | None = None,
+    missing_leaf_ids: list[str] | None = None,
+    compact: bool = False,
 ) -> dict[str, Any]:
     """One representation-neutral Builder evidence package.
 
@@ -656,26 +1032,13 @@ def _e5_builder_evidence_package(
     shell-owned catalog for both lanes: the only visible fixed text a template
     may carry, referenceable by `label_id` only.
     """
-    return {
+    package = {
         "schema_version": "e5-builder-evidence/2",
         "presentation_labels": [
             label.model_dump(mode="json") for label in presentation_labels or []
         ],
-        "structure_draft": draft.model_dump(mode="json"),
-        "underlying_evidence_summary": {
-            "page_size_pt": list(page_size),
-            "state_sections": [
-                {
-                    "node_id": node.node_id,
-                    "kind": node.kind,
-                    "sources": getattr(node.binding, "sources", None) if node.binding else None,
-                }
-                for node in state.nodes
-                if node.kind == "section"
-            ],
-            "sidebar_rules": derived.get("sidebar_rules"),
-            "sidebar_labels": derived.get("sidebar_labels"),
-        },
+        "candidate_review_scope": candidate_review_scope or {},
+        "slot_shape_contract": _slot_shape_contract(),
         "current_render_version": current_render_version,
         "findings": [finding.model_dump(mode="json") for finding in findings or []],
         "measurements": [result.model_dump(mode="json") for result in measurements or []],
@@ -698,6 +1061,93 @@ def _e5_builder_evidence_package(
         ),
         "action_fingerprint": action_fingerprint,
     }
+    if candidate is not None:
+        package["candidate_layout_footprint"] = _candidate_layout_footprint(candidate)
+    if candidate_compatible_labels is not None:
+        package["candidate_compatible_labels"] = candidate_compatible_labels
+    if body_color_context is not None:
+        package["target_body_text_color_context"] = body_color_context
+    if not compact:
+        package["structure_draft"] = (
+            _candidate_compatible_draft(draft, candidate_review_scope or {})
+            if initial_compact else draft.model_dump(mode="json")
+        )
+        package["underlying_evidence_summary"] = {
+            "page_size_pt": list(page_size),
+            "state_sections": [
+                {
+                    "node_id": node.node_id,
+                    "kind": node.kind,
+                    "sources": getattr(node.binding, "sources", None) if node.binding else None,
+                }
+                for node in state.nodes
+                if node.kind == "section"
+            ],
+            "sidebar_rules": derived.get("sidebar_rules"),
+            "sidebar_labels": derived.get("sidebar_labels"),
+        }
+    elif findings and findings[0].requested_measurement.metric == "header_vertical_rule_geometry":
+        header_claim = next(
+            (
+                claim for claim in draft.structure
+                if "header" in claim.statement.casefold()
+                and len(re.findall(r"(\d+(?:\.\d+)?)\s*pt[^.;]*?weight\s*(\d+)", claim.statement, re.I)) >= 2
+            ),
+            None,
+        )
+        typography = (
+            [
+                {"line": index, "font_size_pt": float(size), "font_weight": int(weight)}
+                for index, (size, weight) in enumerate(
+                    re.findall(
+                        r"(\d+(?:\.\d+)?)\s*pt[^.;]*?weight\s*(\d+)",
+                        header_claim.statement,
+                        re.I,
+                    )[:2],
+                    1,
+                )
+            ]
+            if header_claim else []
+        )
+        package["region_repair_context"] = {
+            "selected_region": "header_name",
+            "affected_page": findings[0].page,
+            "structure_claim": (
+                {
+                    "claim_id": header_claim.claim_id,
+                    "relation": header_claim.relation,
+                    "evidence_ids": [ref.evidence_id for ref in header_claim.evidence],
+                }
+                if header_claim else None
+            ),
+            "target_name_typography": typography,
+            "region_images": {
+                "target": "target_images",
+                "current_render": "current_render_images",
+                "scope": "page 1 top 25% original-resolution crop",
+            },
+            "allowed_changes": ["header_vertical_rule_dom_css"],
+            "preserve_unless_measured": [
+                "current_name_font_size",
+                "current_name_font_weight",
+                "current_name_color",
+                "current_name_letter_spacing",
+                "unrelated_sections_and_layout",
+                {"ordinary_body_color": body_color_context} if body_color_context else {},
+            ],
+            "affected_leaf_kinds": ["header_field"],
+            "representation_limits": {
+                "candidate:name": (
+                    "one atomic slot; do not simulate separate first/last-name typography"
+                )
+            },
+        }
+    elif compact and findings and candidate is not None:
+        package["region_repair_context"] = _lane_b_repair_boundary(
+            findings[0], candidate=candidate, missing_leaf_ids=missing_leaf_ids,
+            body_color_context=body_color_context,
+        )
+    return package
 
 
 def _e5_gate_classification(
@@ -705,15 +1155,43 @@ def _e5_gate_classification(
     gates: dict[str, Any],
     *,
     privacy_labels_symmetric: bool,
+    gate_details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Classify only what the implemented gates can establish."""
+    """Classify only what the implemented gates can establish.
+
+    ``gates`` is the version's BOOLEAN gate map; ``gate_details`` is that
+    version's recorded per-gate evidence (optional: without it the Lane A
+    classification falls back to "no per-property record", never to a claim).
+    """
     result: dict[str, Any] = {}
     if lane == "a" and not gates.get("content_shapes_match_evidence", True):
         result["representation_ceiling"] = "unverified"
-        result["reason"] = (
-            "content_shape_verification does not verify rail_heading, "
-            "rail_label_width_pt, rail_label_align, or rendered rail geometry"
+        # The reason must state what the shell's OWN gate record failed on.
+        # Before 2026-09-23 it asserted a rail-geometry gap the record never
+        # named: in live run `e_pipeline_e5_20260923T095557Z` the failing
+        # property was `section.04.entry_typography` ("measured entry
+        # title/meta/detail typography tiers not consumed by the renderer"),
+        # i.e. the classification contradicted its own evidence.
+        gaps = _e5_content_shape_capability_gaps(
+            (gate_details or {}).get("content_shapes_match_evidence") or {}
         )
+        if gaps:
+            result["reason"] = (
+                "content_shape_verification failed on this lane's declared "
+                "content shapes: the shell's own renderer does not consume "
+                + ", ".join(gaps)
+                + " (recorded capability gaps). No agent — Builder included — "
+                "can change a property the fixed renderer does not consume, so "
+                "this failure is ownerless by design: it is reported here and "
+                "never routed to a repair owner."
+            )
+        else:
+            result["reason"] = (
+                "no per-property record was supplied for the content-shape "
+                "failure, so the shell cannot claim an owning layer; the "
+                "historical ceiling note (rail_heading, rail_label_width_pt, "
+                "rail_label_align, rendered rail geometry) is not verified here"
+            )
     if lane == "b" and not gates.get("no_target_candidate_facts", True):
         result["privacy_failure"] = (
             "unresolved" if privacy_labels_symmetric else "gate_false_positive_or_boundary_unresolved"
@@ -726,14 +1204,47 @@ def _e5_hard_gate_record(
     render_version: str,
     gates: dict[str, bool],
     details: dict[str, Any],
+    *,
+    blocking_gates: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    """Version-bound gate summary plus the evidence needed to explain it."""
+    """Version-bound E5 gate summary.
+
+    E5 is an exploratory comparison. Candidate truth and privacy block owner
+    review; template safety is enforced before rendering. Other checks remain
+    visible as diagnostics. The optional argument preserves the legacy
+    all-blocking behavior for callers that do not opt into the E5 policy.
+    """
+    blocking = blocking_gates or tuple(gates)
+    blocking_failures = [name for name in blocking if gates.get(name) is not True]
+    diagnostics = details.get("diagnostics") or {}
     return {
         "render_version": render_version,
-        "passed": all(gates.values()),
+        "passed": not blocking_failures,
+        "blocking_gates": list(blocking),
+        "blocking_failures": blocking_failures,
+        "diagnostic_warnings": [
+            *(
+                name for name, passed in gates.items()
+                if not passed and name not in blocking
+            ),
+            *(
+                name for name, detail in diagnostics.items()
+                if detail.get("passed") is not True
+            ),
+        ],
         "gates": gates,
         "details": details,
     }
+
+
+def _e5_blocking_gates(lane: str) -> tuple[str, ...]:
+    """The experiment's minimal safety boundary; all other gates are warnings."""
+    del lane
+    return ("candidate_content_accounting", "no_target_candidate_facts")
+
+
+def _e5_blocking_gates_passed(lane: str, gates: dict[str, bool]) -> bool:
+    return all(gates.get(name) is True for name in _e5_blocking_gates(lane))
 
 
 def _e5_builder_candidate_record(
@@ -774,13 +1285,14 @@ def _e5_builder_candidate_record(
 E5_MAX_ROUND_ATTRIBUTION_FINDINGS = 3
 
 # A hard-gate failure on one of these is NEVER quarantinable: the candidate is
-# unsafe (target-person facts leaked into the output, authored-template safety
-# failed) or untrustworthy. Every other gate failure (content/PDF presence,
+# unsafe (target-person facts leaked into the output) or untrustworthy. Template
+# safety has already passed before a render exists. Every other gate failure
+# (content/PDF presence,
 # candidate-content accounting, pagination, blank pages, section order, the
 # declared Lane A representation ceiling) is a PRESENTATION defect that may keep
 # being repaired from the quarantined candidate — but a quarantined candidate is
 # never promoted, never best, and never the lane's owner-facing output.
-E5_NON_QUARANTINABLE_GATES = ("no_target_candidate_facts", "template_safety")
+E5_NON_QUARANTINABLE_GATES = ("no_target_candidate_facts",)
 
 
 def _e5_review_this_round(reviewed_render_fingerprints: set[str], pdf_sha256: str) -> bool:
@@ -792,42 +1304,107 @@ def _e5_review_this_round(reviewed_render_fingerprints: set[str], pdf_sha256: st
     return pdf_sha256 not in reviewed_render_fingerprints
 
 
+def _e5_content_shape_capability_gaps(details: dict[str, Any]) -> list[str]:
+    """The capability-gap property paths of ONE Lane A
+    `content_shapes_match_evidence` record.
+
+    This gate fails EXACTLY when a declared-shape property is not both measured
+    and consumed by the renderer: `c2_renderer.content_shape_verification`
+    computes `capability_gap = None if not required or (measured and consumed)`
+    and `consistent = all(capability_gap is None)`, with
+    `passed = all(row["consistent"])`. So Lane A's content-shape failure IS the
+    shell's representation capability gap: there is no second, repairable defect
+    hiding in the same record, and no agent (Builder included) can change a
+    property the fixed renderer does not consume. The walker therefore reports
+    the gaps only, and an unreadable record reports nothing (fail closed)."""
+    gaps: list[str] = []
+    for row in details.get("rows") or []:
+        if not isinstance(row, dict) or row.get("consistent"):
+            continue
+        section = str(row.get("section") or "")
+        for prop in row.get("properties") or []:
+            if not isinstance(prop, dict):
+                continue
+            if (
+                str(prop.get("capability_gap") or "").strip()
+                or prop.get("renderer_consumes") is not True
+            ):
+                gaps.append(f"{section}.{prop.get('property')}")
+    return gaps
+
+
+def _candidate_role_page(candidate: Any, role: str, current_pdf: Path) -> int:
+    """Locate a role from its existing rendered leaves/heading; no new metric."""
+    import pdfplumber
+
+    texts = [
+        leaf.text for leaf in candidate.leaves
+        if leaf.source == role and leaf.text
+    ]
+    texts.extend(
+        section.heading for section in candidate.sections
+        if section.source == role and section.heading
+    )
+    with pdfplumber.open(current_pdf) as document:
+        for page_number, page in enumerate(document.pages, 1):
+            page_text = re.sub(r"\s+", " ", page.extract_text() or "").casefold()
+            if any(re.sub(r"\s+", " ", text).casefold() in page_text for text in texts):
+                return page_number
+    return 1
+
+
 def _e5_gate_repair_items(
     lane: str,
     target_id: str,
     render_version: str,
     current_gates: dict[str, Any],
+    *,
+    candidate: Any | None = None,
+    current_pdf: Path | None = None,
 ) -> list[tuple[DefectFinding, MeasurementResult, MeasurementRequest, AttributionRecord]]:
-    """Deterministic repair inputs derived from EXISTING hard-gate evidence
-    (2026-09-21 owner work order: a candidate-accounting/content hard-gate
-    failure must not wait behind the visual attribution backlog).
+    """Deterministic repair input for exact Lane B slot-accounting failures.
 
-    Only failures whose recorded gate evidence identifies a BUILDER-owned
-    content defect are converted: Lane B's `content_gate` /
-    `candidate_content_accounting` missing-leaf sets (the authored template
-    decides which leaves render). The gate evidence is reused verbatim: the
-    existing `content_gate_missing_pdf/1` measurement channel semantics
-    (target baseline 0) and an explicit `AttributionRecord`
-    (template_compilation / confirmed / builder) — no second defect,
-    attribution, or state model. Privacy failures and root-cause-uncertain
-    gate failures (e.g. Lane A's declared content-shape representation
-    ceiling) are NEVER converted and the gate stays red."""
+    PDF presence is observational in this route-finding experiment because
+    letter spacing and multi-column reading order make flattened-text matching
+    unreliable. Lane A is NEVER converted: its
+    `content_shapes_match_evidence` failure IS a recorded capability gap (see
+    `_e5_content_shape_capability_gaps`), so a builder input would hand the
+    Builder a property the fixed renderer does not consume — an unreachable
+    repair. That ownerless-by-design state is reported through
+    `_e5_gate_classification`, never fabricated into an owning layer. The Lane
+    B accounting evidence is reused verbatim with an explicit
+    `AttributionRecord` (template_compilation / confirmed / builder) — no second
+    defect, attribution, or state model. Privacy failures and observational
+    quality warnings are never converted automatically."""
     if lane != "b":
         return []
     items: list[tuple[DefectFinding, MeasurementResult, MeasurementRequest, AttributionRecord]] = []
-    for gate_name, missing_key in (
-        ("content_gate", "missing_pdf_leaves"),
-        ("candidate_content_accounting", "missing_leaves"),
-    ):
+    # PDF text presence is deliberately observational in E5: letter spacing
+    # and multi-column reading order can split text that is visibly present.
+    # Only the exact authored-slot accounting may create an automatic repair.
+    for gate_name, missing_key in (("candidate_content_accounting", "missing_leaves"),):
         details = current_gates.get(gate_name) or {}
         missing = [str(item) for item in (details.get(missing_key) or [])]
         if details.get("passed") is not False or not missing:
             continue
+        leaf_by_id = {
+            leaf.leaf_id: leaf for leaf in getattr(candidate, "leaves", [])
+        }
+        roles = {
+            leaf_by_id[leaf_id].source
+            for leaf_id in missing if leaf_id in leaf_by_id and leaf_by_id[leaf_id].source
+        }
+        region = next(iter(roles)) if len(roles) == 1 else gate_name
+        affected_page = (
+            _candidate_role_page(candidate, region, current_pdf)
+            if candidate is not None and current_pdf is not None and len(roles) == 1
+            else 1
+        )
         request_id = f"gate-{gate_name}-{render_version}"
         request = MeasurementRequest(
             request_id=request_id,
             metric="role_gap",
-            page=1,
+            page=affected_page,
             intent=(
                 f"verbatim presence of the candidate leaves recorded missing by "
                 f"the {gate_name} gate in the final PDF text"
@@ -837,8 +1414,8 @@ def _e5_gate_repair_items(
             finding_id=f"gate-{gate_name}-{render_version}",
             target_version=target_id,
             render_version=render_version,
-            page=1,
-            region=gate_name,
+            page=affected_page,
+            region=region,
             observation=(
                 f"{gate_name} failed on this render: {len(missing)} candidate "
                 f"leaves missing from the final PDF ({', '.join(missing[:6])})"
@@ -855,7 +1432,7 @@ def _e5_gate_repair_items(
             target_value_pt=0.0,
             current_value_pt=float(len(missing)),
             delta_pt=float(len(missing)),
-            method="content_gate_missing_pdf/1",
+            method="candidate_content_accounting_missing/1",
             warnings=[
                 "repair input derived from the shell's OWN gate record, not from "
                 "a reviewer claim; the same gate is re-measured on any candidate",
@@ -1062,6 +1639,31 @@ def _e5_default_attribution(
     )
 
 
+def _e5_lane_b_attribution(
+    finding: DefectFinding,
+    result: MeasurementResult,
+    request: MeasurementRequest,
+) -> AttributionRecord:
+    """Lane B owns its whole presentation template; a confirmed visual
+    mismatch can go straight back to its Builder."""
+    if (
+        result.status == "confirmed"
+        and result.delta_pt is not None
+        and abs(result.delta_pt) > E2_IMPROVEMENT_TOLERANCE_PT
+    ):
+        return AttributionRecord(
+            finding_id=finding.finding_id,
+            render_version=finding.render_version,
+            measurement_request_id=request.request_id,
+            attribution="template_compilation",
+            hypothesis_status="confirmed",
+            repair_owner="builder",
+            evidence=[result.request_id],
+            reason="Lane B's Builder owns the complete authored presentation template.",
+        )
+    return _e5_default_attribution(finding, result, request)
+
+
 class LiveAttributionBindingError(ValueError):
     """The live attribution batch did not return exactly ONE hypothesis per
     batch finding id. The shell fails closed: no positional fallback, no
@@ -1184,6 +1786,21 @@ def _bind_role_gap_anchors(
     within the region span. A Reviewer OCR mismatch never becomes an
     automatic measurement_failure: an unresolvable intent returns
     `evidence_missing` for re-verification, with the binding method recorded."""
+    intent = (request.intent or "").casefold()
+    if not (
+        any(word in intent for word in ("gap", "distance", "spacing"))
+        and any(word in intent for word in ("entry", "role", "job"))
+        and not any(word in intent for word in (
+            "contact", "typography", "font", "vertical rule",
+        ))
+    ):
+        return MeasurementResult(
+            request_id=request.request_id,
+            status="not_measurable",
+            reason="the current deterministic metric measures entry-head spacing only",
+            method="role_gap_binding/1",
+            warnings=["a different visual dimension requires its own deterministic metric"],
+        )
     render_rows = _pdf_line_rows(current_pdf, request.page)
 
     def _norm_row(text: str) -> str:
@@ -1244,6 +1861,264 @@ def _bind_role_gap_anchors(
             "render_from_text": render_anchors[0],
             "render_to_text": render_anchors[1],
         }
+    )
+
+
+def _header_vertical_rule_evidence(
+    pdf: Path, page_number: int, *, name_text: str | None = None
+) -> dict[str, Any] | None:
+    """Measure header rules against the exact candidate-name row when known.
+
+    Target PDFs have no candidate lineage, so their bounded fallback is the
+    single tallest header line. This stays one metric, not a visual framework.
+    """
+    import pdfplumber
+
+    page_width, page_height = _page_pt_size(pdf, page_number)
+    lines = [
+        line for line in _pdf_lines_and_marks(pdf)[0]
+        if line["page"] == page_number and line["top"] < page_height * 0.25
+    ]
+    if not lines:
+        return None
+    name_lines: list[dict[str, Any]] = []
+    exact_name_match = False
+    if name_text:
+        expected = re.sub(r"\s+", " ", name_text).strip().casefold()
+        for start in range(len(lines)):
+            selected: list[dict[str, Any]] = []
+            for line in lines[start:start + 3]:
+                selected.append(line)
+                observed = re.sub(
+                    r"\s+", " ", " ".join(item["text"] for item in selected)
+                ).strip().casefold()
+                if observed == expected:
+                    name_lines = selected
+                    exact_name_match = True
+                    break
+                if not expected.startswith(observed + " "):
+                    break
+            if name_lines:
+                break
+    if not name_lines:
+        max_height = max(float(line["bottom"]) - float(line["top"]) for line in lines)
+        name_lines = [
+            line for line in lines
+            if math.isclose(
+                float(line["bottom"]) - float(line["top"]),
+                max_height,
+                abs_tol=0.25,
+            )
+        ]
+    name = {
+        "x0": min(float(line["x0"]) for line in name_lines),
+        "x1": max(float(line["x1"]) for line in name_lines),
+        "top": min(float(line["top"]) for line in name_lines),
+        "bottom": max(float(line["bottom"]) for line in name_lines),
+    }
+    header_top = max(0.0, name["top"] - 80.0)
+    header_bottom = min(page_height, name["bottom"] + 80.0)
+    rules: list[dict[str, Any]] = []
+    with pdfplumber.open(pdf) as document:
+        page = document.pages[page_number - 1]
+        objects = [*page.rects, *page.curves, *(getattr(page, "lines", None) or [])]
+        seen: set[tuple[float, float, float]] = set()
+        for mark in objects:
+            x0, x1 = float(mark["x0"]), float(mark["x1"])
+            top, bottom = float(mark["top"]), float(mark["bottom"])
+            width, height = abs(x1 - x0), abs(bottom - top)
+            center_x = (x0 + x1) / 2
+            if width > 4.0 or height < 8.0 or bottom < header_top or top > header_bottom:
+                continue
+            horizontal_gap = max(name["x0"] - x1, x0 - name["x1"], 0.0)
+            if horizontal_gap > 80.0 or center_x < 12.0 or center_x > page_width - 12.0:
+                continue
+            key = (round(center_x, 2), round(top, 2), round(bottom, 2))
+            if key in seen:
+                continue
+            seen.add(key)
+            dx = horizontal_gap
+            dy = max(name["top"] - bottom, top - name["bottom"], 0.0)
+            overlap = max(0.0, min(bottom, name["bottom"]) - max(top, name["top"]))
+            rules.append({
+                "x": round(center_x, 3),
+                "top": round(top, 3),
+                "bottom": round(bottom, 3),
+                "height": round(height, 3),
+                "relative_x_to_name_left": round(center_x - name["x0"], 3),
+                "relative_top_to_name_top": round(top - name["top"], 3),
+                "relative_bottom_to_name_top": round(bottom - name["top"], 3),
+                "nearest_distance_to_name_bbox": round(math.hypot(dx, dy), 3),
+                "name_vertical_overlap_pt": round(overlap, 3),
+            })
+    rules.sort(key=lambda rule: (rule["relative_top_to_name_top"], rule["relative_x_to_name_left"]))
+    return {
+        "page": page_number,
+        "name_anchor_source": (
+            "candidate_name_text" if exact_name_match else "tallest_header_line"
+        ),
+        "name_region": {key: round(value, 3) for key, value in name.items()},
+        "vertical_rule_count": len(rules),
+        "vertical_rules": rules,
+    }
+
+
+def _header_vertical_rule_target_context(pdf: Path) -> dict[str, Any] | None:
+    """Small Builder context for the already-supported header-rule metric."""
+    evidence = _header_vertical_rule_evidence(pdf, 1)
+    if evidence is None:
+        return None
+    rules = evidence["vertical_rules"]
+    return {
+        "scope": "header_name",
+        "target_final_pdf_evidence": evidence,
+        "preserve_separate_name_gap": (
+            len(rules) == 2
+            and all(rule["name_vertical_overlap_pt"] == 0 for rule in rules)
+        ),
+        "forbidden_interpretation": "continuous_or_page_spanning_vertical_rail",
+    }
+
+
+def _target_body_text_color_context(pdf: Path) -> dict[str, Any] | None:
+    """Measured dominant text fill by visible-character volume."""
+    import pdfplumber
+
+    colors: Counter[tuple[float, float, float]] = Counter()
+    with pdfplumber.open(pdf) as document:
+        for page in document.pages:
+            for char in page.chars:
+                color = char.get("non_stroking_color")
+                if not str(char.get("text") or "").strip() or not isinstance(color, (list, tuple)) or len(color) != 3:
+                    continue
+                rgb = tuple(round(float(channel), 4) for channel in color)
+                if all(0.0 <= channel <= 1.0 for channel in rgb):
+                    colors[rgb] += 1
+    if not colors:
+        return None
+    rgb, count = colors.most_common(1)[0]
+    return {
+        "scope": "ordinary_body_copy",
+        "source": "target_final_pdf_character_fill",
+        "selection": "dominant_non_whitespace_character_color",
+        "dominant_color_rgb": list(rgb),
+        "dominant_color_hex": "#" + "".join(f"{round(channel * 255):02x}" for channel in rgb),
+        "supporting_character_count": count,
+        "excluded_roles": ["header_name", "section_labels", "rules"],
+    }
+
+
+def _measure_header_vertical_rule_geometry(
+    request: MeasurementRequest,
+    *,
+    target_pdf: Path,
+    current_pdf: Path,
+    current_name_text: str | None = None,
+) -> MeasurementResult:
+    """One transparent scalar error over the complete detected rule sets.
+
+    Count and name-overlap penalties prevent an extra retained rule from being
+    ignored; raw geometry remains in evidence for owner inspection.
+    """
+    intent = (request.intent or "").casefold()
+    if not (
+        any(word in intent for word in ("header", "name"))
+        and "vertical" in intent
+        and any(word in intent for word in ("rule", "line", "bar"))
+    ):
+        return MeasurementResult(
+            request_id=request.request_id,
+            status="not_measurable",
+            reason="header_vertical_rule_geometry requires an explicit header/name vertical-rule intent",
+            method="header_vertical_rule_geometry/1",
+        )
+    target = _header_vertical_rule_evidence(target_pdf, request.page)
+    current = _header_vertical_rule_evidence(
+        current_pdf, request.page, name_text=current_name_text
+    )
+    if target is None or current is None:
+        return MeasurementResult(
+            request_id=request.request_id,
+            status="evidence_missing",
+            reason="the name/header region could not be located in one of the final PDFs",
+            method="header_vertical_rule_geometry/1",
+        )
+    target_rules = target["vertical_rules"]
+    current_rules = current["vertical_rules"]
+    if not target_rules or not current_rules:
+        return MeasurementResult(
+            request_id=request.request_id,
+            status="evidence_missing",
+            target_evidence=[target],
+            current_evidence=[current],
+            reason="a header vertical-rule set is empty; deletion is not automatic improvement",
+            method="header_vertical_rule_geometry/1",
+        )
+    paired_error = sum(
+        abs(current_rule["relative_x_to_name_left"] - target_rule["relative_x_to_name_left"])
+        + abs(current_rule["relative_top_to_name_top"] - target_rule["relative_top_to_name_top"])
+        + abs(current_rule["relative_bottom_to_name_top"] - target_rule["relative_bottom_to_name_top"])
+        for target_rule, current_rule in zip(target_rules, current_rules)
+    )
+    target_overlap = sum(rule["name_vertical_overlap_pt"] > 0 for rule in target_rules)
+    current_overlap = sum(rule["name_vertical_overlap_pt"] > 0 for rule in current_rules)
+    error = (
+        100.0 * abs(len(current_rules) - len(target_rules))
+        + 100.0 * abs(current_overlap - target_overlap)
+        + paired_error
+    )
+    formula = (
+        "error_pt = 100*abs(rule_count-target_rule_count) + "
+        "100*abs(name_overlap_count-target_name_overlap_count) + "
+        "sum paired abs(relative_x, relative_top, relative_bottom) deltas; "
+        "all detected header vertical rules are included"
+    )
+    target["error_calculation"] = formula
+    current["error_calculation"] = formula
+    return MeasurementResult(
+        request_id=request.request_id,
+        status="confirmed",
+        target_value_pt=0.0,
+        current_value_pt=round(error, 3),
+        delta_pt=round(error, 3),
+        target_evidence=[target],
+        current_evidence=[current],
+        method="header_vertical_rule_geometry/1",
+        warnings=["coordinates are page-local pt; geometry is relative to the detected name region"],
+    )
+
+
+def _measurement_improvement(
+    before: MeasurementResult, after: MeasurementResult
+) -> tuple[bool, str]:
+    if after.status != "confirmed":
+        return False, f"identical re-measurement was {after.status}"
+    if any(value is None for value in (
+        before.current_value_pt, before.target_value_pt,
+        after.current_value_pt, after.target_value_pt,
+    )):
+        return False, "identical re-measurement left scalar evidence missing"
+    if before.method == after.method == "header_vertical_rule_geometry/1":
+        before_rules = (before.current_evidence[0].get("vertical_rules", []) if before.current_evidence else [])
+        after_rules = (after.current_evidence[0].get("vertical_rules", []) if after.current_evidence else [])
+        if len(after_rules) > len(before_rules):
+            retained_crossing_rule = any(
+                old.get("name_vertical_overlap_pt", 0) > 0
+                and any(
+                    new.get("name_vertical_overlap_pt", 0) > 0
+                    and abs(new.get("height", 0) - old.get("height", 0)) <= 2.0
+                    for new in after_rules
+                )
+                for old in before_rules
+            )
+            if retained_crossing_rule:
+                return False, "added a vertical rule while retaining the original long name-crossing rule"
+    improved = abs(after.current_value_pt - after.target_value_pt) < abs(
+        before.current_value_pt - before.target_value_pt
+    )
+    return improved, (
+        "identical deterministic error decreased" if improved
+        else "identical deterministic error did not decrease"
     )
 
 
@@ -1383,8 +2258,26 @@ def _scripted_lane_b_template(base: AuthoredTemplateCandidate, finding: DefectFi
     return base.model_copy(update={"template_id": base.template_id + "-r", "css": css})
 
 
+def _header_crop_from_overview_source(overview: Path, output: Path) -> Path:
+    """Crop the header from the original 2x page PNG behind an overview."""
+    from PIL import Image
+
+    source_stem = overview.stem.split("_overview_", 1)[-1]
+    source = overview.with_name(f"{source_stem}.png")
+    if not source.exists():
+        raise FileNotFoundError(f"full-resolution page behind overview is missing: {source}")
+    with Image.open(source) as image:
+        image.crop((0, 0, image.width, round(image.height * 0.25))).save(output)
+    return output
+
+
 def _review_scope_payload(
-    round_no: int, changed_regions: list[str], findings: list["DefectFinding"]
+    round_no: int,
+    changed_regions: list[str],
+    findings: list["DefectFinding"],
+    *,
+    ledger_statuses: dict[str, str] | None = None,
+    changed_pages: list[int] | None = None,
 ) -> dict[str, Any]:
     """Phase 0 review scope (E5 work order): round 1 reviews the whole
     document; later rounds focus on changed regions, dependent regions, and
@@ -1394,9 +2287,19 @@ def _review_scope_payload(
         "round": round_no,
         "whole_document": round_no == 1,
         "changed_regions": list(changed_regions),
+        "affected_pages": list(changed_pages or []),
         "open_findings": [
-            {"region": finding.region, "dimension": finding.suspected_dimension}
+            {
+                "finding_id": finding.finding_id,
+                "page": finding.page,
+                "region": finding.region,
+                "suspected_dimension": finding.suspected_dimension,
+                "observation": finding.observation[:240],
+                "status": (ledger_statuses or {}).get(finding.finding_id, "open"),
+            }
             for finding in findings
+            if (ledger_statuses or {}).get(finding.finding_id, "open")
+            not in {"resolved", "repaired"}
         ],
         "instruction": (
             "Round 1: whole-document review. Later rounds: focus on the "
@@ -1405,6 +2308,119 @@ def _review_scope_payload(
             "NOT regenerate the entire defect list."
         ),
     }
+
+
+def _e5_region_catalog(state: Any, derived: dict[str, Any]) -> list[dict[str, Any]]:
+    label_pages = {
+        str(item.get("text") or "").casefold(): int(item["page"])
+        for item in derived.get("sidebar_labels") or [] if item.get("page")
+    }
+    nodes = {node.node_id: node for node in state.nodes}
+
+    def section_for(node: Any) -> Any | None:
+        current = node
+        while current is not None and current.kind != "section":
+            current = nodes.get(current.parent_id)
+        return current
+
+    def page_for(node: Any, section: Any | None) -> int | None:
+        if node.kind == "header_row":
+            return 1
+        labels = [
+            child.label for child in state.nodes
+            if child.kind == "heading"
+            and child.parent_id == getattr(section, "node_id", None)
+            and child.label
+        ]
+        return next((label_pages[label.casefold()] for label in labels if label.casefold() in label_pages), None)
+
+    catalog = []
+    for node in state.nodes:
+        section = section_for(node)
+        sources = list(getattr(getattr(section, "binding", None), "sources", []) or [])
+        catalog.append({
+            "region_id": node.node_id,
+            "kind": node.kind,
+            "semantic_role": sources[0] if len(sources) == 1 else ("/".join(sources) or node.kind),
+            "source": sources,
+            "page": page_for(node, section),
+        })
+    return catalog
+
+
+def _reviewer_presentation_facts(
+    target_pdf: Path, current_pdf: Path, derived: dict[str, Any]
+) -> dict[str, Any]:
+    labels = derived.get("sidebar_labels") or []
+    right_edges = [round(float(item["x1"]), 3) for item in labels if item.get("x1") is not None]
+    return {
+        "header_vertical_rule_target_context": _header_vertical_rule_target_context(target_pdf),
+        "sidebar_labels": {
+            "alignment": "right",
+            "common_right_edge_pt": round(sum(right_edges) / len(right_edges), 3) if right_edges else None,
+            "max_right_edge_spread_pt": round(max(right_edges) - min(right_edges), 3) if right_edges else None,
+        },
+        "target_ordinary_body_color": _target_body_text_color_context(target_pdf),
+        "current_render_ordinary_body_color": _target_body_text_color_context(current_pdf),
+    }
+
+
+def _e5_reviewer_message(
+    *,
+    target_version: str,
+    render_version: str,
+    page: int,
+    region_catalog: list[dict[str, Any]],
+    review_scope: dict[str, Any],
+    candidate_review_scope: dict[str, Any],
+    lane: str,
+    deterministic_presentation_facts: dict[str, Any],
+) -> str:
+    context = {
+        "target_version": target_version,
+        "render_version": render_version,
+        "page": page,
+        "region_catalog": region_catalog,
+        "review_scope": review_scope,
+        "candidate_review_scope": candidate_review_scope,
+        "representation_capabilities": E5_LANE_REPAIR_SURFACE[lane],
+        "deterministic_presentation_facts": deterministic_presentation_facts,
+    }
+    return (
+        "Compare the TARGET and RENDER images for exactly this page. Use one "
+        "region_id from region_catalog per finding and exactly one suspected "
+        "dimension. Carry the exact target_version, render_version, and page "
+        "below. Do not combine ABOUT ME with contact, target-only content with "
+        "candidate presentation, or multiple regions/dimensions. role_gap is "
+        "only for entry/job/role spacing; header_vertical_rule_geometry is only "
+        "for the header/name vertical rule. Atomic candidate:name and flat "
+        "candidate:contact cannot create Builder-repairable split-name or "
+        "label/value-table residuals. Candidate facts are absent by design.\n"
+        + json.dumps(context, ensure_ascii=False, sort_keys=True)
+    )
+
+
+def _validate_reviewer_regions(
+    findings: list[DefectFinding], region_ids: set[str], page: int | set[int]
+) -> list[DefectFinding]:
+    pages = page if isinstance(page, set) else {page}
+    valid = []
+    for finding in findings:
+        dimension = finding.suspected_dimension.casefold()
+        observation = finding.observation.casefold()
+        if finding.page not in pages or finding.region not in region_ids:
+            continue
+        if re.search(r"\b(and|plus)\b|[,/]", dimension):
+            continue
+        if "about me" in observation and "contact" in observation:
+            continue
+        metric = finding.requested_measurement.metric
+        if metric == "role_gap" and not any(word in dimension for word in ("gap", "spacing", "role")):
+            continue
+        if metric == "header_vertical_rule_geometry" and not finding.region.startswith("header"):
+            continue
+        valid.append(finding)
+    return valid
 
 
 def _apply_header_overflow_disposition(candidate: Any, state: Any) -> Any:
@@ -1644,7 +2660,7 @@ def _live_lane_b_builder(
     The shell validates the safety boundary and fills typed slots — the agent
     never touches candidate values or the filesystem. ``audit`` records the
     full model-visible message history (owner decision 2026-09-22)."""
-    from pydantic_ai import Agent, BinaryContent
+    from pydantic_ai import Agent, BinaryContent, PromptedOutput, capture_run_messages
 
     from tests.experiments.d_pipeline import _live_model
     from tests.experiments.e_authored_template import AuthoredTemplateCandidate
@@ -1653,7 +2669,9 @@ def _live_lane_b_builder(
         raise CheckpointBudgetExceeded("budget exhausted before lane B builder")
     agent = Agent(
         _live_model(),
-        output_type=AuthoredTemplateCandidate,
+        # Prompted JSON avoids the forced final-result tool choice that
+        # DeepSeek Chat Completions rejects while thinking is enabled.
+        output_type=PromptedOutput(AuthoredTemplateCandidate),
         name="lane_b_builder",
         instructions=E5_LANE_B_BUILDER_INSTRUCTIONS,
     )
@@ -1662,19 +2680,21 @@ def _live_lane_b_builder(
         *[BinaryContent(data=image.read_bytes(), media_type="image/png") for image in images],
     ]
     model_name = getattr(getattr(agent, "model", None), "model_name", None)
+    captured_messages: list[Any] = []
     try:
-        run_result = _with_connection_retry(
-            lambda: agent.run_sync(
-                user_messages,
-                usage_limits=_call_limits(budget, E5_BUILDER_MAX_REQUESTS),
-                model_settings=_live_model_settings(),
-            ),
-            trace=trace, what="lane B builder",
-        )
+        with capture_run_messages() as captured_messages:
+            run_result = _with_connection_retry(
+                lambda: agent.run_sync(
+                    user_messages,
+                    usage_limits=_call_limits(budget, E5_BUILDER_MAX_REQUESTS),
+                    model_settings=_live_model_settings(thinking=True),
+                ),
+                trace=trace, what="lane B builder",
+            )
     except Exception as error:
         if audit is not None:
             _e5_agent_audit_record(
-                trace, audit, input_messages=user_messages,
+                trace, audit, input_messages=captured_messages or user_messages,
                 run_result=None, error=f"{type(error).__name__}: {error}",
                 model_name=model_name,
             )
@@ -1696,6 +2716,7 @@ def _live_attribution_batch(
     *,
     findings: list[DefectFinding],
     results: list[MeasurementResult],
+    lane: str = "a",
     audit: E5AgentAuditSpec | None = None,
 ) -> list[LiveAttributionHypothesis]:
     """Phase 0 batched live attribution: findings that share the same region
@@ -1720,6 +2741,12 @@ def _live_attribution_batch(
         "findings": [finding.model_dump(mode="json") for finding in findings],
         "measurements": [result.model_dump(mode="json") for result in results],
         "target_description": pod.describe_target(),
+        # The lane's ACTUAL repair surface: ownership of a confirmed defect may
+        # only follow a surface that exists. Without it the role had to guess
+        # the owning layer, and in live run `e_pipeline_e5_20260923T095557Z` it
+        # attributed Lane A's plan-level structure defects to a renderer no
+        # agent owns — unreachable by construction.
+        "lane_repair_surface": E5_LANE_REPAIR_SURFACE.get(lane, ""),
         "budget_note": (
             "ONE bounded agent run for this whole batch; decide from the "
             "evidence you already have plus at most a few tool calls."
@@ -1730,7 +2757,13 @@ def _live_attribution_batch(
     try:
         run_result = agent.run_sync(
             user_messages,
-            usage_limits=_call_limits(budget, E5_ATTRIBUTION_MAX_REQUESTS),
+            usage_limits=_call_limits(
+                budget,
+                max(
+                    E5_ATTRIBUTION_MAX_REQUESTS,
+                    E4_PER_CALL_MAX_TOOL_CALLS + len(findings) + 1,
+                ),
+            ),
             model_settings=_live_model_settings(),
         )
     except Exception as error:
@@ -1940,10 +2973,27 @@ def _freeze_e5_config(
             "measure_local_pdf", "audit_coverage", "measure_render_words",
             "compare_pdf_geometry", "render_and_checkpoint",
         ],
-        "lane_a_gates": list(CANDIDATE_FACT_GATES) + ["content_shapes_match_evidence"],
+        "gate_policy": {
+            "mode": "exploratory_wide_entry",
+            "blocking": {
+                lane: list(_e5_blocking_gates(lane)) for lane in lanes
+            },
+            "note": (
+                "all other checks are recorded as warnings and do not suppress "
+                "a safety-valid PDF from owner review"
+            ),
+        },
+        "lane_a_gates": [
+            "deterministic_render", "no_target_candidate_facts",
+            "section_order_matches_state", "no_blank_page",
+            "candidate_content_accounting", "content_shapes_match_evidence",
+            "content_gate",
+        ],
         "lane_b_gates": [
-            "deterministic_render", "no_target_candidate_facts", "no_blank_page",
-            "candidate_content_accounting", "content_gate", "template_safety",
+            "no_target_candidate_facts", "candidate_content_accounting",
+        ],
+        "lane_b_diagnostics": [
+            "pdf_presence", "no_blank_page",
         ],
         "evaluation_rubric_reference": {**rubric_reference, "not_given_to_agents": True},
         "starting_commit": commit,
@@ -1988,9 +3038,11 @@ def run_e5(
     (Phase 0 loop fixes + Lane A structured layout + Lane B authored
     template). One runner, one shell, two fresh agent contexts.
 
-    Normal exits: ``ready_for_owner_review`` and ``budget_exhausted`` (never
-    success, never `unsupported`, never owner acceptance). Operational aborts
-    describe the failed operation only. Content-shape probes always run
+    A safety-valid PDF exits ``ready_for_owner_review`` even when exploratory
+    quality checks report warnings; ``budget_exhausted`` means no safety-valid
+    output was reached before a configured ceiling. Neither means owner
+    acceptance. Operational aborts describe the failed operation only.
+    Content-shape probes always run
     against the SELECTED representation (the best-valid render's proposal/
     template, or diagnostic probes on the latest attempt when no best-valid
     render exists)."""
@@ -2180,6 +3232,14 @@ def run_e5(
     candidate_sha256 = hashlib.sha256(
         json.dumps(candidate.model_dump(mode="json"), sort_keys=True).encode("utf-8")
     ).hexdigest()
+    candidate_review_scope = _candidate_review_scope(candidate, label_catalog)
+    candidate_name_text = next(
+        (
+            leaf.text for leaf in candidate.leaves
+            if leaf.kind == "header_field" and leaf.slot == "name" and leaf.text
+        ),
+        None,
+    )
 
     config = _freeze_e5_config(
         out_dir,
@@ -2218,6 +3278,7 @@ def run_e5(
     store.register_version("structure_draft_v1", out_dir / "structure_draft.json", "shared evidence-linked draft")
     page_size = _page_pt_size(target_pdf, 1)
     shared_target_images = _overview_pngs(target_pdf, out_dir, "builder_target_shared")
+    body_color_context = _target_body_text_color_context(target_pdf)
     initial_builder_evidence = _e5_builder_evidence_package(
         draft=draft,
         state=state,
@@ -2225,7 +3286,19 @@ def run_e5(
         page_size=page_size,
         target_images=shared_target_images,
         presentation_labels=approved_label_catalog,
+        candidate_review_scope=candidate_review_scope,
+        candidate=candidate,
+        initial_compact=True,
+        candidate_compatible_labels=_candidate_compatible_labels(
+            label_catalog, candidate_review_scope
+        ),
+        body_color_context=body_color_context,
     )
+    header_rule_context = _header_vertical_rule_target_context(target_pdf)
+    if header_rule_context is not None:
+        initial_builder_evidence["header_vertical_rule_target_context"] = (
+            header_rule_context
+        )
     initial_builder_evidence_path = out_dir / "builder_evidence_initial.json"
     initial_builder_evidence_path.write_text(
         json.dumps(initial_builder_evidence, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -2337,6 +3410,7 @@ def run_e5(
         # The region of the last PROMOTED repair (the only state that scopes
         # the next review round; rejected attempts never do).
         last_promoted_region: str | None = None
+        last_promoted_page: int | None = None
         # QUARANTINED REPAIR BASE (owner work order 2026-09-22): the history
         # index of the last repairable-but-not-passing candidate. It is NOT a
         # second state machine — it reuses the existing version map, builder-
@@ -2401,7 +3475,18 @@ def run_e5(
             attempted_strategies.append(strategy)
             trace.add(agent="shell", phase="loop", action="strategy_escalation", note=strategy)
 
-        def _lane_terminal(lane_id: str, forced: str | None = None) -> E5LaneRecord:
+        # Loop stop state (terminal semantics fix, 2026-09-23): the lane's
+        # terminal state must say WHICH ceiling was hit, or that nothing was
+        # left to do — never a single catch-all. Declared before
+        # `_lane_terminal` so the pre-loop failure paths can read them too.
+        stop_state: str | None = None
+        stop_reason = ""
+
+        def _lane_terminal(
+            lane_id: str,
+            forced: str | None = None,
+            reason: str = "",
+        ) -> E5LaneRecord:
             # The ledger is the ONLY open/closed source: a deduplicated
             # re-observation of an already-repaired/resolved defect must not
             # resurrect it as open under a new finding id.
@@ -2524,12 +3609,10 @@ def run_e5(
                         probe_html_path.write_text(doc, encoding="utf-8")
                         net_env = authored_network_disabled_environment()
                         _export_pinned_html_to_pdf(probe_html_path, probe_pdf_path, net_env)
-                        _export_pinned_html_to_pdf(probe_html_path, probe_pdf_second, net_env)
                         pages = _render_pages(probe_pdf_path, lane_dir, f"probe_{profile}")
-                        second_pages = _render_pages(probe_pdf_second, lane_dir, f"probe_{profile}_second")
                         gates = {
                             "candidate_content_accounting": not fill.missing_leaves,
-                            "pdf_presence_gate": authored_pdf_presence_gate(
+                            "pdf_presence": authored_pdf_presence_gate(
                                 fill, probe_candidate, probe_pdf_path
                             )["passed"],
                             "privacy_gate": authored_privacy_gate(
@@ -2537,14 +3620,6 @@ def run_e5(
                                 labels=approved_label_texts,
                             )["passed"],
                             "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
-                            "deterministic_render": (
-                                all(
-                                    c2r._sha256(left) == c2r._sha256(right)
-                                    for left, right in zip(pages, second_pages)
-                                )
-                                and c2r._line_stability(probe_pdf_path, probe_pdf_second)["passed"]
-                            ),
-                            "template_safety": True,  # validation raises otherwise
                         }
                     entry["gates"] = gates
                     entry["pages"] = len(pages)
@@ -2558,21 +3633,26 @@ def run_e5(
                 json.dumps(probe_report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            expected_pages = set(range(1, (target_frozen.page_count or 1) + 1))
+            # E5 asks which representation is worth pursuing.  Once a
+            # safety-valid PDF exists it belongs in owner review; open visual
+            # findings, failed probes, and incomplete agent review stay visible
+            # as observations instead of suppressing the output.
             terminal = (
                 "ready_for_owner_review"
-                if (
-                    best_version_id
-                    and best_version is not None
-                    and best_version.hard_gates_passed
-                    and not open_ids
-                    and probes_ok
-                    and pages_reviewed >= expected_pages
-                )
+                if best_version_id and best_version is not None
+                and best_version.hard_gates_passed
                 else "budget_exhausted"
             )
+            terminal_reason = ""
+            if terminal != "ready_for_owner_review":
+                # The loop records WHICH ceiling or stall ended the lane; the
+                # for-loop completing with no recorded stop means the repair
+                # round budget was reached.
+                terminal = stop_state or terminal
+                terminal_reason = stop_reason or "repair_round_budget"
             if forced is not None:
                 terminal = forced
+                terminal_reason = reason
             record = E5LaneRecord(
                 lane=lane_id,
                 representation=(
@@ -2601,6 +3681,7 @@ def run_e5(
                 content_shape_probes_passed=probes_ok,
                 pages_reviewed=sorted(pages_reviewed),
                 terminal_state=terminal,
+                terminal_reason=terminal_reason,
                 budget_state=lane_budget.to_json(),
                 summary={
                     "total_findings": len(findings),
@@ -2625,7 +3706,14 @@ def run_e5(
                         privacy_labels_symmetric=label_symmetry_by_version.get(
                             active_version_id or "", True
                         ),
+                        gate_details=gate_details_by_version.get(active_version_id or "", {}),
                     ),
+                    "diagnostic_warnings": _e5_hard_gate_record(
+                        active_version_id or "none",
+                        gates_by_version.get(active_version_id, {}),
+                        gate_details_by_version.get(active_version_id or "", {}),
+                        blocking_gates=_e5_blocking_gates(lane_id),
+                    )["diagnostic_warnings"],
                     "presentation_labels_referenced": sorted(referenced_labels),
                     "elapsed_seconds": None,
                     "live": live,
@@ -2638,6 +3726,7 @@ def run_e5(
             (lane_dir / "REPORT.md").write_text(
                 _write_e5_lane_report_md(lane_id, record), encoding="utf-8"
             )
+            checkpoint("terminal")
             trace.save()
             return record
 
@@ -2733,7 +3822,7 @@ def run_e5(
                     html_sha256=_sha256_file(html_path),
                     pdf_sha256=_sha256_file(pdf_path),
                     page_count=len(pages),
-                    hard_gates_passed=all(gates.values()),
+                    hard_gates_passed=_e5_blocking_gates_passed("a", gates),
                     note=note,
                 )
                 versions.append(version)
@@ -2754,7 +3843,12 @@ def run_e5(
                 store.register_version(version.version_id, pdf_path, note)
                 (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
                     json.dumps(
-                        _e5_hard_gate_record(version.version_id, gates, gate_details),
+                        _e5_hard_gate_record(
+                            version.version_id,
+                            gates,
+                            gate_details,
+                            blocking_gates=_e5_blocking_gates("a"),
+                        ),
                         indent=2,
                         sort_keys=True,
                     ) + "\n",
@@ -2785,11 +3879,7 @@ def run_e5(
                 pdf_path = lane_dir / f"render_{index}.pdf"
                 net_env = authored_network_disabled_environment()
                 _export_pinned_html_to_pdf(html_path, pdf_path, net_env)
-                second = lane_dir / f"render_{index}_second.pdf"
-                _export_pinned_html_to_pdf(html_path, second, net_env)
                 pages = _render_pages(pdf_path, lane_dir, f"render_{index}")
-                second_pages = _render_pages(second, lane_dir, f"render_{index}_second")
-                stability = c2r._line_stability(pdf_path, second)
                 presence = authored_pdf_presence_gate(fill, candidate, pdf_path)
                 # The SAME common gate Lane A runs: identical gate function and
                 # identical owner-approved label set, so both lanes' privacy
@@ -2808,23 +3898,10 @@ def run_e5(
                 )
                 blank = c2r.blank_page_gate(pdf_path)
                 gates = {
-                    "deterministic_render": all(
-                        c2r._sha256(left) == c2r._sha256(right)
-                        for left, right in zip(pages, second_pages)
-                    ) and stability["passed"],
                     "no_target_candidate_facts": common_privacy["passed"],
-                    "no_blank_page": blank["passed"],
                     "candidate_content_accounting": not fill.missing_leaves,
-                    "content_gate": presence["passed"],
-                    "template_safety": True,  # validation raises otherwise
                 }
                 gate_details = {
-                    "deterministic_render": {
-                        "passed": gates["deterministic_render"],
-                        "first_page_hashes": [c2r._sha256(page) for page in pages],
-                        "second_page_hashes": [c2r._sha256(page) for page in second_pages],
-                        "line_stability": stability,
-                    },
                     "no_target_candidate_facts": {
                         **common_privacy,
                         "label_semantics": label_semantics,
@@ -2836,15 +3913,17 @@ def run_e5(
                         "missing_leaves": fill.missing_leaves,
                         "leaf_counts": fill.leaf_counts,
                     },
-                    "content_gate": presence,
-                    "template_safety": {"passed": True},
+                    "diagnostics": {
+                        "pdf_presence": presence,
+                        "no_blank_page": blank,
+                    },
                 }
                 version = RenderVersion(
                     version_id=f"render-{target_pdf.stem}-laneB-v{index}",
                     html_sha256=_sha256_file(html_path),
                     pdf_sha256=_sha256_file(pdf_path),
                     page_count=len(pages),
-                    hard_gates_passed=all(gates.values()),
+                    hard_gates_passed=_e5_blocking_gates_passed("b", gates),
                     note=note,
                 )
                 versions.append(version)
@@ -2863,7 +3942,12 @@ def run_e5(
                 store.register_version(version.version_id, pdf_path, note)
                 (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
                     json.dumps(
-                        _e5_hard_gate_record(version.version_id, gates, gate_details),
+                        _e5_hard_gate_record(
+                            version.version_id,
+                            gates,
+                            gate_details,
+                            blocking_gates=_e5_blocking_gates("b"),
+                        ),
                         indent=2,
                         sort_keys=True,
                     ) + "\n",
@@ -2908,8 +3992,39 @@ def run_e5(
                 agent="measure_controller", phase="measure", action="binding",
                 input={"render_version": render_version, "finding": finding.finding_id},
             )
+            request = finding.requested_measurement.model_copy(update={"request_id": request_id})
+            if request.metric == "header_vertical_rule_geometry":
+                finding_text = (
+                    f"{finding.region} {finding.suspected_dimension} {finding.observation} "
+                    f"{request.intent or ''}"
+                ).casefold()
+                if not (
+                    any(word in finding_text for word in ("header", "name"))
+                    and "vertical" in finding_text
+                    and any(word in finding_text for word in ("rule", "line", "bar"))
+                ):
+                    result = MeasurementResult(
+                        request_id=request_id,
+                        status="not_measurable",
+                        reason="metric may bind only to an explicit header vertical-rule finding",
+                        method="header_vertical_rule_geometry/1",
+                    )
+                else:
+                    lane_budget.spend_tool("measure_header_vertical_rule_geometry")
+                    result = _measure_header_vertical_rule_geometry(
+                        request,
+                        target_pdf=target_pdf,
+                        current_pdf=pdf,
+                        current_name_text=candidate_name_text,
+                    )
+                trace.add(
+                    agent="measure_controller", phase="measure", action="measurement",
+                    tool="measure_header_vertical_rule_geometry",
+                    output=result.model_dump(mode="json"), persist_output=True,
+                )
+                return result, request
             bound = _bind_role_gap_anchors(
-                finding.requested_measurement.model_copy(update={"request_id": request_id}),
+                request,
                 target_pdf=target_pdf,
                 current_pdf=pdf,
                 region_span=span_tuple,
@@ -2951,8 +4066,13 @@ def run_e5(
             candidate CANNOT be verified to hold the region -> not held."""
             rechecks: list[dict[str, Any]] = []
             for finding_id, (request, prior) in resolved_measurements.items():
-                repeat = MeasureController(pod, lane_budget, trace).execute(
-                    request.model_copy(), current_pdf=candidate_pdf
+                finding = findings_by_id[finding_id]
+                repeat, _ = execute_measurement(
+                    finding.model_copy(update={"requested_measurement": request}),
+                    candidate_pdf,
+                    request.request_id,
+                    plan=plan_by_version.get(versions[-1].version_id),
+                    render_version=versions[-1].version_id,
                 )
                 values_present = (
                     repeat.current_value_pt is not None
@@ -2985,6 +4105,66 @@ def run_e5(
                 if not held:
                     return False, rechecks
             return True, rechecks
+
+        def checkpoint(phase: str) -> None:
+            """Small atomic recovery snapshot plus machine-readable residuals."""
+            current = versions[active_index].version_id if versions else None
+            payload = {
+                "schema_version": "e5-checkpoint/1",
+                "phase": phase,
+                "lane": lane,
+                "active_render_version": current,
+                "render_versions": [item.model_dump(mode="json") for item in versions],
+                "findings": [item.model_dump(mode="json") for item in findings],
+                "ledger": [item.model_dump(mode="json") for item in ledger.entries.values()],
+                "builder_candidates": builder_candidates,
+                "budget_state": lane_budget.to_json(),
+            }
+            path = lane_dir / "checkpoint.json"
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            temporary.replace(path)
+
+            findings_by_key = {_ledger_key(item): item for item in findings}
+            residuals = []
+            for key, entry in ledger.entries.items():
+                finding = findings_by_key.get(key)
+                if finding is None:
+                    continue
+                repair = next(
+                    (
+                        item for item in reversed(builder_candidates)
+                        if (item.get("trigger_attribution") or {}).get("finding_id")
+                        == finding.finding_id
+                    ),
+                    None,
+                )
+                attribution = entry.attribution
+                residuals.append({
+                    "schema_version": "e5-residual/1",
+                    "residual_type": _residual_type(finding),
+                    "region_role": finding.region,
+                    "status": entry.status,
+                    "finding_id": finding.finding_id,
+                    "render_version": finding.render_version,
+                    "observation": finding.observation,
+                    "repair_attempted": repair is not None,
+                    "repair_outcome": repair.get("outcome") if repair else None,
+                    "resolution_layer": (
+                        "representation" if attribution and attribution.repair_owner == "builder"
+                        else attribution.repair_owner if attribution else None
+                    ),
+                })
+            residual_path = lane_dir / "residuals.jsonl"
+            residual_tmp = residual_path.with_suffix(".tmp")
+            residual_tmp.write_text(
+                "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in residuals),
+                encoding="utf-8",
+            )
+            residual_tmp.replace(residual_path)
 
         # --- 3. Initial Builder output (representation under test) ---------
         initial_note = f"lane {lane} initial render ({'authored template' if lane == 'b' else 'structured layout'})"
@@ -3084,7 +4264,7 @@ def run_e5(
                 )
         except CheckpointBudgetExceeded:
             escalate("builder_initial_budget_exhausted")
-            return _lane_terminal(lane, "budget_exhausted")
+            return _lane_terminal(lane, "budget_exhausted", reason="builder_initial_budget")
         except Exception as error:
             import traceback as _tb
             detail = _tb.format_exc()[-600:]
@@ -3097,7 +4277,8 @@ def run_e5(
             lane_state["last_rejection"] = f"initial render failed: {str(error)[:200]}"
             trace.add(agent="shell", phase="builder", action="initial_failed", note=str(error)[:200], output={"traceback": detail}, persist_output=True)
             escalate(f"lane_builder_initial_failed:{type(error).__name__}")
-            return _lane_terminal(lane, "budget_exhausted")
+            return _lane_terminal(lane, "budget_exhausted", reason="builder_initial_failed")
+        checkpoint("initial_render")
 
         # --- 4. See -> Measure -> Attribute -> Repair -> Re-render loop -----
         # Scheduling state (repair-starvation fix, 2026-09-21 owner work order):
@@ -3121,6 +4302,7 @@ def run_e5(
             try:
                 if lane_budget.remaining_model_requests() < 1:
                     trace.add(agent="shell", phase="loop", action="budget_exhausted", note="before review")
+                    stop_state, stop_reason = "budget_exhausted", "model_request_budget"
                     break
                 # The round reviews/measures the ACTIVE version (the last
                 # PROMOTED render, or the initial render before any
@@ -3185,14 +4367,26 @@ def run_e5(
                     if live and run_review:
                         target_overviews = _overview_pngs(target_pdf, out_dir, f"review_target_l{lane}_{round_no}")
                         render_overviews = _overview_pngs(current_pdf, out_dir, f"review_render_l{lane}_{round_no}")
-                        scope = _review_scope_payload(round_no, changed_regions, findings)
+                        scope = _review_scope_payload(
+                            round_no,
+                            changed_regions,
+                            findings,
+                            ledger_statuses={
+                                entry.finding_id: entry.status
+                                for entry in ledger.entries.values()
+                            },
+                            changed_pages=[last_promoted_page] if last_promoted_page else [],
+                        )
+                        region_catalog = _e5_region_catalog(state, derived)
+                        presentation_facts = _reviewer_presentation_facts(
+                            target_pdf, current_pdf, derived
+                        )
                         counter["finding"] += 1
                         node_inventory = json.dumps(
                             {
-                                "state_nodes": [
-                                    {"node_id": n.node_id, "kind": n.kind} for n in state.nodes
-                                ],
+                                "region_catalog": region_catalog,
                                 "review_scope": scope,
+                                "candidate_review_scope": candidate_review_scope,
                             },
                             ensure_ascii=False,
                         )
@@ -3203,7 +4397,7 @@ def run_e5(
                             if page_index <= len(render_overviews):
                                 lane_images.append(render_overviews[page_index - 1])
                             counter["finding"] += 1
-                            findings_new.extend(_with_connection_retry(
+                            page_findings = _with_connection_retry(
                                 lambda lane_images=lane_images, page_index=page_index: _live_reviewer_findings(
                                     lane_images,
                                     finding_id=f"finding-l{lane}-r{round_no}-p{page_index}",
@@ -3233,18 +4427,27 @@ def run_e5(
                                         ),
                                     ),
                                     message=(
-                                        "Compare the TARGET and RENDER images for this page. Review scope: "
-                                        + json.dumps(scope, ensure_ascii=False)
-                                        + "\nReport observation-first findings with SEMANTIC measurement "
-                                        "intents (leave the four anchor fields empty, set `intent`). "
-                                        "Findings must carry exact versions and a region id from the "
-                                        "node inventory. proposed_cause is a hypothesis only."
+                                        _e5_reviewer_message(
+                                            target_version=target_id,
+                                            render_version=current_version.version_id,
+                                            page=page_index,
+                                            region_catalog=region_catalog,
+                                            review_scope=scope,
+                                            candidate_review_scope=candidate_review_scope,
+                                            lane=lane,
+                                            deterministic_presentation_facts=presentation_facts,
+                                        )
                                     ),
                                 ),
                                 trace=trace, what=f"visual reviewer page {page_index}",
+                            )
+                            findings_new.extend(_validate_reviewer_regions(
+                                page_findings,
+                                {item["region_id"] for item in region_catalog},
+                                page_index,
                             ))
                             pages_reviewed.add(page_index)
-                    else:
+                    elif not live:
                         counter["finding"] += 1
                         prompt = f"TARGET {target_frozen.case_id} RENDER {current_version.version_id} page 1."
                         findings_new = ScriptedReviewer().run(
@@ -3260,6 +4463,7 @@ def run_e5(
                         pages_reviewed.add(1)
                 except CheckpointBudgetExceeded:
                     escalate("reviewer_budget_exhausted")
+                    stop_state, stop_reason = "budget_exhausted", "reviewer_budget"
                     break
                 except Exception as error:
                     import traceback as _tb2
@@ -3272,6 +4476,25 @@ def run_e5(
                 if run_review and not reviewer_failed:
                     reviewed_render_fingerprints.add(render_fingerprint)
                 findings_new = _validate_finding_versions(findings_new, target_id, current_version.version_id)
+                filtered = [
+                    {
+                        "finding": finding.model_dump(mode="json"),
+                        "reason": reason,
+                    }
+                    for finding in findings_new
+                    if (reason := _candidate_boundary_filter_reason(
+                        finding, candidate_review_scope
+                    )) is not None
+                ]
+                findings_new = _candidate_aware_findings(findings_new, candidate_review_scope)
+                if filtered:
+                    trace.add(
+                        agent="shell",
+                        phase="review",
+                        action="candidate_boundary_filtered",
+                        output={"removed": len(filtered), "findings": filtered},
+                        persist_output=True,
+                    )
                 findings.extend(findings_new)
                 for finding in findings_new:
                     findings_by_id[finding.finding_id] = finding
@@ -3287,7 +4510,9 @@ def run_e5(
                 if repair_base_version.version_id not in gate_repair_versions_seen:
                     gate_repair_versions_seen.add(repair_base_version.version_id)
                     gate_items = _e5_gate_repair_items(
-                        lane, target_id, repair_base_version.version_id, repair_base_details
+                        lane, target_id, repair_base_version.version_id, repair_base_details,
+                        candidate=candidate,
+                        current_pdf=pdf_by_version[repair_base_version.version_id],
                     )
                 for gate_finding, gate_result, gate_request, gate_attribution in gate_items:
                     findings_by_id[gate_finding.finding_id] = gate_finding
@@ -3324,6 +4549,8 @@ def run_e5(
                             continue  # unchanged region: the stored measurement stays the record
                         carried_open_used = True  # one bounded carried-open re-measure
                     actionable.append(finding)
+                if run_review and not reviewer_failed:
+                    checkpoint("review_complete")
     
                 # Bounded per-round scheduling: this round's new findings
                 # first, then previously deferred open findings; at most
@@ -3399,7 +4626,7 @@ def run_e5(
                     measured_by_finding[finding.finding_id] = (finding, result, bound)
                     ledger.entries[_ledger_key(finding)].last_measured_version = current_version.version_id
                 batches = _e5_attribution_batches(selected, measured)
-                if live and batches and _builder_reserve_intact(lane_budget):
+                if live and lane != "b" and batches and _builder_reserve_intact(lane_budget):
                     pod.render_pdf = current_pdf
                     for group in batches:
                         try:
@@ -3407,6 +4634,7 @@ def run_e5(
                                 pod, lane_budget, trace,
                                 findings=group,
                                 results=[measured[f.finding_id][0] for f in group],
+                                lane=lane,
                                 audit=_e5_audit(
                                     agent="attribution_investigator",
                                     phase="attribute",
@@ -3443,6 +4671,7 @@ def run_e5(
                                 )
                         except CheckpointBudgetExceeded:
                             escalate("attribution_budget_exhausted")
+                            stop_state, stop_reason = "budget_exhausted", "attribution_budget"
                             break
                         except LiveAttributionBindingError as error:
                             # Fail closed WITH an auditable reason: the batch's
@@ -3459,11 +4688,34 @@ def run_e5(
                             )
                         except Exception as error:
                             escalate(f"attribution_live_call_failed:{type(error).__name__}: {str(error)[:150]}")
+                if lane == "b":
+                    for finding in _e5_findings_needing_fallback_attribution(
+                        selected, measured, attributions
+                    ):
+                        result, bound = measured[finding.finding_id]
+                        attribution = _e5_lane_b_attribution(finding, result, bound)
+                        attributions.append(attribution)
+                        _record_ledger_attribution(
+                            ledger, finding, attribution, bound.request_id,
+                        )
+                        trace.add(
+                            agent="shell",
+                            phase="attribute",
+                            action="lane_b_direct_attribution",
+                            output=attribution.model_dump(mode="json"),
+                        )
                 for finding in _e5_findings_needing_fallback_attribution(
                     selected, measured, attributions
                 ):
                     result, bound = measured[finding.finding_id]
                     attribute(finding, result, bound)
+
+                # `max_repair_rounds=0` is review-only. The old `+ 2` loop
+                # envelope accidentally allowed one repair even with a zero
+                # repair budget.
+                if round_no > max_repair_rounds:
+                    stop_state, stop_reason = "budget_exhausted", "repair_round_budget"
+                    break
 
                 # Builder opportunity (SCHEDULING GUARANTEE): the scan covers
                 # EVERY defect bound to the ACTIVE version — this round's and
@@ -3486,6 +4738,10 @@ def run_e5(
                 )
                 if repair_finding is None and all_repairable_repeated:
                     escalate("stalled_no_new_action")
+                    # Nothing is left to DO (every repairable action
+                    # fingerprint was already executed) — that is a distinct
+                    # state from a real budget ceiling.
+                    stop_state, stop_reason = "stalled_no_new_action", "stalled_no_new_action"
                     break
                 if repair_finding is None:
                     actionable_keys = {
@@ -3502,6 +4758,7 @@ def run_e5(
                     work_this_round = bool(findings_new) or bool(selected) or bool(gate_items)
                     if not work_this_round:
                         escalate(f"round{round_no}:no_new_render_no_pending_work")
+                        stop_state, stop_reason = "stalled_no_new_action", "no_new_render_no_pending_work"
                         break
                     escalate(
                         "awaiting_attribution_or_other_owner"
@@ -3520,24 +4777,55 @@ def run_e5(
                     lane_dir,
                     f"builder_render_r{round_no}",
                 )
+                repair_target_images = shared_target_images
+                repair_render_images = current_render_images
+                if (
+                    lane == "b"
+                    and finding.requested_measurement.metric
+                    == "header_vertical_rule_geometry"
+                ):
+                    repair_target_images = [
+                        _header_crop_from_overview_source(
+                            shared_target_images[0],
+                            lane_dir / f"builder_target_header_r{round_no}.png",
+                        )
+                    ]
+                    repair_render_images = [
+                        _header_crop_from_overview_source(
+                            current_render_images[0],
+                            lane_dir / f"builder_render_header_r{round_no}.png",
+                        )
+                    ]
                 repair_builder_evidence = _e5_builder_evidence_package(
                     draft=draft,
                     state=state,
                     derived=derived,
                     page_size=page_size,
                     current_render_version=repair_base_version.version_id,
-                    findings=scan_candidates,
-                    measurements=[scan_measured[item.finding_id][0] for item in scan_candidates],
+                    findings=[finding] if lane == "b" else scan_candidates,
+                    measurements=[result] if lane == "b" else [
+                        scan_measured[item.finding_id][0] for item in scan_candidates
+                    ],
                     current_gates=repair_base_gates,
                     last_rejection=lane_state.get("last_rejection"),
-                    target_images=shared_target_images,
-                    current_render_images=current_render_images,
+                    target_images=repair_target_images,
+                    current_render_images=repair_render_images,
                     current_representation=representation_by_version[
                         repair_base_version.version_id
                     ],
                     selected_attribution=attribution,
                     action_fingerprint=fingerprint,
                     presentation_labels=approved_label_catalog,
+                    candidate_review_scope=candidate_review_scope,
+                    candidate=candidate,
+                    body_color_context=body_color_context,
+                    missing_leaf_ids=list(
+                        repair_base_details.get("candidate_content_accounting", {}).get(
+                            "missing_leaves"
+                        )
+                        or []
+                    ),
+                    compact=lane == "b",
                 )
                 (lane_dir / f"builder_evidence_round_{round_no:02d}.json").write_text(
                     json.dumps(
@@ -3600,7 +4888,7 @@ def run_e5(
                         if live:
                             template = _live_lane_b_builder(
                                 lane_budget, trace, payload=repair_builder_evidence,
-                                images=[*shared_target_images, *current_render_images],
+                                images=[*repair_target_images, *repair_render_images],
                                 template_id=f"lane-b-r{round_no + 1}",
                                 audit=_e5_audit(
                                     agent="lane_b_builder",
@@ -3611,8 +4899,8 @@ def run_e5(
                                     measurement_ids=(bound.request_id,),
                                     instructions=E5_LANE_B_BUILDER_INSTRUCTIONS,
                                     image_refs=(
-                                        _e5_image_refs(shared_target_images, "target")
-                                        + _e5_image_refs(current_render_images, "render")
+                                        _e5_image_refs(repair_target_images, "target")
+                                        + _e5_image_refs(repair_render_images, "render")
                                     ),
                                 ),
                             )
@@ -3678,8 +4966,10 @@ def run_e5(
                         outcome="rendered_pending_decision",
                         reason="validated candidate rendered; awaiting shell promotion or rollback",
                     )
+                    checkpoint("repair_rendered")
                 except CheckpointBudgetExceeded:
                     escalate("builder_budget_exhausted")
+                    stop_state, stop_reason = "budget_exhausted", "builder_budget"
                     break
                 except Exception as error:
                     if candidate_audit_index is not None:
@@ -3713,16 +5003,12 @@ def run_e5(
                 if finding.suspected_dimension == "hard_gate_content":
                     candidate_gate_details = (
                         gate_details_by_version.get(candidate_version.version_id, {}).get(
-                            finding.region
+                            "candidate_content_accounting"
                         )
                         or {}
                     )
                     candidate_missing = len(
-                        candidate_gate_details.get(
-                            "missing_pdf_leaves"
-                            if finding.region == "content_gate"
-                            else "missing_leaves"
-                        )
+                        candidate_gate_details.get("missing_leaves")
                         or []
                     )
                     repeat_result = MeasurementResult(
@@ -3731,7 +5017,7 @@ def run_e5(
                         target_value_pt=0.0,
                         current_value_pt=float(candidate_missing),
                         delta_pt=float(candidate_missing),
-                        method="content_gate_missing_pdf/1",
+                        method="candidate_content_accounting_missing/1",
                         warnings=[
                             "the identical hard-gate record re-measured on the "
                             "candidate render (target baseline 0)"
@@ -3744,28 +5030,21 @@ def run_e5(
                         render_version=candidate_version.version_id,
                     )
                 measurement_results.append(repeat_result)
-                improved = (
-                    repeat_result.current_value_pt is not None
-                    and result.current_value_pt is not None
-                    and repeat_result.target_value_pt is not None
-                    and abs(repeat_result.current_value_pt - repeat_result.target_value_pt)
-                    < abs(result.current_value_pt - result.target_value_pt)
-                )
+                improved, improvement_reason = _measurement_improvement(result, repeat_result)
                 if not improved:
                     rolled_back_versions.add(candidate_version.version_id)
                     update_builder_candidate(
                         candidate_audit_index,
                         outcome="rolled_back",
-                        reason="identical re-measurement did not improve",
+                        reason=improvement_reason,
                     )
                     attempted_strategies.append(f"round{round_no}:{finding.finding_id}:non_improving_rolled_back")
-                    trace.add(agent="shell", phase="repair", action="rolled_back", note="non-improving repair")
+                    trace.add(
+                        agent="shell", phase="repair", action="rolled_back",
+                        note=f"non-improving repair: {improvement_reason}",
+                    )
                     continue
-                gate_keys = (
-                    CANDIDATE_FACT_GATES if lane == "a"
-                    else ("content_gate", "candidate_content_accounting", "no_target_candidate_facts",
-                          "no_blank_page", "deterministic_render")
-                )
+                gate_keys = _e5_blocking_gates(lane)
                 failing_gates = [
                     gate for gate in gate_keys if candidate_gates.get(gate) is not True
                 ]
@@ -3877,6 +5156,7 @@ def run_e5(
                 )
                 active_index = candidate_index
                 last_promoted_region = finding.region
+                last_promoted_page = finding.page
                 if lane == "a":
                     lane_state["active_proposal"] = proposal
                 else:
@@ -3894,6 +5174,7 @@ def run_e5(
             except (CheckpointBudgetExceeded, BudgetExhausted) as budget_error:
                 escalate("loop_tool_budget_exhausted")
                 trace.add(agent="shell", phase="loop", action="budget_exhausted", note=str(budget_error)[:200])
+                stop_state, stop_reason = "budget_exhausted", "tool_call_budget"
                 break
         return _lane_terminal(lane)
 
@@ -3906,11 +5187,22 @@ def run_e5(
         lane_records[lane] = record
 
     # -- 6. Terminal state + comparison + owner package ----------------------
-    overall_terminal = (
-        "ready_for_owner_review"
-        if lane_records and all(r.terminal_state == "ready_for_owner_review" for r in lane_records.values())
-        else "budget_exhausted"
-    )
+    # The run-level state follows the LANES: owner-ready only when every lane
+    # is; otherwise it says whether the run stopped because a ceiling was hit
+    # or because no lane had an action left (the 2026-09-23 mislabel: a stalled
+    # Lane B with 11 of 400 requests spent reported as `budget_exhausted`).
+    blocked_lanes = [
+        record for record in lane_records.values()
+        if record.terminal_state != "ready_for_owner_review"
+    ]
+    if lane_records and not blocked_lanes:
+        overall_terminal = "ready_for_owner_review"
+    elif blocked_lanes and all(
+        record.terminal_state == "stalled_no_new_action" for record in blocked_lanes
+    ):
+        overall_terminal = "stalled_no_new_action"
+    else:
+        overall_terminal = "budget_exhausted"
     # Source identity check: if any registered direct runtime source changed
     # mid-run, the run records `source_changed` and is NOT source-identity
     # stable. `source_identity_stable` says ONLY that the source did not
@@ -3928,6 +5220,9 @@ def run_e5(
             "live": live,
             "elapsed_seconds": round(time.time() - started, 1),
             "lanes": {lane: r.terminal_state for lane, r in lane_records.items()},
+            "lane_terminal_reasons": {
+                lane: r.terminal_reason for lane, r in lane_records.items()
+            },
             "source_changed": source_changed,
             "source_identity_stable": not source_changed,
             "presentation_label_approval": {
@@ -3990,9 +5285,12 @@ def _write_e5_lane_report_md(lane_id: str, record: E5LaneRecord) -> str:
         "render; NOT promotion evidence)" if record.summary.get("probe_mode") == "diagnostic"
         else "promotion-evidence probes against the selected best-valid representation"
     )
+    stop_reason = (
+        f" (stop reason: {record.terminal_reason})" if record.terminal_reason else ""
+    )
     return f"""# Pipeline E5 Lane {lane_id.upper()} — {record.representation}
 
-- Terminal state: **{record.terminal_state}** (never owner acceptance)
+- Terminal state: **{record.terminal_state}**{stop_reason} (never owner acceptance)
 - Best render: `{record.best_render_version or 'NONE — no best-valid render exists'}`
 - Active render: `{record.active_render_version}`
 - Defect-level promoted (never BEST): `{record.best_defect_level_version or 'none'}`
@@ -4006,6 +5304,7 @@ def _write_e5_lane_report_md(lane_id: str, record: E5LaneRecord) -> str:
   {record.summary.get('attribution_calls')}
 - Tokens (live): {record.budget_state.get('usage', {}).get('input_tokens', 0)}/
   {record.budget_state.get('usage', {}).get('output_tokens', 0)}
+- Diagnostic warnings: {', '.join(record.summary.get('diagnostic_warnings') or []) or 'none'}
 - Probes: {record.content_shape_probes_passed} — {probes_note}
 
 ## Render versions
@@ -4044,6 +5343,7 @@ def summarize_e5_state(e5_state_path: Path) -> dict[str, Any]:
         budget_state = lane.get("budget_state", {})
         lanes[lane_id] = {
             "terminal_state": lane.get("terminal_state"),
+            "terminal_reason": lane.get("terminal_reason"),
             "best_render_version": lane.get("best_render_version"),
             "active_render_version": lane.get("active_render_version"),
             "render_versions": len(lane.get("render_versions", [])),
@@ -4121,7 +5421,7 @@ def _write_e5_comparison(
     rows = []
     for lane_id, lane in record.lanes.items():
         summary = lane.summary
-        # Page count comes from the SELECTED artifact (best-valid render, or
+        # Page count comes from the SELECTED artifact (safety-valid render, or
         # the clearly-labeled latest attempt when none exists) — never from
         # `render_versions[-1]` silently.
         selected, _stem, label = _selected_lane_artifact(lane)
@@ -4130,6 +5430,7 @@ def _write_e5_comparison(
                 "lane": lane_id,
                 "representation": lane.representation,
                 "terminal_state": lane.terminal_state,
+                "terminal_reason": lane.terminal_reason,
                 "best_render": lane.best_render_version,
                 "best_defect_level_version": lane.best_defect_level_version,
                 "active_render": lane.active_render_version,
@@ -4145,6 +5446,7 @@ def _write_e5_comparison(
                 "improving_repairs": summary.get("promoted_versions"),
                 "rollbacks": len([s for s in lane.attempted_strategies if "rolled_back" in s]),
                 "probes_passed": lane.content_shape_probes_passed,
+                "diagnostic_warnings": summary.get("diagnostic_warnings", []),
                 "probe_mode": summary.get("probe_mode"),
                 "input_tokens": lane.budget_state.get("usage", {}).get("input_tokens", 0),
                 "output_tokens": lane.budget_state.get("usage", {}).get("output_tokens", 0),
@@ -4176,9 +5478,12 @@ def _write_e5_comparison(
         encoding="utf-8",
     )
     table = "\n".join(
-        f"| {row['lane']} | {row['terminal_state']} | {row['best_render'] or 'none'} "
+        f"| {row['lane']} | {row['terminal_state']}"
+        f"{(' (' + row['terminal_reason'] + ')') if row.get('terminal_reason') else ''} "
+        f"| {row['best_render'] or 'none'} "
         f"({row['render_label']}) | {row['findings']} | {row['confirmed_measurements']} | "
         f"{row['builder_calls']} | {row['improving_repairs']} | "
+        f"{', '.join(row['diagnostic_warnings']) or 'none'} | "
         f"{row['input_tokens']}/{row['output_tokens']} | {row['elapsed_seconds']} |"
         for row in rows
     )
@@ -4186,17 +5491,23 @@ def _write_e5_comparison(
         f"""# Pipeline E5 Builder-representation comparison — {out_dir.name}
 
 - Terminal state: **{record.summary.get('terminal_state')}**
+- Per-lane stop reason: {", ".join(
+  f"{lane}={state} ({record.summary.get('lane_terminal_reasons', {}).get(lane) or 'not recorded'})"
+  for lane, state in (record.summary.get('lanes') or {}).items()
+) or 'not recorded'} (`budget_exhausted` means a configured ceiling WAS hit;
+  `stalled_no_new_action` means the loop had no action left)
 - Question: which Builder representation gives the Agent a practical path
   toward convergence WITHOUT target-specific backend code?
 - This report declares NO winner; the owner decides from `owner_review/`.
-- BEST labels mark a real best-valid render; ACTIVE DEFECT-LEVEL VERSION
-  marks a defect-level promoted active render when no hard-gate-valid best
+- BEST labels mark a safety-valid render; non-blocking checks remain visible
+  as diagnostics. ACTIVE DEFECT-LEVEL VERSION marks a promoted active
+  render when no safety-valid best
   exists (a local improvement, never BEST); ACTIVE UNPROMOTED VERSION marks
   the lane's current active render that never earned promotion; a
   rolled-back attempt is never shown as the lane's output.
 
-| lane | terminal | best render | findings | confirmed | builder calls | improving repairs | tokens in/out | elapsed s |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| lane | terminal | best render | findings | confirmed | builder calls | improving repairs | diagnostics | tokens in/out | elapsed s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 {table}
 
 ## Non-claims
@@ -4276,6 +5587,27 @@ def _write_e5_owner_package(
         shutil.copy2(lane_pdf, package / f"lane_{lane_id}_{kind}.pdf")
         if lane_html.exists():
             shutil.copy2(lane_html, package / f"lane_{lane_id}_{kind}.html")
+    # Keep the bounded repair attempt visible even when the shell correctly
+    # rolls it back: owner review needs BEFORE and AFTER, not only BEST.
+    repair_artifacts: list[str] = []
+    for lane_id, lane in record.lanes.items():
+        if len(lane.render_versions) < 2:
+            continue
+        lane_dir = out_dir / f"lane_{lane_id}"
+        initial_pdf = lane_dir / "render_1.pdf"
+        repaired_pdf = lane_dir / f"render_{len(lane.render_versions)}.pdf"
+        if not initial_pdf.exists() or not repaired_pdf.exists():
+            continue
+        shutil.copy2(initial_pdf, package / f"lane_{lane_id}_initial.pdf")
+        shutil.copy2(repaired_pdf, package / f"lane_{lane_id}_repaired.pdf")
+        repair_artifacts.extend((f"lane_{lane_id}_initial.pdf", f"lane_{lane_id}_repaired.pdf"))
+        for page in range(1, max(v.page_count for v in lane.render_versions) + 1):
+            before = lane_dir / f"render_1_page_{page}.png"
+            after = lane_dir / f"render_{len(lane.render_versions)}_page_{page}.png"
+            if before.exists() or after.exists():
+                name = f"lane_{lane_id}_before_after_page_{page}.png"
+                _side_by_side([("BEFORE", before), ("REPAIRED", after)], package / name)
+                repair_artifacts.append(name)
     # Probe outputs.
     for lane_id in record.lanes:
         probes = out_dir / f"lane_{lane_id}" / "content_shape_probes.json"
@@ -4397,6 +5729,9 @@ def _write_e5_owner_package(
   current output);
 - `lane_*_latest_attempt.html/.pdf` — latest attempt for a lane with NO
   active version at all (explicitly not BEST);
+- `lane_*_initial.pdf`, `lane_*_repaired.pdf`, and
+  `lane_*_before_after_page_N.png` — the bounded repair evidence, retained
+  even when the repaired candidate was rolled back ({', '.join(repair_artifacts) or 'no repair attempted'});
 - `lane_*_content_shape_probes.json` — short/medium/long probe outcomes;
   probes marked diagnostic ran on a latest attempt and are NOT promotion
   evidence;

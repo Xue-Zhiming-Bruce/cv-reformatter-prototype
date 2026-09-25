@@ -47,6 +47,16 @@ class ApprovedProfileVersion(BaseModel):
     approved_at: str
     reviewer_note: str | None = None
 
+    @property
+    def profile_revision_id(self) -> str:
+        """Revision name for the legacy on-disk ``profile_version_id`` field."""
+        return self.profile_version_id
+
+    @property
+    def created_at(self) -> str:
+        """Creation time stored in the legacy ``approved_at`` field."""
+        return self.approved_at
+
 
 def profile_sha256(profile: CandidateProfile) -> str:
     """Stable checksum of a CandidateProfile (no secrets: hashed only)."""
@@ -125,6 +135,26 @@ def save_approved_profile(
     return version
 
 
+def save_profile_revision(
+    artifact_dir: str | Path,
+    *,
+    artifact_id: str,
+    profile: CandidateProfile,
+    source_draft_sha256: str,
+) -> ApprovedProfileVersion:
+    """Save an immutable revision in the existing profile-version store.
+
+    The legacy schema/file names are retained only for migration compatibility;
+    no human approval is implied.
+    """
+    return save_approved_profile(
+        artifact_dir,
+        artifact_id=artifact_id,
+        profile=profile,
+        source_draft_sha256=source_draft_sha256,
+    )
+
+
 def load_approved_profile_version(
     artifact_dir: str | Path, version_id: str
 ) -> ApprovedProfileVersion | None:
@@ -137,6 +167,13 @@ def load_approved_profile_version(
         return ApprovedProfileVersion.model_validate(payload)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise ProfileApprovalError(f"Approved profile version is invalid: {exc}") from exc
+
+
+def load_profile_revision(
+    artifact_dir: str | Path, revision_id: str
+) -> ApprovedProfileVersion | None:
+    """Transitional reader over the existing immutable version files."""
+    return load_approved_profile_version(artifact_dir, revision_id)
 
 
 def load_current_approved_profile(
