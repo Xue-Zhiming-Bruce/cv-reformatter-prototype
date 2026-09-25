@@ -18,11 +18,11 @@ from app.template_analysis.design_evidence import (
     target_checksum_from_bytes,
 )
 from app.template_analysis.design_service import (
-    DESIGN_STRATEGY_CLAUDE,
     DESIGN_STRATEGY_EXISTING,
     DESIGN_STRATEGY_MEASURED,
-    DESIGNER_CLAUDE,
+    DESIGN_STRATEGY_OPENAI,
     DESIGNER_DETERMINISTIC,
+    DESIGNER_OPENAI,
     DesignService,
     DesignServiceError,
     design_dir_for,
@@ -76,9 +76,9 @@ def test_default_strategy_is_measured_template(monkeypatch: pytest.MonkeyPatch) 
     assert get_design_strategy() == DESIGN_STRATEGY_MEASURED
 
 
-def test_claude_strategy_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TEMPLATE_DESIGN_STRATEGY", "claude_designer")
-    assert get_design_strategy() == DESIGN_STRATEGY_CLAUDE
+def test_openai_strategy_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEMPLATE_DESIGN_STRATEGY", "openai_designer")
+    assert get_design_strategy() == DESIGN_STRATEGY_OPENAI
 
 
 def test_invalid_strategy_value_falls_back_to_measured_template(
@@ -145,7 +145,7 @@ def test_cache_key_includes_all_versions() -> None:
         assert field in payload
     # Any single version change must change the cache id.
     variants = [
-        {**payload, "designer_model": "claude-3-5-sonnet"},
+        {**payload, "designer_model": "gpt-5.4-mini"},
         {**payload, "prompt_version": "designer/system-v2"},
         {**payload, "compiler_version": "2"},
         {**payload, "evidence_version": "2.0"},
@@ -234,7 +234,7 @@ def test_approval_requires_validated_state() -> None:
 def test_provider_failure_produces_structured_state() -> None:
     tmp, tmp_path, artifact_dir, evidence, style_spec, sections, profile = _setup()
     service = DesignService(
-        strategy=DESIGN_STRATEGY_CLAUDE,
+        strategy=DESIGN_STRATEGY_OPENAI,
         cache=DesignCache(tmp_path / "cache"),
         designer=_FailingDesigner(),
     )
@@ -257,12 +257,12 @@ def test_provider_failure_produces_structured_state() -> None:
     tmp.cleanup()
 
 
-def test_claude_designer_is_live_gated(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_openai_designer_is_live_gated(monkeypatch: pytest.MonkeyPatch) -> None:
     tmp, tmp_path, artifact_dir, evidence, style_spec, sections, profile = _setup()
     monkeypatch.delenv("TEMPLATE_DESIGN_LIVE_ENABLED", raising=False)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
     service = DesignService(
-        strategy=DESIGN_STRATEGY_CLAUDE,
+        strategy=DESIGN_STRATEGY_OPENAI,
         cache=DesignCache(tmp_path / "cache"),
     )
     state = service.create_design(
@@ -271,7 +271,7 @@ def test_claude_designer_is_live_gated(monkeypatch: pytest.MonkeyPatch) -> None:
         evidence=evidence,
         candidate_sections=sections,
         style_spec=style_spec,
-        designer=DESIGNER_CLAUDE,
+        designer=DESIGNER_OPENAI,
     )
     assert state.state == "provider_failed"
     assert state.trace is not None

@@ -2,6 +2,12 @@
 
 Status: `Accepted` (owner ruling, 2026-08-24; originally proposed 2026-08-09)
 
+> **[Amended] 2026-09-07, owner ruling (OpenAI-only):** the Anthropic
+> adapter (`AnthropicClaudeDesigner`) has been removed. OpenAI is the sole
+> live designer provider (`OpenAITemplateDesigner`). The boundary rules in
+> this ADR are unchanged and vendor-independent; the decision record above is
+> preserved as history.
+
 Owner: Backend
 
 ## Context

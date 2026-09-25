@@ -134,6 +134,7 @@ class MissingField(StrictModel):
 
 class CandidateProfile(StrictModel):
     full_name: str | None = None
+    current_title: str | None = None
     email: str | None = None
     phone: str | None = None
     location: str | None = None

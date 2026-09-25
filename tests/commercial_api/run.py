@@ -15,7 +15,6 @@ from app.extraction.candidate_schema import CandidateProfile, DisplayRule
 from app.generation.html_renderer import render_html
 from app.generation.template_mapper import build_client_render_context
 from tests.helpers.adobe_evidence import build_synthetic_target_analysis
-from app.template_analysis.visual_comparator import compare_pdf_layouts
 from app.validation.missing_fields import apply_missing_field_detection
 from tests.commercial_api.corpus import (
     CORPUS_DIR,
@@ -102,7 +101,7 @@ class Runner:
         self.requests_used = 0
 
         # Canonical environment loading: root .env first (single source of
-        # truth for shared credentials/Anthropic config, matching FastAPI's
+        # truth for shared credentials/OpenAI config, matching FastAPI's
         # bare load_dotenv()); explicit env files are used verbatim; missing
         # files are not an error - providers simply report not_configured.
         load_canonical_environment(self.env_file)
@@ -317,7 +316,7 @@ class Runner:
                 "external": status["execution"] == "external",
                 "selected": selected,
             }
-            if provider == "claude_designer":
+            if provider == "openai_designer":
                 # Record the exact configured model ID (explicit, never a
                 # moving *-latest value) for reproducibility.
                 entry["model_id"] = _explicit_model()
@@ -671,47 +670,16 @@ class Runner:
             expected_terms = render_context_terms(context.model_dump(mode="json"))
             pdf_name = str(outcome.normalized["pdf_path"])
             pdf_path = _output_artifact_path(artifacts, run_dir, pdf_name)
-            visual_similarity = self._visual_similarity(lane, case, run_dir, pdf_path)
             return evaluate_rendering(
                 pdf_path,
                 case,
                 expected_terms=expected_terms,
                 privacy_exclusions=list(case.privacy_exclusions),
-                visual_similarity=visual_similarity,
+                visual_similarity=None,
             )
         if lane == "design":
             return evaluate_design(outcome.normalized, case)
         raise ValueError(f"Unsupported lane: {lane}")  # pragma: no cover
-
-    def _visual_similarity(
-        self, lane: str, case: Any, run_dir: Path, pdf_path: Path
-    ) -> float | None:
-        if lane != "rendering" or case.case_id != "controlled_docx_to_pdf":
-            return None
-        baseline_candidates = list(
-            (
-                run_dir
-                / "cases"
-                / "rendering"
-                / case.case_id
-                / "libreoffice"
-                / "artifacts"
-            ).glob("*.pdf")
-        )
-        if not baseline_candidates:
-            return None
-        baseline_pdf = baseline_candidates[0]
-        if baseline_pdf == pdf_path:
-            return None
-        try:
-            comparison = compare_pdf_layouts(
-                baseline_pdf,
-                pdf_path,
-                pdf_path.parent / "vs_libreoffice",
-            )
-        except Exception:
-            return None
-        return round(comparison.average_layout_similarity, 4)
 
     # -- helpers ------------------------------------------------------------
 
@@ -760,10 +728,7 @@ def _all_adapters() -> dict[tuple[str, str], ProviderAdapter]:
 
 def _provider_sort_key(lane: str, provider: str) -> tuple[int, str]:
     """Run the accepted baselines before alternative providers."""
-    baseline_rank = 0 if (
-        (lane == "rendering" and provider == "libreoffice")
-        or (lane == "design" and provider == "mock_designer")
-    ) else 1
+    baseline_rank = 0 if lane == "design" and provider == "mock_designer" else 1
     return baseline_rank, provider
 
 
@@ -811,7 +776,6 @@ def _runtime_info() -> RuntimeInfo:
     package_names = (
         "pydantic",
         "openai",
-        "anthropic",
         "httpx",
         "pypdf",
         "pypdfium2",

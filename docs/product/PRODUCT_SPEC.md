@@ -4,7 +4,7 @@ Status: `Active product contract`
 
 Owner: Product and backend
 
-Last reviewed: August 28, 2026
+Last reviewed: September 5, 2026
 
 This document defines what CV Reformatter must do and the product boundaries
 that implementations must preserve. It does not serve as an engineering
@@ -36,7 +36,8 @@ who needs to:
 - review and correct the extracted information;
 - identify recruiter-critical missing information;
 - apply recruiter or client branding;
-- edit content in an HTML surface in the interface and prepare visually consistent PDF submissions;
+- edit content in the surface appropriate to the uploaded resume format and
+  prepare a same-format client submission;
 - draft a follow-up message for missing candidate details.
 
 ## Required Workflow
@@ -48,9 +49,10 @@ Candidate resume
 -> missing and sensitive field review
 -> recruiter corrections and disclosure choices
 -> client-facing render context
--> approved layout template
--> editable HTML surface in the interface
--> headless-Chrome PDF deliverable
+-> approved same-format layout template
+-> format-preserving render lane:
+   PDF  -> editable HTML surface -> headless-Chrome PDF
+   DOCX -> editable DOCX          -> DOCX
 -> independent quality gates
 ```
 
@@ -179,13 +181,20 @@ The candidate resume supplies candidate content. The accepted baseline supports:
 
 Scanned or photographed resumes remain unsupported until OCR enters scope.
 
+The uploaded candidate format selects the product lane. A PDF candidate remains
+in the PDF lane; a DOCX candidate remains in the DOCX lane. When a recruiter
+also supplies a target format, it must have the same format as the candidate
+resume. Cross-format conversion is not a supported product workflow.
+
 ### Recruiter target format
 
 The recruiter target supplies presentation behavior only.
 
-- A supported DOCX can be analyzed or used as a controlled template source.
+- A supported DOCX can be analyzed or used as a controlled template source in
+  the DOCX lane.
 - A supported text-based PDF is a target-style source, not candidate data and
-  not a directly editable template.
+  not a directly editable template. It drives the editable HTML surface in the
+  PDF lane.
 - PDF analysis may contribute page geometry, typography, colors, rules,
   regions, and reviewed branding assets.
 - Generated decoration follows the selected target presentation. Visual rules
@@ -216,8 +225,9 @@ target document
 
 ClientFacingRenderContext + LayoutTemplateSpec
 -> renderer-specific RenderPlan
--> editable HTML surface in the interface
--> headless-Chrome PDF deliverable
+-> format-preserving render lane:
+   PDF  -> editable HTML surface -> headless-Chrome PDF
+   DOCX -> editable DOCX          -> DOCX
 ```
 
 The layout contract must support safe content reflow. It must not achieve visual
@@ -233,8 +243,10 @@ the renderer must not invent a generic target section to place them silently.
 
 The product must produce:
 
-1. Editable rendered HTML surface in the interface (not raw-source editing).
-2. Client-ready formatted CV as PDF.
+1. A format-appropriate editable surface: rendered HTML for the PDF lane, or
+   an editable DOCX for the DOCX lane. Raw HTML-source editing is not supported.
+2. A client-ready CV in the same format as the uploaded candidate: PDF from
+   the PDF lane or DOCX from the DOCX lane.
 3. Missing-information checklist for the recruiter.
 4. Draft candidate follow-up message.
 5. Debug and reproducibility artifacts, including:
@@ -245,7 +257,7 @@ The product must produce:
    - validated layout-template JSON;
    - target page PNGs and diagnostic overlays;
    - generated-versus-target comparison JSON and difference images;
-   - editable HTML surface and generated PDF;
+   - the format-appropriate editable surface and generated PDF or DOCX;
    - schema, provider, prompt, model, renderer, font, and checksum metadata.
 
 ## Quality Gates
@@ -272,7 +284,7 @@ baseline includes:
 
 - DOCX and text-based PDF candidate extraction;
 - strict `CandidateProfile` validation;
-- OpenAI and Anthropic extraction abstraction plus deterministic mock mode;
+- OpenAI extraction, with deterministic provider stubs confined to tests;
 - missing-field detection and follow-up drafting;
 - disclosure and blind-profile render behavior;
 - target DOCX/PDF analysis into `LayoutTemplateSpec`;
@@ -283,6 +295,13 @@ baseline includes:
 - FastAPI process, target-format, generation, artifact, preview, and download
   endpoints;
 - local filesystem artifacts and a transitional SQLite metadata index.
+
+The accepted implementation baseline covers the PDF lane. A minimal native
+DOCX lane is implemented but is not yet an accepted fidelity baseline; that
+requires the versioned DOCX corpus and visual acceptance gate.
+ADR [0007](../decisions/0007-format-preserving-pdf-and-docx-lanes.md) governs
+the two-lane direction and partially supersedes ADR 0006's single-renderer
+scope.
 
 Future changes must preserve this baseline until a measured replacement passes
 the relevant corpus and rollback behavior is proven.

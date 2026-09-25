@@ -4,7 +4,7 @@ Status: `Active contract`
 
 Owner: Backend
 
-Last reviewed: August 28, 2026
+Last reviewed: September 5, 2026
 
 This document records the current MVP-compatible backend interface used by the
 frontend. It is not a complete versioned OpenAPI replacement; the FastAPI
@@ -25,9 +25,16 @@ Request:
 Unsupported candidate inputs include images and scanned PDFs without
 extractable text.
 
+The candidate file selects a format-preserving workflow lane. PDF candidates
+produce editable HTML and PDF; DOCX candidates will produce editable DOCX and
+DOCX. If a target format is uploaded, its format must match the candidate
+format. Cross-format requests are unsupported under
+[ADR 0007](../decisions/0007-format-preserving-pdf-and-docx-lanes.md).
+
 Response fields:
 
 - `artifact_id`;
+- `workflow_lane` — typed `pdf` or `docx`, derived from the candidate filename;
 - `profile`;
 - `ledger`;
 - `original_text` — the preserved extracted text, stored as
@@ -77,6 +84,7 @@ Response fields:
 
 The `target_format` object includes:
 
+- `workflow_lane` — typed `pdf` or `docx`;
 - `analysis_status`;
 - `used_as_template_source`;
 - `style_spec_url` (compatibility field name; points to the artifact-root
@@ -137,7 +145,9 @@ Request JSON:
 - `artifact_id` — must reference the artifact that owns the approved profile;
 - optional `target_format`;
 - optional `design_id` (approved designer template);
-- optional `allow_existing_template`.
+- optional `allow_existing_template`;
+- optional `output_format` — an assertion that must match the candidate lane;
+  it never requests conversion.
 - deprecated `allow_built_in_fallback` — retained for request compatibility but
   never honored for an uploaded target. Unsupported targets must be replaced or
   re-analyzed; the built-in template is only a normal no-target choice.
@@ -153,19 +163,20 @@ the persisted approved profile bound to `approved_profile_version_id`, merged
 with the request's disclosure choices. There is no silent fallback to an
 unapproved template.
 
-Response fields:
+The response is a discriminated union keyed by `workflow_lane`.
+
+Common response fields:
 
 - `artifact_id`;
-- `html_surface_url` (rendered interface surface, not raw-source editing);
-- `pdf_download_url`;
-- `pdf_preview_url`;
 - `artifact_metadata_url`;
-- `visual_comparison_url`;
-- `visual_comparison`;
-- `visual_comparison_artifact_urls`;
 - `followup_message`;
 - `missing_fields`;
 - `debug_artifacts`.
+
+The `pdf` response additionally returns `html_surface_url`,
+`pdf_download_url`, `pdf_preview_url`, and the visual-comparison fields. The
+`docx` response returns `docx_download_url` and no HTML/PDF URLs. OpenAPI uses
+`workflow_lane` as the discriminator.
 
 Every successful generation also persists `production_render_plan.json`. It
 binds the current immutable approved profile version and checksum to the exact
@@ -175,11 +186,12 @@ approved profile. Preserved optional/custom source blocks enter generated
 content only after the recruiter approves their explicit `show` disposition;
 `hide` entries remain accounted for but are not rendered.
 
-The HTML surface and Adobe-exported PDF are generated from the same approved
-profile, disclosure rules, blind-profile state, and target-format reference.
-Every successful generation persists `content_validation.json`. If approved
-source-owned content is absent from the PDF, generation returns HTTP 500 with
-`error_code=generated_content_incomplete` and the missing items.
+The editable surface and final native output are generated from the same
+approved profile, disclosure rules, blind-profile state, and target-format
+reference. Every successful generation persists `content_validation.json`.
+DOCX generation additionally persists native `privacy_validation.json`,
+`structure_validation.json`, and `editability_validation.json` reports. A
+failed quality gate returns an explicit error and no cross-format fallback.
 
 ### Approval errors
 
@@ -197,9 +209,11 @@ profile version:
 | Optional/custom source block was silently removed from the approval payload | 409 | `source_content_unaccounted` |
 | Uploaded target analysis is unsupported (`analysis_status=fallback_to_built_in`) | 409 | `uploaded_target_fallback_removed` |
 | Uploaded target has only a legacy v1 artifact-level spec (`structure_contract=legacy`) | 409 | `measured_layout_spec_required` |
-| Designer strategy (`claude_designer`/`openai_designer`) without an approved design or without explicit `allow_existing_template=true` | 409 | `fallback_requires_approval` |
+| Designer strategy (`openai_designer`) without an approved design or without explicit `allow_existing_template=true` | 409 | `fallback_requires_approval` |
+| Candidate and target formats differ | 409 | `candidate_target_format_mismatch` |
+| Requested output format differs from the candidate lane | 409 | `cross_format_output_unsupported` |
 
-Target-based generation additionally requires an approved layout-proof set
+PDF-target-based generation additionally requires an approved layout-proof set
 (see `docs/archive/CONTENT_AND_LAYOUT_MODEL_PROPOSED_20260807.md`); missing, incomplete,
 failed, or mismatched proofs return HTTP 409 with `layout_proof_*` error
 codes. Design-driven generation additionally requires an approved design
@@ -240,6 +254,8 @@ access in the later storage stage.
 - Do not silently replace a requested target format with the built-in style.
 - Return clear errors for corrupt, scanned, unsupported, or unsafe files.
 - Keep generated PDF previews separate from original-resume previews.
+- Preserve the selected lane: PDF-to-PDF and DOCX-to-DOCX only.
+- Reject candidate/target format mismatches and cross-format output requests.
 - Add versioned machine-readable error codes during API-hardening work.
 - Never rewrite or delete `candidate_profile.json` or `raw_extracted_text.txt`
   outside extraction; generation ignores request-supplied `original_text`.

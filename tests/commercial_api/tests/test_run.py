@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.commercial_api import adapters as adapter_module
 from tests.commercial_api.compare import load_run_manifest
 from tests.commercial_api.corpus import case_by_id, load_corpus_manifest
 from tests.commercial_api.models import ArtifactRef, ProviderCapabilities, UsageRecord
@@ -15,14 +14,9 @@ from tests.commercial_api.registry import (
     InvalidProviderResult,
     ProviderAdapter,
     ProviderCallError,
-    ProviderNotConfigured,
 )
 from tests.commercial_api.report import render_report
-from tests.commercial_api.run import Runner, _output_artifact_path, _provider_sort_key
-from tests.commercial_api.providers import (
-    ProviderCallError as LegacyProviderCallError,
-    ProviderConfigurationError as LegacyProviderConfigurationError,
-)
+from tests.commercial_api.run import Runner, _output_artifact_path
 from tests.helpers.synthetic_pdf import build_plain_target_pdf
 
 
@@ -198,10 +192,10 @@ def test_authorized_local_layout_inputs_use_canonical_runner(
 def test_missing_credentials_produce_not_configured_not_failure(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.delenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", raising=False)
-    monkeypatch.delenv("AZURE_DOCUMENT_INTELLIGENCE_KEY", raising=False)
+    monkeypatch.delenv("ADOBE_PDF_SERVICES_CLIENT_ID", raising=False)
+    monkeypatch.delenv("ADOBE_PDF_SERVICES_CLIENT_SECRET", raising=False)
     runner = Runner(env_file=None, output_root=tmp_path / "out", live=False)
-    run_dir = runner.run(lanes={"layout"}, providers={"azure"})
+    run_dir = runner.run(lanes={"layout"}, providers={"adobe"})
     manifest = load_run_manifest(run_dir)
     assert manifest.results
     assert all(r.status == "not_configured" for r in manifest.results)
@@ -213,10 +207,10 @@ def test_missing_credentials_produce_not_configured_not_failure(
 def test_configured_external_without_live_is_skipped_not_called(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "https://fake.example")
-    monkeypatch.setenv("AZURE_DOCUMENT_INTELLIGENCE_KEY", "fake-key")
+    monkeypatch.setenv("ADOBE_PDF_SERVICES_CLIENT_ID", "fake-client")
+    monkeypatch.setenv("ADOBE_PDF_SERVICES_CLIENT_SECRET", "fake-key")
     runner = Runner(env_file=None, output_root=tmp_path / "out", live=False)
-    run_dir = runner.run(lanes={"layout"}, providers={"azure"})
+    run_dir = runner.run(lanes={"layout"}, providers={"adobe"})
     manifest = load_run_manifest(run_dir)
     assert manifest.results
     assert all(r.status == "skipped" for r in manifest.results)
@@ -238,23 +232,6 @@ def test_provider_failure_produces_structured_result(
     assert "provider exploded" in manifest.results[0].error_message
     assert all(len(r.attempts) == 1 for r in manifest.results)
     assert all(r.retry_count == 0 for r in manifest.results)
-
-
-def test_legacy_adapter_exceptions_are_translated(monkeypatch, tmp_path: Path) -> None:
-    def fail_call(_case_input: Path):
-        raise LegacyProviderCallError("legacy provider failure")
-
-    monkeypatch.setattr(adapter_module, "_run_azure_layout", fail_call)
-    adapter = adapter_module.AzureLayoutAdapter()
-    with pytest.raises(ProviderCallError, match="legacy provider failure"):
-        adapter.run(tmp_path / "synthetic.pdf", tmp_path / "artifacts")
-
-    def fail_configuration(_case_input: Path):
-        raise LegacyProviderConfigurationError("legacy configuration failure")
-
-    monkeypatch.setattr(adapter_module, "_run_azure_layout", fail_configuration)
-    with pytest.raises(ProviderNotConfigured, match="legacy configuration failure"):
-        adapter.run(tmp_path / "synthetic.pdf", tmp_path / "artifacts")
 
 
 def test_invalid_provider_response_fails_strict_validation(
@@ -340,16 +317,6 @@ def test_request_budget_caps_retry_attempts(tmp_path: Path, fake_registry) -> No
     assert result.status == "provider_failed"
 
 
-def test_rendering_provider_order_runs_libreoffice_first() -> None:
-    providers = ["aspose", "libreoffice", "adobe_render", "apryse_render"]
-
-    ordered = sorted(
-        providers, key=lambda provider: _provider_sort_key("rendering", provider)
-    )
-
-    assert ordered[0] == "libreoffice"
-
-
 def test_rendered_output_path_resolves_from_recorded_artifact(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     output = run_dir / "cases" / "rendering" / "candidate.pdf"
@@ -400,17 +367,16 @@ def test_report_generation_is_deterministic_from_stored_results(tmp_path: Path) 
 
 
 def test_artifacts_never_contain_configured_secrets(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "https://fake.example")
-    monkeypatch.setenv("AZURE_DOCUMENT_INTELLIGENCE_KEY", "sup3r-secret-key")
+    monkeypatch.setenv("ADOBE_PDF_SERVICES_CLIENT_ID", "fake-client")
+    monkeypatch.setenv("ADOBE_PDF_SERVICES_CLIENT_SECRET", "sup3r-secret-key")
     runner = Runner(env_file=None, output_root=tmp_path / "out", live=False)
-    run_dir = runner.run(lanes={"layout"}, providers={"azure"})
+    run_dir = runner.run(lanes={"layout"}, providers={"adobe"})
     for path in run_dir.rglob("*.json"):
         if path.name == "run_manifest.json":
             continue  # config_status is booleans only; still scanned below
         assert "sup3r-secret-key" not in path.read_text(encoding="utf-8")
     manifest_text = (run_dir / "run_manifest.json").read_text(encoding="utf-8")
     assert "sup3r-secret-key" not in manifest_text
-    assert "https://fake.example" not in manifest_text
 
 
 def test_summary_json_rows_point_at_result_paths(tmp_path: Path) -> None:
@@ -422,16 +388,16 @@ def test_summary_json_rows_point_at_result_paths(tmp_path: Path) -> None:
         assert (run_dir / row["result_path"]).is_file()
 
 
-def test_run_configuration_records_explicit_claude_model(
+def test_run_configuration_records_explicit_openai_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("ANTHROPIC_DESIGN_API_KEY", "sk-test")
-    monkeypatch.setenv("ANTHROPIC_DESIGN_MODEL", "claude-3-5-sonnet-20241022")
+    monkeypatch.setenv("OPENAI_DESIGN_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_DESIGN_MODEL", "gpt-5.4-mini")
     monkeypatch.setenv("TEMPLATE_DESIGN_LIVE_ENABLED", "1")
     runner = Runner(env_file=None, output_root=tmp_path / "out", live=False)
-    config = runner._run_configuration({"design"}, {"claude_designer"}, None)
-    entry = config.config_status["claude_designer"]
-    assert entry["model_id"] == "claude-3-5-sonnet-20241022"
+    config = runner._run_configuration({"design"}, {"openai_designer"}, None)
+    entry = config.config_status["openai_designer"]
+    assert entry["model_id"] == "gpt-5.4-mini"
     assert entry["configured"] is True
     assert not str(entry["model_id"]).lower().endswith("-latest")
 
@@ -439,12 +405,12 @@ def test_run_configuration_records_explicit_claude_model(
 def test_run_configuration_rejects_latest_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("ANTHROPIC_DESIGN_API_KEY", "sk-test")
-    monkeypatch.setenv("ANTHROPIC_DESIGN_MODEL", "claude-3-5-sonnet-latest")
+    monkeypatch.setenv("OPENAI_DESIGN_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_DESIGN_MODEL", "gpt-test-latest")
     monkeypatch.setenv("TEMPLATE_DESIGN_LIVE_ENABLED", "1")
     runner = Runner(env_file=None, output_root=tmp_path / "out", live=False)
-    config = runner._run_configuration({"design"}, {"claude_designer"}, None)
-    entry = config.config_status["claude_designer"]
+    config = runner._run_configuration({"design"}, {"openai_designer"}, None)
+    entry = config.config_status["openai_designer"]
     assert entry["model_id"] is None
     assert entry["configured"] is False
 

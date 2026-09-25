@@ -9,16 +9,8 @@ from typing import Any
 SENSITIVE_ENV_NAMES = (
     "OPENAI_EXTRACT_API_KEY",
     "OPENAI_API_KEY",
-    "AZURE_DOCUMENT_INTELLIGENCE_KEY",
-    "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT",
     "ADOBE_PDF_SERVICES_CLIENT_ID",
     "ADOBE_PDF_SERVICES_CLIENT_SECRET",
-    "APRYSE_LICENSE_KEY",
-    "ASPOSE_WORDS_LICENSE_PATH",
-    "ASPOSE_WORDS_METERED_PUBLIC_KEY",
-    "ASPOSE_WORDS_METERED_PRIVATE_KEY",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_DESIGN_API_KEY",
 )
 
 # Keys that are dropped/redacted wherever they appear in provider payloads.
@@ -30,14 +22,8 @@ SENSITIVE_ARTIFACT_KEYS = {
     "dowloaduri",
     "downloaduri",
     "operation-location",
-    "apim-subscription-key",
     "authorization",
     "x-api-key",
-    "ocp-apim-subscription-key",
-    "licensekey",
-    "license_key",
-    "meteredprivatekey",
-    "metered_private_key",
 }
 
 _SIGNED_URL_PATTERN = re.compile(r"https://[^\s?]+[?&#][^\s]+")

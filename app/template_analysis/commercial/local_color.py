@@ -135,6 +135,7 @@ def enrich_rules_from_local_pdf(
     """Record long horizontal separators; short underlines stay excluded."""
 
     rules: list[NormalizedRule] = []
+    warnings = list(normalized.warnings)
     lines_by_page: dict[int, list[dict[str, object]]] = {}
     with pdfplumber.open(pdf_path) as pdf:
         for page_number, page in enumerate(pdf.pages, start=1):
@@ -158,8 +159,9 @@ def enrich_rules_from_local_pdf(
                     if item.get("stroking_color") is not None
                     else item.get("non_stroking_color")
                 )
-                if color is None:
-                    continue
+                color_inferred = color is None
+                if color_inferred:
+                    color = "#000000"
                 left, right = min(x0, x1), max(x0, x1)
                 overlapping_words = [
                     word
@@ -177,6 +179,11 @@ def enrich_rules_from_local_pdf(
                     if float(word["top"]) >= bottom - 0.1
                 ]
                 element_id = f"local.page.{page_number}.rule.{object_index}"
+                if color_inferred:
+                    warnings.append(
+                        f"Rule '{element_id}' has no measurable stroke color; "
+                        "#000000 is an inferred PDF graphics-state default."
+                    )
                 rules.append(
                     NormalizedRule(
                         element_id=element_id,
@@ -203,7 +210,12 @@ def enrich_rules_from_local_pdf(
                             source="local_pdf",
                             provider="pdfplumber",
                             source_element_id=element_id,
-                            method="long_horizontal_line_or_thin_rectangle",
+                            method=(
+                                "long_horizontal_line_or_thin_rectangle;"
+                                "stroke_color_default_black_unmeasured"
+                                if color_inferred
+                                else "long_horizontal_line_or_thin_rectangle"
+                            ),
                         ),
                     )
                 )
@@ -211,6 +223,7 @@ def enrich_rules_from_local_pdf(
         update={
             "rules": rules,
             "graphic_count": max(normalized.graphic_count, len(rules)),
+            "warnings": warnings,
         }
     )
     return _enrich_section_spacing(enriched, lines_by_page)

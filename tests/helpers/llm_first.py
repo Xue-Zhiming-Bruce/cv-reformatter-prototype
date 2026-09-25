@@ -5,7 +5,7 @@ segmentation path. These helpers drive it end-to-end with MockLLMClient so
 unit and integration tests never call a live provider.
 """
 
-from app.extraction.llm_extractor import MockLLMClient
+from tests.helpers.mock_llm import MockLLMClient
 from app.extraction.llm_segmentation import (
     materialize_llm_segmentation,
     segment_and_extract_resume,

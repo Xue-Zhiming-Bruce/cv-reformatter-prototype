@@ -245,6 +245,7 @@ def build_candidate_block_binding_plan(
 
 _PROFILE_FIELD_SOURCES: dict[str, CandidateBlockSource] = {
     "full_name": "contact",
+    "current_title": "contact",
     "email": "contact",
     "phone": "contact",
     "location": "contact",

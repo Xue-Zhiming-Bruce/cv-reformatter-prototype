@@ -13,8 +13,8 @@ from tests.commercial_api.redaction import (
 
 
 def test_sanitize_text_removes_configured_secret(monkeypatch) -> None:
-    monkeypatch.setenv("APRYSE_LICENSE_KEY", "super-secret-license")
-    result = sanitize_text("failed with APRYSE_LICENSE_KEY=super-secret-license here")
+    monkeypatch.setenv("ADOBE_PDF_SERVICES_CLIENT_SECRET", "super-secret-license")
+    result = sanitize_text("failed with ADOBE_PDF_SERVICES_CLIENT_SECRET=super-secret-license here")
     assert "super-secret-license" not in result
     assert "[REDACTED]" in result
 
@@ -54,6 +54,6 @@ def test_assert_no_secrets_passes_for_clean_payload(monkeypatch) -> None:
 
 
 def test_text_contains_secret_detects_configured_value(monkeypatch) -> None:
-    monkeypatch.setenv("AZURE_DOCUMENT_INTELLIGENCE_KEY", "az-key-123")
-    assert text_contains_secret("key is az-key-123 here")
+    monkeypatch.setenv("ADOBE_PDF_SERVICES_CLIENT_SECRET", "adobe-key-123")
+    assert text_contains_secret("key is adobe-key-123 here")
     assert not text_contains_secret("nothing sensitive")

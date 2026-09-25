@@ -6,14 +6,15 @@ import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager
+from hashlib import sha256
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import httpx
 
 from app.extraction.candidate_document_analyzer import (
@@ -36,7 +37,6 @@ from app.extraction.coverage_audit import (
 )
 from app.extraction.llm_segmentation import (
     LLM_SEGMENTATION_PROMPT_VERSION,
-    LLMSegmentationOutput,
     SegmentationRunMetadata,
     materialize_llm_segmentation,
     segment_and_extract_resume,
@@ -47,13 +47,25 @@ from app.generation.content_validation import (
     validate_generated_content,
     validate_output_structure,
 )
+from app.generation.docx_renderer import DocxRenderingError, render_docx
+from app.generation.docx_validation import (
+    validate_docx_editability,
+    validate_docx_privacy,
+    validate_docx_structure,
+)
 from app.generation.followup_message_generator import generate_followup_message
 from app.generation.html_renderer import HtmlRenderingError, render_html
 from app.generation.render_plan import build_production_render_plan
 from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME, build_client_render_context
 from app.ingestion.docx_reader import read_docx
 from app.ingestion.file_validator import CorruptedFileError, UnsupportedFileTypeError
-from app.ingestion.pdf_reader import CorruptedPdfError, EmptyPdfTextError, UnsupportedPdfTypeError, read_pdf_text
+from app.ingestion.pdf_reader import (
+    CorruptedPdfError,
+    EmptyPdfTextError,
+    PdfTextExtractionUnavailableError,
+    UnsupportedPdfTypeError,
+    read_pdf_text,
+)
 from app.profile_approval import (
     ApprovedProfileVersion,
     ProfileApprovalError,
@@ -128,16 +140,13 @@ from app.template_analysis.commercial.local_color import (
 )
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from app.template_analysis.design_schemas import (
-    CandidateSectionRole,
     DesignArtifactState,
     DesignProposal,
     DesignRequest,
     DesignState,
 )
 from app.template_analysis.design_service import (
-    DESIGN_STRATEGY_CLAUDE,
     DESIGN_STRATEGY_OPENAI,
-    DESIGNER_CLAUDE,
     DESIGNER_OPENAI,
     DESIGNER_DETERMINISTIC,
     DesignService,
@@ -147,13 +156,14 @@ from app.template_analysis.design_service import (
     load_design_state,
 )
 from app.validation.missing_fields import apply_missing_field_detection
+from app.workflow import WorkflowLane, require_same_lane, workflow_lane_for_filename
 
 load_dotenv()
 
 
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI):
-    # Non-secret startup observability: log the resolved Anthropic designer
+    # Non-secret startup observability: log the resolved OpenAI designer
     # configuration (model ID + live flag) so checker/runtime parity is
     # verifiable from the server log. Never logs the API key.
     live = (
@@ -162,11 +172,11 @@ async def _app_lifespan(app: FastAPI):
     )
     if live:
         model = (
-            os.getenv("ANTHROPIC_DESIGN_MODEL")
-            or os.getenv("ANTHROPIC_MODEL")
+            os.getenv("OPENAI_DESIGN_MODEL")
+            or os.getenv("OPENAI_MODEL")
             or "unset"
         )
-        print(f"Anthropic client: model={model} live_enabled=true", flush=True)
+        print(f"OpenAI client: model={model} live_enabled=true", flush=True)
     yield
 
 
@@ -179,6 +189,7 @@ LOCAL_DATABASE_PATH = Path(os.getenv("LOCAL_DATABASE_PATH", str(DEFAULT_DATABASE
 DOWNLOADABLE_ARTIFACT_FILENAMES = {
     "candidate_profile.html",
     "candidate_profile.pdf",
+    "candidate_profile.docx",
     "original_resume_preview.pdf",
     "target_format_reference.pdf",
     "target_format_template.docx",
@@ -213,8 +224,8 @@ class TargetFormatMetadata(BaseModel):
     artifact_id: str
     input_filename: str
     stored_filename: str
-    input_type: str
-    role: str
+    input_type: WorkflowLane
+    role: Literal["pdf_reference", "docx_template"]
     generation_strategy: str
     accepted_for_generation: bool
     used_as_template_source: bool
@@ -229,10 +240,25 @@ class TargetFormatMetadata(BaseModel):
     # a limited-capability analysis is never silently presented as full.
     structure_contract: str | None = None
     unsupported_features: list[str] = Field(default_factory=list)
+    workflow_lane: WorkflowLane
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_legacy_lane(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "workflow_lane" not in value:
+            value = {**value, "workflow_lane": value.get("input_type")}
+        return value
+
+    @model_validator(mode="after")
+    def require_matching_lane(self) -> "TargetFormatMetadata":
+        if self.workflow_lane != self.input_type:
+            raise ValueError("workflow_lane must match target input_type")
+        return self
 
 
 class ProcessResponse(BaseModel):
     artifact_id: str
+    workflow_lane: WorkflowLane
     profile: CandidateProfile
     ledger: LedgerSummary
     original_text: str
@@ -265,13 +291,11 @@ class GenerateRequest(BaseModel):
     design_id: str | None = None
     allow_existing_template: bool = False
     allow_built_in_fallback: bool = False
+    output_format: WorkflowLane | None = None
 
 
-class GenerateResponse(BaseModel):
+class GenerateResponseBase(BaseModel):
     artifact_id: str
-    html_surface_url: str
-    pdf_download_url: str
-    pdf_preview_url: str
     artifact_metadata_url: str
     followup_message: str
     missing_fields: list[MissingField]
@@ -282,6 +306,24 @@ class GenerateResponse(BaseModel):
     design_id: str | None = None
     template_version: str | None = None
     profile_sha256: str | None = None
+
+
+class PdfGenerateResponse(GenerateResponseBase):
+    workflow_lane: Literal[WorkflowLane.PDF] = WorkflowLane.PDF
+    html_surface_url: str
+    pdf_download_url: str
+    pdf_preview_url: str
+
+
+class DocxGenerateResponse(GenerateResponseBase):
+    workflow_lane: Literal[WorkflowLane.DOCX] = WorkflowLane.DOCX
+    docx_download_url: str
+
+
+GenerateResponse = Annotated[
+    PdfGenerateResponse | DocxGenerateResponse,
+    Field(discriminator="workflow_lane"),
+]
 
 
 class FollowupRequest(BaseModel):
@@ -301,6 +343,7 @@ class ArtifactMetadataResponse(BaseModel):
     artifact_dir: str
     source_filename: str | None = None
     source_file_type: str | None = None
+    workflow_lane: WorkflowLane | None = None
     original_pdf_preview_url: str | None = None
     original_preview_error: str | None = None
     target_format_role: str | None = None
@@ -311,6 +354,7 @@ class ArtifactMetadataResponse(BaseModel):
     html_surface_url: str | None = None
     pdf_download_url: str | None = None
     pdf_preview_url: str | None = None
+    docx_download_url: str | None = None
     needs_review_count: int | None = None
     missing_field_labels: list[str] = Field(default_factory=list)
     debug_artifacts: dict[str, str] = Field(default_factory=dict)
@@ -452,6 +496,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
             status_code=400,
             detail="Only .docx and text-based .pdf candidate resumes are supported in this milestone.",
         )
+    workflow_lane = workflow_lane_for_filename(file.filename)
 
     contents = await file.read()
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -467,6 +512,8 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except CorruptedPdfError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except PdfTextExtractionUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except EmptyPdfTextError as exc:
             raise HTTPException(
                 status_code=400,
@@ -565,6 +612,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
             artifact_dir=artifact_dir,
             source_filename=file.filename,
             source_file_type=suffix.removeprefix("."),
+            workflow_lane=workflow_lane.value,
             original_pdf_preview_url=original_pdf_preview_url,
             original_preview_error=original_preview_error,
             missing_fields=profile.missing_fields,
@@ -575,6 +623,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
 
     return ProcessResponse(
         artifact_id=artifact_id,
+        workflow_lane=workflow_lane,
         profile=profile,
         ledger=_build_ledger(profile),
         original_text=extracted_text,
@@ -599,9 +648,24 @@ async def upload_target_format(
             status_code=400,
             detail="Only .docx target templates and .pdf visual reference samples are supported in the MVP.",
         )
+    target_lane = workflow_lane_for_filename(file.filename)
 
     resolved_artifact_id = artifact_id or _new_artifact_id()
     artifact_dir = _prepare_artifact_dir(resolved_artifact_id, allow_existing=True)
+    candidate_lane = _candidate_workflow_lane(resolved_artifact_id, artifact_dir)
+    if candidate_lane is not None:
+        try:
+            require_same_lane(candidate_lane, target_lane, other_name="targets")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "candidate_target_format_mismatch",
+                    "message": str(exc),
+                    "candidate_lane": candidate_lane.value,
+                    "target_format": target_lane.value,
+                },
+            ) from exc
     contents = await file.read()
     analyzed_style_spec: LayoutTemplateSpec | None = None
     if suffix == ".pdf":
@@ -856,9 +920,9 @@ def approve_profile(artifact_id: str, body: ProfileApproveRequest) -> ProfileApp
 def request_template_design(body: DesignRequestCreate) -> DesignResponse:
     """Request a template design for an artifact's analyzed target format.
 
-    The deterministic designer is the default. Claude is used only when
-    ``TEMPLATE_DESIGN_STRATEGY=claude_designer`` (or an explicit
-    ``designer="claude"``) and live calls are permitted. Failed or unsupported
+    The deterministic designer is the default. OpenAI is used only when
+    ``TEMPLATE_DESIGN_STRATEGY=openai_designer`` (or an explicit
+    ``designer="openai"``) and live calls are permitted. Failed or unsupported
     designs produce a structured design state; there is never a silent
     fallback to the built-in template.
     """
@@ -869,14 +933,13 @@ def request_template_design(body: DesignRequestCreate) -> DesignResponse:
         raise HTTPException(status_code=404, detail="Artifact not found.")
     if body.designer is not None and body.designer not in {
         DESIGNER_DETERMINISTIC,
-        DESIGNER_CLAUDE,
         DESIGNER_OPENAI,
     }:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Unknown designer '{body.designer}'. Supported: "
-                f"{DESIGNER_DETERMINISTIC}, {DESIGNER_CLAUDE}, {DESIGNER_OPENAI}."
+                f"{DESIGNER_DETERMINISTIC}, {DESIGNER_OPENAI}."
             ),
         )
     if not (body.approved_profile_version_id or "").strip():
@@ -1130,10 +1193,60 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         artifact_id,
         allow_existing=request.artifact_id is not None or target_format is not None,
     )
+    if target_format is not None and target_format.artifact_id == artifact_id:
+        _validate_target_format_reference(artifact_id, artifact_dir, target_format)
+    workflow_lane = _candidate_workflow_lane(artifact_id, artifact_dir)
+    if workflow_lane is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "workflow_lane_missing",
+                "message": "Generation requires a processed PDF or DOCX candidate resume.",
+                "options": ["process_candidate_resume"],
+            },
+        )
+    if request.output_format is not None:
+        try:
+            require_same_lane(workflow_lane, request.output_format, other_name="outputs")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "cross_format_output_unsupported",
+                    "message": str(exc),
+                    "workflow_lane": workflow_lane.value,
+                    "requested_output_format": request.output_format.value,
+                },
+            ) from exc
     if target_format is None and request.artifact_id is not None:
         target_format = _load_saved_target_format(artifact_dir)
     if target_format is not None and target_format.artifact_id != artifact_id:
         raise HTTPException(status_code=400, detail="target_format.artifact_id must match artifact_id.")
+    if target_format is not None:
+        try:
+            require_same_lane(
+                workflow_lane,
+                target_format.workflow_lane,
+                other_name="targets",
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "candidate_target_format_mismatch",
+                    "message": str(exc),
+                    "candidate_lane": workflow_lane.value,
+                    "target_format": target_format.input_type,
+                },
+            ) from exc
+    if workflow_lane == WorkflowLane.DOCX and request.design_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "docx_designer_unsupported",
+                "message": "Designer templates currently belong to the PDF lane; use a DOCX target or the native built-in DOCX layout.",
+            },
+        )
     fallback_warnings: list[str] = []
     if request.allow_built_in_fallback:
         fallback_warnings.append(
@@ -1230,7 +1343,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         design_template_version = design_state.template_version
         design_profile_sha256 = profile_sha256(reviewed_profile)
     elif (
-        get_design_strategy() in {DESIGN_STRATEGY_CLAUDE, DESIGN_STRATEGY_OPENAI}
+        get_design_strategy() == DESIGN_STRATEGY_OPENAI
         and target_format is not None
         and target_format.role in {"pdf_reference", "docx_template"}
         and target_format.used_as_template_source
@@ -1241,7 +1354,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
             detail={
                 "error_code": "fallback_requires_approval",
                 "message": (
-                    "TEMPLATE_DESIGN_STRATEGY=claude_designer requires an approved "
+                    "TEMPLATE_DESIGN_STRATEGY=openai_designer requires an approved "
                     "design before generation from a requested target format. "
                     "Approve a design for this artifact, or explicitly set "
                     "allow_existing_template=true to use the existing template path."
@@ -1252,10 +1365,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     elif (
         request.allow_existing_template
         and target_format is not None
-        and get_design_strategy() in {
-            DESIGN_STRATEGY_CLAUDE,
-            DESIGN_STRATEGY_OPENAI,
-        }
+        and get_design_strategy() == DESIGN_STRATEGY_OPENAI
     ):
         fallback_warnings.append(
             "EXPLICIT FALLBACK: allow_existing_template=true selected the "
@@ -1274,7 +1384,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         and target_format.used_as_template_source
         and style_spec is not None
     )
-    if uses_uploaded_target:
+    if uses_uploaded_target and workflow_lane == WorkflowLane.PDF:
         layout_proof_approval = _require_layout_proof_approval(
             artifact_dir=artifact_dir,
             artifact_id=artifact_id,
@@ -1283,6 +1393,21 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         )
     else:
         layout_proof_approval = None
+
+    if (
+        workflow_lane == WorkflowLane.DOCX
+        and uses_uploaded_target
+        and style_spec is not None
+        and style_spec.unsupported_features
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_code": "docx_target_unsupported",
+                "message": "The DOCX target uses structure the native renderer cannot preserve safely.",
+                "unsupported_features": list(style_spec.unsupported_features),
+            },
+        )
 
     normalized_document = _load_normalized_candidate_document(artifact_dir)
     effective_layout_spec = style_spec or built_in_layout_template_spec()
@@ -1297,6 +1422,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
 
     html_path = artifact_dir / "candidate_profile.html"
     pdf_path = artifact_dir / "candidate_profile.pdf"
+    docx_path = artifact_dir / "candidate_profile.docx"
 
     debug_artifacts = _write_debug_artifacts(
         artifact_dir=artifact_dir,
@@ -1321,17 +1447,20 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     _write_json(
         generation_metadata_path,
         {
+            "workflow_lane": workflow_lane.value,
             "layout_spec_sha256": production_render_plan.layout_spec_sha256,
             "layout_spec_filename": (
                 LAYOUT_SPEC_FILENAME if uses_uploaded_target else None
             ),
-            "fallback_warnings": fallback_warnings,
+            "fallback_warnings": production_render_plan.warnings,
         },
     )
     debug_artifacts["generation_metadata"] = str(generation_metadata_path)
 
     try:
-        if uses_uploaded_target:
+        if workflow_lane == WorkflowLane.DOCX:
+            render_docx(render_context, effective_layout_spec, docx_path)
+        elif uses_uploaded_target:
             # Approval-aware candidate renderer: renders only with an approved,
             # artifact-scoped, checksum-matched layout-proof approval.
             html_path, exported_pdf_path = render_candidate_document(
@@ -1347,18 +1476,24 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     except (
         HtmlRenderingError,
         HtmlToPdfExportError,
+        DocxRenderingError,
         FileNotFoundError,
         LayoutProofRenderError,
     ) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    if exported_pdf_path != pdf_path and exported_pdf_path.exists():
+    if (
+        workflow_lane == WorkflowLane.PDF
+        and exported_pdf_path != pdf_path
+        and exported_pdf_path.exists()
+    ):
         exported_pdf_path.replace(pdf_path)
 
     try:
         content_validation = validate_generated_content(
             render_context,
-            pdf_path=pdf_path,
+            pdf_path=pdf_path if workflow_lane == WorkflowLane.PDF else None,
+            docx_path=docx_path if workflow_lane == WorkflowLane.DOCX else None,
             layout_spec=effective_layout_spec,
         )
     except (OSError, ValueError) as exc:
@@ -1387,19 +1522,26 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         )
 
     try:
-        structure_validation = validate_output_structure(
-            render_context,
-            html_path=html_path,
-            layout_spec=effective_layout_spec,
-            pdf_path=pdf_path,
-            target_pdf_path=(
-                artifact_dir / "target_format_reference.pdf"
-                if uses_uploaded_target else None
-            ),
-            coverage_ledger=build_source_coverage_ledger(
-                approved_profile.profile, normalized_document
-            ),
-        )
+        if workflow_lane == WorkflowLane.DOCX:
+            structure_validation = validate_docx_structure(
+                render_context,
+                docx_path=docx_path,
+                layout_spec=effective_layout_spec,
+            )
+        else:
+            structure_validation = validate_output_structure(
+                render_context,
+                html_path=html_path,
+                layout_spec=effective_layout_spec,
+                pdf_path=pdf_path,
+                target_pdf_path=(
+                    artifact_dir / "target_format_reference.pdf"
+                    if uses_uploaded_target else None
+                ),
+                coverage_ledger=build_source_coverage_ledger(
+                    approved_profile.profile, normalized_document
+                ),
+            )
     except (OSError, ValueError) as exc:
         raise HTTPException(
             status_code=500,
@@ -1419,19 +1561,51 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
             detail={
                 "error_code": "generated_structure_incomplete",
                 "message": (
-                    "Generated output does not match the expected entry "
-                    "structure (tiers, bullet state, ordering, bullet counts)."
+                    "Generated output does not match the expected native structure."
                 ),
                 "checks": [
                     check.model_dump(mode="json")
                     for check in structure_validation.checks
-                    if not check.matched or check.issues
+                    if (
+                        (hasattr(check, "matched") and not check.matched)
+                        or (hasattr(check, "passed") and not check.passed)
+                        or check.issues
+                    )
                 ],
             },
         )
 
-    debug_artifacts["generated_html"] = str(html_path)
-    debug_artifacts["generated_pdf"] = str(pdf_path)
+    if workflow_lane == WorkflowLane.DOCX:
+        privacy_validation = validate_docx_privacy(
+            reviewed_profile,
+            docx_path=docx_path,
+            blind_profile=request.blind_profile,
+        )
+        editability_validation = validate_docx_editability(docx_path=docx_path)
+        for name, report in (
+            ("privacy_validation", privacy_validation),
+            ("editability_validation", editability_validation),
+        ):
+            report_path = artifact_dir / f"{name}.json"
+            _write_json(report_path, report.model_dump(mode="json"))
+            debug_artifacts[name] = str(report_path)
+            if not report.passed:
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error_code": f"docx_{name}_failed",
+                        "message": f"Generated DOCX failed {name.replace('_', ' ')}.",
+                        "checks": [
+                            check.model_dump(mode="json")
+                            for check in report.checks
+                            if not check.passed
+                        ],
+                    },
+                )
+        debug_artifacts["generated_docx"] = str(docx_path)
+    else:
+        debug_artifacts["generated_html"] = str(html_path)
+        debug_artifacts["generated_pdf"] = str(pdf_path)
     if design_id is not None:
         debug_artifacts["design_id"] = design_id
         debug_artifacts["design_state"] = "approved"
@@ -1490,26 +1664,55 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
                     artifact_dir / page.difference_filename
                 )
 
+    output_path = docx_path if workflow_lane == WorkflowLane.DOCX else pdf_path
+    _write_json(
+        generation_metadata_path,
+        {
+            "workflow_lane": workflow_lane.value,
+            "renderer": (
+                "native_docx" if workflow_lane == WorkflowLane.DOCX else "html_chrome"
+            ),
+            "renderer_version": (
+                "native-docx/1.0" if workflow_lane == WorkflowLane.DOCX else "html-chrome/1.0"
+            ),
+            "layout_spec_sha256": production_render_plan.layout_spec_sha256,
+            "layout_spec_filename": LAYOUT_SPEC_FILENAME if uses_uploaded_target else None,
+            "template_version": effective_layout_spec.template_version,
+            "font_manifest": sorted(
+                {
+                    effective_layout_spec.body.font_family,
+                    effective_layout_spec.title.font_family,
+                    effective_layout_spec.heading.font_family,
+                }
+            ),
+            "output_sha256": sha256(output_path.read_bytes()).hexdigest(),
+            "fallback_warnings": production_render_plan.warnings,
+        },
+    )
+
+    html_url = _artifact_url(artifact_id, "candidate_profile.html")
+    pdf_url = _artifact_url(artifact_id, "candidate_profile.pdf")
+    docx_url = _artifact_url(artifact_id, "candidate_profile.docx")
+
     try:
         _local_artifact_store().record_generated_outputs(
             artifact_id=artifact_id,
             artifact_dir=artifact_dir,
             template_name=request.template_name,
             blind_profile=request.blind_profile,
-            html_surface_url=html_url,
-            pdf_download_url=pdf_url,
-            pdf_preview_url=pdf_url,
             missing_fields=reviewed_profile.missing_fields,
             debug_artifacts=debug_artifacts,
+            workflow_lane=workflow_lane.value,
+            html_surface_url=html_url if workflow_lane == WorkflowLane.PDF else None,
+            pdf_download_url=pdf_url if workflow_lane == WorkflowLane.PDF else None,
+            pdf_preview_url=pdf_url if workflow_lane == WorkflowLane.PDF else None,
+            docx_download_url=docx_url if workflow_lane == WorkflowLane.DOCX else None,
         )
     except LocalDatabaseError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    return GenerateResponse(
+    common_response = dict(
         artifact_id=artifact_id,
-        html_surface_url=html_url,
-        pdf_download_url=pdf_url,
-        pdf_preview_url=pdf_url,
         artifact_metadata_url=_artifact_metadata_url(artifact_id),
         followup_message=_draft_followup(reviewed_profile),
         missing_fields=reviewed_profile.missing_fields,
@@ -1520,6 +1723,14 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         design_id=design_id,
         template_version=design_template_version,
         profile_sha256=design_profile_sha256,
+    )
+    if workflow_lane == WorkflowLane.DOCX:
+        return DocxGenerateResponse(docx_download_url=docx_url, **common_response)
+    return PdfGenerateResponse(
+        html_surface_url=html_url,
+        pdf_download_url=pdf_url,
+        pdf_preview_url=pdf_url,
+        **common_response,
     )
 
 
@@ -1613,6 +1824,35 @@ def _prepare_artifact_dir(artifact_id: str, *, allow_existing: bool = False) -> 
     return artifact_dir
 
 
+def _candidate_workflow_lane(
+    artifact_id: str,
+    artifact_dir: Path,
+) -> WorkflowLane | None:
+    metadata = None
+    if LOCAL_DATABASE_PATH.exists():
+        try:
+            metadata = _local_artifact_store().get_artifact(artifact_id)
+        except LocalDatabaseError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+    lanes = {
+        lane
+        for lane in WorkflowLane
+        if (artifact_dir / f"source_resume.{lane.value}").is_file()
+    }
+    source_type = metadata.get("source_file_type") if metadata else None
+    if source_type in {lane.value for lane in WorkflowLane}:
+        lanes.add(WorkflowLane(source_type))
+    if len(lanes) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "workflow_lane_invalid",
+                "message": "Artifact contains conflicting candidate source formats.",
+            },
+        )
+    return next(iter(lanes), None)
+
+
 def _write_source_resume(artifact_dir: Path, *, suffix: str, contents: bytes) -> Path:
     source_path = artifact_dir / f"source_resume{suffix}"
     source_path.write_bytes(contents)
@@ -1665,11 +1905,14 @@ def _store_target_format(
 
     return TargetFormatMetadata(
         artifact_id=artifact_id,
+        workflow_lane=WorkflowLane(suffix.removeprefix(".")),
         input_filename=input_filename,
         stored_filename=stored_filename,
         input_type=suffix.removeprefix("."),
         role=role,
-        generation_strategy="html_adobe_renderer",
+        generation_strategy=(
+            "native_docx_renderer" if suffix == ".docx" else "html_chrome_renderer"
+        ),
         accepted_for_generation=True,
         used_as_template_source=False,
         download_url=_artifact_url(artifact_id, stored_filename),
@@ -1687,9 +1930,14 @@ def _validate_target_format_reference(
         "pdf_reference": "target_format_reference.pdf",
     }
     expected_filename = expected_filename_by_role.get(target_format.role)
+    expected_lane_by_role = {
+        "docx_template": WorkflowLane.DOCX,
+        "pdf_reference": WorkflowLane.PDF,
+    }
     if (
         target_format.artifact_id != artifact_id
         or expected_filename is None
+        or target_format.workflow_lane != expected_lane_by_role.get(target_format.role)
         or target_format.stored_filename != expected_filename
         or target_format.download_url != _artifact_url(artifact_id, expected_filename)
     ):

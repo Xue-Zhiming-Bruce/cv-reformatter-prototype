@@ -25,31 +25,25 @@ def _cli(
     )
 
 
-_CLAUDE_ENV_VARS = (
-    "ANTHROPIC_DESIGN_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_DESIGN_MODEL",
-    "ANTHROPIC_MODEL",
+_OPENAI_ENV_VARS = (
+    "OPENAI_DESIGN_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENAI_DESIGN_MODEL",
+    "OPENAI_MODEL",
     "TEMPLATE_DESIGN_LIVE_ENABLED",
 )
 
 
 def _clean_env() -> dict[str, str]:
-    """Host environment minus Claude config so each readiness test is
+    """Host environment minus OpenAI config so each readiness test is
     hermetic regardless of the machine's real settings."""
-    return {key: value for key, value in os.environ.items() if key not in _CLAUDE_ENV_VARS}
+    return {key: value for key, value in os.environ.items() if key not in _OPENAI_ENV_VARS}
 
 
 _PROVIDER_ENV_PREFIXES = (
     "ADOBE_",
-    "ANTHROPIC_",
-    "APRYSE_",
-    "ASPOSE_",
-    "AZURE_",
-    "FOXIT_",
     "LLM_PROVIDER",
     "OPENAI_",
-    "PDFREST_",
     "TEMPLATE_",
 )
 
@@ -77,12 +71,12 @@ def _readiness(tmp_path: Path, **values: str) -> dict[str, object]:
     result = _cli("check-config", "--env-file", str(env_file), env=_clean_env())
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    return payload["claude_designer_readiness"]
+    return payload["openai_designer_readiness"]
 
 
 def test_check_config_readiness_no_credentials(tmp_path: Path) -> None:
     readiness = _readiness(
-        tmp_path, ANTHROPIC_DESIGN_MODEL="claude-test-model", TEMPLATE_DESIGN_LIVE_ENABLED="1"
+        tmp_path, OPENAI_DESIGN_MODEL="gpt-test-model", TEMPLATE_DESIGN_LIVE_ENABLED="1"
     )
     assert readiness["credentials_configured"] is False
     assert readiness["model_configured"] is True
@@ -93,7 +87,7 @@ def test_check_config_readiness_no_credentials(tmp_path: Path) -> None:
 
 def test_check_config_readiness_no_explicit_model(tmp_path: Path) -> None:
     readiness = _readiness(
-        tmp_path, ANTHROPIC_DESIGN_API_KEY="sk-test", TEMPLATE_DESIGN_LIVE_ENABLED="1"
+        tmp_path, OPENAI_DESIGN_API_KEY="sk-test", TEMPLATE_DESIGN_LIVE_ENABLED="1"
     )
     assert readiness["model_configured"] is False
     assert readiness["ready_for_synthetic_live_run"] is False
@@ -102,8 +96,8 @@ def test_check_config_readiness_no_explicit_model(tmp_path: Path) -> None:
 def test_check_config_readiness_rejects_latest_model(tmp_path: Path) -> None:
     readiness = _readiness(
         tmp_path,
-        ANTHROPIC_DESIGN_API_KEY="sk-test",
-        ANTHROPIC_DESIGN_MODEL="claude-3-5-sonnet-latest",
+        OPENAI_DESIGN_API_KEY="sk-test",
+        OPENAI_DESIGN_MODEL="gpt-test-latest",
         TEMPLATE_DESIGN_LIVE_ENABLED="1",
     )
     assert readiness["model_configured"] is False
@@ -112,7 +106,7 @@ def test_check_config_readiness_rejects_latest_model(tmp_path: Path) -> None:
 
 def test_check_config_readiness_no_live_permission(tmp_path: Path) -> None:
     readiness = _readiness(
-        tmp_path, ANTHROPIC_DESIGN_API_KEY="sk-test", ANTHROPIC_DESIGN_MODEL="claude-test-model"
+        tmp_path, OPENAI_DESIGN_API_KEY="sk-test", OPENAI_DESIGN_MODEL="gpt-test-model"
     )
     assert readiness["live_permission_enabled"] is False
     assert readiness["ready_for_synthetic_live_run"] is False
@@ -121,14 +115,14 @@ def test_check_config_readiness_no_live_permission(tmp_path: Path) -> None:
 def test_check_config_readiness_live_permission_enabled(tmp_path: Path) -> None:
     readiness = _readiness(
         tmp_path,
-        ANTHROPIC_DESIGN_API_KEY="sk-test",
-        ANTHROPIC_DESIGN_MODEL="claude-test-model",
+        OPENAI_DESIGN_API_KEY="sk-test",
+        OPENAI_DESIGN_MODEL="gpt-test-model",
         TEMPLATE_DESIGN_LIVE_ENABLED="1",
     )
     assert readiness["live_permission_enabled"] is True
     assert readiness["credentials_configured"] is True
     assert readiness["model_configured"] is True
-    assert readiness["anthropic_package_installed"] is True
+    assert readiness["openai_package_installed"] is True
     assert readiness["ready_for_synthetic_live_run"] is True
 
 
@@ -136,15 +130,15 @@ def test_check_config_never_prints_values(tmp_path: Path) -> None:
     secret = "sk-very-secret-value-123"
     env_file = _write_env(
         tmp_path,
-        ANTHROPIC_DESIGN_API_KEY=secret,
-        ANTHROPIC_DESIGN_MODEL="claude-test-model",
+        OPENAI_DESIGN_API_KEY=secret,
+        OPENAI_DESIGN_MODEL="gpt-test-model",
         TEMPLATE_DESIGN_LIVE_ENABLED="1",
     )
     result = _cli("check-config", "--env-file", str(env_file), env=_clean_env())
     assert result.returncode == 0, result.stderr
     assert secret not in result.stdout
     payload = json.loads(result.stdout)
-    readiness = payload["claude_designer_readiness"]
+    readiness = payload["openai_designer_readiness"]
     assert readiness["ready_for_synthetic_live_run"] is True
 
 
@@ -152,13 +146,13 @@ def test_check_config_readiness_package_missing(monkeypatch: pytest.MonkeyPatch)
     from tests.commercial_api import registry
 
     monkeypatch.setattr(registry, "_module_available", lambda name: False)
-    monkeypatch.setenv("ANTHROPIC_DESIGN_API_KEY", "sk-test")
-    monkeypatch.setenv("ANTHROPIC_DESIGN_MODEL", "claude-test-model")
+    monkeypatch.setenv("OPENAI_DESIGN_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_DESIGN_MODEL", "gpt-test-model")
     monkeypatch.setenv("TEMPLATE_DESIGN_LIVE_ENABLED", "1")
-    readiness = registry.claude_designer_readiness()
-    assert readiness["anthropic_package_installed"] is False
+    readiness = registry.openai_designer_readiness()
+    assert readiness["openai_package_installed"] is False
     assert readiness["ready_for_synthetic_live_run"] is False
-    assert any("anthropic" in item for item in readiness["missing"])
+    assert any("openai" in item for item in readiness["missing"])
 
 
 def test_check_config_readiness_all_missing(tmp_path: Path) -> None:
@@ -174,9 +168,9 @@ def test_check_config_runs_offline_and_prints_json() -> None:
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert "openai" in payload
-    assert "azure" in payload
-    assert "configured" in payload["azure"]
-    assert "missing_config" in payload["azure"]
+    assert "adobe" in payload
+    assert "configured" in payload["adobe"]
+    assert "missing_config" in payload["adobe"]
 
 
 def test_list_prints_providers_lanes_and_cases() -> None:
@@ -227,7 +221,7 @@ def test_run_rejects_provider_wrong_lane_before_calls(tmp_path: Path) -> None:
         "--lane",
         "extraction",
         "--providers",
-        "azure",
+        "adobe",
         "--output-dir",
         str(tmp_path),
         "--env-file",
@@ -280,7 +274,7 @@ def test_live_warning_mentions_cost_without_calling(tmp_path: Path) -> None:
         "--lane",
         "layout",
         "--providers",
-        "azure,adobe",
+        "adobe",
         "--output-dir",
         str(tmp_path / "out"),
         "--env-file",

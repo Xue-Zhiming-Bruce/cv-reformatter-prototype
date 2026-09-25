@@ -4,10 +4,18 @@ from __future__ import annotations
 
 from html import escape
 from pathlib import Path
+import shutil
+import subprocess
 from typing import Mapping
 
 from app.generation.template_mapper import ClientFacingRenderContext, RenderContactItem
-from app.template_analysis.schemas import BadgeStyle, LayoutTemplateSpec, SectionLayoutSpec, TextStyle
+from app.template_analysis.schemas import (
+    BadgeStyle,
+    LayoutTemplateSpec,
+    SectionLayoutSpec,
+    SpacingStyle,
+    TextStyle,
+)
 
 
 DEFAULT_OUTPUT_DIR = Path("data/generated_outputs")
@@ -38,6 +46,8 @@ def render_html(
         if isinstance(layout_spec, LayoutTemplateSpec)
         else LayoutTemplateSpec.model_validate(layout_spec)
     )
+    spec, _warnings = resolve_target_render_spec(spec)
+    _validate_target_hard_measurements(spec)
     path = Path(output_path) if output_path else Path(output_dir) / "candidate_profile.html"
     if path.suffix.lower() != ".html":
         raise HtmlRenderingError("Product HTML output must use an .html filename.")
@@ -176,23 +186,63 @@ ul {{ margin: 0; padding-left: 18pt; line-height: {body_lh}pt; }}
             f'style="margin-top:{section_spacing.section_before_pt}pt">'
         )
         if section.show_heading:
-            heading_class = "section-heading heading-rule" if spec.decoration.heading_rule else "section-heading"
+            effective_heading_rule = (
+                section.heading_rule
+                if section.heading_rule is not None
+                else spec.decoration.heading_rule
+            )
+            heading_class = "section-heading heading-rule" if effective_heading_rule else "section-heading"
             next_style = _section_first_text_style(spec, section)
             next_line_height = next_style.line_height_pt or body_lh
+            rule_width = section.heading_rule_width_pt or spec.decoration.rule_width_pt
+            rule_gap_below = (
+                section.heading_rule_gap_below_pt
+                if section.heading_rule_gap_below_pt is not None
+                else spec.decoration.heading_rule_gap_below_pt
+            )
             heading_margin = _gap_compensated(
-                spec.decoration.heading_rule_gap_below_pt,
+                rule_gap_below,
                 next_line_height,
                 next_style.font_size_pt,
-                spec.decoration.rule_width_pt,
+                rule_width,
                 below=True,
             )
+            explicit_rule_style = ""
+            if effective_heading_rule and section.heading_rule is not None:
+                heading_style = section.heading_style or spec.heading
+                rule_gap_above = (
+                    section.heading_rule_gap_above_pt
+                    if section.heading_rule_gap_above_pt is not None
+                    else spec.decoration.heading_rule_gap_above_pt
+                )
+                rule_padding = _gap_compensated(
+                    rule_gap_above,
+                    heading_lh,
+                    heading_style.font_size_pt,
+                    rule_width,
+                )
+                explicit_rule_style = (
+                    f"border-bottom:{rule_width}pt solid {spec.decoration.rule_color_hex};"
+                    f"padding-bottom:{rule_padding}pt;"
+                )
             heading = (
                 f'<h2 class="{heading_class}" style="{_text_css(section.heading_style or spec.heading, include_family=False)}'
-                f'{f"margin-bottom:{heading_margin}pt;" if spec.decoration.heading_rule else ""}">'
+                f'{explicit_rule_style}'
+                f'{f"margin-bottom:{heading_margin}pt;" if effective_heading_rule else ""}">'
                 f"{escape(section.label)}</h2>"
             )
-            if spec.decoration.heading_rule and (spec.decoration.heading_rule_length_pt is not None):
-                heading = f'<div class="heading-rule-length">{heading}</div>'
+            rule_length = (
+                section.heading_rule_length_pt
+                if section.heading_rule_length_pt is not None
+                else spec.decoration.heading_rule_length_pt
+            )
+            if effective_heading_rule and rule_length is not None:
+                wrapper_style = (
+                    f' style="width:{rule_length}pt"'
+                    if section.heading_rule is not None
+                    else ""
+                )
+                heading = f'<div class="heading-rule-length"{wrapper_style}>{heading}</div>'
             parts.append(heading)
         parts.append(body)
         parts.append("</section>")
@@ -519,7 +569,9 @@ def _text_css(style: TextStyle, *, include_family: bool = True) -> str:
     return (
         f"{family}font-size:{style.font_size_pt}pt;"
         f"font-weight:{700 if style.bold else 400};font-style:{'italic' if style.italic else 'normal'};"
-        f"color:{style.color_hex};letter-spacing:{style.character_spacing_pt}pt;{line_height}"
+        f"color:{style.color_hex};letter-spacing:{style.character_spacing_pt}pt;"
+        f"word-spacing:{style.word_spacing_pt}pt;"
+        f"font-stretch:{style.horizontal_scale_percent}%;{line_height}"
     )
 
 
@@ -558,8 +610,299 @@ def _section_first_text_style(
 
 
 def _family(value: str, postscript: str | None = None) -> str:
-    # Prefer the measured PostScript name when present so Chrome resolves the
-    # same font metrics as the target PDF.
-    if postscript:
-        return f'"{escape(postscript, quote=True)}", serif'
-    return f'"{escape(value, quote=True)}", sans-serif'
+    # PDF PostScript names commonly carry document-local subset prefixes such
+    # as "ABCDEF+Lato-Regular". Chrome cannot resolve those names and silently
+    # falls back to Times. Request the measured family itself, with no generic
+    # fallback that could masquerade as target typography.
+    del postscript
+    return f'"{escape(value, quote=True)}"'
+
+
+def resolve_target_render_spec(
+    spec: LayoutTemplateSpec,
+) -> tuple[LayoutTemplateSpec, list[str]]:
+    """Apply review-visible defaults for non-critical target layout details."""
+    if spec.source_type != "pdf_analysis":
+        return spec, []
+
+    warnings: list[str] = []
+
+    def warn(path: str, fallback: str) -> None:
+        warnings.append(
+            f"SOFT LAYOUT DEGRADATION: {path} is unmeasured; renderer uses "
+            f"{fallback} pending review."
+        )
+
+    defaults = SpacingStyle()
+    line_spacing = spec.spacing.line_spacing
+    if line_spacing is None:
+        line_spacing = defaults.line_spacing
+        warn("spacing.line_spacing", f"documented default {line_spacing}")
+    assert line_spacing is not None
+    line_height = spec.spacing.line_height_pt
+    if line_height is None:
+        line_height = (
+            spec.body.line_height_pt or spec.body.font_size_pt * line_spacing
+        )
+        warn("spacing.line_height_pt", f"derived body line height {line_height:.2f}pt")
+
+    def spacing_value(field: str) -> float:
+        value = getattr(spec.spacing, field)
+        if value is None:
+            value = getattr(defaults, field)
+            warn(f"spacing.{field}", f"documented default {value}pt")
+        assert value is not None
+        return value
+
+    spacing = spec.spacing.model_copy(
+        update={
+            "line_spacing": line_spacing,
+            "line_height_pt": line_height,
+            "paragraph_after_pt": spacing_value("paragraph_after_pt"),
+            "section_before_pt": spacing_value("section_before_pt"),
+            "section_after_pt": spacing_value("section_after_pt"),
+        }
+    )
+
+    def text_style(style: TextStyle, path: str) -> TextStyle:
+        updates: dict[str, float] = {}
+        for field, fallback in (
+            ("character_spacing_pt", 0.0),
+            ("word_spacing_pt", 0.0),
+            ("horizontal_scale_percent", 100.0),
+            ("line_height_pt", line_height),
+        ):
+            if getattr(style, field) is None:
+                updates[field] = fallback
+                suffix = "%" if field == "horizontal_scale_percent" else "pt"
+                warn(f"{path}.{field}", f"documented default {fallback}{suffix}")
+        return style.model_copy(update=updates) if updates else style
+
+    body = text_style(spec.body, "body")
+    title = text_style(spec.title, "title")
+    heading = text_style(spec.heading, "heading")
+    header_updates: dict[str, object] = {}
+    if spec.header.contact_fields:
+        if spec.header.contact_style is None:
+            header_updates["contact_style"] = body
+            warn("header.contact_style", "the measured global body style")
+        else:
+            header_updates["contact_style"] = text_style(
+                spec.header.contact_style, "header.contact_style"
+            )
+        if spec.header.contact_line_height_pt is None:
+            header_updates["contact_line_height_pt"] = line_height
+            warn("header.contact_line_height_pt", f"global value {line_height}pt")
+        if spec.header.name_gap_pt is None:
+            header_updates["name_gap_pt"] = spacing.section_after_pt
+            warn(
+                "header.name_gap_pt",
+                f"global value {spacing.section_after_pt}pt",
+            )
+    header = (
+        spec.header.model_copy(update=header_updates)
+        if header_updates
+        else spec.header
+    )
+    decoration_updates: dict[str, float] = {}
+    content_width = (
+        spec.page.width_pt - spec.page.margin_left_pt - spec.page.margin_right_pt
+    )
+    for prefix, enabled in (
+        ("header_rule", spec.decoration.header_rule),
+        ("heading_rule", spec.decoration.heading_rule),
+    ):
+        if not enabled:
+            continue
+        for suffix, fallback in (
+            ("gap_above_pt", 0.0),
+            ("gap_below_pt", 0.0),
+            ("length_pt", content_width),
+        ):
+            field = f"{prefix}_{suffix}"
+            if getattr(spec.decoration, field) is None:
+                decoration_updates[field] = fallback
+                warn(f"decoration.{field}", f"documented default {fallback}pt")
+    decoration = (
+        spec.decoration.model_copy(update=decoration_updates)
+        if decoration_updates
+        else spec.decoration
+    )
+    sections: list[SectionLayoutSpec] = []
+    for section in spec.sections:
+        section_path = f"sections[{section.section_id}]"
+        body_style = section.body_style
+        if body_style is None:
+            body_style = body
+            warn(f"{section_path}.body_style", "the measured global body style")
+        else:
+            body_style = text_style(body_style, f"{section_path}.body_style")
+        heading_style = section.heading_style
+        if heading_style is None:
+            heading_style = heading
+            if section.show_heading:
+                warn(
+                    f"{section_path}.heading_style",
+                    "the measured global heading style",
+                )
+        else:
+            heading_style = text_style(
+                heading_style, f"{section_path}.heading_style"
+            )
+        section_spacing = section.spacing
+        if section_spacing is None:
+            section_spacing = spacing
+            if section.show_heading:
+                warn(f"{section_path}.spacing", "the resolved global spacing")
+        else:
+            updates = {}
+            for field in (
+                "line_spacing",
+                "line_height_pt",
+                "paragraph_after_pt",
+                "section_before_pt",
+                "section_after_pt",
+            ):
+                if getattr(section_spacing, field) is None:
+                    fallback = getattr(spacing, field)
+                    updates[field] = fallback
+                    unit = "" if field == "line_spacing" else "pt"
+                    warn(
+                        f"{section_path}.spacing.{field}",
+                        f"global value {fallback}{unit}",
+                    )
+            if updates:
+                section_spacing = section_spacing.model_copy(update=updates)
+        section_updates: dict[str, object] = {
+            "body_style": body_style,
+            "heading_style": heading_style,
+            "spacing": section_spacing,
+        }
+        for field in (
+            "entry_title_style",
+            "entry_metadata_style",
+            "entry_secondary_style",
+            "skill_label_style",
+            "education_institution_style",
+        ):
+            if (style := getattr(section, field)) is not None:
+                section_updates[field] = text_style(
+                    style, f"{section_path}.{field}"
+                )
+        sections.append(section.model_copy(update=section_updates))
+
+    resolved = spec.model_copy(
+        update={
+            "body": body,
+            "title": title,
+            "heading": heading,
+            "spacing": spacing,
+            "header": header,
+            "decoration": decoration,
+            "sections": sections,
+            "warnings": [*spec.warnings, *warnings],
+        }
+    )
+    return resolved, warnings
+
+
+def target_soft_degradation_warnings(spec: LayoutTemplateSpec) -> list[str]:
+    return resolve_target_render_spec(spec)[1]
+
+
+def _validate_target_hard_measurements(spec: LayoutTemplateSpec) -> None:
+    if spec.source_type != "pdf_analysis":
+        return
+
+    missing: list[str] = []
+    styles: list[tuple[str, TextStyle]] = [
+        ("body", spec.body),
+        ("title", spec.title),
+        ("heading", spec.heading),
+    ]
+    if spec.header.contact_style is not None:
+        styles.append(("header.contact_style", spec.header.contact_style))
+    measured_families = {spec.body.font_family, spec.title.font_family, spec.heading.font_family}
+    if spec.header.contact_style is not None:
+        measured_families.add(spec.header.contact_style.font_family)
+    for section in spec.sections:
+        if section.mapping_action != "map":
+            continue
+        assert section.body_style is not None
+        styles.append((f"sections[{section.section_id}].body_style", section.body_style))
+        measured_families.add(section.body_style.font_family)
+        if section.show_heading:
+            assert section.heading_style is not None
+            styles.append(
+                (f"sections[{section.section_id}].heading_style", section.heading_style)
+            )
+            measured_families.add(section.heading_style.font_family)
+        for field in (
+            "entry_title_style",
+            "entry_metadata_style",
+            "entry_secondary_style",
+            "skill_label_style",
+            "education_institution_style",
+        ):
+            if (style := getattr(section, field)) is not None:
+                styles.append((f"sections[{section.section_id}].{field}", style))
+                measured_families.add(style.font_family)
+
+    for path, style in styles:
+        if not style.font_family.strip():
+            missing.append(f"{path}.font_family")
+        if style.font_size_pt is None:
+            missing.append(f"{path}.font_size_pt")
+        if not style.color_hex:
+            missing.append(f"{path}.color_hex")
+
+    if missing:
+        raise HtmlRenderingError(
+            "Target layout has unmeasured hard renderer fields: "
+            + ", ".join(sorted(missing))
+            + ". Generation stopped without inventing typography or page geometry."
+        )
+
+    normalized_families = {family.strip().casefold() for family in measured_families}
+    if len(normalized_families) != 1:
+        raise HtmlRenderingError(
+            "Target layout uses multiple measured font families, but the current "
+            "renderer supports one inherited family. Generation stopped instead "
+            "of silently collapsing them."
+        )
+    family = spec.body.font_family.strip()
+    resolved = _resolved_font_families(family)
+    if family.casefold() not in resolved:
+        raise HtmlRenderingError(
+            f"Measured target font '{family}' is unavailable to Chrome; generation "
+            "stopped instead of substituting a default font."
+        )
+
+
+def _resolved_font_families(value: str) -> set[str]:
+    executable = shutil.which("fc-match")
+    if executable is None:
+        raise HtmlRenderingError(
+            "Target font availability cannot be verified because fc-match is unavailable."
+        )
+    try:
+        result = subprocess.run(
+            [executable, "--format=%{family}", value],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HtmlRenderingError(
+            f"Target font availability could not be verified for '{value}'."
+        ) from exc
+    if result.returncode != 0:
+        raise HtmlRenderingError(
+            f"Target font availability could not be verified for '{value}'."
+        )
+    return {
+        family.strip().casefold()
+        for family in result.stdout.split(",")
+        if family.strip()
+    }

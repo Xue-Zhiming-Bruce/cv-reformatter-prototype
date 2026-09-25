@@ -78,6 +78,7 @@ class LLMSegmentedSection(BaseModel):
     items: list[str] = Field(min_length=1)
     review_state: SectionReviewState = SectionReviewState.REVIEWED
     full_name: str | None = None
+    current_title: str | None = None
     email: str | None = None
     phone: str | None = None
     location: str | None = None
@@ -136,6 +137,7 @@ Completeness rules:
 
 Extraction rules:
 - Populate structured fields only when explicitly supported by that section's source lines; never guess missing facts.
+- Populate current_title with the resume headline or current-position title when a standalone title line appears under the candidate name (for example, "Senior Business Person"). Keep it distinct from work-experience entry titles; leave it null when absent.
 - Put projects, awards, publications, volunteering, interests, and unknown sections in additional_entries using the existing entry title/link/description shape.
 - Classify a trailing section containing only portfolio/contact links as contact, not an additional section.
 - Use section_type=other and review_state=pending_review for unknown or low-confidence semantics while preserving all source lines in items.
@@ -180,8 +182,8 @@ def segment_and_extract_resume(
 def segmentation_output_lines(output: LLMSegmentationOutput) -> list[str]:
     lines: list[str] = []
     for section in output.sections:
-        if section.heading is not None:
-            lines.append(section.heading)
+        if (heading := _effective_heading(section)) is not None:
+            lines.append(heading)
         lines.extend(section.items)
     return lines
 
@@ -192,10 +194,25 @@ def segmentation_output_line_evidence(
     lines: list[tuple[str, str]] = []
     for index, section in enumerate(output.sections, start=1):
         block_id = f"candidate-block-{index:03d}"
-        if section.heading is not None:
-            lines.append((section.heading, block_id))
+        if (heading := _effective_heading(section)) is not None:
+            lines.append((heading, block_id))
         lines.extend((item, block_id) for item in section.items)
     return lines
+
+
+def _effective_heading(section: LLMSegmentedSection) -> str | None:
+    """Return a heading only when it is a distinct source line.
+
+    Some one-line summary labels contain their entire content. Providers can
+    classify that same source line as both ``heading`` and the first item; it
+    must retain one lineage occurrence, not fail coverage as an invented copy.
+    """
+    if section.heading is None:
+        return None
+    normalized_heading = " ".join(section.heading.split())
+    if any(" ".join(item.split()) == normalized_heading for item in section.items):
+        return None
+    return section.heading
 
 
 _CANONICAL_SOURCES = {
@@ -225,6 +242,7 @@ def materialize_llm_segmentation(
     }
     scalar_fields = (
         "full_name",
+        "current_title",
         "email",
         "phone",
         "location",
@@ -248,6 +266,7 @@ def materialize_llm_segmentation(
     source_line_cursor = 1
     for index, section in enumerate(output.sections, start=1):
         block_id = f"candidate-block-{index:03d}"
+        effective_heading = _effective_heading(section)
         candidate_source = _CANONICAL_SOURCES.get(section.section_type)
         optional_type = (
             SectionType(section.section_type.value)
@@ -263,10 +282,10 @@ def materialize_llm_segmentation(
                 block_id=block_id,
                 order=index - 1,
                 classification=classification,
-                source_heading=section.heading,
+                source_heading=effective_heading,
                 normalized_heading=(
-                    _normalize_heading(section.heading)
-                    if section.heading
+                    _normalize_heading(effective_heading)
+                    if effective_heading
                     else section.section_type.value
                 ),
                 candidate_source=candidate_source,
@@ -275,11 +294,11 @@ def materialize_llm_segmentation(
                 item_kinds=item_kinds,
                 raw_text="\n".join(section.items),
                 source_line_start=(
-                    source_line_cursor + int(section.heading is not None)
+                    source_line_cursor + int(effective_heading is not None)
                 ),
                 source_line_end=(
                     source_line_cursor
-                    + int(section.heading is not None)
+                    + int(effective_heading is not None)
                     + len(section.items)
                     - 1
                 ),
@@ -288,7 +307,7 @@ def materialize_llm_segmentation(
                 classifier_status="ok",
             )
         )
-        source_line_cursor += len(section.items) + int(section.heading is not None)
+        source_line_cursor += len(section.items) + int(effective_heading is not None)
 
         for field in scalar_fields:
             value = getattr(section, field)

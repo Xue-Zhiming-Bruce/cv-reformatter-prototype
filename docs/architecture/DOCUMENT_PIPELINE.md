@@ -2,7 +2,7 @@
 
 Status: `Active contract`
 
-Last reviewed: August 28, 2026
+Last reviewed: September 5, 2026
 
 This document defines the provider-neutral boundaries of the CV Reformatter
 backend. The [Product Specification](../product/PRODUCT_SPEC.md) remains the
@@ -28,10 +28,9 @@ Target format
 ClientFacingRenderContext + LayoutTemplateSpec
 -> RendererCompiler
 -> renderer-specific RenderPlan
--> HtmlRenderer
--> editable HTML surface
--> headless-Chrome HTML-to-PDF
--> PDF deliverable
+-> format-preserving renderer lane:
+   PDF  -> HtmlRenderer -> editable HTML -> headless-Chrome PDF
+   DOCX -> DocxRenderer -> editable DOCX
 -> content, privacy, structural, and visual quality gates
 -> versioned ArtifactManifest
 ```
@@ -134,8 +133,9 @@ its native mechanism.
 `LayoutTemplateSpec` is provider-neutral and contains approved reusable layout,
 style, asset, section, and content-flow decisions. It must not contain target
 candidate facts or a target page image used as a document background. It must
-also stay renderer-neutral: HTML is the selected product renderer, while the
-contract remains independent of HTML/CSS and exporter-specific instructions.
+also stay renderer-neutral: the PDF lane uses HTML and the DOCX lane uses
+OOXML, while the contract remains independent of HTML/CSS, OOXML, and
+exporter-specific instructions.
 
 For uploaded PDF targets, the measured `LayoutTemplateSpec` compiled from
 target analysis is the single generation source. The legacy artifact-level
@@ -182,16 +182,26 @@ Renderer-specific properties belong in `RenderPlan`, not in the stored product
 template contract. This allows a renderer to be measured, replaced, or rolled
 back without migrating product templates to a vendor schema.
 
-`HtmlRenderer` creates the editable interface surface from the approved render
-context and provider-neutral layout contract. Badge items retain their measured
-rounded geometry directly in CSS. Headless Chrome produces the deliverable
-from that same HTML; there is no DOCX renderer or corner approximation.
+Rendering has two format-preserving lanes under
+[ADR 0007](../decisions/0007-format-preserving-pdf-and-docx-lanes.md):
 
-The structure gate locates semantic HTML sections and entry articles by their
-renderer-authored identities, never by text equality. After Chrome export, the
-no-loss content gate extracts PDF text and verifies every approved source-owned
-value. Generation fails closed and persists the independent structure and
-content reports.
+- **PDF lane:** `HtmlRenderer` creates the editable interface surface. Badge
+  items retain measured rounded geometry in CSS, and headless Chrome produces
+  the PDF from that same HTML.
+- **DOCX lane:** `DocxRenderer` creates the editable DOCX and preserves it as
+  the final deliverable. It must use supported native OOXML structures and must
+  not route through HTML or PDF.
+
+The uploaded candidate format selects the lane. An optional target format must
+match it; PDF-to-DOCX and DOCX-to-PDF conversion fail as unsupported. The PDF
+lane remains the accepted baseline. The DOCX lane now has a minimal native
+OOXML implementation; it remains outside the accepted fidelity baseline until
+the versioned DOCX corpus and visual acceptance gate pass.
+
+Quality gates inspect the native output of each lane. The PDF structure gate
+uses renderer-authored HTML identities and the no-loss gate extracts PDF text.
+The DOCX lane must inspect OOXML structure and extracted DOCX text. Generation
+fails closed and persists independent structure and content reports.
 
 ## Reproducibility And Jobs
 

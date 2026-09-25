@@ -3,6 +3,7 @@ from app.generation.render_plan import build_production_render_plan
 from app.generation.template_mapper import build_client_render_context
 from app.profile_approval import profile_sha256
 from app.template_analysis.schemas import (
+    SpacingStyle,
     built_in_template_style_spec,
     migrate_template_style_spec,
 )
@@ -63,3 +64,36 @@ def test_production_plan_surfaces_legacy_contract_warning() -> None:
         layout_spec=legacy_spec,
     )
     assert any("LEGACY ARTIFACT" in warning for warning in plan.warnings)
+
+
+def test_production_plan_surfaces_soft_layout_degradation_warning() -> None:
+    document = llm_first_document("Jane Candidate\n")
+    profile = CandidateProfile(full_name="Jane Candidate")
+    spec = migrate_template_style_spec(built_in_template_style_spec()).model_copy(
+        update={
+            "source_type": "pdf_analysis",
+            "structure_contract": "measured",
+            "sections": [],
+            "warnings": [],
+            "spacing": SpacingStyle(
+                line_spacing=None,
+                line_height_pt=None,
+                paragraph_after_pt=None,
+                section_before_pt=None,
+                section_after_pt=None,
+            ),
+        }
+    )
+
+    plan = build_production_render_plan(
+        approved_profile_version_id="profile_v1",
+        profile_sha256=profile_sha256(profile),
+        document=document,
+        context=build_client_render_context(profile),
+        layout_spec=spec,
+    )
+
+    assert any(
+        warning.startswith("SOFT LAYOUT DEGRADATION: spacing.line_spacing")
+        for warning in plan.warnings
+    )

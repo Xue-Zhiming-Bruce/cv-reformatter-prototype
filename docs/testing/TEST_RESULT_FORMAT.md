@@ -75,6 +75,19 @@ matrix_<timestamp>_<purpose>/
 If a transformation fails, keep its directory and `result.json`. Do not create
 placeholder DOCX, PDF, or comparison files.
 
+> **Experiment-format waiver (owner, 2026-09-06):** the A-pipeline
+> refinement experiment (`tests/experiments/a_pipeline.py`) runs D/E/F
+> cross-pairs under this same `runs/` directory and `matrix_` naming, but its
+> results do NOT fit this contract's required fields: the experiment uses
+> reviewer preference instead of numeric visual scores and produces no render-plan or layout-proof
+> artifacts. For
+> runs whose `run_manifest.json` records
+> `experiment: "a_pipeline"`, the numeric-score / render-plan /
+> layout-proof requirements are waived; the run instead emits the refinement-loop
+> report (per-round hard gates, visual preference champion/challenger, no
+> numeric score) plus the manifest/CSV/RESULTS_INDEX structure it can
+> honestly populate. Root README updates still apply.
+
 ## Human Review Entry Point
 
 `RESULTS_INDEX.md` is the first file a reviewer opens. It must contain, in this

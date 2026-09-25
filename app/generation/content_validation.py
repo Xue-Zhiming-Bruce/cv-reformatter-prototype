@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import pdfplumber
+from docx import Document
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.extraction.candidate_document_analyzer import SourceCoverageLedger
@@ -24,7 +25,7 @@ class ContentValidationModel(BaseModel):
 
 
 class OutputContentCheck(ContentValidationModel):
-    format: Literal["pdf"]
+    format: Literal["pdf", "docx"]
     passed: bool
     missing_items: list[str] = Field(default_factory=list)
 
@@ -39,15 +40,22 @@ class ContentValidationReport(ContentValidationModel):
 def validate_generated_content(
     context: ClientFacingRenderContext,
     *,
-    pdf_path: str | Path,
+    pdf_path: str | Path | None = None,
+    docx_path: str | Path | None = None,
     layout_spec: LayoutTemplateSpec | None = None,
 ) -> ContentValidationReport:
     """Fail closed when approved render-context text vanishes from an output."""
 
     expected = _expected_items(context, layout_spec)
-    checks = [
-        _check("pdf", _read_pdf_text(Path(pdf_path)), expected),
-    ]
+    if (pdf_path is None) == (docx_path is None):
+        raise ValueError("Exactly one native output path is required for content validation.")
+    output_format: Literal["pdf", "docx"] = "pdf" if pdf_path is not None else "docx"
+    text = (
+        _read_pdf_text(Path(pdf_path))
+        if pdf_path is not None
+        else _read_docx_text(Path(docx_path))
+    )
+    checks = [_check(output_format, text, expected)]
     return ContentValidationReport(
         passed=all(check.passed for check in checks),
         expected_item_count=len(expected),
@@ -131,7 +139,7 @@ def _expected_items(
 
 
 def _check(
-    output_format: Literal["pdf"],
+    output_format: Literal["pdf", "docx"],
     text: str,
     expected: list[str],
 ) -> OutputContentCheck:
@@ -154,6 +162,19 @@ def _check(
 def _read_pdf_text(path: Path) -> str:
     with pdfplumber.open(path) as pdf:
         return "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+
+def _read_docx_text(path: Path) -> str:
+    document = Document(path)
+    paragraphs = list(document.paragraphs)
+    paragraphs.extend(
+        paragraph
+        for table in document.tables
+        for row in table.rows
+        for cell in row.cells
+        for paragraph in cell.paragraphs
+    )
+    return "\n".join(paragraph.text for paragraph in paragraphs)
 
 
 def _normalize(value: str) -> str:

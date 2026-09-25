@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.template_analysis.commercial.local_color import (
     _hex_from_color,
@@ -14,13 +16,6 @@ from app.template_analysis.commercial.models import (
     NormalizedLayoutEvidence,
     NormalizedPage,
     NormalizedTextBlock,
-)
-from scripts.run_abc_live_matrix import (
-    _body_size_failure,
-    _measure_dominant_text_size,
-    _measure_pdf_rules,
-    _rule_geometry_failures,
-    _structure_failures,
 )
 from tests.helpers.synthetic_pdf import (
     build_partial_heading_rules_target_pdf,
@@ -90,11 +85,6 @@ def test_enrich_measures_majority_fill_colors(tmp_path: Path) -> None:
         assert provenance.source == "local_pdf"
         assert provenance.provider == "pdfplumber"
         assert provenance.source_element_id == key
-    assert _measure_dominant_text_size(pdf) == 10.0
-    assert _body_size_failure(10.0, 10.2) is None
-    assert _body_size_failure(10.0, 10.3) == (
-        "dominant body size drift=0.30pt exceeds 0.25pt"
-    )
 
 
 def test_provider_measured_colors_are_never_overwritten(tmp_path: Path) -> None:
@@ -122,17 +112,6 @@ def test_enrich_records_only_long_horizontal_rules(tmp_path: Path) -> None:
     assert all(rule.gap_above_pt is not None for rule in enriched.rules)
     assert all(rule.gap_below_pt is not None for rule in enriched.rules)
 
-    geometry = _measure_pdf_rules(pdf)
-    assert geometry["count"] == 2
-    assert geometry["heading"]["length_pt"] == 463
-    assert _rule_geometry_failures(geometry, geometry) == []
-    drifted = {
-        **geometry,
-        "heading": {**geometry["heading"], "length_pt": 464.1},
-    }
-    assert _rule_geometry_failures(geometry, drifted) == [
-        "heading.length_pt drift=1.10pt exceeds 1.0pt"
-    ]
 
 
 def test_enrich_records_partial_heading_rule_target_without_filling_gaps(
@@ -146,41 +125,36 @@ def test_enrich_records_partial_heading_rule_target_without_filling_gaps(
     assert sorted(rule.stroke_width_pt for rule in enriched.rules) == [0.75, 0.75, 1.25]
 
 
-def test_structure_gate_rejects_heading_width_drift_over_one_point() -> None:
-    structure = {
-        "header_lines": [],
-        "section_labels": [
-            {"text": "SKILLS", "size_pt": 12.0, "width_pt": 47.4}
+def test_enrich_keeps_rule_with_unmeasured_color(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    page = SimpleNamespace(
+        width=612,
+        height=792,
+        lines=[
+            {
+                "x0": 36,
+                "x1": 576,
+                "top": 92.9,
+                "bottom": 92.9,
+                "linewidth": 0.398,
+                "stroking_color": None,
+                "non_stroking_color": None,
+            }
         ],
-        "entry_title_size_pt": None,
-    }
-    assert _structure_failures(
-        structure,
-        {
-            **structure,
-            "section_labels": [
-                {"text": "SKILLS", "size_pt": 12.0, "width_pt": 48.3}
-            ],
-        },
-    ) == []
-    # Width tolerance is re-baselined to the HTML→Adobe path (3.5pt, ADR 0006
-    # / BACKEND_ROADMAP B3); a 0.9pt drift must still pass and a 1.10pt drift
-    # still fails (no loosening below the evidence floor).
-    assert _structure_failures(
-        structure,
-        {
-            **structure,
-            "section_labels": [
-                {"text": "SKILLS", "size_pt": 12.0, "width_pt": 48.26}
-            ],
-        },
-    ) == []
-    assert _structure_failures(
-        structure,
-        {
-            **structure,
-            "section_labels": [
-                {"text": "SKILLS", "size_pt": 12.0, "width_pt": 51.0}
-            ],
-        },
-    ) == ["section_labels[0].width drift=3.60pt exceeds 3.50pt"]
+        rects=[],
+        extract_words=lambda: [],
+        extract_text_lines=lambda strip=True: [],
+    )
+    monkeypatch.setattr(
+        "app.template_analysis.commercial.local_color.pdfplumber.open",
+        lambda _path: nullcontext(SimpleNamespace(pages=[page])),
+    )
+
+    enriched = enrich_rules_from_local_pdf(_evidence(), tmp_path / "target.pdf")
+
+    assert len(enriched.rules) == 1
+    assert enriched.rules[0].color_hex == "#000000"
+    assert "stroke_color_default_black_unmeasured" in enriched.rules[0].provenance.method
+    assert any("inferred PDF graphics-state default" in warning for warning in enriched.warnings)

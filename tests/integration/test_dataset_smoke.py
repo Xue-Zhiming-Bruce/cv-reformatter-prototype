@@ -1,7 +1,8 @@
 from pathlib import Path
 import pytest
 
-from app.extraction.llm_extractor import MockLLMClient, extract_candidate_profile
+from app.extraction.llm_extractor import extract_candidate_profile
+from tests.helpers.mock_llm import MockLLMClient
 from app.generation.html_renderer import render_html
 from app.generation.template_mapper import build_client_render_context
 from app.ingestion.docx_reader import read_docx

@@ -4,6 +4,7 @@ import pytest
 
 from app import main
 from tests.helpers.adobe_evidence import mock_run_adobe_layout
+from tests.helpers.mock_llm import MockLLMClient
 
 
 @pytest.fixture(autouse=True)
@@ -13,3 +14,4 @@ def _offline_adobe_target_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(main, "enrich_colors_from_local_pdf", lambda evidence, _path: evidence)
     monkeypatch.setattr(main, "enrich_badges_from_local_pdf", lambda evidence, _path: evidence)
     monkeypatch.setattr(main, "enrich_rules_from_local_pdf", lambda evidence, _path: evidence)
+    monkeypatch.setattr(main, "build_llm_client", lambda **_kwargs: MockLLMClient())

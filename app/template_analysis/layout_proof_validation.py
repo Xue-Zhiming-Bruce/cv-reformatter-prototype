@@ -21,6 +21,7 @@ from pathlib import Path
 
 from app.template_analysis.layout_proof_content import (
     expected_rendered_marker_counts,
+    expected_rendered_rule_count,
 )
 from app.template_analysis.layout_proof_schemas import (
     LengthVariant,
@@ -67,6 +68,7 @@ class PdfGeometryMeasurements:
     page_count: int
     pages: list[PdfPageMeasurements]
     text: str
+    horizontal_rule_count: int | None = None
 
     @property
     def empty(self) -> bool:
@@ -79,8 +81,21 @@ def measure_pdf_geometry(pdf_path: str | Path) -> PdfGeometryMeasurements:
 
     with pdfplumber.open(pdf_path) as pdf:
         page_measurements: list[PdfPageMeasurements] = []
+        horizontal_rule_count = 0
         for index, page in enumerate(pdf.pages, start=1):
             chars = page.chars
+            seen_rules: set[tuple[float, ...]] = set()
+            for item in [*page.lines, *page.rects]:
+                x0 = float(item.get("x0") or 0)
+                x1 = float(item.get("x1") or 0)
+                top = float(item.get("top") or 0)
+                bottom = float(item.get("bottom") or top)
+                width = abs(x1 - x0)
+                height = abs(bottom - top)
+                stroke_width = float(item.get("linewidth") or height or 0)
+                if width >= float(page.width) * 0.5 and height <= 1.5 and 0.25 <= stroke_width <= 6.0:
+                    seen_rules.add((round(min(x0, x1), 2), round(max(x0, x1), 2), round(top, 2), round(bottom, 2)))
+            horizontal_rule_count += len(seen_rules)
             page_measurements.append(
                 PdfPageMeasurements(
                     page_number=index,
@@ -114,6 +129,7 @@ def measure_pdf_geometry(pdf_path: str | Path) -> PdfGeometryMeasurements:
             page_count=len(page_measurements),
             pages=page_measurements,
             text="\n".join(page.text for page in page_measurements),
+            horizontal_rule_count=horizontal_rule_count,
         )
     return measurements
 
@@ -480,6 +496,31 @@ def validate_proof_structure(
     )
     if not headings_ok:
         errors.append(f"expected headings missing from rendered text: {missing_headings}")
+
+    has_section_rule_overrides = any(
+        section.heading_rule is not None for section in layout_spec.sections
+    )
+    if (
+        variant is not None
+        and measured.horizontal_rule_count is not None
+        and has_section_rule_overrides
+    ):
+        expected_rules = expected_rendered_rule_count(layout_spec, variant)
+        rules_ok = measured.horizontal_rule_count == expected_rules
+        checks.append(
+            StructuralCheck(
+                name="horizontal_rule_count",
+                passed=rules_ok,
+                detail=(
+                    f"measured {measured.horizontal_rule_count} horizontal rule(s); "
+                    f"expected {expected_rules}"
+                ),
+            )
+        )
+        if not rules_ok:
+            errors.append(
+                f"horizontal rule count {measured.horizontal_rule_count} != expected {expected_rules}"
+            )
 
     # 5. Content completeness: every synthetic marker from the canonical
     #    context must appear with its expected multiplicity in the extracted

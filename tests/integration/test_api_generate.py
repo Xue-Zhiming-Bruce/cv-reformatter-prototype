@@ -28,7 +28,11 @@ def _use_tmp_local_database(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
 
 
 def _approve_profile_via_api(
-    artifact_dir: Path, profile: CandidateProfile, artifact_id: str
+    artifact_dir: Path,
+    profile: CandidateProfile,
+    artifact_id: str,
+    *,
+    lane: str = "pdf",
 ) -> str:
     """Write the extraction draft evidence and approve the profile through the
     API. Mirrors /api/process: candidate_profile.json is the draft and
@@ -39,6 +43,10 @@ def _approve_profile_via_api(
     (artifact_dir / "raw_extracted_text.txt").write_text(
         "Jane Candidate\nSkills: Python, SQL", encoding="utf-8"
     )
+    if lane == "docx":
+        Document().save(artifact_dir / "source_resume.docx")
+    else:
+        (artifact_dir / "source_resume.pdf").write_bytes(b"%PDF-1.4\n")
     response = client.post(
         f"/api/artifacts/{artifact_id}/profiles/approve",
         json={"profile": profile.model_dump(mode="json"), "reviewer_note": "recruiter approved"},
@@ -448,18 +456,6 @@ def test_generate_applies_uploaded_docx_style_spec(
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
-    monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
-    monkeypatch.setattr(
-        layout_proof_service, "export_html_to_pdf", _fake_pdf_export
-    )
-    original_render_html = layout_proof_service.render_html
-    captured_style_spec = {}
-
-    def capture_render_html(*args, **kwargs):
-        captured_style_spec["value"] = args[1]
-        return original_render_html(*args, **kwargs)
-
-    monkeypatch.setattr(layout_proof_service, "render_html", capture_render_html)
     target_path = tmp_path / "target.docx"
     target_document = Document()
     target_document.styles["Normal"].font.name = "Times New Roman"
@@ -489,18 +485,30 @@ def test_generate_applies_uploaded_docx_style_spec(
     profile = CandidateProfile(
         full_name="Jane Candidate", professional_summary="Approved summary."
     )
-    version_id = _approve_profile_via_api(artifact_dir, profile, artifact_id)
+    version_id = _approve_profile_via_api(
+        artifact_dir, profile, artifact_id, lane="docx"
+    )
     response = client.post(
-        f"/api/artifacts/{artifact_id}/layout-proofs", json={}
+        "/api/generate",
+        json={
+            "artifact_id": artifact_id,
+            "approved_profile_version_id": version_id,
+        },
     )
 
     assert upload_response.status_code == 200
     upload_body = upload_response.json()
     assert upload_body["target_format"]["structure_contract"] == "measured"
     assert upload_body["target_format"]["unsupported_features"] == []
-    assert response.status_code == 400, response.text
-    assert response.json()["detail"]["error_code"] == "pdf_target_required_for_layout_proof"
-    assert captured_style_spec == {}
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["workflow_lane"] == "docx"
+    assert body["docx_download_url"].endswith("/candidate_profile.docx")
+    generated = Document(artifact_dir / "candidate_profile.docx")
+    assert generated.styles["Normal"].font.name == "Times New Roman"
+    text = "\n".join(paragraph.text for paragraph in generated.paragraphs)
+    assert "Approved summary." in text
+    assert "Measured placeholder body" not in text
 
 
 def test_artifact_metadata_list_returns_recent_jobs(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

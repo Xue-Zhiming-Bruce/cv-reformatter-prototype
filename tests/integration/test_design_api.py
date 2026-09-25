@@ -29,14 +29,14 @@ def _fake_pdf_export(html_path, output_path):
     return make_proof_pdf_exporter()(html_path, output_path)
 
 
-class _ExplodingAnthropicClient:
-    """Architectural live-call guard: if any code path constructs an Anthropic
+class _ExplodingOpenAIClient:
+    """Architectural live-call guard: if any code path constructs an OpenAI
     client during offline pytest, this raises instead of touching the network.
     This is independent of environment variables or cached settings."""
 
     def __init__(self, *args, **kwargs):
         raise AssertionError(
-            "Refusing to construct an Anthropic client during offline pytest. "
+            "Refusing to construct an OpenAI client during offline pytest. "
             "Live provider calls are never allowed in automated tests."
         )
 
@@ -69,14 +69,14 @@ def _isolate(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
     monkeypatch.setattr(layout_proof_service, "export_html_to_pdf", _fake_pdf_export)
     monkeypatch.delenv("TEMPLATE_DESIGN_STRATEGY", raising=False)
-    # Hard guarantee: no live Claude call can occur during offline pytest,
+    # Hard guarantee: no live OpenAI call can occur during offline pytest,
     # regardless of the host environment, the repository .env file, or any
     # cached settings object. Two independent layers: (1) environment cleared,
-    # (2) the Anthropic client class itself is replaced so construction raises.
+    # (2) the OpenAI client class itself is replaced so construction raises.
     monkeypatch.delenv("TEMPLATE_DESIGN_LIVE_ENABLED", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_DESIGN_API_KEY", raising=False)
-    monkeypatch.setattr("anthropic.Anthropic", _ExplodingAnthropicClient)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_DESIGN_API_KEY", raising=False)
+    monkeypatch.setattr("openai.OpenAI", _ExplodingOpenAIClient)
     monkeypatch.setenv("DESIGN_CACHE_DIR", str(tmp_path / "design_cache"))
 
 
@@ -100,6 +100,7 @@ def _make_artifact_without_approval(
     WITHOUT approving any profile (extraction draft only)."""
     artifact_dir = tmp_path / "outputs" / artifact_id
     artifact_dir.mkdir(parents=True)
+    (artifact_dir / "source_resume.pdf").write_bytes(b"%PDF-1.4\n")
     target_path = artifact_dir / "target_format_reference.pdf"
     build_styled_target_pdf(target_path)
     build_synthetic_target_analysis(target_path, artifact_dir)
@@ -280,10 +281,10 @@ def test_get_unknown_design_returns_404(tmp_path: Path) -> None:
 def test_approve_rejects_invalid_state_design(tmp_path: Path) -> None:
     """A provider_failed design cannot be approved."""
     artifact_id, _, version_id = _make_artifact(tmp_path)
-    # Designer 'claude' is live-gated -> provider_failed without permission.
+    # Designer 'openai' is live-gated -> provider_failed without permission.
     response = client.post(
         "/api/designs/request",
-        json={"artifact_id": artifact_id, "designer": "claude", "approved_profile_version_id": version_id},
+        json={"artifact_id": artifact_id, "designer": "openai", "approved_profile_version_id": version_id},
     )
     assert response.status_code == 200
     body = response.json()
@@ -308,10 +309,10 @@ def test_unknown_designer_rejected(tmp_path: Path) -> None:
     assert response.status_code == 400
 
 
-def test_claude_strategy_requires_approved_design_or_explicit_fallback(
+def test_openai_strategy_requires_approved_design_or_explicit_fallback(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("TEMPLATE_DESIGN_STRATEGY", "claude_designer")
+    monkeypatch.setenv("TEMPLATE_DESIGN_STRATEGY", "openai_designer")
     artifact_id, _, version_id = _make_artifact(tmp_path)
     version_id = _approve_profile(
         artifact_id,

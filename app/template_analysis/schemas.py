@@ -67,18 +67,20 @@ class TextStyle(AnalysisModel):
     bold: bool = False
     italic: bool = False
     color_hex: str = Field(default="#000000", pattern=HEX_COLOR_PATTERN)
-    character_spacing_pt: float = Field(default=0.0, ge=-5.0, le=20.0)
-    word_spacing_pt: float = Field(default=0.0, ge=-5.0, le=30.0)
-    horizontal_scale_percent: float = Field(default=100.0, ge=50.0, le=200.0)
+    character_spacing_pt: float | None = Field(default=0.0, ge=-5.0, le=20.0)
+    word_spacing_pt: float | None = Field(default=0.0, ge=-5.0, le=30.0)
+    horizontal_scale_percent: float | None = Field(
+        default=100.0, ge=50.0, le=200.0
+    )
     line_height_pt: float | None = Field(default=None, gt=0, le=72)
 
 
 class SpacingStyle(AnalysisModel):
-    line_spacing: float = Field(default=1.1, ge=0.8, le=2.0)
+    line_spacing: float | None = Field(default=1.1, ge=0.8, le=2.0)
     line_height_pt: float | None = Field(default=None, gt=0, le=72)
-    paragraph_after_pt: float = Field(default=4.0, ge=0, le=36)
-    section_before_pt: float = Field(default=10.0, ge=0, le=72)
-    section_after_pt: float = Field(default=4.0, ge=0, le=36)
+    paragraph_after_pt: float | None = Field(default=4.0, ge=0, le=36)
+    section_before_pt: float | None = Field(default=10.0, ge=0, le=72)
+    section_after_pt: float | None = Field(default=4.0, ge=0, le=36)
 
 
 class DecorationStyle(AnalysisModel):
@@ -244,6 +246,11 @@ class SectionLayoutSpec(AnalysisModel):
     heading_style: TextStyle | None = None
     body_style: TextStyle | None = None
     spacing: SpacingStyle | None = None
+    heading_rule: bool | None = None
+    heading_rule_width_pt: float | None = Field(default=None, ge=0.25, le=6.0)
+    heading_rule_gap_above_pt: float | None = Field(default=None, ge=0, le=144)
+    heading_rule_gap_below_pt: float | None = Field(default=None, ge=0, le=144)
+    heading_rule_length_pt: float | None = Field(default=None, gt=0, le=2000)
     entry_title_bold: bool | None = None
     entry_title_style: TextStyle | None = None
     entry_metadata_style: TextStyle | None = None

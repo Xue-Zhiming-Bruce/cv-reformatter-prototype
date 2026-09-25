@@ -87,7 +87,7 @@ analysis (default strategy) or an approved designer's
   greps the generation slice for `load_template_style_spec`,
   `migrate_template_style_spec`, `STYLE_SPEC_FILENAME`).
 - Escape tests: `tests/integration/test_design_api.py::
-  test_claude_strategy_requires_approved_design_or_explicit_fallback`;
+  test_openai_strategy_requires_approved_design_or_explicit_fallback`;
   `tests/integration/test_api_generate.py::
   test_uploaded_target_never_falls_back_to_built_in`,
   `test_allow_built_in_fallback_use_is_recorded_not_honored`.

@@ -21,7 +21,7 @@ from tests.commercial_api.corpus import cases_for_lane, load_corpus_manifest
 from tests.commercial_api.models import RunManifest
 from tests.commercial_api.outcome_review import build_outcome_review
 from tests.commercial_api.registry import (
-    claude_designer_readiness,
+    openai_designer_readiness,
     configuration_status,
     registered_providers,
     resolve_adapter,
@@ -114,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     matrix.add_argument("--input-dir", type=Path, default=RESUME_MATRIX_DIR)
     matrix.add_argument(
         "--providers",
-        default="azure,adobe,pdfrest,foxit_structural",
+        default="adobe",
         help="Comma-separated layout providers.",
     )
     matrix.add_argument("--live", action="store_true")
@@ -226,13 +226,13 @@ def _ground_truth(args: argparse.Namespace) -> int:
 
 def _check_config(*, env_file: Path | None = DEFAULT_ENV_FILE) -> int:
     # Canonical environment loading: root .env is the single source of truth
-    # for shared credentials/Anthropic config (loaded first on the default
+    # for shared credentials/OpenAI config (loaded first on the default
     # path, matching FastAPI's bare load_dotenv()); an explicitly-passed
     # env_file is used verbatim (hermetic tests rely on this).
     load_canonical_environment(env_file or DEFAULT_ENV_FILE)
     # Presence only: booleans and missing-item names, never values.
     payload: dict[str, object] = {
-        "claude_designer_readiness": claude_designer_readiness(),
+        "openai_designer_readiness": openai_designer_readiness(),
         **configuration_status(),
     }
     print(json.dumps(payload, indent=2))
@@ -287,7 +287,7 @@ def _baseline(args: argparse.Namespace) -> int:
         print(f"error: unknown lanes: {', '.join(sorted(unknown))}", file=sys.stderr)
         return 2
     cases = _split(args.cases)
-    local_providers = {"baseline", "libreoffice", "mock_designer"}
+    local_providers = {"baseline", "mock_designer"}
     # Only select providers that are actually registered for a selected lane.
     applicable = {
         caps.provider

@@ -2,7 +2,7 @@
 provider-neutral ``LayoutTemplateSpec`` (schema 2.0).
 
 Only this module may promote a proposal into a stored product template.
-Claude output is evidence; every value here is either copied from measured
+OpenAI output is evidence; every value here is either copied from measured
 evidence, derived from proposal references, or produced by deterministic rules.
 """
 
@@ -43,7 +43,7 @@ class DesignCompilerError(RuntimeError):
 class UnsupportedPlacementError(DesignCompilerError):
     """Raised when a validated placement cannot be represented by the current
     renderer vocabulary. The design state becomes explicit ``unsupported``; a
-    Claude placement decision is never silently replaced with a default."""
+    OpenAI placement decision is never silently replaced with a default."""
 
 
 def compile_layout_template_spec(
@@ -70,7 +70,7 @@ def compile_layout_template_spec(
         {
             "schema_version": "2.0",
             "template_name": f"designed_{proposal.proposal_id[:8]}",
-            "template_version": f"design-{_proposal_checksum(proposal)[:10]}",
+            "template_version": f"design-{proposal_checksum(proposal)[:10]}",
             "structure_contract": (
                 "measured"
                 if evidence.header_structure is not None
@@ -89,11 +89,21 @@ def compile_layout_template_spec(
                 *proposal.warnings,
                 *[
                     f"Inter-section gap unmeasured for section '{section.label}'; "
-                    "renderer falls back to global section spacing pending review."
+                    "renderer inherits resolved global spacing with a review warning."
                     for section in sections
                     if section.show_heading
                     and section.mapping_action == "map"
-                    and section.spacing is None
+                    and (
+                        section.spacing is None
+                        or section.spacing.section_before_pt is None
+                        or section.spacing.section_after_pt is None
+                    )
+                ],
+                *[
+                    f"Body typography unmeasured for section '{section.label}'; "
+                    "renderer inherits the measured global body style with a review warning."
+                    for section in sections
+                    if section.mapping_action == "map" and section.body_style is None
                 ],
                 *[
                     f"Source section '{role}' is preserved in the mapping plan but "
@@ -141,7 +151,8 @@ def compile_measured_layout_template_spec(
 
 
 def proposal_checksum(proposal: DesignProposal) -> str:
-    return _proposal_checksum(proposal)
+    payload = json.dumps(proposal.model_dump(mode="json"), sort_keys=True, ensure_ascii=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def compiler_version() -> str:
@@ -203,6 +214,7 @@ def _compile_sections(
                 layout=_default_layout(mapping.source_role, style_spec),
                 placement=placement,
                 heading_style=heading_style,
+                body_style=style_spec.body,
                 mapping_action="preserve_as_additional" if preserve else "map",
             )
         )
@@ -285,14 +297,15 @@ def _compile_measured_sections(
             style_spec.spacing.model_copy(
                 update={
                     "section_before_pt": region.spacing_before_pt,
-                    "section_after_pt": (
-                    region.spacing_after_pt
-                    if region.spacing_after_pt is not None
-                    else style_spec.spacing.section_after_pt
-                    ),
+                    "section_after_pt": region.spacing_after_pt,
                 }
             )
-            if region is not None and region.spacing_before_pt is not None
+            if region is not None
+            else None
+        )
+        body_style = (
+            _required_style(measured.body_style_role_ref, roles_by_id)
+            if measured.body_style_role_ref
             else None
         )
         sections.append(
@@ -303,7 +316,13 @@ def _compile_measured_sections(
                 layout=measured.layout or _default_layout(source, style_spec),
                 placement="full_width",
                 heading_style=heading_style,
+                body_style=body_style,
                 spacing=spacing,
+                heading_rule=measured.heading_rule,
+                heading_rule_width_pt=measured.heading_rule_width_pt,
+                heading_rule_gap_above_pt=measured.heading_rule_gap_above_pt,
+                heading_rule_gap_below_pt=measured.heading_rule_gap_below_pt,
+                heading_rule_length_pt=measured.heading_rule_length_pt,
                 entry_title_style=(
                     measured_entry_title
                     if source in {"work_experience", "additional_details"}
@@ -365,6 +384,7 @@ def _compile_measured_sections(
                 layout=_default_layout(source, style_spec),
                 placement="full_width",
                 heading_style=_required_style("global.heading", roles_by_id),
+                body_style=style_spec.body,
                 mapping_action="preserve_as_additional",
             )
         )
@@ -437,8 +457,3 @@ def _columns_for_layout(
         )
         return columns.model_dump()
     return evidence.columns.model_copy(deep=True, update={"count": 1}).model_dump()
-
-
-def _proposal_checksum(proposal: DesignProposal) -> str:
-    payload = json.dumps(proposal.model_dump(mode="json"), sort_keys=True, ensure_ascii=True)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

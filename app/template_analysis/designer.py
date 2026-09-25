@@ -3,7 +3,7 @@
 - ``TemplateDesigner``: provider-neutral ``design(request) -> DesignProposal``.
 - ``MockTemplateDesigner``: deterministic, reproducible designer used offline,
   in tests and for explicit offline design requests.
-- ``AnthropicClaudeDesigner``: bounded single-call Claude adapter. Live calls
+- ``OpenAITemplateDesigner``: bounded single-call OpenAI adapter. Live calls
   are disabled by default and require explicit opt-in
   (``TEMPLATE_DESIGN_LIVE_ENABLED``) in addition to credentials, because
   ``ProviderPolicy`` does not exist yet.
@@ -18,7 +18,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from collections import Counter
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -228,181 +228,6 @@ class OpenAITemplateDesigner(TemplateDesigner):
         except ValidationError as exc:
             raise DesignerInvalidProposal(
                 f"OpenAI returned a proposal that failed strict validation: {exc}"
-            ) from exc
-
-
-# -- Claude designer ---------------------------------------------------------
-
-
-class AnthropicClaudeDesigner(TemplateDesigner):
-    """Single-attempt Claude adapter.
-
-    One ``design()`` call performs at most one external Anthropic request: the
-    workflow/harness retry coordinator owns retries, request budgets, and
-    attempt records. The timeout is an explicit constructor argument that
-    defaults to ``TEMPLATE_DESIGN_TIMEOUT_SECONDS`` (production
-    configuration), with a safe fallback; the commercial harness passes its
-    ``--timeout`` through the constructor.
-
-    Receives only the external-safe ``DesignRequest`` (no candidate values, no
-    target body text, no geometry). Response must match the strict
-    ``DesignProposal`` schema; extra fields and invalid enums are rejected.
-    """
-
-    provider = "claude"
-
-    DEFAULT_MODEL = "claude-3-5-sonnet-latest"
-    SYSTEM_PROMPT = (
-        "You are the template designer for a CV reformatting service. You decide "
-        "presentation and semantic mappings only.\n"
-        "You must NEVER create, rewrite, or invent candidate facts.\n"
-        "You never provide physical geometry or coordinates; exact geometry comes "
-        "only from deterministic evidence references.\n"
-        "Every region reference, style-role reference, and evidence reference must "
-        "be an ID present in the provided request: region references and "
-        "evidence_refs entries must be measured region IDs (region_id values) or "
-        "style-role IDs (role_id values); never use request metadata field names "
-        "such as target_checksum or target_evidence_version; evidence_refs may be "
-        "an empty list.\n"
-        "Set needs_review=true on every mapping that is low-confidence or has an "
-        "uncertainty reason_code such as no_measured_heading_region; low-confidence "
-        "mappings without needs_review=true are rejected.\n"
-        "section_order must contain only mapping_id values from this proposal's "
-        "mappings, or be omitted.\n"
-        "Target sample candidate content must never be mapped as candidate output.\n"
-        "Unmatched candidate source sections must be preserved or flagged; unknown "
-        "target slots must be flagged, never guessed.\n"
-        "Missing target data must never be fabricated: empty slots are hidden by policy.\n"
-        "Declare unsupported targets explicitly via declared_unsupported and "
-        "unsupported_features.\n"
-        "Respond only with the strict JSON schema; do not add extra fields."
-    )
-
-    def __init__(
-        self,
-        *,
-        model: str | None = None,
-        api_key: str | None = None,
-        timeout_seconds: float | None = None,
-    ) -> None:
-        super().__init__()
-        self.model = model or os.getenv("ANTHROPIC_DESIGN_MODEL") or os.getenv(
-            "ANTHROPIC_MODEL", self.DEFAULT_MODEL
-        )
-        self.api_key = api_key or os.getenv("ANTHROPIC_DESIGN_API_KEY") or os.getenv(
-            "ANTHROPIC_API_KEY"
-        )
-        # Explicit production timeout configuration. The commercial harness
-        # passes its configured --timeout through this constructor argument;
-        # otherwise TEMPLATE_DESIGN_TIMEOUT_SECONDS applies, never a hidden
-        # adapter-internal default that the CLI cannot reach.
-        self.timeout_seconds = (
-            timeout_seconds
-            if timeout_seconds is not None
-            else _env_float("TEMPLATE_DESIGN_TIMEOUT_SECONDS", 60.0)
-        )
-
-    def is_live_permitted(self) -> bool:
-        return _env_flag("TEMPLATE_DESIGN_LIVE_ENABLED")
-
-    def is_configured(self) -> bool:
-        return bool(self.api_key) and self._has_explicit_model()
-
-    def _has_explicit_model(self) -> bool:
-        """An explicit, pinned model is required for reproducibility. The
-        resolved ``self.model`` (constructor argument > env) is accepted only
-        when it is not a moving *-latest value; the DEFAULT_MODEL fallback is
-        never accepted."""
-        if not self.model:
-            return False
-        return not self.model.strip().lower().endswith("-latest")
-
-    def missing_config(self) -> list[str]:
-        missing = []
-        if not self.api_key:
-            missing.append("ANTHROPIC_DESIGN_API_KEY or ANTHROPIC_API_KEY")
-        if not self._has_explicit_model():
-            missing.append(
-                "explicit ANTHROPIC_DESIGN_MODEL or ANTHROPIC_MODEL "
-                "(a *-latest value is not accepted)"
-            )
-        return missing
-
-    def design(self, request: DesignRequest) -> DesignProposal:
-        if not self.is_live_permitted():
-            raise DesignerLiveDisabled(
-                "Live Claude design is disabled. Set TEMPLATE_DESIGN_LIVE_ENABLED=1 "
-                "only after ProviderPolicy and data-processing controls exist."
-            )
-        if not self._has_explicit_model():
-            raise DesignerNotConfigured(
-                "Claude designer requires an explicit model (ANTHROPIC_DESIGN_MODEL "
-                "or ANTHROPIC_MODEL); moving *-latest defaults are not accepted "
-                "for reproducible evaluation."
-            )
-        if not self.is_configured():
-            raise DesignerNotConfigured(
-                "Claude designer is not configured: " + "; ".join(self.missing_config())
-            )
-        from anthropic import Anthropic
-
-        # Exactly one external request per design() call. The client is
-        # constructed lazily here, only after live permission and credentials
-        # are confirmed.
-        client = Anthropic(api_key=self.api_key, timeout=self.timeout_seconds)
-        user_payload = _external_payload(request)
-        started = time.perf_counter()
-        try:
-            response = client.messages.create(
-                model=self.model,
-                max_tokens=4096,
-                system=self.SYSTEM_PROMPT,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": (
-                            "Design the presentation and semantic mappings for this "
-                            "target using only the provided references.\n\n"
-                            + json.dumps(user_payload, sort_keys=True, indent=2)
-                        ),
-                    }
-                ],
-                tools=[
-                    {
-                        "name": "submit_design",
-                        "description": "Submit the strict design proposal.",
-                        "input_schema": DesignProposal.model_json_schema(),
-                    }
-                ],
-                tool_choice={"type": "tool", "name": "submit_design"},
-            )
-        except Exception as exc:
-            raise DesignerProviderCallError(
-                "Claude design call failed."
-            ) from exc
-        latency = time.perf_counter() - started
-        self.last_usage = {
-            "input_tokens": getattr(response.usage, "input_tokens", None),
-            "output_tokens": getattr(response.usage, "output_tokens", None),
-            "total_tokens": getattr(response.usage, "total_tokens", None),
-        }
-        self.last_request_count = 1
-        tool_blocks = [
-            block
-            for block in response.content
-            if getattr(block, "type", None) == "tool_use"
-            and getattr(block, "name", None) == "submit_design"
-        ]
-        if not tool_blocks:
-            raise DesignerInvalidProposal(
-                "Claude did not return a submit_design tool call."
-            )
-        raw_input = tool_blocks[0].input
-        try:
-            return _proposal_from_payload(raw_input, request, provider=self.provider)
-        except ValidationError as exc:
-            raise DesignerInvalidProposal(
-                f"Claude returned a proposal that failed strict validation: {exc}"
             ) from exc
 
 

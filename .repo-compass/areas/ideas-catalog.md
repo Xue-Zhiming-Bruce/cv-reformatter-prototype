@@ -19,8 +19,8 @@ never by rebuilding a parallel pipeline.
 | Deterministic region/block detection | `detection_pipeline.py`, `detection_models.py` | rule-based column/region/block detection | cheap deterministic geometry (no provider) | harness `layout` lane as `baseline` |
 | Color-palette/typography extraction | `skeleton_compiler.py`, `models.py` (`ColorPaletteSpec`, `ColorToken`) | dominant colors + heading aliases from target | feeds the fixed LayoutTemplateSpec (the typography fix) | harness layout lane |
 | Image-grounded interpretation | `multimodal_interpreter.py`, `multimodal_models.py` | OpenAI vision reads the target image for semantic interpretation | better layout-class/role inference on styled targets | harness layout lane with image mode |
-| One-HTML-bundle → all renderers | `pipeline.py`, `html_renderer.py`, `generic_html_renderer.py` | single HTML bundle rendered by every engine for fair comparison | **ADOPTED**: this is the seed of the locked Option-B HTML-source-of-truth renderer | becomes the product render path |
-| Font embedding in DOCX | `docx_font_embedder.py` | embeds Lato etc. into generated DOCX | DOCX nice-to-have leg; embed fonts so Word shows the right face | DOCX export leg |
+| One-HTML-bundle → all renderers | `pipeline.py`, `html_renderer.py`, `generic_html_renderer.py` | single HTML bundle rendered by every engine | **ADOPTED for the PDF lane**: HTML is the PDF-lane renderer (ADR 0006); headless Chrome exports PDF. DOCX lane is native OOXML, not HTML-based (ADR 0007) | `html_renderer.py` + `chrome_html_to_pdf.py` (PDF); `docx_renderer.py` (DOCX) |
+| Font embedding in DOCX | `docx_font_embedder.py` | embeds Lato etc. into generated DOCX | **REVIVED by ADR 0007** (2026-09-05): DOCX lane is native OOXML again; font embedding is relevant for the DOCX deliverable | (feeds the ADR 0007 DOCX lane) |
 
 ## Other preserved ideas (from other pruned candidates)
 

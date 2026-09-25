@@ -11,7 +11,7 @@ except ModuleNotFoundError:
 
 from app.ingestion.docx_reader import read_docx
 from app.ingestion.pdf_reader import read_pdf_text
-from app.extraction.llm_extractor import MockLLMClient, build_llm_client, extract_candidate_profile
+from app.extraction.llm_extractor import build_llm_client, extract_candidate_profile
 from app.generation.followup_message_generator import generate_followup_message
 
 
@@ -24,7 +24,6 @@ def main() -> None:
     load_dotenv()
     parser = argparse.ArgumentParser(description="Run the resume extraction milestone demo.")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT, help="Path to a synthetic DOCX or PDF resume.")
-    parser.add_argument("--mock", action="store_true", help="Use deterministic mock extraction instead of a real LLM.")
     parser.add_argument("--job-description", type=str, default=None, help="Optional job description text.")
     args = parser.parse_args()
 
@@ -33,7 +32,7 @@ def main() -> None:
         create_synthetic_resume(resume_path)
 
     resume_text = read_resume_text(resume_path)
-    llm_client = MockLLMClient() if args.mock else build_llm_client()
+    llm_client = build_llm_client()
     profile = extract_candidate_profile(resume_text, llm_client, args.job_description)
     followup_message = generate_followup_message(profile)
 

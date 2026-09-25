@@ -48,6 +48,7 @@ def _approve_profile(artifact_id: str, artifact_dir: Path) -> str:
     Generation now requires a current, artifact-scoped approved profile version
     on every path."""
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "source_resume.pdf").write_bytes(b"%PDF-1.4\n")
     (artifact_dir / "candidate_profile.json").write_text(
         json.dumps(_profile_payload()), encoding="utf-8"
     )

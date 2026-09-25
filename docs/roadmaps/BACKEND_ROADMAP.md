@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: August 28, 2026
+Last reviewed: September 5, 2026
 
 This is the active engineering roadmap after completion of the MVP and PDF
 demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
@@ -31,7 +31,8 @@ Accepted MVP/PDF demo
 -> controlled staging and production launch
 ```
 
-The current backend priority is target-format fidelity:
+The current backend priority is target-format fidelity in the implemented PDF
+lane, followed by the approved DOCX lane:
 
 ```text
 Recruiter target PDF
@@ -40,7 +41,17 @@ Recruiter target PDF
 -> controlled CandidateProfile rendering
 -> faithful editable HTML surface and headless-Chrome-exported PDF
 -> deterministic and visual quality gates
+
+Recruiter target DOCX
+-> controlled native DOCX template
+-> approved CandidateProfile rendering
+-> editable DOCX and DOCX deliverable
+-> DOCX-native quality gates
 ```
+
+The candidate input and optional target must belong to the same lane. The
+product supports PDF-to-PDF and DOCX-to-DOCX, not cross-format conversion
+([ADR 0007](../decisions/0007-format-preserving-pdf-and-docx-lanes.md)).
 
 Do not restart the MVP or replace working components without a benchmark that
 shows a material quality, reliability, privacy, or operational benefit.
@@ -62,7 +73,8 @@ The backend reaches product standard when it has:
 - clear confidence, fallback, and unsupported-format behavior;
 - idempotent jobs, bounded retries, timeouts, and safe error messages;
 - structured logs and operational metrics without leaking candidate data;
-- reproducible HTML/PDF generation from the approved `CandidateProfile`,
+- reproducible same-format PDF or DOCX generation from the approved
+  `CandidateProfile`,
   disclosure rules, blind-profile state, and template version;
 - automated tests for success, degradation, provider failure, and recovery;
 - documented data retention, deletion, and external-provider processing
@@ -91,9 +103,9 @@ Client-facing render context
 + LayoutTemplateSpec
 -> RendererCompiler
 -> renderer-specific RenderPlan
--> HtmlRenderer
--> editable HTML surface
--> headless-Chrome PDF
+-> format-preserving renderer lane:
+   PDF  -> HtmlRenderer -> editable HTML -> headless-Chrome PDF
+   DOCX -> DocxRenderer -> editable DOCX
 -> content, privacy, structural, and visual quality gates
 -> versioned ArtifactManifest
 ```
@@ -243,7 +255,7 @@ Checklist:
       passed. Full ABC matrix rerun pending (disk artifact specs are
       pre-fix snapshots).
 
-Landed slices that do NOT complete this stage: bounded Claude designer
+Landed slices that do NOT complete this stage: bounded OpenAI designer
 (ADR 0001), Adobe-analyzer compile bridge (ADR 0002), horizontal-rule and
 rule-geometry fidelity (compiler v3), measured text-volume body typography
 (compiler v4), measured header/section structure and sub-role typography
@@ -296,14 +308,14 @@ Exit gate:
 ## Stage B2: Target-PDF Analyzer
 
 Status: `[x]` Decided — Adobe is the sole production target-PDF analyzer
-(ADR 0002, owner ruling August 27, 2026). Azure is retained as backup
-knowledge only; there is no analyzer fallback. The remaining items are
+(ADR 0002, owner ruling August 27, 2026). Prior provider evidence remains
+archived; there is no analyzer fallback. The remaining items are
 operational exit gates, not provider selection.
 
 - [x] Select the production analyzer and document routing + failure behavior
       (ADR 0002).
-- [ ] Build a repeatable provider comparison report over the canonical
-      synthetic corpus (Azure and Adobe replay lanes, for evidence continuity).
+- [ ] Build a repeatable Adobe regression report over the canonical synthetic
+      corpus; use archived multi-provider reports only as historical evidence.
 - [ ] Evaluate Adobe private/container deployment separately from the managed
       cloud service before hosting real candidate data.
 - [ ] Reconfirm commercial terms (latency, cost per typical resume, data
@@ -313,7 +325,7 @@ Standing decision rules:
 
 - No sequential multi-analyzer defaults; provider failures surface explicitly
   and produce no target artifacts.
-- GPT/Claude may label ambiguous regions or evaluate rendered pages, but must
+- OpenAI may label ambiguous regions or evaluate rendered pages, but must
   not supply exact geometry.
 - Provider output is evidence into the internal contracts, never a stored
   product schema.
@@ -323,21 +335,22 @@ Exit gate:
 - Operational terms and deployment model are verified against production
   requirements before real candidate data reaches the analyzer.
 
-## Stage B3: Product-Standard HTML/PDF Renderer
+## Stage B3: Product-Standard Format-Preserving Renderers
 
-Status: `[~]` HTML selected by ADR 0006; live HTML→PDF fidelity fixed
-(2026-08-31) — headless Chrome is the HTML→PDF exporter; font tiers, rule
-geometry, contact separator, badges, and content/no-loss gates pass on A→B
-and A→C on the Chrome baseline (measured deltas below); the section-label
-width gate is re-baselined to the HTML path (evidence below).
+Status: `[~]` PDF lane selected by ADR 0006; format-preserving lane decision in
+[ADR 0007](../decisions/0007-format-preserving-pdf-and-docx-lanes.md). Live HTML→PDF fidelity fixed (2026-08-31) — headless Chrome is the
+PDF-lane exporter; font tiers, rule geometry, contact separator, badges, and
+content/no-loss gates pass on A→B and A→C on the Chrome baseline (measured
+deltas below). The minimal native DOCX lane is implemented; its versioned
+corpus and visual acceptance gate remain open.
 
 The output engine must reproduce supported layouts while allowing candidate
 content to reflow safely.
 
-Selected render path: provider-neutral `RenderPlan` to product HTML, then
-headless Chrome/Chromium `--headless --print-to-pdf` (owner decision
-2026-08-30). DOCX, LibreOffice, and provider-hosted export are retired from
-generation.
+Selected PDF path: provider-neutral `RenderPlan` to product HTML, then headless
+Chrome/Chromium `--headless --print-to-pdf` (owner decision 2026-08-30). The
+legacy DOCX-derived-PDF path remains retired. The approved DOCX path is a
+separate native DOCX-to-DOCX lane and must not be used to generate PDF.
 
 Checklist:
 
@@ -353,19 +366,30 @@ Checklist:
 - [x] Define font availability, substitution, embedding, and licensing rules.
 - [ ] Benchmark every shortlisted renderer against the accepted baseline and
       the same output corpus.
-- [x] Select HTML as the product renderer (ADR 0006).
-- [x] Retire the DOCX/LibreOffice render path; rollback is by build deployment,
-      not a silent runtime fallback.
-- [ ] Save renderer name, version, template version, and font manifest with
-      every generation.
+- [x] Select HTML as the PDF-lane renderer (ADR 0006, narrowed by ADR 0007).
+- [x] Retire DOCX/LibreOffice as a PDF render path; rollback is by build
+      deployment, not a silent runtime fallback.
+- [x] Add an explicit workflow-lane discriminator derived from candidate input
+      format and reject mismatched target or output formats (2026-09-06).
+- [x] Define and implement the native DOCX `RenderPlan`/renderer path that
+      produces an editable DOCX without passing through HTML or PDF
+      (2026-09-06).
+- [~] Add DOCX-native content, privacy, structure, editability, and visual
+      acceptance checks against a versioned DOCX corpus. Content, privacy,
+      native structure, and editability gates landed 2026-09-06; the versioned
+      corpus and visual acceptance gate remain open.
+- [x] Save renderer name, version, template version, and font manifest with
+      every generation (2026-09-06).
 
-Decision authority is ADR 0006. Alternative renderer experiments remain
-evaluation evidence only and cannot introduce a second product render path.
+Decision authority is ADR 0007, with ADR 0006 retained for badge behavior and
+the PDF lane. Alternative renderer experiments remain evaluation evidence only.
 
 Exit gate:
 
-- Supported corpus documents generate editable interface HTML and visually consistent PDF
-  without content contamination, clipping, or silent fallback.
+- Supported PDF corpus documents generate editable interface HTML and visually
+  consistent PDF; supported DOCX corpus documents generate editable DOCX.
+  Neither lane permits content contamination, clipping, cross-format routing,
+  or silent fallback.
 
 ### HTML→PDF fidelity re-baseline (2026-08-31, headless Chrome)
 
@@ -410,13 +434,13 @@ visual-evaluation phase remains `[~]` for the items below (layer doctrine: LLM
 owns semantic interpretation; deterministic code owns measurement, validation
 gates, and approval).
 
-- [ ] Keep the existing OpenAI/Anthropic provider abstraction.
+- [ ] Keep the existing OpenAI provider boundary.
 - [ ] Require schema-constrained output for every production provider.
 - [ ] Separate extraction, ambiguous-region labeling, and visual-evaluation
       prompts and model settings.
 - [ ] Add evidence/provenance for extracted candidate fields where practical.
 - [ ] Add a deterministic validation gate before AI visual evaluation.
-- [ ] Use GPT/Claude vision to describe material mismatches between target and
+- [ ] Use OpenAI vision to describe material mismatches between target and
       generated page images.
 - [ ] Prevent the visual evaluator from approving content accuracy or replacing
       recruiter review.
@@ -485,7 +509,9 @@ Status: `[ ]`.
 - [ ] Create a versioned golden corpus and expected-result manifest.
 - [ ] Add unit, integration, contract, snapshot, and end-to-end tests.
 - [ ] Add provider-independent contract tests.
-- [ ] Add deterministic DOCX inspection and PDF render checks.
+- [x] Add API contract tests for PDF and DOCX lane discrimination, including
+      rejection of PDF-to-DOCX, DOCX-to-PDF, and candidate/target mismatches.
+- [x] Add deterministic DOCX inspection and PDF render checks.
 - [x] Add a content gate that compares generated text with the approved
       `ClientFacingRenderContext`.
 - [ ] Add a privacy gate that checks hidden identifiers and prevents target

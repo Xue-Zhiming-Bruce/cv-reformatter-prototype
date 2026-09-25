@@ -39,11 +39,24 @@ tests/
   test_results/            ignored generated evidence only
     pytest/                timestamped terminal output
     commercial_api/        versioned provider-evaluation runs
+  experiments/             OWNER-AUTHORIZED parallel experimental path
+                          (2026-09-04): AI-built template / A-pipeline
+                          prototypes. Not a production workflow; code +
+                          run artifacts live here (see note below).
 ```
 
 Source code, fixtures, credentials, and generated results must not share a
 directory. Do not add generated `outputs/` directories beneath test source
 packages.
+
+> **Authorized exception — `tests/experiments/` (owner, 2026-09-04):** the
+> canonical-layout rule against new top-level test workflows is waived for
+> this one directory, explicitly approved by the owner for the A-pipeline
+> experiment. It is a parallel, non-production
+> prototype path (AI#1 empty-HTML-template + AI#2 fill). It may generate run
+> artifacts beneath it (self-contained, ignored by git). This waiver is
+> specific: it does NOT authorize other new top-level test workflows, which
+> still require separate owner approval per the core rule.
 
 Provider-neutral normalized layout evidence and offline Adobe response
 normalization are production-owned under `app/template_analysis/commercial/`.
@@ -57,7 +70,7 @@ usage, scoring, manifests, and reporting stay under `tests/commercial_api/`.
 | Automated backend tests | `pytest tests/unit tests/integration` | synthetic fixtures | `tests/test_results/pytest/` terminal log |
 | Explicit live smoke tests | pytest tests under `tests/live/` with `live_provider` marker and opt-in | synthetic or authorized input | `tests/test_results/pytest/` terminal log |
 | Commercial provider comparison | `python -m tests.commercial_api.cli` | committed synthetic corpus or authorized local Resume A-F targets | `tests/test_results/commercial_api/<run_id>/` |
-| Resume transformation matrix | `scripts/run_abc_live_matrix.py` (API-driven; supersedes the retired `run_block_aware_matrix.py` offline runner) | authorized `tests/local_datasets/resume_matrix/` inputs | versioned matrix run defined by `TEST_RESULT_FORMAT.md`; run reports under `data/generated_outputs/abc_live_matrix/` |
+| Resume transformation matrix | `python -m tests.experiments.a_pipeline --live --matrix-def` | authorized `tests/local_datasets/resume_matrix/` inputs | versioned matrix run defined by `TEST_RESULT_FORMAT.md`; run reports under `tests/local_datasets/resume_matrix/runs/` |
 
 There may be only one current workflow for each responsibility. Retained
 historical result directories may be consumed by an explicit compatibility

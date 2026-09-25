@@ -88,6 +88,25 @@ def test_render_context_formats_nested_sections() -> None:
     assert context.work_experience[0].date_range == "2020 - 2024"
 
 
+def test_render_context_prefers_current_title_for_subheading() -> None:
+    profile = CandidateProfile(
+        full_name="Jane Candidate",
+        current_title="Platform Architect",
+        location="Boston",
+        work_experience=[WorkExperience(title="Senior Engineer")],
+    )
+
+    context = build_client_render_context(profile)
+
+    assert context.candidate_subheading == "Platform Architect | Boston"
+
+    fallback_context = build_client_render_context(
+        profile.model_copy(update={"current_title": None})
+    )
+
+    assert fallback_context.candidate_subheading == "Senior Engineer | Boston"
+
+
 def test_render_context_strips_list_markers_without_mutating_profile() -> None:
     profile = CandidateProfile.model_validate(
         {

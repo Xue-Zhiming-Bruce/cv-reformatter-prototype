@@ -39,3 +39,8 @@ Example:
 
 Copy [ADR Template](ADR_TEMPLATE.md) for a new record. Link the supporting
 corpus, evaluation reports, privacy review, and rollback plan.
+
+## Accepted Decisions
+
+- [ADR 0007](0007-format-preserving-pdf-and-docx-lanes.md) — PDF-to-PDF through
+  editable HTML and native DOCX-to-DOCX, with cross-format conversion rejected.

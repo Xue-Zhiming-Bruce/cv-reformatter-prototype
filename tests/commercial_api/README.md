@@ -36,7 +36,7 @@ comparison" below).
    the versioned synthetic corpus:
 
    ```bash
-   python -m tests.commercial_api.cli baseline --lanes layout,rendering
+   python -m tests.commercial_api.cli baseline --lanes layout
    ```
 
 3. **Explicit live-provider evaluations** — commercial APIs run only when the
@@ -44,8 +44,8 @@ comparison" below).
 
    ```bash
    python -m tests.commercial_api.cli run --lane layout \
-     --providers azure,adobe,pdfrest,foxit_structural --cases styled_two_column \
-     --live --max-cases 1 --max-requests 4 --timeout 120 --max-retries 2
+     --providers adobe --cases styled_two_column \
+     --live --max-cases 1 --max-requests 1 --timeout 120 --max-retries 2
    ```
 
    Without `--live`, configured external providers produce `skipped`
@@ -58,7 +58,7 @@ comparison" below).
 
    ```bash
    python -m tests.commercial_api.cli matrix-run --live \
-     --providers azure,adobe,pdfrest,foxit_structural --max-requests 24
+     --providers adobe --max-requests 6
    ```
 
 4. **Result comparison** — compares two completed runs without calling any
@@ -119,7 +119,6 @@ Lane `design` evaluates the bounded template-designer workflow (see
 `docs/architecture/LLM_DESIGNER_WORKFLOW.md`):
 
 - `mock_designer` — deterministic offline designer (baseline, no network);
-- `claude_designer` — Anthropic Claude designer; external and live-gated;
 - `openai_designer` — OpenAI structured-output designer; external and
   live-gated.
 
@@ -129,16 +128,16 @@ Deterministic baseline (no network):
 python -m tests.commercial_api.cli baseline --lanes design
 ```
 
-Live Claude design evaluation (explicit opt-in; may incur cost and sends
+Live OpenAI design evaluation (explicit opt-in; may incur cost and sends
 synthetic target layout evidence, never real candidate data):
 
 ```bash
 python -m tests.commercial_api.cli run --lane design \
-  --providers claude_designer --cases design_plain_one_column \
+  --providers openai_designer --cases design_plain_one_column \
   --live --max-cases 1 --max-requests 1 --timeout 120
 ```
 
-The Claude and OpenAI adapters additionally require
+The OpenAI adapter additionally requires
 `TEMPLATE_DESIGN_LIVE_ENABLED=1`
 because `ProviderPolicy` does not exist yet. Without it, runs report
 `provider_failed`/`live_design_disabled` and never call out.
@@ -161,9 +160,8 @@ Protections:
 Independent lanes with provider-independent case definitions:
 
 - `extraction` — candidate-profile extraction (OpenAI adapter);
-- `layout` — target-layout analysis (baseline, Azure, Adobe, pdfRest Extract
-  Text, Foxit Structural Extraction trial, Apryse);
-- `rendering` — DOCX-to-PDF export (LibreOffice, Aspose, Apryse, Adobe Create PDF);
+- `layout` — target-layout analysis (local baseline and Adobe Extract);
+- `rendering` — Adobe Create PDF;
 - `visual_diagnosis` and `e2e` — declared but not implemented; no registry
   entries exist, so they can never be scheduled.
 

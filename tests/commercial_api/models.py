@@ -129,7 +129,7 @@ class RunConfiguration(StrictModel):
     output_dir: str | None = None
     env_file: str | None = None
     pricing_file: str | None = None
-    # Presence flags plus the exact configured Claude model ID (explicit,
+    # Presence flags plus the exact configured OpenAI model ID (explicit,
     # never a moving *-latest value). Secret values are never recorded.
     config_status: dict[str, dict[str, bool | str | None]] = Field(default_factory=dict)
 

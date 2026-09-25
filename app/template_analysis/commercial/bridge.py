@@ -80,12 +80,15 @@ def build_design_evidence_from_normalized(
         normalized,
         title=title,
         body=body,
+        heading=heading,
+        heading_candidates=non_title_headings,
+        global_heading_rule=decoration.heading_rule,
     )
     line_height_role_refs = {
         role_ref
         for section in section_structure
-        if section.source_hint == "additional_section"
         for role_ref in (
+            section.body_style_role_ref,
             section.entry_title_style_role_ref,
             section.entry_metadata_style_role_ref,
         )
@@ -162,7 +165,7 @@ def build_design_evidence_from_normalized(
     line_spacing = (
         max(0.8, min(2.0, body_line_height / body.font_size_pt))
         if body_line_height is not None and body.font_size_pt is not None
-        else 1.1
+        else None
     )
     style_spec = TemplateStyleSpec(
         source_type="pdf_analysis",
@@ -175,19 +178,11 @@ def build_design_evidence_from_normalized(
         spacing=SpacingStyle(
             line_spacing=line_spacing,
             line_height_pt=body_line_height,
-            paragraph_after_pt=(
-                body.spacing_after_pt
-                if body.spacing_after_pt is not None
-                else 0.0
-            ),
+            paragraph_after_pt=body.spacing_after_pt,
             # Inter-section gaps are section-local evidence. Globalizing the
             # first heading's gap adds it above unrelated/headingless sections.
             section_before_pt=0.0,
-            section_after_pt=(
-                heading.spacing_after_pt
-                if heading.spacing_after_pt is not None
-                else 0.0
-            ),
+            section_after_pt=heading.spacing_after_pt,
         ),
         decoration=decoration.model_copy(
             update={
@@ -233,6 +228,9 @@ def _measured_structure(
     *,
     title: NormalizedTextBlock,
     body: NormalizedTextBlock,
+    heading: NormalizedTextBlock,
+    heading_candidates: list[NormalizedTextBlock],
+    global_heading_rule: bool,
 ) -> tuple[
     MeasuredHeaderStructure | None,
     list[MeasuredSectionStructure],
@@ -301,55 +299,103 @@ def _measured_structure(
         ),
     )
 
-    heading_pairs: list[tuple[NormalizedTextBlock, NormalizedRule]] = []
-    for rule in ordered_rules:
-        if rule.element_id == header_rule.element_id:
-            continue
-        page = page_by_number.get(rule.page_number)
-        if page is None:
-            continue
-        candidates = [
-            block
-            for block in normalized.text_blocks
-            if block.page_number == rule.page_number
-            and block.bbox is not None
-            and 0 <= rule.bbox.top - block.bbox.bottom <= 12.0 / page.height_pt
+    heading_pairs: list[tuple[NormalizedTextBlock, NormalizedRule | None]] = []
+    if global_heading_rule:
+        # Preserve the accepted all-heading path exactly.
+        for rule in ordered_rules:
+            if rule.element_id == header_rule.element_id:
+                continue
+            page = page_by_number.get(rule.page_number)
+            if page is None:
+                continue
+            candidates = [
+                block for block in normalized.text_blocks
+                if block.page_number == rule.page_number
+                and block.bbox is not None
+                and 0 <= rule.bbox.top - block.bbox.bottom <= 12.0 / page.height_pt
+            ]
+            if candidates:
+                heading_pairs.append(
+                    (max(candidates, key=lambda item: item.bbox.bottom), rule)
+                )
+    else:
+        attached_headings = [
+            candidate
+            for rule in ordered_rules
+            if rule.element_id != header_rule.element_id
+            if (candidate := _heading_near_rule(
+                normalized, rule, heading_candidates
+            )) is not None
         ]
-        if candidates:
-            heading_pairs.append(
-                (max(candidates, key=lambda item: item.bbox.bottom), rule)
-            )
+        attached_heading_classes = Counter(
+            candidate.typography_class or typography_class(candidate)
+            for candidate in attached_headings
+        )
+        heading_class = (
+            attached_heading_classes.most_common(1)[0][0]
+            if attached_heading_classes
+            else heading.typography_class or typography_class(heading)
+        )
+        section_headings = sorted(
+            {
+                block.element_id: block
+                for block in heading_candidates
+                if block.bbox is not None
+                and (block.typography_class or typography_class(block)) == heading_class
+            }.values(),
+            key=lambda block: (block.page_number, block.bbox.top),
+        )
+        used_rule_ids = {header_rule.element_id}
+        for block in section_headings:
+            rule = _rule_near_heading(normalized, block, used_rule_ids)
+            if rule is not None:
+                used_rule_ids.add(rule.element_id)
+            heading_pairs.append((block, rule))
 
     sections: list[MeasuredSectionStructure] = []
     first_heading = heading_pairs[0][0] if heading_pairs else None
-    summary_present = any(
+    summary_blocks = [
+        block
+        for block in normalized.text_blocks
+        if (
         block.page_number == 1
         and block.bbox is not None
         and header_rule.bbox.bottom < block.bbox.top
         and (first_heading is None or block.bbox.bottom < first_heading.bbox.top)
         and block.font_size_pt == body.font_size_pt
-        for block in normalized.text_blocks
-    )
-    if summary_present:
+        )
+    ]
+    if summary_blocks:
+        summary_body = _dominant_body(summary_blocks)
         sections.append(
             MeasuredSectionStructure(
                 region_id="measured.unlabelled.summary",
                 source_hint="summary",
                 show_heading=False,
+                body_style_role_ref=f"element.{summary_body.element_id}",
             )
         )
     section_heading_ids: set[str] = set()
     section_by_heading_id: dict[str, int] = {}
     previous_heading_page: int | None = None
-    for block, _rule in heading_pairs:
+    for block, rule in heading_pairs:
         label = block.text.strip()
         source_hint, contact_overflow = _section_source_hint(label)
+        has_rule = rule is not None
+        rule_override = True if has_rule and not global_heading_rule else None
         sections.append(
             MeasuredSectionStructure(
                 region_id=f"element.{block.element_id}",
                 label=label,
                 source_hint=source_hint,
                 contact_fields=contact_overflow,
+                heading_rule=rule_override,
+                heading_rule_width_pt=(rule.stroke_width_pt if rule_override else None),
+                heading_rule_gap_above_pt=(rule.gap_above_pt if rule_override else None),
+                heading_rule_gap_below_pt=(rule.gap_below_pt if rule_override else None),
+                heading_rule_length_pt=(
+                    _rule_length(normalized, rule) if rule_override else None
+                ),
                 page_break_before=(
                     previous_heading_page is not None
                     and block.page_number > previous_heading_page
@@ -389,6 +435,9 @@ def _measured_structure(
         next_heading = heading_pairs[index + 1][0] if index + 1 < len(heading_pairs) else None
         blocks = _blocks_in_section(normalized, heading_block, next_heading, section_heading_ids)
         updates: dict[str, object] = {}
+        if blocks:
+            section_body = _dominant_body(blocks)
+            updates["body_style_role_ref"] = f"element.{section_body.element_id}"
         if section.source_hint == "skills":
             labels = [block for block in blocks if block.bold]
             if labels:
@@ -419,7 +468,7 @@ def _measured_structure(
                 if rule_top_pt is not None:
                     global_gap_below = min(
                         (rule.gap_below_pt for _, rule in heading_pairs
-                         if rule.gap_below_pt is not None),
+                         if rule is not None and rule.gap_below_pt is not None),
                         default=None,
                     )
                     if global_gap_below is not None:
@@ -457,7 +506,11 @@ def _measured_structure(
                     ]
                     if preceding_tops:
                         title_top = title_block.bbox.top * page.height_pt
-                        body_line_height = body.line_height_pt or body.font_size_pt or 0.0
+                        body_line_height = body.line_height_pt or body.font_size_pt
+                        if body_line_height is None:
+                            raise CompileBridgeEvidenceError(
+                                "work-experience body line height is unmeasured"
+                            )
                         # Inter-entry gap as the vertical space the renderer needs
                         # between .entry blocks: next title top minus the last
                         # preceding body line's box bottom, plus the next title's
@@ -482,7 +535,7 @@ def _measured_structure(
                 structure_warnings.append(
                     "Work-experience entry gap unmeasurable (fewer than two measurable "
                     f"entry titles in section '{section.label or heading_block.text.strip()}'); "
-                    "compiled section falls back to global paragraph spacing pending review."
+                    "entry spacing remains unmeasured and requires review before rendering."
                 )
         elif section.source_hint == "additional_section":
             titles = [block for block in blocks if block.bold]
@@ -522,7 +575,11 @@ def _measured_structure(
                 if entry_gaps:
                     updates["entry_gap_pt"] = median(entry_gaps)
             if links:
-                body_line_height = body.line_height_pt or body.font_size_pt or 0.0
+                body_line_height = body.line_height_pt or body.font_size_pt
+                if body_line_height is None:
+                    raise CompileBridgeEvidenceError(
+                        "additional-section body line height is unmeasured"
+                    )
                 link_tops = sorted(
                     block.bbox.top * page_by_number[block.page_number].height_pt
                     for block in links
@@ -545,13 +602,13 @@ def _measured_structure(
                             f"{link_row_delta:.2f}pt in section "
                             f"'{section.label or heading_block.text.strip()}', but its "
                             "metadata text role has no matching measured line height; "
-                            "renderer falls back to global line height pending review."
+                            "link line height remains unmeasured and requires review before rendering."
                         )
                 else:
                     structure_warnings.append(
                         "Additional-section link row spacing unmeasurable in section "
-                        f"'{section.label or heading_block.text.strip()}'; renderer falls "
-                        "back to global line height pending review."
+                        f"'{section.label or heading_block.text.strip()}'; line "
+                        "height remains unmeasured and requires review before rendering."
                     )
                 ordered_titles = sorted(
                     titles,
@@ -758,11 +815,22 @@ def _decoration_from_rules(
         peer_headings=peer_headings,
         excluded_rule_ids=used_rule_ids,
     )
+    warnings: list[str] = []
+    inferred_partial_heading_rules = False
     style_rules = matched if uniform_heading_rules else []
     if not style_rules and header_rule is not None:
         style_rules = [header_rule]
-
-    warnings: list[str] = []
+    if not style_rules:
+        inferred_roles = _ordered_uniform_rule_roles(normalized)
+        if inferred_roles is not None:
+            header_rule, matched = inferred_roles
+            inferred_partial_heading_rules = True
+            style_rules = matched
+            warnings.append(
+                "Header and heading rule roles were inferred from ordered, "
+                "uniform measured rule geometry because text-region attachment "
+                "was unavailable."
+            )
     if matched and not uniform_heading_rules:
         warnings.append(
             "Non-uniform heading-rule distribution detected; the global "
@@ -797,7 +865,7 @@ def _decoration_from_rules(
             rule_color_hex=color,
             rule_width_pt=median(rule.stroke_width_pt for rule in style_rules),
             header_rule=header_rule is not None,
-            heading_rule=uniform_heading_rules,
+            heading_rule=uniform_heading_rules and not inferred_partial_heading_rules,
             header_rule_gap_above_pt=(
                 header_rule.gap_above_pt if header_rule is not None else None
             ),
@@ -813,12 +881,28 @@ def _decoration_from_rules(
             heading_rule_gap_below_pt=heading_gap_below,
             heading_rule_length_pt=(
                 median(_rule_length(normalized, rule) for rule in matched)
-                if uniform_heading_rules
+                if matched
                 else None
             ),
         ),
         warnings,
     )
+
+
+def _ordered_uniform_rule_roles(
+    normalized: NormalizedLayoutEvidence,
+) -> tuple[NormalizedRule, list[NormalizedRule]] | None:
+    rules = sorted(
+        (rule for rule in normalized.rules if rule.page_number == 1),
+        key=lambda rule: rule.bbox.top,
+    )
+    if len(rules) < 3 or rules[0].bbox.top >= 0.3:
+        return None
+    lengths = [_rule_length(normalized, rule) for rule in rules]
+    widths = [rule.stroke_width_pt for rule in rules]
+    if max(lengths) - min(lengths) > 1.0 or max(widths) - min(widths) >= 0.25:
+        return None
+    return rules[0], rules[1:]
 
 
 def _median_measurement(
@@ -868,6 +952,76 @@ def _rule_below_heading(
     return min(
         candidates,
         key=lambda rule: rule.bbox.top - heading.bbox.bottom,
+        default=None,
+    )
+
+
+def _rule_near_heading(
+    normalized: NormalizedLayoutEvidence,
+    heading: NormalizedTextBlock,
+    excluded_rule_ids: set[str],
+) -> NormalizedRule | None:
+    """Attach a measured rule whose line intersects or sits beside a heading box."""
+    if heading.bbox is None:
+        return None
+    page = next(
+        (page for page in normalized.pages if page.page_number == heading.page_number),
+        None,
+    )
+    if page is None:
+        return None
+    tolerance = 12.0 / page.height_pt
+
+    def distance(rule: NormalizedRule) -> float:
+        if heading.bbox.top <= rule.bbox.top <= heading.bbox.bottom:
+            return 0.0
+        return min(
+            abs(rule.bbox.top - heading.bbox.top),
+            abs(rule.bbox.top - heading.bbox.bottom),
+        )
+
+    return min(
+        (
+            rule for rule in normalized.rules
+            if rule.page_number == heading.page_number
+            and rule.element_id not in excluded_rule_ids
+            and distance(rule) <= tolerance
+        ),
+        key=distance,
+        default=None,
+    )
+
+
+def _heading_near_rule(
+    normalized: NormalizedLayoutEvidence,
+    rule: NormalizedRule,
+    heading_candidates: list[NormalizedTextBlock],
+) -> NormalizedTextBlock | None:
+    page = next(
+        (page for page in normalized.pages if page.page_number == rule.page_number),
+        None,
+    )
+    if page is None:
+        return None
+    tolerance = 12.0 / page.height_pt
+
+    def distance(block: NormalizedTextBlock) -> float:
+        assert block.bbox is not None
+        if block.bbox.top <= rule.bbox.top <= block.bbox.bottom:
+            return 0.0
+        return min(
+            abs(rule.bbox.top - block.bbox.top),
+            abs(rule.bbox.top - block.bbox.bottom),
+        )
+
+    return min(
+        (
+            block for block in heading_candidates
+            if block.page_number == rule.page_number
+            and block.bbox is not None
+            and distance(block) <= tolerance
+        ),
+        key=distance,
         default=None,
     )
 
@@ -1010,16 +1164,16 @@ def _text_style(block: NormalizedTextBlock, page_width_pt: float) -> TextStyle:
 
 def _character_spacing_pt(
     block: NormalizedTextBlock, page_width_pt: float
-) -> float:
+) -> float | None:
     bounds = block.char_bounds[: len(block.text)]
     if len(bounds) < 2:
-        return 0.0
+        return None
     gaps = [
         (right.x0 - left.x1) * page_width_pt
         for left, right in zip(bounds, bounds[1:])
         if right.x0 >= left.x0
     ]
-    return round(median(gaps), 2) if gaps else 0.0
+    return round(median(gaps), 2) if gaps else None
 
 
 def _columns(
@@ -1125,10 +1279,12 @@ def _page_style(
     top_pt: float | None = None,
 ) -> PageStyle:
     boxes = [block.bbox for block in blocks if block.bbox is not None]
-    left = min((box.x0 for box in boxes), default=0.08) * width
-    right = (1 - max((box.x1 for box in boxes), default=0.92)) * width
-    top = top_pt if top_pt is not None else min((box.top for box in boxes), default=0.06) * height
-    observed_bottom = (1 - max((box.bottom for box in boxes), default=0.94)) * height
+    if not boxes:
+        raise CompileBridgeEvidenceError("page margins are unmeasured")
+    left = min(box.x0 for box in boxes) * width
+    right = (1 - max(box.x1 for box in boxes)) * width
+    top = top_pt if top_pt is not None else min(box.top for box in boxes) * height
+    observed_bottom = (1 - max(box.bottom for box in boxes)) * height
     # Commercial extraction can omit trailing bullets/rows while still
     # retaining their section heading. Such an omission makes the apparent
     # bottom whitespace larger, never smaller. Cap it at the independently
@@ -1149,4 +1305,6 @@ def _observed_bottom_margin(
     height: float, blocks: list[NormalizedTextBlock]
 ) -> float:
     boxes = [block.bbox for block in blocks if block.bbox is not None]
-    return (1 - max((box.bottom for box in boxes), default=0.94)) * height
+    if not boxes:
+        raise CompileBridgeEvidenceError("page bottom margin is unmeasured")
+    return (1 - max(box.bottom for box in boxes)) * height

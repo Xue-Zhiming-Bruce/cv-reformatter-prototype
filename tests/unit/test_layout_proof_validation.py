@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.template_analysis.layout_proof_schemas import LayoutProofApproval, LengthVariant
+from app.template_analysis.layout_proof_content import expected_rendered_rule_count
 from app.template_analysis.layout_proof_validation import (
     PdfGeometryMeasurements,
     PdfPageMeasurements,
@@ -15,6 +16,8 @@ from app.template_analysis.layout_proof_validation import (
     validate_proof_structure,
 )
 from app.template_analysis.schemas import (
+    DecorationStyle,
+    SectionLayoutSpec,
     built_in_template_style_spec,
     migrate_template_style_spec,
 )
@@ -228,6 +231,90 @@ def test_default_headings_derive_from_layout_spec() -> None:
     assert "missing headings" in missing.detail
 
 
+def test_proof_rule_count_follows_section_local_presence() -> None:
+    base = _spec()
+    spec = base.model_copy(
+        update={
+            "decoration": DecorationStyle(heading_rule=False),
+            "sections": [
+                SectionLayoutSpec(
+                    section_id=f"section-{index}",
+                    source="skills",
+                    label=f"SECTION {index}",
+                    heading_rule=index in {1, 4} or None,
+                )
+                for index in range(6)
+            ],
+        }
+    )
+    text = _bound_text(spec, LengthVariant.SHORT)
+    measurements = _complete_measurements(LengthVariant.SHORT, text=text)
+    measurements = PdfGeometryMeasurements(
+        page_count=measurements.page_count,
+        pages=measurements.pages,
+        text=measurements.text,
+        horizontal_rule_count=2,
+    )
+
+    result = validate_proof_structure(
+        layout_spec=spec,
+        measurements=measurements,
+        expected_headings=[],
+        variant=LengthVariant.SHORT,
+    )
+
+    check = next(item for item in result.checks if item.name == "horizontal_rule_count")
+    assert check.passed is True
+    assert "expected 2" in check.detail
+
+
+@pytest.mark.parametrize(
+    ("contact_fields", "measured_rules"),
+    [([], 0), (["location"], 1)],
+)
+def test_proof_header_rule_requires_rendered_contact(
+    contact_fields: list[str], measured_rules: int
+) -> None:
+    base = _spec()
+    spec = base.model_copy(
+        update={
+            "header": base.header.model_copy(
+                update={"contact_fields": contact_fields}
+            ),
+            "decoration": DecorationStyle(header_rule=True),
+            "sections": [
+                SectionLayoutSpec(
+                    section_id="contact",
+                    source="contact",
+                    label="Contact",
+                    show_heading=False,
+                    heading_rule=False,
+                    contact_fields=contact_fields,
+                )
+            ],
+        }
+    )
+    variant = LengthVariant.SHORT
+    text = _bound_text(spec, variant)
+    measurements = PdfGeometryMeasurements(
+        page_count=1,
+        pages=[_page(1, text=text)],
+        text=text,
+        horizontal_rule_count=measured_rules,
+    )
+
+    assert expected_rendered_rule_count(spec, variant) == measured_rules
+    result = validate_proof_structure(
+        layout_spec=spec,
+        measurements=measurements,
+        expected_headings=[],
+        variant=variant,
+    )
+    assert next(
+        check for check in result.checks if check.name == "horizontal_rule_count"
+    ).passed
+
+
 # -- approval boundary ---------------------------------------------------------
 
 
@@ -274,9 +361,13 @@ def _content_check(result) -> StructuralCheck:
 
 def test_complete_content_passes_for_all_variants() -> None:
     for variant in LengthVariant:
+        spec = _spec()
         result = validate_proof_structure(
-            layout_spec=_spec(),
-            measurements=_complete_measurements(variant),
+            layout_spec=spec,
+            measurements=_complete_measurements(
+                variant,
+                text=_bound_text(spec, variant),
+            ),
             variant=variant,
         )
         assert _content_check(result).passed, variant
@@ -540,7 +631,11 @@ def test_real_pdf_with_header_footer_regions(tmp_path: Path) -> None:
 # -- template-aware content completeness ---------------------------------------
 
 
-def _partial_spec(*sources: str, placement: str = "full_width"):
+def _partial_spec(
+    *sources: str,
+    placement: str = "full_width",
+    contact_fields: tuple[str, ...] = (),
+):
     """A compiled LayoutTemplateSpec with only the given section sources."""
     from app.template_analysis.schemas import SectionLayoutSpec
 
@@ -562,6 +657,7 @@ def _partial_spec(*sources: str, placement: str = "full_width"):
             source=source,
             label=default_label[source],
             placement=placement,
+            contact_fields=list(contact_fields) if source == "contact" else [],
         )
         for source in sources
     ]
@@ -641,7 +737,12 @@ def test_header_and_footer_bindings_contribute_markers() -> None:
         expected_rendered_marker_counts,
     )
 
-    spec = _partial_spec("contact", "summary", "additional_details")
+    spec = _partial_spec(
+        "contact",
+        "summary",
+        "additional_details",
+        contact_fields=("phone",),
+    )
     counts = expected_rendered_marker_counts(spec, LengthVariant.MEDIUM)
     assert any(token.startswith("SYNTHETIC_PHONE") for token in counts)
     counts_long = expected_rendered_marker_counts(spec, LengthVariant.LONG)
@@ -662,11 +763,36 @@ def test_contact_fallback_is_represented() -> None:
     counts = expected_rendered_marker_counts(spec, LengthVariant.MEDIUM)
     assert counts.get("SYNTHETIC_PHONE_1") == 1
     # Explicit contact section -> contact markers come from the section binding.
-    with_contact = _partial_spec("contact", "summary", "work_experience")
+    with_contact = _partial_spec(
+        "contact",
+        "summary",
+        "work_experience",
+        contact_fields=("phone",),
+    )
     counts_with = expected_rendered_marker_counts(
         with_contact, LengthVariant.MEDIUM
     )
     assert counts_with.get("SYNTHETIC_PHONE_1") == 1
+
+
+def test_empty_contact_section_expects_no_contact_content_or_heading() -> None:
+    from app.template_analysis.layout_proof_content import (
+        expected_rendered_marker_counts,
+    )
+    from app.template_analysis.layout_proof_service import _expected_heading_labels
+
+    spec = _partial_spec("contact", "summary", "work_experience")
+    counts = expected_rendered_marker_counts(spec, LengthVariant.SHORT)
+
+    assert counts["SYNTHETIC_CITY_1"] == 2
+    assert "SYNTHETIC_PHONE_1" not in counts
+    assert "Contact" not in _expected_heading_labels(spec, LengthVariant.SHORT)
+    result = _validate_bound(
+        spec,
+        LengthVariant.SHORT,
+        _bound_text(spec, LengthVariant.SHORT),
+    )
+    assert result.passed is True
 
 
 def test_repeated_bindings_follow_renderer_behavior() -> None:
@@ -736,9 +862,13 @@ def test_legacy_spec_retains_full_content_expectations() -> None:
 
 def test_builtin_template_all_variants_pass_template_aware() -> None:
     for variant in LengthVariant:
+        spec = _spec()
         result = validate_proof_structure(
-            layout_spec=_spec(),
-            measurements=_complete_measurements(variant),
+            layout_spec=spec,
+            measurements=_complete_measurements(
+                variant,
+                text=_bound_text(spec, variant),
+            ),
             variant=variant,
         )
         assert _content_check(result).passed is True, variant

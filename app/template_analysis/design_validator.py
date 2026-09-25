@@ -1,9 +1,9 @@
 """Deterministic validation of design proposals.
 
-Code — never Claude — verifies that a proposal is safe to compile: every
+Code — never OpenAI — verifies that a proposal is safe to compile: every
 reference exists, no geometry or candidate content was invented, every source
 section is accounted for, overflow policies are within vocabulary, and
-low-confidence decisions require human review. Claude output is evidence; only
+low-confidence decisions require human review. OpenAI output is evidence; only
 ``validate_design_proposal`` + ``DesignCompiler`` may promote it.
 """
 
@@ -16,9 +16,6 @@ from app.template_analysis.design_evidence import target_body_texts
 from app.template_analysis.design_schemas import (
     APPROVED_DEFAULT_STYLE_ROLES,
     REVIEW_CONFIDENCE_THRESHOLD,
-    SUPPORTED_LAYOUT_CLASSES,
-    SUPPORTED_MAPPING_ACTIONS,
-    SUPPORTED_OVERFLOW_POLICIES,
     DesignProposal,
     DesignRequest,
     DesignValidationResult,

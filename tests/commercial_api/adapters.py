@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import importlib.util
 import os
-import shutil
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,6 +14,7 @@ from app.validation.missing_fields import apply_missing_field_detection
 from tests.commercial_api.models import ProviderCapabilities, UsageRecord
 from tests.commercial_api.registry import (
     AdapterOutcome,
+    InvalidProviderResult,
     ProviderAdapter,
     ProviderCallError,
     ProviderNotConfigured,
@@ -26,15 +25,8 @@ from tests.commercial_api.providers import (
     ProviderCallError as LegacyProviderCallError,
     ProviderConfigurationError as LegacyProviderConfigurationError,
     render_with_adobe as _render_with_adobe,
-    render_with_apryse as _render_with_apryse,
-    render_with_aspose as _render_with_aspose,
-    render_with_libreoffice as _render_with_libreoffice,
-    run_apryse_layout as _run_apryse_layout,
-    run_azure_layout as _run_azure_layout,
     run_baseline_layout as _run_baseline_layout,
-    run_foxit_structural_layout as _run_foxit_structural_layout,
     run_openai_extraction as _run_openai_extraction,
-    run_pdfrest_layout as _run_pdfrest_layout,
 )
 
 ADAPTER_VERSION = "1.0"
@@ -127,36 +119,6 @@ class BaselineLayoutAdapter(ProviderAdapter):
         )
 
 
-class AzureLayoutAdapter(ProviderAdapter):
-    provider = "azure"
-
-    def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(
-            provider=self.provider,
-            adapter_version=ADAPTER_VERSION,
-            lanes=["layout"],
-            formats=["pdf"],
-            required_config=[
-                "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT",
-                "AZURE_DOCUMENT_INTELLIGENCE_KEY",
-            ],
-            execution="external",
-            retryable=True,
-            pricing_key="azure_layout",
-            description="Azure AI Document Intelligence prebuilt-layout analysis.",
-        )
-
-    def run(self, case_input: Path, artifact_dir: Path) -> AdapterOutcome:
-        evidence, raw = _call_legacy(_run_azure_layout, case_input)
-        return AdapterOutcome(
-            normalized=evidence.model_dump(mode="json"),
-            raw_debug=raw,
-            usage=UsageRecord(pages=evidence.page_count, transactions=1),
-            provider_version=evidence.provider_version,
-            api_version=os.getenv("AZURE_DOCUMENT_INTELLIGENCE_API_VERSION", "2024-11-30"),
-        )
-
-
 class AdobeLayoutAdapter(ProviderAdapter):
     provider = "adobe"
 
@@ -185,222 +147,6 @@ class AdobeLayoutAdapter(ProviderAdapter):
             provider_version=evidence.provider_version,
             extra_artifacts=[("adobe_extract_result.zip", zip_bytes)],
             warnings=list(evidence.warnings),
-        )
-
-
-class ApryseLayoutAdapter(ProviderAdapter):
-    provider = "apryse"
-
-    def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(
-            provider=self.provider,
-            adapter_version=ADAPTER_VERSION,
-            lanes=["layout"],
-            formats=["pdf"],
-            required_config=["APRYSE_LICENSE_KEY", "apryse-sdk package"],
-            execution="local",
-            retryable=False,
-            pricing_key="apryse_layout",
-            description="Apryse Server SDK low-level PDF element inspection.",
-        )
-
-    def is_configured(self) -> bool:
-        return bool(os.getenv("APRYSE_LICENSE_KEY")) and _module_available("apryse_sdk")
-
-    def missing_config(self) -> list[str]:
-        missing = []
-        if not os.getenv("APRYSE_LICENSE_KEY"):
-            missing.append("APRYSE_LICENSE_KEY")
-        if not _module_available("apryse_sdk"):
-            missing.append("apryse-sdk package")
-        return missing
-
-    def run(self, case_input: Path, artifact_dir: Path) -> AdapterOutcome:
-        evidence, raw = _call_legacy(_run_apryse_layout, case_input)
-        return AdapterOutcome(
-            normalized=evidence.model_dump(mode="json"),
-            raw_debug=raw,
-            usage=UsageRecord(pages=evidence.page_count, transactions=1),
-            provider_version=evidence.provider_version,
-            warnings=list(evidence.warnings),
-        )
-
-
-class PdfRestLayoutAdapter(ProviderAdapter):
-    provider = "pdfrest"
-
-    def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(
-            provider=self.provider,
-            adapter_version=ADAPTER_VERSION,
-            lanes=["layout"],
-            formats=["pdf"],
-            required_config=["PDFREST_API_KEY"],
-            execution="external",
-            retryable=True,
-            pricing_key="pdfrest_layout",
-            description="pdfRest Extract Text word-level typography and coordinates.",
-        )
-
-    def run(self, case_input: Path, artifact_dir: Path) -> AdapterOutcome:
-        evidence, raw = _call_legacy(_run_pdfrest_layout, case_input)
-        return AdapterOutcome(
-            normalized=evidence.model_dump(mode="json"),
-            raw_debug=raw,
-            usage=UsageRecord(pages=evidence.page_count, transactions=1),
-            provider_version=evidence.provider_version,
-            warnings=list(evidence.warnings),
-        )
-
-
-class FoxitStructuralLayoutAdapter(ProviderAdapter):
-    provider = "foxit_structural"
-
-    def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(
-            provider=self.provider,
-            adapter_version=ADAPTER_VERSION,
-            lanes=["layout"],
-            formats=["pdf"],
-            required_config=[
-                "FOXIT_PDF_SERVICES_CLIENT_ID",
-                "FOXIT_PDF_SERVICES_CLIENT_SECRET",
-            ],
-            execution="external",
-            retryable=True,
-            pricing_key="foxit_structural_layout",
-            description="Foxit PDF Structural Extraction trial API.",
-        )
-
-    def run(self, case_input: Path, artifact_dir: Path) -> AdapterOutcome:
-        evidence, raw, zip_bytes = _call_legacy(_run_foxit_structural_layout, case_input)
-        return AdapterOutcome(
-            normalized=evidence.model_dump(mode="json"),
-            raw_debug=raw,
-            usage=UsageRecord(pages=evidence.page_count, transactions=1),
-            provider_version=evidence.provider_version,
-            extra_artifacts=[("foxit_structural_result.zip", zip_bytes)],
-            warnings=list(evidence.warnings),
-        )
-
-
-class LibreOfficeRenderAdapter(ProviderAdapter):
-    provider = "libreoffice"
-
-    def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(
-            provider=self.provider,
-            adapter_version=ADAPTER_VERSION,
-            lanes=["rendering"],
-            formats=["docx"],
-            required_config=["soffice executable"],
-            execution="local",
-            retryable=False,
-            description="LibreOffice DOCX-to-PDF export (accepted local baseline).",
-        )
-
-    def is_configured(self) -> bool:
-        return bool(shutil.which("soffice") or shutil.which("libreoffice"))
-
-    def missing_config(self) -> list[str]:
-        return [] if self.is_configured() else ["soffice executable"]
-
-    def run(self, case_input: Path, artifact_dir: Path) -> AdapterOutcome:
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        output_path = _call_legacy(_render_with_libreoffice, case_input, artifact_dir)
-        return AdapterOutcome(
-            normalized={"pdf_path": output_path.name},
-            raw_debug={"renderer": "libreoffice"},
-            usage=UsageRecord(transactions=1),
-            extra_artifacts=[(output_path.name, output_path.read_bytes())],
-            renderer="libreoffice",
-        )
-
-
-class AsposeRenderAdapter(ProviderAdapter):
-    provider = "aspose"
-
-    def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(
-            provider=self.provider,
-            adapter_version=ADAPTER_VERSION,
-            lanes=["rendering"],
-            formats=["docx"],
-            required_config=["aspose-words package"],
-            execution="local",
-            retryable=False,
-            pricing_key="aspose_render",
-            description="Aspose.Words DOCX-to-PDF (evaluation or licensed mode).",
-        )
-
-    def is_configured(self) -> bool:
-        return _module_available("aspose.words")
-
-    def missing_config(self) -> list[str]:
-        return [] if self.is_configured() else ["aspose-words package"]
-
-    def run(self, case_input: Path, artifact_dir: Path) -> AdapterOutcome:
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        output_path = artifact_dir / "candidate_profile.pdf"
-        _call_legacy(_render_with_aspose, case_input, output_path)
-        warnings: list[str] = []
-        if not (
-            os.getenv("ASPOSE_WORDS_LICENSE_PATH")
-            or (
-                os.getenv("ASPOSE_WORDS_METERED_PUBLIC_KEY")
-                and os.getenv("ASPOSE_WORDS_METERED_PRIVATE_KEY")
-            )
-        ):
-            warnings.append(
-                "Aspose ran in evaluation mode; watermark and document limits can affect scores."
-            )
-        return AdapterOutcome(
-            normalized={"pdf_path": output_path.name},
-            raw_debug={"renderer": "aspose", "licensed": not warnings},
-            usage=UsageRecord(transactions=1),
-            extra_artifacts=[(output_path.name, output_path.read_bytes())],
-            renderer="aspose",
-            warnings=warnings,
-        )
-
-
-class ApryseRenderAdapter(ProviderAdapter):
-    provider = "apryse_render"
-
-    def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(
-            provider=self.provider,
-            adapter_version=ADAPTER_VERSION,
-            lanes=["rendering"],
-            formats=["docx"],
-            required_config=["APRYSE_LICENSE_KEY", "apryse-sdk package"],
-            execution="local",
-            retryable=False,
-            pricing_key="apryse_render",
-            description="Apryse Server SDK Office-to-PDF conversion.",
-        )
-
-    def is_configured(self) -> bool:
-        return bool(os.getenv("APRYSE_LICENSE_KEY")) and _module_available("apryse_sdk")
-
-    def missing_config(self) -> list[str]:
-        missing = []
-        if not os.getenv("APRYSE_LICENSE_KEY"):
-            missing.append("APRYSE_LICENSE_KEY")
-        if not _module_available("apryse_sdk"):
-            missing.append("apryse-sdk package")
-        return missing
-
-    def run(self, case_input: Path, artifact_dir: Path) -> AdapterOutcome:
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        output_path = artifact_dir / "candidate_profile.pdf"
-        _call_legacy(_render_with_apryse, case_input, output_path)
-        return AdapterOutcome(
-            normalized={"pdf_path": output_path.name},
-            raw_debug={"renderer": "apryse"},
-            usage=UsageRecord(transactions=1),
-            extra_artifacts=[(output_path.name, output_path.read_bytes())],
-            renderer="apryse",
         )
 
 
@@ -471,11 +217,11 @@ class MockDesignAdapter(ProviderAdapter):
         )
 
 
-class ClaudeDesignAdapter(ProviderAdapter):
-    """Live-gated Claude template designer (design lane). Never called without
+class OpenAIDesignAdapter(ProviderAdapter):
+    """Live-gated OpenAI template designer (design lane). Never called without
     --live and explicit TEMPLATE_DESIGN_LIVE_ENABLED permission."""
 
-    provider = "claude_designer"
+    provider = "openai_designer"
 
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
@@ -484,30 +230,30 @@ class ClaudeDesignAdapter(ProviderAdapter):
             lanes=["design"],
             formats=["pdf"],
             required_config=[
-                "ANTHROPIC_DESIGN_API_KEY or ANTHROPIC_API_KEY",
-                "ANTHROPIC_DESIGN_MODEL or ANTHROPIC_MODEL",
+                "OPENAI_DESIGN_API_KEY or OPENAI_API_KEY",
+                "OPENAI_DESIGN_MODEL or OPENAI_MODEL",
             ],
             execution="external",
             retryable=True,
-            pricing_key="claude_designer",
+            pricing_key="openai_designer",
             description=(
-                "Anthropic Claude template designer. Requires --live and "
+                "OpenAI template designer. Requires --live and "
                 "TEMPLATE_DESIGN_LIVE_ENABLED=1 (ProviderPolicy not yet implemented)."
             ),
         )
 
     def is_configured(self) -> bool:
         return bool(
-            os.getenv("ANTHROPIC_DESIGN_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+            os.getenv("OPENAI_DESIGN_API_KEY") or os.getenv("OPENAI_API_KEY")
         ) and _explicit_model() is not None
 
     def missing_config(self) -> list[str]:
         missing = []
-        if not (os.getenv("ANTHROPIC_DESIGN_API_KEY") or os.getenv("ANTHROPIC_API_KEY")):
-            missing.append("ANTHROPIC_DESIGN_API_KEY or ANTHROPIC_API_KEY")
+        if not (os.getenv("OPENAI_DESIGN_API_KEY") or os.getenv("OPENAI_API_KEY")):
+            missing.append("OPENAI_DESIGN_API_KEY or OPENAI_API_KEY")
         if _explicit_model() is None:
             missing.append(
-                "explicit ANTHROPIC_DESIGN_MODEL or ANTHROPIC_MODEL "
+                "explicit OPENAI_DESIGN_MODEL or OPENAI_MODEL "
                 "(a *-latest value is not accepted)"
             )
         return missing
@@ -515,14 +261,14 @@ class ClaudeDesignAdapter(ProviderAdapter):
     def run(self, case_input: Path, artifact_dir: Path) -> AdapterOutcome:
         from tests.commercial_api.design_lane import run_design_pipeline
         from app.template_analysis.designer import (
-            AnthropicClaudeDesigner,
+            OpenAITemplateDesigner,
             DesignerInvalidProposal,
             DesignerLiveDisabled,
             DesignerNotConfigured,
             DesignerProviderCallError,
         )
 
-        designer = AnthropicClaudeDesigner(timeout_seconds=self._timeout_seconds)
+        designer = OpenAITemplateDesigner(timeout_seconds=self._timeout_seconds)
         try:
             normalized = run_design_pipeline(
                 case_input, artifact_dir, self._case, designer
@@ -539,7 +285,7 @@ class ClaudeDesignAdapter(ProviderAdapter):
         return AdapterOutcome(
             normalized=normalized,
             raw_debug={
-                "designer": "claude",
+                "designer": "openai",
                 "support_state": normalized["support_state"],
             },
             usage=UsageRecord(
@@ -558,27 +304,13 @@ class ClaudeDesignAdapter(ProviderAdapter):
         )
 
 
-def _module_available(module_name: str) -> bool:
-    try:
-        return importlib.util.find_spec(module_name) is not None
-    except ModuleNotFoundError:
-        return False
-
-
 def register_all() -> None:
     register(OpenAIExtractionAdapter())
     register(BaselineLayoutAdapter())
-    register(AzureLayoutAdapter())
     register(AdobeLayoutAdapter())
-    register(ApryseLayoutAdapter())
-    register(PdfRestLayoutAdapter())
-    register(FoxitStructuralLayoutAdapter())
-    register(LibreOfficeRenderAdapter())
-    register(AsposeRenderAdapter())
-    register(ApryseRenderAdapter())
     register(AdobeRenderAdapter())
     register(MockDesignAdapter())
-    register(ClaudeDesignAdapter())
+    register(OpenAIDesignAdapter())
 
 
 register_all()

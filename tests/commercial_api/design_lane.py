@@ -3,7 +3,7 @@
 Builds a ``DesignRequest`` from a materialized synthetic target PDF plus the
 case's candidate section inventory, runs a designer, validates deterministically,
 and compiles the layout spec when supported. Used by both the offline
-``mock_designer`` adapter and the live-gated ``claude_designer`` adapter.
+``mock_designer`` adapter and the live-gated ``openai_designer`` adapter.
 """
 
 from __future__ import annotations

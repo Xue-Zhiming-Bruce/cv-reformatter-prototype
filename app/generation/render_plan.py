@@ -13,6 +13,7 @@ from app.extraction.candidate_document_analyzer import (
     build_candidate_block_binding_plan,
 )
 from app.generation.template_mapper import ClientFacingRenderContext
+from app.generation.html_renderer import target_soft_degradation_warnings
 from app.template_analysis.schemas import LayoutTemplateSpec
 
 
@@ -100,6 +101,7 @@ def build_production_render_plan(
 
     review_required = _review_required_blocks(evidence_plan)
     plan_warnings = list(warnings or [])
+    plan_warnings.extend(target_soft_degradation_warnings(layout_spec))
     if review_required:
         plan_warnings.append(
             "Preserved optional/custom source blocks were excluded from generated "

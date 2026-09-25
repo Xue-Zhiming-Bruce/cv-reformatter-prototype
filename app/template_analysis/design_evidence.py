@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
 
 from app.extraction.candidate_schema import CandidateProfile
 from app.template_analysis.design_schemas import (
@@ -30,7 +29,6 @@ from app.template_analysis.design_schemas import (
 )
 from app.template_analysis.schemas import (
     ColumnStyle,
-    PageLayout,
     TargetPdfAnalysis,
     TemplateStyleSpec,
     TextStyle,

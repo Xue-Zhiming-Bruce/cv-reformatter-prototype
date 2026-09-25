@@ -1,7 +1,7 @@
 """Offline tests for the design evaluation lane.
 
-These tests never call Claude or any other external provider. The live
-claude_designer adapter is verified to be gated (skipped without --live,
+These tests never call OpenAI or any other external provider. The live
+openai_designer adapter is verified to be gated (skipped without --live,
 not_configured without credentials) but is never executed.
 """
 
@@ -35,12 +35,12 @@ def test_design_adapters_registered_with_correct_capabilities() -> None:
     assert caps.execution == "local"
     assert caps.lanes == ["design"]
     assert caps.required_config == []
-    claude = resolve_adapter("design", "claude_designer")
-    caps = caps = claude.capabilities()
+    openai = resolve_adapter("design", "openai_designer")
+    caps = openai.capabilities()
     assert caps.execution == "external"
     assert caps.lanes == ["design"]
-    assert caps.provider == "claude_designer"
-    assert caps.pricing_key == "claude_designer"
+    assert caps.provider == "openai_designer"
+    assert caps.pricing_key == "openai_designer"
 
 
 def test_design_cases_declared_in_corpus() -> None:
@@ -116,18 +116,18 @@ def test_mock_designer_is_offline_and_accounts_for_every_section(tmp_path: Path)
 
 
 def test_mock_designer_runs_first_in_provider_order() -> None:
-    providers = ["claude_designer", "mock_designer"]
+    providers = ["openai_designer", "mock_designer"]
     ordered = sorted(providers, key=lambda p: _provider_sort_key("design", p))
     assert ordered[0] == "mock_designer"
 
 
-def test_claude_designer_skipped_without_live(tmp_path: Path) -> None:
+def test_openai_designer_skipped_without_live(tmp_path: Path) -> None:
     runner = Runner(
         env_file=tmp_path / "missing.env",
         output_root=tmp_path / "out",
         live=False,
     )
-    run_dir = runner.run(lanes={"design"}, providers={"claude_designer"}, cases={"design_plain_one_column"})
+    run_dir = runner.run(lanes={"design"}, providers={"openai_designer"}, cases={"design_plain_one_column"})
     manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     result = manifest["results"][0]
     assert result["status"] in {"skipped", "not_configured"}
@@ -137,12 +137,12 @@ def test_claude_designer_skipped_without_live(tmp_path: Path) -> None:
     assert result["status"] != "passed"
 
 
-def test_claude_designer_never_executed_during_pytest(
+def test_openai_designer_never_executed_during_pytest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Guards against accidental live Claude calls in the offline suite.
+    """Guards against accidental live OpenAI calls in the offline suite.
 
-    The Anthropic client class itself is replaced so that any attempt to
+    The OpenAI client class itself is replaced so that any attempt to
     construct a live client — regardless of environment, cached settings, or
     future refactors — raises instead of touching the network.
     """
@@ -150,19 +150,19 @@ def test_claude_designer_never_executed_during_pytest(
     class _ExplodingClient:
         def __init__(self, *args, **kwargs):
             raise AssertionError(
-                "Refusing to construct an Anthropic client during offline pytest."
+                "Refusing to construct an OpenAI client during offline pytest."
             )
 
-    monkeypatch.setattr("anthropic.Anthropic", _ExplodingClient)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_DESIGN_API_KEY", raising=False)
+    monkeypatch.setattr("openai.OpenAI", _ExplodingClient)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_DESIGN_API_KEY", raising=False)
     monkeypatch.delenv("TEMPLATE_DESIGN_LIVE_ENABLED", raising=False)
     runner = Runner(
         env_file=tmp_path / "missing.env",
         output_root=tmp_path / "out",
         live=True,  # even with --live, missing credentials must not call out
     )
-    run_dir = runner.run(lanes={"design"}, providers={"claude_designer"}, cases={"design_plain_one_column"})
+    run_dir = runner.run(lanes={"design"}, providers={"openai_designer"}, cases={"design_plain_one_column"})
     manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     result = manifest["results"][0]
     assert result["status"] == "not_configured"

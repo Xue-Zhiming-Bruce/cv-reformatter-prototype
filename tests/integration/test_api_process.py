@@ -102,6 +102,7 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
     body = response.json()
     artifact_dir = tmp_path / body["artifact_id"]
     assert body["profile"]["full_name"] == "Jane Candidate"
+    assert body["workflow_lane"] == "docx"
     assert body["profile"]["email"] == "jane@example.com"
     assert body["ledger"]["needs_review"] == len(body["profile"]["missing_fields"])
     assert body["ledger"]["extracted"] == body["ledger"]["placed"]
@@ -124,6 +125,7 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
     assert metadata["status"] == "processed"
     assert metadata["source_filename"] == "resume.docx"
     assert metadata["source_file_type"] == "docx"
+    assert metadata["workflow_lane"] == "docx"
     assert metadata["original_pdf_preview_url"] == body["original_pdf_preview_url"]
     assert metadata["needs_review_count"] == len(body["profile"]["missing_fields"])
     assert metadata["debug_artifacts"]["candidate_profile"] == str(artifact_dir / "candidate_profile.json")
@@ -167,6 +169,7 @@ def test_process_accepts_text_pdf_upload(tmp_path: Path, monkeypatch: MonkeyPatc
     body = response.json()
     artifact_dir = tmp_path / body["artifact_id"]
     assert body["profile"]["full_name"] == "Jane Candidate"
+    assert body["workflow_lane"] == "pdf"
     assert body["profile"]["email"] == "jane@example.com"
     assert body["profile"]["skills"] == ["Python", "SQL"]
     assert "Jane Candidate" in body["original_text"]
@@ -185,6 +188,7 @@ def test_process_accepts_text_pdf_upload(tmp_path: Path, monkeypatch: MonkeyPatc
     metadata = metadata_response.json()
     assert metadata["status"] == "processed"
     assert metadata["source_file_type"] == "pdf"
+    assert metadata["workflow_lane"] == "pdf"
 
 
 def test_llm_first_unavailable_fails_closed_with_structured_error(
@@ -242,7 +246,7 @@ def test_llm_first_missing_line_persists_failed_audit_and_blocks_approval(
     the persisted line-coverage audit fails and approval returns a structured
     409 (ADR 0005 audit gate)."""
 
-    from app.extraction.llm_extractor import MockLLMClient
+    from tests.helpers.mock_llm import MockLLMClient
 
     class MissingLineClient:
         """Deterministic segmentation client that drops one item from the
@@ -359,7 +363,7 @@ def test_resume_abc_segmentation_audit_passes_with_mock_llm_first(
     )
 
     from app.extraction.coverage_audit import audit_segmentation_lines
-    from app.extraction.llm_extractor import MockLLMClient
+    from tests.helpers.mock_llm import MockLLMClient
     from app.extraction.llm_segmentation import (
         materialize_llm_segmentation,
         segment_and_extract_resume,

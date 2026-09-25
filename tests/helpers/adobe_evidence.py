@@ -44,18 +44,30 @@ def measured_adobe_evidence() -> NormalizedLayoutEvidence:
         ("heading_candidate", "LANGUAGES", 13.0, True, "#1F4E79", 0.08, 0.92, 0.72),
         ("body", "Measured body line five", 10.5, False, "#252525", 0.08, 0.92, 0.79),
     ]
-    blocks = [
-        NormalizedTextBlock(
-            element_id=f"adobe.page.1.element.{index}", text=text,
-            page_number=1, reading_order=index,
-            bbox=NormalizedBox(x0=x0, top=top, x1=x1, bottom=top + 0.035),
-            structural_role=role, font_family="Helvetica", font_size_pt=size,
-            bold=bold, italic=False, color_hex=color,
-            line_height_pt=size * 1.2, spacing_before_pt=6.0 if "heading" in role else 0.0,
-            spacing_after_pt=3.0,
+    blocks = []
+    for index, (role, text, size, bold, color, x0, x1, top) in enumerate(rows):
+        character_width = (x1 - x0) / len(text)
+        blocks.append(
+            NormalizedTextBlock(
+                element_id=f"adobe.page.1.element.{index}", text=text,
+                page_number=1, reading_order=index,
+                bbox=NormalizedBox(x0=x0, top=top, x1=x1, bottom=top + 0.035),
+                structural_role=role, font_family="Helvetica", font_size_pt=size,
+                bold=bold, italic=False, color_hex=color,
+                line_height_pt=size * 1.2,
+                spacing_before_pt=6.0 if "heading" in role else 0.0,
+                spacing_after_pt=3.0,
+                char_bounds=[
+                    NormalizedBox(
+                        x0=x0 + character_index * character_width,
+                        top=top,
+                        x1=x0 + (character_index + 1) * character_width,
+                        bottom=top + 0.035,
+                    )
+                    for character_index in range(len(text))
+                ],
+            )
         )
-        for index, (role, text, size, bold, color, x0, x1, top) in enumerate(rows)
-    ]
     rules = [
         NormalizedRule(
             element_id=f"local.rule.{index}",

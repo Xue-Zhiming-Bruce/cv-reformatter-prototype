@@ -2,7 +2,7 @@
 
 These models describe *presentation and semantic mapping decisions only*.
 They never contain candidate facts, exact geometry, renderer instructions, or
-provider response formats. Claude output is validated into ``DesignProposal``
+provider response formats. OpenAI output is validated into ``DesignProposal``
 and treated as evidence; only deterministic compilation may create a
 ``LayoutTemplateSpec`` (see ``app.template_analysis.schemas``).
 """
@@ -30,7 +30,7 @@ DESIGN_EVIDENCE_SCHEMA_VERSION = "layout/evidence/1"
 DESIGN_PROMPT_VERSION = "designer/system-v3"
 DESIGN_COMPILER_VERSION = "7"
 
-# Supported product vocabulary. Claude may choose only from these sets.
+# Supported product vocabulary. OpenAI may choose only from these sets.
 SUPPORTED_LAYOUT_CLASSES = ("one_column", "two_column", "sidebar")
 SUPPORTED_MAPPING_ACTIONS = (
     "map",
@@ -51,7 +51,7 @@ SUPPORTED_OVERFLOW_POLICIES = (
 )
 
 #: Semantic placements the current provider-neutral contract and renderer can
-#: represent. Everything outside this set is explicit `unsupported`; a Claude
+#: represent. Everything outside this set is explicit `unsupported`; an OpenAI
 #: placement decision is never silently replaced with a default.
 SUPPORTED_SEMANTIC_PLACEMENTS = (
     "full_width",
@@ -162,6 +162,12 @@ class MeasuredSectionStructure(DesignModel):
     ] = Field(default_factory=list)
     badge_style: BadgeStyle | None = None
     layout: Literal["bullets", "stacked", "inline", "two_column_bullets"] | None = None
+    heading_rule: bool | None = None
+    heading_rule_width_pt: float | None = Field(default=None, ge=0.25, le=6.0)
+    heading_rule_gap_above_pt: float | None = Field(default=None, ge=0, le=144)
+    heading_rule_gap_below_pt: float | None = Field(default=None, ge=0, le=144)
+    heading_rule_length_pt: float | None = Field(default=None, gt=0, le=2000)
+    body_style_role_ref: str | None = None
     entry_title_style_role_ref: str | None = None
     entry_metadata_style_role_ref: str | None = None
     entry_secondary_style_role_ref: str | None = None
@@ -283,7 +289,7 @@ class SectionMapping(DesignModel):
 
 
 class DesignProposal(DesignModel):
-    """Claude's design output. References existing IDs only; the model has no
+    """OpenAI's design output. References existing IDs only; the model has no
     coordinate, geometry, or candidate-content fields by construction."""
 
     schema_version: Literal["design/proposal/1"] = DESIGN_PROPOSAL_SCHEMA_VERSION
@@ -325,7 +331,7 @@ class DesignerCallMetadata(DesignModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
-    #: Actual external provider requests made (1 per claude design() call;
+    #: Actual external provider requests made (1 per OpenAI design() call;
     #: 0 for deterministic designers and for cache hits).
     provider_request_count: int = Field(default=0, ge=0)
     #: Harness-owned retries above the first attempt (attempts - 1).

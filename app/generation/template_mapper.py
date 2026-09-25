@@ -92,7 +92,12 @@ def build_client_render_context(
     heading = "Candidate A" if blind_profile else _display_or_none(profile.full_name) or "Candidate"
     subheading = _join_display_values(
         [
-            _display_or_none(profile.work_experience[0].title) if profile.work_experience else None,
+            _display_or_none(profile.current_title)
+            or (
+                _display_or_none(profile.work_experience[0].title)
+                if profile.work_experience
+                else None
+            ),
             _field_display(profile, "location", profile.location),
         ]
     )

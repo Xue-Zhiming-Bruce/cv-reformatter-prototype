@@ -1,8 +1,221 @@
 # Active repository brainstorm
 
-Status: `execution`
+Status: `execution — experimental rev-6 Builder-repair loop implemented; live owner-review evidence blocked by provider access (2026-09-07)`
 This file is the SINGLE working plan (merged with the former EXECUTION_PLAN.md
 on 2026-08-24; that file was deleted to stop dual-head drift).
+
+---
+
+## Current mainline status (2026-09-06): ADR 0007 format-preserving lanes
+
+- **ADR 0007 Accepted (owner + Codex brainstorm, 2026-09-05)**: two
+  format-preserving lanes by uploaded candidate format — PDF candidate →
+  editable HTML → PDF (ADR 0006 renderer); DOCX candidate → native OOXML
+  DOCX (new `docx_renderer.py`, no HTML/PDF/LibreOffice pass-through).
+  No cross-format conversion; mismatched candidate/target fails closed
+  (`app/workflow.py` lanes + discriminated API responses in `main.py`).
+  Partially supersedes ADR 0006's single-renderer/no-DOCX scope.
+- Implemented 2026-09-05/06: offline suite 518 passed, contract checks 29
+  passed. DOCX visual-corpus acceptance remains explicitly open.
+- The A-pipeline brainstorm below (AI-generated HTML template + dual-judge
+  loop) is a SEPARATE parallel experiment in `tests/experiments/` — not yet
+  mainline. It targets the PDF/format-fidelity path and does not supersede
+  ADR 0007. See `tests/experiments/CODEX_LOOP_REFINEMENT.md`.
+
+---
+
+## Change brief (draft, AWAITING owner approval — 2026-09-01 brainstorm, rev 3: minimal A-pipeline)
+
+**Outcome**: minimal per-employer format pipeline: AI builds an empty HTML
+template from a target PDF once; then AI fills the ORIGINAL resume text
+directly into that template. No extraction-to-JSON, no recruiter content
+review/approval, no disclosure/blind-profile layer (Y), no 8-enum spec.
+
+**Owner decisions on record (2026-09-01)**
+
+1. One format per target resume (per-employer), saved/reused — not a generic
+   skeleton.
+2. Format precision (±1pt geometry) comes from Adobe; AI#1's template
+   geometry must NOT deviate from Adobe-measured values (decided 2026-09-01).
+3. AI#1 output = HTML empty template directly (no intermediate JSON).
+4. Filling (AI#2) must be AI (source resumes vary; mapping content→slots
+   needs understanding).
+5. Content source = ORIGINAL resume text, verbatim basis; NO recruiter
+   content review (X removed) and NO disclosure/blind layer (Y removed) —
+   simplest design, owner decision 2026-09-01.
+6. First prove via prototype before production; old render path stays as
+   comparison baseline meanwhile.
+
+**PRODUCT-DIRECTION NOTE (owner-driven shift)**: decisions 5+Y remove the
+"recruiter-approved" layer that PRODUCT_SPEC.md:17-27 centers on ("recruiter
+workflow tool... Original preserved. Recruiter approved."). This makes the
+product a format converter (recruiter/employer supplies the frozen template,
+then candidate text converts with zero recruiter content gate). PRODUCT_SPEC
+must be reconciled IF this direction is confirmed by the prototype; flagged
+now, not silently rewritten.
+
+**Pipeline shape (A, minimal)**
+
+```
+Format side (once per employer):
+  target PDF -> Adobe measures (±1pt geometry)
+             -> AI #1: reads Adobe blocks/page image + measured values,
+                emits EMPTY HTML template (slots + repeatable units,
+                geometry matching Adobe values) -> saved/frozen
+
+Content side (per resume, no recruiter gate):
+  source resume (any format) -> text extraction
+             -> AI #2: reads [frozen HTML template] + [original resume
+                text], fills content verbatim into slots
+             -> render PDF (Chrome export likely reused)
+```
+
+**Template must express (owner, 2026-09-01)** — the format object must
+pin down, from Adobe values: (1) line spacing within a block, (2) block-to-
+block spacing, (3) character spacing, (4) heading-to-body spacing,
+(5) bullet-to-bullet spacing. If these are fixed in the template, content
+just flows and the PDF is correct. It must ALSO record decoration elements —
+rules/lines and icons/badges — in some form (exact record format, JSON vs
+dict vs other, NOT yet decided; spec reserves the capability). Existing
+reference: `rules` carry bbox/stroke_width/gaps/color + provenance; badges
+via `enrich_badges_from_local_pdf`.
+
+**Relationship to existing architecture**
+
+- KEEP: Adobe measurement; the frozen HTML template replaces
+  `LayoutTemplateSpec` + its html_renderer on the target path.
+- REMOVED from this pipeline: extraction JSON (CandidateProfile),
+  approval flow, blind-profile/disclosure rules, missing-field review —
+  none exist in the minimal A content path. (Existing endpoints stay until
+  the prototype decides direction; no deletion yet.)
+- Existing A→B/A→C baseline (same-content format-matching) is the
+  comparison method (owner point 4/6: only same content is comparable).
+
+**Still open (deferred by design)**
+
+- Exact shape of AI#1's HTML template: DECIDED direction 2026-09-01 —
+  template is a format-complete HTML with sample/placeholder content, whose
+  two jobs are (1) show AI#2 each section's format and which units are
+  repeatable (work-entry, skill-group, project...), (2) AI#2 clones units and
+  fills original-text content, deciding N clones from the source text (owner
+  chose b: no separate extraction; AI#2 segments+clones inline; quality via
+  prompt engineering). Marker strictness is low (AI#2 reads it, not a template
+  engine). Residual risk: output quality depends on one AI#2 prompt — flagged,
+  tune via prompts in prototype.
+- How Adobe's measured values are fed to AI#1: DECIDED direction 2026-09-01 —
+  deterministic code first compresses Adobe blocks into a format summary
+  (dedupe into style groups by font/size/bold/color + text samples + relative
+  position + computed 5 spacing types + margins/rules), so Adobe data is never
+  lost and geometry stays Adobe-faithful; then AI#1 receives the summary (not
+  raw blocks, not the PDF) and only assigns semantic roles (which group =
+  name/heading/body/...) and builds the HTML template. Real sample: 30 blocks
+  dedupe to 7 style groups. Residual: exact 5-spacing computation method still
+  to detail in prototype. Adobe's raw output lacks reliable rules/color, so
+  the summary input must include local pdfplumber enrichment (rules, color,
+  section spacing) — existing `enrich_rules_from_local_pdf` /
+  `enrich_colors_from_local_pdf` (`local_color.py`) already merge these into
+  enriched normalized evidence with provenance local_pdf; AI#1 consumes this
+  merged evidence (owner decision 2026-09-01: Adobe + local pdfplumber
+  together), never Adobe alone.
+- No-missing-info gate: CLOSED into definition-of-done L0 (source text vs
+  generated PDF, cheap LLM); exact comparison granularity tuned in prototype.
+**In scope (prototype first)**
+
+- Prototype: one target; AI#1 builds empty HTML template (Adobe values
+  pinned); AI#2 fills original text of one source resume; produce PDF.
+- Verify per the definition of done below (L0/L1/L2). Outcome PDFs
+  reviewable by owner (owner is final judge, never metrics alone).
+- New offline fixtures/tests for template build + fill.
+
+**Out of scope for now**
+
+- Rewriting/deleting existing extraction/approval/HTML-renderer paths
+  (prototype only; no production change until owner sees outputs).
+- The 28 uncommitted 2026-08-31 rhythm-fix files.
+
+**Experiment execution status (2026-09-04, Codex A-pipeline prototype)**
+
+- Codex ran a first prototype in `tests/experiments/` (code `a_pipeline.py`,
+  task docs `CODEX_TASK_A_PIPELINE.md`). It produced PDFs but visual fidelity
+  was poor (3→1 page blowout, 41pt global gap, wrong margins, font fallback,
+  double bullets). Owner reviewed the code: root cause = the deterministic
+  format-summary step (`build_format_summary`) does NOT group blocks into
+  structure (one global block-gap median + outermost-block margins), so AI#1
+  is forced to guess section/entry layout from flat parts. NOT an AI-capability
+  problem.
+- Research (2026-09-04): Adobe raw JSON HAS a Path-encoded hierarchy
+  (Sect/LI/LBody/H1/H2 — verified in run adobe_raw.json), flattened by repo
+  normalization (`adobe.py:_flatten_text_elements`); industry practice =
+  deterministic geometry grouping first, LLM semantics second (SectionMiner,
+  pdf-struct-chunker). Codex review rounds corrected spec details (join via
+  flatten traversal not zip; cache key = checksum+versions; unmeasurable →
+  fail-closed; margins by page class; `meta` not `right_meta`; nearest
+  heading Sect ancestor).
+- **Owner decisions 2026-09-04**: (1) pagination is a HARD GATE — page count
+  NOT compared to target; content flows naturally by volume; layout-bug
+  blank/sparse pages = FAIL. (2) unmeasurable required geometry → FAIL-CLOSED
+  before AI#1 (never guess). (3) `tests/experiments/` is owner-authorized as a
+  parallel experimental path, recorded as an Authorized exception in
+  `docs/testing/TEST_STRUCTURE.md` (single-point waiver; does not authorize
+  other new top-level test workflows).
+- Rev 3 was implemented and the 2026-09-05 D/E/F cross-run completed 6/6
+  pairs; L0/L1 passed 5/6. The run also exposed that several independent font,
+  icon, bullet, and source-emphasis checks are currently reported but excluded
+  from the overall automatic verdict, and that the permissive whole-document
+  word-coverage fallback can disagree with L0 judge notes.
+- **Owner decision 2026-09-05:** the next refinement loop uses no numeric
+  visual score. Hard gates decide artifact eligibility; a visual comparator
+  chooses `challenger_better`, `champion_better`, or `tie`; rubric acceptance
+  remains pass/fail; the owner remains the final L2 judge. Template calibration
+  is separate from per-candidate filling, and AI#2 must not change approved
+  template CSS. The loop has a hard limit of **5 total rounds** and stops early
+  after acceptance or two rounds without champion promotion. The implementation
+  brief is `tests/experiments/CODEX_LOOP_REFINEMENT.md` rev 5.
+- **Rev 6 implemented 2026-09-07 (experimental only):** `--builder-repair`
+  adds action routing, strict measurement references, role-specific stateless
+  contexts/artifacts, Filler CSS conformance, one-operation Builder patches,
+  template+filled champion state, explicit rubric passes, an issue ledger,
+  promoted-only calibration, and the two-valid-non-promotion stop. Focused
+  offline result: 37 passed
+  (`tests/test_results/pytest/20260907T123747Z_a_pipeline_rev6.txt`). Requested
+  D/E/F baseline and rev-6 matrices were attempted at
+  `matrix_20260907T1238Z_rev5_loop_def` and
+  `matrix_20260907T1242Z_rev6_builder_repair_def`; both completed 0/6 because
+  of external access failures (baseline OpenAI connection error plus Adobe TLS
+  EOFs; rev-6 five OpenAI `unsupported_country_region_territory` 403s plus one
+  connection error). No Filler/Reviewer comparison or visual-quality claim was
+  possible. Persistent template cache was not replaced.
+
+**Verification / "definition of done" (owner decision 2026-09-01)**
+
+Prototype passes when ALL of:
+
+- **L0 — no content missing (automatic, cheap LLM)**: compare source-resume
+  text vs generated-PDF text with a cheap base LLM; zero unexplained missing
+  content. (Baseline is the SOURCE resume, not the target PDF — target has
+  different content.)
+- **L1 — no layout accidents (automatic)**: no text overflow/overlap/blank
+  page/empty section in the generated PDF.
+- **L2 — owner eyeball (human, final judge)**: because generated content
+  differs from target content, L2 compares FORMAT STYLE only — does the
+  generated PDF look like the target's layout (heading/body/spacing/bullets/
+  rules) with no visible bugs. Owner is the final judge; never metrics alone.
+
+L3 (same-content old-vs-new side-by-side) is DROPPED — owner confirmed the old
+path is not viable (2026-09-01), so no comparison baseline against it.
+
+
+**Intervention triggers (pause & ask)**
+
+- If AI#1's template geometry deviates from Adobe-measured values —
+  violates decision 2, stop.
+- If the prototype starts expanding into a second production path before
+  the owner sees output PDFs — stop.
+- If this direction (no recruiter gate) is confirmed by the prototype, the
+  PRODUCT_SPEC/AGENTS.md "recruiter-approved" contract must be explicitly
+  reconciled before any production rollout — flag, do not silently proceed.
+
+---
 
 ## Operating boundary (`[maintainer]`)
 
@@ -27,22 +240,30 @@ on 2026-08-24; that file was deleted to stop dual-head drift).
   approved profile version records the outcome. Block-aware's distinctive idea
   stays a KEEP feature seed; render_plan provenance also KEEP (default).
 
-## Locked direction (2026-08-21, `LOCKED` pending verification)
+## Locked direction (2026-08-21 `LOCKED` → 2026-08-30 ADR 0006 → **revised 2026-09-05 ADR 0007**)
 
-**Option B — HTML is master; PDF is the exact fidelity deliverable; DOCX is a
-nice-to-have styling-faithful export.**
+**Format-preserving lanes (ADR 0006 + ADR 0007):** candidate format picks the
+lane — PDF candidate → ONE HTML document → headless Chrome → PDF (ADR 0006);
+DOCX candidate → native OOXML DOCX (ADR 0007). No cross-format conversion.
 
 ```
-approved CandidateProfile + LayoutTemplateSpec (fixed, target-derived)
+PDF cand: approved CandidateProfile + LayoutTemplateSpec
    -> ONE HTML document (client-edited, source of truth)
-      -> Chromium/WeasyPrint -> PDF   (the PRECISE deliverable)
-      -> html-to-docx / Pandoc reference.docx -> DOCX  (best-effort)
+      -> headless Chrome -> PDF
+DOCX cand: same profile + spec -> native OOXML DOCX (docx_renderer.py)
 ```
 
-- Commercial DOCX render lanes downgrade to optional; commercial ANALYSIS /
-  extraction stays primary; the harness stays.
-- Not durable until the decision gate passes (all branches verified bug-free).
-- The working tree is the authoritative version; git history is stale.
+- ADR 0006 (2026-08-30) locked HTML/Chrome for the PDF lane (2026-08-31
+  re-baselined); WeasyPrint-vs-Chromium resolved (Chromium).
+- ADR 0007 (2026-09-05, owner + Codex) added the native OOXML DOCX lane for
+  .docx candidates, partially superseding ADR 0006's single-renderer/no-DOCX
+  scope. PDF lane unchanged.
+- The working tree was the authoritative version through the 2026-08-31
+  rhythm-fix work; those fixes are committed at `15dfe2a` and the remaining
+  28-file dirty delta is the same rhythm work awaiting owner commit.
+- HTML as client-edited source of truth (contenteditable surface) is the
+  product direction, but the editor contract is still `[unknown]` (see open
+  questions).
 
 ## Agreed next-work chain (`[maintainer]`, 2026-08-24)
 
@@ -60,15 +281,19 @@ Ordered backlog:
    **Adobe (precise geometry/typography) + one LLM semantic-labeling call**
    (labels validated against measured typography via design_validator). This
    can replace the conditional-Azure leg AND dissolve `_SECTION_ALIASES`.
-   Fits the existing Claude-designer slot; runs once per target analysis.
+   Fits the existing designer slot (OpenAI adapter); runs once per target analysis.
    Likely DISSOLVES fix step "measure per-section typography" of the 3-part
    typography fix (Adobe already returns exactly that data); fallback-to-global
    and preserve_as_additional handling still needed.
-2. **Renderer bakeoff (#6/#7)**: fixed template; Chromium vs WeasyPrint (+
-   commercial HTML lanes); then DOCX leg (LibreOffice vs Aspose/Apryse).
-3. **Decision gate**: lock HTML-master durably after 1+2 pass visual proof;
-   then prune superseded paths (v1 schema dual-track, design_cache,
-   script-only modules).
+2. **Renderer bakeoff (#6/#7)** `[RESOLVED for PDF lane, 2026-08-30/31,
+   ADR 0006]`: HTML/Chromium is the PDF-lane HTML→PDF exporter
+   (re-baselined 2026-08-31). DOCX leg REOPENED as a native OOXML lane by
+   ADR 0007 (2026-09-05) — not a bakeoff; native docx_renderer, no
+   LibreOffice/Aspose.
+3. **Decision gate** `[PASSED for PDF lane, ADR 0006; revised ADR 0007]`:
+   HTML-master locked for PDF; DOCX lane added natively (ADR 0007). Remaining
+   prune candidates: v1 schema legacy-reading support, design_cache,
+   script-only modules (render_plan audit JSON).
 4. **Provider consolidation** `[done 2026-08-27, ADR 0002 accepted]`:
    Adobe is the sole target analyzer; there is no fallback. Analysis failure
    surfaces an explicit error and produces no target-analysis output.
@@ -251,7 +476,8 @@ yet implemented — the dual loop remains `[hypothesis]`.
 ## Open questions (owner: user unless noted)
 
 - How to present preserved-extra-info in the editing UI (method TBD).
-- WeasyPrint vs Chromium final choice (bakeoff evidence).
+- ~~WeasyPrint vs Chromium final choice~~ RESOLVED 2026-08-31: Chromium
+  (ADR 0006; headless Chrome re-baselined on the measured path).
 - Whether the DOCX leg needs commercial rendering (bakeoff evidence).
 - ~~ADR 0001 status ruling~~ RESOLVED 2026-08-24 (see CONTROL.md durable
   decisions).
@@ -508,6 +734,8 @@ the listed files.
   workflow is now unblocked credential-wise. See overlaps-inventory prune
   log. The matrix runner named in TEST_STRUCTURE
   (`scripts/run_block_aware_matrix.py`) is untouched and remains canonical.
+  (Superseded 2026-08-29: that runner + block_aware_mapper were deleted;
+  `scripts/run_abc_live_matrix.py` is the sole canonical matrix workflow.)
 
 - Phase 1 executed by CodeX (2026-08-22): target_replica + duplicate cache
   deleted; memory/plan updated. Phase 2 analyzer half partially executed

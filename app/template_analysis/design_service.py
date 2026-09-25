@@ -3,7 +3,7 @@
 Chooses the configured designer, runs strict validation and deterministic
 compilation, persists design artifacts under the existing artifact-store
 boundary (filesystem; SQLite is not expanded), and manages approval and
-superseding. Live Claude use stays disabled by default because ``ProviderPolicy``
+superseding. Live OpenAI use stays disabled by default because ``ProviderPolicy``
 does not exist yet.
 """
 
@@ -38,7 +38,6 @@ from app.template_analysis.design_evidence import (
 from app.template_analysis.design_schemas import (
     APPROVABLE_DESIGN_STATES,
     DESIGN_COMPILER_VERSION,
-    DESIGN_REQUEST_SCHEMA_VERSION,
     CandidateSectionRole,
     DesignArtifactState,
     DesignDecisionTrace,
@@ -51,7 +50,6 @@ from app.template_analysis.design_schemas import (
 )
 from app.template_analysis.design_validator import validate_design_proposal
 from app.template_analysis.designer import (
-    AnthropicClaudeDesigner,
     DesignerError,
     DesignerInvalidProposal,
     DesignerLiveDisabled,
@@ -65,19 +63,16 @@ from app.template_analysis.schemas import TemplateStyleSpec
 
 DESIGN_STRATEGY_EXISTING = "existing_template"
 DESIGN_STRATEGY_MEASURED = "measured_template"
-DESIGN_STRATEGY_CLAUDE = "claude_designer"
 DESIGN_STRATEGY_OPENAI = "openai_designer"
 SUPPORTED_STRATEGIES = (
     DESIGN_STRATEGY_MEASURED,
     DESIGN_STRATEGY_EXISTING,
-    DESIGN_STRATEGY_CLAUDE,
     DESIGN_STRATEGY_OPENAI,
 )
 
 DESIGNER_DETERMINISTIC = "deterministic"
-DESIGNER_CLAUDE = "claude"
 DESIGNER_OPENAI = "openai"
-SUPPORTED_DESIGNERS = (DESIGNER_DETERMINISTIC, DESIGNER_CLAUDE, DESIGNER_OPENAI)
+SUPPORTED_DESIGNERS = (DESIGNER_DETERMINISTIC, DESIGNER_OPENAI)
 
 
 class DesignServiceError(RuntimeError):
@@ -96,14 +91,10 @@ class DesignService:
         strategy: str | None = None,
         cache: DesignCache | None = None,
         designer: TemplateDesigner | None = None,
-        claude_designer: AnthropicClaudeDesigner | None = None,
-        openai_designer: OpenAITemplateDesigner | None = None,
     ) -> None:
         self.strategy = strategy or get_design_strategy()
         self.cache = cache or DesignCache(default_cache_dir())
         self._designer_override = designer
-        self._claude_designer = claude_designer or AnthropicClaudeDesigner()
-        self._openai_designer = openai_designer or OpenAITemplateDesigner()
 
     # -- public API -----------------------------------------------------------
 
@@ -335,8 +326,6 @@ class DesignService:
     # -- internals ------------------------------------------------------------
 
     def _default_designer_name(self) -> str:
-        if self.strategy == DESIGN_STRATEGY_CLAUDE:
-            return DESIGNER_CLAUDE
         if self.strategy == DESIGN_STRATEGY_OPENAI:
             return DESIGNER_OPENAI
         return DESIGNER_DETERMINISTIC
@@ -346,9 +335,7 @@ class DesignService:
             return self._designer_override
         if name == DESIGNER_DETERMINISTIC:
             return MockTemplateDesigner()
-        if name == DESIGNER_OPENAI:
-            return self._openai_designer
-        return self._claude_designer
+        return OpenAITemplateDesigner()
 
     def _cache_key(
         self,

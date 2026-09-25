@@ -2,7 +2,7 @@
 
 Status: `Active index`
 
-Last reviewed: August 7, 2026
+Last reviewed: September 5, 2026
 
 This index explains which CV Reformatter documents are authoritative and where
 new information belongs.
@@ -50,6 +50,8 @@ replace the product contract.
 
 - [Architecture Decision Records](decisions/README.md) — accepted technical
   decisions and the ADR process.
+- [ADR 0007](decisions/0007-format-preserving-pdf-and-docx-lanes.md) — approved
+  PDF-to-PDF and DOCX-to-DOCX product lanes.
 - [ADR Template](decisions/ADR_TEMPLATE.md) — template for new decisions.
 
 ### Research And Evaluation
@@ -57,7 +59,7 @@ replace the product contract.
 - [Provider Comparison — 2026-08-01](evaluations/PROVIDER_COMPARISON_20260801.md)
   — curated synthetic bake-off evidence; not an architecture decision.
 - [Four-Provider Layout Analyzer Smoke — 2026-08-23](evaluations/2026-08-23_FOUR_PROVIDER_LAYOUT_SMOKE.md)
-  — one-case Azure, Adobe, Foxit, and pdfRest credential and evidence check;
+  — dated multi-provider credential and evidence check retained for history;
   not the complete Phase 2 decision gate.
 
 ### Testing
@@ -75,6 +77,12 @@ replace the product contract.
 - [Content and Layout Model — Proposed 2026-08-07](archive/CONTENT_AND_LAYOUT_MODEL_PROPOSED_20260807.md)
   — proposed block/information-preservation design; never promoted into the
   product contract.
+- [PDF Template Reconstruction](archive/PDF_TEMPLATE_RECONSTRUCTION.md) —
+  superseded PDF-to-HTML template approach, replaced by ADR 0004/0007 lanes.
+- Early target-replica and provider-credential evaluations (2026-08-12 through
+  2026-08-23) — superseded by ADR 0004/0007 and later detection-first evidence.
+- Consumed one-shot Codex experiment handoff briefs live in git history; the
+  current experiment contract is `tests/experiments/README.md`.
 
 Archived documents that were superseded without unique surviving content
 (MVP build roadmap, July 2026 frontend alignment snapshot, full enterprise

@@ -244,14 +244,32 @@ _ALL_RENDER_SOURCES = (
 )
 
 
-def source_content_values(source: str, context: SyntheticPlaceholderRenderContext) -> list[str]:
+def source_content_values(
+    source: str,
+    context: SyntheticPlaceholderRenderContext,
+    contact_fields: list[str] | None = None,
+) -> list[str]:
     """The non-empty content strings one source binds from the render context.
 
     Kept in lockstep with the HTML renderer's section-to-context binding so
     proof-content expectations cannot drift from what the renderer emits.
     """
     if source == "contact":
-        return list(context.contact_lines)
+        if contact_fields is None:
+            return list(context.contact_lines)
+        labels = {
+            "email": "email",
+            "phone": "phone",
+            "location": "location",
+            "linkedin_url": "linkedin",
+            "portfolio_url": "portfolio",
+        }
+        requested = {labels[field] for field in contact_fields if field in labels}
+        return [
+            line
+            for line in context.contact_lines
+            if line.partition(":")[0].strip().casefold() in requested
+        ]
     if source == "summary":
         return [context.professional_summary] if context.professional_summary else []
     if source == "skills":
@@ -317,7 +335,18 @@ def rendered_content_values(layout_spec, variant: LengthVariant) -> list[str]:
                 and section.additional_section_heading
             ):
                 continue
-            values.extend(source_content_values(section.source, context))
+            contact_fields = (
+                section.contact_fields or layout_spec.header.contact_fields
+                if section.source == "contact"
+                else None
+            )
+            values.extend(
+                source_content_values(
+                    section.source,
+                    context,
+                    contact_fields,
+                )
+            )
         # Contact fallback: the renderer emits the contact lines full-width when
         # no explicit contact section exists.
         if "contact" not in sources and context.contact_lines:
@@ -341,3 +370,33 @@ def expected_rendered_marker_counts(layout_spec, variant: LengthVariant) -> dict
         for token in _SYNTHETIC_TOKEN_RE.findall(value):
             counts[token] = counts.get(token, 0) + 1
     return counts
+
+
+def expected_rendered_rule_count(layout_spec, variant: LengthVariant) -> int:
+    """Count horizontal rules implied by the populated proof sections."""
+    context = build_synthetic_context(variant)
+    count = int(bool(
+        layout_spec.decoration.header_rule
+        and source_content_values(
+            "contact", context, layout_spec.header.contact_fields
+        )
+    ))
+    for section in list(getattr(layout_spec, "sections", None) or []):
+        if not section.show_heading:
+            continue
+        if section.source == "additional_details" and section.additional_section_heading:
+            continue
+        fields = (
+            section.contact_fields or layout_spec.header.contact_fields
+            if section.source == "contact"
+            else None
+        )
+        if not source_content_values(section.source, context, fields):
+            continue
+        has_rule = (
+            section.heading_rule
+            if section.heading_rule is not None
+            else layout_spec.decoration.heading_rule
+        )
+        count += int(has_rule)
+    return count

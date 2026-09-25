@@ -1,13 +1,18 @@
 # ADR 0006: Badge Decoration And HTML As The Single Product Renderer
 
-Status: `Accepted` (owner direction 2026-08-30; revised same day to confirm HTML
-is the product renderer and DOCX is retired)
+Status: `Accepted`, with the single-renderer scope partially superseded by
+[ADR 0007](0007-format-preserving-pdf-and-docx-lanes.md) on 2026-09-05. Badge
+behavior and the HTML-to-PDF lane remain accepted.
 
 Date: 2026-08-30
 
 Owner: Backend
 
 Approver: Product owner
+
+Supersession note: ADR 0007 restores DOCX only as a separate native
+DOCX-to-DOCX lane. It does not restore DOCX/LibreOffice as a PDF renderer and
+does not change this ADR's badge measurements or HTML-to-PDF evidence.
 
 ## Context
 

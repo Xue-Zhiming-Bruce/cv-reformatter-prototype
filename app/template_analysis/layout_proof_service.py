@@ -46,6 +46,7 @@ from app.generation.template_mapper import ClientFacingRenderContext
 from app.template_analysis.layout_proof_content import (
     build_synthetic_context,
     canonical_context_checksum,
+    source_content_values,
     synthetic_context_checksum,
 )
 from app.template_analysis.layout_proof_schemas import (
@@ -599,7 +600,16 @@ def _expected_heading_labels(
                 # Canonical proof content contains no candidate-specific
                 # custom sections, so an exact-heading binding renders empty.
                 continue
-            if section.source in populated_sources and section.label:
+            contact_fields = (
+                section.contact_fields or layout_spec.header.contact_fields
+                if section.source == "contact"
+                else None
+            )
+            if source_content_values(
+                section.source,
+                context,
+                contact_fields,
+            ) and section.label:
                 labels.append(section.label)
     else:
         defaults = layout_spec.section_labels

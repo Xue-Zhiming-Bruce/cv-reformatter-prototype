@@ -236,11 +236,9 @@ def test_compiled_spec_placement_has_no_coordinates() -> None:
     assert placements["summary"] == "sidebar"
     for section in spec.sections:
         assert section.placement in {"full_width", "main_column", "sidebar", "header", "footer"}
-    sections_payload = json.dumps(
-        [section.model_dump(mode="json") for section in spec.sections]
-    )
-    for geometry_marker in ("x0", "top", "bbox", "left_pt", "width_pt"):
-        assert geometry_marker not in sections_payload
+    forbidden_placement_keys = {"x0", "top", "bbox", "left_pt", "width_pt"}
+    for section in spec.sections:
+        assert forbidden_placement_keys.isdisjoint(section.model_dump(mode="json"))
 
 
 def test_measured_additional_sections_carry_entry_tiers() -> None:

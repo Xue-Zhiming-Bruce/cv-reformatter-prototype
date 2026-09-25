@@ -35,6 +35,7 @@ class LocalArtifactStore:
                         artifact_dir TEXT NOT NULL,
                         source_filename TEXT,
                         source_file_type TEXT,
+                        workflow_lane TEXT,
                         original_pdf_preview_url TEXT,
                         original_preview_error TEXT,
                         target_format_role TEXT,
@@ -45,6 +46,7 @@ class LocalArtifactStore:
                         html_surface_url TEXT,
                         pdf_download_url TEXT,
                         pdf_preview_url TEXT,
+                        docx_download_url TEXT,
                         needs_review_count INTEGER,
                         missing_field_labels_json TEXT NOT NULL DEFAULT '[]',
                         debug_artifacts_json TEXT NOT NULL DEFAULT '{}'
@@ -57,6 +59,14 @@ class LocalArtifactStore:
                 if "html_surface_url" not in columns:
                     connection.execute(
                         "ALTER TABLE artifact_jobs ADD COLUMN html_surface_url TEXT"
+                    )
+                if "workflow_lane" not in columns:
+                    connection.execute(
+                        "ALTER TABLE artifact_jobs ADD COLUMN workflow_lane TEXT"
+                    )
+                if "docx_download_url" not in columns:
+                    connection.execute(
+                        "ALTER TABLE artifact_jobs ADD COLUMN docx_download_url TEXT"
                     )
         except sqlite3.Error as exc:
             raise LocalDatabaseError(f"Local database schema could not be initialized: {exc}") from exc
@@ -72,6 +82,7 @@ class LocalArtifactStore:
         original_preview_error: str | None,
         missing_fields: list[MissingField],
         debug_artifacts: Mapping[str, str],
+        workflow_lane: str | None = None,
     ) -> None:
         self._upsert_artifact(
             artifact_id=artifact_id,
@@ -80,6 +91,7 @@ class LocalArtifactStore:
             updates={
                 "source_filename": source_filename,
                 "source_file_type": source_file_type,
+                "workflow_lane": workflow_lane or source_file_type,
                 "original_pdf_preview_url": original_pdf_preview_url,
                 "original_preview_error": original_preview_error,
                 "needs_review_count": len(missing_fields),
@@ -117,11 +129,13 @@ class LocalArtifactStore:
         artifact_dir: str | Path,
         template_name: str,
         blind_profile: bool,
-        html_surface_url: str,
-        pdf_download_url: str,
-        pdf_preview_url: str,
         missing_fields: list[MissingField],
         debug_artifacts: Mapping[str, str],
+        workflow_lane: str = "pdf",
+        html_surface_url: str | None = None,
+        pdf_download_url: str | None = None,
+        pdf_preview_url: str | None = None,
+        docx_download_url: str | None = None,
     ) -> None:
         self._upsert_artifact(
             artifact_id=artifact_id,
@@ -130,9 +144,11 @@ class LocalArtifactStore:
             updates={
                 "template_name": template_name,
                 "blind_profile": int(blind_profile),
+                "workflow_lane": workflow_lane,
                 "html_surface_url": html_surface_url,
                 "pdf_download_url": pdf_download_url,
                 "pdf_preview_url": pdf_preview_url,
+                "docx_download_url": docx_download_url,
                 "needs_review_count": len(missing_fields),
                 "missing_field_labels_json": _missing_field_labels_json(missing_fields),
             },

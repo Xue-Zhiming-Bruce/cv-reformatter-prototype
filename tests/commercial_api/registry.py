@@ -57,7 +57,7 @@ class ProviderAdapter(abc.ABC):
 
     def set_timeout(self, timeout_seconds: float | None) -> None:
         """Forward the runner's configured timeout so live adapters pass it to
-        their provider clients (e.g. CLI ``--timeout`` reaching the Claude
+        their provider clients (e.g. CLI ``--timeout`` reaching the OpenAI
         client)."""
         self._timeout_seconds = timeout_seconds
 
@@ -122,11 +122,11 @@ def configuration_status() -> dict[str, dict[str, Any]]:
 
 
 def _explicit_model() -> str | None:
-    """The configured Claude design model when it is explicit and pinned.
+    """The configured OpenAI design model when it is explicit and pinned.
     Moving *-latest values are rejected so evaluation results are
     reproducible; the model ID is recorded in the run manifest, never
     printed by check-config."""
-    model = os.getenv("ANTHROPIC_DESIGN_MODEL") or os.getenv("ANTHROPIC_MODEL")
+    model = os.getenv("OPENAI_DESIGN_MODEL") or os.getenv("OPENAI_MODEL")
     if not model:
         return None
     stripped = model.strip()
@@ -144,42 +144,42 @@ def _module_available(module_name: str) -> bool:
         return False
 
 
-def claude_designer_readiness() -> dict[str, Any]:
-    """Offline readiness for a synthetic live Claude design run.
+def openai_designer_readiness() -> dict[str, Any]:
+    """Offline readiness for a synthetic live OpenAI design run.
 
     Reads configuration presence only (never prints values) and makes no
     network call. Distinguishes: credentials configured; explicit model
     configured; live permission enabled (``TEMPLATE_DESIGN_LIVE_ENABLED``);
-    Anthropic package installed; ready for a synthetic live run. The live
+    OpenAI package installed; ready for a synthetic live run. The live
     run still requires the CLI ``--live`` flag on top of this.
     """
     api_key_configured = bool(
-        os.getenv("ANTHROPIC_DESIGN_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+        os.getenv("OPENAI_DESIGN_API_KEY") or os.getenv("OPENAI_API_KEY")
     )
     model = _explicit_model()
     live_permission = (
         os.getenv("TEMPLATE_DESIGN_LIVE_ENABLED", "").strip().lower()
         in {"1", "true", "yes", "on"}
     )
-    package_installed = _module_available("anthropic")
+    package_installed = _module_available("openai")
     missing: list[str] = []
     if not api_key_configured:
-        missing.append("ANTHROPIC_DESIGN_API_KEY or ANTHROPIC_API_KEY")
+        missing.append("OPENAI_DESIGN_API_KEY or OPENAI_API_KEY")
     if model is None:
         missing.append(
-            "explicit ANTHROPIC_DESIGN_MODEL or ANTHROPIC_MODEL "
+            "explicit OPENAI_DESIGN_MODEL or OPENAI_MODEL "
             "(a *-latest value is not accepted)"
         )
     if not live_permission:
         missing.append("TEMPLATE_DESIGN_LIVE_ENABLED=1")
     if not package_installed:
-        missing.append("anthropic package installed")
+        missing.append("openai package installed")
     return {
         "credentials_configured": api_key_configured,
         "model": model,
         "model_configured": model is not None,
         "live_permission_enabled": live_permission,
-        "anthropic_package_installed": package_installed,
+        "openai_package_installed": package_installed,
         "ready_for_synthetic_live_run": not missing,
         "missing": missing,
     }

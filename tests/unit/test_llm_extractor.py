@@ -11,11 +11,11 @@ from app.extraction.llm_extractor import (
     DEFAULT_OPENAI_MODEL,
     LLMClient,
     LLMExtractionError,
-    MockLLMClient,
     OpenAILLMClient,
     build_llm_client,
     extract_candidate_profile,
 )
+from tests.helpers.mock_llm import MockLLMClient
 
 
 def test_mock_llm_extractor_returns_validated_profile_with_missing_fields() -> None:

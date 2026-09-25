@@ -17,8 +17,13 @@ def _output() -> LLMSegmentationOutput:
                 {
                     "heading": None,
                     "section_type": "contact",
-                    "items": ["Jane Candidate", "jane@example.com"],
+                    "items": [
+                        "Jane Candidate",
+                        "Platform Engineer",
+                        "jane@example.com",
+                    ],
                     "full_name": "Jane Candidate",
+                    "current_title": "Platform Engineer",
                     "email": "jane@example.com",
                 },
                 {
@@ -49,6 +54,30 @@ def test_coverage_audit_catches_missing_and_invented_lines() -> None:
     assert [item.line for item in audit.invented_or_altered_lines] == ["Rust"]
 
 
+def test_one_line_summary_is_not_counted_twice_as_heading_and_item() -> None:
+    line = "SUMMARY — Engineer building reliable systems."
+    output = LLMSegmentationOutput.model_validate(
+        {
+            "schema_version": "llm_segmentation/1",
+            "sections": [
+                {
+                    "heading": line,
+                    "section_type": "summary",
+                    "items": [line],
+                    "professional_summary": "Engineer building reliable systems.",
+                }
+            ],
+        }
+    )
+
+    assert segmentation_output_lines(output) == [line]
+    assert audit_segmentation_lines(line, segmentation_output_lines(output)).status == "passed"
+    _profile, document = materialize_llm_segmentation(line, output)
+    assert document.blocks[0].source_heading is None
+    assert document.blocks[0].source_line_start == 1
+    assert document.blocks[0].source_line_end == 1
+
+
 def test_segmentation_schema_rejects_malformed_output() -> None:
     payload = _output().model_dump(mode="json")
     payload["sections"][0]["unexpected"] = "not allowed"
@@ -59,12 +88,13 @@ def test_segmentation_schema_rejects_malformed_output() -> None:
 
 def test_materialized_profile_and_blocks_keep_llm_section_lineage() -> None:
     output = _output()
-    source = "Jane Candidate\njane@example.com\nPROJECTS\nResume Builder\n• Preserved every source line\n"
+    source = "Jane Candidate\nPlatform Engineer\njane@example.com\nPROJECTS\nResume Builder\n• Preserved every source line\n"
 
     audit = audit_segmentation_lines(source, segmentation_output_lines(output))
     profile, document = materialize_llm_segmentation(source, output)
 
     assert audit.status == "passed"
+    assert profile.current_title == "Platform Engineer"
     assert [block.normalized_heading for block in document.blocks] == [
         "contact",
         "projects",

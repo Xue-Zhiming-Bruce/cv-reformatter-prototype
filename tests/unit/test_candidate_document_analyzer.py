@@ -163,10 +163,11 @@ def test_contact_preamble_is_accounted_for_by_existing_header_behavior() -> None
 
 def test_field_evidence_is_conservative_and_section_level() -> None:
     document = llm_first_document(
-        "Jane Candidate\njane@example.com\nSKILLS\nPython\n"
+        "Jane Candidate\nPlatform Engineer\njane@example.com\nSKILLS\nPython\n"
     )
     profile = CandidateProfile(
         full_name="Jane Candidate",
+        current_title="Platform Engineer",
         email="jane@example.com",
         skills=["Python"],
         work_authorization="Requires confirmation",
@@ -176,6 +177,7 @@ def test_field_evidence_is_conservative_and_section_level() -> None:
 
     evidence = {item.field_name: item for item in ledger.fields}
     assert evidence["full_name"].match_kind == "section_level"
+    assert evidence["current_title"].source_block_ids == ["candidate-block-001"]
     assert evidence["skills"].source_block_ids == ["candidate-block-002"]
     assert evidence["work_authorization"].match_kind == "unresolved"
     assert evidence["work_authorization"].source_block_ids == []

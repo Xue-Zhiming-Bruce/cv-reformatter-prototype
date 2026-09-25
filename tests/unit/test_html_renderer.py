@@ -3,9 +3,13 @@ from pathlib import Path
 import pytest
 
 from app.extraction.candidate_schema import CandidateProfile
-from app.generation.html_renderer import HtmlRenderingError, render_html
+from app.generation.html_renderer import (
+    HtmlRenderingError,
+    render_html,
+    resolve_target_render_spec,
+)
 from app.generation.content_validation import validate_output_structure
-from app.generation.template_mapper import build_client_render_context
+from app.generation.template_mapper import ClientFacingRenderContext, build_client_render_context
 from app.template_analysis.schemas import (
     BadgeStyle,
     DecorationStyle,
@@ -192,9 +196,197 @@ def test_html_renderer_emits_contract_font_sizes_and_no_inline_families(
     assert "font-size:26.0pt" in html  # candidate name
     # The renderer emits the family only on body and inherits it elsewhere.
     assert html.count("font-family:") == 1
+    assert 'font-family: "Arial"' in html
+    assert 'font-family: "Arial",' not in html
     assert "style=\"font-family:" not in html
     # The rules (header + heading) must be present in the emitted CSS.
     assert "border-bottom: 0.75pt solid #1A1A1A" in html
+
+
+def test_target_renderer_rejects_unavailable_measured_font_without_substitution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "app.generation.html_renderer._resolved_font_families",
+        lambda _family: {"verdana"},
+    )
+    measured = TextStyle(
+        font_family="Lato",
+        font_size_pt=10,
+        line_height_pt=12,
+        color_hex="#111111",
+    )
+    spec = LayoutTemplateSpec(
+        source_type="pdf_analysis",
+        page=PageStyle(
+            width_pt=612,
+            height_pt=792,
+            orientation="portrait",
+            margin_top_pt=36,
+            margin_right_pt=36,
+            margin_bottom_pt=36,
+            margin_left_pt=36,
+        ),
+        title=measured,
+        body=measured,
+        heading=measured,
+        spacing=SpacingStyle(
+            line_spacing=1.2,
+            line_height_pt=12,
+            paragraph_after_pt=4,
+            section_before_pt=0,
+            section_after_pt=4,
+        ),
+    )
+
+    with pytest.raises(HtmlRenderingError, match="Lato.*unavailable.*instead of substituting"):
+        render_html(
+            ClientFacingRenderContext(candidate_heading="Jane Candidate"),
+            spec,
+            tmp_path / "blocked.html",
+        )
+
+
+def test_target_renderer_degrades_soft_nulls_with_review_warnings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "app.generation.html_renderer._resolved_font_families",
+        lambda _family: {"lato"},
+    )
+    measured = TextStyle(
+        font_family="Lato",
+        font_size_pt=10,
+        color_hex="#111111",
+        character_spacing_pt=None,
+        word_spacing_pt=None,
+        horizontal_scale_percent=None,
+        line_height_pt=None,
+    )
+    spec = LayoutTemplateSpec(
+        source_type="pdf_analysis",
+        page=PageStyle(
+            width_pt=612,
+            height_pt=792,
+            orientation="portrait",
+            margin_top_pt=36,
+            margin_right_pt=36,
+            margin_bottom_pt=36,
+            margin_left_pt=36,
+        ),
+        title=measured,
+        body=measured,
+        heading=measured,
+        spacing=SpacingStyle(
+            line_spacing=None,
+            line_height_pt=None,
+            paragraph_after_pt=None,
+            section_before_pt=None,
+            section_after_pt=None,
+        ),
+        sections=[
+            SectionLayoutSpec(
+                section_id="summary",
+                source="summary",
+                label="SUMMARY",
+                body_style=None,
+                spacing=SpacingStyle(
+                    line_spacing=None,
+                    line_height_pt=None,
+                    paragraph_after_pt=None,
+                    section_before_pt=None,
+                    section_after_pt=None,
+                ),
+            )
+        ],
+    )
+    context = ClientFacingRenderContext(
+        candidate_heading="Jane Candidate",
+        professional_summary="Measured candidate content.",
+    )
+
+    resolved, warnings = resolve_target_render_spec(spec)
+    output = render_html(context, spec, tmp_path / "soft.html")
+    html = output.read_text(encoding="utf-8")
+
+    assert resolved.sections[0].body_style == resolved.body
+    assert resolved.sections[0].spacing is not None
+    assert any("spacing.line_spacing" in warning for warning in warnings)
+    assert any("sections[summary].body_style" in warning for warning in warnings)
+    assert all(warning.startswith("SOFT LAYOUT DEGRADATION:") for warning in warnings)
+    assert "None" not in html
+    assert "letter-spacing:0.0pt" in html
+    assert "word-spacing:0.0pt" in html
+    assert "font-stretch:100.0%" in html
+
+
+def test_target_renderer_still_blocks_hard_missing_font(
+    tmp_path: Path,
+) -> None:
+    style = TextStyle(
+        font_family="",
+        font_size_pt=10,
+        color_hex="#111111",
+        line_height_pt=12,
+    )
+    spec = LayoutTemplateSpec(
+        source_type="pdf_analysis",
+        page=PageStyle(
+            width_pt=612,
+            height_pt=792,
+            orientation="portrait",
+            margin_top_pt=36,
+            margin_right_pt=36,
+            margin_bottom_pt=36,
+            margin_left_pt=36,
+        ),
+        title=style,
+        body=style,
+        heading=style,
+        spacing=SpacingStyle(line_height_pt=12),
+    )
+
+    with pytest.raises(HtmlRenderingError, match="hard renderer fields:.*font_family"):
+        render_html(
+            ClientFacingRenderContext(candidate_heading="Jane Candidate"),
+            spec,
+            tmp_path / "blocked.html",
+        )
+
+
+def test_target_renderer_still_blocks_mixed_measured_families(
+    tmp_path: Path,
+) -> None:
+    body = TextStyle(
+        font_family="Lato",
+        font_size_pt=10,
+        color_hex="#111111",
+        line_height_pt=12,
+    )
+    heading = body.model_copy(update={"font_family": "Font Awesome"})
+    spec = LayoutTemplateSpec(
+        source_type="pdf_analysis",
+        page=PageStyle(
+            width_pt=612,
+            height_pt=792,
+            orientation="portrait",
+            margin_top_pt=36,
+            margin_right_pt=36,
+            margin_bottom_pt=36,
+            margin_left_pt=36,
+        ),
+        title=body,
+        body=body,
+        heading=heading,
+        spacing=SpacingStyle(line_height_pt=12),
+    )
+
+    with pytest.raises(HtmlRenderingError, match="multiple measured font families"):
+        render_html(
+            ClientFacingRenderContext(candidate_heading="Jane Candidate"),
+            spec,
+            tmp_path / "blocked.html",
+        )
 
 
 def test_html_renderer_emits_rules_for_header_and_headings(tmp_path: Path) -> None:
@@ -254,6 +446,45 @@ def test_html_renderer_emits_rules_for_header_and_headings(tmp_path: Path) -> No
     assert html.count("class=\"header-rule-length\"") == 1
     assert html.count("width: 463.276pt") == 2
     assert html.count("border-bottom: 0.75pt solid #1A1A1A") == 2  # header + heading css rules
+
+
+def test_html_renderer_emits_only_section_local_heading_rules(tmp_path: Path) -> None:
+    context = build_client_render_context(
+        CandidateProfile(full_name="Jane Candidate", skills=["Python"])
+    )
+    spec = LayoutTemplateSpec(
+        source_type="built_in",
+        page=PageStyle(
+            width_pt=612,
+            height_pt=792,
+            orientation="portrait",
+            margin_top_pt=36,
+            margin_right_pt=36,
+            margin_bottom_pt=36,
+            margin_left_pt=36,
+        ),
+        decoration=DecorationStyle(
+            heading_rule=False,
+            heading_rule_gap_above_pt=4.2,
+            heading_rule_gap_below_pt=4.8,
+            heading_rule_length_pt=540,
+        ),
+        sections=[
+            SectionLayoutSpec(
+                section_id=f"section-{index}",
+                source="skills",
+                label=f"SECTION {index}",
+                heading_rule=index in {1, 4} or None,
+            )
+            for index in range(6)
+        ],
+    )
+
+    html = render_html(context, spec, tmp_path / "candidate_profile.html").read_text()
+
+    assert html.count("<h2") == 6
+    assert html.count('class="section-heading heading-rule"') == 2
+    assert html.count('class="heading-rule-length"') == 2
 
 
 def test_html_renderer_compensates_rule_gaps_from_actual_text_tiers(

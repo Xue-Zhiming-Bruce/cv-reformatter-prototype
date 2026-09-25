@@ -4,13 +4,13 @@ Status: `Active contract`
 
 Owner: Backend
 
-Last reviewed: August 24, 2026
+Last reviewed: September 7, 2026
 
 > **Decision record:** [ADR 0001](../decisions/0001-claude-template-designer-boundary.md)
 > was ruled **Accepted** by the owner on 2026-08-24, with one generalization:
 > the designer LLM is **provider-pluggable** (the rules never depended on
-> Anthropic specifically). Current adapter: Anthropic (`AnthropicClaudeDesigner`).
-> Preferred next adapter: OpenAI, reusing the existing extraction integration.
+> Anthropic specifically). Current adapter (owner ruling 2026-09-07, OpenAI-only):
+> OpenAI (`OpenAITemplateDesigner`). The Anthropic adapter has been removed.
 > This document is the single operational home for the boundary; the ADR is
 > the immutable decision record.
 
@@ -40,7 +40,7 @@ This document records:
 
 ## Roles And Boundaries
 
-### Claude may
+### The designer LLM may
 
 - interpret target section intent;
 - classify target regions semantically;
@@ -53,7 +53,7 @@ This document records:
 - identify uncertainty, request human review, and declare a target
   unsupported.
 
-### Claude may not
+### The designer LLM may not
 
 - alter approved candidate wording;
 - fabricate missing information;
@@ -73,7 +73,7 @@ This document records:
 - approval transitions, caching keys, and inventory checks;
 - rendering and quality gates (unchanged).
 
-Claude output is `DesignProposal` evidence. Only deterministic compilation may
+Designer output is `DesignProposal` evidence. Only deterministic compilation may
 create a `LayoutTemplateSpec`, and only an approved spec may drive generation.
 
 ## Pipeline
@@ -83,7 +83,7 @@ Target PDF/DOCX
 -> deterministic TargetLayoutAnalyzer
 -> TargetLayoutEvidence (local, full)
 -> external-safe DesignRequest (references + heading labels + counts only)
--> TemplateDesigner (deterministic | Claude)
+-> TemplateDesigner (deterministic | OpenAI)
 -> DesignProposal (strict, versioned)
 -> deterministic DesignValidator
 -> deterministic DesignCompiler
@@ -111,16 +111,16 @@ privacy, structural, and visual gates.
 | --- | --- | --- |
 | `measured_template` (default) | no designer call | target analysis → artifact-root measured spec → renderer |
 | `existing_template` | deterministic (`mock` designer) | legacy explicit compatibility setting |
-| `claude_designer` | Anthropic Claude adapter (live-gated) | generation from a requested target format requires an approved design or an explicit `allow_existing_template=true` |
+| `openai_designer` | OpenAI adapter (`OpenAITemplateDesigner`, live-gated) | generation from a requested target format requires an approved design or an explicit `allow_existing_template=true` |
 
 - `measured_template` is the default. Uploaded PDF targets require the
   artifact-root measured structure contract; there is no artifact-level v1
   spec or built-in-template fallback; the route that caused the invented
   Contact-section regression is retired with it.
-- Fallback from `claude_designer` is never silent: without an approved design,
+- Fallback from `openai_designer` is never silent: without an approved design,
   `/api/generate` returns a structured
   `fallback_requires_approval` error with the explicit opt-in option.
-- An unsupported or failed Claude design produces a structured state
+- An unsupported or failed designer proposal produces a structured state
   (`unsupported`, `provider_failed`, `invalid_proposal`), never a silent
   substitution.
 
@@ -174,9 +174,9 @@ Target candidate body text (names, employers, achievements, contact values)
 is excluded. `DesignRequest.include_target_content` defaults to `False` and
 is used only by controlled offline tests of the redaction boundary.
 
-## Claude Constraints
+## Designer Constraints
 
-The current adapter (`AnthropicClaudeDesigner`) sends a bounded single call with a
+The current adapter (`OpenAITemplateDesigner`) sends a bounded single call with a
 tool-forced strict schema (`submit_design`). System instructions state that:
 
 - candidate facts cannot be created or rewritten;
@@ -222,7 +222,7 @@ and no free-running agent.
   (`data/generated_outputs/<artifact>/designs/<design_id>/`); SQLite is not
   expanded.
 - Once a `LayoutTemplateSpec` is approved, generation reuses it and never
-  calls Claude. A changed model or prompt changes the cache key and creates a
+  calls the designer. A changed model or prompt changes the cache key and creates a
   new draft; it never silently replaces the approved design.
 - Approving a new design for the same target and candidate inventory marks the
   previous approved design `superseded`.
@@ -235,7 +235,7 @@ and no free-running agent.
 Additive routes (frontend unchanged):
 
 - `POST /api/designs/request` — request a design for an artifact's analyzed
-  target format (`designer`: `deterministic` default, or `claude`).
+  target format (`designer`: `deterministic` default, or `openai`).
 - `GET /api/artifacts/{artifact_id}/designs/{design_id}` — inspect proposal,
   warnings, confidence, support state, and validation errors.
 - `POST /api/artifacts/{artifact_id}/designs/{design_id}/approve` — approve a
@@ -244,7 +244,7 @@ Additive routes (frontend unchanged):
   a design artifact JSON (allowlisted filenames only).
 - `POST /api/generate` — optional `design_id` (approved design) and
   `allow_existing_template` (explicit, non-silent fallback opt-in under
-  `claude_designer`).
+  `openai_designer`).
 
 Execution is synchronous, matching the current baseline; no queue was
 invented.
@@ -261,7 +261,7 @@ Overflow handling must never silently discard approved candidate content.
 dropping approved content that does not fit. Safe handling is controlled
 continuation/reflow (`continue_next_page`, `shrink_to_fit`); semantic
 shortening or content removal requires `require_review` and a new approved
-content version. Claude may propose `require_review`; it may never authorize
+content version. The designer may propose `require_review`; it may never authorize
 content loss.
 
 Unsupported classes (explicit state, never guessed): scanned,
@@ -277,18 +277,18 @@ renderer behavior (Stage B3); the design decision is recorded in the approved
 Names only; values are never committed, logged, or stored:
 
 - `TEMPLATE_DESIGN_STRATEGY` — `measured_template` (default), `existing_template`, or
-  `claude_designer`.
-- `TEMPLATE_DESIGN_LIVE_ENABLED` — explicit opt-in for live Claude design.
+  `openai_designer`.
+- `TEMPLATE_DESIGN_LIVE_ENABLED` — explicit opt-in for live designer calls.
   Required because `ProviderPolicy` does not exist yet.
-- `ANTHROPIC_DESIGN_API_KEY` (fallback `ANTHROPIC_API_KEY`).
-- `ANTHROPIC_DESIGN_MODEL` (fallback `ANTHROPIC_MODEL`).
+- `OPENAI_API_KEY` (or a stage-specific key such as `OPENAI_DESIGN_API_KEY`).
+- `OPENAI_MODEL` (or `OPENAI_DESIGN_MODEL`).
 - `DESIGN_CACHE_DIR` — optional cache location.
 
 ## Privacy Limitations
 
-- Real candidate or target documents are never sent to Claude in tests; only
-  synthetic corpus inputs are used.
-- The Claude adapter receives structured `DesignRequest` data only — no
+- Real candidate or target documents are never sent to the designer in tests;
+  only synthetic corpus inputs are used.
+- The designer adapter receives structured `DesignRequest` data only — no
   arbitrary files, no target candidate body text, no geometry.
 - Only safe configuration-presence flags are recorded; API keys,
   authorization headers, signed URLs, and raw sensitive payloads are never
@@ -317,9 +317,9 @@ A separate `design` evaluation lane exists in `tests/commercial_api/`:
 # deterministic offline baseline
 python -m tests.commercial_api.cli baseline --lanes design
 
-# explicit live synthetic Claude evaluation (never automatic)
+# explicit live synthetic designer evaluation (never automatic)
 python -m tests.commercial_api.cli run --lane design \
-  --providers claude_designer --cases design_plain_one_column \
+  --providers openai_designer --cases design_plain_one_column \
   --live --max-cases 1 --max-requests 1 --timeout 120
 ```
 

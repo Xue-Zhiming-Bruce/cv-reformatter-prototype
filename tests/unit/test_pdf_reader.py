@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZipFile
 
 import pytest
@@ -7,6 +8,7 @@ from pypdf import PdfWriter
 from app.ingestion.pdf_reader import (
     CorruptedPdfError,
     EmptyPdfTextError,
+    PdfTextExtractionUnavailableError,
     UnsupportedPdfTypeError,
     read_pdf_text,
 )
@@ -71,6 +73,46 @@ def test_read_pdf_text_rejects_pdf_without_extractable_text(tmp_path: Path) -> N
 
     with pytest.raises(EmptyPdfTextError, match="No extractable text"):
         read_pdf_text(path)
+
+
+def test_read_pdf_text_fails_closed_when_poppler_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "resume.pdf"
+    path.write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr("app.ingestion.pdf_reader.shutil.which", lambda _name: None)
+
+    with pytest.raises(PdfTextExtractionUnavailableError, match="requires Poppler"):
+        read_pdf_text(path)
+
+
+def test_read_pdf_text_normalizes_ligatures_and_contact_icon_glyphs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "resume.pdf"
+    path.write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr("app.ingestion.pdf_reader.shutil.which", lambda _name: "pdftotext")
+    monkeypatch.setattr(
+        "app.ingestion.pdf_reader.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "Ô (000) 000-0000 \x10\n"
+                "example@example.com \x89 github.com/example-proﬁle ° "
+                "linkedin.com/in/example\n"
+                "ï linkedin.com/in/USER —\n"
+                "§ github.com/USER\n"
+            ),
+        ),
+    )
+
+    text = read_pdf_text(path)
+
+    assert "(000) 000-0000" in text
+    assert "github.com/example-profile" in text
+    assert "linkedin.com/in/USER" in text
+    assert "github.com/USER" in text
+    assert all(marker not in text for marker in ("Ô", "\x10", "\x89", "°", "ï", "§"))
 
 
 def _require_pdf_resume_dataset() -> Path:

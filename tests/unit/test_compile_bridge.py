@@ -38,16 +38,19 @@ def _normalized(*, color: str | None = "#102030") -> NormalizedLayoutEvidence:
         text_blocks=[
             NormalizedTextBlock(
                 element_id="title", text="Private title", page_number=1, reading_order=0,
+                bbox={"x0": 0.08, "top": 0.06, "x1": 0.92, "bottom": 0.10},
                 font_family="Lato", font_size_pt=22, bold=True, color_hex=color,
                 typography_class="title",
             ),
             NormalizedTextBlock(
                 element_id="heading", text="Unusual heading", page_number=1, reading_order=1,
+                bbox={"x0": 0.08, "top": 0.18, "x1": 0.92, "bottom": 0.22},
                 font_family="Lato", font_size_pt=14, bold=True, color_hex=color,
                 spacing_before_pt=8, typography_class="heading",
             ),
             NormalizedTextBlock(
                 element_id="body", text="Private body", page_number=1, reading_order=2,
+                bbox={"x0": 0.08, "top": 0.26, "x1": 0.92, "bottom": 0.30},
                 font_family="Lato", font_size_pt=10, bold=False, color_hex=color,
                 typography_class="body",
             ),
@@ -166,6 +169,12 @@ def test_bridge_selects_body_typography_by_text_volume_not_block_count() -> None
             text="Heading",
             page_number=1,
             reading_order=index,
+            bbox={
+                "x0": 0.08,
+                "top": 0.05 + index * 0.03,
+                "x1": 0.92,
+                "bottom": 0.07 + index * 0.03,
+            },
             font_family="Lato",
             font_size_pt=12,
             bold=True,
@@ -180,6 +189,12 @@ def test_bridge_selects_body_typography_by_text_volume_not_block_count() -> None
             text="Body text that carries substantially more content than a heading",
             page_number=1,
             reading_order=8 + index,
+            bbox={
+                "x0": 0.08,
+                "top": 0.32 + index * 0.04,
+                "x1": 0.92,
+                "bottom": 0.35 + index * 0.04,
+            },
             font_family="Lato",
             font_size_pt=10.5,
             color_hex="#102030",
@@ -310,13 +325,68 @@ def test_bridge_compiles_uniform_header_and_heading_rules() -> None:
 
 
 def test_bridge_does_not_globalize_partial_heading_rules() -> None:
-    _, style = build_design_evidence_from_normalized(
+    evidence, style = build_design_evidence_from_normalized(
         _rule_target(ruled_headings={0, 2}), target_checksum="sha"
     )
 
     assert style.decoration.header_rule is True
     assert style.decoration.heading_rule is False
     assert any("Non-uniform heading-rule" in warning for warning in style.warnings)
+
+
+def test_bridge_infers_rule_roles_from_uniform_ordered_geometry() -> None:
+    normalized = _rule_target(ruled_headings={0, 1, 2})
+    blocks = [
+        block.model_copy(
+            update={
+                "bbox": block.bbox.model_copy(
+                    update={"x0": 0.1, "top": 0.05, "x1": 0.2, "bottom": 0.06}
+                )
+            }
+        )
+        if block.element_id.startswith("heading-")
+        else block
+        for block in normalized.text_blocks
+    ]
+
+    evidence, style = build_design_evidence_from_normalized(
+        normalized.model_copy(
+            update={
+                "text_blocks": blocks,
+                "rules": [
+                    rule.model_copy(update={"stroke_width_pt": 0.75})
+                    for rule in normalized.rules
+                ],
+            }
+        ),
+        target_checksum="sha",
+    )
+
+    assert style.decoration.header_rule is True
+    assert style.decoration.heading_rule is False
+    assert style.decoration.header_rule_length_pt == pytest.approx(489.6)
+    assert style.decoration.heading_rule_length_pt == pytest.approx(489.6)
+    assert all(section.heading_rule is None for section in evidence.section_structure)
+    assert any("roles were inferred" in warning for warning in style.warnings)
+
+
+def test_bridge_records_partial_rules_on_the_measured_sections() -> None:
+    evidence, style = build_design_evidence_from_normalized(
+        _rule_target(ruled_headings={0, 2}), target_checksum="sha"
+    )
+
+    assert style.decoration.heading_rule is False
+    assert [section.heading_rule for section in evidence.section_structure] == [
+        True,
+        None,
+        True,
+    ]
+    ruled = [section for section in evidence.section_structure if section.heading_rule]
+    assert [section.heading_rule_gap_above_pt for section in ruled] == [4.2, 4.2]
+    assert [section.heading_rule_gap_below_pt for section in ruled] == [4.8, 4.8]
+    assert [section.heading_rule_length_pt for section in ruled] == pytest.approx(
+        [489.6, 489.6]
+    )
 
 
 def test_adobe_normalizer_accepts_archived_wrapper() -> None:
@@ -581,7 +651,8 @@ def test_archived_evidence_missing_nested_rows_records_gap_warning() -> None:
     assert experience.entry_gap_pt is None
     # ...and an explicit review warning is recorded (no silent fallback)
     assert any(
-        "entry gap unmeasurable" in warning and "falls back to global paragraph spacing"
-        in warning and "pending review" in warning
+        "entry gap unmeasurable" in warning
+        and "remains unmeasured" in warning
+        and "requires review before rendering" in warning
         for warning in evidence.warnings
     ), evidence.warnings

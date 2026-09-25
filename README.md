@@ -2,7 +2,7 @@
 
 CV Reformatter is a document-processing backend that helps boutique recruiters
 turn inconsistent candidate resumes into reviewed candidate data and
-recruiter-branded HTML surfaces and PDF submissions.
+same-format recruiter-branded submissions.
 
 The accepted workflow preserves candidate content separately from target
 presentation:
@@ -10,8 +10,12 @@ presentation:
 ```text
 Candidate resume -> CandidateProfile -> recruiter review -> client content
 Target document -> reusable layout specification
-Client content + layout specification -> editable HTML surface -> Adobe PDF
+PDF client content + PDF layout   -> editable HTML -> PDF
+DOCX client content + DOCX layout -> editable DOCX -> DOCX
 ```
+
+The uploaded candidate format selects the lane. An optional target format must
+match it; PDF-to-DOCX and DOCX-to-PDF conversion are unsupported.
 
 The MVP and target-PDF demo were accepted on July 26, 2026. Current work focuses
 on measurable information accuracy, target-layout fidelity, safe content
@@ -36,7 +40,9 @@ DigitalOcean deployment begins only after the end-to-end synthetic demo and loca
 - Flags recruiter-critical missing information.
 - Applies recruiter-controlled disclosure and blind-profile rules.
 - Analyzes supported target DOCX/PDF files for reusable presentation evidence.
-- Generates the editable interface HTML and exports PDF through Adobe HTML-to-PDF.
+- Generates editable HTML and a headless-Chrome PDF in the PDF lane.
+- The approved future DOCX lane will generate an editable DOCX and DOCX output.
+- Rejects cross-format PDF/DOCX conversion.
 - Saves diagnostic layout, preview, comparison, and workflow artifacts.
 - Exposes FastAPI endpoints for processing, target upload, generation,
   previews, downloads, and artifact metadata.
@@ -61,9 +67,8 @@ Start with the [Documentation Guide](docs/README.md).
 ## Requirements
 
 - Python 3.12 or later.
-- Adobe PDF Services credentials for live HTML-to-PDF export.
-- An OpenAI or Anthropic API key for real semantic extraction; mock mode works
-  without an external provider.
+- Adobe PDF Services credentials for live target-PDF analysis.
+- An OpenAI API key for semantic extraction.
 
 PostgreSQL is planned as the first production-oriented persistence foundation.
 The accepted baseline still uses local files and a transitional SQLite metadata
@@ -88,22 +93,12 @@ OPENAI_EXTRACT_MODEL=gpt-5.4-mini
 OPENAI_EXTRACT_API_KEY=
 ```
 
-For Anthropic, use `LLM_PROVIDER=anthropic` with
-`ANTHROPIC_EXTRACT_API_KEY`/`ANTHROPIC_API_KEY` and an optional
-`ANTHROPIC_EXTRACT_MODEL`/`ANTHROPIC_MODEL`.
-
 Never commit `.env`, API keys, provider licenses, real resumes, or generated
 candidate data.
 
 ## Run The Backend
 
-For an offline local API using deterministic mock extraction:
-
-```bash
-API_LLM_PROVIDER=mock uvicorn app.main:app --reload
-```
-
-For configured real-provider extraction:
+For configured extraction:
 
 ```bash
 uvicorn app.main:app --reload
@@ -115,17 +110,16 @@ owner.
 
 ## Run The CLI Demo
 
-The offline demo creates a synthetic DOCX input when the default sample is
-missing:
+The demo creates a synthetic DOCX input when the default sample is missing:
 
 ```bash
-python scripts/run_demo.py --mock
+python scripts/run_demo.py
 ```
 
 To process another synthetic DOCX or text-based PDF:
 
 ```bash
-python scripts/run_demo.py --input path/to/synthetic_resume.docx --mock
+python scripts/run_demo.py --input path/to/synthetic_resume.docx
 ```
 
 Artifacts are written to `data/generated_outputs/`.

@@ -91,6 +91,7 @@ def _make_artifact_with_approval(
     (artifact_dir / "candidate_profile.json").write_text(
         json.dumps(draft.model_dump(mode="json")), encoding="utf-8"
     )
+    (artifact_dir / "source_resume.pdf").write_bytes(b"%PDF-1.4\n")
     version_id = _approve_profile(artifact_id, draft)
     return artifact_id, artifact_dir, version_id
 
@@ -99,6 +100,7 @@ def test_approval_rejects_silently_deleted_source_section(tmp_path: Path) -> Non
     artifact_id = "artifact_source_coverage"
     artifact_dir = tmp_path / "outputs" / artifact_id
     artifact_dir.mkdir(parents=True)
+    (artifact_dir / "source_resume.pdf").write_bytes(b"%PDF-1.4\n")
     source = "Jane Candidate\nPROJECTS\nResume Builder\n"
     document = llm_first_document(source)
     draft = _profile()
@@ -451,6 +453,7 @@ def test_pending_review_blocks_approval_and_generation_until_recruiter_reviews(
     artifact_id = "artifact_pending_review"
     artifact_dir = tmp_path / "outputs" / artifact_id
     artifact_dir.mkdir(parents=True)
+    (artifact_dir / "source_resume.pdf").write_bytes(b"%PDF-1.4\n")
     source = "Jane Candidate\nSUMMARY\nEngineer.\nHACKATHONS\nBuilt a thing.\n"
     output = LLMSegmentationOutput.model_validate(
         {

@@ -91,6 +91,7 @@ def test_generation_preserves_extraction_draft_and_uses_corrected_profile(
     (artifact_dir / "candidate_profile.json").write_text(
         json.dumps(draft.model_dump(mode="json")), encoding="utf-8"
     )
+    (artifact_dir / "source_resume.pdf").write_bytes(b"%PDF-1.4\n")
     draft_bytes_before = (artifact_dir / "candidate_profile.json").read_bytes()
 
     # 2. A recruiter approves a corrected profile (different from the draft).
@@ -218,11 +219,12 @@ def test_generation_never_overwrites_both_evidence_files_through_process(
         assert (
             raw_text_path.read_bytes() == raw_text_bytes_before
         ), f"{label}: raw extracted text changed"
-        text = _html_text(artifact_dir / "candidate_profile.html")
+        generated_docx = DocxDocument(artifact_dir / "candidate_profile.docx")
+        text = "\n".join(paragraph.text for paragraph in generated_docx.paragraphs)
         assert "Corrected Candidate" in text, f"{label}: output must use approved profile"
         assert "Processed Candidate" not in text, f"{label}: output must not use the draft"
 
-    # 4. Download endpoints return valid files.
+    # 4. The native DOCX download endpoint returns an editable OOXML file.
     body = client.post(
         "/api/generate",
         json={
@@ -231,11 +233,8 @@ def test_generation_never_overwrites_both_evidence_files_through_process(
             "template_name": "apex_standard",
         },
     ).json()
-    html_surface = client.get(body["html_surface_url"])
-    pdf_download = client.get(body["pdf_download_url"])
-    assert html_surface.status_code == 200
-    assert html_surface.headers["content-disposition"].startswith("inline;")
-    assert html_surface.text.startswith("<!doctype html>")
-    assert pdf_download.status_code == 200
-    assert pdf_download.headers["content-type"] == "application/pdf"
-    assert pdf_download.content[:4] == b"%PDF"
+    docx_download = client.get(body["docx_download_url"])
+    assert body["workflow_lane"] == "docx"
+    assert docx_download.status_code == 200
+    assert docx_download.headers["content-disposition"].startswith("attachment;")
+    assert docx_download.content[:2] == b"PK"
