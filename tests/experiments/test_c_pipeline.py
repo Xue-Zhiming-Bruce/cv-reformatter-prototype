@@ -48,6 +48,9 @@ from tests.experiments.c_pipeline import (
     validate_body_topology,
     validate_topology,
 )
+from pydantic import ValidationError
+
+from tests.experiments.b_pipeline import FinalReview
 from tests.experiments.refinement import GateFailure, HardGateResult
 
 SCAFFOLD = [
@@ -2281,3 +2284,29 @@ def test_deterministic_topology_equals_selected_architect_topology_offline() -> 
         det_rows = [[row.target_role, row.slots, row.alignment] for row in deterministic.rows]
         sel_rows = [[row.target_role, row.slots, row.alignment] for row in selected.rows]
         assert det_rows == sel_rows, (pair, det_rows, sel_rows)
+
+
+# --- surviving cross-generation contracts ------------------------------------
+# These two models outlived the A/B pipelines that introduced them: FinalReview is
+# the reviewer response schema C1 sends to the provider, and GateFailure is what
+# run_hard_gates (frozen a_pipeline code that C1 still calls) emits. Their only
+# coverage used to live in the B-loop suite, which drove a retired workflow.
+
+
+def test_final_review_schema_is_closed_and_typed_as_sent_to_the_provider() -> None:
+    schema = FinalReview.model_json_schema()
+    assert set(schema["properties"]) == {"accepted", "diagnosis"}
+    assert schema["required"] == ["accepted"]
+    assert schema["additionalProperties"] is False
+    assert FinalReview(accepted=False, diagnosis=["x"]).accepted is False
+    with pytest.raises(ValidationError):
+        FinalReview(accepted=True, unexpected="field")
+
+
+def test_gate_failure_carries_its_code_and_optional_details() -> None:
+    assert GateFailure(code="missing_html_content").details is None
+    assert GateFailure(code="invented_content", details={"a": 1}).details == {"a": 1}
+    with pytest.raises(ValidationError):
+        GateFailure(code="x", unexpected="field")
+    with pytest.raises(ValidationError):
+        GateFailure(details="no code")

@@ -8,9 +8,6 @@ import pytest
 from tests.experiments.a_pipeline import _missing_source_tokens
 from tests.experiments.fill_plan import analyze_candidate_provenance, deduplicate_candidate_html
 from tests.experiments.refinement import (
-    CandidateState,
-    apply_builder_operation,
-    validate_builder_operation,
     validate_filler_conformance,
 )
 
@@ -83,48 +80,6 @@ def test_filler_cannot_change_template_presentation() -> None:
     candidate = '<html><style>.name { font-size: 12px; }</style><body><p class="name">Jane</p></body></html>'
 
     assert validate_filler_conformance(template, candidate) == ["Filler modified or added <style> content"]
-
-
-def test_builder_applies_one_evidence_backed_style_change() -> None:
-    template = '<html><style>.name { font-size: 12pt; }</style><body><p class="name">[NAME]</p></body></html>'
-    filled = template.replace("[NAME]", "Jane")
-    measurements = [{
-        "measurement_ref": "style_1.font_size_pt",
-        "value": 18,
-        "unit": "pt",
-        "provenance": {"source": "target"},
-    }]
-    operation = validate_builder_operation(
-        {
-            "action": "set_style_token",
-            "selector": ".name",
-            "property": "font-size",
-            "measurement_ref": "style_1.font_size_pt",
-        },
-        template,
-        measurements,
-    )
-    state = CandidateState(template, filled, hashlib.sha256(template.encode()).hexdigest(), [])
-
-    changed = apply_builder_operation(state, operation, measurements)
-
-    assert ".name { font-size: 18pt; }" in changed.template_html
-    assert ".name { font-size: 18pt; }" in changed.filled_html
-    assert len(changed.builder_changes) == 1
-
-
-def test_builder_rejects_unmeasured_values() -> None:
-    with pytest.raises(ValueError, match="unresolved"):
-        validate_builder_operation(
-            {
-                "action": "set_style_token",
-                "selector": ".name",
-                "property": "font-size",
-                "measurement_ref": "style_1.font_size_pt",
-            },
-            '<style>.name { font-size: 12pt; }</style>',
-            [],
-        )
 
 
 def test_deterministic_source_coverage_replaces_l0_model_call() -> None:
