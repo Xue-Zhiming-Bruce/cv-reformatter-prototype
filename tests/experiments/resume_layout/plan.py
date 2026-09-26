@@ -21,16 +21,23 @@ from pydantic import ConfigDict, Field, model_validator
 from pathlib import Path
 
 from tests.experiments.a_pipeline import _median
-from tests.experiments.c2_pipeline import (  # phase-1 split
-    C2LayoutState,
+from tests.experiments.c2_pipeline import own_leaf
+from tests.experiments.resume_layout.candidates import (
     CandidateDocument,
     CandidateLeaf,
+    UnroutableContent,
+)
+from tests.experiments.resume_layout.state import (
+    C2LayoutState,
     PageState,
     SectionContent,
     StateModel,
-    StyleToken,
-    UnroutableContent,
-    own_leaf,
+)
+
+from tests.experiments.docx_lane.build import (
+    FAMILY_ALIASES,
+    _FONT_SEARCH_DIRS,
+    _font_is_installed,
 )
 
 
@@ -360,11 +367,6 @@ def _preflight_font(
     it never guesses)."""
     from PIL import ImageFont  # lazy: ships with the existing pdfplumber stack
 
-    from tests.experiments.c2_docx_renderer import (  # lazy: single font-policy source
-        FAMILY_ALIASES,
-        _FONT_SEARCH_DIRS,
-        _font_is_installed,
-    )
 
     # The written-font policy (documented, single source): an installed
     # measured family is written verbatim; an unavailable one is written as

@@ -33,7 +33,7 @@ from pydantic import Field
 
 from tests.experiments.a_pipeline import _median
 from tests.experiments.resume_layout.text import _norm
-from tests.experiments.resume_layout.state import (  # phase-1 split
+from tests.experiments.resume_layout.state import (
     C2LayoutState,
     StateModel,
     StyleToken,

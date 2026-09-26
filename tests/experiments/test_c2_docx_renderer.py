@@ -25,38 +25,48 @@ from pathlib import Path
 import pytest
 
 from tests.experiments.c2_docx_renderer import (
-    MAX_FITTING_ITERATIONS,
+    binding_review_rows,
+    run_pair,
+)
+from tests.experiments.docx_lane.build import (
     FitAdjustments,
+    MAX_FITTING_ITERATIONS,
     SectionFit,
     _strip_leading_marker_glyphs,
     _style_of,
-    binding_review_rows,
     build_document,
-    compare_geometry,
-    compare_colors,
     content_accounting,
-    conversion_compatibility_report,
     deterministic_docx_bytes,
     expected_reading_order,
     expected_visual_rows,
-    compare_colors,
-    fit_docx,
-    installed_font_families,
     inspect_docx,
-    map_rendered_to_expected,
+    installed_font_families,
     reading_order_gate,
     resolve_written_fonts,
-    run_pair,
     strip_presentation_marker,
+)
+from tests.experiments.docx_lane.measure import (
+    compare_colors,
+    compare_geometry,
+    conversion_compatibility_report,
+    fit_docx,
+    map_rendered_to_expected,
     typography_tables,
 )
-from tests.experiments.c2_renderer import LeafText, compile_render_plan, render_html
+from tests.experiments.resume_layout.html import render_html
+from tests.experiments.resume_layout.plan import (
+    LeafText,
+    compile_render_plan,
+)
 from tests.experiments.test_c2_pipeline import (
     BULLET_TIERS,
     FULL_COVERAGE_LABELS,
     compile_synthetic,
 )
-from tests.experiments.test_c2_renderer import _leaf, rich_candidate
+from tests.experiments.test_c2_renderer import (
+    _leaf,
+    rich_candidate,
+)
 
 
 def _state_and_plan(labels: list[str] | None = None):
@@ -124,7 +134,7 @@ def test_native_bullet_markers_convert_in_the_docx_and_accounting(tmp_path: Path
         ]
         return candidate.model_copy(update={"leaves": leaves})
 
-    from tests.experiments.c2_docx_renderer import expected_paragraphs
+    from tests.experiments.docx_lane.build import expected_paragraphs
 
     for prefix, rendered_start in (("•", "Did candidate work"), ("–", "Did candidate work"), ("→", "→ Did candidate work")):
         state, plan, path, inspection, accounting = _full_pipeline(
@@ -168,12 +178,16 @@ def test_package_opens_and_carries_native_structures(tmp_path: Path) -> None:
     ]
     # Measured bullet designs become real Word list paragraphs (entry
     # bullets and bulleted item lists alike), in document order.
-    expected_paragraphs = __import__(
-        "tests.experiments.c2_docx_renderer", fromlist=["expected_paragraphs"]
-    ).expected_paragraphs(plan)
+    # Owner-module import: the previous
+    # `__import__("tests.experiments.c2_docx_renderer", fromlist=[...])` reached a
+    # re-export removed by the facade collapse. A string-based dynamic import is
+    # invisible to AST tooling, which is how it survived the rewrite.
+    from tests.experiments.docx_lane.build import expected_paragraphs
+
+    expected = expected_paragraphs(plan)
     expected_bullets = [
         paragraph["text"]
-        for paragraph in expected_paragraphs
+        for paragraph in expected
         if paragraph["kind"] == "bullet" or paragraph.get("native_bullet")
     ]
     assert inspection["list_paragraphs"] == expected_bullets
@@ -473,7 +487,7 @@ def test_unsupported_features_require_explicit_owner_confirmation(tmp_path: Path
 def test_a_failed_plan_refuses_docx_compilation() -> None:
     import pytest
 
-    from tests.experiments.c2_pipeline import SectionContent
+    from tests.experiments.resume_layout.state import SectionContent
 
     state, _ = _state_and_plan()
     broken = state.model_copy(deep=True)
@@ -974,7 +988,7 @@ def test_wrong_entry_column_x_and_metadata_right_edge_fail() -> None:
 
 
 def test_wrong_bullet_indent_and_heading_rule_gap_fail() -> None:
-    from tests.experiments.c2_docx_renderer import compare_geometry
+    from tests.experiments.docx_lane.measure import compare_geometry
     from tests.experiments.test_c2_renderer import _shape_summary
 
     summary = _shape_summary()
@@ -1377,7 +1391,12 @@ def _colored_state(colors: list[str | None], header_colors: dict[str, str] | Non
     """A synthetic state whose heading scaffolds (and optionally header rows)
     carry measured colors — the Resume-D shape without any pair-specific code."""
     from tests.experiments.c2_pipeline import state_from_scaffolds
-    from tests.experiments.test_c2_pipeline import BODY, HEADER, SUMMARY, TARGET_SHA
+    from tests.experiments.test_c2_pipeline import (
+        BODY,
+        HEADER,
+        SUMMARY,
+        TARGET_SHA,
+    )
 
     body = BODY.model_copy(update={
         "headings": [
@@ -1460,7 +1479,7 @@ def test_docx_writes_native_w_color_run_values(tmp_path: Path) -> None:
 
 
 def test_html_emits_the_same_measured_color_intent() -> None:
-    from tests.experiments.c2_renderer import render_html
+    from tests.experiments.resume_layout.html import render_html
 
     state = _colored_state(
         colors=["#B50013"] + [None] * (len(FULL_COVERAGE_LABELS) - 1),
@@ -1490,7 +1509,13 @@ def _heading_row(node: str, style_id: str, color: str | None) -> dict:
 
 def test_rendered_color_measured_from_pdf_and_compared() -> None:
     from tests.experiments.c2_pipeline import state_from_scaffolds
-    from tests.experiments.test_c2_pipeline import BULLET_TIERS, BODY, HEADER, SUMMARY, TARGET_SHA
+    from tests.experiments.test_c2_pipeline import (
+        BODY,
+        BULLET_TIERS,
+        HEADER,
+        SUMMARY,
+        TARGET_SHA,
+    )
     from tests.experiments.c2_renderer import _pdf_color_hex
 
     # pdfplumber color normalization is deterministic (gray/RGB/CMYK).
@@ -1554,7 +1579,7 @@ def test_unmeasured_color_fallback_is_adjusted_never_exact() -> None:
 def test_gold_and_green_rule_colors_are_verified_from_rendered_output() -> None:
     from types import SimpleNamespace
 
-    from tests.experiments.c2_pipeline import RuleDecoration
+    from tests.experiments.resume_layout.state import RuleDecoration
 
     state = _colored_state(colors=[None] * len(FULL_COVERAGE_LABELS))
     state = state.model_copy(update={"rules": [
@@ -1616,7 +1641,10 @@ def _styled_line_plan():
     """The full-coverage plan with the summary paragraph rendered as ordered
     styled runs (the C2-0cC capability proof: candidate-owned text split into
     ordered runs bound to template-owned measured style tokens)."""
-    from tests.experiments.c2_renderer import StyledLine, StyledRun
+    from tests.experiments.resume_layout.plan import (
+        StyledLine,
+        StyledRun,
+    )
 
     state, plan = _state_and_plan()
     section = next(s for s in plan.sections if s.node_id == "section.01")
@@ -1637,7 +1665,7 @@ def _styled_line_plan():
 
 
 def test_ordered_styled_runs_preserve_text_order_color_bold_editability(tmp_path: Path) -> None:
-    from tests.experiments.c2_renderer import render_html
+    from tests.experiments.resume_layout.html import render_html
 
     state, plan = _styled_line_plan()
     document = build_document(state, plan)
@@ -1777,7 +1805,10 @@ def test_geometry_row_carries_visible_rhythm_provenance() -> None:
 
 def _with_grid(state, columns: int = 2, split_x: float = 300.0):
     """Attach a measured category grid to the skills section (synthetic offline)."""
-    from tests.experiments.c2_pipeline import CategoryGrid, CategoryGridColumn
+    from tests.experiments.resume_layout.state import (
+        CategoryGrid,
+        CategoryGridColumn,
+    )
 
     grid_section = next(
         node.node_id for node in state.nodes
@@ -1859,12 +1890,15 @@ def test_category_grid_detection_pure() -> None:
 
 
 def test_grid_state_validator_scope() -> None:
-    from tests.experiments.c2_pipeline import validate_layout_state, CategoryGrid
+    from tests.experiments.resume_layout.state import (
+        CategoryGrid,
+        validate_layout_state,
+    )
     from pydantic import ValidationError
 
     state = compile_synthetic(["TECHNICAL SKILLS"])
     heading = next(n for n in state.nodes if n.node_id == "section.01.heading")
-    from tests.experiments.c2_pipeline import LayoutNode
+    from tests.experiments.resume_layout.state import LayoutNode
     with pytest.raises(ValidationError):
         LayoutNode(
             **{**heading.model_dump(), "category_grid": {
@@ -1878,7 +1912,7 @@ def test_grid_state_validator_scope() -> None:
 
 
 def test_plan_binds_candidate_groups_row_major_to_measured_grid() -> None:
-    from tests.experiments.c2_renderer import compile_render_plan
+    from tests.experiments.resume_layout.plan import compile_render_plan
 
     state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]))
     candidate = rich_candidate(include_unmatched=False)
@@ -1974,7 +2008,7 @@ def test_grid_geometry_rows_offline(tmp_path: Path) -> None:
 def test_adaptation_action_and_status_are_separate_fields() -> None:
     from pydantic import ValidationError
 
-    from tests.experiments.c2_renderer import SectionAdaptation
+    from tests.experiments.resume_layout.plan import SectionAdaptation
 
     record = SectionAdaptation(
         decision_id="adapt.section.01",
@@ -2110,9 +2144,7 @@ def test_no_grid_sections_emit_no_adaptation_decision() -> None:
 
 
 def test_grid_preflight_is_metric_driven_not_char_count() -> None:
-    from tests.experiments.c2_renderer import (
-        category_grid_preflight,
-    )
+    from tests.experiments.resume_layout.plan import category_grid_preflight
 
     state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]), split_x=120.0)
     section = next(n for n in state.nodes if n.category_grid)
@@ -2171,7 +2203,7 @@ def test_extremely_long_final_value_cannot_preserve_grid_topology() -> None:
     """C2-0eB-R capacity hole: a very long LAST-ROW value once received
     preserve_target_topology while visibly overflowing. The finite measured
     wrap capacity now fails it into the existing single-column fallback."""
-    from tests.experiments.c2_renderer import compile_render_plan
+    from tests.experiments.resume_layout.plan import compile_render_plan
 
     base = rich_candidate(include_unmatched=False)
     # The final skill leaf carries an extremely long value (its greedy
@@ -2208,7 +2240,7 @@ def test_extremely_long_final_value_cannot_preserve_grid_topology() -> None:
 def test_candidate_rows_exceeding_measured_grid_capacity_fall_back() -> None:
     """C2-0eB-R capacity hole: the candidate may not use more grid rows than
     the measured target grid carries."""
-    from tests.experiments.c2_renderer import (
+    from tests.experiments.resume_layout.plan import (
         category_grid_preflight,
         compile_render_plan,
     )
@@ -2253,10 +2285,8 @@ def test_candidate_rows_exceeding_measured_grid_capacity_fall_back() -> None:
 
 
 def test_document_review_result_sparse_and_ready_classifications() -> None:
-    from tests.experiments.c2_docx_renderer import (
-        SPARSE_TRAILING_PAGE_FRACTION,
-        document_review_result,
-    )
+    from tests.experiments.docx_lane.build import SPARSE_TRAILING_PAGE_FRACTION
+    from tests.experiments.docx_lane.measure import document_review_result
 
     ready = document_review_result({"page_count": 1, "sparse_trailing_page": None})
     assert ready.status == "ready" and ready.reason_code == "no_sparse_trailing_page"
@@ -2298,7 +2328,7 @@ def test_document_review_result_sparse_and_ready_classifications() -> None:
 def test_review_classification_is_post_render_and_cannot_mutate_a_plan() -> None:
     import inspect as _inspect
 
-    from tests.experiments.c2_docx_renderer import document_review_result
+    from tests.experiments.docx_lane.measure import document_review_result
 
     # The classifier consumes ONLY rendered evidence — no plan/state/candidate
     # input exists through which it could mutate or re-render anything.
@@ -2360,7 +2390,7 @@ def _wrapped_last_row_fixture(intrude: bool):
     value (passes the coarse whole-page rejection bound pre-render). The fake
     rendered geometry either ends before the next visible section with the
     measured gap, or intrudes into it."""
-    from tests.experiments.c2_renderer import compile_render_plan
+    from tests.experiments.resume_layout.plan import compile_render_plan
 
     state = _with_grid(compile_synthetic(), split_x=160.0)
     # The next VISIBLE section (section.04) gets a measured heading gap so
@@ -2458,7 +2488,7 @@ def wrapped_evidence_matches(wrapped_evidence: list[str], decision: object) -> b
 
 
 def test_wrapped_last_row_grid_verifies_when_rendered_output_fits() -> None:
-    from tests.experiments.c2_docx_renderer import verify_rendered_grids
+    from tests.experiments.docx_lane.measure import verify_rendered_grids
 
     state, plan, rendered_geometry = _wrapped_last_row_fixture(intrude=False)
     result = verify_rendered_grids(state, plan, rendered_geometry)
@@ -2475,7 +2505,7 @@ def test_wrapped_last_row_grid_verifies_when_rendered_output_fits() -> None:
 
 
 def test_wrapped_last_row_intruding_into_next_section_is_not_verified() -> None:
-    from tests.experiments.c2_docx_renderer import verify_rendered_grids
+    from tests.experiments.docx_lane.measure import verify_rendered_grids
 
     state, plan, rendered_geometry = _wrapped_last_row_fixture(intrude=True)
     result = verify_rendered_grids(state, plan, rendered_geometry)
@@ -2489,7 +2519,7 @@ def test_wrapped_last_row_intruding_into_next_section_is_not_verified() -> None:
 
 
 def test_fallback_grid_decision_is_not_applicable_to_rendered_verification() -> None:
-    from tests.experiments.c2_docx_renderer import verify_rendered_grids
+    from tests.experiments.docx_lane.measure import verify_rendered_grids
 
     state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]), split_x=120.0)
     plan = compile_render_plan(state, rich_candidate(include_unmatched=False))
@@ -2507,7 +2537,7 @@ def test_fallback_grid_decision_is_not_applicable_to_rendered_verification() -> 
 
 
 def test_unmeasurable_rendered_relationship_is_unverified_not_success() -> None:
-    from tests.experiments.c2_docx_renderer import verify_rendered_grids
+    from tests.experiments.docx_lane.measure import verify_rendered_grids
 
     state, plan, _ = _wrapped_last_row_fixture(intrude=False)
     # The next visible section's heading cannot be located in the preview:
@@ -2546,7 +2576,7 @@ def _appended_after_grid_fixture(intrude: bool, set_gap: bool = True):
     section follows the grid; the fake rendered geometry either ends before the
     appended heading with the renderer's median measured rhythm gap, or
     intrudes into it."""
-    from tests.experiments.c2_renderer import compile_render_plan
+    from tests.experiments.resume_layout.plan import compile_render_plan
 
     state = _with_grid(compile_synthetic(["TECHNICAL SKILLS"]), split_x=160.0)
     if set_gap:
@@ -2630,7 +2660,10 @@ def _all_other_gates_pass() -> dict[str, bool]:
 def test_grid_verification_failure_fails_overall_hard_gates() -> None:
     """Regression: all OTHER hard gates pass, rendered grid verification fails
     -> the overall hard-gate decision must still FAIL."""
-    from tests.experiments.c2_docx_renderer import grid_verification_gate, verify_rendered_grids
+    from tests.experiments.docx_lane.measure import (
+        grid_verification_gate,
+        verify_rendered_grids,
+    )
 
     state, plan, rendered_geometry, _ = _appended_after_grid_fixture(intrude=True)
     grid_verification = verify_rendered_grids(state, plan, rendered_geometry)
@@ -2646,7 +2679,10 @@ def test_grid_verification_failure_fails_overall_hard_gates() -> None:
 
 
 def test_grid_gate_verified_fallback_and_no_grid_cases() -> None:
-    from tests.experiments.c2_docx_renderer import grid_verification_gate, verify_rendered_grids
+    from tests.experiments.docx_lane.measure import (
+        grid_verification_gate,
+        verify_rendered_grids,
+    )
 
     # VERIFIED preserved grid -> gate passes.
     state, plan, rendered_geometry, _ = _appended_after_grid_fixture(intrude=False)
@@ -2680,7 +2716,10 @@ def test_grid_gate_verified_fallback_and_no_grid_cases() -> None:
 def test_appended_candidate_only_section_following_grid_is_next_section() -> None:
     """The next-visible-section lookup must include an APPENDED candidate-only
     section when it follows a preserved grid (real renderer emission order)."""
-    from tests.experiments.c2_docx_renderer import grid_verification_gate, verify_rendered_grids
+    from tests.experiments.docx_lane.measure import (
+        grid_verification_gate,
+        verify_rendered_grids,
+    )
 
     # Non-intruding: the appended heading sits exactly one median measured
     # rhythm gap (10.0pt) below the grid -> VERIFIED with the appended basis.
@@ -2711,7 +2750,7 @@ def test_appended_next_section_without_gap_basis_is_unverified_never_success() -
     """No trustworthy gap basis -> verify what CAN be measured (page, intact
     words, non-overlap) and mark the missing spacing claim UNVERIFIED; never
     invent a target gap; never pass silently."""
-    from tests.experiments.c2_docx_renderer import verify_rendered_grids
+    from tests.experiments.docx_lane.measure import verify_rendered_grids
 
     state, plan, rendered_geometry, _ = _appended_after_grid_fixture(
         intrude=False, set_gap=False
@@ -2730,7 +2769,7 @@ def test_appended_next_section_without_gap_basis_is_unverified_never_success() -
 
 
 def test_unmapped_appended_next_heading_is_unverified_not_silent_pass() -> None:
-    from tests.experiments.c2_docx_renderer import verify_rendered_grids
+    from tests.experiments.docx_lane.measure import verify_rendered_grids
 
     state, plan, rendered_geometry, next_plan = _appended_after_grid_fixture(
         intrude=False, set_gap=False
@@ -2801,8 +2840,8 @@ def _cross_page_rendered(state, plan, last_node: str):
 
 
 def test_cross_page_section_gap_is_unmeasurable_and_not_fit_adjustable() -> None:
-    from tests.experiments.c2_docx_renderer import (
-        FitAdjustments,
+    from tests.experiments.docx_lane.build import FitAdjustments
+    from tests.experiments.docx_lane.measure import (
         apply_measured_deltas,
         compare_geometry,
     )
@@ -2834,8 +2873,8 @@ def test_cross_page_section_gap_is_unmeasurable_and_not_fit_adjustable() -> None
 
 
 def test_same_page_gap_failure_still_produces_the_expected_correction() -> None:
-    from tests.experiments.c2_docx_renderer import (
-        FitAdjustments,
+    from tests.experiments.docx_lane.build import FitAdjustments
+    from tests.experiments.docx_lane.measure import (
         apply_measured_deltas,
         compare_geometry,
     )
@@ -2877,7 +2916,10 @@ def test_same_page_gap_failure_still_produces_the_expected_correction() -> None:
 
 
 def _nested_docx_candidate(bullet_counts: tuple[int, ...], titles: tuple[str, ...], *, with_meta: bool, long_bullet: bool = False) -> "object":
-    from tests.experiments.c2_pipeline import CandidateDocument, CandidateLeaf
+    from tests.experiments.resume_layout.candidates import (
+        CandidateDocument,
+        CandidateLeaf,
+    )
 
     def leaf(leaf_id: str, kind: str, source: str | None = None, **kwargs: object) -> CandidateLeaf:
         if "parent" in kwargs:

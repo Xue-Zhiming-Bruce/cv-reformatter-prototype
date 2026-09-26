@@ -34,8 +34,16 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, NamedTuple, Sequence
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from tests.experiments.a_pipeline import ROOT, _render_pages
-from tests.experiments.d_pipeline import RunBudget, RunTrace
+from tests.experiments.a_pipeline import (
+    ROOT,
+    _render_pages,
+)
+from tests.experiments.d_pipeline import (
+    RunBudget,
+    RunTrace,
+)
+
+from tests.experiments.d_pipeline import _live_model
 
 POD_SCHEMA_VERSION = "pipeline-e-evidence-pod/1"
 DRAFT_SCHEMA_VERSION = "pipeline-e-structure-draft/1"
@@ -1402,7 +1410,6 @@ def _live_visual_model() -> Any:
             openai_client=AsyncOpenAI(api_key=key, base_url=base, timeout=300)
         )
         return OpenAIChatModel(model_name, provider=provider)
-    from tests.experiments.d_pipeline import _live_model
 
     return _live_model()
 

@@ -27,6 +27,9 @@ import pytest
 
 import tests.experiments.e_pipeline as e
 from tests.experiments.d_pipeline import RunBudget
+import tests.experiments.e.shared as e_shared
+import tests.experiments.e.stages as e_stages
+import tests.experiments.d_pipeline as d_pipeline
 
 ROOT = Path(__file__).resolve().parents[2]
 RESUME_I = ROOT / "tests/local_datasets/resume_matrix/resume_I.pdf"
@@ -56,7 +59,7 @@ def _pod(tmp_path: Path, *, with_normalized: bool = True, raw: dict | None = Non
         normalized = NormalizedLayoutEvidence.model_validate_json(
             RESUME_I_NORMALIZED.read_text(encoding="utf-8")
         )
-    return e.EvidencePod(RESUME_I, raw_path, tmp_path, normalized=normalized)
+    return e_shared.EvidencePod(RESUME_I, raw_path, tmp_path, normalized=normalized)
 
 
 def _minimal_raw() -> dict:
@@ -78,7 +81,7 @@ def _minimal_raw() -> dict:
 
 
 def test_coverage_audit_separates_normalization_loss_from_missing_extraction() -> None:
-    audit = e.audit_evidence_coverage(_minimal_raw()["structured_data"], ["KEPT"])
+    audit = e_shared.audit_evidence_coverage(_minimal_raw()["structured_data"], ["KEPT"])
     assert audit["raw_text_leaf_count"] == 2
     assert audit["raw_leaves_present_in_normalized"] == 1
     assert audit["raw_leaves_absent_from_normalized"] == 1
@@ -93,7 +96,7 @@ def test_coverage_audit_counts_textless_leaves_separately() -> None:
     raw["structured_data"]["elements"].append(
         {"Path": "//Document/Sect/Figure", "Page": 0, "ObjectID": 3, "HasClip": True}
     )
-    audit = e.audit_evidence_coverage(raw["structured_data"], ["KEPT"])
+    audit = e_shared.audit_evidence_coverage(raw["structured_data"], ["KEPT"])
     assert audit["textless_leaf_count"] == 1
     assert audit["textless_leaves"][0]["path"] == "//Document/Sect/Figure"
     assert audit["raw_leaves_absent_from_normalized"] == 1
@@ -103,7 +106,7 @@ def test_coverage_audit_does_not_count_font_metadata_as_missing_objects() -> Non
     raw = _minimal_raw()
     raw["structured_data"]["elements"][0]["Font"] = {"family_name": "Avenir", "weight": 600}
     raw["structured_data"]["elements"][0]["attrs"] = {"LineHeight": 12.0}
-    audit = e.audit_evidence_coverage(raw["structured_data"], ["KEPT"])
+    audit = e_shared.audit_evidence_coverage(raw["structured_data"], ["KEPT"])
     # Font/attribute sub-dicts are not document objects and must not inflate the count.
     assert audit["textless_leaf_count"] == 0
     assert "conservative lower bound" in audit["count_caveat"]
@@ -227,7 +230,7 @@ def test_local_measurement_is_provenanced_and_not_an_analyzer_fallback(tmp_path:
     result = pod.measure_local_pdf(page_number=1, include="rules")
     assert result["provenance"] == "local_pdf"
     assert result["is_analyzer_fallback"] is False
-    assert result["source_sha256"] == e._sha256_file(RESUME_I)
+    assert result["source_sha256"] == e_shared._sha256_file(RESUME_I)
     rules = result["pages"]["1"]["rules"]
     for rule in rules:
         assert rule["provenance"] == "local_pdf"
@@ -251,7 +254,7 @@ def test_unavailable_record_requires_a_reason() -> None:
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError, match="requires a reason"):
-        e.EvidenceAccessRecord(
+        e_shared.EvidenceAccessRecord(
             evidence_id="ev.x",
             kind="region_crop",
             provider="pypdfium2",
@@ -263,11 +266,11 @@ def test_bbox_evidence_ref_requires_four_numbers() -> None:
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError, match=r"\[x0, top, x1, bottom\]"):
-        e.EvidenceRef(evidence_id="ev.x", kind="region_crop", bbox_pt=[1.0, 2.0, 3.0])
+        e_shared.EvidenceRef(evidence_id="ev.x", kind="region_crop", bbox_pt=[1.0, 2.0, 3.0])
 
 
 def test_target_facts_are_marked_diagnostic_only_not_candidate_data() -> None:
-    ref = e.EvidenceRef(
+    ref = e_shared.EvidenceRef(
         evidence_id="ev.adobe.001",
         kind="adobe_element",
         page_number=2,
@@ -281,7 +284,7 @@ def test_target_facts_are_marked_diagnostic_only_not_candidate_data() -> None:
 
 
 def test_run_e1_emits_evidence_linked_draft_without_live_calls(tmp_path: Path) -> None:
-    run_dir, terminal, draft = e.run_e1(
+    run_dir, terminal, draft = e_stages.run_e1(
         RESUME_I,
         RESUME_I_RAW,
         tmp_path / "run",
@@ -320,7 +323,7 @@ def test_run_e1_emits_evidence_linked_draft_without_live_calls(tmp_path: Path) -
 
 
 def test_run_e1_artifact_has_no_lossy_normalization_substitute(tmp_path: Path) -> None:
-    run_dir, _terminal, _draft = e.run_e1(
+    run_dir, _terminal, _draft = e_stages.run_e1(
         RESUME_I,
         RESUME_I_RAW,
         tmp_path / "run",
@@ -345,7 +348,7 @@ def test_run_e1_artifact_has_no_lossy_normalization_substitute(tmp_path: Path) -
 
 
 def test_run_e1_records_unavailable_sources_as_records_not_failures(tmp_path: Path) -> None:
-    run_dir, _terminal, _draft = e.run_e1(
+    run_dir, _terminal, _draft = e_stages.run_e1(
         RESUME_I,
         RESUME_I_RAW,
         tmp_path / "run",
@@ -359,7 +362,7 @@ def test_run_e1_records_unavailable_sources_as_records_not_failures(tmp_path: Pa
 
 
 def test_run_e1_is_understanding_only_and_never_promotes(tmp_path: Path) -> None:
-    run_dir, _terminal, _draft = e.run_e1(RESUME_I, RESUME_I_RAW, tmp_path / "run")
+    run_dir, _terminal, _draft = e_stages.run_e1(RESUME_I, RESUME_I_RAW, tmp_path / "run")
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["active_layout_version_id"] == "layout_v1"
     assert manifest["pending_candidate_id"] is None
@@ -374,7 +377,7 @@ def test_run_e1_is_understanding_only_and_never_promotes(tmp_path: Path) -> None
 
 def test_run_e1_budget_counts_every_tool_call(tmp_path: Path) -> None:
     budget = RunBudget()
-    run_dir, _terminal, _draft = e.run_e1(
+    run_dir, _terminal, _draft = e_stages.run_e1(
         RESUME_I, RESUME_I_RAW, tmp_path / "run", budget=budget
     )
     manifest = json.loads((run_dir / "manifest.json").read_text())
@@ -388,50 +391,50 @@ def test_e1_stop_gate_treats_confident_ok_without_confirmation_as_needs_owner_re
 ) -> None:
     pod = _pod(tmp_path)
     pod.inspect_page_overview(1)
-    draft = e.TargetStructureDraft(
+    draft = e_shared.TargetStructureDraft(
         target_id="x",
         investigator="scripted",
         structure=[
-            e.StructuralRelation(
+            e_shared.StructuralRelation(
                 claim_id="c1",
                 relation="section_boundary",
                 statement="confident claim",
-                evidence=[e.EvidenceRef(evidence_id="ev.overview.001", kind="page_overview")],
+                evidence=[e_shared.EvidenceRef(evidence_id="ev.overview.001", kind="page_overview")],
                 confidence=0.95,
             )
         ],
         unresolved=[],
-        self_reported=e.SelfReportedStatus(status="ok"),
+        self_reported=e_shared.SelfReportedStatus(status="ok"),
     )
-    assert e.check_e1_stop_gates(draft, pod) == "needs_owner_review"
+    assert e_stages.check_e1_stop_gates(draft, pod) == "needs_owner_review"
 
 
 def test_e1_stop_gate_flags_claims_citing_uncollected_evidence(tmp_path: Path) -> None:
     pod = _pod(tmp_path)
-    draft = e.TargetStructureDraft(
+    draft = e_shared.TargetStructureDraft(
         target_id="x",
         investigator="scripted",
         structure=[
-            e.StructuralRelation(
+            e_shared.StructuralRelation(
                 claim_id="c1",
                 relation="ownership",
                 statement="cites evidence that was never collected",
-                evidence=[e.EvidenceRef(evidence_id="ev.nope.999", kind="region_crop")],
+                evidence=[e_shared.EvidenceRef(evidence_id="ev.nope.999", kind="region_crop")],
                 confidence=0.5,
             )
         ],
         unresolved=[],
-        self_reported=e.SelfReportedStatus(status="partial"),
+        self_reported=e_shared.SelfReportedStatus(status="partial"),
     )
-    assert e.check_e1_stop_gates(draft, pod) == "needs_owner_review"
+    assert e_stages.check_e1_stop_gates(draft, pod) == "needs_owner_review"
 
 
 def test_frozen_case_hashes_the_inputs_before_inspection(tmp_path: Path) -> None:
     raw_path = tmp_path / "raw.json"
     raw_path.write_text(json.dumps(_minimal_raw()), encoding="utf-8")
-    case = e.freeze_cases(RESUME_I, raw_path, role="diagnostic_known", case_id="resume_I")
-    assert case.target_sha256 == e._sha256_file(RESUME_I)
-    assert case.adobe_json_sha256 == e._sha256_file(raw_path)
+    case = e_shared.freeze_cases(RESUME_I, raw_path, role="diagnostic_known", case_id="resume_I")
+    assert case.target_sha256 == e_shared._sha256_file(RESUME_I)
+    assert case.adobe_json_sha256 == e_shared._sha256_file(raw_path)
     assert case.page_count == 1
     assert case.label_status == "pending_human_annotation"
     assert "no human" in case.notes
@@ -641,7 +644,7 @@ e2_skip = pytest.mark.skipif(
 
 def test_repair_proposal_rejects_candidate_fact_mutation() -> None:
     with pytest.raises(ValueError, match="candidate fact mutation is forbidden"):
-        e.RepairProposal(
+        e_stages.RepairProposal(
             finding_id="f1",
             base_render_version="render-resume_F-v1",
             layer="state_style",
@@ -654,7 +657,7 @@ def test_repair_proposal_rejects_candidate_fact_mutation() -> None:
 
 def test_repair_proposal_rejects_unbounded_mutations() -> None:
     with pytest.raises(ValueError, match="non-zero gap_delta_pt"):
-        e.RepairProposal(
+        e_stages.RepairProposal(
             finding_id="f1",
             base_render_version="v1",
             layer="plan_entry_gap",
@@ -663,7 +666,7 @@ def test_repair_proposal_rejects_unbounded_mutations() -> None:
             agent="scripted",
         )
     with pytest.raises(ValueError, match="requires style_updates"):
-        e.RepairProposal(
+        e_stages.RepairProposal(
             finding_id="f1",
             base_render_version="v1",
             layer="state_style",
@@ -679,11 +682,11 @@ def test_role_gap_measurement_binds_actual_final_pdf_content(tmp_path: Path) -> 
         json.dumps(json.loads((TARGET_F_CACHE / "adobe_raw.json").read_text())),
         encoding="utf-8",
     )
-    pod = e.DualSourcePod(TARGET_F, raw_path, tmp_path, render_pdf=None)
-    budget = e.RunBudget(max_model_requests=4, max_tool_calls=48)
-    trace = e.RunTrace(tmp_path)
-    controller = e.MeasureController(pod, budget, trace)
-    request = e.MeasurementRequest(
+    pod = e_shared.DualSourcePod(TARGET_F, raw_path, tmp_path, render_pdf=None)
+    budget = d_pipeline.RunBudget(max_model_requests=4, max_tool_calls=48)
+    trace = d_pipeline.RunTrace(tmp_path)
+    controller = e_stages.MeasureController(pod, budget, trace)
+    request = e_shared.MeasurementRequest(
         request_id="measure-001",
         metric="role_gap",
         page=1,
@@ -708,11 +711,11 @@ def test_measurement_evidence_missing_is_recorded_not_faked(tmp_path: Path) -> N
         json.dumps(json.loads((TARGET_F_CACHE / "adobe_raw.json").read_text())),
         encoding="utf-8",
     )
-    pod = e.DualSourcePod(TARGET_F, raw_path, tmp_path, render_pdf=None)
-    budget = e.RunBudget(max_model_requests=4, max_tool_calls=48)
-    trace = e.RunTrace(tmp_path)
-    controller = e.MeasureController(pod, budget, trace)
-    request = e.MeasurementRequest(
+    pod = e_shared.DualSourcePod(TARGET_F, raw_path, tmp_path, render_pdf=None)
+    budget = d_pipeline.RunBudget(max_model_requests=4, max_tool_calls=48)
+    trace = d_pipeline.RunTrace(tmp_path)
+    controller = e_stages.MeasureController(pod, budget, trace)
+    request = e_shared.MeasurementRequest(
         request_id="measure-002",
         metric="role_gap",
         page=1,
@@ -730,7 +733,7 @@ def test_measurement_evidence_missing_is_recorded_not_faked(tmp_path: Path) -> N
 def test_run_e2_delivers_verified_repair_with_versions_and_repeat_measurement(
     tmp_path: Path,
 ) -> None:
-    run_dir, terminal, record = e.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
     assert terminal == "ready_for_owner_review"
     versions = record["render_versions"]
     assert len(versions) >= 2  # first render + at least one repaired candidate
@@ -757,7 +760,7 @@ def test_run_e2_delivers_verified_repair_with_versions_and_repeat_measurement(
 
 @e2_skip
 def test_run_e2_findings_bind_exact_versions(tmp_path: Path) -> None:
-    run_dir, _terminal, record = e.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, _terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
     target_id = record["target_id"]
     for finding in record["findings"]:
         assert finding["target_version"] == target_id
@@ -769,7 +772,7 @@ def test_run_e2_findings_bind_exact_versions(tmp_path: Path) -> None:
 
 @e2_skip
 def test_run_e2_failed_repair_is_rolled_back_and_best_is_preserved(tmp_path: Path) -> None:
-    run_dir, _terminal, record = e.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, _terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
     # The second scripted attempt repeats the first action with the same
     # evidence; the shell rejects/rolls it back instead of promoting it.
     non_improving = [s for s in record["attempted_strategies"] if "rolled_back" in s]
@@ -783,7 +786,7 @@ def test_run_e2_failed_repair_is_rolled_back_and_best_is_preserved(tmp_path: Pat
 def test_run_e2_repeats_the_identical_measurement_request_after_repair(
     tmp_path: Path,
 ) -> None:
-    run_dir, _terminal, record = e.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, _terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
     trace = json.loads((run_dir / "trace.json").read_text())
     measurements = [
         json.loads((run_dir / entry["output_artifact"]).read_text())
@@ -807,8 +810,8 @@ def test_run_e2_never_stops_on_stall_but_returns_budget_exhausted_when_budget_en
     # Exhausted model budget BEFORE the loop: the run must end budget_exhausted
     # (never success/unsupported), preserve resumable state, and record the
     # blocked strategy — a stall is an escalation signal, not a terminal.
-    budget = e.RunBudget(max_model_requests=0, max_tool_calls=48)
-    run_dir, terminal, record = e.run_e2(TARGET_F, tmp_path / "run", budget=budget)
+    budget = d_pipeline.RunBudget(max_model_requests=0, max_tool_calls=48)
+    run_dir, terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run", budget=budget)
     assert terminal == "budget_exhausted"
     assert record["summary"]["best_render_version"] is None or record["summary"]
     manifest = json.loads((run_dir / "manifest.json").read_text())
@@ -828,7 +831,7 @@ def test_run_e2_operational_abort_returns_typed_state(
         raise RuntimeError("chrome unavailable")
 
     monkeypatch.setattr(legacy, "pinned_export_environment", fail_environment)
-    run_dir, terminal, record = e.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
     assert terminal == "operational_abort"
     assert record["schema_version"] == "pipeline-e-e2-state/1"
     assert record["summary"]["abort"]["operation"] == "pinned_chrome_environment"
@@ -837,7 +840,7 @@ def test_run_e2_operational_abort_returns_typed_state(
 
 @e2_skip
 def test_run_e2_target_person_facts_cannot_enter_candidate_output(tmp_path: Path) -> None:
-    run_dir, _terminal, record = e.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, _terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
     best = record["best_render_version"]
     manifest = json.loads((run_dir / "manifest.json").read_text())
     best_entry = next(v for v in manifest["versions"] if v["id"] == best)
@@ -851,7 +854,7 @@ def test_run_e2_target_person_facts_cannot_enter_candidate_output(tmp_path: Path
 
 @e2_skip
 def test_run_e2_best_render_is_owner_reviewable_and_probes_pass(tmp_path: Path) -> None:
-    run_dir, terminal, record = e.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
     best = record["best_render_version"]
     manifest = json.loads((run_dir / "manifest.json").read_text())
     best_entry = next(v for v in manifest["versions"] if v["id"] == best)
@@ -867,7 +870,7 @@ def test_run_e2_best_render_is_owner_reviewable_and_probes_pass(tmp_path: Path) 
 
 @e2_skip
 def test_run_e2_no_target_specific_rules_and_frozen_chain_reuse(tmp_path: Path) -> None:
-    run_dir, _terminal, record = e.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, _terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
     state = json.loads((run_dir / "c2_layout_state.json").read_text())
     assert state["schema_version"] == "layout-state/1"
     assert state["provenance"]["provider"] == "adobe"
@@ -880,7 +883,7 @@ def test_run_e2_no_target_specific_rules_and_frozen_chain_reuse(tmp_path: Path) 
 def test_run_e2_reviewer_cannot_approve_its_own_repair(tmp_path: Path) -> None:
     """No model promotes: the shell (not the reviewer) promotes a repaired
     candidate, and the reviewer/repair roles are distinct agents."""
-    run_dir, _terminal, record = e.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, _terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
     trace = json.loads((run_dir / "trace.json").read_text())
     finding_agents = {entry["agent"] for entry in trace if entry.get("action") == "finding"}
     proposal_agents = {entry["agent"] for entry in trace if entry.get("action") == "proposal"}
@@ -895,7 +898,7 @@ def test_run_e2_reviewer_cannot_approve_its_own_repair(tmp_path: Path) -> None:
 def test_run_e2_measurements_inspect_real_final_content_not_probes(tmp_path: Path) -> None:
     """§9 rule 1: measurements inspect the final PDF the owner sees; method
     provenance names the pdfplumber word-row method and carries the page."""
-    run_dir, _terminal, record = e.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, _terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
     for result in record["measurement_results"]:
         assert result["method"].startswith("pdfplumber_word_rows_role_gap/")
         assert result["status"] in {
@@ -942,7 +945,7 @@ def test_measure_sidebar_headings_are_generic_and_evidence_linked(tmp_path: Path
     from tests.experiments.a_pipeline import build_format_summary
 
     summary = build_format_summary(ev, json.loads(raw_path.read_text()), TARGET_I)
-    labels = e.measure_sidebar_headings(TARGET_I, summary)
+    labels = e_stages.measure_sidebar_headings(TARGET_I, summary)
     # The clustered sidebar-label evidence recovers the section boundaries
     # (9 measured labels across the page break) without target-specific code.
     assert len(labels) == 9
@@ -967,13 +970,13 @@ def test_compile_two_column_state_is_valid_and_candidate_safe(tmp_path: Path) ->
     from tests.experiments.a_pipeline import build_format_summary
 
     summary = build_format_summary(ev, json.loads(raw_path.read_text()), TARGET_I)
-    state, derived = e.compile_two_column_state(TARGET_I, summary, ev)
+    state, derived = e_stages.compile_two_column_state(TARGET_I, summary, ev)
     from tests.experiments.resume_layout.state import validate_layout_state
 
     assert validate_layout_state(state) == []
     assert state.schema_version == "layout-state/1"
     assert state.provenance.provider == "adobe"
-    assert state.provenance.target_sha256 == e._sha256_file(TARGET_I)
+    assert state.provenance.target_sha256 == e_shared._sha256_file(TARGET_I)
     # 9 evidence-linked section claims; unresolved bindings never carry sources.
     sections = [node for node in state.nodes if node.kind == "section"]
     assert len(sections) == 9
@@ -1003,11 +1006,11 @@ def test_terminal_rename_ready_for_owner_review_reserved_delivered(tmp_path: Pat
 
 @e3_skip
 def test_run_e3_walkthrough_records_the_loop_trajectory(tmp_path: Path) -> None:
-    run_dir, terminal, record = e.run_e3(TARGET_I, tmp_path / "run")
+    run_dir, terminal, record = e_stages.run_e3(TARGET_I, tmp_path / "run")
     assert terminal in {"ready_for_owner_review", "budget_exhausted"}
     # Frozen inputs before examination: hashes + run config persisted.
     frozen = json.loads((run_dir / "frozen_case.json").read_text())
-    assert frozen["target_sha256"] == e._sha256_file(TARGET_I)
+    assert frozen["target_sha256"] == e_shared._sha256_file(TARGET_I)
     config = json.loads((run_dir / "run_config.json").read_text())
     assert config["target_sha256"] == frozen["target_sha256"]
     # The rubric reference is path+hash only, explicitly not given to agents.
@@ -1052,13 +1055,13 @@ def test_run_e3_operational_abort_never_classifies_unsupported(tmp_path: Path) -
     # Missing cached evidence → operational_abort describing the failed
     # operation, never 'unsupported'.
     with pytest.raises(RuntimeError, match="target PDF not found"):
-        e.run_e3(tmp_path / "missing.pdf", tmp_path / "run")
+        e_stages.run_e3(tmp_path / "missing.pdf", tmp_path / "run")
 
 
 @e3_skip
 def test_run_e3_tool_budget_exhaustion_is_resumable(tmp_path: Path) -> None:
-    budget = e.RunBudget(max_model_requests=6, max_tool_calls=4)
-    _run_dir, terminal, record = e.run_e3(
+    budget = d_pipeline.RunBudget(max_model_requests=6, max_tool_calls=4)
+    _run_dir, terminal, record = e_stages.run_e3(
         TARGET_I, tmp_path / "run", budget=budget, max_repair_attempts=1,
     )
     assert terminal == "budget_exhausted"
@@ -1067,7 +1070,7 @@ def test_run_e3_tool_budget_exhaustion_is_resumable(tmp_path: Path) -> None:
 
 @e3_skip
 def test_run_e3_reviewer_cannot_approve_its_own_repair(tmp_path: Path) -> None:
-    run_dir, _terminal, record = e.run_e3(TARGET_I, tmp_path / "run")
+    run_dir, _terminal, record = e_stages.run_e3(TARGET_I, tmp_path / "run")
     trace = json.loads((run_dir / "trace.json").read_text())
     finding_agents = {entry["agent"] for entry in trace if entry.get("action") == "finding"}
     proposal_agents = {entry["agent"] for entry in trace if entry.get("action") == "proposal"}
@@ -1093,7 +1096,7 @@ def test_budget_counts_live_and_scripted_calls_separately() -> None:
     with live provider calls; token usage belongs to live calls only."""
     from tests.experiments.d_pipeline import BudgetExhausted
 
-    budget = e.RunBudget(max_model_requests=3, max_tool_calls=8)
+    budget = d_pipeline.RunBudget(max_model_requests=3, max_tool_calls=8)
     budget.spend_model("visual_reviewer")  # scripted invocation (default mode)
     budget.spend_model("visual_reviewer", mode="scripted")
     class _Usage:
@@ -1112,7 +1115,7 @@ def test_budget_counts_live_and_scripted_calls_separately() -> None:
 
 def test_duplicate_unresolved_items_are_deduplicated_by_item_id() -> None:
     items = [
-        e.UnresolvedItem(
+        e_shared.UnresolvedItem(
             item_id="unresolved.same",
             question="same question",
             status="unresolved",
@@ -1121,7 +1124,7 @@ def test_duplicate_unresolved_items_are_deduplicated_by_item_id() -> None:
         )
         for _ in range(5)
     ] + [
-        e.UnresolvedItem(
+        e_shared.UnresolvedItem(
             item_id="unresolved.other",
             question="different question",
             status="unresolved",
@@ -1129,7 +1132,7 @@ def test_duplicate_unresolved_items_are_deduplicated_by_item_id() -> None:
             evidence_gap="normalization_loss",
         )
     ]
-    deduped = e._dedup_unresolved(items)
+    deduped = e_shared._dedup_unresolved(items)
     assert len(deduped) == 2
     assert len({item.item_id for item in deduped}) == 2
 
@@ -1139,7 +1142,7 @@ def test_repair_counts_agree_across_state_trace_and_report(
 ) -> None:
     """Phase 0: repair_attempt_count was 0 while a repair/rollback was
     recorded; now state, trace, budget, and evaluation report agree."""
-    run_dir, _terminal, record = e.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, _terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run")
     executed = [a for a in record["repair_attempts"] if "layer" in a]
     budget_state = record["budget_state"]
     assert budget_state["repair_attempt_count"] == len(executed)
@@ -1161,7 +1164,7 @@ def test_repair_counts_agree_across_state_trace_and_report(
         "sections_bound_to_candidate_sources": 4,
         "unresolved_items": [],
     }
-    report = e.write_evaluation_report(
+    report = e_stages.write_evaluation_report(
         run_dir,
         record,
         structure_evaluation=structure_evaluation,
@@ -1194,33 +1197,33 @@ def test_signed_provider_urls_never_enter_shareable_artifacts(
         },
         "structured_data": {"pages": [{"page": 1, "size": [612, 792]}]},
     }
-    redacted = e.redact_signed_urls(raw)
-    assert e.SIGNED_QUERY_MARKERS[0] not in json.dumps(redacted)
-    assert redacted["status"]["content"]["downloadUri"] == e.REDACTED_SIGNED_URL
+    redacted = e_shared.redact_signed_urls(raw)
+    assert e_shared.SIGNED_QUERY_MARKERS[0] not in json.dumps(redacted)
+    assert redacted["status"]["content"]["downloadUri"] == e_shared.REDACTED_SIGNED_URL
     # Useful content, IDs, geometry, provenance and hashes are preserved.
     assert redacted["status"]["content"]["size"] == 10
     assert redacted["status"]["resource"]["downloadUri"] == "https://s3.example.com/plain"
     with pytest.raises(RuntimeError, match="signed provider credential"):
-        e.assert_no_signed_strings({"a": [signed]})
+        e_shared.assert_no_signed_strings({"a": [signed]})
     # The offline run dir carries the redacted derivative only; the original
     # cache file keeps its signed content and is byte-unchanged by the run.
     original = TARGET_I_CACHE / "adobe_raw.json"
     before = original.read_bytes()
-    run_dir, _terminal, _record = e.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, _terminal, _record = e_stages.run_e4(TARGET_I, tmp_path / "run")
     run_raw = json.loads((run_dir / "adobe_raw.json").read_text())
     assert "X-Amz" not in (run_dir / "adobe_raw.json").read_text()
     assert original.read_bytes() == before
-    e.assert_no_signed_strings((run_dir / "adobe_raw.json").read_text(encoding="utf-8"))
+    e_shared.assert_no_signed_strings((run_dir / "adobe_raw.json").read_text(encoding="utf-8"))
     # The owner package is checked too (no signed credential may enter it).
     assert (run_dir / "owner_review" / "REPORT.md").exists()
 
 
 @e4_skip
 def test_run_e4_freezes_config_before_first_live_call(tmp_path: Path) -> None:
-    run_dir, terminal, record = e.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run")
     config = json.loads((run_dir / "run_config.json").read_text())
     assert config["frozen_before_first_live_call"] is True
-    assert config["target_sha256"] == e._sha256_file(TARGET_I)
+    assert config["target_sha256"] == e_shared._sha256_file(TARGET_I)
     assert config["starting_commit"]
     # Candidate input frozen by hash; the Builder can never edit candidate facts.
     assert config["candidate_input"]["sha256"]
@@ -1246,7 +1249,7 @@ def test_run_e4_freezes_config_before_first_live_call(tmp_path: Path) -> None:
 
 @e4_skip
 def test_run_e4_records_the_live_loop_trajectory(tmp_path: Path) -> None:
-    run_dir, terminal, record = e.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run")
     assert terminal in {"ready_for_owner_review", "budget_exhausted"}
     assert record["schema_version"] == "pipeline-e-e4-state/1"
     assert record["findings"] and record["measurement_results"] and record["attributions"]
@@ -1266,7 +1269,7 @@ def test_run_e4_records_the_live_loop_trajectory(tmp_path: Path) -> None:
 def test_run_e4_repeats_the_identical_measurement_after_repair(
     tmp_path: Path,
 ) -> None:
-    run_dir, _terminal, record = e.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, _terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run")
     promoted = [entry for entry in record["render_versions"] if entry["promoted"]]
     assert promoted, record["attempted_strategies"]
     wrap_results = [
@@ -1290,7 +1293,7 @@ def test_run_e4_repeats_the_identical_measurement_after_repair(
 def test_run_e4_promotes_only_verified_improvement_and_records_ceilings(
     tmp_path: Path,
 ) -> None:
-    run_dir, terminal, record = e.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run")
     promoted = [v for v in record["render_versions"] if v["promoted"]]
     if promoted:
         # A promoted defect-level repair improved its confirmed defect without
@@ -1298,7 +1301,7 @@ def test_run_e4_promotes_only_verified_improvement_and_records_ceilings(
         # gates stay recorded honestly; this test does not classify their cause.
         version_id = promoted[-1]["version_id"]
         gates = json.loads((run_dir / f"hard_gates_{version_id}.json").read_text())
-        for gate in e.CANDIDATE_FACT_GATES:
+        for gate in e_shared.CANDIDATE_FACT_GATES:
             assert gates["gates"][gate] is True
         assert terminal in {"ready_for_owner_review", "budget_exhausted"}
     assert terminal == "budget_exhausted"  # the red shape gate keeps this run resumable
@@ -1308,8 +1311,8 @@ def test_run_e4_promotes_only_verified_improvement_and_records_ceilings(
 def test_run_e4_budget_exhaustion_is_resumable_and_never_unsupported(
     tmp_path: Path,
 ) -> None:
-    budget = e.RunBudget(max_model_requests=0, max_tool_calls=48)
-    run_dir, terminal, record = e.run_e4(TARGET_I, tmp_path / "run", budget=budget)
+    budget = d_pipeline.RunBudget(max_model_requests=0, max_tool_calls=48)
+    run_dir, terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run", budget=budget)
     assert terminal == "budget_exhausted"
     state = json.loads((run_dir / "e4_state.json").read_text())
     assert state["schema_version"] == "pipeline-e-e4-state/1"
@@ -1328,14 +1331,14 @@ def test_no_unsupported_terminal_state_exists() -> None:
 
 def test_live_reviewer_and_builder_outputs_cannot_promote() -> None:
     """No agent output type can express promotion; only the shell promotes."""
-    assert "promoted" not in e.DefectFinding.model_fields
-    assert "promoted" not in e.LiveBuilderRepair.model_fields
-    assert "promoted" not in e.LiveAttributionHypothesis.model_fields
+    assert "promoted" not in e_shared.DefectFinding.model_fields
+    assert "promoted" not in e_stages.LiveBuilderRepair.model_fields
+    assert "promoted" not in e_shared.LiveAttributionHypothesis.model_fields
 
 
 def test_builder_cannot_modify_candidate_facts_or_unbounded_layers() -> None:
     with pytest.raises(ValueError, match="candidate fact mutation"):
-        e.RepairProposal(
+        e_stages.RepairProposal(
             finding_id="f1",
             base_render_version="v1",
             layer="state_style",
@@ -1345,7 +1348,7 @@ def test_builder_cannot_modify_candidate_facts_or_unbounded_layers() -> None:
             agent="llm",
         )
     with pytest.raises(ValueError, match="bounded 'title_row' placement"):
-        e.RepairProposal(
+        e_stages.RepairProposal(
             finding_id="f1",
             base_render_version="v1",
             layer="plan_entry_meta_placement",
@@ -1354,7 +1357,7 @@ def test_builder_cannot_modify_candidate_facts_or_unbounded_layers() -> None:
             agent="llm",
         )
     with pytest.raises(ValueError, match="state_style layer"):
-        e.RepairProposal(
+        e_stages.RepairProposal(
             finding_id="f1",
             base_render_version="v1",
             layer="plan_entry_gap",
@@ -1373,11 +1376,11 @@ def test_accepted_region_recheck_rolls_a_regression_back() -> None:
     tolerance = TOLERANCE_PT["local_gap"]
 
     def holds(prior_delta: float, repeat_delta: float) -> bool:
-        prior = e.MeasurementResult(
+        prior = e_shared.MeasurementResult(
             request_id="r1", status="confirmed",
             target_value_pt=0.0, current_value_pt=prior_delta, delta_pt=prior_delta,
         )
-        repeat = e.MeasurementResult(
+        repeat = e_shared.MeasurementResult(
             request_id="r1", status="confirmed",
             target_value_pt=0.0, current_value_pt=repeat_delta, delta_pt=repeat_delta,
         )
@@ -1393,7 +1396,7 @@ def test_accepted_region_recheck_rolls_a_regression_back() -> None:
 
 @e4_skip
 def test_run_e4_promotion_rechecks_accepted_regions(tmp_path: Path) -> None:
-    run_dir, _terminal, record = e.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, _terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run")
     trace = json.loads((run_dir / "trace.json").read_text())
     promoted = [entry for entry in trace if entry.get("action") == "promoted"]
     assert promoted, record["attempted_strategies"]
@@ -1449,7 +1452,7 @@ F"""verdict for {name}: JOB TITLE"""
 
 
 def test_promotion_requires_shell_not_any_agent(tmp_path: Path) -> None:
-    run_dir, _terminal, record = e.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, _terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run")
     trace = json.loads((run_dir / "trace.json").read_text())
     finding_agents = {entry["agent"] for entry in trace if entry.get("action") == "finding"}
     proposal_agents = {entry["agent"] for entry in trace if entry.get("action") == "proposal"}

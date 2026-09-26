@@ -63,7 +63,11 @@ from tests.experiments.fill_plan import (
     source_lines,
     validate_candidate_html,
 )
-from tests.experiments.refinement import GateFailure, HardGateResult, validate_filler_conformance
+from tests.experiments.refinement import (
+    GateFailure,
+    HardGateResult,
+    validate_filler_conformance,
+)
 
 DEFAULT_TARGET = ROOT / "tests/local_datasets/resume_matrix/resume_E.pdf"
 DEFAULT_SOURCE = ROOT / "tests/local_datasets/resume_matrix/resume_D.pdf"

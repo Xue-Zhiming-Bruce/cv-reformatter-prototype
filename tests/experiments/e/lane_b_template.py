@@ -88,7 +88,17 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from tests.experiments.resume_layout.candidates import CandidateDocument
-from tests.experiments.e.shared import EvidenceModel, PresentationLabel
+from tests.experiments.e.shared import (
+    EvidenceModel,
+    PresentationLabel,
+)
+
+from tests.experiments.a_pipeline import (
+    _html_text,
+    _inject_local_fonts,
+)
+from tests.experiments.c_pipeline import pinned_export_environment
+from tests.experiments.resume_layout.text import _norm
 
 # ---------------------------------------------------------------------------
 # Typed slot vocabulary
@@ -308,7 +318,6 @@ def validate_authored_template(
     and label markers, no visible text node may carry an alphanumeric
     character. Tag/class/attribute names and CSS are not visible text and are
     unaffected."""
-    from tests.experiments.c2_renderer import _html_text
 
     normalized_html = _normalize_slot_markers(candidate.html)
     payload = normalized_html + "\n" + candidate.css
@@ -686,7 +695,6 @@ def fill_authored_template(
     # Accounting: every candidate leaf is consumed by exactly one region
     # instance BY CONSTRUCTION (recorded per leaf); its verbatim value must
     # be present in the filled HTML.
-    from tests.experiments.c2_renderer import _html_text
 
     html_text, _ = _html_text(html)
     html_norm = _norm_text(html_text)
@@ -710,7 +718,6 @@ def build_authored_document(
     """Assemble the final standalone HTML: target page geometry + authored
     CSS + filled body, then the SAME local-font injection the canonical
     render path uses. No external asset, no script, no network reference."""
-    from tests.experiments.a_pipeline import _inject_local_fonts
 
     width_pt, height_pt = page_size
     page_css = (
@@ -737,7 +744,6 @@ def authored_network_disabled_environment() -> dict[str, Any]:
     proven (no probe asserts a fetch attempt failed), so the claim recorded
     is "network resolution disabled at the Chrome host resolver", never
     "proven unable to load network assets"."""
-    from tests.experiments.c_pipeline import pinned_export_environment
 
     environment = pinned_export_environment({})
     environment["flags"] = [
@@ -755,7 +761,6 @@ def authored_privacy_gate(
     line granularity as the canonical privacy gate; rail/section labels are
     the template presentation the owner decision renders and are excluded)."""
     from app.ingestion.pdf_reader import read_pdf_text
-    from tests.experiments.c2_renderer import _html_text, _norm
 
     html_text, _ = _html_text(html)
     normalized_html = _norm(html_text)

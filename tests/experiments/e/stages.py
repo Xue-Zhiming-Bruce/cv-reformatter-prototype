@@ -24,10 +24,31 @@ from pathlib import Path
 from typing import Any, Literal
 from PIL import Image
 from pydantic import Field, model_validator
-from tests.experiments.a_pipeline import ROOT, RUNS, _export_pinned_html_to_pdf, _render_pages
-from tests.experiments.d_pipeline import BudgetExhausted, CheckpointBudgetExceeded, EvidenceStore, RunBudget, RunTrace, _limits, _record_usage
+from tests.experiments.a_pipeline import (
+    ROOT,
+    RUNS,
+    _export_pinned_html_to_pdf,
+    _render_pages,
+)
+from tests.experiments.d_pipeline import (
+    BudgetExhausted,
+    CheckpointBudgetExceeded,
+    EvidenceStore,
+    RunBudget,
+    RunTrace,
+    _limits,
+    _record_usage,
+)
 from tests.experiments.docx_lane.build import TOLERANCE_PT
-from tests.experiments.c_pipeline import BodyEntryScaffold, BodyHeadingScaffold, BodyScaffold, HeaderScaffold, _pdf_lines_and_marks, derive_body_tier_targets, pinned_export_environment
+from tests.experiments.c_pipeline import (
+    BodyEntryScaffold,
+    BodyHeadingScaffold,
+    BodyScaffold,
+    HeaderScaffold,
+    _pdf_lines_and_marks,
+    derive_body_tier_targets,
+    pinned_export_environment,
+)
 import pdfplumber as _pdfplumber
 
 from tests.experiments.e.shared import (
@@ -68,6 +89,39 @@ from tests.experiments.e.shared import (
     freeze_cases,
     redact_signed_urls,
 )
+
+from tests.experiments.a_pipeline import build_format_summary
+from tests.experiments.c2_pipeline import (
+    compile_layout_state,
+    run_flow_probe,
+    state_from_scaffolds,
+)
+from tests.experiments.c_pipeline import (
+    BULLET_GLYPHS,
+    derive_body_scaffold as _derive_body_scaffold,
+    derive_header_scaffold as _derive_header_scaffold,
+)
+from tests.experiments.d_pipeline import _live_model
+from tests.experiments.resume_layout.candidates import (
+    UnroutableContent,
+    candidate_resume_E as _cand_E,
+    candidate_resume_E,
+    independent_candidate_fixtures,
+)
+from tests.experiments.resume_layout.html import (
+    render_html as _rh,
+    render_html,
+)
+from tests.experiments.resume_layout.plan import (
+    compile_render_plan as _crp,
+    compile_render_plan,
+)
+from tests.experiments.resume_layout.state import (
+    state_bytes,
+    validate_layout_state,
+)
+import tests.experiments.c2_renderer as c2r
+import tests.experiments.a_pipeline as a_pipeline
 
 # --- E1: investigator prompt and scripted rehearsal ---------------------------
 
@@ -434,7 +488,6 @@ def _run_live_investigator(
     a per-call request limit inside the global budget."""
     from pydantic_ai import Agent
 
-    from tests.experiments.d_pipeline import _live_model
 
     model = _live_model()
     agent = Agent(
@@ -720,7 +773,6 @@ def _live_reviewer_findings(
     history (owner decision 2026-09-22; the E5 call sites pass it)."""
     from pydantic_ai import Agent, BinaryContent
 
-    from tests.experiments.d_pipeline import _live_model
 
     model = _live_visual_model() if visual_model else _live_model()
     agent = Agent(
@@ -873,12 +925,6 @@ def run_e2(
     template as unsupported. The offline path performs REAL Chrome renders and
     REAL pdfplumber measurement with zero model calls.
     """
-    from tests.experiments.resume_layout.candidates import candidate_resume_E
-    from tests.experiments.c2_pipeline import compile_layout_state, run_flow_probe
-    from tests.experiments.resume_layout.plan import compile_render_plan
-    from tests.experiments.resume_layout.html import render_html
-    from tests.experiments import c2_renderer as c2r
-    from tests.experiments.resume_layout.state import validate_layout_state, state_bytes
 
     target_pdf = target_pdf.resolve()
     if not target_pdf.exists():
@@ -963,7 +1009,6 @@ def run_e2(
     #    components; DOCX stays out of this lane).
     try:
         evidence_obj = normalized
-        from tests.experiments.a_pipeline import build_format_summary, _analyze_target
 
         summary = build_format_summary(evidence_obj, json.loads(raw_path.read_text(encoding="utf-8")), target_pdf)
         state = compile_layout_state(target_pdf, summary, evidence=evidence_obj, provider_name="adobe")
@@ -1008,9 +1053,6 @@ def run_e2(
         run the delivery gates. Candidates are INACTIVE until the shell
         promotes; nothing is overwritten. The optional gap repair is scoped
         to the diagnosed section (generic; E2's F constant is gone)."""
-        from tests.experiments.resume_layout.plan import compile_render_plan
-        from tests.experiments.resume_layout.html import render_html
-        from tests.experiments import c2_renderer as c2r
 
         budget.spend_tool("render_and_checkpoint")
         plan = compile_render_plan(state, candidate)
@@ -1033,7 +1075,7 @@ def run_e2(
         second = out_dir / f"render_{len(versions) + 1}_second.pdf"
         _export_pinned_html_to_pdf(html_path, second, environment)
         second_pages = _render_pages(second, out_dir, f"render_{len(versions) + 1}_second")
-        stability = c2r._line_stability(pdf, second)
+        stability = a_pipeline._line_stability(pdf, second)
         content = c2r.content_gate(plan, html, pdf)
         privacy = c2r.privacy_gate(plan, privacy_target, html, pdf)
         structure = c2r.structure_gate(plan, state, html, pdf)
@@ -1043,8 +1085,6 @@ def run_e2(
         # the E3 two-column compile (unfamiliar family) or the canonical
         # single-column scaffold derivation, chosen by what the evidence
         # supports — never a target-name condition.
-        from tests.experiments.c_pipeline import derive_body_scaffold as _derive_body_scaffold
-        from tests.experiments.c_pipeline import derive_header_scaffold as _derive_header_scaffold
         try:
             header_scaffold = _derive_header_scaffold(target_pdf, summary)
             body_scaffold = _derive_body_scaffold(target_pdf, summary, header_scaffold=header_scaffold)
@@ -1062,7 +1102,7 @@ def run_e2(
             # only in the export timestamp, which is inherent Chrome
             # nondeterminism (documented in the C2-0cS record).
             "deterministic_render": all(
-                c2r._sha256(left) == c2r._sha256(right)
+                a_pipeline._sha256(left) == a_pipeline._sha256(right)
                 for left, right in zip(pages, second_pages)
             )
             and stability["passed"],
@@ -1333,7 +1373,6 @@ def run_e2(
     # 6. Content-shape probes (short/long/missing-field/nested-entry proxies via
     # the canonical C2 flow probe on independent fixtures; the canonical probe
     # lane remains C2's own content-shape verification, which already ran).
-    from tests.experiments.resume_layout.candidates import independent_candidate_fixtures
 
     shape_probes: dict[str, Any] = {}
     for profile, probe_candidate in independent_candidate_fixtures().items():
@@ -1710,7 +1749,6 @@ def compile_two_column_state(
         contact_separator=None,
         category_grids=[],
     )
-    from tests.experiments.c2_pipeline import state_from_scaffolds
 
     # Rule decoration semantics for this family: the label's own rule sits
     # BELOW it (LuaTeX label-over-rule). The scaffold carries the measured
@@ -1756,7 +1794,6 @@ def _two_column_bullet_tiers(
 ) -> dict[str, float]:
     """Measured bullet tiers from the LI/Lbl glyph column and the following
     text column (generic; BULLET_GLYPHS owns the glyph vocabulary)."""
-    from tests.experiments.c_pipeline import BULLET_GLYPHS
 
     dot_x0s: list[float] = []
     after_dot_x0s: list[float] = []
@@ -2071,13 +2108,6 @@ def run_e3(
     describes the failed operation and never classifies the template as
     unsupported.
     """
-    from tests.experiments.a_pipeline import build_format_summary
-    from tests.experiments.resume_layout.candidates import candidate_resume_E, independent_candidate_fixtures
-    from tests.experiments.c2_pipeline import run_flow_probe, state_from_scaffolds
-    from tests.experiments.resume_layout.plan import compile_render_plan
-    from tests.experiments.resume_layout.html import render_html
-    from tests.experiments import c2_renderer as c2r
-    from tests.experiments.resume_layout.state import validate_layout_state, state_bytes
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 
     target_pdf = target_pdf.resolve()
@@ -2343,7 +2373,6 @@ def run_e3(
     )
 
     # -- 4. Builder: candidate-safe presentation from reviewed content -------
-    from tests.experiments.resume_layout.candidates import candidate_resume_E as _cand_E
 
     candidate = _cand_E()
     probe = run_flow_probe(state, candidate)
@@ -2378,8 +2407,6 @@ def run_e3(
     # rule): candidate header fields with no home in the compiled state route
     # through the EXISTING explicit header-overflow disposition. The record
     # names the measured target structure, never a Resume-I string.
-    from tests.experiments.resume_layout.candidates import UnroutableContent
-    from tests.experiments.fill_plan import CONTACT_KIND_CHECKS
 
     header_slots_in_state = {
         slot
@@ -2430,8 +2457,6 @@ def run_e3(
         """Render one whole document version through the canonical chain,
         run the delivery gates, and return the plan + html for the
         gate-driven finding derivation (no scripted gap mutation)."""
-        from tests.experiments.resume_layout.plan import compile_render_plan as _crp
-        from tests.experiments.resume_layout.html import render_html as _rh
 
         budget.spend_tool("render_and_checkpoint")
         plan = _crp(state, candidate)
@@ -2446,7 +2471,7 @@ def run_e3(
         second = out_dir / f"render_{len(versions) + 1}_second.pdf"
         _export_pinned_html_to_pdf(html_path, second, environment)
         second_pages = _render_pages(second, out_dir, f"render_{len(versions) + 1}_second")
-        stability = c2r._line_stability(pdf, second)
+        stability = a_pipeline._line_stability(pdf, second)
         content = c2r.content_gate(plan, html, pdf)
         privacy = c2r.privacy_gate(plan, privacy_target, html, pdf)
         structure_gate = c2r.structure_gate(plan, state, html, pdf)
@@ -2457,7 +2482,7 @@ def run_e3(
         shape = c2r.content_shape_verification(state, plan, body_scaffold, bullet_tiers, html, summary, pdf)
         gates = {
             "deterministic_render": all(
-                c2r._sha256(left) == c2r._sha256(right)
+                a_pipeline._sha256(left) == a_pipeline._sha256(right)
                 for left, right in zip(pages, second_pages)
             )
             and stability["passed"],
@@ -3295,13 +3320,6 @@ def run_e4(
     describes the failed operation and never classifies the template as
     unsupported. Stalls do not terminate the run: they escalate strategy.
     """
-    from tests.experiments.a_pipeline import build_format_summary
-    from tests.experiments.resume_layout.candidates import candidate_resume_E, independent_candidate_fixtures
-    from tests.experiments.c2_pipeline import run_flow_probe, state_from_scaffolds
-    from tests.experiments.resume_layout.plan import compile_render_plan
-    from tests.experiments.resume_layout.html import render_html
-    from tests.experiments import c2_renderer as c2r
-    from tests.experiments.resume_layout.state import validate_layout_state, state_bytes
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 
     started = time.time()
@@ -3454,8 +3472,6 @@ def run_e4(
     )
 
     # -- 3. Investigator role: live StructureDraft (offline = deterministic) --
-    from tests.experiments.resume_layout.candidates import UnroutableContent
-    from tests.experiments.fill_plan import CONTACT_KIND_CHECKS
 
     label_rules = {int(key): value for key, value in derived["sidebar_rules"].items()}
     structure: list[StructuralRelation] = []
@@ -3727,8 +3743,6 @@ def run_e4(
         """One whole-document render through the canonical chain; a repair
         proposal applies its bounded plan-layer mutations to the FRESHLY
         compiled plan (never over approved state), then the delivery gates run."""
-        from tests.experiments.resume_layout.plan import compile_render_plan as _crp
-        from tests.experiments.resume_layout.html import render_html as _rh
 
         budget.spend_tool("render_and_checkpoint")
         plan = _crp(state, candidate)
@@ -3770,7 +3784,7 @@ def run_e4(
         second = out_dir / f"render_{len(versions) + 1}_second.pdf"
         _export_pinned_html_to_pdf(html_path, second, environment)
         second_pages = _render_pages(second, out_dir, f"render_{len(versions) + 1}_second")
-        stability = c2r._line_stability(pdf, second)
+        stability = a_pipeline._line_stability(pdf, second)
         content = c2r.content_gate(plan, html, pdf)
         privacy = c2r.privacy_gate(plan, privacy_target, html, pdf)
         structure_gate = c2r.structure_gate(plan, state, html, pdf)
@@ -3781,7 +3795,7 @@ def run_e4(
         shape = c2r.content_shape_verification(state, plan, body_scaffold, bullet_tiers, html, summary, pdf)
         gates = {
             "deterministic_render": all(
-                c2r._sha256(left) == c2r._sha256(right)
+                a_pipeline._sha256(left) == a_pipeline._sha256(right)
                 for left, right in zip(pages, second_pages)
             )
             and stability["passed"],
@@ -4436,7 +4450,6 @@ def _live_builder_proposal(
     the agent) binds versions, validates, applies, re-measures and promotes."""
     from pydantic_ai import Agent
 
-    from tests.experiments.d_pipeline import _live_model
 
     if budget.remaining_model_requests() < 1:
         raise CheckpointBudgetExceeded("budget exhausted before builder")
@@ -4500,7 +4513,6 @@ def _live_attribution_hypothesis(
     The observation survives; only the causal hypothesis may be replaced."""
     from pydantic_ai import Agent
 
-    from tests.experiments.d_pipeline import _live_model
 
     if budget.remaining_model_requests() < 1:
         raise CheckpointBudgetExceeded("budget exhausted before attribution investigator")

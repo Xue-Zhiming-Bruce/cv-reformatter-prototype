@@ -6,10 +6,11 @@ import re
 import pytest
 
 from tests.experiments.a_pipeline import _missing_source_tokens
-from tests.experiments.fill_plan import analyze_candidate_provenance, deduplicate_candidate_html
-from tests.experiments.refinement import (
-    validate_filler_conformance,
+from tests.experiments.fill_plan import (
+    analyze_candidate_provenance,
+    deduplicate_candidate_html,
 )
+from tests.experiments.refinement import validate_filler_conformance
 
 
 def test_provenance_reports_missing_and_invented_content() -> None:
@@ -118,7 +119,10 @@ def test_section_headings_injected_verbatim_when_filler_drops_them() -> None:
     # the unannotated heading slot (or clones the template prototype when the
     # heading element is gone). Never re-cased (codex review); all-caps look
     # is delegated to the marked text-transform rule.
-    from tests.experiments.fill_plan import append_heading_case_rule, normalize_section_headings
+    from tests.experiments.fill_plan import (
+        append_heading_case_rule,
+        normalize_section_headings,
+    )
 
     template = (
         '<html><head><style>h2 { color: #111; }</style></head><body>'

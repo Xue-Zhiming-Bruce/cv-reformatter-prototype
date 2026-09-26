@@ -42,14 +42,11 @@ from app.template_analysis.commercial.local_color import (
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from tests.experiments.deepseek import (
     PipelineCallError,
-    _chat_completion,
     _chat_content,
-    _deepseek_client,
-    visual_client,
     _html_call,
     _image_data,
     _structured_chat_call,
-    _usage_from,
+    visual_client,
 )
 from tests.experiments.fill_plan import (
     _section_semantic,
@@ -68,7 +65,6 @@ from lxml import etree, html as lxml_html
 from tests.experiments.refinement import (
     BUILDER_ACTIONS,
     BUILDER_PROPERTIES,
-    FILLER_ACTIONS,
     BuilderOperation,
     CandidateState,
     GateFailure,
@@ -78,14 +74,12 @@ from tests.experiments.refinement import (
     RubricResult,
     VisualComparison,
     VisualIssue,
-    VisualRegression,
-    apply_builder_operation,
-    apply_placement_operation,
-    build_measurement_catalog,
     _class_names,
     _consolidate_gate_failures,
     _declared_class_names,
     _style_blocks,
+    apply_builder_operation,
+    build_measurement_catalog,
     gate_failure_issue,
     issue_fingerprint,
     resolve_measurements,

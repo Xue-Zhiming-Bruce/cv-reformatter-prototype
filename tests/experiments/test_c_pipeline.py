@@ -19,29 +19,29 @@ from tests.experiments.c_pipeline import (
     HeaderRow,
     HeaderScaffold,
     HeaderTopology,
-    compile_header_template,
+    _pdf_font_name_matches,
     apply_measured_alignment,
     apply_section_indents,
     c1_filler_prompt,
     c1_provenance_contract_failures,
-    _pdf_font_name_matches,
+    compile_header_template,
     derive_body_scaffold,
-    derive_header_scaffold,
-    derive_body_topology_candidates,
     derive_body_tier_targets,
+    derive_body_topology_candidates,
+    derive_header_scaffold,
+    final_reviewer_prompt,
     fit_body_line_geometry,
     fit_geometry,
-    final_reviewer_prompt,
-    merge_unprovenanced_sibling_headings,
     inject_missing_source_headings,
     measure_body_lines,
+    merge_unprovenanced_sibling_headings,
     normalize_source_block_owners,
     normalize_source_section_semantics,
     relocate_misplaced_slots,
+    remove_entry_leading_dashes,
     remove_unfilled_header_slots,
     remove_unprovenanced_punctuation_nodes,
     remove_unused_placeholders,
-    remove_entry_leading_dashes,
     render_body_x0_acceptance,
     restore_compiler_header_attributes,
     topology_fingerprint,
@@ -51,7 +51,10 @@ from tests.experiments.c_pipeline import (
 from pydantic import ValidationError
 
 from tests.experiments.b_pipeline import FinalReview
-from tests.experiments.refinement import GateFailure, HardGateResult
+from tests.experiments.refinement import (
+    GateFailure,
+    HardGateResult,
+)
 
 SCAFFOLD = [
     HeaderScaffold(role="name", top_pt=34.6, x0_pt=250, x1_pt=360, evidence_ids=["e1"], slots=["name"], alignment="center"),
@@ -2123,7 +2126,10 @@ def test_zero_bullet_marker_suppression_wins_the_cascade() -> None:
 
 def test_double_leading_glyph_is_a_duplicate_regardless_of_marker_kind(tmp_path) -> None:
     from tests.experiments.c_pipeline import rendered_duplicate_bullet_lines
-    from tests.experiments.a_pipeline import _export_pinned_html_to_pdf, _pinned_chrome_environment
+    from tests.experiments.a_pipeline import (
+        _export_pinned_html_to_pdf,
+        _pinned_chrome_environment,
+    )
     pdf = tmp_path / "dup.pdf"
     html = tmp_path / "dup.html"
     html.write_text(

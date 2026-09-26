@@ -22,26 +22,30 @@ from pathlib import Path
 import pytest
 
 import tests.experiments.c2_renderer as renderer_module
-from tests.experiments.c2_pipeline import (
-    C2LayoutState,
+from tests.experiments.resume_layout.candidates import (
     CandidateDocument,
     CandidateLeaf,
     CandidateSection,
-    SectionContent,
     UnroutableContent,
+)
+from tests.experiments.resume_layout.state import (
+    C2LayoutState,
+    SectionContent,
     state_bytes,
 )
 from tests.experiments.c2_renderer import (
-    OVERFLOW_POLICY,
-    C2RenderPlan,
     blank_page_gate,
     candidate_accounting_gate,
-    compile_render_plan,
     content_gate,
     content_shape_verification,
     privacy_gate,
-    render_html,
     structure_gate,
+)
+from tests.experiments.resume_layout.html import render_html
+from tests.experiments.resume_layout.plan import (
+    C2RenderPlan,
+    OVERFLOW_POLICY,
+    compile_render_plan,
 )
 from tests.experiments.test_c2_pipeline import (
     BODY,
@@ -366,7 +370,7 @@ def test_unsupported_and_nonmaterializable_composite_fail_closed() -> None:
         [label for label in FULL_COVERAGE_LABELS if label != "EDUCATION"],
         include_unmatched=False,
     )[0].model_copy(deep=True)
-    from tests.experiments.c2_pipeline import SectionBinding
+    from tests.experiments.resume_layout.state import SectionBinding
 
     index = work_section(composite)
     node = composite.nodes[index]
@@ -425,7 +429,10 @@ def test_empty_target_sections_render_nothing_but_are_recorded() -> None:
 
 
 def _shape_scaffold(labels: list[str] | None = None) -> Any:
-    from tests.experiments.c_pipeline import BodyEntryScaffold, BodyScaffold
+    from tests.experiments.c_pipeline import (
+        BodyEntryScaffold,
+        BodyScaffold,
+    )
     from tests.experiments.test_c2_pipeline import _heading
 
     return BodyScaffold(
@@ -511,7 +518,10 @@ def _heading_rule_pdf(path: Path, items: list[dict]) -> Path:
 
 
 def test_content_shapes_are_verified_against_measured_evidence() -> None:
-    from tests.experiments.c_pipeline import BodyEntryScaffold, BodyScaffold
+    from tests.experiments.c_pipeline import (
+        BodyEntryScaffold,
+        BodyScaffold,
+    )
     from tests.experiments.test_c2_pipeline import _heading
 
     state, plan = plan_for()
@@ -820,7 +830,10 @@ def _two_rule_summary() -> dict:
 def _two_rule_scaffold() -> Any:
     """Scaffold matching compile_synthetic's 60pt heading spacing (the rule
     y positions in _two_rule_summary must resolve against these headings)."""
-    from tests.experiments.c_pipeline import BodyEntryScaffold, BodyScaffold
+    from tests.experiments.c_pipeline import (
+        BodyEntryScaffold,
+        BodyScaffold,
+    )
     from tests.experiments.test_c2_pipeline import _heading
 
     return BodyScaffold(
@@ -1015,7 +1028,7 @@ REQUIRED_ARTIFACTS = (
 @pytest.mark.local_dataset
 @pytest.mark.parametrize("pair", ["D_E", "E_F", "E_D"])
 def test_frozen_c1_pair_runs_end_to_end(pair: str) -> None:
-    from tests.experiments.c2_pipeline import C2_0B_PAIRS
+    from tests.experiments.resume_layout.candidates import C2_0B_PAIRS
 
     spec = C2_0B_PAIRS[pair]
     target = Path(renderer_module.__file__).resolve().parents[2] / (

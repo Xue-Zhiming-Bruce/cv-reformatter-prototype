@@ -65,118 +65,49 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 from pydantic import Field
 
-from tests.experiments.a_pipeline import RUNS, _analyze_target, _median, _render_pages, build_format_summary
+from tests.experiments.a_pipeline import (
+    RUNS,
+    _analyze_target,
+    _render_pages,
+    build_format_summary,
+)
 from tests.experiments.c2_pipeline import (
-    C2LayoutState,
-    C2_0B_PAIRS,
-    StateModel,
-    StyleToken,
-    _COMPOSITE_SPLIT,
-    candidate_document_for_pair,
     compile_layout_state,
     render_context_coverage,
+)
+from tests.experiments.resume_layout.candidates import (
+    C2_0B_PAIRS,
+    candidate_document_for_pair,
+)
+from tests.experiments.resume_layout.state import (
+    C2LayoutState,
+    _COMPOSITE_SPLIT,
     state_bytes,
 )
-from tests.experiments.c2_renderer import (
-    _norm,
-    _pdf_color_hex,
-    _rendered_heading_positions,
-    _rendered_rule_extents,
-    _rule_in_section_region,
-    blank_page_gate,
-    compile_render_plan,
-)
-from tests.experiments.docx_lane.build import (  # phase-1 split re-export
-    BORDER_SIZE_QUANTUM,
-    SPACING_QUANTUM,
-    UNMEASURED_COLOR_HEX,
-    ENTRY_LEFT_COLUMN_FRACTION,
-    TOLERANCE_PT,
-    MAX_FITTING_ITERATIONS,
-    SPARSE_TRAILING_PAGE_FRACTION,
-    BULLET_GLYPH_MARKERS,
-    DASH_MARKERS,
-    _FONT_SEARCH_DIRS,
-    FAMILY_ALIASES,
-    installed_font_families,
-    _font_is_installed,
-    resolve_written_fonts,
-    _half_point_round,
-    normalize_font_family,
-    strip_presentation_marker,
-    BulletTiers,
-    SectionFit,
-    FitAdjustments,
-    ExactClaim,
-    AdjustedFeature,
-    UnsupportedFeature,
-    PaginationCompatibility,
+from tests.experiments.c2_renderer import blank_page_gate
+from tests.experiments.resume_layout.plan import compile_render_plan
+from tests.experiments.docx_lane.build import (
     ConversionCompatibilityReport,
-    DocumentReviewResult,
-    _apply_token,
-    _paragraph_border,
-    _control_paragraph,
-    _no_table_borders,
-    _fixed_table_layout,
-    _rows_cannot_split,
-    _style_of,
-    _entry_columns_of,
-    _header_row_text,
-    _write_text_paragraph,
-    _write_heading,
-    _write_entry_table,
-    category_grid_table_geometry,
-    _write_category_grid,
+    MAX_FITTING_ITERATIONS,
     build_document,
-    _write_native_bullet,
-    _bullet_indents,
-    deterministic_docx_bytes,
-    _iter_block_paragraphs,
-    inspect_docx,
-    expected_paragraphs,
-    expected_visual_rows,
-    _pair_with_meta,
-    expected_reading_order,
     content_accounting,
+    deterministic_docx_bytes,
+    inspect_docx,
     reading_order_gate,
-    _leaf_text,
-    _MARKER_GLYPHS,
-    _RENDERED_MARKER_GLYPHS,
-    _strip_leading_marker_glyphs,
+    resolve_written_fonts,
 )
-from tests.experiments.docx_lane.measure import (  # phase-1 split re-export
-    _rendered_lines,
-    _line_record,
-    _text_key,
-    map_rendered_to_expected,
-    measure_rendered_geometry,
-    _right_meta_edge_basis,
-    measure_target_geometry,
-    _rule_in_target_region,
-    _row,
-    _rule_of,
-    _rightmost_char_size,
-    typography_tables,
-    _families_compatible,
-    apply_measured_deltas,
-    fit_docx,
-    bullet_rows_expected,
-    _previous_content_bottom,
-    _has_following_content_on_page,
-    compare_geometry,
-    COLOR_CHANNEL_TOLERANCE,
-    _colors_match,
-    _majority_char_color,
-    _color_row,
-    _run_char_slices,
+from tests.experiments.docx_lane.measure import (
     compare_colors,
     conversion_compatibility_report,
-    _cell_words,
-    verify_rendered_grids,
-    grid_verification_gate,
     document_review_result,
-    _preview_pdf,
+    fit_docx,
+    grid_verification_gate,
+    measure_rendered_geometry,
+    typography_tables,
+    verify_rendered_grids,
 )
+
+from tests.experiments.resume_layout.candidates import FROZEN_C1_RUNS
 
 # ---------------------------------------------------------------------------
 # Canonical pair run
@@ -214,7 +145,6 @@ def run_pair(pair: str, out: Path | None = None, confirm_unsupported: bool = Fal
     (run_dir / "candidate_render_context.json").write_text(
         candidate.model_dump_json(indent=2), encoding="utf-8"
     )
-    from tests.experiments.c2_pipeline import FROZEN_C1_RUNS
 
     frozen_dir = RUNS / FROZEN_C1_RUNS[pair]
     coverage = render_context_coverage(

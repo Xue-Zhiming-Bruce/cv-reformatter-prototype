@@ -30,9 +30,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from pydantic import Field, model_validator
-from tests.experiments.a_pipeline import ROOT, RUNS, _export_pinned_html_to_pdf, _render_pages
-from tests.experiments.d_pipeline import BudgetExhausted, CheckpointBudgetExceeded, EvidenceStore, RunBudget, RunTrace, _record_usage
-from tests.experiments.c_pipeline import _pdf_lines_and_marks, pinned_export_environment
+from tests.experiments.a_pipeline import (
+    ROOT,
+    RUNS,
+    _export_pinned_html_to_pdf,
+    _render_pages,
+)
+from tests.experiments.d_pipeline import (
+    BudgetExhausted,
+    CheckpointBudgetExceeded,
+    EvidenceStore,
+    RunBudget,
+    RunTrace,
+    _record_usage,
+)
+from tests.experiments.c_pipeline import (
+    _pdf_lines_and_marks,
+    pinned_export_environment,
+)
 
 from tests.experiments.e.shared import (
     AttributionRecord,
@@ -81,6 +96,34 @@ from tests.experiments.e.stages import (
     compile_two_column_state,
     compile_two_column_state_for_scaffold,
 )
+
+from tests.experiments.a_pipeline import build_format_summary
+from tests.experiments.d_pipeline import _live_model
+from tests.experiments.e.lane_b_template import (
+    AuthoredTemplateCandidate,
+    SCRIPTED_AUTHORED_TEMPLATE,
+    SCRIPTED_AUTHORED_TEMPLATE as _base_template,
+    authored_network_disabled_environment,
+    authored_pdf_presence_gate,
+    authored_privacy_gate,
+    build_authored_document,
+    fill_authored_template,
+    presentation_label_markers,
+    validate_authored_template,
+)
+from tests.experiments.resume_layout.candidates import (
+    CandidateSection,
+    UnroutableContent,
+    candidate_resume_E,
+    independent_candidate_fixtures,
+)
+from tests.experiments.resume_layout.html import render_html
+from tests.experiments.resume_layout.plan import compile_render_plan
+from tests.experiments.resume_layout.state import state_bytes
+from tests.experiments.resume_layout.text import _norm
+import tests.experiments.c2_renderer as c2r
+import tests.experiments.a_pipeline as a_pipeline
+import tests.experiments.resume_layout.text as resume_layout_text
 
 # ===========================================================================
 # E5 — Builder representation comparison (Phase 0 loop fixes + Lane A / Lane B)
@@ -862,7 +905,6 @@ def _e5_label_semantics(
     label set. Both lanes run the SAME common gate with the SAME approved set,
     so a subset (e.g. Lane A's plan-derived labels) is NOT symmetric — the two
     lanes' privacy decisions must be identical to be comparable."""
-    from tests.experiments.c2_renderer import _norm
 
     excluded = {_norm(item) for item in (gate.get("excluded_labels") or [])}
     approved_texts = {_norm(label.text) for label in approved}
@@ -2428,7 +2470,6 @@ def _apply_header_overflow_disposition(candidate: Any, state: Any) -> Any:
     content-shape probe: header fields with no measured home in the compiled
     state route through the EXPLICIT candidate-only header-overflow node
     (nothing silently dropped, nothing invented)."""
-    from tests.experiments.resume_layout.candidates import UnroutableContent
 
     header_slots_in_state = {
         slot for node in state.nodes if node.kind == "header_row" for slot in node.slots
@@ -2493,7 +2534,6 @@ def _sectioned_probe_candidate(fixture: Any) -> Any:
     item-list merge consumes top-level item leaves, so the shell flattens
     the container (children re-parented as top-level items) — the same
     top-level-item shape every candidate render context uses."""
-    from tests.experiments.resume_layout.candidates import CandidateSection
 
     flattened: list[Any] = []
     for leaf in fixture.leaves:
@@ -2604,7 +2644,6 @@ def _live_lane_a_builder(
     model-visible message history (owner decision 2026-09-22)."""
     from pydantic_ai import Agent, BinaryContent
 
-    from tests.experiments.d_pipeline import _live_model
 
     if budget.remaining_model_requests() < 1:
         raise CheckpointBudgetExceeded("budget exhausted before lane A builder")
@@ -2662,8 +2701,6 @@ def _live_lane_b_builder(
     full model-visible message history (owner decision 2026-09-22)."""
     from pydantic_ai import Agent, BinaryContent, PromptedOutput, capture_run_messages
 
-    from tests.experiments.d_pipeline import _live_model
-    from tests.experiments.e.lane_b_template import AuthoredTemplateCandidate
 
     if budget.remaining_model_requests() < 1:
         raise CheckpointBudgetExceeded("budget exhausted before lane B builder")
@@ -2724,7 +2761,6 @@ def _live_attribution_batch(
     the input findings list."""
     from pydantic_ai import Agent
 
-    from tests.experiments.d_pipeline import _live_model
 
     if budget.remaining_model_requests() < 1:
         raise CheckpointBudgetExceeded("budget exhausted before attribution batch")
@@ -3046,25 +3082,7 @@ def run_e5(
     against the SELECTED representation (the best-valid render's proposal/
     template, or diagnostic probes on the latest attempt when no best-valid
     render exists)."""
-    from tests.experiments.a_pipeline import build_format_summary
-    from tests.experiments.resume_layout.candidates import (
-        candidate_resume_E,
-        independent_candidate_fixtures,
-    )
-    from tests.experiments.resume_layout.plan import compile_render_plan
-    from tests.experiments.resume_layout.html import render_html
-    from tests.experiments import c2_renderer as c2r
-    from tests.experiments.resume_layout.state import state_bytes
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
-    from tests.experiments.e.lane_b_template import (
-        authored_network_disabled_environment,
-        authored_pdf_presence_gate,
-        authored_privacy_gate,
-        build_authored_document,
-        fill_authored_template,
-        presentation_label_markers,
-        validate_authored_template,
-    )
 
     started = time.time()
     started_at = datetime.now(UTC).isoformat(timespec="seconds")
@@ -3583,10 +3601,10 @@ def run_e5(
                             "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
                             "deterministic_render": (
                                 all(
-                                    c2r._sha256(left) == c2r._sha256(right)
+                                    a_pipeline._sha256(left) == a_pipeline._sha256(right)
                                     for left, right in zip(pages, second_pages)
                                 )
-                                and c2r._line_stability(probe_pdf_path, probe_pdf_second)["passed"]
+                                and a_pipeline._line_stability(probe_pdf_path, probe_pdf_second)["passed"]
                             ),
                         }
                     else:
@@ -3749,7 +3767,7 @@ def run_e5(
                 _export_pinned_html_to_pdf(html_path, second, environment)
                 pages = _render_pages(pdf_path, lane_dir, f"render_{index}")
                 second_pages = _render_pages(second, lane_dir, f"render_{index}_second")
-                stability = c2r._line_stability(pdf_path, second)
+                stability = a_pipeline._line_stability(pdf_path, second)
                 content = c2r.content_gate(plan, html, pdf_path)
                 # DIAGNOSTIC ONLY (see gate_details): the renderer gate keeps
                 # excluding plan-derived labels; the privacy DECISION is the
@@ -3769,7 +3787,7 @@ def run_e5(
                 )
                 gates = {
                     "deterministic_render": all(
-                        c2r._sha256(left) == c2r._sha256(right)
+                        a_pipeline._sha256(left) == a_pipeline._sha256(right)
                         for left, right in zip(pages, second_pages)
                     ) and stability["passed"],
                     # The COMMON privacy decision: the same gate function and
@@ -3790,17 +3808,17 @@ def run_e5(
                 referenced_labels.update(
                     label.label_id
                     for label in label_catalog
-                    if c2r._norm(label.text)
+                    if resume_layout_text._norm(label.text)
                     in {
-                        c2r._norm(section.label)
+                        resume_layout_text._norm(section.label)
                         for section in [*plan.sections, *plan.appended_sections]
                     }
                 )
                 gate_details = {
                     "deterministic_render": {
                         "passed": gates["deterministic_render"],
-                        "first_page_hashes": [c2r._sha256(page) for page in pages],
-                        "second_page_hashes": [c2r._sha256(page) for page in second_pages],
+                        "first_page_hashes": [a_pipeline._sha256(page) for page in pages],
+                        "second_page_hashes": [a_pipeline._sha256(page) for page in second_pages],
                         "line_stability": stability,
                     },
                     "no_target_candidate_facts": {
@@ -4228,7 +4246,6 @@ def run_e5(
                         ),
                     )
                 else:
-                    from tests.experiments.e.lane_b_template import SCRIPTED_AUTHORED_TEMPLATE
 
                     template = SCRIPTED_AUTHORED_TEMPLATE
                 try:
@@ -4905,7 +4922,6 @@ def run_e5(
                                 ),
                             )
                         else:
-                            from tests.experiments.e.lane_b_template import SCRIPTED_AUTHORED_TEMPLATE as _base_template
 
                             # The offline Builder continues from the REPAIR BASE's
                             # own representation (the quarantined candidate when
@@ -5537,7 +5553,6 @@ def _write_e5_owner_package(
     plus probe outputs, costs, the shell-issued presentation-label table,
     remaining differences, and the non-claims."""
     from app.ingestion.pdf_reader import read_pdf_text
-    from tests.experiments import c2_renderer as c2r
 
     package = out_dir / "owner_review"
     package.mkdir(exist_ok=True)

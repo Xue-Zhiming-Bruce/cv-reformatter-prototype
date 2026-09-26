@@ -30,20 +30,26 @@ from tests.experiments.c_pipeline import (
     HeaderScaffold,
 )
 from tests.experiments.c2_pipeline import (
-    C2LayoutState,
+    compile_layout_state,
+    compile_target,
+    own_leaf,
+    run_flow_probe,
+    state_from_scaffolds,
+)
+from tests.experiments.resume_layout.candidates import (
     CandidateDocument,
+    independent_candidate_fixtures,
+)
+from tests.experiments.resume_layout.state import (
+    C2LayoutState,
     LayoutNode,
     SectionBinding,
     SectionContent,
-    compile_layout_state,
-    compile_target,
-    independent_candidate_fixtures,
-    own_leaf,
-    run_flow_probe,
     state_bytes,
-    state_from_scaffolds,
     validate_layout_state,
 )
+import tests.experiments.resume_layout.candidates as resume_layout_candidates
+import tests.experiments.resume_layout.state as resume_layout_state
 
 TARGET_SHA = hashlib.sha256(b"c2-0a-synthetic-target").hexdigest()
 
@@ -203,11 +209,11 @@ def compile_synthetic(labels: list[str] | None = None, **overrides: object) -> C
 def test_fixtures_are_built_without_reading_the_state(monkeypatch: pytest.MonkeyPatch) -> None:
     # Any attempt to inspect C2LayoutState while building fixtures fails hard.
     monkeypatch.setattr(c2_module, "C2LayoutState", None)
-    fixtures = c2_module.independent_candidate_fixtures()
+    fixtures = resume_layout_candidates.independent_candidate_fixtures()
     assert set(fixtures) == {"short", "medium", "long"}
-    assert "state" not in inspect.signature(c2_module.independent_candidate_fixtures).parameters
+    assert "state" not in inspect.signature(resume_layout_candidates.independent_candidate_fixtures).parameters
     # Fixtures are identical regardless of which target was compiled last.
-    again = c2_module.independent_candidate_fixtures()
+    again = resume_layout_candidates.independent_candidate_fixtures()
     for profile in fixtures:
         assert [leaf.leaf_id for leaf in fixtures[profile].leaves] == [
             leaf.leaf_id for leaf in again[profile].leaves
@@ -327,22 +333,22 @@ def test_bind_composite_decomposes_measured_separators() -> None:
         "EDUCATION/CERTIFICATIONS",
         "Education and Certifications",
     ):
-        sources, reason = c2_module.bind_composite(label)
+        sources, reason = resume_layout_state.bind_composite(label)
         assert sources == ["education", "certifications"], (label, reason)
         assert reason is None
 
 
 def test_bind_composite_stays_unresolved_without_full_evidence() -> None:
     # No separator: an ordinary single-section label.
-    assert c2_module.bind_composite("WORK EXPERIENCE") == ([], None)
+    assert resume_layout_state.bind_composite("WORK EXPERIENCE") == ([], None)
     # A component that does not resolve to exactly one source role.
-    sources, reason = c2_module.bind_composite("VOLUNTEER EXPERIENCE & SKILLS")
+    sources, reason = resume_layout_state.bind_composite("VOLUNTEER EXPERIENCE & SKILLS")
     assert sources == [] and "VOLUNTEER EXPERIENCE" in reason
     # A repeated component never binds a partial subset.
-    sources, reason = c2_module.bind_composite("EDUCATION & EDUCATION")
+    sources, reason = resume_layout_state.bind_composite("EDUCATION & EDUCATION")
     assert sources == [] and "education" in reason
     # A separator inside a non-vocabulary token (R&D) stays unresolved.
-    sources, reason = c2_module.bind_composite("R&D EXPERIENCE")
+    sources, reason = resume_layout_state.bind_composite("R&D EXPERIENCE")
     assert sources == [] and reason
 
 
@@ -828,25 +834,25 @@ def _subgrouped_probe_candidate() -> CandidateDocument:
     """One parent entry over THREE titled sub-groups (3/1/2 bullets). Anonymous
     synthetic text only — no target-sample content of any real corpus file."""
     leaves = [
-        c2_module.CandidateLeaf(leaf_id="header.name", kind="header_field", slot="name", text="C. Probe"),
-        c2_module.CandidateLeaf(leaf_id="header.location", kind="header_field", slot="location", text="Probe City, PC"),
-        c2_module.CandidateLeaf(leaf_id="header.phone", kind="header_field", slot="phone", text="+1 555 0100"),
-        c2_module.CandidateLeaf(leaf_id="header.email", kind="header_field", slot="envelope", text="probe@example.test"),
-        c2_module.CandidateLeaf(leaf_id="header.github", kind="header_field", slot="github", text="github.com/probe"),
-        c2_module.CandidateLeaf(leaf_id="header.linkedin", kind="header_field", slot="linkedin", text="linkedin.com/in/probe"),
-        c2_module.CandidateLeaf(leaf_id="work.e1", kind="work_entry", source="work_experience", text="Parent Coordinator, Example Org"),
-        c2_module.CandidateLeaf(leaf_id="work.e1.m1", kind="entry_meta", source="work_experience", parent_leaf_id="work.e1", text="2024-Present"),
-        c2_module.CandidateLeaf(leaf_id="work.e1.sg1", kind="entry_subgroup", source="work_experience", parent_leaf_id="work.e1", text="Group One Title"),
-        c2_module.CandidateLeaf(leaf_id="work.e1.sg1.b1", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg1", text="Planned the first group's weekly schedule"),
-        c2_module.CandidateLeaf(leaf_id="work.e1.sg1.b2", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg1", text="Trained six volunteers"),
-        c2_module.CandidateLeaf(leaf_id="work.e1.sg1.b3", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg1", text="Reported attendance monthly"),
-        c2_module.CandidateLeaf(leaf_id="work.e1.sg2", kind="entry_subgroup", source="work_experience", parent_leaf_id="work.e1", text="Group Two Title"),
-        c2_module.CandidateLeaf(leaf_id="work.e1.sg2.b1", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg2", text="Ran the second group's single event"),
-        c2_module.CandidateLeaf(leaf_id="work.e1.sg3", kind="entry_subgroup", source="work_experience", parent_leaf_id="work.e1", text="Group Three Title"),
-        c2_module.CandidateLeaf(leaf_id="work.e1.sg3.b1", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg3", text="Audited the third group's records"),
-        c2_module.CandidateLeaf(leaf_id="work.e1.sg3.b2", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg3", text="Filed the third group's summary"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="header.name", kind="header_field", slot="name", text="C. Probe"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="header.location", kind="header_field", slot="location", text="Probe City, PC"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="header.phone", kind="header_field", slot="phone", text="+1 555 0100"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="header.email", kind="header_field", slot="envelope", text="probe@example.test"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="header.github", kind="header_field", slot="github", text="github.com/probe"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="header.linkedin", kind="header_field", slot="linkedin", text="linkedin.com/in/probe"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="work.e1", kind="work_entry", source="work_experience", text="Parent Coordinator, Example Org"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="work.e1.m1", kind="entry_meta", source="work_experience", parent_leaf_id="work.e1", text="2024-Present"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="work.e1.sg1", kind="entry_subgroup", source="work_experience", parent_leaf_id="work.e1", text="Group One Title"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="work.e1.sg1.b1", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg1", text="Planned the first group's weekly schedule"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="work.e1.sg1.b2", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg1", text="Trained six volunteers"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="work.e1.sg1.b3", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg1", text="Reported attendance monthly"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="work.e1.sg2", kind="entry_subgroup", source="work_experience", parent_leaf_id="work.e1", text="Group Two Title"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="work.e1.sg2.b1", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg2", text="Ran the second group's single event"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="work.e1.sg3", kind="entry_subgroup", source="work_experience", parent_leaf_id="work.e1", text="Group Three Title"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="work.e1.sg3.b1", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg3", text="Audited the third group's records"),
+        resume_layout_candidates.CandidateLeaf(leaf_id="work.e1.sg3.b2", kind="work_bullet", source="work_experience", parent_leaf_id="work.e1.sg3", text="Filed the third group's summary"),
     ]
-    return c2_module.CandidateDocument(candidate_id="probe_nested", leaves=leaves)
+    return resume_layout_candidates.CandidateDocument(candidate_id="probe_nested", leaves=leaves)
 
 
 def _state_with_declared_subgroup_tier(labels: list[str] | None = None) -> C2LayoutState:
@@ -912,7 +918,10 @@ REAL = {
 
 
 def _summary_for(target: Path) -> tuple[dict, object]:
-    from tests.experiments.a_pipeline import _analyze_target, build_format_summary
+    from tests.experiments.a_pipeline import (
+        _analyze_target,
+        build_format_summary,
+    )
 
     evidence, raw = _analyze_target(target, c2_module.RUNS, use_persistent_cache=True)
     return build_format_summary(evidence, raw, target), evidence

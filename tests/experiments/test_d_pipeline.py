@@ -34,12 +34,14 @@ from tests.experiments.d_pipeline import (
     ScriptedAgents,
     SetHeadingRuleEdit,
     ValidationReport,
+    _validate_patch_policy,
     apply_set_heading_rule,
     discover_section_nodes,
     owner_decide,
     run_d0,
-    _validate_patch_policy,
 )
+import tests.experiments.a_pipeline as a_pipeline
+import tests.experiments.c_pipeline as c_pipeline
 
 SMALL_HTML = """<html><body>
 <header class="c1-header">J. Doe</header><hr class="hr">
@@ -109,7 +111,7 @@ def test_apply_edit_moves_section_rules_below_headings() -> None:
     header = tree.xpath("//header")[0]
     assert header.getnext().tag == "hr" and "hr--green" not in (header.getnext().get("class") or "")
     # visible text unchanged
-    assert d._html_text(SMALL_HTML)[0] == d._html_text(html)[0]
+    assert a_pipeline._html_text(SMALL_HTML)[0] == a_pipeline._html_text(html)[0]
 
 
 def test_apply_edit_node_scope_touches_only_declared_node() -> None:
@@ -839,8 +841,8 @@ def test_fixture_reproduces_defect_and_full_offline_repair(tmp_path) -> None:
 def _render(tmp_path: Path, fixture_dir: Path) -> Path:
     """Render the fixture's base candidate HTML once for measurement."""
     pdf = tmp_path / "fixture_base.pdf"
-    d._export_pinned_html_to_pdf(
-        fixture_dir / "filled.html", pdf, d.pinned_export_environment({})
+    a_pipeline._export_pinned_html_to_pdf(
+        fixture_dir / "filled.html", pdf, c_pipeline.pinned_export_environment({})
     )
     return pdf
 

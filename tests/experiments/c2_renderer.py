@@ -53,12 +53,10 @@ from app.ingestion.pdf_reader import read_pdf_text
 from tests.experiments.a_pipeline import (
     RUNS,
     _analyze_target,
-    _median,
     _comparison_diff,
     _export_pinned_html_to_pdf,
     _html_text,
     _hyphen_free,
-    _inject_local_fonts,
     _line_stability,
     _render_pages,
     _sha256,
@@ -68,62 +66,29 @@ from tests.experiments.a_pipeline import (
 )
 from tests.experiments.c_pipeline import pinned_export_environment
 from tests.experiments.c2_pipeline import (
-    C2LayoutState,
-    CandidateDocument,
-    CandidateLeaf,
-    C2_0B_PAIRS,
-    FROZEN_C1_RUNS,
-    PageState,
-    SectionContent,
-    StateModel,
-    StyleToken,
-    UnroutableContent,
     _below_heading_rule,
     _resolve_above_heading_rule,
-    candidate_document_for_pair,
     compile_layout_state,
-    own_leaf,
     render_context_coverage,
+)
+from tests.experiments.resume_layout.candidates import (
+    C2_0B_PAIRS,
+    FROZEN_C1_RUNS,
+    candidate_document_for_pair,
+)
+from tests.experiments.resume_layout.state import (
+    C2LayoutState,
     state_bytes,
 )
-from tests.experiments.resume_layout.plan import (  # phase-1 split re-export
-    OVERFLOW_POLICY,
-    PlanStatus,
-    LeafText,
-    StyledRun,
-    StyledLine,
-    HeaderFieldPlan,
-    OverflowField,
-    HeaderOverflowPlan,
-    OmittedContent,
-    HeaderRowPlan,
-    EntryPlan,
-    EntrySubGroupPlan,
-    RhythmDecision,
-    CategoryGridCell,
-    AdaptationAction,
-    AdaptationStatus,
-    SectionAdaptation,
-    SectionPlan,
+from tests.experiments.resume_layout.plan import (
     C2RenderPlan,
-    GRID_PREFLIGHT_METHOD,
-    _GRID_FONT_CACHE,
-    _preflight_font,
-    _fragment_extent_pt,
-    _wrap_line_count,
-    category_grid_preflight,
-    _entry_plan,
+    OVERFLOW_POLICY,
     compile_render_plan,
 )
-from tests.experiments.resume_layout.html import (  # phase-1 split re-export
+from tests.experiments.resume_layout.html import (
+    _class_for,
     _esc,
     _pt,
-    _style_css,
-    _class_for,
-    _rule_extent_css,
-    _styled_line_html,
-    _heading_html,
-    _list_html,
     render_html,
 )
 from tests.experiments.resume_layout.text import _norm

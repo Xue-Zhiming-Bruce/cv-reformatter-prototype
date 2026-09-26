@@ -23,8 +23,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from tests.experiments.a_pipeline import RUNS, _median, _render_pages
-from tests.experiments.c2_renderer import (  # phase-1 split
+from tests.experiments.a_pipeline import (
+    RUNS,
+    _median,
+    _render_pages,
+)
+from tests.experiments.c2_renderer import (
     _pdf_color_hex,
     _rendered_heading_positions,
     _rendered_rule_extents,
@@ -33,12 +37,9 @@ from tests.experiments.c2_renderer import (  # phase-1 split
 )
 from tests.experiments.resume_layout.text import _norm
 
-from tests.experiments.resume_layout.state import (  # phase-1 split
-    C2LayoutState,
-    Column,
-)
+from tests.experiments.resume_layout.state import C2LayoutState
 
-from tests.experiments.docx_lane.build import (  # phase-1 split
+from tests.experiments.docx_lane.build import (
     AdjustedFeature,
     ConversionCompatibilityReport,
     DocumentReviewResult,
@@ -57,12 +58,10 @@ from tests.experiments.docx_lane.build import (  # phase-1 split
     _style_of,
     build_document,
     category_grid_table_geometry,
-    content_accounting,
     deterministic_docx_bytes,
     expected_paragraphs,
     expected_visual_rows,
     normalize_font_family,
-    reading_order_gate,
 )
 
 

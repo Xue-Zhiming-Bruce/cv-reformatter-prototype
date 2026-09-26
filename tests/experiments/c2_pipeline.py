@@ -47,7 +47,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.template_analysis.commercial.bridge import _dominant_body
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
-from tests.experiments.a_pipeline import _analyze_target, build_format_summary
+from tests.experiments.a_pipeline import (
+    _analyze_target,
+    build_format_summary,
+)
 from tests.experiments.c_pipeline import (
     BodyScaffold,
     derive_body_scaffold,
@@ -62,52 +65,34 @@ DEFAULT_TARGET = (
 
 # Renderer-instruction ban (work order): the provider-neutral state must not
 # carry HTML/CSS/OOXML instructions. extra="forbid" rejects such fields; this
-from tests.experiments.resume_layout.state import (  # phase-1 split re-export
-    _RENDERER_SYNTAX,
-    SourceRole,
-    ALL_SOURCES,
-    _DEFAULT_CONTENT_KINDS,
-    _SOURCE_KEYWORDS,
-    bind_source,
-    _COMPOSITE_SPLIT,
-    bind_composite,
-    StateModel,
-    EvidenceProvenance,
-    PageState,
-    StyleToken,
-    RuleDecoration,
+from tests.experiments.resume_layout.state import (
     BadgeDecoration,
+    C2LayoutState,
+    CapabilityGap,
+    CategoryGrid,
+    CategoryGridColumn,
     Column,
-    HeaderField,
-    NodeSpacing,
+    EvidenceProvenance,
     FlowConstraint,
+    HeaderField,
+    LayoutNode,
+    NodeSpacing,
+    PageState,
+    RuleDecoration,
     SectionBinding,
     SectionContent,
-    CategoryGridColumn,
-    CategoryGrid,
-    LayoutNode,
-    CapabilityGap,
-    _ALLOWED_PARENT_KINDS,
-    C2LayoutState,
-    validate_layout_state,
+    SourceRole,
+    StyleToken,
+    _DEFAULT_CONTENT_KINDS,
+    bind_composite,
+    bind_source,
     state_bytes,
+    validate_layout_state,
 )
-from tests.experiments.resume_layout.candidates import (  # phase-1 split re-export
-    CandidateLeafKind,
-    CandidateLeaf,
-    UnroutableContent,
-    CandidateSection,
+from tests.experiments.resume_layout.candidates import (
     CandidateDocument,
-    _profile_leaves,
+    CandidateLeaf,
     independent_candidate_fixtures,
-    FROZEN_C1_RUNS,
-    C2_0B_PAIRS,
-    _leaf,
-    _unroutable,
-    candidate_resume_D,
-    candidate_resume_E,
-    candidate_resume_F,
-    candidate_document_for_pair,
 )
 def _label_case(label: str) -> Literal["upper", "title", "mixed"]:
     letters = [char for char in label if char.isalpha()]

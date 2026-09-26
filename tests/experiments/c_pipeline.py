@@ -20,15 +20,34 @@ from lxml import html as lxml_html
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field
 
-from tests.experiments.a_pipeline import ROOT, _pinned_chrome_environment, _requested_font_families
-from tests.experiments.b_pipeline import DEFAULT_SOURCE, DEFAULT_TARGET, FinalReview, _page_text_lines, source_header_units
-from tests.experiments.refinement import GateFailure, HardGateResult
+from tests.experiments.a_pipeline import (
+    ROOT,
+    _pinned_chrome_environment,
+    _requested_font_families,
+)
+from tests.experiments.b_pipeline import (
+    DEFAULT_SOURCE,
+    DEFAULT_TARGET,
+    FinalReview,
+    _page_text_lines,
+    source_header_units,
+)
+from tests.experiments.refinement import (
+    GateFailure,
+    HardGateResult,
+)
 from tests.experiments.fill_plan import (
     _section_semantic,
     analyze_candidate_provenance,
     normalize_section_headings,
     source_blocks,
     source_lines,
+)
+
+from tests.experiments.fill_plan import (
+    CONTACT_KIND_CHECKS,
+    CONTACT_KIND_CHECKS as _CKC,
+    _ROLE_WORDS,
 )
 
 SlotKind = Literal["name", "title", "tagline", "location", "phone", "envelope", "github", "linkedin"]
@@ -349,7 +368,6 @@ def derive_header_scaffold(
     margin_left = float(summary.get("margins_pt", {}).get("default", {}).get("left", 0))
     all_header_candidates = _page_text_lines(target_pdf, max_lines=20)
 
-    from tests.experiments.fill_plan import CONTACT_KIND_CHECKS as _CKC
 
     def _cap_line_text(line: dict[str, Any]) -> str:
         return " ".join(str(word["text"]) for word in line["words"])
@@ -380,7 +398,6 @@ def derive_header_scaffold(
     # not a positional assumption that it is always the last line (D's tagline
     # row sits BELOW its contact line). Fallback keeps the frozen positional
     # mapping when no line matches (two-line headers unchanged).
-    from tests.experiments.fill_plan import CONTACT_KIND_CHECKS, _ROLE_WORDS
 
     def line_text(line: dict[str, Any]) -> str:
         return " ".join(str(word["text"]) for word in line["words"])

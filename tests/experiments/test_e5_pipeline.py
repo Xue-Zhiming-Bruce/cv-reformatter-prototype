@@ -38,6 +38,11 @@ from tests.experiments.test_e_pipeline import (
 )
 
 import tests.experiments.e.lane_b_template as at
+import tests.experiments.a_pipeline as a_pipeline
+import tests.experiments.e.shared as e_shared
+import tests.experiments.e.stages as e_stages
+import tests.experiments.d_pipeline as d_pipeline
+import tests.experiments.e.e5 as e_e5
 
 # ===========================================================================
 # E5 — Phase 0 loop fixes + Builder representation comparison (Lane A / Lane B)
@@ -62,8 +67,8 @@ def _base_authored_template() -> "at.AuthoredTemplateCandidate":
 
 
 def test_lane_b_can_opt_into_thinking_without_changing_other_live_roles() -> None:
-    default = e5._live_model_settings()
-    thinking = e5._live_model_settings(thinking=True)
+    default = e_shared._live_model_settings()
+    thinking = e_shared._live_model_settings(thinking=True)
     assert default["extra_body"]["thinking"]["type"] == "disabled"
     assert "openai_reasoning_effort" not in default
     assert thinking["extra_body"]["thinking"]["type"] == "enabled"
@@ -76,7 +81,7 @@ def test_lane_b_can_opt_into_thinking_without_changing_other_live_roles() -> Non
 def test_measurement_request_accepts_semantic_intent_without_anchors() -> None:
     """Phase 0: the Reviewer reports a semantic measurement intent; exact
     verbatim PDF text anchors are no longer required."""
-    request = e.MeasurementRequest(
+    request = e_shared.MeasurementRequest(
         request_id="measure-pending",
         metric="role_gap",
         page=1,
@@ -86,13 +91,13 @@ def test_measurement_request_accepts_semantic_intent_without_anchors() -> None:
     assert request.intent
     assert not request.from_text
     with pytest.raises(ValueError):
-        e.MeasurementRequest(
+        e_shared.MeasurementRequest(
             request_id="measure-pending", metric="role_gap", page=1,
         )  # neither anchors nor intent
 
 
 def test_role_gap_binding_does_not_measure_an_unrelated_visual_dimension() -> None:
-    request = e.MeasurementRequest(
+    request = e_shared.MeasurementRequest(
         request_id="measure-header", metric="role_gap", page=1,
         intent="compare the height of the vertical rule beside the name",
     )
@@ -103,7 +108,7 @@ def test_role_gap_binding_does_not_measure_an_unrelated_visual_dimension() -> No
         region_span=None,
         render_leaf_texts=[],
     )
-    assert isinstance(result, e.MeasurementResult)
+    assert isinstance(result, e_shared.MeasurementResult)
     assert result.status == "not_measurable"
 
     contact = request.model_copy(update={
@@ -117,14 +122,14 @@ def test_role_gap_binding_does_not_measure_an_unrelated_visual_dimension() -> No
         region_span=None,
         render_leaf_texts=[],
     )
-    assert isinstance(contact_result, e.MeasurementResult)
+    assert isinstance(contact_result, e_shared.MeasurementResult)
     assert contact_result.status == "not_measurable"
 
 
 def test_measurement_binding_resolves_against_actual_final_pdf_objects(tmp_path: Path) -> None:
     """Phase 0: binding resolves the semantic intent into REAL final-PDF
     objects (render anchors come from the render's own entry-head rows)."""
-    run_dir, _terminal, record = e.run_e5(
+    run_dir, _terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
     )
     lane = record["lanes"]["a"]
@@ -137,7 +142,7 @@ def test_measurement_binding_resolves_against_actual_final_pdf_objects(tmp_path:
 
 
 def test_stable_duplicate_findings_are_deduplicated_before_attribution() -> None:
-    finding = e.DefectFinding(
+    finding = e_shared.DefectFinding(
         finding_id="finding-001",
         target_version="target-resume_I-v1",
         render_version="render-v1",
@@ -145,14 +150,14 @@ def test_stable_duplicate_findings_are_deduplicated_before_attribution() -> None
         region="section.04",
         observation="The gap between the first two entry heads is larger than the target.",
         suspected_dimension="role_gap",
-        requested_measurement=e.MeasurementRequest(
+        requested_measurement=e_shared.MeasurementRequest(
             request_id="measure-pending", metric="role_gap", page=1, intent="entry head gap",
         ),
         severity="high",
         confidence=0.6,
         reviewer="scripted",
     )
-    ledger = e.DefectLedger()
+    ledger = e_e5.DefectLedger()
     entry, action = ledger.observe(finding)
     assert action == "new"
     # Re-observation of the same defect (same region/dimension/class) is a
@@ -166,7 +171,7 @@ def test_stable_duplicate_findings_are_deduplicated_before_attribution() -> None
 
 
 def test_changed_findings_reopen_in_the_ledger() -> None:
-    finding = e.DefectFinding(
+    finding = e_shared.DefectFinding(
         finding_id="finding-001",
         target_version="target-resume_I-v1",
         render_version="render-v2",
@@ -174,14 +179,14 @@ def test_changed_findings_reopen_in_the_ledger() -> None:
         region="section.04",
         observation="The gap between the first two entry heads is larger than the target.",
         suspected_dimension="role_gap",
-        requested_measurement=e.MeasurementRequest(
+        requested_measurement=e_shared.MeasurementRequest(
             request_id="m", metric="role_gap", page=1, intent="entry head gap",
         ),
         severity="high",
         confidence=0.6,
         reviewer="scripted",
     )
-    ledger = e.DefectLedger()
+    ledger = e_e5.DefectLedger()
     ledger.observe(finding)
     changed = finding.model_copy(
         update={"render_version": "render-v3", "observation": "The entry head text now overlaps the meta column."}
@@ -192,8 +197,8 @@ def test_changed_findings_reopen_in_the_ledger() -> None:
 
 
 def test_later_review_rounds_focus_on_changed_regions() -> None:
-    round1 = e._review_scope_payload(1, [], [])
-    round2 = e._review_scope_payload(2, ["section.04"], [])
+    round1 = e_e5._review_scope_payload(1, [], [])
+    round2 = e_e5._review_scope_payload(2, ["section.04"], [])
     assert round1["whole_document"] is True
     assert round2["whole_document"] is False
     assert round2["changed_regions"] == ["section.04"]
@@ -201,12 +206,12 @@ def test_later_review_rounds_focus_on_changed_regions() -> None:
 
 
 def test_live_builder_budget_is_reserved() -> None:
-    assert e.E5_BUILDER_RESERVE_REQUESTS > 0
-    exhausted_to_reserve = RunBudget(max_model_requests=e.E5_BUILDER_RESERVE_REQUESTS, max_tool_calls=10)
-    assert exhausted_to_reserve.remaining_model_requests() == e.E5_BUILDER_RESERVE_REQUESTS
-    assert e._builder_reserve_intact(exhausted_to_reserve) is False
-    healthy = RunBudget(max_model_requests=e.E5_BUILDER_RESERVE_REQUESTS + 1, max_tool_calls=10)
-    assert e._builder_reserve_intact(healthy) is True
+    assert e_e5.E5_BUILDER_RESERVE_REQUESTS > 0
+    exhausted_to_reserve = RunBudget(max_model_requests=e_e5.E5_BUILDER_RESERVE_REQUESTS, max_tool_calls=10)
+    assert exhausted_to_reserve.remaining_model_requests() == e_e5.E5_BUILDER_RESERVE_REQUESTS
+    assert e_e5._builder_reserve_intact(exhausted_to_reserve) is False
+    healthy = RunBudget(max_model_requests=e_e5.E5_BUILDER_RESERVE_REQUESTS + 1, max_tool_calls=10)
+    assert e_e5._builder_reserve_intact(healthy) is True
 
 
 # --- repair-starvation scheduling (2026-09-21 owner work order) -------------
@@ -218,13 +223,13 @@ def test_same_render_paraphrase_does_not_reopen_the_ledger() -> None:
     measurement/attribution on an unchanged render — the 110-reopen loop).
     Reopen is reserved for a changed observation on a NEW render version."""
     finding = _e5_finding("f1", "section.04", "role_gap")
-    original_class = e._observation_class(finding.observation)
-    ledger = e.DefectLedger()
+    original_class = e_e5._observation_class(finding.observation)
+    ledger = e_e5.DefectLedger()
     entry, action = ledger.observe(finding)
     assert action == "new"
-    e._record_ledger_attribution(
+    e_e5._record_ledger_attribution(
         ledger, finding,
-        e.AttributionRecord(
+        e_shared.AttributionRecord(
             finding_id="f1", render_version="render-v1",
             measurement_request_id="measure-f1",
             attribution="unresolved", hypothesis_status="unresolved",
@@ -254,8 +259,8 @@ def test_round_work_cap_bounds_attribution_backlog() -> None:
     """100 open findings can only send at most 3 findings into one round's
     attribution backlog; the rest are returned as deferred (never lost)."""
     findings = [_e5_finding(f"f{i}", f"region.{i:03d}", "role_gap") for i in range(100)]
-    selected, deferred = e._e5_select_round_work(findings, [], [])
-    assert len(selected) == e.E5_MAX_ROUND_ATTRIBUTION_FINDINGS == 3
+    selected, deferred = e_e5._e5_select_round_work(findings, [], [])
+    assert len(selected) == e_e5.E5_MAX_ROUND_ATTRIBUTION_FINDINGS == 3
     assert len(deferred) == 97
     assert set(f.finding_id for f in selected) != set(f.finding_id for f in deferred)
     assert selected[0].finding_id == "f0"  # review order preserved
@@ -265,10 +270,10 @@ def test_deferred_findings_stay_open_and_reeligible() -> None:
     """Deferred is scheduling state, NOT closure: a deferred finding stays in
     the open-findings view and is re-selected in a later round."""
     findings = [_e5_finding(f"f{i}", f"region.{i}", "role_gap") for i in range(5)]
-    selected, deferred = e._e5_select_round_work(findings, [], [])
+    selected, deferred = e_e5._e5_select_round_work(findings, [], [])
     assert [f.finding_id for f in selected] == ["f0", "f1", "f2"]
     # a later round re-selects the deferred ones under the same rule
-    later_selected, later_deferred = e._e5_select_round_work([], [], deferred)
+    later_selected, later_deferred = e_e5._e5_select_round_work([], [], deferred)
     assert [f.finding_id for f in later_selected] == ["f3", "f4"]
     assert later_deferred == []
 
@@ -280,7 +285,7 @@ def test_one_failed_attribution_does_not_block_an_attributed_defect() -> None:
     blocked = _e5_finding("f1", "region.01", "role_gap")
     repairable = _e5_finding("f2", "region.02", "role_gap")
     attributions = [
-        e.AttributionRecord(
+        e_shared.AttributionRecord(
             finding_id="f1", render_version="render-v1",
             measurement_request_id="measure-f1",
             attribution="unresolved", hypothesis_status="unresolved",
@@ -290,10 +295,10 @@ def test_one_failed_attribution_does_not_block_an_attributed_defect() -> None:
         _e5_attribution(repairable),
     ]
     measured = {
-        "f1": (e.MeasurementResult(request_id="measure-f1", status="confirmed", delta_pt=9.0), blocked.requested_measurement),
-        "f2": (e.MeasurementResult(request_id="measure-f2", status="confirmed", delta_pt=5.0), repairable.requested_measurement),
+        "f1": (e_shared.MeasurementResult(request_id="measure-f1", status="confirmed", delta_pt=9.0), blocked.requested_measurement),
+        "f2": (e_shared.MeasurementResult(request_id="measure-f2", status="confirmed", delta_pt=5.0), repairable.requested_measurement),
     }
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = e_e5._next_e5_repair_finding(
         [blocked, repairable], measured, attributions, []
     )
     assert selected is not None and selected[0].finding_id == "f2"
@@ -307,9 +312,9 @@ def test_builder_called_before_full_ledger_is_attributed() -> None:
     repairable = _e5_finding("f3", "region.03", "role_gap")
     attributions = [_e5_attribution(repairable)]  # ONLY f3 is attributed
     measured = {
-        "f3": (e.MeasurementResult(request_id="measure-f3", status="confirmed", delta_pt=7.0), repairable.requested_measurement),
+        "f3": (e_shared.MeasurementResult(request_id="measure-f3", status="confirmed", delta_pt=7.0), repairable.requested_measurement),
     }
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = e_e5._next_e5_repair_finding(
         [repairable], measured, attributions, []
     )
     assert selected is not None and selected[0].finding_id == "f3" and stalled is False
@@ -329,7 +334,7 @@ def test_exact_candidate_accounting_failure_enters_repair_with_gate_evidence() -
             "missing_leaves": ["header.name", "work.e1.b1"],
         },
     }
-    items = e._e5_gate_repair_items("b", "target-resume_I-v1", "render-v1", gates)
+    items = e_e5._e5_gate_repair_items("b", "target-resume_I-v1", "render-v1", gates)
     assert len(items) == 1
     finding, result, request, attribution = items[0]
     assert finding.region == "candidate_content_accounting"
@@ -347,9 +352,9 @@ def test_exact_candidate_accounting_failure_enters_repair_with_gate_evidence() -
     visual = _e5_finding("v1", "region.09", "role_gap")
     measured = {
         finding.finding_id: (result, request),
-        "v1": (e.MeasurementResult(request_id="m", status="confirmed", delta_pt=6.0), visual.requested_measurement),
+        "v1": (e_shared.MeasurementResult(request_id="m", status="confirmed", delta_pt=6.0), visual.requested_measurement),
     }
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = e_e5._next_e5_repair_finding(
         [finding, visual], measured, [attribution, _e5_attribution(visual)], []
     )
     assert selected is not None and selected[0].finding_id == finding.finding_id
@@ -360,12 +365,12 @@ def test_hard_gate_repair_inputs_never_convert_uncertain_or_lane_a_gates() -> No
     turned into repair inputs (fail closed, gate stays red); Lane A's
     content-shape failure is the declared representation ceiling."""
     privacy = {"no_target_candidate_facts": {"passed": False, "excluded_labels": []}}
-    assert e._e5_gate_repair_items("b", "t", "v1", privacy) == []
+    assert e_e5._e5_gate_repair_items("b", "t", "v1", privacy) == []
     shapes = {"content_shapes_match_evidence": {"passed": False, "rows": []}}
-    assert e._e5_gate_repair_items("a", "t", "v1", shapes) == []
+    assert e_e5._e5_gate_repair_items("a", "t", "v1", shapes) == []
     # a green gate yields no repair input
     green = {"content_gate": {"passed": True, "missing_pdf_leaves": []}}
-    assert e._e5_gate_repair_items("b", "t", "v1", green) == []
+    assert e_e5._e5_gate_repair_items("b", "t", "v1", green) == []
 
 
 def test_lane_b_only_candidate_truth_and_privacy_are_render_gates() -> None:
@@ -377,16 +382,16 @@ def test_lane_b_only_candidate_truth_and_privacy_are_render_gates() -> None:
         "pdf_presence": {"passed": False},
         "no_blank_page": {"passed": False},
     }}
-    blocking = e._e5_blocking_gates("b")
-    record = e._e5_hard_gate_record(
+    blocking = e_e5._e5_blocking_gates("b")
+    record = e_e5._e5_hard_gate_record(
         "render-v1", gates, details, blocking_gates=blocking
     )
     assert record["passed"] is True
     assert record["blocking_failures"] == []
     assert record["diagnostic_warnings"] == ["pdf_presence", "no_blank_page"]
-    assert e._e5_blocking_gates_passed("b", gates) is True
+    assert e_e5._e5_blocking_gates_passed("b", gates) is True
     gates["candidate_content_accounting"] = False
-    assert e._e5_blocking_gates_passed("b", gates) is False
+    assert e_e5._e5_blocking_gates_passed("b", gates) is False
 
 
 @e5_skip
@@ -414,7 +419,7 @@ def test_reviewer_failure_does_not_starve_shell_confirmed_gate_repair(
     monkeypatch.setattr(e5, "_live_reviewer_findings", reviewer_failure)
     monkeypatch.setattr(e5, "_with_connection_retry", lambda call, **_kwargs: call())
 
-    run_dir, _terminal, record = e.run_e5(
+    run_dir, _terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=True, lanes=("b",), max_repair_rounds=1,
     )
     lane = record["lanes"]["b"]
@@ -436,15 +441,15 @@ def test_review_gate_full_review_once_per_render_fingerprint() -> None:
     same version id/hash -> one review; a DIFFERENT version id with the SAME
     pdf hash does NOT re-review; a new pdf hash may be reviewed once."""
     reviewed: set[str] = set()
-    assert e._e5_review_this_round(reviewed, "pdf-hash-a") is True
+    assert e_e5._e5_review_this_round(reviewed, "pdf-hash-a") is True
     reviewed.add("pdf-hash-a")
-    assert e._e5_review_this_round(reviewed, "pdf-hash-a") is False
+    assert e_e5._e5_review_this_round(reviewed, "pdf-hash-a") is False
     # different version id, same final PDF: same fingerprint, no re-review
-    assert e._e5_review_this_round(reviewed, "pdf-hash-a") is False
+    assert e_e5._e5_review_this_round(reviewed, "pdf-hash-a") is False
     # new pdf hash -> scoped review allowed once
-    assert e._e5_review_this_round(reviewed, "pdf-hash-b") is True
+    assert e_e5._e5_review_this_round(reviewed, "pdf-hash-b") is True
     reviewed.add("pdf-hash-b")
-    assert e._e5_review_this_round(reviewed, "pdf-hash-b") is False
+    assert e_e5._e5_review_this_round(reviewed, "pdf-hash-b") is False
 
 
 def test_round_scheduling_is_lane_agnostic() -> None:
@@ -452,15 +457,15 @@ def test_round_scheduling_is_lane_agnostic() -> None:
     shared cap) and the same repair-scan rule."""
     findings = [_e5_finding(f"f{i}", f"region.{i}", "role_gap") for i in range(6)]
     for _lane in ("a", "b"):
-        selected, deferred = e._e5_select_round_work(findings, [], [])
-        assert len(selected) == e.E5_MAX_ROUND_ATTRIBUTION_FINDINGS
+        selected, deferred = e_e5._e5_select_round_work(findings, [], [])
+        assert len(selected) == e_e5.E5_MAX_ROUND_ATTRIBUTION_FINDINGS
         assert len(deferred) == 3
 
 
 # --- agent message audit (owner decision 2026-09-22) ------------------------
 
 
-def _audit_spec(**overrides: Any) -> e.E5AgentAuditSpec:
+def _audit_spec(**overrides: Any) -> e_shared.E5AgentAuditSpec:
     defaults = dict(
         agent="visual_reviewer",
         lane="a",
@@ -475,7 +480,7 @@ def _audit_spec(**overrides: Any) -> e.E5AgentAuditSpec:
         image_refs=(),
     )
     defaults.update(overrides)
-    return e.E5AgentAuditSpec(**defaults)
+    return e_shared.E5AgentAuditSpec(**defaults)
 
 
 class _FakeRunResult:
@@ -538,7 +543,7 @@ def test_agent_audit_success_keeps_full_history_and_redacts_images(tmp_path: Pat
     the call_id matches the persisted trace artifact."""
     import json
 
-    trace = e.RunTrace(tmp_path)
+    trace = d_pipeline.RunTrace(tmp_path)
     trace.add(agent="shell", phase="e0", action="lane_started")
     image_ref = {
         "path": "review_target_page_1.png", "page": 1, "role": "target",
@@ -546,7 +551,7 @@ def test_agent_audit_success_keeps_full_history_and_redacts_images(tmp_path: Pat
     }
     messages = _audit_messages(tmp_image=b"raw png bytes")
     spec = _audit_spec(image_refs=(image_ref,))
-    call_id = e._e5_agent_audit_record(
+    call_id = e_shared._e5_agent_audit_record(
         trace, spec,
         input_messages=messages,
         run_result=_FakeRunResult(messages),
@@ -600,8 +605,8 @@ def test_agent_audit_reference_less_image_is_hashed_and_marked_redacted(
     serialized = json.loads(ModelMessagesTypeAdapter.dump_json(messages))
     encoded = serialized[0]["parts"][0]["content"][1]["data"]
     assert "-" in encoded or "_" in encoded
-    trace = e.RunTrace(tmp_path)
-    e._e5_agent_audit_record(
+    trace = d_pipeline.RunTrace(tmp_path)
+    e_shared._e5_agent_audit_record(
         trace, _audit_spec(image_refs=()),
         input_messages=messages, run_result=_FakeRunResult(messages), error=None,
     )
@@ -634,9 +639,9 @@ def test_agent_audit_keeps_validation_retry_and_tool_traffic(tmp_path: Path) -> 
         ModelRequest(parts=[RetryPromptPart(content="schema error")]),
         ModelResponse(parts=[TextPart(content="ok")]),
     ]
-    trace = e.RunTrace(tmp_path)
+    trace = d_pipeline.RunTrace(tmp_path)
     spec = _audit_spec(agent="attribution_investigator", phase="attribute")
-    e._e5_agent_audit_record(
+    e_shared._e5_agent_audit_record(
         trace, spec, input_messages=messages, run_result=_FakeRunResult(messages), error=None
     )
     import json
@@ -653,9 +658,9 @@ def test_agent_audit_failed_call_records_error_not_a_fake_response(tmp_path: Pat
     from pydantic_ai.messages import ModelRequest, UserPromptPart
 
     messages = [ModelRequest(parts=[UserPromptPart(content="prompt")])]
-    trace = e.RunTrace(tmp_path)
+    trace = d_pipeline.RunTrace(tmp_path)
     spec = _audit_spec(agent="lane_b_builder", lane="b", phase="repair")
-    e._e5_agent_audit_record(
+    e_shared._e5_agent_audit_record(
         trace, spec, input_messages=messages, run_result=None,
         error="UsageLimitExceeded: The next request would exceed the request_limit of 8.",
     )
@@ -680,13 +685,13 @@ def test_agent_audit_withholds_content_on_secret_or_signed_url(tmp_path: Path) -
             parts=[TextPart(content="https://s3.amazonaws.com/x?X-Amz-Security-Token=SECRET")]
         ),
     ]
-    trace = e.RunTrace(tmp_path)
-    e._e5_agent_audit_record(
+    trace = d_pipeline.RunTrace(tmp_path)
+    e_shared._e5_agent_audit_record(
         trace, _audit_spec(), input_messages=poisoned,
         run_result=_FakeRunResult(poisoned), error=None,
     )
     safe_messages = [ModelRequest(parts=[UserPromptPart(content="prompt")])]
-    e._e5_agent_audit_record(
+    e_shared._e5_agent_audit_record(
         trace,
         _audit_spec(instructions="inspect https://x.test/?X-Amz-Signature=INSTRUCTION_SECRET"),
         input_messages=safe_messages,
@@ -708,17 +713,17 @@ def test_agent_audit_withholds_content_on_secret_or_signed_url(tmp_path: Path) -
 
 
 def test_agent_audit_lane_files_are_isolated(tmp_path: Path) -> None:
-    trace_a = e.RunTrace(tmp_path / "lane_a")
-    trace_b = e.RunTrace(tmp_path / "lane_b")
+    trace_a = d_pipeline.RunTrace(tmp_path / "lane_a")
+    trace_b = d_pipeline.RunTrace(tmp_path / "lane_b")
     trace_a.out_dir.mkdir(); trace_b.out_dir.mkdir()
     from pydantic_ai.messages import ModelRequest, UserPromptPart
 
     messages = [ModelRequest(parts=[UserPromptPart(content="x")])]
-    e._e5_agent_audit_record(
+    e_shared._e5_agent_audit_record(
         trace_a, _audit_spec(lane="a"), input_messages=messages,
         run_result=_FakeRunResult(messages), error=None,
     )
-    e._e5_agent_audit_record(
+    e_shared._e5_agent_audit_record(
         trace_b, _audit_spec(lane="b"), input_messages=messages,
         run_result=None, error="Connection error.",
     )
@@ -732,13 +737,13 @@ def test_agent_audit_lane_files_are_isolated(tmp_path: Path) -> None:
 def test_agent_audit_call_id_binds_trace_and_render_version(tmp_path: Path) -> None:
     import json
 
-    trace = e.RunTrace(tmp_path)
+    trace = d_pipeline.RunTrace(tmp_path)
     trace.add(agent="shell", phase="loop", action="review_gate", output={"render_version": "render-v1"})
     from pydantic_ai.messages import ModelRequest, UserPromptPart
 
     messages = [ModelRequest(parts=[UserPromptPart(content="p")])]
     spec = _audit_spec(render_version="render-v1", phase="attribute", agent="attribution_investigator")
-    call_id = e._e5_agent_audit_record(
+    call_id = e_shared._e5_agent_audit_record(
         trace, spec, input_messages=messages, run_result=None, error="some error"
     )
     record = json.loads((tmp_path / "agent_messages.jsonl").read_text())
@@ -751,24 +756,24 @@ def test_agent_audit_call_id_binds_trace_and_render_version(tmp_path: Path) -> N
 def test_lane_a_rejects_target_specific_identifiers_and_invalid_fields() -> None:
     # Unknown fields fail validation (pydantic extra=forbid).
     with pytest.raises(ValueError):
-        e.LaneAStructureProposal.model_validate(
+        e_e5.LaneAStructureProposal.model_validate(
             {
                 "proposal_id": "p1", "agent": "scripted", "sections": [],
                 "target_hash": "af6b9234",
             }
         )
     with pytest.raises(ValueError):
-        e.E5LaneASection.model_validate(
+        e_e5.E5LaneASection.model_validate(
             {"section_node_id": "section.01", "heading_in_rail": True,
              "rail_label_width_pt": 90.0, "resume_i_heading": "EXPERIENCE"}
         )
     with pytest.raises(ValueError):
-        e.E5LaneASection.model_validate(
+        e_e5.E5LaneASection.model_validate(
             {"section_node_id": "section.01", "heading_in_rail": True}
         )  # rail_heading without width is invalid
     for unused_field in ("rationale", "evidence_refs", "expected_measurements"):
         with pytest.raises(ValueError):
-            e.LaneAStructureProposal.model_validate(
+            e_e5.LaneAStructureProposal.model_validate(
                 {
                     "proposal_id": "p1",
                     "agent": "scripted",
@@ -794,12 +799,12 @@ def test_builder_entries_receive_identical_initial_payload_and_image_hashes(
     def lane_a_builder(_budget, _trace, *, payload, images, proposal_id, audit=None):
         # the production call site passes the agent-message audit spec: the
         # seam must match the real signature or the builder is never reached
-        assert isinstance(audit, e.E5AgentAuditSpec) and audit.lane == "a", audit
+        assert isinstance(audit, e_shared.E5AgentAuditSpec) and audit.lane == "a", audit
         capture("a", payload, images)
-        return e.LaneAStructureProposal(proposal_id=proposal_id, sections=[], agent="llm")
+        return e_e5.LaneAStructureProposal(proposal_id=proposal_id, sections=[], agent="llm")
 
     def lane_b_builder(_budget, _trace, *, payload, images, template_id, audit=None):
-        assert isinstance(audit, e.E5AgentAuditSpec) and audit.lane == "b", audit
+        assert isinstance(audit, e_shared.E5AgentAuditSpec) and audit.lane == "b", audit
         capture("b", payload, images)
         return _base_authored_template().model_copy(update={"template_id": template_id})
 
@@ -810,7 +815,7 @@ def test_builder_entries_receive_identical_initial_payload_and_image_hashes(
         return []
 
     monkeypatch.setattr(e5, "_live_reviewer_findings", reviewer)
-    e.run_e5(
+    e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=True, lanes=("a", "b"), max_repair_rounds=0,
     )
     assert received["a"] == received["b"]
@@ -837,20 +842,20 @@ def test_builder_evidence_package_is_representation_neutral() -> None:
     class State:
         nodes = [Node()]
 
-    draft = e.TargetStructureDraft(
+    draft = e_shared.TargetStructureDraft(
         target_id="target-v1",
         investigator="scripted",
         structure=[],
         unresolved=[],
-        self_reported=e.SelfReportedStatus(status="partial"),
+        self_reported=e_shared.SelfReportedStatus(status="partial"),
     )
-    package_a = e._e5_builder_evidence_package(
+    package_a = e_e5._e5_builder_evidence_package(
         draft=draft,
         state=State(),
         derived={"sidebar_rules": {"r": {"x0_pt": 1}}, "sidebar_labels": []},
         page_size=(612.0, 792.0),
     )
-    package_b = e._e5_builder_evidence_package(
+    package_b = e_e5._e5_builder_evidence_package(
         draft=draft,
         state=State(),
         derived={"sidebar_rules": {"r": {"x0_pt": 1}}, "sidebar_labels": []},
@@ -862,8 +867,8 @@ def test_builder_evidence_package_is_representation_neutral() -> None:
     assert package_a["current_representation"] is None
 
 
-def _e5_finding(finding_id: str, region: str, dimension: str) -> e.DefectFinding:
-    return e.DefectFinding(
+def _e5_finding(finding_id: str, region: str, dimension: str) -> e_shared.DefectFinding:
+    return e_shared.DefectFinding(
         finding_id=finding_id,
         target_version="target-v1",
         render_version="render-v1",
@@ -871,7 +876,7 @@ def _e5_finding(finding_id: str, region: str, dimension: str) -> e.DefectFinding
         region=region,
         observation=f"Observed {dimension} mismatch",
         suspected_dimension=dimension,
-        requested_measurement=e.MeasurementRequest(
+        requested_measurement=e_shared.MeasurementRequest(
             request_id=f"measure-{finding_id}",
             metric="role_gap",
             page=1,
@@ -884,14 +889,14 @@ def _e5_finding(finding_id: str, region: str, dimension: str) -> e.DefectFinding
 
 
 def _e5_attribution(
-    finding: e.DefectFinding,
+    finding: e_shared.DefectFinding,
     *,
     owner: str = "builder",
     status: str = "confirmed",
     render_version: str | None = None,
     request_id: str | None = None,
-) -> e.AttributionRecord:
-    return e.AttributionRecord(
+) -> e_shared.AttributionRecord:
+    return e_shared.AttributionRecord(
         finding_id=finding.finding_id,
         render_version=render_version or finding.render_version,
         measurement_request_id=request_id or finding.requested_measurement.request_id,
@@ -904,10 +909,10 @@ def _e5_attribution(
 
 
 def _force_scripted_builder_attribution(monkeypatch: pytest.MonkeyPatch) -> None:
-    default = e._e5_default_attribution
+    default = e_e5._e5_default_attribution
 
     def scripted(finding, result, request):
-        if result.status == "confirmed" and abs(result.delta_pt or 0.0) > e.E2_IMPROVEMENT_TOLERANCE_PT:
+        if result.status == "confirmed" and abs(result.delta_pt or 0.0) > e_stages.E2_IMPROVEMENT_TOLERANCE_PT:
             return _e5_attribution(finding, request_id=request.request_id)
         return default(finding, result, request)
 
@@ -918,10 +923,10 @@ def test_repeated_fingerprint_uses_the_next_repairable_finding() -> None:
     first = _e5_finding("f1", "header", "gap")
     second = _e5_finding("f2", "experience", "alignment")
     measured = {
-        "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), first.requested_measurement),
-        "f2": (e.MeasurementResult(request_id="m2", status="confirmed", delta_pt=4.0), second.requested_measurement),
+        "f1": (e_shared.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), first.requested_measurement),
+        "f2": (e_shared.MeasurementResult(request_id="m2", status="confirmed", delta_pt=4.0), second.requested_measurement),
     }
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = e_e5._next_e5_repair_finding(
         [first, second], measured,
         [_e5_attribution(first), _e5_attribution(second)],
         [f"{first.render_version}:header:gap:8.0"],
@@ -933,9 +938,9 @@ def test_repeated_fingerprint_uses_the_next_repairable_finding() -> None:
 def test_all_repeated_fingerprints_stop_as_stalled() -> None:
     finding = _e5_finding("f1", "header", "gap")
     measured = {
-        "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
+        "f1": (e_shared.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
     }
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = e_e5._next_e5_repair_finding(
         [finding], measured, [_e5_attribution(finding)],
         [f"{finding.render_version}:header:gap:8.0"],
     )
@@ -948,19 +953,19 @@ def test_mixed_confirmed_and_unbound_findings_are_both_sent_for_attribution() ->
     unbound = _e5_finding("f2", "experience", "alignment")
     no_defect = _e5_finding("f3", "header", "gap")
     measured = {
-        "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), confirmed.requested_measurement),
-        "f2": (e.MeasurementResult(request_id="m2", status="evidence_missing", reason="unbound"), unbound.requested_measurement),
-        "f3": (e.MeasurementResult(request_id="m3", status="confirmed", delta_pt=0.1), no_defect.requested_measurement),
+        "f1": (e_shared.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), confirmed.requested_measurement),
+        "f2": (e_shared.MeasurementResult(request_id="m2", status="evidence_missing", reason="unbound"), unbound.requested_measurement),
+        "f3": (e_shared.MeasurementResult(request_id="m3", status="confirmed", delta_pt=0.1), no_defect.requested_measurement),
     }
-    batches = e._e5_attribution_batches([confirmed, unbound, no_defect], measured)
+    batches = e_e5._e5_attribution_batches([confirmed, unbound, no_defect], measured)
     assert [[finding.finding_id for finding in batch] for batch in batches] == [["f1", "f2"]]
 
 
 def test_measurement_alone_never_confirms_template_compilation() -> None:
     finding = _e5_finding("f1", "experience", "gap")
-    attribution = e._e5_default_attribution(
+    attribution = e_e5._e5_default_attribution(
         finding,
-        e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
+        e_shared.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
         finding.requested_measurement,
     )
     assert attribution.attribution == "unresolved"
@@ -972,7 +977,7 @@ def test_lane_b_routes_confirmed_presentation_residual_directly_to_builder() -> 
     finding = _e5_finding("f1", "experience", "gap")
     attribution = e5._e5_lane_b_attribution(
         finding,
-        e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
+        e_shared.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
         finding.requested_measurement,
     )
     assert (attribution.attribution, attribution.repair_owner) == (
@@ -984,7 +989,7 @@ def test_reviewer_does_not_request_target_only_candidate_sections() -> None:
     from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     labels = [
-        e.PresentationLabel(
+        e_shared.PresentationLabel(
             label_id=f"label-{index}", text=text, kind="section_heading",
             status="approved", evidence_ids=[f"evidence-{index}"],
         )
@@ -1057,7 +1062,7 @@ def test_candidate_shape_filter_keeps_real_skills_layout_and_page_local_residual
     )
 
     entry_header_gap = _e5_finding("f7", "experience", "role_gap").model_copy(update={
-        "requested_measurement": e.MeasurementRequest(
+        "requested_measurement": e_shared.MeasurementRequest(
             request_id="entry-header-gap", metric="role_gap", page=1,
             intent="measure the gap from the last bullet to the next entry header line",
         )
@@ -1090,7 +1095,7 @@ def test_header_vertical_rule_metric_counts_additive_repairs(tmp_path: Path) -> 
     additive_pdf = make(tmp_path / "additive.pdf", [(100, 675, 750), (95, 725, 750)])
     fixed_pdf = make(tmp_path / "fixed.pdf", [(100, 725, 750), (100, 675, 695)])
     empty_pdf = make(tmp_path / "empty.pdf", [])
-    request = e.MeasurementRequest(
+    request = e_shared.MeasurementRequest(
         request_id="header-rule",
         metric="header_vertical_rule_geometry",
         page=1,
@@ -1119,7 +1124,7 @@ def test_header_vertical_rule_metric_counts_additive_repairs(tmp_path: Path) -> 
 
 
 def test_header_vertical_rule_metric_rejects_unrelated_finding() -> None:
-    request = e.MeasurementRequest(
+    request = e_shared.MeasurementRequest(
         request_id="wrong-header-rule",
         metric="header_vertical_rule_geometry",
         page=1,
@@ -1190,16 +1195,16 @@ def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
 
     finding = _e5_finding("f1", "experience", "gap")
     attribution = _e5_attribution(finding)
-    current_representation = e.LaneAStructureProposal(
+    current_representation = e_e5.LaneAStructureProposal(
         proposal_id="lane-a-v2", sections=[], agent="llm"
     )
-    package = e._e5_builder_evidence_package(
-        draft=e.TargetStructureDraft(
+    package = e_e5._e5_builder_evidence_package(
+        draft=e_shared.TargetStructureDraft(
             target_id="target-v1",
             investigator="scripted",
             structure=[],
             unresolved=[],
-            self_reported=e.SelfReportedStatus(status="partial"),
+            self_reported=e_shared.SelfReportedStatus(status="partial"),
         ),
         state=State(),
         derived={},
@@ -1207,7 +1212,7 @@ def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
         current_render_version=finding.render_version,
         current_representation=current_representation,
         findings=[finding],
-        measurements=[e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0)],
+        measurements=[e_shared.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0)],
         selected_attribution=attribution,
         action_fingerprint="experience:gap:8.0",
     )
@@ -1218,11 +1223,11 @@ def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
     assert package["selected_attribution"]["measurement_request_id"] == "measure-f1"
     assert package["action_fingerprint"] == "experience:gap:8.0"
 
-    header_draft = e.TargetStructureDraft(
+    header_draft = e_shared.TargetStructureDraft(
         target_id="target-v1",
         investigator="scripted",
         structure=[
-            e.StructuralRelation(
+            e_shared.StructuralRelation(
                 claim_id="header-typography",
                 relation="reading_order",
                 statement=(
@@ -1233,24 +1238,24 @@ def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
             )
         ],
         unresolved=[],
-        self_reported=e.SelfReportedStatus(status="partial"),
+        self_reported=e_shared.SelfReportedStatus(status="partial"),
     )
     header_finding = finding.model_copy(update={
         "region": "header_name",
-        "requested_measurement": e.MeasurementRequest(
+        "requested_measurement": e_shared.MeasurementRequest(
             request_id="header-rule",
             metric="header_vertical_rule_geometry",
             page=1,
             intent="compare the vertical rule beside the header name",
         ),
     })
-    compact = e._e5_builder_evidence_package(
+    compact = e_e5._e5_builder_evidence_package(
         draft=header_draft,
         state=State(), derived={}, page_size=(612.0, 792.0),
         current_render_version=finding.render_version,
         current_representation=current_representation,
         findings=[header_finding],
-        measurements=[e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0)],
+        measurements=[e_shared.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0)],
         selected_attribution=attribution,
         compact=True,
     )
@@ -1266,7 +1271,7 @@ def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
     assert "current_name_font_size" in context["preserve_unless_measured"]
     assert "unrelated_sections_and_layout" in context["preserve_unless_measured"]
 
-    other_region = e._e5_builder_evidence_package(
+    other_region = e_e5._e5_builder_evidence_package(
         draft=header_draft,
         state=State(), derived={}, page_size=(612.0, 792.0),
         findings=[finding],
@@ -1279,9 +1284,9 @@ def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
 def test_non_builder_owner_never_selects_builder(owner: str) -> None:
     finding = _e5_finding("f1", "experience", "gap")
     measured = {
-        "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
+        "f1": (e_shared.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
     }
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = e_e5._next_e5_repair_finding(
         [finding], measured, [_e5_attribution(finding, owner=owner)], []
     )
     assert selected is None and stalled is False
@@ -1290,9 +1295,9 @@ def test_non_builder_owner_never_selects_builder(owner: str) -> None:
 def test_unresolved_attribution_never_selects_builder() -> None:
     finding = _e5_finding("f1", "experience", "gap")
     measured = {
-        "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
+        "f1": (e_shared.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
     }
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = e_e5._next_e5_repair_finding(
         [finding], measured, [_e5_attribution(finding, status="unresolved")], []
     )
     assert selected is None and stalled is False
@@ -1301,16 +1306,16 @@ def test_unresolved_attribution_never_selects_builder() -> None:
 def test_only_current_confirmed_builder_attribution_selects_builder() -> None:
     finding = _e5_finding("f1", "experience", "gap")
     measured = {
-        "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
+        "f1": (e_shared.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
     }
     stale = _e5_attribution(finding, render_version="render-old")
     wrong_measurement = _e5_attribution(finding, request_id="measure-old")
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = e_e5._next_e5_repair_finding(
         [finding], measured, [stale, wrong_measurement], []
     )
     assert selected is None and stalled is False
     current = _e5_attribution(finding)
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = e_e5._next_e5_repair_finding(
         [finding], measured, [stale, wrong_measurement, current], []
     )
     assert stalled is False
@@ -1323,8 +1328,8 @@ def _live_hypothesis(
     attribution: str = "template_compilation",
     status: str = "confirmed",
     owner: str = "builder",
-) -> e.LiveAttributionHypothesis:
-    return e.LiveAttributionHypothesis(
+) -> e_shared.LiveAttributionHypothesis:
+    return e_shared.LiveAttributionHypothesis(
         finding_id=finding_id,
         attribution=attribution,
         hypothesis_status=status,
@@ -1337,7 +1342,7 @@ def _live_hypothesis(
 def test_live_attribution_binds_by_finding_id_not_position() -> None:
     first = _e5_finding("f1", "experience", "gap")
     second = _e5_finding("f2", "header", "gap")
-    bound = e._bind_live_attribution_batch(
+    bound = e_e5._bind_live_attribution_batch(
         [first, second],
         [
             _live_hypothesis("f2", attribution="renderer", owner="renderer"),
@@ -1355,25 +1360,25 @@ def test_live_attribution_binds_by_finding_id_not_position() -> None:
 def test_live_attribution_missing_finding_fails_closed() -> None:
     first = _e5_finding("f1", "experience", "gap")
     second = _e5_finding("f2", "header", "gap")
-    with pytest.raises(e.LiveAttributionBindingError, match="no hypothesis returned"):
-        e._bind_live_attribution_batch([first, second], [_live_hypothesis("f1")])
+    with pytest.raises(e_e5.LiveAttributionBindingError, match="no hypothesis returned"):
+        e_e5._bind_live_attribution_batch([first, second], [_live_hypothesis("f1")])
 
 
 def test_live_attribution_duplicate_finding_fails_closed() -> None:
     first = _e5_finding("f1", "experience", "gap")
     second = _e5_finding("f2", "header", "gap")
-    with pytest.raises(e.LiveAttributionBindingError, match="duplicate hypothesis"):
-        e._bind_live_attribution_batch(
+    with pytest.raises(e_e5.LiveAttributionBindingError, match="duplicate hypothesis"):
+        e_e5._bind_live_attribution_batch(
             [first, second], [_live_hypothesis("f1"), _live_hypothesis("f1")]
         )
 
 
 def test_live_attribution_foreign_or_empty_id_fails_closed() -> None:
     first = _e5_finding("f1", "experience", "gap")
-    with pytest.raises(e.LiveAttributionBindingError, match="outside the batch"):
-        e._bind_live_attribution_batch([first], [_live_hypothesis("f9")])
-    with pytest.raises(e.LiveAttributionBindingError, match="without a finding_id"):
-        e._bind_live_attribution_batch([first], [_live_hypothesis("")])
+    with pytest.raises(e_e5.LiveAttributionBindingError, match="outside the batch"):
+        e_e5._bind_live_attribution_batch([first], [_live_hypothesis("f9")])
+    with pytest.raises(e_e5.LiveAttributionBindingError, match="without a finding_id"):
+        e_e5._bind_live_attribution_batch([first], [_live_hypothesis("")])
 
 
 @pytest.mark.parametrize(
@@ -1391,7 +1396,7 @@ def test_contradictory_builder_claim_never_reaches_builder(
     attribution: str, status: str
 ) -> None:
     finding = _e5_finding("f1", "experience", "gap")
-    record = e._e5_live_attribution_record(
+    record = e_shared._e5_live_attribution_record(
         finding,
         _live_hypothesis("f1", attribution=attribution, status=status, owner="builder"),
         "measure-f1",
@@ -1402,17 +1407,17 @@ def test_contradictory_builder_claim_never_reaches_builder(
     assert f"attribution={attribution!r}" in record.reason
     measured = {
         "f1": (
-            e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
+            e_shared.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
             finding.requested_measurement,
         ),
     }
-    selected, stalled = e._next_e5_repair_finding([finding], measured, [record], [])
+    selected, stalled = e_e5._next_e5_repair_finding([finding], measured, [record], [])
     assert selected is None and stalled is False
 
 
 def test_consistent_builder_claim_is_recorded_and_selects_builder() -> None:
     finding = _e5_finding("f1", "experience", "gap")
-    record = e._e5_live_attribution_record(finding, _live_hypothesis("f1"), "measure-f1")
+    record = e_shared._e5_live_attribution_record(finding, _live_hypothesis("f1"), "measure-f1")
     assert (record.attribution, record.hypothesis_status, record.repair_owner) == (
         "template_compilation",
         "confirmed",
@@ -1424,11 +1429,11 @@ def test_consistent_builder_claim_is_recorded_and_selects_builder() -> None:
     assert record.evidence == ["measure-f1", "ev-1"]
     measured = {
         "f1": (
-            e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
+            e_shared.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
             finding.requested_measurement,
         ),
     }
-    selected, stalled = e._next_e5_repair_finding([finding], measured, [record], [])
+    selected, stalled = e_e5._next_e5_repair_finding([finding], measured, [record], [])
     assert stalled is False
     assert selected is not None and selected[3] is record
 
@@ -1437,17 +1442,17 @@ def test_old_measurement_attribution_does_not_satisfy_new_measurement() -> None:
     finding = _e5_finding("f1", "experience", "gap")
     measured = {
         "f1": (
-            e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
+            e_shared.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
             finding.requested_measurement,
         ),
     }
-    stale = e._e5_live_attribution_record(finding, _live_hypothesis("f1"), "measure-old")
+    stale = e_shared._e5_live_attribution_record(finding, _live_hypothesis("f1"), "measure-old")
     assert stale.render_version == finding.render_version
-    assert e._e5_findings_needing_fallback_attribution([finding], measured, [stale]) == [
+    assert e_e5._e5_findings_needing_fallback_attribution([finding], measured, [stale]) == [
         finding
     ]
-    current = e._e5_live_attribution_record(finding, _live_hypothesis("f1"), "measure-f1")
-    assert e._e5_findings_needing_fallback_attribution(
+    current = e_shared._e5_live_attribution_record(finding, _live_hypothesis("f1"), "measure-f1")
+    assert e_e5._e5_findings_needing_fallback_attribution(
         [finding], measured, [stale, current]
     ) == []
 
@@ -1461,15 +1466,15 @@ def test_valid_full_batch_with_reordered_hypotheses_still_enters_the_flow() -> N
 
     measured = {
         "f1": (
-            e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
+            e_shared.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0),
             first.requested_measurement,
         ),
         "f2": (
-            e.MeasurementResult(request_id="m2", status="confirmed", delta_pt=4.0),
+            e_shared.MeasurementResult(request_id="m2", status="confirmed", delta_pt=4.0),
             second.requested_measurement,
         ),
     }
-    bound = e._bind_live_attribution_batch(
+    bound = e_e5._bind_live_attribution_batch(
         [first, second],
         [
             _live_hypothesis("f2", attribution="renderer", owner="renderer"),
@@ -1477,15 +1482,15 @@ def test_valid_full_batch_with_reordered_hypotheses_still_enters_the_flow() -> N
         ],
     )
     records = [
-        e._e5_live_attribution_record(
+        e_shared._e5_live_attribution_record(
             finding, hypothesis, measured[finding.finding_id][1].request_id
         )
         for finding, hypothesis in bound
     ]
-    assert e._e5_findings_needing_fallback_attribution(
+    assert e_e5._e5_findings_needing_fallback_attribution(
         [first, second], measured, records
     ) == []
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = e_e5._next_e5_repair_finding(
         [first, second], measured, records, []
     )
     assert stalled is False
@@ -1493,19 +1498,19 @@ def test_valid_full_batch_with_reordered_hypotheses_still_enters_the_flow() -> N
 
 
 def test_gate_classification_does_not_overclaim_representation_or_privacy() -> None:
-    lane_a = e._e5_gate_classification(
+    lane_a = e_e5._e5_gate_classification(
         "a", {"content_shapes_match_evidence": False}, privacy_labels_symmetric=True
     )
     assert lane_a["representation_ceiling"] == "unverified"
     assert "rail_heading" in lane_a["reason"]
-    lane_b = e._e5_gate_classification(
+    lane_b = e_e5._e5_gate_classification(
         "b", {"no_target_candidate_facts": False}, privacy_labels_symmetric=False
     )
     assert lane_b["privacy_failure"] == "gate_false_positive_or_boundary_unresolved"
 
 
 def test_gate_and_builder_candidate_audits_are_version_bound() -> None:
-    gate_record = e._e5_hard_gate_record(
+    gate_record = e_e5._e5_hard_gate_record(
         "render-v2",
         {"candidate_content_accounting": True},
         {"diagnostics": {
@@ -1517,8 +1522,8 @@ def test_gate_and_builder_candidate_audits_are_version_bound() -> None:
     assert gate_record["details"]["diagnostics"]["pdf_presence"][
         "missing_pdf_leaves"
     ] == ["leaf.1"]
-    proposal = e.LaneAStructureProposal(proposal_id="p1", sections=[], agent="scripted")
-    candidate_record = e._e5_builder_candidate_record(
+    proposal = e_e5.LaneAStructureProposal(proposal_id="p1", sections=[], agent="scripted")
+    candidate_record = e_e5._e5_builder_candidate_record(
         lane="a",
         attempt=2,
         stage="repair",
@@ -1561,18 +1566,18 @@ def test_lane_a_proposal_cites_only_known_state_nodes() -> None:
         pytest.skip("cached Resume I evidence not present")
     normalized = NormalizedLayoutEvidence.model_validate_json(normalized_path.read_text(encoding="utf-8"))
     summary = build_format_summary(normalized, json.loads(raw_path.read_text(encoding="utf-8")), RESUME_I)
-    state, _derived = e.compile_two_column_state(RESUME_I, summary, evidence=normalized)
-    proposal = e.LaneAStructureProposal(
+    state, _derived = e_stages.compile_two_column_state(RESUME_I, summary, evidence=normalized)
+    proposal = e_e5.LaneAStructureProposal(
         proposal_id="p1",
-        sections=[e.E5LaneASection(section_node_id="section.99", heading_in_rail=True, rail_label_width_pt=90.0)],
+        sections=[e_e5.E5LaneASection(section_node_id="section.99", heading_in_rail=True, rail_label_width_pt=90.0)],
         agent="scripted",
     )
-    assert e._validate_lane_a_proposal(proposal, state) is not None
-    valid = e.LaneAStructureProposal(
+    assert e_e5._validate_lane_a_proposal(proposal, state) is not None
+    valid = e_e5.LaneAStructureProposal(
         proposal_id="p2",
-        sections=[e.E5LaneASection(section_node_id=node.node_id, heading_in_rail=True, rail_label_width_pt=90.0)
+        sections=[e_e5.E5LaneASection(section_node_id=node.node_id, heading_in_rail=True, rail_label_width_pt=90.0)
                   for node in state.nodes if node.kind == "section"] or
-                 [e.E5LaneASection(section_node_id=state.nodes[0].node_id, heading_in_rail=False)],
+                 [e_e5.E5LaneASection(section_node_id=state.nodes[0].node_id, heading_in_rail=False)],
         agent="scripted",
     )
     # every proposed id must exist in the compiled state
@@ -1582,7 +1587,7 @@ def test_lane_a_proposal_cites_only_known_state_nodes() -> None:
 
 @e5_skip
 def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
-    run_dir, terminal, record = e.run_e5(
+    run_dir, terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
         presentation_label_approval=_simulated_approval_for_test_target_catalog(),
     )
@@ -1602,7 +1607,7 @@ def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
 
 @e5_skip
 def test_run_e5_offline_lane_b_authored_template_loop(tmp_path: Path) -> None:
-    run_dir, terminal, record = e.run_e5(
+    run_dir, terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     assert terminal in {"ready_for_owner_review", "budget_exhausted"}
@@ -1646,7 +1651,7 @@ def test_validator_rejected_builder_candidate_is_auditable_but_never_active(
         )
 
     monkeypatch.setattr(e5, "_scripted_lane_b_template", rejected_template)
-    run_dir, _terminal, record = e.run_e5(
+    run_dir, _terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     lane = record["lanes"]["b"]
@@ -1703,7 +1708,7 @@ def test_lane_b_candidate_facts_come_only_from_the_render_context(tmp_path: Path
     from tests.experiments.resume_layout.candidates import independent_candidate_fixtures
 
     fill_a = at.fill_authored_template(base, candidate_resume_E())
-    fixture = at.fill_authored_template(base, e._probe_candidate_with_text(independent_candidate_fixtures()["short"]))
+    fixture = at.fill_authored_template(base, e_e5._probe_candidate_with_text(independent_candidate_fixtures()["short"]))
     assert fill_a.html_filled != fixture.html_filled
     assert "example@example.com" in fill_a.html_filled
 
@@ -1731,7 +1736,7 @@ def test_run_e5_repeats_the_identical_measurement_after_repair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _force_scripted_builder_attribution(monkeypatch)
-    _run_dir, _terminal, record = e.run_e5(
+    _run_dir, _terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
     lane = record["lanes"]["b"]
@@ -1742,7 +1747,7 @@ def test_run_e5_repeats_the_identical_measurement_after_repair(
 
 @e5_skip
 def test_run_e5_rolls_back_regressions_and_records_the_ledger(tmp_path: Path) -> None:
-    run_dir, terminal, record = e.run_e5(
+    run_dir, terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=2,
     )
     for lane_id, lane in record["lanes"].items():
@@ -1756,7 +1761,7 @@ def test_run_e5_rolls_back_regressions_and_records_the_ledger(tmp_path: Path) ->
 @e5_skip
 def test_run_e5_tiny_repair_budget_still_returns_the_safety_valid_output(tmp_path: Path) -> None:
     tiny = RunBudget(max_model_requests=1, max_tool_calls=8)
-    run_dir, terminal, record = e.run_e5(
+    run_dir, terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
         budget=tiny,
     )
@@ -1772,12 +1777,12 @@ def test_run_e5_tiny_repair_budget_still_returns_the_safety_valid_output(tmp_pat
 
 def test_neither_lane_can_emit_an_unsupported_terminal_state() -> None:
     with pytest.raises(ValueError):
-        e.E5LaneRecord(lane="a", representation="x", terminal_state="unsupported")
+        e_e5.E5LaneRecord(lane="a", representation="x", terminal_state="unsupported")
 
 
 @e5_skip
 def test_run_e5_prompts_never_carry_rubric_answers(tmp_path: Path) -> None:
-    run_dir, _terminal, _record = e.run_e5(
+    run_dir, _terminal, _record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     prompts = (run_dir / "prompts.json").read_text(encoding="utf-8")
@@ -1799,7 +1804,7 @@ def test_owner_acceptance_is_never_inferred() -> None:
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        e.E5LaneRecord(lane="b", representation="x", terminal_state="delivered")
+        e_e5.E5LaneRecord(lane="b", representation="x", terminal_state="delivered")
 
 
 # --- E5 correctness round: injection, rollback, budgets, probes, reports ----
@@ -1810,7 +1815,10 @@ def test_lane_b_candidate_text_cannot_inject_html() -> None:
     candidate values are text nodes only — `<li>`/`<br>` markup comes from
     the shell, and no candidate-supplied element, event attribute, closing
     tag, or entity survives as markup."""
-    from tests.experiments.resume_layout.candidates import CandidateDocument, CandidateLeaf
+    from tests.experiments.resume_layout.candidates import (
+        CandidateDocument,
+        CandidateLeaf,
+    )
 
     malicious = CandidateDocument(
         candidate_id="malicious_probe",
@@ -1868,7 +1876,10 @@ def test_lane_b_candidate_text_cannot_inject_html() -> None:
 def test_lane_b_candidate_values_are_never_rescanned_as_slot_syntax() -> None:
     """One substitution pass: a candidate value carrying `{{...}}` cannot
     inject slot tokens; the fill fails closed on the residual-token check."""
-    from tests.experiments.resume_layout.candidates import CandidateDocument, CandidateLeaf
+    from tests.experiments.resume_layout.candidates import (
+        CandidateDocument,
+        CandidateLeaf,
+    )
 
     hostile = CandidateDocument(
         candidate_id="token_probe",
@@ -1896,11 +1907,11 @@ def test_measurement_tool_budget_consumed_once_per_measurement(tmp_path: Path) -
         json.dumps(json.loads((TARGET_F_CACHE / "adobe_raw.json").read_text())),
         encoding="utf-8",
     )
-    pod = e.DualSourcePod(TARGET_F, raw_path, tmp_path, render_pdf=None)
-    budget = e.RunBudget(max_model_requests=4, max_tool_calls=48)
-    trace = e.RunTrace(tmp_path)
-    controller = e.MeasureController(pod, budget, trace)
-    request = e.MeasurementRequest(
+    pod = e_shared.DualSourcePod(TARGET_F, raw_path, tmp_path, render_pdf=None)
+    budget = d_pipeline.RunBudget(max_model_requests=4, max_tool_calls=48)
+    trace = d_pipeline.RunTrace(tmp_path)
+    controller = e_stages.MeasureController(pod, budget, trace)
+    request = e_shared.MeasurementRequest(
         request_id="measure-budget-001", metric="role_gap", page=1,
         from_text="ImageCaptioningSystem", to_text="SentimentAnalysisAPI",
         render_from_text="ImageCaptioningSystem", render_to_text="SentimentAnalysisAPI",
@@ -1915,7 +1926,7 @@ def test_run_e5_measurement_tool_count_matches_actual_measurements(tmp_path: Pat
     """No caller-side double consumption: the lane's compare_pdf_geometry
     tool count equals the number of actual measurement records traced by the
     MeasureController (one trace record per deterministic measurement)."""
-    _run_dir, _terminal, record = e.run_e5(
+    _run_dir, _terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     trace = json.loads((tmp_path / "run" / "lane_b" / "trace.json").read_text())
@@ -1931,37 +1942,37 @@ def test_best_valid_version_selection_follows_explicit_rule() -> None:
     """Explicit rule: only a HARD-GATE-VALID, never-rolled-back version is
     the best-valid render. A defect-level promotion (promoted with a known
     remaining red gate) is NEVER best — it is the defect-level state."""
-    def version(vid: str, *, gates: bool, promoted: bool = False) -> e.RenderVersion:
-        return e.RenderVersion(
+    def version(vid: str, *, gates: bool, promoted: bool = False) -> e_shared.RenderVersion:
+        return e_shared.RenderVersion(
             version_id=vid, html_sha256="h", pdf_sha256="p",
             page_count=1, hard_gates_passed=gates, promoted=promoted, note="",
         )
 
     # promoted + hard-gate-INVALID: never best (defect-level promotion only)
     v1 = version("v1", gates=False, promoted=True)
-    assert e._best_valid_version_id([v1]) is None
+    assert e_e5._best_valid_version_id([v1]) is None
     # the same version IS the defect-level state (it stays the latest
     # promoted-not-valid version even after a full-valid promotion exists)
-    assert e._best_defect_level_version_id([v1]) == "v1"
+    assert e_e5._best_defect_level_version_id([v1]) == "v1"
     # promoted + hard-gate-valid: the best
     v2 = version("v2", gates=True, promoted=True)
-    assert e._best_valid_version_id([v1, v2]) == "v2"
+    assert e_e5._best_valid_version_id([v1, v2]) == "v2"
     # the LATEST hard-gate-valid version wins, promoted or not (in practice
     # an executed repair is either promoted or rolled back, so this only
     # differs for the pre-repair initial render)
     v3 = version("v3", gates=True)
-    assert e._best_valid_version_id([v1, v2, v3]) == "v3"
+    assert e_e5._best_valid_version_id([v1, v2, v3]) == "v3"
     # no promotion: the LATEST hard-gate-valid, not the first
-    assert e._best_valid_version_id([version("a", gates=True), version("b", gates=True)]) == "b"
+    assert e_e5._best_valid_version_id([version("a", gates=True), version("b", gates=True)]) == "b"
     # nothing valid: None (no best-valid render exists)
-    assert e._best_valid_version_id([version("v1", gates=False)]) is None
+    assert e_e5._best_valid_version_id([version("v1", gates=False)]) is None
     # a rolled-back hard-gate-valid candidate never masquerades as best
     v4 = version("v4", gates=True)
-    assert e._best_valid_version_id([version("v1", gates=False), v4], excluded={"v4"}) is None
+    assert e_e5._best_valid_version_id([version("v1", gates=False), v4], excluded={"v4"}) is None
     v5 = version("v5", gates=True)
-    assert e._best_valid_version_id([v4, v5], excluded={"v4"}) == "v5"
+    assert e_e5._best_valid_version_id([v4, v5], excluded={"v4"}) == "v5"
     # a rolled-back defect-level promotion is not the defect-level state either
-    assert e._best_defect_level_version_id([v1, v2], excluded={"v1"}) is None
+    assert e_e5._best_defect_level_version_id([v1, v2], excluded={"v1"}) is None
 
 
 @e5_skip
@@ -1979,7 +1990,7 @@ def test_run_e5_rejected_render_stays_in_history_and_next_round_uses_old_active(
         return base.model_copy(update={"template_id": base.template_id + "-r"})
 
     monkeypatch.setattr(e5, "_scripted_lane_b_template", non_improving_template)
-    run_dir, terminal, record = e.run_e5(
+    run_dir, terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
     lane = record["lanes"]["b"]
@@ -2019,7 +2030,7 @@ def test_run_e5_promoted_render_becomes_active_and_best_matches_artifact(
     selection resolves to it, and the best ID matches the actual artifact
     bytes on disk."""
     _force_scripted_builder_attribution(monkeypatch)
-    run_dir, _terminal, record = e.run_e5(
+    run_dir, _terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     lane = record["lanes"]["b"]
@@ -2033,7 +2044,7 @@ def test_run_e5_promoted_render_becomes_active_and_best_matches_artifact(
     index = lane["render_versions"].index(promoted) + 1
     pdf_path = run_dir / "lane_b" / f"render_{index}.pdf"
     assert pdf_path.exists()
-    assert e._sha256_file(pdf_path) == promoted["pdf_sha256"], (
+    assert e_shared._sha256_file(pdf_path) == promoted["pdf_sha256"], (
         "the best ID must resolve to the actual artifact bytes"
     )
     # the NEXT round (after promotion) reads the promoted active version
@@ -2049,7 +2060,7 @@ def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
     PDF -> accounting/presence/blank/determinism/privacy gates) against the
     EXACT selected representation — recorded by id, with real PDF
     artifacts — never a default-state or string-fill-only claim."""
-    run_dir, _terminal, record = e.run_e5(
+    run_dir, _terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=1,
         presentation_label_approval=_simulated_approval_for_test_target_catalog(),
     )
@@ -2093,7 +2104,7 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
     VERSION — never a rolled-back attempt; BEST never appears for that lane;
     with a best render, the package copies exactly the best version's
     artifact."""
-    run_dir, _terminal, record = e.run_e5(
+    run_dir, _terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=1,
     )
     package = run_dir / "owner_review"
@@ -2115,7 +2126,7 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
                 if v["version_id"] == lane["active_render_version"]
             )
             copied = package / f"lane_{lane_id}_active_unpromoted.pdf"
-            assert e._sha256_file(copied) == e._sha256_file(
+            assert e_shared._sha256_file(copied) == e_shared._sha256_file(
                 run_dir / f"lane_{lane_id}" / f"render_{active_index}.pdf"
             )
     if any(l["best_render_version"] is None for l in lanes.values()):
@@ -2186,7 +2197,7 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
         )
         copied = package / "lane_b_best.pdf"
         assert copied.exists()
-        assert e._sha256_file(copied) == e._sha256_file(
+        assert e_shared._sha256_file(copied) == e_shared._sha256_file(
             run_dir / "lane_b" / f"render_{best_index}.pdf"
         )
     # the comparison report labels every lane accurately and takes the page
@@ -2223,7 +2234,11 @@ def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -
     out_dir.mkdir()
     lane_dir = out_dir / "lane_a"
     lane_dir.mkdir()
-    from tests.experiments.e_pipeline import RenderVersion, E5LaneRecord, E5LoopRecord
+    from tests.experiments.e.e5 import (
+        E5LaneRecord,
+        E5LoopRecord,
+    )
+    from tests.experiments.e.shared import RenderVersion
 
     v1_pdf = lane_dir / "render_1.pdf"
     v2_pdf = lane_dir / "render_2.pdf"
@@ -2232,12 +2247,12 @@ def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -
     versions = [
         RenderVersion(
             version_id="render-resume_I-laneA-v1", html_sha256="h1",
-            pdf_sha256=e._sha256_file(v1_pdf), page_count=2,
+            pdf_sha256=e_shared._sha256_file(v1_pdf), page_count=2,
             hard_gates_passed=True, promoted=True, note="best",
         ),
         RenderVersion(
             version_id="render-resume_I-laneA-v2", html_sha256="h2",
-            pdf_sha256=e._sha256_file(v2_pdf), page_count=2,
+            pdf_sha256=e_shared._sha256_file(v2_pdf), page_count=2,
             hard_gates_passed=True, promoted=False, note="latest",
         ),
     ]
@@ -2250,7 +2265,7 @@ def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -
         target_id="target-resume_I-v1", target_sha256="0" * 64, lanes={"a": lane},
         summary={"terminal_state": "budget_exhausted"},
     )
-    package = e._write_e5_owner_package(out_dir, target, record)
+    package = e_e5._write_e5_owner_package(out_dir, target, record)
     best = package / "lane_a_best.pdf"
     assert best.exists()
     assert best.read_bytes() == v1_pdf.read_bytes(), (
@@ -2266,7 +2281,7 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     sources BEFORE the first live call; any drift is detected and the run is
     NOT source-identity stable. Source stability never promotes a run to
     'canonical' — the field is `source_identity_stable`, nothing more."""
-    run_dir, _terminal, record = e.run_e5(
+    run_dir, _terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     config = json.loads((run_dir / "run_config.json").read_text())
@@ -2274,8 +2289,8 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     assert hashes["recorded_before_first_live_call"] is True
     assert hashes["basis"] == "selected_critical_source_drift_detection"
     # the registered set covers the ACTUAL direct runtime dependencies
-    for name in e.E5_SOURCE_FILES:
-        assert hashes["files"][name] == e._sha256_file(e.ROOT / name), name
+    for name in e_e5.E5_SOURCE_FILES:
+        assert hashes["files"][name] == e_shared._sha256_file(a_pipeline.ROOT / name), name
     for name in (
         "tests/experiments/d_pipeline.py",
         "tests/experiments/c2_renderer.py",
@@ -2285,7 +2300,7 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
         "tests/experiments/resume_layout/state.py",
     ):
         assert name in hashes["files"], f"missing direct runtime source: {name}"
-    assert hashes["tracked_diff_sha256"] == e._tracked_diff_sha256(e.ROOT, e.E5_SOURCE_FILES)
+    assert hashes["tracked_diff_sha256"] == e_e5._tracked_diff_sha256(a_pipeline.ROOT, e_e5.E5_SOURCE_FILES)
     assert record["summary"]["source_changed"] is False
     assert record["summary"]["source_identity_stable"] is True
     # offline rehearsal runs are NEVER auto-promoted to canonical by a
@@ -2294,15 +2309,15 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     # any drift between frozen identity and current source is detected
     drifted = json.loads(json.dumps(config))
     drifted["source_hashes"]["files"]["tests/experiments/e_pipeline.py"] = "0" * 64
-    assert e._source_hashes_changed(drifted) is True
+    assert e_e5._source_hashes_changed(drifted) is True
     # a changed tracked diff (same file hashes is impossible then, but a
     # tampered diff hash must also be detected)
     drifted = json.loads(json.dumps(config))
     drifted["source_hashes"]["tracked_diff_sha256"] = "0" * 64
-    assert e._source_hashes_changed(drifted) is True
+    assert e_e5._source_hashes_changed(drifted) is True
     # a config WITHOUT source identity (e.g. the pre-fix canonical run) is
     # reported as changed/not-bindable, never silently trusted
-    assert e._source_hashes_changed({"starting_commit": "x"}) is True
+    assert e_e5._source_hashes_changed({"starting_commit": "x"}) is True
 
 
 def test_source_diff_identity_ignores_unrelated_files(tmp_path: Path) -> None:
@@ -2326,23 +2341,27 @@ def test_source_diff_identity_ignores_unrelated_files(tmp_path: Path) -> None:
     git("add", ".")
     git("commit", "-qm", "base")
     identity = ("pkg/a.py", "pkg/b.py")
-    baseline = e._tracked_diff_sha256(repo, identity)
+    baseline = e_e5._tracked_diff_sha256(repo, identity)
     assert baseline is not None
     # an unrelated file changes: identity unchanged
     (repo / "unrelated/notes.md").write_text("owner notes edited\n")
-    assert e._tracked_diff_sha256(repo, identity) == baseline
+    assert e_e5._tracked_diff_sha256(repo, identity) == baseline
     # an unregistered path inside the same tree changes: identity unchanged
     (repo / "pkg/extra.txt").write_text("new file\n")
-    assert e._tracked_diff_sha256(repo, identity) == baseline
+    assert e_e5._tracked_diff_sha256(repo, identity) == baseline
     # a REGISTERED source changes: drift detected
     (repo / "pkg/b.py").write_text("b = 2\n")
-    assert e._tracked_diff_sha256(repo, identity) != baseline
+    assert e_e5._tracked_diff_sha256(repo, identity) != baseline
 
 
 def test_summarize_e5_state_reads_one_run_only() -> None:
     """The deterministic ledger summarizer reads a single e5_state.json and
     reports exactly that run's numbers (no cross-run splicing possible)."""
-    from tests.experiments.e_pipeline import E5LaneRecord, E5LoopRecord, summarize_e5_state
+    from tests.experiments.e.e5 import (
+        E5LaneRecord,
+        E5LoopRecord,
+        summarize_e5_state,
+    )
     import tempfile
 
     lane = E5LaneRecord(
@@ -2385,14 +2404,14 @@ def test_run_e5_rollback_binds_next_round_to_the_active_version(
     against the OLD ACTIVE version — PDF, RenderPlan, and gates — and the
     rejected representation never enters the probe basis or best selection."""
     _force_scripted_builder_attribution(monkeypatch)
-    from tests.experiments.e_pipeline import LaneAStructureProposal
+    from tests.experiments.e.e5 import LaneAStructureProposal
 
     # a scripted proposal that changes nothing -> the identical render ->
     # the identical measurement -> deterministic non-improving rollback
     def non_improving_proposal(state, derived):
         return LaneAStructureProposal(proposal_id="noop", sections=[], agent="scripted")
 
-    class RoundDistinctReviewer(e.ScriptedReviewer):
+    class RoundDistinctReviewer(e_stages.ScriptedReviewer):
         # a distinct dimension per round keeps the repair fingerprint distinct
         # so a repair actually executes in EVERY round (the fingerprint would
         # otherwise be rejected as a repeat after the first rollback)
@@ -2406,7 +2425,7 @@ def test_run_e5_rollback_binds_next_round_to_the_active_version(
 
     monkeypatch.setattr(e5, "_scripted_lane_a_proposal", non_improving_proposal)
     monkeypatch.setattr(e5, "ScriptedReviewer", RoundDistinctReviewer)
-    run_dir, terminal, record = e.run_e5(
+    run_dir, terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=2,
     )
     lane = record["lanes"]["a"]
@@ -2475,38 +2494,38 @@ def test_owner_package_labels_defect_level_active_version_never_best(tmp_path: P
     v1_pdf.write_bytes(b"%PDF-1.4 v1")
     v2_pdf.write_bytes(b"%PDF-1.4 v2 defect-level")
     versions = [
-        e.RenderVersion(
-            version_id="v1", html_sha256="h1", pdf_sha256=e._sha256_file(v1_pdf),
+        e_shared.RenderVersion(
+            version_id="v1", html_sha256="h1", pdf_sha256=e_shared._sha256_file(v1_pdf),
             page_count=1, hard_gates_passed=False, promoted=False, note="initial",
         ),
-        e.RenderVersion(
-            version_id="v2", html_sha256="h2", pdf_sha256=e._sha256_file(v2_pdf),
+        e_shared.RenderVersion(
+            version_id="v2", html_sha256="h2", pdf_sha256=e_shared._sha256_file(v2_pdf),
             page_count=1, hard_gates_passed=False, promoted=True, note="defect-level",
         ),
     ]
-    lane = e.E5LaneRecord(
+    lane = e_e5.E5LaneRecord(
         lane="a", representation="lane A", render_versions=versions,
         best_render_version=None,
         best_defect_level_version="v2",
         active_render_version="v2",
     )
-    record = e.E5LoopRecord(
+    record = e_e5.E5LoopRecord(
         target_id="t", target_sha256="0" * 64, lanes={"a": lane},
         summary={"terminal_state": "budget_exhausted"},
     )
     # the selection rule: the defect-level version is the shown artifact,
     # labeled ACTIVE DEFECT-LEVEL VERSION
-    version, stem, label = e._selected_lane_artifact(lane)
+    version, stem, label = e_e5._selected_lane_artifact(lane)
     assert label == "ACTIVE DEFECT-LEVEL VERSION"
     assert version.version_id == "v2" and stem == "render_2"
-    package = e._write_e5_owner_package(out_dir, RESUME_I, record)
+    package = e_e5._write_e5_owner_package(out_dir, RESUME_I, record)
     assert (package / "lane_a_active_defect_level.pdf").read_bytes() == v2_pdf.read_bytes()
     assert not (package / "lane_a_best.pdf").exists()
     assert not (package / "lane_a_latest_attempt.pdf").exists()
     report = (package / "REPORT.md").read_text(encoding="utf-8")
     assert "ACTIVE DEFECT-LEVEL VERSION" in report
     assert "never BEST" in report
-    comparison = e._write_e5_comparison(out_dir, record, {"run_id": out_dir.name})
+    comparison = e_e5._write_e5_comparison(out_dir, record, {"run_id": out_dir.name})
     row = json.loads((out_dir / "comparison_report.json").read_text())["lanes"][0]
     assert row["render_label"] == "ACTIVE DEFECT-LEVEL VERSION"
     assert row["best_render"] is None
@@ -2517,7 +2536,10 @@ def test_candidate_token_syntax_fails_closed_in_every_slot_region() -> None:
     """A candidate value carrying `{{...}}` must fail closed in EVERY slot
     region — never silently stripped — and the original CandidateDocument
     stays byte-identical."""
-    from tests.experiments.resume_layout.candidates import CandidateDocument, CandidateLeaf
+    from tests.experiments.resume_layout.candidates import (
+        CandidateDocument,
+        CandidateLeaf,
+    )
 
     def entry_candidate(entry_text, *children) -> CandidateDocument:
         return CandidateDocument(
@@ -2694,9 +2716,9 @@ def _minimal_template(html: str) -> at.AuthoredTemplateCandidate:
     )
 
 
-def _presentation_labels() -> list[e.PresentationLabel]:
+def _presentation_labels() -> list[e_shared.PresentationLabel]:
     return [
-        e.PresentationLabel(
+        e_shared.PresentationLabel(
             label_id="label.section.p1.top221.5",
             text="EXPERIENCE",
             kind="section_heading",
@@ -2750,18 +2772,18 @@ def test_authored_template_rejects_unknown_presentation_label_marker() -> None:
 
 def test_presentation_label_requires_typed_target_evidence() -> None:
     with pytest.raises(ValueError, match="at least one target evidence id"):
-        e.PresentationLabel(label_id="l1", text="EXPERIENCE", kind="section_heading")
+        e_shared.PresentationLabel(label_id="l1", text="EXPERIENCE", kind="section_heading")
     with pytest.raises(ValueError, match="at least one target evidence id"):
-        e.PresentationLabel(
+        e_shared.PresentationLabel(
             label_id="l1", text="EXPERIENCE", kind="section_heading", evidence_ids=[" "]
         )
     with pytest.raises(ValueError, match="non-empty text"):
-        e.PresentationLabel(
+        e_shared.PresentationLabel(
             label_id="l1", text=" ", kind="section_heading", evidence_ids=["local_pdf.x"]
         )
     # an unimplemented kind is not silently accepted
     with pytest.raises(ValueError):
-        e.PresentationLabel(
+        e_shared.PresentationLabel(
             label_id="l1", text="Email", kind="field_label", evidence_ids=["local_pdf.x"]
         )
 
@@ -2769,9 +2791,9 @@ def test_presentation_label_requires_typed_target_evidence() -> None:
 def test_presentation_labels_come_only_from_measured_evidence() -> None:
     # no measured sidebar evidence -> NO label exists (nothing is invented
     # from the target document, its file name, or a hardcoded title list)
-    assert e._presentation_label_catalog({}) == []
-    assert e._presentation_label_catalog({"sidebar_labels": []}) == []
-    catalog = e._presentation_label_catalog(
+    assert e_e5._presentation_label_catalog({}) == []
+    assert e_e5._presentation_label_catalog({"sidebar_labels": []}) == []
+    catalog = e_e5._presentation_label_catalog(
         {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
     )
     assert [
@@ -2801,11 +2823,11 @@ def test_presentation_labels_come_only_from_measured_evidence() -> None:
             labels=[],
         )
     with pytest.raises(ValueError, match="non-empty text"):
-        e._presentation_label_catalog(
+        e_e5._presentation_label_catalog(
             {"sidebar_labels": [{"page": 1, "top": 1.0, "text": "   "}]}
         )
     with pytest.raises(ValueError, match="duplicate presentation label id"):
-        e._presentation_label_catalog(
+        e_e5._presentation_label_catalog(
             {
                 "sidebar_labels": [
                     {"page": 1, "top": 1.0, "text": "A"},
@@ -2822,7 +2844,7 @@ def test_measurement_alone_never_approves_a_label() -> None:
     approval (target-bound) can flip ids into the approved view."""
     from tests.experiments.resume_layout.candidates import candidate_resume_E
 
-    catalog = e._presentation_label_catalog(
+    catalog = e_e5._presentation_label_catalog(
         {
             "sidebar_labels": [
                 {"page": 1, "top": 1.0, "text": "JOHN SMITH"},
@@ -2835,7 +2857,7 @@ def test_measurement_alone_never_approves_a_label() -> None:
     assert [label.status for label in catalog] == ["proposed"] * 4
     # no approval -> zero approved labels: nothing renderable, nothing
     # privacy-excluded
-    approved = e._apply_presentation_label_approval(
+    approved = e_e5._apply_presentation_label_approval(
         catalog, None, target_sha256="a" * 64
     )
     assert approved == []
@@ -2860,31 +2882,31 @@ def test_measurement_alone_never_approves_a_label() -> None:
     assert "JOHN SMITH" not in approved_texts and "MIT" not in approved_texts
 
 
-def _catalog_one() -> list[e.PresentationLabel]:
-    return e._presentation_label_catalog(
+def _catalog_one() -> list[e_shared.PresentationLabel]:
+    return e_e5._presentation_label_catalog(
         {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
     )
 
 
 def _approval_for(
-    catalog: list[e.PresentationLabel],
+    catalog: list[e_shared.PresentationLabel],
     ids: list[str],
     *,
     target_sha256: str = "a" * 64,
     catalog_sha256: str | None = None,
-) -> e.PresentationLabelApproval:
-    return e.PresentationLabelApproval(
+) -> e_e5.PresentationLabelApproval:
+    return e_e5.PresentationLabelApproval(
         target_sha256=target_sha256,
         catalog_sha256=catalog_sha256
         if catalog_sha256 is not None
-        else e.presentation_label_catalog_sha256(catalog),
+        else e_e5.presentation_label_catalog_sha256(catalog),
         approved_label_ids=ids,
     )
 
 
 def _simulated_approval_for_test_target_catalog(
     target: Path = RESUME_I,
-) -> e.PresentationLabelApproval:
+) -> e_e5.PresentationLabelApproval:
     """Simulate owner approval so offline tests can exercise the approved path.
 
     Lane A renders the compiled plan, and the plan's section headings come from
@@ -2902,24 +2924,24 @@ def _simulated_approval_for_test_target_catalog(
     from tests.experiments.a_pipeline import build_format_summary
 
     target = target.resolve()
-    cache = ROOT / "tests/experiments/runs/target_cache" / e._sha256_file(target)
+    cache = ROOT / "tests/experiments/runs/target_cache" / e_shared._sha256_file(target)
     raw = json.loads((cache / "adobe_raw.json").read_text(encoding="utf-8"))
     normalized = NormalizedLayoutEvidence.model_validate_json(
         (cache / "enriched_evidence.json").read_text(encoding="utf-8")
     )
     summary = build_format_summary(normalized, raw, target)
-    _state, derived = e.compile_two_column_state(target, summary, evidence=normalized)
-    catalog = e._presentation_label_catalog(derived)
-    return e.PresentationLabelApproval(
-        target_sha256=e._sha256_file(target),
-        catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+    _state, derived = e_stages.compile_two_column_state(target, summary, evidence=normalized)
+    catalog = e_e5._presentation_label_catalog(derived)
+    return e_e5.PresentationLabelApproval(
+        target_sha256=e_shared._sha256_file(target),
+        catalog_sha256=e_e5.presentation_label_catalog_sha256(catalog),
         approved_label_ids=[label.label_id for label in catalog],
     )
 
 
 def test_valid_approval_projects_only_the_approved_ids() -> None:
     catalog = _catalog_one()
-    approved = e._apply_presentation_label_approval(
+    approved = e_e5._apply_presentation_label_approval(
         catalog,
         _approval_for(catalog, ["label.section.p1.top221.5"]),
         target_sha256="a" * 64,
@@ -2937,7 +2959,7 @@ def test_valid_approval_projects_only_the_approved_ids() -> None:
     # the PROPOSED catalog itself is never mutated by an approval
     assert [label.status for label in catalog] == ["proposed"]
     # partial approval: only the listed ids enter the view
-    two = e._presentation_label_catalog(
+    two = e_e5._presentation_label_catalog(
         {
             "sidebar_labels": [
                 {"page": 1, "top": 221.5, "text": "EXPERIENCE"},
@@ -2945,7 +2967,7 @@ def test_valid_approval_projects_only_the_approved_ids() -> None:
             ]
         }
     )
-    approved = e._apply_presentation_label_approval(
+    approved = e_e5._apply_presentation_label_approval(
         two,
         _approval_for(two, ["label.section.p1.top309.9"]),
         target_sha256="a" * 64,
@@ -2959,21 +2981,21 @@ def test_approval_fails_closed_on_identity_mismatch() -> None:
     catalog = _catalog_one()
     # wrong target sha
     with pytest.raises(ValueError, match="target_sha256 does not match"):
-        e._apply_presentation_label_approval(
+        e_e5._apply_presentation_label_approval(
             catalog,
             _approval_for(catalog, ["label.section.p1.top221.5"], target_sha256="b" * 64),
             target_sha256="a" * 64,
         )
     # wrong catalog sha (any content change invalidates the old approval)
     with pytest.raises(ValueError, match="catalog_sha256 does not match"):
-        e._apply_presentation_label_approval(
+        e_e5._apply_presentation_label_approval(
             catalog,
             _approval_for(catalog, ["label.section.p1.top221.5"], catalog_sha256="c" * 64),
             target_sha256="a" * 64,
         )
     # unknown label id
     with pytest.raises(ValueError, match="unknown label ids"):
-        e._apply_presentation_label_approval(
+        e_e5._apply_presentation_label_approval(
             catalog,
             _approval_for(catalog, ["label.section.p9.top999.0"]),
             target_sha256="a" * 64,
@@ -2987,16 +3009,16 @@ def test_approval_fails_closed_on_identity_mismatch() -> None:
         _approval_for(catalog, [" "])
     # sha256 shape is enforced
     with pytest.raises(ValidationError):
-        e.PresentationLabelApproval(
+        e_e5.PresentationLabelApproval(
             target_sha256="not-a-hash",
-            catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+            catalog_sha256=e_e5.presentation_label_catalog_sha256(catalog),
             approved_label_ids=["label.section.p1.top221.5"],
         )
     # the approval model carries NO content fields (extra="forbid")
     with pytest.raises(ValidationError):
-        e.PresentationLabelApproval(
+        e_e5.PresentationLabelApproval(
             target_sha256="a" * 64,
-            catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+            catalog_sha256=e_e5.presentation_label_catalog_sha256(catalog),
             approved_label_ids=["label.section.p1.top221.5"],
             text="INVENTED",  # type: ignore[call-arg]
         )
@@ -3008,26 +3030,26 @@ def test_same_text_in_another_target_does_not_inherit_approval() -> None:
     approval = _approval_for(
         catalog_a, ["label.section.p1.top221.5"], target_sha256="a" * 64
     )
-    assert e._apply_presentation_label_approval(
+    assert e_e5._apply_presentation_label_approval(
         catalog_a, approval, target_sha256="a" * 64
     )
     # target B measures the SAME wording at the SAME geometry: identical label
     # id and identical catalog content hash — but the TARGET differs, so the
     # approval must NOT carry over (the binding is the target, not the words)
-    catalog_b = e._presentation_label_catalog(
+    catalog_b = e_e5._presentation_label_catalog(
         {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
     )
-    assert e.presentation_label_catalog_sha256(catalog_b) == e.presentation_label_catalog_sha256(catalog_a)
+    assert e_e5.presentation_label_catalog_sha256(catalog_b) == e_e5.presentation_label_catalog_sha256(catalog_a)
     with pytest.raises(ValueError, match="target_sha256 does not match"):
-        e._apply_presentation_label_approval(
+        e_e5._apply_presentation_label_approval(
             catalog_b, approval, target_sha256="b" * 64
         )
     # different target, different measured geometry: catalog identity differs too
-    catalog_c = e._presentation_label_catalog(
+    catalog_c = e_e5._presentation_label_catalog(
         {"sidebar_labels": [{"page": 2, "top": 199.0, "text": "EXPERIENCE"}]}
     )
     with pytest.raises(ValueError, match="target_sha256 does not match"):
-        e._apply_presentation_label_approval(
+        e_e5._apply_presentation_label_approval(
             catalog_c, approval, target_sha256="b" * 64
         )
 
@@ -3035,32 +3057,32 @@ def test_same_text_in_another_target_does_not_inherit_approval() -> None:
 def test_catalog_content_change_invalidates_old_approval() -> None:
     catalog = _catalog_one()
     approval = _approval_for(catalog, ["label.section.p1.top221.5"])
-    assert e._apply_presentation_label_approval(catalog, approval, target_sha256="a" * 64)
+    assert e_e5._apply_presentation_label_approval(catalog, approval, target_sha256="a" * 64)
     # a text change changes the catalog identity -> the SAME approval fails
     # (note: whitespace-only changes are normalized away by the model, so a
     # REAL wording change is what invalidates approval)
-    changed_text = e._presentation_label_catalog(
+    changed_text = e_e5._presentation_label_catalog(
         {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EMPLOYMENT"}]}
     )
-    assert e.presentation_label_catalog_sha256(changed_text) != approval.catalog_sha256
+    assert e_e5.presentation_label_catalog_sha256(changed_text) != approval.catalog_sha256
     with pytest.raises(ValueError, match="catalog_sha256 does not match"):
-        e._apply_presentation_label_approval(changed_text, approval, target_sha256="a" * 64)
+        e_e5._apply_presentation_label_approval(changed_text, approval, target_sha256="a" * 64)
     # an evidence change does the same (evidence_ids are part of the identity)
     changed_evidence = [
         label.model_copy(update={"evidence_ids": ["local_pdf.other"]}) for label in catalog
     ]
-    assert e.presentation_label_catalog_sha256(changed_evidence) != approval.catalog_sha256
+    assert e_e5.presentation_label_catalog_sha256(changed_evidence) != approval.catalog_sha256
     with pytest.raises(ValueError, match="catalog_sha256 does not match"):
-        e._apply_presentation_label_approval(changed_evidence, approval, target_sha256="a" * 64)
+        e_e5._apply_presentation_label_approval(changed_evidence, approval, target_sha256="a" * 64)
 
 
 def test_frozen_e5_config_records_the_presentation_label_approval(tmp_path: Path) -> None:
     """The validated approval identity is frozen into run_config.json BEFORE
     the first live call — a mid-run crash still proves what the lanes saw.
     No approval -> the same shape freezes provided=False, approved=[]."""
-    from tests.experiments.e_pipeline import _freeze_e5_config
+    from tests.experiments.e.e5 import _freeze_e5_config
 
-    target_frozen = e.FrozenCase(
+    target_frozen = e_shared.FrozenCase(
         case_id="x",
         target_sha256="a" * 64,
         adobe_json_sha256="b" * 64,
@@ -3115,8 +3137,8 @@ def test_catalog_hash_is_deterministic_and_excludes_status() -> None:
     catalog = _catalog_one()
     flip = [label.model_copy(update={"status": "approved"}) for label in catalog]
     # status is approval state, not evidence: it is NOT part of the identity
-    assert e.presentation_label_catalog_sha256(catalog) == e.presentation_label_catalog_sha256(flip)
-    assert e.presentation_label_catalog_sha256(catalog) == e.presentation_label_catalog_sha256(
+    assert e_e5.presentation_label_catalog_sha256(catalog) == e_e5.presentation_label_catalog_sha256(flip)
+    assert e_e5.presentation_label_catalog_sha256(catalog) == e_e5.presentation_label_catalog_sha256(
         list(reversed(catalog))
     )
 
@@ -3136,7 +3158,7 @@ def test_presentation_label_text_is_escaped_and_never_reparsed() -> None:
 
     candidate = candidate_resume_E()
     catalog = [
-        e.PresentationLabel(
+        e_shared.PresentationLabel(
             label_id="label.section.p1.top1.0",
             text="{{candidate:name}} <b>X</b> & Y",
             kind="section_heading",
@@ -3193,25 +3215,25 @@ def test_residual_or_malformed_label_marker_fails_closed() -> None:
 
 
 def test_lane_gates_share_one_shell_owned_label_catalog() -> None:
-    catalog = e._presentation_label_catalog(
+    catalog = e_e5._presentation_label_catalog(
         {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
     )
-    approval = e.PresentationLabelApproval(
+    approval = e_e5.PresentationLabelApproval(
         target_sha256="a" * 64,
-        catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+        catalog_sha256=e_e5.presentation_label_catalog_sha256(catalog),
         approved_label_ids=["label.section.p1.top221.5"],
     )
-    approved = e._apply_presentation_label_approval(
+    approved = e_e5._apply_presentation_label_approval(
         catalog, approval, target_sha256="a" * 64
     )
     # both lanes run the common gate with the approved set -> exact equality
-    lane_a = e._e5_label_semantics({"excluded_labels": ["experience"]}, approved)
-    lane_b = e._e5_label_semantics({"excluded_labels": ["EXPERIENCE"]}, approved)
+    lane_a = e_e5._e5_label_semantics({"excluded_labels": ["experience"]}, approved)
+    lane_b = e_e5._e5_label_semantics({"excluded_labels": ["EXPERIENCE"]}, approved)
     assert lane_a["symmetric"] is True and lane_b["symmetric"] is True
     assert lane_a["approved_label_ids"] == lane_b["approved_label_ids"]
     # P1: a SUBSET is not symmetry — a plan-derived 4-of-9 exclusion must NOT
     # be reported as symmetric
-    two = e._presentation_label_catalog(
+    two = e_e5._presentation_label_catalog(
         {
             "sidebar_labels": [
                 {"page": 1, "top": 221.5, "text": "EXPERIENCE"},
@@ -3219,22 +3241,22 @@ def test_lane_gates_share_one_shell_owned_label_catalog() -> None:
             ]
         }
     )
-    two_approved = e._apply_presentation_label_approval(
+    two_approved = e_e5._apply_presentation_label_approval(
         two,
-        e.PresentationLabelApproval(
+        e_e5.PresentationLabelApproval(
             target_sha256="a" * 64,
-            catalog_sha256=e.presentation_label_catalog_sha256(two),
+            catalog_sha256=e_e5.presentation_label_catalog_sha256(two),
             approved_label_ids=["label.section.p1.top221.5", "label.section.p1.top309.9"],
         ),
         target_sha256="a" * 64,
     )
-    subset = e._e5_label_semantics({"excluded_labels": ["experience"]}, two_approved)
+    subset = e_e5._e5_label_semantics({"excluded_labels": ["experience"]}, two_approved)
     assert subset["symmetric"] is False
     assert subset["approved_texts_never_excluded"] == ["education"]
     # the old Lane B probe asymmetry (empty labels) and a hand-built set both
     # fail the exact-equality check
-    assert e._e5_label_semantics({"excluded_labels": []}, approved)["symmetric"] is False
-    hand_built = e._e5_label_semantics({"excluded_labels": ["section.01"]}, approved)
+    assert e_e5._e5_label_semantics({"excluded_labels": []}, approved)["symmetric"] is False
+    hand_built = e_e5._e5_label_semantics({"excluded_labels": ["section.01"]}, approved)
     assert hand_built["symmetric"] is False
     assert hand_built["excluded_outside_approved"] == ["section.01"]
     assert hand_built["approved_texts_never_excluded"] == ["experience"]
@@ -3248,7 +3270,7 @@ def test_lane_gates_share_one_shell_owned_label_catalog() -> None:
 
 
 def test_owner_package_label_listing_matches_the_catalog() -> None:
-    catalog = e._presentation_label_catalog(
+    catalog = e_e5._presentation_label_catalog(
         {
             "sidebar_labels": [
                 {"page": 1, "top": 221.5, "text": "EXPERIENCE"},
@@ -3256,16 +3278,16 @@ def test_owner_package_label_listing_matches_the_catalog() -> None:
             ]
         }
     )
-    listing = e._presentation_label_listing(
+    listing = e_e5._presentation_label_listing(
         catalog,
         {"a": ["label.section.p1.top221.5"], "b": []},
         target_sha256="a" * 64,
-        catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+        catalog_sha256=e_e5.presentation_label_catalog_sha256(catalog),
     )
     # no approval input -> EVERYTHING is proposed, zero approved ids
     assert listing["schema_version"] == "e5-presentation-labels/1"
     assert listing["target_sha256"] == "a" * 64
-    assert listing["catalog_sha256"] == e.presentation_label_catalog_sha256(catalog)
+    assert listing["catalog_sha256"] == e_e5.presentation_label_catalog_sha256(catalog)
     assert listing["approval_provided"] is None
     assert listing["approved_label_ids"] == []
     assert listing["proposed_label_ids"] == ["label.section.p1.top221.5", "label.section.p1.top309.9"]
@@ -3281,12 +3303,12 @@ def test_owner_package_label_listing_matches_the_catalog() -> None:
     assert "target_sha256" in listing["note"]
     # with a VALIDATED owner approval the listing distinguishes approved from
     # proposed; content still comes from the catalog
-    listing = e._presentation_label_listing(
+    listing = e_e5._presentation_label_listing(
         catalog,
         {"a": ["label.section.p1.top221.5"], "b": []},
         ["label.section.p1.top221.5"],
         target_sha256="a" * 64,
-        catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+        catalog_sha256=e_e5.presentation_label_catalog_sha256(catalog),
         approval_provided=True,
         approval_validated=True,
     )
@@ -3310,7 +3332,7 @@ def test_owner_package_label_listing_matches_the_catalog() -> None:
             "referenced_by_lanes": [],
         },
     ]
-    assert e._presentation_label_listing([], {"a": [], "b": []})["labels"] == []
+    assert e_e5._presentation_label_listing([], {"a": [], "b": []})["labels"] == []
 
 
 # --- E5 third correctness round: ledger as the single open/closed source,
@@ -3318,8 +3340,8 @@ def test_owner_package_label_listing_matches_the_catalog() -> None:
 
 
 def _finding(vid: str, *, finding_id: str, region: str = "section.05",
-             dimension: str = "role_gap", observation: str = "gap looks larger") -> e.DefectFinding:
-    return e.DefectFinding(
+             dimension: str = "role_gap", observation: str = "gap looks larger") -> e_shared.DefectFinding:
+    return e_shared.DefectFinding(
         finding_id=finding_id,
         target_version="target-resume_I-v1",
         render_version=vid,
@@ -3327,7 +3349,7 @@ def _finding(vid: str, *, finding_id: str, region: str = "section.05",
         region=region,
         observation=observation,
         suspected_dimension=dimension,
-        requested_measurement=e.MeasurementRequest(
+        requested_measurement=e_shared.MeasurementRequest(
             request_id=f"measure-{finding_id}", metric="role_gap", page=1,
             region_id=region, intent="vertical gap between the first two entry heads",
         ),
@@ -3343,29 +3365,29 @@ def test_ledger_is_the_single_open_closed_source() -> None:
     re-observation under a NEW finding id must not reopen a repaired defect;
     a CHANGED observation reopens bound to the latest finding id with the
     stale attribution cleared."""
-    ledger = e.DefectLedger()
+    ledger = e_e5.DefectLedger()
     f1 = _finding("v1", finding_id="f1")
     entry, action = ledger.observe(f1)
     assert action == "new" and entry.status == "open"
-    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == ["f1"]
+    assert e_e5._open_ledger_finding_ids(list(ledger.entries.values())) == ["f1"]
     # confirmed within tolerance (no_defect) closes the entry as resolved
-    attribution = e.AttributionRecord(
+    attribution = e_shared.AttributionRecord(
         finding_id="f1", render_version="v1",
         measurement_request_id="measure-f1",
         attribution="no_defect", hypothesis_status="rejected",
         repair_owner="none", evidence=["measure-f1"], reason="within tolerance",
     )
-    e._record_ledger_attribution(ledger, f1, attribution, "measure-f1")
+    e_e5._record_ledger_attribution(ledger, f1, attribution, "measure-f1")
     assert entry.status == "resolved"
     assert entry.attribution is attribution
     assert entry.measurement_request_id == "measure-f1"
-    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == []
+    assert e_e5._open_ledger_finding_ids(list(ledger.entries.values())) == []
     # the SAME defect re-observed under a NEW finding id: dedup, still closed
     f2 = _finding("v2", finding_id="f2")
     entry, action = ledger.observe(f2)
     assert action == "dedup"
     assert entry.status == "resolved"
-    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == []
+    assert e_e5._open_ledger_finding_ids(list(ledger.entries.values())) == []
     # a changed observation REOPENS: latest finding id, stale state cleared
     f3 = _finding("v3", finding_id="f3", observation="the heading moved below the rule now")
     entry, action = ledger.observe(f3)
@@ -3374,12 +3396,12 @@ def test_ledger_is_the_single_open_closed_source() -> None:
     assert entry.finding_id == "f3"
     assert entry.attribution is None
     assert entry.measurement_request_id is None
-    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == ["f3"]
+    assert e_e5._open_ledger_finding_ids(list(ledger.entries.values())) == ["f3"]
     # every status other than repaired/resolved stays open
     entry.status = "regressed"
-    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == ["f3"]
+    assert e_e5._open_ledger_finding_ids(list(ledger.entries.values())) == ["f3"]
     entry.status = "repaired"
-    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == []
+    assert e_e5._open_ledger_finding_ids(list(ledger.entries.values())) == []
 
 
 @e5_skip
@@ -3392,7 +3414,7 @@ def test_run_e5_deduped_repair_does_not_reopen_in_open_findings(
     permanently un-finishable). The scripted reviewer already emits a fresh
     finding id per round with the same ledger key + observation class."""
     _force_scripted_builder_attribution(monkeypatch)
-    _run_dir, _terminal, record = e.run_e5(
+    _run_dir, _terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
     lane = record["lanes"]["b"]
@@ -3418,7 +3440,7 @@ def test_run_e5_accepted_region_recheck_fails_closed_on_missing_evidence(
     Deterministic measurements are faked so the loop deterministically
     reaches the round-2 recheck with a prior accepted region."""
     _force_scripted_builder_attribution(monkeypatch)
-    real_controller = e.MeasureController
+    real_controller = e_stages.MeasureController
     call_counts: dict[str, int] = {}
     first_request_id: list[str] = []
 
@@ -3439,7 +3461,7 @@ def test_run_e5_accepted_region_recheck_fails_closed_on_missing_evidence(
                 scripted = {1: (20.0, 0.0), 2: (15.0, 0.0)}
             if count in scripted:
                 current, target = scripted[count]
-                return e.MeasurementResult(
+                return e_shared.MeasurementResult(
                     request_id=request.request_id,
                     status="confirmed",
                     current_value_pt=current,
@@ -3447,14 +3469,14 @@ def test_run_e5_accepted_region_recheck_fails_closed_on_missing_evidence(
                     delta_pt=current - target,
                     method="role_gap/scripted-test",
                 )
-            return e.MeasurementResult(
+            return e_shared.MeasurementResult(
                 request_id=request.request_id,
                 status="evidence_missing",
                 reason="the accepted-region anchor vanished from the candidate PDF",
                 method="role_gap/scripted-test",
             )
 
-    class DimensionShiftReviewer(e.ScriptedReviewer):
+    class DimensionShiftReviewer(e_stages.ScriptedReviewer):
         # a distinct dimension per round keeps the ledger keys (and repair
         # fingerprints) distinct so round 2 executes a real repair while the
         # round-1 accepted region is rechecked
@@ -3468,7 +3490,7 @@ def test_run_e5_accepted_region_recheck_fails_closed_on_missing_evidence(
 
     monkeypatch.setattr(e5, "MeasureController", ScriptedMeasurements)
     monkeypatch.setattr(e5, "ScriptedReviewer", DimensionShiftReviewer)
-    _run_dir, _terminal, record = e.run_e5(
+    _run_dir, _terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
     lane = record["lanes"]["b"]
@@ -3497,29 +3519,29 @@ def test_owner_package_shows_active_unpromoted_never_rolled_back(tmp_path: Path)
     v1_pdf.write_bytes(b"%PDF-1.4 active v1")
     v2_pdf.write_bytes(b"%PDF-1.4 rolled-back v2")
     versions = [
-        e.RenderVersion(
-            version_id="v1", html_sha256="h1", pdf_sha256=e._sha256_file(v1_pdf),
+        e_shared.RenderVersion(
+            version_id="v1", html_sha256="h1", pdf_sha256=e_shared._sha256_file(v1_pdf),
             page_count=1, hard_gates_passed=False, promoted=False, note="active initial",
         ),
-        e.RenderVersion(
-            version_id="v2", html_sha256="h2", pdf_sha256=e._sha256_file(v2_pdf),
+        e_shared.RenderVersion(
+            version_id="v2", html_sha256="h2", pdf_sha256=e_shared._sha256_file(v2_pdf),
             page_count=1, hard_gates_passed=False, promoted=False, note="rolled back",
         ),
     ]
-    lane = e.E5LaneRecord(
+    lane = e_e5.E5LaneRecord(
         lane="a", representation="lane A", render_versions=versions,
         best_render_version=None,
         best_defect_level_version=None,
         active_render_version="v1",
     )
-    version, stem, label = e._selected_lane_artifact(lane)
+    version, stem, label = e_e5._selected_lane_artifact(lane)
     assert label == "ACTIVE UNPROMOTED VERSION"
     assert version.version_id == "v1" and stem == "render_1"
-    record = e.E5LoopRecord(
+    record = e_e5.E5LoopRecord(
         target_id="t", target_sha256="0" * 64, lanes={"a": lane},
         summary={"terminal_state": "budget_exhausted"},
     )
-    package = e._write_e5_owner_package(out_dir, RESUME_I, record)
+    package = e_e5._write_e5_owner_package(out_dir, RESUME_I, record)
     copied = package / "lane_a_active_unpromoted.pdf"
     assert copied.exists()
     assert copied.read_bytes() == v1_pdf.read_bytes(), (
@@ -3529,7 +3551,7 @@ def test_owner_package_shows_active_unpromoted_never_rolled_back(tmp_path: Path)
     assert not (package / "lane_a_best.pdf").exists()
     report = (package / "REPORT.md").read_text(encoding="utf-8")
     assert "ACTIVE UNPROMOTED VERSION" in report
-    row = e._write_e5_comparison(out_dir, record, {"run_id": out_dir.name})
+    row = e_e5._write_e5_comparison(out_dir, record, {"run_id": out_dir.name})
     comparison = json.loads((out_dir / "comparison_report.json").read_text())
     assert comparison["lanes"][0]["render_label"] == "ACTIVE UNPROMOTED VERSION"
     assert comparison["lanes"][0]["selected_version"] == "v1"
@@ -3560,7 +3582,9 @@ def test_authored_slot_carries_no_token_and_no_free_text() -> None:
     report = at.validate_authored_template(base, target_pdf=RESUME_I)
     assert report["passed"] is True
     assert report["declared_slots"] == sorted(slot.category for slot in base.slots)
-    from tests.experiments.resume_layout.candidates import candidate_resume_E as _candidate_resume_E
+    from tests.experiments.resume_layout.candidates import (
+        candidate_resume_E as _candidate_resume_E,
+    )
 
     fill = at.fill_authored_template(base, _candidate_resume_E())
     assert not fill.missing_leaves
@@ -3584,7 +3608,10 @@ def test_authored_slot_carries_no_token_and_no_free_text() -> None:
 
 def _e5_lineage_candidate():
     """A small typed candidate for deterministic lineage probes."""
-    from tests.experiments.resume_layout.candidates import CandidateDocument, CandidateLeaf
+    from tests.experiments.resume_layout.candidates import (
+        CandidateDocument,
+        CandidateLeaf,
+    )
 
     return CandidateDocument(
         candidate_id="lineage_probe",
@@ -3618,7 +3645,7 @@ def _e5_clean_lineage_records() -> dict[str, dict[str, object]]:
 
 
 def _e5_clean_lineage(render_version: str = "render-v1") -> "e5.CandidateBindingLineage":
-    return e5._e5_candidate_binding_lineage(
+    return e_shared._e5_candidate_binding_lineage(
         _e5_lineage_candidate(), render_version, _e5_clean_lineage_records()
     )
 
@@ -3638,21 +3665,21 @@ def test_lineage_proofs_cover_every_deterministic_binding_contradiction() -> Non
     candidate does not have, a value substituted under a candidate leaf's
     identity, and a leaf owned under a destination that is not its own slot."""
     candidate = _e5_lineage_candidate()
-    foreign = e5._e5_candidate_binding_lineage(
+    foreign = e_shared._e5_candidate_binding_lineage(
         candidate, "v",
         {**_e5_clean_lineage_records(), "work.e9": {"text": "Someone Else"}},
     )
     assert [proof.kind for proof in foreign.proofs] == ["foreign_leaf_identity"]
     assert foreign.proofs[0].leaf_id == "work.e9"
 
-    substituted = e5._e5_candidate_binding_lineage(
+    substituted = e_shared._e5_candidate_binding_lineage(
         candidate, "v",
         {**_e5_clean_lineage_records(),
          "header.name": {"destination": "header.01.name", "text": "Lewis Verstappen"}},
     )
     assert [proof.kind for proof in substituted.proofs] == ["leaf_value_substituted"]
 
-    mismatched = e5._e5_candidate_binding_lineage(
+    mismatched = e_shared._e5_candidate_binding_lineage(
         candidate, "v",
         {**_e5_clean_lineage_records(),
          "header.envelope": {"destination": "header.01.name", "text": "alex@example.com"}},
@@ -3667,7 +3694,7 @@ def test_target_person_text_differs_from_candidate_never_confirms_candidate_bind
     render's name block hold different people. That is the product contract, so
     the claim stays unresolved/reviewer and never reaches a binding owner."""
     finding = _e5_finding("finding-la-r1-p1.01", "header_name_block", "typography")
-    record = e._e5_live_attribution_record(
+    record = e_shared._e5_live_attribution_record(
         finding,
         _live_hypothesis(
             finding.finding_id, attribution="candidate_binding", owner="binding",
@@ -3688,7 +3715,7 @@ def test_differing_target_work_history_does_not_trigger_rebind() -> None:
     rebind. The finding stays open (never hidden as `no_defect`) and the Builder
     never receives it."""
     finding = _e5_finding("finding-la-r1-p2.01", "experience_section", "content_structure")
-    record = e._e5_live_attribution_record(
+    record = e_shared._e5_live_attribution_record(
         finding,
         _live_hypothesis(
             finding.finding_id, attribution="candidate_binding", owner="binding",
@@ -3700,11 +3727,11 @@ def test_differing_target_work_history_does_not_trigger_rebind() -> None:
     assert record.attribution != "no_defect", "a real observation is never closed by a rejected hypothesis"
     measured = {
         finding.finding_id: (
-            e.MeasurementResult(request_id="m", status="confirmed", delta_pt=12.0),
+            e_shared.MeasurementResult(request_id="m", status="confirmed", delta_pt=12.0),
             finding.requested_measurement,
         ),
     }
-    selected, stalled = e._next_e5_repair_finding([finding], measured, [record], [])
+    selected, stalled = e_e5._next_e5_repair_finding([finding], measured, [record], [])
     assert selected is None and stalled is False, "a rebind claim must never become a Builder action"
 
 
@@ -3713,12 +3740,12 @@ def test_real_leaf_to_wrong_slot_mapping_is_still_confirmed_as_binding() -> None
     deterministically constructed candidate leaf owned under a foreign slot is
     still confirmed as `candidate_binding`."""
     finding = _e5_finding("finding-real-binding", "contact_info_block", "content_structure")
-    lineage = e5._e5_candidate_binding_lineage(
+    lineage = e_shared._e5_candidate_binding_lineage(
         _e5_lineage_candidate(), finding.render_version,
         {**_e5_clean_lineage_records(),
          "header.envelope": {"destination": "header.01.name", "text": "alex@example.com"}},
     )
-    record = e._e5_live_attribution_record(
+    record = e_shared._e5_live_attribution_record(
         finding,
         _live_hypothesis(
             finding.finding_id, attribution="candidate_binding", owner="binding",
@@ -3737,12 +3764,12 @@ def test_contact_structure_gap_is_not_attributed_to_candidate_replacement() -> N
     values differing from the candidate's are not evidence of a wrong candidate;
     the shell's recorded representation ceiling is the honest record."""
     finding = _e5_finding("finding-la-r1-p1.04", "contact_info_block", "content_structure")
-    lineage = e5._e5_candidate_binding_lineage(
+    lineage = e_shared._e5_candidate_binding_lineage(
         _e5_lineage_candidate(), finding.render_version,
         _e5_clean_lineage_records(),
         representation_ceiling_gates=["content_shapes_match_evidence"],
     )
-    record = e._e5_live_attribution_record(
+    record = e_shared._e5_live_attribution_record(
         finding,
         _live_hypothesis(
             finding.finding_id, attribution="candidate_binding", owner="binding",
@@ -3763,8 +3790,8 @@ def test_missing_or_stale_lineage_audit_fails_closed() -> None:
     hypothesis = _live_hypothesis(
         "f1", attribution="candidate_binding", owner="binding",
     )
-    absent = e._e5_live_attribution_record(finding, hypothesis, "m", lineage=None)
-    stale = e._e5_live_attribution_record(
+    absent = e_shared._e5_live_attribution_record(finding, hypothesis, "m", lineage=None)
+    stale = e_shared._e5_live_attribution_record(
         finding, hypothesis, "m", lineage=_e5_clean_lineage("render-other")
     )
     for record in (absent, stale):
@@ -3780,7 +3807,7 @@ def test_builder_never_receives_a_rebind_or_target_copy_repair() -> None:
     states the product contract the shell now enforces deterministically."""
     finding = _e5_finding("f1", "header_name_block", "typography")
     for owner in ("binding", "builder", "renderer", "none", "reviewer"):
-        record = e._e5_live_attribution_record(
+        record = e_shared._e5_live_attribution_record(
             finding,
             _live_hypothesis("f1", attribution="candidate_binding", owner=owner),
             "m",
@@ -3807,7 +3834,7 @@ def test_live_lane_a_render_lineage_is_clean_in_the_recorded_run() -> None:
     from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     details = json.loads(gates_path.read_text(encoding="utf-8"))["details"]
-    lineage = e5._e5_candidate_binding_lineage(
+    lineage = e_shared._e5_candidate_binding_lineage(
         candidate_resume_E(),
         "render-resume_I-laneA-v1",
         details["content_gate"]["leaf_records"],
@@ -3847,7 +3874,7 @@ def _e5_quarantine_gates(**overrides: bool) -> dict[str, bool]:
 def _e5_quarantine_case(
     version_id: str = "render-q-v2", **kwargs
 ) -> tuple[bool, str]:
-    version = e.RenderVersion(
+    version = e_shared.RenderVersion(
         version_id=version_id, html_sha256="h", pdf_sha256="p", page_count=1,
         hard_gates_passed=False,
     )
@@ -3886,7 +3913,7 @@ def test_unverifiable_identity_or_dirty_lineage_can_never_be_a_repair_base() -> 
     assert _e5_quarantine_case(representation=None)[0] is False
     assert _e5_quarantine_case(candidate_audit={"candidate_render_version": "other"})[0] is False
     assert _e5_quarantine_case(binding_lineage=None)[0] is False
-    dirty = e5._e5_candidate_binding_lineage(
+    dirty = e_shared._e5_candidate_binding_lineage(
         _e5_lineage_candidate(), "render-q-v2",
         {**_e5_clean_lineage_records(), "work.e9": {"text": "Someone Else"}},
     )
@@ -3900,7 +3927,7 @@ def test_action_fingerprint_binds_the_repair_base_version() -> None:
     identical remaining defect on a NEW quarantined repair version is a different
     action — so cumulative repair can continue instead of stalling."""
     finding = _e5_finding("f1", "candidate_content_accounting", "hard_gate_content")
-    result = e.MeasurementResult(
+    result = e_shared.MeasurementResult(
         request_id="m", status="confirmed", target_value_pt=0.0,
         current_value_pt=4.0, delta_pt=4.0,
     )
@@ -3908,7 +3935,7 @@ def test_action_fingerprint_binds_the_repair_base_version() -> None:
     executed = [
         f"{finding.render_version}:candidate_content_accounting:hard_gate_content:4.0"
     ]
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = e_e5._next_e5_repair_finding(
         [finding], measured, [_e5_attribution(finding)], executed
     )
     assert selected is None and stalled is True
@@ -3917,7 +3944,7 @@ def test_action_fingerprint_binds_the_repair_base_version() -> None:
         update={"finding_id": "f2", "render_version": "render-q-v2"}
     )
     measured_q = {"f2": (result, quarantined.requested_measurement)}
-    selected_q, _stalled_q = e._next_e5_repair_finding(
+    selected_q, _stalled_q = e_e5._next_e5_repair_finding(
         [quarantined], measured_q, [_e5_attribution(quarantined)], executed
     )
     assert selected_q is not None
@@ -3947,7 +3974,12 @@ def _inject_scripted_pdf_presence_failures(
                 }
         return result
 
-    monkeypatch.setattr(at, "authored_pdf_presence_gate", wrapper)
+    # Patch where it is looked up. Previously e_pipeline_e5 imported this
+    # symbol inside the function body, so patching the owner module took effect
+    # at call time. The facade-collapse pass hoisted that import to module
+    # level (R2), which binds it once at import time — so the patch target is
+    # now the consuming module. Same observable behaviour, same gate.
+    monkeypatch.setattr(e_e5, "authored_pdf_presence_gate", wrapper)
 
 
 @e5_skip
@@ -3957,7 +3989,7 @@ def test_run_e5_pdf_presence_failure_is_diagnostic_and_owner_reviewable(
     """Flattened-PDF presence mismatches stay visible but do not suppress a
     safety-valid authored output or fabricate a Builder repair."""
     _inject_scripted_pdf_presence_failures(monkeypatch, [5])
-    run_dir, terminal, record = e.run_e5(
+    run_dir, terminal, record = e_e5.run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=0,
     )
     lane = record["lanes"]["b"]
@@ -3997,12 +4029,12 @@ def test_recoverable_tool_input_error_returns_to_the_model(tmp_path: Path) -> No
     def pod_tools(pod: object, trace: object) -> dict[str, object]:
         return {
             tool.__name__: tool
-            for tool in e5._pod_tools(
+            for tool in e_shared._pod_tools(
                 pod, RunBudget(max_model_requests=10, max_tool_calls=10), trace
             )
         }
 
-    trace = e.RunTrace(tmp_path)
+    trace = d_pipeline.RunTrace(tmp_path)
     tools = pod_tools(_pod(tmp_path), trace)
     result = tools["inspect_page_overview"](99)
     assert isinstance(result, dict) and result["status"] == "error"
@@ -4015,7 +4047,7 @@ def test_recoverable_tool_input_error_returns_to_the_model(tmp_path: Path) -> No
     broken = _pod(tmp_path)
     broken.inspect_page_overview = exploding_renderer  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="renderer itself failed"):
-        pod_tools(broken, e.RunTrace(tmp_path))["inspect_page_overview"](1)
+        pod_tools(broken, d_pipeline.RunTrace(tmp_path))["inspect_page_overview"](1)
 
 
 def test_e5_reviewer_message_carries_exact_scope_without_candidate_text() -> None:
@@ -4107,11 +4139,11 @@ def test_initial_lane_b_context_is_candidate_compatible_and_compact(tmp_path: Pa
 
 
 def test_review_scope_open_findings_is_compact_and_complete() -> None:
-    finding = e.DefectFinding(
+    finding = e_shared.DefectFinding(
         finding_id="finding-1", target_version="t", render_version="r", page=2,
         region="skills", observation="Ordinary body copy is too dark.",
         suspected_dimension="color",
-        requested_measurement=e.MeasurementRequest(
+        requested_measurement=e_shared.MeasurementRequest(
             request_id="m", metric="role_gap", page=2,
             intent="record the unsupported color observation",
         ),
@@ -4131,11 +4163,11 @@ def test_review_scope_open_findings_is_compact_and_complete() -> None:
 
 
 def test_reviewer_findings_must_bind_one_catalog_region_and_dimension() -> None:
-    valid = e.DefectFinding(
+    valid = e_shared.DefectFinding(
         finding_id="f", target_version="t", render_version="r", page=1,
         region="section.03", observation="The entry spacing is too large.",
         suspected_dimension="role_spacing",
-        requested_measurement=e.MeasurementRequest(
+        requested_measurement=e_shared.MeasurementRequest(
             request_id="m", metric="role_gap", page=1,
             intent="record this non-measurable color residual",
         ),
@@ -4175,11 +4207,11 @@ def test_every_lane_b_repair_gets_a_minimal_boundary() -> None:
     from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     candidate = candidate_resume_E()
-    finding = e.DefectFinding(
+    finding = e_shared.DefectFinding(
         finding_id="gate", target_version="t", render_version="r", page=2,
         region="skills", observation="two leaves missing",
         suspected_dimension="hard_gate_content",
-        requested_measurement=e.MeasurementRequest(
+        requested_measurement=e_shared.MeasurementRequest(
             request_id="m", metric="role_gap", page=2, intent="missing leaves",
         ),
         severity="high", confidence=1.0, reviewer="scripted",
@@ -4201,7 +4233,10 @@ def test_every_lane_b_repair_gets_a_minimal_boundary() -> None:
 
 
 def test_authored_shell_uses_full_page_geometry_without_hidden_scale() -> None:
-    from tests.experiments.resume_layout.candidates import CandidateDocument, CandidateLeaf
+    from tests.experiments.resume_layout.candidates import (
+        CandidateDocument,
+        CandidateLeaf,
+    )
 
     template = _base_authored_template().model_copy(update={
         "template_id": "full-page",
@@ -4224,7 +4259,10 @@ def test_authored_shell_uses_full_page_geometry_without_hidden_scale() -> None:
 def test_authored_full_page_pdf_keeps_declared_size_and_font(tmp_path: Path) -> None:
     import pdfplumber
     from tests.experiments.a_pipeline import _export_pinned_html_to_pdf
-    from tests.experiments.resume_layout.candidates import CandidateDocument, CandidateLeaf
+    from tests.experiments.resume_layout.candidates import (
+        CandidateDocument,
+        CandidateLeaf,
+    )
 
     template = _base_authored_template().model_copy(update={
         "template_id": "full-page-pdf",
