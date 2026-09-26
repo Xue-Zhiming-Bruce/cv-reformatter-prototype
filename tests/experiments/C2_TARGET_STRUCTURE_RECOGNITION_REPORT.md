@@ -3,6 +3,29 @@
 Status: `Research / experiment evidence — awaiting owner review. Pipeline C2
 remains experimental and NOT accepted.`
 
+**Owner ruling 2026-09-26: the module is retired; the findings stand.**
+`c2_structure_recognition.py` and its 17 tests are removed. Two reasons, and
+the second is the deciding one:
+
+1. Pipeline E superseded it with a different deterministic route. `E_PIPELINE_PREP.md`
+   listed `recognize_target_structure` among the reusable assets E would draw
+   on, but E3 instead measures the two-column family generically (clustered
+   right-aligned label rows left of the rule column, label-over-rule
+   presentation, name row above the first page-1 label, LI/Lbl bullet tiers) and
+   compiles through the existing `state_from_scaffolds` mapping. No code path
+   calls `recognize_target_structure` any more.
+2. The blind audit below found a fail-closed defect that was never fixed: on
+   resume I the recognizer reported `status=ok` with `unresolved=0` while 52% of
+   the document's raw text leaves never reached it. A recognizer that reports
+   success while blind to half its input is unsafe to leave wireable.
+
+Recovery route if this direction is ever revisited: `git show <commit>^:tests/experiments/c2_structure_recognition.py`,
+plus the section 2.5 next-experiment definition further down this report. The
+upstream defects both audits identify as the dominant blockers — normalization
+dropping text leaves inside `/Table/` paths (64/122 on resume I) and dropping
+LI/Lbl bullet markers — remain open, deterministic, and recorded here and in
+`C2_RESUME_I_BLIND_STRUCTURE_AUDIT.md` section 5.
+
 Date: 2026-09-18. Branch `experiment/pipeline-c2`, worktree
 `/private/tmp/cv-converter-c2`. Phase-1 base commit `f8149c6`, phase-2 commit
 see §5. No Adobe/LLM/VLM/external call was made in this round; only the
