@@ -17,13 +17,13 @@ import html as html_lib
 from typing import Any
 
 from tests.experiments.a_pipeline import _inject_local_fonts
-from tests.experiments.c2_state import (  # phase-1 split
+from tests.experiments.resume_layout.state import (  # phase-1 split
     C2LayoutState,
     PageState,
     StyleToken,
 )
 
-from tests.experiments.c2_plan import (  # phase-1 split
+from tests.experiments.resume_layout.plan import (  # phase-1 split
     C2RenderPlan,
     LeafText,
     OVERFLOW_POLICY,

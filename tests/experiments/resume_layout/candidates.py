@@ -18,7 +18,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from tests.experiments.c2_state import (  # phase-1 split
+from tests.experiments.resume_layout.state import (  # phase-1 split
     C2LayoutState,
     SourceRole,
     StateModel,

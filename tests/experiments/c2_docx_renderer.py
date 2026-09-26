@@ -86,7 +86,7 @@ from tests.experiments.c2_renderer import (
     blank_page_gate,
     compile_render_plan,
 )
-from tests.experiments.c2_docx_build import (  # phase-1 split re-export
+from tests.experiments.docx_lane.build import (  # phase-1 split re-export
     BORDER_SIZE_QUANTUM,
     SPACING_QUANTUM,
     UNMEASURED_COLOR_HEX,
@@ -144,7 +144,7 @@ from tests.experiments.c2_docx_build import (  # phase-1 split re-export
     _RENDERED_MARKER_GLYPHS,
     _strip_leading_marker_glyphs,
 )
-from tests.experiments.c2_docx_compare import (  # phase-1 split re-export
+from tests.experiments.docx_lane.measure import (  # phase-1 split re-export
     _rendered_lines,
     _line_record,
     _text_key,

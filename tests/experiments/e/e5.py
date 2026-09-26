@@ -8,8 +8,8 @@ scheduling, `run_e5`, the source-identity freeze and every E5 report/owner
 package writer.
 
 The `PresentationLabel` / `EvidenceModel` contracts come from
-`tests.experiments.e_pipeline_common` (the true owner), the shared E2/E4
-records and helpers from `tests.experiments.e_pipeline_legacy`. Neither of
+`tests.experiments.e.shared` (the true owner), the shared E2/E4
+records and helpers from `tests.experiments.e.stages`. Neither of
 those modules imports this one: the graph is acyclic by construction.
 
 Prompts, budgets, schema_version strings, gating, privacy behaviour, terminal
@@ -34,7 +34,7 @@ from tests.experiments.a_pipeline import ROOT, RUNS, _export_pinned_html_to_pdf,
 from tests.experiments.d_pipeline import BudgetExhausted, CheckpointBudgetExceeded, EvidenceStore, RunBudget, RunTrace, _record_usage
 from tests.experiments.c_pipeline import _pdf_lines_and_marks, pinned_export_environment
 
-from tests.experiments.e_pipeline_common import (
+from tests.experiments.e.shared import (
     AttributionRecord,
     CandidateBindingLineage,
     DefectFinding,
@@ -68,7 +68,7 @@ from tests.experiments.e_pipeline_common import (
     redact_signed_urls,
 )
 
-from tests.experiments.e_pipeline_legacy import (
+from tests.experiments.e.stages import (
     E2_IMPROVEMENT_TOLERANCE_PT,
     MeasureController,
     SCRIPTED_OBSERVATION_BY_TARGET,
@@ -2428,7 +2428,7 @@ def _apply_header_overflow_disposition(candidate: Any, state: Any) -> Any:
     content-shape probe: header fields with no measured home in the compiled
     state route through the EXPLICIT candidate-only header-overflow node
     (nothing silently dropped, nothing invented)."""
-    from tests.experiments.c2_candidates import UnroutableContent
+    from tests.experiments.resume_layout.candidates import UnroutableContent
 
     header_slots_in_state = {
         slot for node in state.nodes if node.kind == "header_row" for slot in node.slots
@@ -2493,7 +2493,7 @@ def _sectioned_probe_candidate(fixture: Any) -> Any:
     item-list merge consumes top-level item leaves, so the shell flattens
     the container (children re-parented as top-level items) — the same
     top-level-item shape every candidate render context uses."""
-    from tests.experiments.c2_candidates import CandidateSection
+    from tests.experiments.resume_layout.candidates import CandidateSection
 
     flattened: list[Any] = []
     for leaf in fixture.leaves:
@@ -2663,7 +2663,7 @@ def _live_lane_b_builder(
     from pydantic_ai import Agent, BinaryContent, PromptedOutput, capture_run_messages
 
     from tests.experiments.d_pipeline import _live_model
-    from tests.experiments.e_authored_template import AuthoredTemplateCandidate
+    from tests.experiments.e.lane_b_template import AuthoredTemplateCandidate
 
     if budget.remaining_model_requests() < 1:
         raise CheckpointBudgetExceeded("budget exhausted before lane B builder")
@@ -2790,32 +2790,32 @@ E5_SOURCE_FILES = (
     # of an E5 run, so all four are registered.
     "tests/experiments/e_pipeline.py",
     # Shared contracts, evidence layer, live-model plumbing, agent-call audit.
-    "tests/experiments/e_pipeline_common.py",
+    "tests/experiments/e/shared.py",
     # E1-E4 stages (shared E2 records, review/measure/repair helpers).
-    "tests/experiments/e_pipeline_legacy.py",
+    "tests/experiments/e/stages.py",
     # The E5 stage implementation itself.
-    "tests/experiments/e_pipeline_e5.py",
+    "tests/experiments/e/e5.py",
     # Lane B boundary + scripted template.
-    "tests/experiments/e_authored_template.py",
+    "tests/experiments/e/lane_b_template.py",
     # Shell infrastructure imported by the Pipeline E modules: RunBudget/
     # RunTrace/EvidenceStore/RenderVersion/MeasureController/live-call plumbing.
     "tests/experiments/d_pipeline.py",
     # Pinned Chrome export environment, scaffolds, line/marks measurement.
     "tests/experiments/c_pipeline.py",
     # Render-plan compilation incl. the header-overflow ownership closure.
-    "tests/experiments/c2_plan.py",
+    "tests/experiments/resume_layout/plan.py",
     # The fixed HTML renderer.
-    "tests/experiments/c2_html.py",
+    "tests/experiments/resume_layout/html.py",
     # Delivery gates (content/privacy/structure/accounting/determinism).
     "tests/experiments/c2_renderer.py",
     # CandidateDocument, fixtures, UnroutableContent.
-    "tests/experiments/c2_candidates.py",
+    "tests/experiments/resume_layout/candidates.py",
     # Layout-state (de)serialization + validation.
-    "tests/experiments/c2_state.py",
+    "tests/experiments/resume_layout/state.py",
     # state_from_scaffolds + flow probes used by the two-column compile.
     "tests/experiments/c2_pipeline.py",
     # TOLERANCE_PT imported at module level by e_pipeline_legacy.
-    "tests/experiments/c2_docx_build.py",
+    "tests/experiments/docx_lane/build.py",
     # Format summary + page rendering/font injection helpers.
     "tests/experiments/a_pipeline.py",
     # Production evidence model directly consumed by the E5 compile basis.
@@ -2918,7 +2918,7 @@ def _freeze_e5_config(
     try:
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
-            cwd=Path(__file__).resolve().parents[2],
+            cwd=ROOT,
         ).stdout.strip()
     except Exception:
         commit = "unknown"
@@ -3047,16 +3047,16 @@ def run_e5(
     template, or diagnostic probes on the latest attempt when no best-valid
     render exists)."""
     from tests.experiments.a_pipeline import build_format_summary
-    from tests.experiments.c2_candidates import (
+    from tests.experiments.resume_layout.candidates import (
         candidate_resume_E,
         independent_candidate_fixtures,
     )
-    from tests.experiments.c2_plan import compile_render_plan
-    from tests.experiments.c2_html import render_html
+    from tests.experiments.resume_layout.plan import compile_render_plan
+    from tests.experiments.resume_layout.html import render_html
     from tests.experiments import c2_renderer as c2r
-    from tests.experiments.c2_state import state_bytes
+    from tests.experiments.resume_layout.state import state_bytes
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
-    from tests.experiments.e_authored_template import (
+    from tests.experiments.e.lane_b_template import (
         authored_network_disabled_environment,
         authored_pdf_presence_gate,
         authored_privacy_gate,
@@ -4228,7 +4228,7 @@ def run_e5(
                         ),
                     )
                 else:
-                    from tests.experiments.e_authored_template import SCRIPTED_AUTHORED_TEMPLATE
+                    from tests.experiments.e.lane_b_template import SCRIPTED_AUTHORED_TEMPLATE
 
                     template = SCRIPTED_AUTHORED_TEMPLATE
                 try:
@@ -4905,7 +4905,7 @@ def run_e5(
                                 ),
                             )
                         else:
-                            from tests.experiments.e_authored_template import SCRIPTED_AUTHORED_TEMPLATE as _base_template
+                            from tests.experiments.e.lane_b_template import SCRIPTED_AUTHORED_TEMPLATE as _base_template
 
                             # The offline Builder continues from the REPAIR BASE's
                             # own representation (the quarantined candidate when
@@ -5459,7 +5459,7 @@ def _write_e5_comparison(
                 "target_specific_code_status": "not_evaluated",
                 "shared_backend_code": {
                     "lane_a": "c2_plan.SectionPlan rail fields + c2_html rail branch",
-                    "lane_b": "tests/experiments/e_authored_template.py",
+                    "lane_b": "tests/experiments/e/lane_b_template.py",
                 }.get("lane_a" if lane_id == "a" else "lane_b"),
             }
         )

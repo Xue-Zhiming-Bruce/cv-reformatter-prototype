@@ -87,8 +87,8 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from tests.experiments.c2_candidates import CandidateDocument
-from tests.experiments.e_pipeline_common import EvidenceModel, PresentationLabel
+from tests.experiments.resume_layout.candidates import CandidateDocument
+from tests.experiments.e.shared import EvidenceModel, PresentationLabel
 
 # ---------------------------------------------------------------------------
 # Typed slot vocabulary

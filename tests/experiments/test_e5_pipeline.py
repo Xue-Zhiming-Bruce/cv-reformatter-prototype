@@ -24,9 +24,9 @@ from pathlib import Path
 
 import pytest
 
-import tests.experiments.e_authored_template as at
+import tests.experiments.e.lane_b_template as at
 import tests.experiments.e_pipeline as e
-import tests.experiments.e_pipeline_e5 as e5
+import tests.experiments.e.e5 as e5
 from tests.experiments.d_pipeline import RunBudget
 from tests.experiments.test_e_pipeline import (
     RESUME_I,
@@ -37,7 +37,7 @@ from tests.experiments.test_e_pipeline import (
     e2_skip,
 )
 
-import tests.experiments.e_authored_template as at
+import tests.experiments.e.lane_b_template as at
 
 # ===========================================================================
 # E5 — Phase 0 loop fixes + Builder representation comparison (Lane A / Lane B)
@@ -56,7 +56,7 @@ e5_skip = pytest.mark.skipif(
 
 
 def _base_authored_template() -> "at.AuthoredTemplateCandidate":
-    from tests.experiments.e_authored_template import SCRIPTED_AUTHORED_TEMPLATE
+    from tests.experiments.e.lane_b_template import SCRIPTED_AUTHORED_TEMPLATE
 
     return SCRIPTED_AUTHORED_TEMPLATE.model_copy(deep=True)
 
@@ -981,7 +981,7 @@ def test_lane_b_routes_confirmed_presentation_residual_directly_to_builder() -> 
 
 
 def test_reviewer_does_not_request_target_only_candidate_sections() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     labels = [
         e.PresentationLabel(
@@ -1010,7 +1010,7 @@ def test_reviewer_does_not_request_target_only_candidate_sections() -> None:
 def test_candidate_shape_filter_keeps_real_skills_layout_and_page_local_residuals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     scope = e5._candidate_review_scope(candidate_resume_E(), [])
     no_language_shape = _e5_finding("f1", "skills", "content_presence").model_copy(update={
@@ -1694,13 +1694,13 @@ def test_lane_b_candidate_facts_come_only_from_the_render_context(tmp_path: Path
     base = _base_authored_template()
     # A template that hardcodes a candidate fact is rejected.
     hardcoded = base.model_copy(update={"html": base.html + "\n<span>example@example.com</span>"})
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     with pytest.raises(ValueError, match="candidate facts"):
         at.validate_authored_template(hardcoded, target_pdf=RESUME_I, render_candidate=candidate_resume_E())
     # The fill reads ONLY the candidate render context: two different
     # candidates produce different values through the same template.
-    from tests.experiments.c2_candidates import independent_candidate_fixtures
+    from tests.experiments.resume_layout.candidates import independent_candidate_fixtures
 
     fill_a = at.fill_authored_template(base, candidate_resume_E())
     fixture = at.fill_authored_template(base, e._probe_candidate_with_text(independent_candidate_fixtures()["short"]))
@@ -1709,7 +1709,7 @@ def test_lane_b_candidate_facts_come_only_from_the_render_context(tmp_path: Path
 
 
 def test_authored_accounting_is_complete_and_fails_on_missing_leaves() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     base = _base_authored_template()
     fill = at.fill_authored_template(base, candidate_resume_E())
@@ -1810,7 +1810,7 @@ def test_lane_b_candidate_text_cannot_inject_html() -> None:
     candidate values are text nodes only — `<li>`/`<br>` markup comes from
     the shell, and no candidate-supplied element, event attribute, closing
     tag, or entity survives as markup."""
-    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+    from tests.experiments.resume_layout.candidates import CandidateDocument, CandidateLeaf
 
     malicious = CandidateDocument(
         candidate_id="malicious_probe",
@@ -1868,7 +1868,7 @@ def test_lane_b_candidate_text_cannot_inject_html() -> None:
 def test_lane_b_candidate_values_are_never_rescanned_as_slot_syntax() -> None:
     """One substitution pass: a candidate value carrying `{{...}}` cannot
     inject slot tokens; the fill fails closed on the residual-token check."""
-    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+    from tests.experiments.resume_layout.candidates import CandidateDocument, CandidateLeaf
 
     hostile = CandidateDocument(
         candidate_id="token_probe",
@@ -2279,10 +2279,10 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     for name in (
         "tests/experiments/d_pipeline.py",
         "tests/experiments/c2_renderer.py",
-        "tests/experiments/c2_candidates.py",
+        "tests/experiments/resume_layout/candidates.py",
         "tests/experiments/a_pipeline.py",
         "tests/experiments/c2_pipeline.py",
-        "tests/experiments/c2_state.py",
+        "tests/experiments/resume_layout/state.py",
     ):
         assert name in hashes["files"], f"missing direct runtime source: {name}"
     assert hashes["tracked_diff_sha256"] == e._tracked_diff_sha256(e.ROOT, e.E5_SOURCE_FILES)
@@ -2517,7 +2517,7 @@ def test_candidate_token_syntax_fails_closed_in_every_slot_region() -> None:
     """A candidate value carrying `{{...}}` must fail closed in EVERY slot
     region — never silently stripped — and the original CandidateDocument
     stays byte-identical."""
-    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+    from tests.experiments.resume_layout.candidates import CandidateDocument, CandidateLeaf
 
     def entry_candidate(entry_text, *children) -> CandidateDocument:
         return CandidateDocument(
@@ -2820,7 +2820,7 @@ def test_measurement_alone_never_approves_a_label() -> None:
     presentation label rather than a person fact. The catalog is purely
     evidence-derived: EVERY entry stays `proposed`, and only a typed owner
     approval (target-bound) can flip ids into the approved view."""
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     catalog = e._presentation_label_catalog(
         {
@@ -3132,7 +3132,7 @@ def test_source_has_no_hardcoded_resume_i_approval_list() -> None:
 
 
 def test_presentation_label_text_is_escaped_and_never_reparsed() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     candidate = candidate_resume_E()
     catalog = [
@@ -3162,7 +3162,7 @@ def test_presentation_label_text_is_escaped_and_never_reparsed() -> None:
 
 
 def test_label_marker_and_candidate_slot_fill_from_their_own_sources() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     candidate = candidate_resume_E()
     name = next(
@@ -3178,7 +3178,7 @@ def test_label_marker_and_candidate_slot_fill_from_their_own_sources() -> None:
 
 
 def test_residual_or_malformed_label_marker_fails_closed() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     malformed = _minimal_template("{{label:NOT_A_CATALOG_ID}}")
     with pytest.raises(ValueError, match="fixed visible text"):
@@ -3239,7 +3239,7 @@ def test_lane_gates_share_one_shell_owned_label_catalog() -> None:
     assert hand_built["excluded_outside_approved"] == ["section.01"]
     assert hand_built["approved_texts_never_excluded"] == ["experience"]
     # the Lane B gate reports its exclusions so the audit can compare them
-    from tests.experiments.e_authored_template import authored_privacy_gate
+    from tests.experiments.e.lane_b_template import authored_privacy_gate
 
     gate = authored_privacy_gate(
         "<html><body></body></html>", RESUME_I, RESUME_I, labels={"EXPERIENCE"}
@@ -3560,7 +3560,7 @@ def test_authored_slot_carries_no_token_and_no_free_text() -> None:
     report = at.validate_authored_template(base, target_pdf=RESUME_I)
     assert report["passed"] is True
     assert report["declared_slots"] == sorted(slot.category for slot in base.slots)
-    from tests.experiments.c2_candidates import candidate_resume_E as _candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E as _candidate_resume_E
 
     fill = at.fill_authored_template(base, _candidate_resume_E())
     assert not fill.missing_leaves
@@ -3584,7 +3584,7 @@ def test_authored_slot_carries_no_token_and_no_free_text() -> None:
 
 def _e5_lineage_candidate():
     """A small typed candidate for deterministic lineage probes."""
-    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+    from tests.experiments.resume_layout.candidates import CandidateDocument, CandidateLeaf
 
     return CandidateDocument(
         candidate_id="lineage_probe",
@@ -3804,7 +3804,7 @@ def test_live_lane_a_render_lineage_is_clean_in_the_recorded_run() -> None:
     target_path = TARGET_F_CACHE
     if not gates_path.exists() or not target_path.exists():
         pytest.skip("recorded live E5 run artifacts are not present in this checkout")
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     details = json.loads(gates_path.read_text(encoding="utf-8"))["details"]
     lineage = e5._e5_candidate_binding_lineage(
@@ -4019,7 +4019,7 @@ def test_recoverable_tool_input_error_returns_to_the_model(tmp_path: Path) -> No
 
 
 def test_e5_reviewer_message_carries_exact_scope_without_candidate_text() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     candidate = candidate_resume_E()
     message = e5._e5_reviewer_message(
@@ -4065,7 +4065,7 @@ def test_reviewer_receives_existing_deterministic_presentation_facts(monkeypatch
 
 
 def test_lane_b_content_free_shape_and_footprint_contracts() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     candidate = candidate_resume_E()
     shape = e5._slot_shape_contract()
@@ -4153,7 +4153,7 @@ def test_reviewer_findings_must_bind_one_catalog_region_and_dimension() -> None:
 
 
 def test_accounting_repair_maps_missing_skills_to_real_region_and_page(monkeypatch) -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     candidate = candidate_resume_E()
     monkeypatch.setattr(e5, "_candidate_role_page", lambda *_args: 2)
@@ -4172,7 +4172,7 @@ def test_accounting_repair_maps_missing_skills_to_real_region_and_page(monkeypat
 
 
 def test_every_lane_b_repair_gets_a_minimal_boundary() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E
 
     candidate = candidate_resume_E()
     finding = e.DefectFinding(
@@ -4201,7 +4201,7 @@ def test_every_lane_b_repair_gets_a_minimal_boundary() -> None:
 
 
 def test_authored_shell_uses_full_page_geometry_without_hidden_scale() -> None:
-    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+    from tests.experiments.resume_layout.candidates import CandidateDocument, CandidateLeaf
 
     template = _base_authored_template().model_copy(update={
         "template_id": "full-page",
@@ -4224,7 +4224,7 @@ def test_authored_shell_uses_full_page_geometry_without_hidden_scale() -> None:
 def test_authored_full_page_pdf_keeps_declared_size_and_font(tmp_path: Path) -> None:
     import pdfplumber
     from tests.experiments.a_pipeline import _export_pinned_html_to_pdf
-    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+    from tests.experiments.resume_layout.candidates import CandidateDocument, CandidateLeaf
 
     template = _base_authored_template().model_copy(update={
         "template_id": "full-page-pdf",

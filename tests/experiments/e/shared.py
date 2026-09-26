@@ -8,7 +8,7 @@ remaining modules need:
 - the versioned typed contracts (`EvidenceModel` family, the E2
   measurement/finding/attribution/render-version records shared by E3-E5);
 - the Lane B `PresentationLabel` contract (imported by
-  `e_authored_template.py` directly — never through the compat facade);
+  `e/lane_b_template.py` directly — never through the compat facade);
 - the read-only `EvidencePod` / `DualSourcePod` evidence layer, the bounded
   local-measurement helpers, and the E0 frozen-input set;
 - the shared live-model plumbing (`_call_limits`, `_live_model_settings`,

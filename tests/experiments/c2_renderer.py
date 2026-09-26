@@ -86,7 +86,7 @@ from tests.experiments.c2_pipeline import (
     render_context_coverage,
     state_bytes,
 )
-from tests.experiments.c2_plan import (  # phase-1 split re-export
+from tests.experiments.resume_layout.plan import (  # phase-1 split re-export
     OVERFLOW_POLICY,
     PlanStatus,
     LeafText,
@@ -115,7 +115,7 @@ from tests.experiments.c2_plan import (  # phase-1 split re-export
     _entry_plan,
     compile_render_plan,
 )
-from tests.experiments.c2_html import (  # phase-1 split re-export
+from tests.experiments.resume_layout.html import (  # phase-1 split re-export
     _esc,
     _pt,
     _style_css,

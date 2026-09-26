@@ -111,9 +111,9 @@ MODULE LAYOUT (behaviour-neutral split, 2026-09-22)
 This module is the COMPATIBILITY FACADE and CLI entry point. It holds no
 implementation of its own: the actual code lives in
 
-- `tests.experiments.e_pipeline_common`  — shared contracts/evidence/runtime,
-- `tests.experiments.e_pipeline_legacy`  — E1/E2/E3/E4 stages,
-- `tests.experiments.e_pipeline_e5`      — E5 lanes, comparison and reports,
+- `tests.experiments.e.shared`  — shared contracts/evidence/runtime,
+- `tests.experiments.e.stages`  — E1/E2/E3/E4 stages,
+- `tests.experiments.e.e5`      — E5 lanes, comparison and reports,
 
 and every public name is re-exported below so existing import paths
 (`from tests.experiments.e_pipeline import run_e5, PresentationLabelApproval`)
@@ -128,7 +128,7 @@ from pathlib import Path
 
 from tests.experiments.d_pipeline import owner_decide
 
-from tests.experiments.e_pipeline_common import (
+from tests.experiments.e.shared import (
     AttributionRecord,
     CANDIDATE_FACT_GATES,
     DefectFinding,
@@ -163,7 +163,7 @@ from tests.experiments.e_pipeline_common import (
     redact_signed_urls,
 )
 
-from tests.experiments.e_pipeline_legacy import (
+from tests.experiments.e.stages import (
     E2_IMPROVEMENT_TOLERANCE_PT,
     LiveBuilderRepair,
     MeasureController,
@@ -179,7 +179,7 @@ from tests.experiments.e_pipeline_legacy import (
     write_evaluation_report,
 )
 
-from tests.experiments.e_pipeline_e5 import (
+from tests.experiments.e.e5 import (
     DefectLedger,
     E5LaneASection,
     E5LaneRecord,

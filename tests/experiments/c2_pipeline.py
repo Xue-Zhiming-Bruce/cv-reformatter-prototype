@@ -62,7 +62,7 @@ DEFAULT_TARGET = (
 
 # Renderer-instruction ban (work order): the provider-neutral state must not
 # carry HTML/CSS/OOXML instructions. extra="forbid" rejects such fields; this
-from tests.experiments.c2_state import (  # phase-1 split re-export
+from tests.experiments.resume_layout.state import (  # phase-1 split re-export
     _RENDERER_SYNTAX,
     SourceRole,
     ALL_SOURCES,
@@ -92,7 +92,7 @@ from tests.experiments.c2_state import (  # phase-1 split re-export
     validate_layout_state,
     state_bytes,
 )
-from tests.experiments.c2_candidates import (  # phase-1 split re-export
+from tests.experiments.resume_layout.candidates import (  # phase-1 split re-export
     CandidateLeafKind,
     CandidateLeaf,
     UnroutableContent,

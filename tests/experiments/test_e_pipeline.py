@@ -450,9 +450,9 @@ def _access_records(run_dir: Path) -> list[dict]:
 # tests read all four so the scanned surface is unchanged by the file split.
 PIPELINE_E_SOURCE_FILES = (
     "e_pipeline.py",
-    "e_pipeline_common.py",
-    "e_pipeline_legacy.py",
-    "e_pipeline_e5.py",
+    "e/shared.py",
+    "e/stages.py",
+    "e/e5.py",
 )
 
 
@@ -822,7 +822,7 @@ def test_run_e2_never_stops_on_stall_but_returns_budget_exhausted_when_budget_en
 def test_run_e2_operational_abort_returns_typed_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tests.experiments import e_pipeline_legacy as legacy
+    from tests.experiments.e import stages as legacy
 
     def fail_environment(_env: dict[str, str]) -> dict[str, str]:
         raise RuntimeError("chrome unavailable")
@@ -968,7 +968,7 @@ def test_compile_two_column_state_is_valid_and_candidate_safe(tmp_path: Path) ->
 
     summary = build_format_summary(ev, json.loads(raw_path.read_text()), TARGET_I)
     state, derived = e.compile_two_column_state(TARGET_I, summary, ev)
-    from tests.experiments.c2_state import validate_layout_state
+    from tests.experiments.resume_layout.state import validate_layout_state
 
     assert validate_layout_state(state) == []
     assert state.schema_version == "layout-state/1"
@@ -1368,7 +1368,7 @@ def test_builder_cannot_modify_candidate_facts_or_unbounded_layers() -> None:
 
 def test_accepted_region_recheck_rolls_a_regression_back() -> None:
     """An accepted region regressing beyond tolerance fails the recheck."""
-    from tests.experiments.c2_docx_build import TOLERANCE_PT
+    from tests.experiments.docx_lane.build import TOLERANCE_PT
 
     tolerance = TOLERANCE_PT["local_gap"]
 

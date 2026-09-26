@@ -7,8 +7,8 @@ convergence trial) keep their exact historical behaviour, prompts,
 schema_version strings, budgets, terminal states and artifact layout.
 
 Shared contracts and runtime plumbing live in
-`tests.experiments.e_pipeline_common`; the E5 lane comparison lives in
-`tests.experiments.e_pipeline_e5`. This module imports only DOWNWARD.
+`tests.experiments.e.shared`; the E5 lane comparison lives in
+`tests.experiments.e.e5`. This module imports only DOWNWARD.
 """
 
 from __future__ import annotations
@@ -26,11 +26,11 @@ from PIL import Image
 from pydantic import Field, model_validator
 from tests.experiments.a_pipeline import ROOT, RUNS, _export_pinned_html_to_pdf, _render_pages
 from tests.experiments.d_pipeline import BudgetExhausted, CheckpointBudgetExceeded, EvidenceStore, RunBudget, RunTrace, _limits, _record_usage
-from tests.experiments.c2_docx_build import TOLERANCE_PT
+from tests.experiments.docx_lane.build import TOLERANCE_PT
 from tests.experiments.c_pipeline import BodyEntryScaffold, BodyHeadingScaffold, BodyScaffold, HeaderScaffold, _pdf_lines_and_marks, derive_body_tier_targets, pinned_export_environment
 import pdfplumber as _pdfplumber
 
-from tests.experiments.e_pipeline_common import (
+from tests.experiments.e.shared import (
     AttributionRecord,
     CANDIDATE_FACT_GATES,
     DRAFT_SCHEMA_VERSION,
@@ -549,7 +549,7 @@ no product contract, no ADR, no roadmap item, and no production code.
 
 E2_SCHEMA_VERSION = "pipeline-e-e2-state/1"
 # Tolerances are re-exported from the canonical C2 rendered-comparison contract
-# (documented BEFORE evaluation in c2_docx_build.py; never tuned afterwards).
+# (documented BEFORE evaluation in docx_lane/build.py; never tuned afterwards).
 E2_IMPROVEMENT_TOLERANCE_PT = TOLERANCE_PT["local_gap"]
 
 # Bounded repair vocabulary (plan §8.4): each layer is one typed mutation; a
@@ -873,12 +873,12 @@ def run_e2(
     template as unsupported. The offline path performs REAL Chrome renders and
     REAL pdfplumber measurement with zero model calls.
     """
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E
     from tests.experiments.c2_pipeline import compile_layout_state, run_flow_probe
-    from tests.experiments.c2_plan import compile_render_plan
-    from tests.experiments.c2_html import render_html
+    from tests.experiments.resume_layout.plan import compile_render_plan
+    from tests.experiments.resume_layout.html import render_html
     from tests.experiments import c2_renderer as c2r
-    from tests.experiments.c2_state import validate_layout_state, state_bytes
+    from tests.experiments.resume_layout.state import validate_layout_state, state_bytes
 
     target_pdf = target_pdf.resolve()
     if not target_pdf.exists():
@@ -1008,8 +1008,8 @@ def run_e2(
         run the delivery gates. Candidates are INACTIVE until the shell
         promotes; nothing is overwritten. The optional gap repair is scoped
         to the diagnosed section (generic; E2's F constant is gone)."""
-        from tests.experiments.c2_plan import compile_render_plan
-        from tests.experiments.c2_html import render_html
+        from tests.experiments.resume_layout.plan import compile_render_plan
+        from tests.experiments.resume_layout.html import render_html
         from tests.experiments import c2_renderer as c2r
 
         budget.spend_tool("render_and_checkpoint")
@@ -1333,7 +1333,7 @@ def run_e2(
     # 6. Content-shape probes (short/long/missing-field/nested-entry proxies via
     # the canonical C2 flow probe on independent fixtures; the canonical probe
     # lane remains C2's own content-shape verification, which already ran).
-    from tests.experiments.c2_candidates import independent_candidate_fixtures
+    from tests.experiments.resume_layout.candidates import independent_candidate_fixtures
 
     shape_probes: dict[str, Any] = {}
     for profile, probe_candidate in independent_candidate_fixtures().items():
@@ -2072,12 +2072,12 @@ def run_e3(
     unsupported.
     """
     from tests.experiments.a_pipeline import build_format_summary
-    from tests.experiments.c2_candidates import candidate_resume_E, independent_candidate_fixtures
+    from tests.experiments.resume_layout.candidates import candidate_resume_E, independent_candidate_fixtures
     from tests.experiments.c2_pipeline import run_flow_probe, state_from_scaffolds
-    from tests.experiments.c2_plan import compile_render_plan
-    from tests.experiments.c2_html import render_html
+    from tests.experiments.resume_layout.plan import compile_render_plan
+    from tests.experiments.resume_layout.html import render_html
     from tests.experiments import c2_renderer as c2r
-    from tests.experiments.c2_state import validate_layout_state, state_bytes
+    from tests.experiments.resume_layout.state import validate_layout_state, state_bytes
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 
     target_pdf = target_pdf.resolve()
@@ -2343,7 +2343,7 @@ def run_e3(
     )
 
     # -- 4. Builder: candidate-safe presentation from reviewed content -------
-    from tests.experiments.c2_candidates import candidate_resume_E as _cand_E
+    from tests.experiments.resume_layout.candidates import candidate_resume_E as _cand_E
 
     candidate = _cand_E()
     probe = run_flow_probe(state, candidate)
@@ -2378,7 +2378,7 @@ def run_e3(
     # rule): candidate header fields with no home in the compiled state route
     # through the EXISTING explicit header-overflow disposition. The record
     # names the measured target structure, never a Resume-I string.
-    from tests.experiments.c2_candidates import UnroutableContent
+    from tests.experiments.resume_layout.candidates import UnroutableContent
     from tests.experiments.fill_plan import CONTACT_KIND_CHECKS
 
     header_slots_in_state = {
@@ -2430,8 +2430,8 @@ def run_e3(
         """Render one whole document version through the canonical chain,
         run the delivery gates, and return the plan + html for the
         gate-driven finding derivation (no scripted gap mutation)."""
-        from tests.experiments.c2_plan import compile_render_plan as _crp
-        from tests.experiments.c2_html import render_html as _rh
+        from tests.experiments.resume_layout.plan import compile_render_plan as _crp
+        from tests.experiments.resume_layout.html import render_html as _rh
 
         budget.spend_tool("render_and_checkpoint")
         plan = _crp(state, candidate)
@@ -3199,7 +3199,7 @@ def _freeze_e4_config(
             capture_output=True,
             text=True,
             check=True,
-            cwd=Path(__file__).resolve().parents[2],
+            cwd=ROOT,
         ).stdout.strip()
     except Exception:
         commit = "unknown"
@@ -3296,12 +3296,12 @@ def run_e4(
     unsupported. Stalls do not terminate the run: they escalate strategy.
     """
     from tests.experiments.a_pipeline import build_format_summary
-    from tests.experiments.c2_candidates import candidate_resume_E, independent_candidate_fixtures
+    from tests.experiments.resume_layout.candidates import candidate_resume_E, independent_candidate_fixtures
     from tests.experiments.c2_pipeline import run_flow_probe, state_from_scaffolds
-    from tests.experiments.c2_plan import compile_render_plan
-    from tests.experiments.c2_html import render_html
+    from tests.experiments.resume_layout.plan import compile_render_plan
+    from tests.experiments.resume_layout.html import render_html
     from tests.experiments import c2_renderer as c2r
-    from tests.experiments.c2_state import validate_layout_state, state_bytes
+    from tests.experiments.resume_layout.state import validate_layout_state, state_bytes
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 
     started = time.time()
@@ -3454,7 +3454,7 @@ def run_e4(
     )
 
     # -- 3. Investigator role: live StructureDraft (offline = deterministic) --
-    from tests.experiments.c2_candidates import UnroutableContent
+    from tests.experiments.resume_layout.candidates import UnroutableContent
     from tests.experiments.fill_plan import CONTACT_KIND_CHECKS
 
     label_rules = {int(key): value for key, value in derived["sidebar_rules"].items()}
@@ -3727,8 +3727,8 @@ def run_e4(
         """One whole-document render through the canonical chain; a repair
         proposal applies its bounded plan-layer mutations to the FRESHLY
         compiled plan (never over approved state), then the delivery gates run."""
-        from tests.experiments.c2_plan import compile_render_plan as _crp
-        from tests.experiments.c2_html import render_html as _rh
+        from tests.experiments.resume_layout.plan import compile_render_plan as _crp
+        from tests.experiments.resume_layout.html import render_html as _rh
 
         budget.spend_tool("render_and_checkpoint")
         plan = _crp(state, candidate)

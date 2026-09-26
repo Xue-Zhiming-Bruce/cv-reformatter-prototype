@@ -33,12 +33,12 @@ from tests.experiments.c2_renderer import (  # phase-1 split
     blank_page_gate,
 )
 
-from tests.experiments.c2_state import (  # phase-1 split
+from tests.experiments.resume_layout.state import (  # phase-1 split
     C2LayoutState,
     Column,
 )
 
-from tests.experiments.c2_docx_build import (  # phase-1 split
+from tests.experiments.docx_lane.build import (  # phase-1 split
     AdjustedFeature,
     ConversionCompatibilityReport,
     DocumentReviewResult,
