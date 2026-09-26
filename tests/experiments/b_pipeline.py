@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
@@ -956,20 +955,3 @@ You are auditing the EXACT final render recorded in context (reviewed_render_ver
     except Exception:
         run_dir.joinpath("run_failed.txt").write_text("See context.json and round artifacts.\n", encoding="utf-8")
         raise
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--live", action="store_true", help="required acknowledgement for real model calls")
-    parser.add_argument("--target", type=Path, default=DEFAULT_TARGET)
-    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--feedback", action="append", default=[], help="owner feedback item; repeatable")
-    args = parser.parse_args()
-    if not args.live:
-        parser.error("--live is required because this experiment makes live model calls")
-    print(run(args.target.resolve(), args.source.resolve(), args.output.resolve() if args.output else None, owner_feedback=args.feedback))
-
-
-if __name__ == "__main__":
-    main()

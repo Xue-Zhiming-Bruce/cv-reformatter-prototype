@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import base64
 import csv
 import difflib
@@ -3489,29 +3488,3 @@ def run_def_matrix(output: Path | None = None) -> Path:
     validation_log = ROOT / "tests/test_results/pytest" / datetime.now(UTC).strftime(f"%Y%m%dT%H%M%SZ_{validation_name}")
     validation_log.write_text(validation_text, encoding="utf-8")
     return root
-
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--live", action="store_true", help="required acknowledgement for real provider calls")
-    parser.add_argument("--target", type=Path, default=DEFAULT_TARGET)
-    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--matrix-def", action="store_true", help="run all six D/E/F cross-pairs")
-    args = parser.parse_args()
-    if not args.live:
-        parser.error("--live is required because this experiment makes live provider calls")
-    if args.matrix_def:
-        result = run_def_matrix(args.output.resolve() if args.output else None)
-        print(result)
-        rows = json.loads(result.joinpath("run_manifest.json").read_text())["transformations"]
-        if any(row["status"] != "completed" or not row.get("automatic_passed", False) for row in rows):
-            raise SystemExit(1)
-    else:
-        print(run(args.target.resolve(), args.source.resolve(), args.output.resolve() if args.output else None))
-
-
-
-if __name__ == "__main__":
-    main()
