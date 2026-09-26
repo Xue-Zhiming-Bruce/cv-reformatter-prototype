@@ -25,13 +25,13 @@ from typing import Any
 
 from tests.experiments.a_pipeline import RUNS, _median, _render_pages
 from tests.experiments.c2_renderer import (  # phase-1 split
-    _norm,
     _pdf_color_hex,
     _rendered_heading_positions,
     _rendered_rule_extents,
     _rule_in_section_region,
     blank_page_gate,
 )
+from tests.experiments.resume_layout.text import _norm
 
 from tests.experiments.resume_layout.state import (  # phase-1 split
     C2LayoutState,

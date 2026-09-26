@@ -126,8 +126,7 @@ from tests.experiments.resume_layout.html import (  # phase-1 split re-export
     _list_html,
     render_html,
 )
-def _norm(value: str) -> str:
-    return re.sub(r"\s+", " ", value.replace(":", " ")).strip().casefold()
+from tests.experiments.resume_layout.text import _norm
 
 
 class _IdentityParser(HTMLParser):
