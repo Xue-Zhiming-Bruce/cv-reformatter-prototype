@@ -23,7 +23,6 @@
   bottom: 88px;
   right: 24px;
   width: 340px;
-  max-height: 480px;
   background: var(--bg, #fff);
   border: 1px solid var(--border, #e5e7eb);
   border-radius: 16px;
@@ -34,6 +33,31 @@
   overflow: hidden;
   animation: chat-in 0.18s ease;
 }
+
+.chat-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: ns-resize;
+  z-index: 10;
+  border-radius: 16px 16px 0 0;
+}
+.chat-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border, #d1d5db);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.chat-resize-handle:hover::after { opacity: 1; }
 @keyframes chat-in {
   from { opacity: 0; transform: translateY(12px) scale(0.97); }
   to   { opacity: 1; transform: none; }

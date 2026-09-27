@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useCallback } from "react"
 import "./ChatWidget.css"
 
 type Message = { role: "user" | "assistant"; content: string }
@@ -8,13 +8,20 @@ const GREETING: Message = {
   content: "Hi! I'm Reform's assistant. Ask me anything about how the tool works, or what features we offer.",
 }
 
+const MIN_HEIGHT = 300
+const MAX_HEIGHT = window.innerHeight - 120
+const DEFAULT_HEIGHT = 480
+
 export function ChatWidget() {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(true)
+  const [height, setHeight] = useState(DEFAULT_HEIGHT)
   const [messages, setMessages] = useState<Message[]>([GREETING])
   const [input, setInput] = useState("")
   const [streaming, setStreaming] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const dragStartY = useRef<number | null>(null)
+  const dragStartH = useRef<number>(DEFAULT_HEIGHT)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -23,6 +30,26 @@ export function ChatWidget() {
   useEffect(() => {
     if (open) inputRef.current?.focus()
   }, [open])
+
+  const onDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    dragStartY.current = e.clientY
+    dragStartH.current = height
+
+    function onMove(ev: MouseEvent) {
+      if (dragStartY.current === null) return
+      const delta = dragStartY.current - ev.clientY
+      const next = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, dragStartH.current + delta))
+      setHeight(next)
+    }
+    function onUp() {
+      dragStartY.current = null
+      window.removeEventListener("mousemove", onMove)
+      window.removeEventListener("mouseup", onUp)
+    }
+    window.addEventListener("mousemove", onMove)
+    window.addEventListener("mouseup", onUp)
+  }, [height])
 
   async function send() {
     const text = input.trim()
@@ -70,7 +97,7 @@ export function ChatWidget() {
           } catch { /* ignore malformed chunk */ }
         }
       }
-    } catch (e) {
+    } catch {
       setMessages(prev => {
         const updated = [...prev]
         updated[updated.length - 1] = { role: "assistant", content: "Sorry, something went wrong. Please try again." }
@@ -91,7 +118,9 @@ export function ChatWidget() {
   return (
     <>
       {open && (
-        <div className="chat-window" role="dialog" aria-label="Reform assistant">
+        <div className="chat-window" style={{ height }} role="dialog" aria-label="Reform assistant">
+          <div className="chat-resize-handle" onMouseDown={onDragStart} title="Drag to resize" />
+
           <div className="chat-header">
             <span className="chat-header-dot" aria-hidden="true" />
             Reform Assistant
