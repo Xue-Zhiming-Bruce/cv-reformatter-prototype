@@ -125,6 +125,10 @@ import tests.experiments.a_pipeline as a_pipeline
 
 # --- E1: investigator prompt and scripted rehearsal ---------------------------
 
+# Preloaded evidence removes the open-ended tool loop; retain bounded retries
+# only for schema correction/final synthesis.
+E1_INVESTIGATOR_MAX_REQUESTS = 4
+
 
 INVESTIGATOR_INSTRUCTIONS = (
     "You are a read-only target-structure investigator for a resume-layout "
@@ -356,7 +360,7 @@ def run_e1(
     out_dir = out_dir or RUNS / datetime.now(UTC).strftime("e_pipeline_e1_%Y%m%dT%H%M%SZ")
     out_dir.mkdir(parents=True, exist_ok=False)
 
-    budget = budget or RunBudget()
+    budget = budget or RunBudget(max_model_requests=E1_INVESTIGATOR_MAX_REQUESTS)
     trace = RunTrace(out_dir)
     # No C1 base render exists at this checkpoint, so the injected empty
     # document replaces D's `filled.html` read instead of a fabricated file.
@@ -397,7 +401,14 @@ def run_e1(
     pod_tools = _pod_tools(pod, budget, trace)
     tools_by_name = {tool.__name__: tool for tool in pod_tools}
     if live:
-        draft = _run_live_investigator(pod, pod_tools, budget, trace)
+        draft = _run_live_investigator(
+            pod,
+            pod_tools,
+            budget,
+            trace,
+            per_call_requests=E1_INVESTIGATOR_MAX_REQUESTS,
+            preload_evidence=True,
+        )
     else:
         draft = ScriptedTargetInvestigator().run(
             "", tools=tools_by_name, pod=pod, budget=budget, trace=trace
@@ -481,6 +492,7 @@ def check_e1_stop_gates(draft: TargetStructureDraft, pod: EvidencePod) -> str:
 def _run_live_investigator(
     pod: EvidencePod, pod_tools: list[Any], budget: RunBudget, trace: RunTrace, *,
     prompt: str | None = None, per_call_requests: int | None = None,
+    preload_evidence: bool = False,
 ) -> TargetStructureDraft:
     """One bounded live investigator request. Requires explicit authorization.
     E4: the prompt is FROZEN in run_config.json before the first live call, the
@@ -495,22 +507,46 @@ def _run_live_investigator(
         output_type=TargetStructureDraft,
         name="target_investigator",
         instructions=INVESTIGATOR_INSTRUCTIONS,
-        tools=pod_tools,
+        tools=[] if preload_evidence else pod_tools,
     )
     if budget.remaining_model_requests() < 1:
         raise CheckpointBudgetExceeded("global model budget exhausted before investigator")
     prompt = prompt or (
         "Investigate this target's structure. Machine-readable target description:\n"
         + json.dumps(pod.describe_target(), ensure_ascii=False, indent=1)
-        + "\nUse your read-only tools for every claim. Cite evidence ids in `evidence`."
+        + "\nUse your read-only tools for every claim. Cite evidence ids in `evidence`. "
+        "Return a document-level summary, not a text-node inventory: at most 12 "
+        "structural relations, at most 8 unresolved items, at most 3 evidence "
+        "references per item, and concise statements. Set evidence_used_by_id={} "
+        "because the shell populates that audit map."
     )
     limits = (
         _call_limits(budget, per_call_requests)
         if per_call_requests is not None
         else _limits(budget)
     )
+    user_input: Any = prompt
+    if preload_evidence:
+        tools = {tool.__name__: tool for tool in pod_tools}
+        evidence_parts: list[Any] = [
+            prompt
+            + "\nThe shell has preloaded the complete bounded evidence package below. "
+            "Synthesize the draft now; record missing detail as unresolved instead of requesting more tools."
+        ]
+        for page_number in sorted(pod.page_sizes):
+            evidence_parts.extend(tools["inspect_page_overview"](page_number))
+            evidence_parts.append(json.dumps(
+                tools["inspect_adobe_json"](page_number=page_number, limit=30),
+                ensure_ascii=False,
+            ))
+            evidence_parts.append(json.dumps(
+                tools["measure_local_pdf"](page_number=page_number, include="rules"),
+                ensure_ascii=False,
+            ))
+        evidence_parts.append(json.dumps(tools["audit_coverage"](), ensure_ascii=False))
+        user_input = evidence_parts
     result = agent.run_sync(
-        prompt, usage_limits=limits, model_settings=_live_model_settings()
+        user_input, usage_limits=limits, model_settings=_live_model_settings()
     )
     _record_usage(budget, trace, "target_investigator", "target_understanding", result)
     return result.output

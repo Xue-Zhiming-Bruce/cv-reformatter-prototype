@@ -386,6 +386,35 @@ def test_run_e1_budget_counts_every_tool_call(tmp_path: Path) -> None:
     assert budget.model_requests <= budget.max_model_requests
 
 
+def test_run_e1_live_uses_its_bounded_investigator_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, int] = {}
+
+    def fake_investigator(
+        pod, pod_tools, budget, trace, *, prompt=None, per_call_requests=None,
+        preload_evidence=False,
+    ):
+        captured["global"] = budget.max_model_requests
+        captured["per_call"] = per_call_requests
+        captured["preloaded"] = preload_evidence
+        return e_shared.TargetStructureDraft(
+            target_id=pod.target_pdf.stem,
+            investigator="llm",
+            self_reported=e_shared.SelfReportedStatus(
+                status="insufficient_evidence", notes="budget wiring test"
+            ),
+        )
+
+    monkeypatch.setattr(e_stages, "_run_live_investigator", fake_investigator)
+    e_stages.run_e1(RESUME_I, RESUME_I_RAW, tmp_path / "run", live=True)
+    assert captured == {
+        "global": e_stages.E1_INVESTIGATOR_MAX_REQUESTS,
+        "per_call": e_stages.E1_INVESTIGATOR_MAX_REQUESTS,
+        "preloaded": True,
+    }
+
+
 def test_e1_stop_gate_treats_confident_ok_without_confirmation_as_needs_owner_review(
     tmp_path: Path,
 ) -> None:

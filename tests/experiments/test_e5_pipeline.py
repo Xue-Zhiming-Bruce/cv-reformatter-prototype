@@ -1714,9 +1714,20 @@ def test_lane_b_rejects_target_person_literals() -> None:
         if word.casefold() not in at._TEMPLATE_GENERIC_VOCABULARY
     ]
     assert outside_vocab, "expected at least one distinctive target word to guard"
-    injected = base.model_copy(update={"html": base.html + f"\n<!-- {outside_vocab[0]} -->"})
+    injected = base.model_copy(update={"html": base.html + f"\n<span>{outside_vocab[0]}</span>"})
     with pytest.raises(ValueError, match="target-person literals"):
         at.validate_authored_template(injected, target_pdf=RESUME_I)
+
+
+def test_lane_b_target_literal_diagnostic_ignores_css_identifiers() -> None:
+    target = ROOT / "tests/local_datasets/resume_matrix/resume_D.pdf"
+    if not target.exists():
+        pytest.skip("authorized Resume D corpus not present")
+    base = _base_authored_template()
+    candidate = base.model_copy(
+        update={"css": base.css + "\n.skills { grid-template-columns: 1fr 1fr; }"}
+    )
+    at.validate_authored_template(candidate, target_pdf=target)
 
 
 def test_lane_b_candidate_facts_come_only_from_the_render_context(tmp_path: Path) -> None:

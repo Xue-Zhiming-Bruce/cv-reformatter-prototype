@@ -423,7 +423,7 @@ def validate_authored_template(
     static_words = {
         word.casefold()
         for word in re.findall(
-            r"[A-Za-z]{5,}", candidate.html + " " + candidate.css + " " + metadata_text
+            r"[A-Za-z]{5,}", visible_text + " " + metadata_text
         )
         if word.casefold() not in _TEMPLATE_GENERIC_VOCABULARY
     }
