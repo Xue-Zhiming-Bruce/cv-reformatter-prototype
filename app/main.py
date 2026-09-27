@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
 import httpx
@@ -2333,3 +2333,59 @@ def _require_layout_proof_approval(
             },
         )
     return approval
+
+
+# ── Chat endpoint ──────────────────────────────────────────────────────────────
+
+_CHAT_SYSTEM_PROMPT = """You are Reform's helpful assistant. Reform is a resume reformatting tool for recruiters and HR teams.
+
+What Reform does:
+- Users upload a candidate's resume (PDF or DOCX)
+- Users upload a target format (PDF reference or DOCX template) — the layout they want the output to look like
+- Reform extracts the resume content, maps it to the target format, and generates a formatted output (DOCX + PDF)
+- Users can review and edit fields before downloading
+- Processing takes about 20 seconds
+
+Key features:
+- Nothing is invented — all content comes from the original resume
+- Missing fields are flagged for the user to fill in
+- Side-by-side review: original resume vs. reformatted draft
+- Click any field to edit before exporting
+- Blind CV mode: anonymize candidate identity for unbiased review
+
+Pricing: Free (3 conversions/month), Personal ($X/month, 100 conversions), Team ($X/month, 250 conversions + team features)
+
+Keep answers short and helpful. If someone asks about something unrelated to Reform, politely redirect. Answer in the same language the user writes in."""
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessage]
+
+
+@app.post("/api/chat")
+async def chat(request: ChatRequest) -> StreamingResponse:
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Chat is not configured.")
+
+    async def stream():
+        try:
+            from anthropic import AsyncAnthropic
+            client = AsyncAnthropic(api_key=api_key)
+            async with client.messages.stream(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=512,
+                system=_CHAT_SYSTEM_PROMPT,
+                messages=[{"role": m.role, "content": m.content} for m in request.messages],
+            ) as s:
+                async for text in s.text_stream:
+                    yield f"data: {json.dumps({'text': text})}\n\n"
+        except Exception as exc:
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream")

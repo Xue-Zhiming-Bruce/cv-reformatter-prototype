@@ -4,6 +4,7 @@ import { ReviewScreen } from "./screens/ReviewScreen"
 import { AuthScreen } from "./screens/AuthScreen"
 import { PricingScreen } from "./screens/PricingScreen"
 import { LegalScreen } from "./screens/LegalScreen"
+import { ChatWidget } from "./components/ChatWidget"
 import { useAuth } from "./context/AuthContext"
 import type { ProcessResponse, TargetFormatMetadata, TargetFormatUploadResponse } from "./types"
 import "./App.css"
@@ -155,16 +156,19 @@ export default function App() {
   }
 
   return (
-    <MainScreen
-      onConvert={handleConvert}
-      isLoading={state.status === "loading"}
-      error={state.status === "error" ? state.message : null}
-      onDismissError={() => setState({ status: "idle" })}
-      onLogin={() => setState({ status: "login", from: "idle" })}
-      onSignup={() => setState({ status: "signup", from: "idle" })}
-      onPricing={() => setState({ status: "pricing" })}
-      onTerms={() => setState({ status: "terms" })}
-      onPrivacy={() => setState({ status: "privacy" })}
-    />
+    <>
+      <MainScreen
+        onConvert={handleConvert}
+        isLoading={state.status === "loading"}
+        error={state.status === "error" ? state.message : null}
+        onDismissError={() => setState({ status: "idle" })}
+        onLogin={() => setState({ status: "login", from: "idle" })}
+        onSignup={() => setState({ status: "signup", from: "idle" })}
+        onPricing={() => setState({ status: "pricing" })}
+        onTerms={() => setState({ status: "terms" })}
+        onPrivacy={() => setState({ status: "privacy" })}
+      />
+      <ChatWidget />
+    </>
   )
 }

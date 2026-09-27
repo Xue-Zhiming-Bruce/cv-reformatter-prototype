@@ -151,6 +151,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
   const [editOverlay, setEditOverlay] = useState<EditOverlay | null>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const overlayInputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null)
+  const [helpOpen, setHelpOpen] = useState(false)
   const [emailPopoverOpen, setEmailPopoverOpen] = useState(false)
   const [emailDraft, setEmailDraft] = useState("")
   const [emailState, setEmailState] = useState<"idle" | "loading" | "ready">("idle")
@@ -600,11 +601,72 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
               )}
             </div>
         </div>
+
+        <button
+          type="button"
+          className={`rv-help-btn${helpOpen ? " rv-help-btn--active" : ""}`}
+          onClick={() => setHelpOpen(v => !v)}
+          aria-label="Help"
+        >?</button>
       </header>
 
 
       {/* ── Two panes ── */}
       <div className="rv-panes">
+
+        {/* ── Help sidebar ── */}
+        {helpOpen && (
+          <aside className="rv-help-sidebar" role="complementary" aria-label="Help guide">
+            <div className="rv-help-sidebar__header">
+              <span>How to use</span>
+              <button type="button" className="rv-help-sidebar__close" onClick={() => setHelpOpen(false)} aria-label="Close help">×</button>
+            </div>
+            <div className="rv-help-sidebar__body">
+              <ol className="rv-help-steps">
+                <li className="rv-help-step">
+                  <span className="rv-help-step__num">1</span>
+                  <div>
+                    <strong>Review the draft</strong>
+                    <p>The right pane shows your resume reformatted into the target layout. Compare it with the original on the left.</p>
+                  </div>
+                </li>
+                <li className="rv-help-step">
+                  <span className="rv-help-step__num">2</span>
+                  <div>
+                    <strong>Click any field to edit</strong>
+                    <p>Hover over any text in the preview — it highlights. Click to open an edit box. Press Enter or click Save.</p>
+                  </div>
+                </li>
+                <li className="rv-help-step">
+                  <span className="rv-help-step__num">3</span>
+                  <div>
+                    <strong>Fill in missing fields</strong>
+                    <p>Fields marked <em>orange</em> need review — either the original didn't have them or they need confirmation.</p>
+                  </div>
+                </li>
+                <li className="rv-help-step">
+                  <span className="rv-help-step__num">4</span>
+                  <div>
+                    <strong>Export when ready</strong>
+                    <p>Click <strong>Export</strong> in the top-right to download as DOCX or PDF.</p>
+                  </div>
+                </li>
+              </ol>
+
+              <div className="rv-help-divider" />
+
+              <div className="rv-help-tips">
+                <div className="rv-help-tips__title">Tips</div>
+                <ul>
+                  <li>Use <strong>Blind profile</strong> to hide candidate identity before sharing.</li>
+                  <li>Draft an email to request missing info from the candidate.</li>
+                  <li>Nothing is invented — all content comes from the original resume.</li>
+                </ul>
+              </div>
+            </div>
+          </aside>
+        )}
+
         {/* Left — original file */}
         <div className="rv-pane rv-pane--left">
           <div className="pane-label">{t("review.leftLabel")}</div>
