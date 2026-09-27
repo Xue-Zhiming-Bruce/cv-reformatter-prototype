@@ -3316,6 +3316,45 @@ def test_residual_or_malformed_label_marker_fails_closed() -> None:
         at.fill_authored_template(unissued, candidate_resume_E(), labels=_presentation_labels())
 
 
+def test_authored_privacy_gate_does_not_call_candidate_source_text_a_target_leak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.experiments.e.lane_b_template import authored_privacy_gate
+
+    monkeypatch.setattr(
+        "app.ingestion.pdf_reader.read_pdf_text",
+        lambda path: "Certifications:" if path.name == "target.pdf" else "Certifications:",
+    )
+    gate = authored_privacy_gate(
+        "<html><body>Certifications:</body></html>",
+        tmp_path / "render.pdf",
+        tmp_path / "target.pdf",
+        labels=set(),
+        source_texts={"Certifications:"},
+    )
+    assert gate["passed"] is True
+    assert gate["leaked_target_lines"] == []
+
+
+def test_authored_privacy_gate_removes_approved_label_before_substring_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.experiments.e.lane_b_template import authored_privacy_gate
+
+    monkeypatch.setattr(
+        "app.ingestion.pdf_reader.read_pdf_text",
+        lambda path: "skills" if path.name == "target.pdf" else "TECHNICAL SKILLS",
+    )
+    gate = authored_privacy_gate(
+        "<html><body>TECHNICAL SKILLS</body></html>",
+        tmp_path / "render.pdf",
+        tmp_path / "target.pdf",
+        labels={"TECHNICAL SKILLS"},
+    )
+    assert gate["passed"] is True
+    assert gate["leaked_target_lines"] == []
+
+
 def test_lane_gates_share_one_shell_owned_label_catalog() -> None:
     catalog = e_e5._presentation_label_catalog(
         {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}

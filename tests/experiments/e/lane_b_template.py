@@ -755,7 +755,12 @@ def authored_network_disabled_environment() -> dict[str, Any]:
 
 
 def authored_privacy_gate(
-    html: str, pdf: Path, target_pdf: Path, *, labels: set[str]
+    html: str,
+    pdf: Path,
+    target_pdf: Path,
+    *,
+    labels: set[str],
+    source_texts: set[str] | None = None,
 ) -> dict[str, Any]:
     """No target-person line may enter the authored output (same target-text
     line granularity as the canonical privacy gate; rail/section labels are
@@ -766,6 +771,10 @@ def authored_privacy_gate(
     normalized_html = _norm(html_text)
     normalized_pdf = _norm(read_pdf_text(pdf))
     excluded = {_norm(label) for label in labels}
+    source = {_norm(text) for text in (source_texts or set())}
+    for label in sorted(excluded, key=len, reverse=True):
+        normalized_html = normalized_html.replace(label, "")
+        normalized_pdf = normalized_pdf.replace(label, "")
     target_lines = [
         line.strip()
         for line in read_pdf_text(target_pdf).splitlines()
@@ -775,7 +784,7 @@ def authored_privacy_gate(
     checked: list[dict[str, Any]] = []
     for line in target_lines:
         token = _norm(line)
-        if token in excluded:
+        if token in excluded or token in source:
             continue
         hit = token in normalized_html or token in normalized_pdf
         checked.append({"line": line, "hit": hit})
@@ -786,6 +795,7 @@ def authored_privacy_gate(
         "leaked_target_lines": leaked,
         "checked_target_lines": checked,
         "excluded_labels": sorted(excluded),
+        "excluded_source_texts": sorted(source),
     }
 
 

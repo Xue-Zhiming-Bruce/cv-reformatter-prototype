@@ -3758,6 +3758,9 @@ def run_e5(
                             "privacy_gate": authored_privacy_gate(
                                 html, probe_pdf_path, target_pdf,
                                 labels=approved_label_texts,
+                                source_texts={
+                                    leaf.text for leaf in probe_candidate.leaves if leaf.text
+                                },
                             )["passed"],
                             "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
                             "deterministic_render": (
@@ -3797,6 +3800,9 @@ def run_e5(
                             "privacy_gate": authored_privacy_gate(
                                 doc, probe_pdf_path, target_pdf,
                                 labels=approved_label_texts,
+                                source_texts={
+                                    leaf.text for leaf in probe_candidate.leaves if leaf.text
+                                },
                             )["passed"],
                             "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
                         }
@@ -3938,7 +3944,11 @@ def run_e5(
                 # owner-approved label set for BOTH lanes, so the two lanes'
                 # privacy decisions are directly comparable.
                 common_privacy = authored_privacy_gate(
-                    html, pdf_path, target_pdf, labels=approved_label_texts
+                    html,
+                    pdf_path,
+                    target_pdf,
+                    labels=approved_label_texts,
+                    source_texts={leaf.text for leaf in candidate.leaves if leaf.text},
                 )
                 structure_gate = c2r.structure_gate(plan, state, html, pdf_path)
                 blank = c2r.blank_page_gate(pdf_path)
@@ -4064,7 +4074,11 @@ def run_e5(
                 # identical owner-approved label set, so both lanes' privacy
                 # decisions are directly comparable.
                 common_privacy = authored_privacy_gate(
-                    doc, pdf_path, target_pdf, labels=approved_label_texts
+                    doc,
+                    pdf_path,
+                    target_pdf,
+                    labels=approved_label_texts,
+                    source_texts={leaf.text for leaf in candidate.leaves if leaf.text},
                 )
                 label_semantics = _e5_label_semantics(
                     common_privacy, approved_label_catalog
@@ -4073,7 +4087,11 @@ def run_e5(
                 # DIAGNOSTIC ONLY: the frozen-target copy gate under the same
                 # approved label set (not the privacy decision).
                 privacy_baseline_gate = authored_privacy_gate(
-                    doc, pdf_path, privacy_baseline, labels=approved_label_texts
+                    doc,
+                    pdf_path,
+                    privacy_baseline,
+                    labels=approved_label_texts,
+                    source_texts={leaf.text for leaf in candidate.leaves if leaf.text},
                 )
                 blank = c2r.blank_page_gate(pdf_path)
                 gates = {
