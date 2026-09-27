@@ -84,6 +84,29 @@ def test_target_structure_draft_must_match_frozen_target(tmp_path: Path) -> None
         e_e5._target_structure_draft_source("b" * 64, draft)
 
 
+def test_standard_state_headings_become_proposed_presentation_labels() -> None:
+    from types import SimpleNamespace
+
+    state = SimpleNamespace(nodes=[
+        SimpleNamespace(
+            kind="heading",
+            node_id="section.01.heading",
+            label="EXPERIENCE",
+            evidence_ids=["adobe.page.1.element.4"],
+        )
+    ])
+    labels = e_e5._presentation_label_catalog(
+        {"layout_family": "standard"}, state
+    )
+    assert [label.model_dump(mode="json") for label in labels] == [{
+        "label_id": "label.section.01.heading",
+        "text": "EXPERIENCE",
+        "kind": "section_heading",
+        "evidence_ids": ["adobe.page.1.element.4"],
+        "status": "proposed",
+    }]
+
+
 def _base_authored_template() -> "at.AuthoredTemplateCandidate":
     from tests.experiments.e.lane_b_template import SCRIPTED_AUTHORED_TEMPLATE
 
@@ -1778,6 +1801,49 @@ def test_run_e5_repeats_the_identical_measurement_after_repair(
     results = lane["measurement_results"]
     request_ids = [r["request_id"] for r in results]
     assert len(request_ids) != len(set(request_ids)), "the identical request was not repeated after repair"
+
+
+@e5_skip
+def test_run_e5_retries_one_initial_lane_b_validator_rejection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    valid = _base_authored_template()
+    invalid = valid.model_copy(update={"css": valid.css + "\n/* remove me */"})
+    outputs = iter((invalid, valid))
+
+    monkeypatch.setattr(
+        e_e5, "_live_lane_b_builder", lambda *args, **kwargs: next(outputs)
+    )
+    monkeypatch.setattr(
+        e_e5, "_live_reviewer_findings", lambda *args, **kwargs: []
+    )
+    run_dir, terminal, record = e_e5.run_e5(
+        RESUME_I, tmp_path / "run", live=True, lanes=("b",)
+    )
+    candidates = json.loads((run_dir / "lane_b" / "checkpoint.json").read_text())[
+        "builder_candidates"
+    ]
+    assert candidates[0]["outcome"] == "validator_rejected"
+    assert candidates[1]["outcome"] == "active_unpromoted"
+    assert terminal == "ready_for_owner_review"
+    assert record["lanes"]["b"]["best_render_version"]
+
+
+@e5_skip
+def test_run_e5_reports_operational_abort_after_two_validator_rejections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = _base_authored_template()
+    invalid = base.model_copy(update={"css": base.css + "\n/* remove me */"})
+    monkeypatch.setattr(
+        e_e5, "_live_lane_b_builder", lambda *args, **kwargs: invalid
+    )
+    _run_dir, terminal, record = e_e5.run_e5(
+        RESUME_I, tmp_path / "run", live=True, lanes=("b",)
+    )
+    assert terminal == "operational_abort"
+    assert record["lanes"]["b"]["terminal_state"] == "operational_abort"
+    assert record["lanes"]["b"]["terminal_reason"] == "builder_initial_failed"
 
 
 @e5_skip

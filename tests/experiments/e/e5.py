@@ -769,7 +769,9 @@ class E5LoopRecord(EvidenceModel):
     summary: dict[str, Any] = Field(default_factory=dict)
 
 
-def _presentation_label_catalog(derived: dict[str, Any]) -> list[PresentationLabel]:
+def _presentation_label_catalog(
+    derived: dict[str, Any], state: Any | None = None
+) -> list[PresentationLabel]:
     """PROPOSE presentation labels from the measured sidebar-label evidence
     that already feeds the StructureDraft and both lanes' evidence package.
 
@@ -805,6 +807,19 @@ def _presentation_label_catalog(derived: dict[str, Any]) -> list[PresentationLab
                 text=text,
                 kind="section_heading",
                 evidence_ids=[f"local_pdf.sidebar_label.p{page}.top{top:.1f}"],
+            )
+        )
+    if catalog or state is None:
+        return catalog
+    for node in state.nodes:
+        if node.kind != "heading" or not node.label:
+            continue
+        catalog.append(
+            PresentationLabel(
+                label_id=f"label.{node.node_id}",
+                text=node.label,
+                kind="section_heading",
+                evidence_ids=list(node.evidence_ids),
             )
         )
     return catalog
@@ -3243,6 +3258,11 @@ def run_e5(
     except Exception as error:
         return abort("layout_preflight", error)
     state_errors = validate_layout_state(state)
+    try:
+        label_catalog = _presentation_label_catalog(derived, state)
+        catalog_sha256 = presentation_label_catalog_sha256(label_catalog)
+    except Exception as error:
+        return abort("presentation_label_catalog", error)
     preflight = {
         "target_id": target_id,
         "target_sha256": target_sha256,
@@ -3251,6 +3271,10 @@ def run_e5(
         "state_validation_errors": state_errors,
         "section_count": sum(node.kind == "section" for node in state.nodes),
         "capability_gaps": [gap.model_dump(mode="json") for gap in state.capability_gaps],
+        "presentation_label_catalog_sha256": catalog_sha256,
+        "proposed_presentation_labels": [
+            label.model_dump(mode="json") for label in label_catalog
+        ],
     }
     (out_dir / "target_preflight.json").write_text(
         json.dumps(preflight, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -3269,11 +3293,6 @@ def run_e5(
     # lanes already share. Lane A renders those labels from the render plan,
     # Lane B can only reference `{{label:<label_id>}}`; both privacy gates and
     # the owner listing reference THIS catalog, never a lane-local set.
-    try:
-        label_catalog = _presentation_label_catalog(derived)
-    except Exception as error:
-        return abort("presentation_label_catalog", error)
-    catalog_sha256 = presentation_label_catalog_sha256(label_catalog)
     # Approval is an owner INPUT, never an inference: the proposed catalog
     # stays all-proposed unless the owner supplied a typed approval bound to
     # THIS target's sha256 and THIS catalog's canonical identity. Without it
@@ -4370,46 +4389,54 @@ def run_e5(
                         reason="initial validated candidate rendered and became the active version",
                     )
             else:
-                template = None
-                if live:
-                    template = _live_lane_b_builder(
-                        lane_budget,
-                        trace,
-                        payload=initial_builder_evidence,
-                        images=shared_target_images,
-                        template_id="lane-b-r1",
-                        audit=_e5_audit(
-                            agent="lane_b_builder",
-                            phase="initial",
-                            round_no=0,
-                            render_version=None,
-                            instructions=E5_LANE_B_BUILDER_INSTRUCTIONS,
-                            image_refs=_e5_image_refs(shared_target_images, "target"),
-                        ),
-                    )
-                else:
-
-                    template = SCRIPTED_AUTHORED_TEMPLATE
-                try:
-                    validation = validate_authored_template(
+                template = SCRIPTED_AUTHORED_TEMPLATE
+                validation_error: str | None = None
+                builder_payload = initial_builder_evidence
+                for attempt in range(1, 3 if live else 2):
+                    if live:
+                        template = _live_lane_b_builder(
+                            lane_budget,
+                            trace,
+                            payload=builder_payload,
+                            images=shared_target_images,
+                            template_id=f"lane-b-r{attempt}",
+                            audit=_e5_audit(
+                                agent="lane_b_builder",
+                                phase="initial" if attempt == 1 else "initial_retry",
+                                round_no=attempt - 1,
+                                render_version=None,
+                                instructions=E5_LANE_B_BUILDER_INSTRUCTIONS,
+                                image_refs=_e5_image_refs(shared_target_images, "target"),
+                            ),
+                        )
+                    try:
+                        validation = validate_authored_template(
+                            template,
+                            target_pdf=target_pdf,
+                            render_candidate=candidate,
+                            known_evidence_ids=_known_evidence_ids(),
+                            labels=approved_label_catalog,
+                        )
+                        validation_error = None
+                    except ValueError as error:
+                        validation = {"passed": False, "error": str(error)}
+                        validation_error = str(error)
+                    candidate_audit_index = record_builder_candidate(
                         template,
-                        target_pdf=target_pdf,
-                        render_candidate=candidate,
-                        known_evidence_ids=_known_evidence_ids(),
-                        labels=approved_label_catalog,
+                        stage="initial" if attempt == 1 else "initial_retry",
+                        input_render_version=None,
+                        validation=validation,
+                        outcome="validator_rejected" if validation_error else "validated",
+                        reason=validation_error or "typed template accepted by the shell validator",
                     )
-                    validation_error = None
-                except ValueError as error:
-                    validation = {"passed": False, "error": str(error)}
-                    validation_error = str(error)
-                candidate_audit_index = record_builder_candidate(
-                    template,
-                    stage="initial",
-                    input_render_version=None,
-                    validation=validation,
-                    outcome="validator_rejected" if validation_error else "validated",
-                    reason=validation_error or "typed template accepted by the shell validator",
-                )
+                    if validation_error is None:
+                        break
+                    lane_state["last_rejection"] = validation_error
+                    builder_payload = {
+                        **initial_builder_evidence,
+                        "current_representation": template.model_dump(mode="json"),
+                        "last_rejection": validation_error,
+                    }
                 if validation_error:
                     raise ValueError(validation_error)
                 lane_state["template"] = template
@@ -4436,7 +4463,7 @@ def run_e5(
             lane_state["last_rejection"] = f"initial render failed: {str(error)[:200]}"
             trace.add(agent="shell", phase="builder", action="initial_failed", note=str(error)[:200], output={"traceback": detail}, persist_output=True)
             escalate(f"lane_builder_initial_failed:{type(error).__name__}")
-            return _lane_terminal(lane, "budget_exhausted", reason="builder_initial_failed")
+            return _lane_terminal(lane, "operational_abort", reason="builder_initial_failed")
         checkpoint("initial_render")
 
         # --- 4. See -> Measure -> Attribute -> Repair -> Re-render loop -----
@@ -5355,6 +5382,10 @@ def run_e5(
     ]
     if lane_records and not blocked_lanes:
         overall_terminal = "ready_for_owner_review"
+    elif any(
+        record.terminal_state == "operational_abort" for record in blocked_lanes
+    ):
+        overall_terminal = "operational_abort"
     elif blocked_lanes and all(
         record.terminal_state == "stalled_no_new_action" for record in blocked_lanes
     ):
