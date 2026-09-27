@@ -1065,3 +1065,20 @@ def test_resume_d_never_duplicates_the_skills_collection() -> None:
     # D truthfully reports unresolved/unhomed candidate content.
     assert result["status"] == "materialized_with_gaps"
     assert result["unhomed"], "D must not claim complete no-loss materialization"
+
+
+@pytest.mark.local_dataset
+def test_resume_g_overlapping_heading_bbox_compiles_with_zero_gap() -> None:
+    target = Path(c2_module.__file__).resolve().parents[2] / (
+        "tests/local_datasets/resume_matrix/resume_G.pdf"
+    )
+    if not target.exists():
+        pytest.skip("local resume_matrix corpus not present")
+    summary, evidence = _summary_for(target)
+    state = compile_layout_state(target, summary, evidence=evidence, provider_name=evidence.provider)
+    assert validate_layout_state(state) == []
+    assert any(
+        node.spacing and node.spacing.gap_below_pt == 0.0
+        for node in state.nodes
+        if node.kind == "heading"
+    )

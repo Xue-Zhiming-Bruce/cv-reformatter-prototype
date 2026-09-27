@@ -156,6 +156,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--e3", action="store_true", help="run the E3 Resume I walkthrough (plan §11; offline)")
     parser.add_argument("--e4", action="store_true", help="run the E4 live-agent Resume I convergence trial (plan §11/§14)")
     parser.add_argument("--e5", action="store_true", help="run the E5 Builder-representation comparison (lanes A and B)")
+    parser.add_argument("--e5-preflight", action="store_true", help="compile and validate this target without agents or rendering")
+    parser.add_argument("--structure-draft", type=Path, default=None, help="target-matched E1 StructureDraft for E5")
+    parser.add_argument("--rubric", type=Path, default=None, help="optional target-specific owner rubric for E5")
     parser.add_argument("--lane", choices=["a", "b", "both"], default="both", help="E5 lane restriction")
     parser.add_argument("--decide", type=Path, default=None)
     parser.add_argument("--decision", choices=["accept", "reject"], default=None)
@@ -213,12 +216,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    if args.e5:
+    if args.e5 or args.e5_preflight:
         run_dir, terminal, record = run_e5(
             args.target, args.out, live=args.live,
             lanes=(args.lane,) if args.lane in ("a", "b") else ("a", "b"),
+            structure_draft_path=args.structure_draft,
+            rubric_path=args.rubric,
+            preflight_only=args.e5_preflight,
         )
         print(f"E5 run {run_dir.name}: terminal state {terminal}")
+        if args.e5_preflight:
+            print(
+                f"  layout_family={record.get('summary', {}).get('layout_family')} "
+                f"sections={record.get('summary', {}).get('section_count')}"
+            )
+            return 0
         print(
             f"  lanes={list(record.get('lanes', {}).keys())} "
             f"budget={record.get('budget_state')}"

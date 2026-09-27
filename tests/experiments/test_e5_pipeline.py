@@ -60,6 +60,30 @@ e5_skip = pytest.mark.skipif(
 )
 
 
+@pytest.mark.local_dataset
+def test_e5_preflight_reuses_standard_compiler_for_resume_d(tmp_path: Path) -> None:
+    target = ROOT / "tests/local_datasets/resume_matrix/resume_D.pdf"
+    if not target.exists():
+        pytest.skip("authorized Resume D corpus not present")
+    run_dir, terminal, record = e_e5.run_e5(
+        target, tmp_path / "run", preflight_only=True, lanes=("b",)
+    )
+    assert terminal == "preflight_complete"
+    assert record["summary"]["layout_family"] == "standard"
+    assert record["summary"]["state_valid"] is True
+    assert (run_dir / "target_preflight.json").exists()
+
+
+def test_target_structure_draft_must_match_frozen_target(tmp_path: Path) -> None:
+    draft = tmp_path / "structure_draft.json"
+    draft.write_text("{}", encoding="utf-8")
+    (tmp_path / "frozen_case.json").write_text(
+        json.dumps({"target_sha256": "a" * 64}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        e_e5._target_structure_draft_source("b" * 64, draft)
+
+
 def _base_authored_template() -> "at.AuthoredTemplateCandidate":
     from tests.experiments.e.lane_b_template import SCRIPTED_AUTHORED_TEMPLATE
 
@@ -3101,6 +3125,7 @@ def test_frozen_e5_config_records_the_presentation_label_approval(tmp_path: Path
         rubric_reference={},
         candidate_sha256="c" * 64,
         shared_draft_ref={},
+        baseline_ref={"status": "not_available"},
         pricing=None,
     )
     config = _freeze_e5_config(**kwargs)

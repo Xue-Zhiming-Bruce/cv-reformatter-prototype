@@ -98,6 +98,12 @@ from tests.experiments.e.stages import (
 )
 
 from tests.experiments.a_pipeline import build_format_summary
+from tests.experiments.c2_pipeline import compile_layout_state
+from tests.experiments.c_pipeline import (
+    derive_body_scaffold,
+    derive_body_tier_targets,
+    derive_header_scaffold,
+)
 from tests.experiments.d_pipeline import _live_model
 from tests.experiments.e.lane_b_template import (
     AuthoredTemplateCandidate,
@@ -119,7 +125,7 @@ from tests.experiments.resume_layout.candidates import (
 )
 from tests.experiments.resume_layout.html import render_html
 from tests.experiments.resume_layout.plan import compile_render_plan
-from tests.experiments.resume_layout.state import state_bytes
+from tests.experiments.resume_layout.state import state_bytes, validate_layout_state
 from tests.experiments.resume_layout.text import _norm
 import tests.experiments.c2_renderer as c2r
 import tests.experiments.a_pipeline as a_pipeline
@@ -155,8 +161,6 @@ E5_BUILDER_MAX_REQUESTS = 4
 # owner — exactly the state that starves the Builder. Still bounded: the global
 # lane budget stays the real ceiling (`_call_limits` clamps to it).
 E5_ATTRIBUTION_MAX_REQUESTS = 8  # floor only; the batch envelope is derived below
-E5_RUNS_E4_BASELINE = "e_pipeline_e4_20260920T134946Z"  # E4 best render baseline
-E5_SHARED_DRAFT_SOURCE = "e_pipeline_e4_20260920T134946Z/structure_draft.json"
 
 E5_REVIEWER_INSTRUCTIONS = (
     "You are the independent Visual Reviewer of a resume-layout experiment.\n"
@@ -2928,6 +2932,98 @@ def _source_hashes_changed(config: dict[str, Any]) -> bool:
     return any(frozen.get(key) != current[key] for key in current)
 
 
+def _matching_run_artifact(
+    target_sha256: str,
+    artifact: str,
+    *,
+    pattern: str = "e_pipeline_e*",
+) -> Path | None:
+    """Newest experiment artifact whose frozen target matches this target."""
+    for run_dir in sorted(RUNS.glob(pattern), reverse=True):
+        frozen_path = run_dir / "frozen_case.json"
+        artifact_path = run_dir / artifact
+        if not frozen_path.exists() or not artifact_path.exists():
+            continue
+        try:
+            frozen = json.loads(frozen_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if frozen.get("target_sha256") == target_sha256:
+            return artifact_path
+    return None
+
+
+def _target_structure_draft_source(
+    target_sha256: str,
+    explicit: Path | None,
+) -> Path | None:
+    source = explicit.resolve() if explicit is not None else _matching_run_artifact(
+        target_sha256, "structure_draft.json"
+    )
+    if source is None:
+        return None
+    frozen_path = source.parent / "frozen_case.json"
+    if not frozen_path.exists():
+        raise ValueError("structure draft must sit beside its frozen_case.json")
+    frozen = json.loads(frozen_path.read_text(encoding="utf-8"))
+    if frozen.get("target_sha256") != target_sha256:
+        raise ValueError("structure draft target does not match the current target")
+    return source
+
+
+def _target_rubric_reference(target_sha256: str, explicit: Path | None) -> dict[str, Any]:
+    if explicit is None:
+        return {
+            "status": "not_available",
+            "reason": "no target-specific owner rubric supplied",
+        }
+    path = explicit.resolve()
+    if target_sha256 not in path.read_text(encoding="utf-8"):
+        raise ValueError("target rubric does not identify the current target sha256")
+    return {"status": "available", "path": str(path), "sha256": _sha256_file(path)}
+
+
+def _compile_e5_state(
+    target_pdf: Path,
+    summary: dict[str, Any],
+    evidence: Any,
+) -> tuple[Any, dict[str, Any], Any, dict[str, float], str]:
+    """Use the existing standard compiler first, then the Resume-I-family fallback."""
+    failures: dict[str, str] = {}
+    try:
+        state = compile_layout_state(
+            target_pdf,
+            summary,
+            evidence=evidence,
+            provider_name=evidence.provider,
+        )
+        header_scaffold = derive_header_scaffold(target_pdf, summary)
+        body_scaffold = derive_body_scaffold(
+            target_pdf, summary, header_scaffold=header_scaffold
+        )
+        bullet_tiers = (
+            derive_body_tier_targets(target_pdf, float(body_scaffold.entry.left_x0_pt))
+            if body_scaffold.entry is not None
+            else {}
+        )
+        return state, {"layout_family": "standard"}, body_scaffold, bullet_tiers, "standard"
+    except Exception as error:
+        failures["standard"] = f"{type(error).__name__}: {error}"
+
+    try:
+        state, derived = compile_two_column_state(target_pdf, summary, evidence=evidence)
+        _headings, body_scaffold = compile_two_column_state_for_scaffold(target_pdf, summary)
+        bullet_tiers = _two_column_bullet_tiers(_pdf_lines_and_marks(target_pdf)[0], summary)
+        return state, derived, body_scaffold, bullet_tiers, "sidebar_two_column"
+    except Exception as error:
+        failures["sidebar_two_column"] = f"{type(error).__name__}: {error}"
+
+    raise RuntimeError(
+        "no existing layout compiler accepted this target: "
+        + json.dumps(failures, ensure_ascii=False, sort_keys=True)
+    )
+
+
 def _freeze_e5_config(
     out_dir: Path,
     *,
@@ -2940,6 +3036,7 @@ def _freeze_e5_config(
     rubric_reference: dict[str, Any],
     candidate_sha256: str,
     shared_draft_ref: dict[str, Any],
+    baseline_ref: dict[str, Any],
     pricing: dict[str, Any] | None,
     presentation_label_approval_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -2977,10 +3074,7 @@ def _freeze_e5_config(
             "catalog_sha256": None,
             "approved_label_ids": [],
         },
-        "e4_best_render_baseline": {
-            "run_dir": E5_RUNS_E4_BASELINE,
-            "note": "E4 promoted best render (baseline render; NOT an accepted template)",
-        },
+        "e4_best_render_baseline": baseline_ref,
         "model_configuration": _model_identity(),
         "sampling": {"temperature": E4_TEMPERATURE},
         "budgets": {
@@ -3069,8 +3163,11 @@ def run_e5(
     budget: RunBudget | None = None,
     pricing: dict[str, Any] | None = None,
     presentation_label_approval: PresentationLabelApproval | None = None,
+    structure_draft_path: Path | None = None,
+    rubric_path: Path | None = None,
+    preflight_only: bool = False,
 ) -> tuple[Path, str, dict[str, Any]]:
-    """E5: controlled comparison of TWO Builder representations on Resume I
+    """E5: controlled comparison of TWO Builder representations on one target
     (Phase 0 loop fixes + Lane A structured layout + Lane B authored
     template). One runner, one shell, two fresh agent contexts.
 
@@ -3125,10 +3222,10 @@ def run_e5(
     target_frozen = freeze_cases(target_pdf, raw_path, role="frozen_blind", case_id=target_pdf.stem)
     (out_dir / "frozen_case.json").write_text(target_frozen.model_dump_json(indent=2), encoding="utf-8")
     target_id = f"target-{target_pdf.stem}-v1"
-    rubric_reference = {
-        "path": "tests/experiments/C2_RESUME_I_BLIND_STRUCTURE_AUDIT.md",
-        "sha256": _sha256_file(ROOT / "tests/experiments/C2_RESUME_I_BLIND_STRUCTURE_AUDIT.md"),
-    }
+    try:
+        rubric_reference = _target_rubric_reference(target_sha256, rubric_path)
+    except Exception as error:
+        return abort("target_rubric", error)
 
     # -- 2. Shared compile basis + shared evidence-linked StructureDraft ----
     try:
@@ -3140,9 +3237,33 @@ def run_e5(
     pod = DualSourcePod(target_pdf, raw_path, out_dir, render_pdf=None, normalized=normalized)
     try:
         summary = build_format_summary(normalized, json.loads(raw_path.read_text(encoding="utf-8")), target_pdf)
-        state, derived = compile_two_column_state(target_pdf, summary, evidence=normalized)
+        state, derived, body_scaffold, bullet_tiers, layout_family = _compile_e5_state(
+            target_pdf, summary, normalized
+        )
     except Exception as error:
-        return abort("compile_two_column_state", error)
+        return abort("layout_preflight", error)
+    state_errors = validate_layout_state(state)
+    preflight = {
+        "target_id": target_id,
+        "target_sha256": target_sha256,
+        "layout_family": layout_family,
+        "state_valid": not state_errors,
+        "state_validation_errors": state_errors,
+        "section_count": sum(node.kind == "section" for node in state.nodes),
+        "capability_gaps": [gap.model_dump(mode="json") for gap in state.capability_gaps],
+    }
+    (out_dir / "target_preflight.json").write_text(
+        json.dumps(preflight, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    if preflight_only:
+        record = E5LoopRecord(target_id=target_id, target_sha256=target_sha256)
+        record.summary.update({"terminal_state": "preflight_complete", **preflight})
+        (out_dir / "e5_state.json").write_text(
+            json.dumps(record.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return out_dir, "preflight_complete", record.model_dump(mode="json")
     # ONE shell-owned presentation-label catalog for BOTH lanes (owner decision
     # 2026-09-21): built from the same measured sidebar-label evidence the two
     # lanes already share. Lane A renders those labels from the render plan,
@@ -3173,22 +3294,26 @@ def run_e5(
     # closed as a leak instead of being silently tolerated).
     approved_label_texts = {label.text for label in approved_label_catalog}
     (out_dir / "c2_layout_state.json").write_bytes(state_bytes(state))
-    _headings_scaffold, body_scaffold = compile_two_column_state_for_scaffold(target_pdf, summary)
-    bullet_tiers = _two_column_bullet_tiers(_pdf_lines_and_marks(target_pdf)[0], summary)
-
-    # The SAME evidence-linked StructureDraft is the common starting point for
-    # both lanes (E5 work order). The E4 run's validated draft is reused as a
-    # frozen shared input (path + sha recorded; content never regenerated).
-    draft_source = RUNS / E5_SHARED_DRAFT_SOURCE
-    if not draft_source.exists():
+    # The SAME target-matched, evidence-linked StructureDraft is the common
+    # starting point for both lanes. It may be supplied explicitly or reused
+    # from the newest prior E run with the same frozen target hash.
+    try:
+        draft_source = _target_structure_draft_source(
+            target_sha256, structure_draft_path
+        )
+    except Exception as error:
+        return abort("target_structure_draft", error)
+    if draft_source is None:
         return abort(
-            "shared_structure_draft",
-            FileNotFoundError(f"the shared StructureDraft ({E5_SHARED_DRAFT_SOURCE}) is missing"),
+            "target_structure_draft",
+            FileNotFoundError(
+                "no target-matched StructureDraft; run E1 for this target or pass --structure-draft"
+            ),
         )
     draft = TargetStructureDraft.model_validate_json(draft_source.read_text(encoding="utf-8"))
     (out_dir / "structure_draft.json").write_text(draft.model_dump_json(indent=2), encoding="utf-8")
     shared_draft_ref = {
-        "source_run": E5_SHARED_DRAFT_SOURCE,
+        "source_run": str(draft_source.parent),
         "sha256": _sha256_file(draft_source),
         "claims": len(draft.structure),
         "shared_by_lanes": True,
@@ -3246,6 +3371,22 @@ def run_e5(
     if not (frozen_dir / "target.pdf").exists():
         return abort("frozen_c1_baseline", FileNotFoundError(str(frozen_dir / "target.pdf")))
     privacy_baseline = frozen_dir / "target.pdf"
+    owner_baseline = _matching_run_artifact(
+        target_sha256, "render_2.pdf", pattern="e_pipeline_e4_*"
+    )
+    baseline_ref = (
+        {
+            "status": "available",
+            "path": str(owner_baseline),
+            "sha256": _sha256_file(owner_baseline),
+            "note": "target-matched E4 render; NOT an accepted template",
+        }
+        if owner_baseline is not None
+        else {
+            "status": "not_available",
+            "note": "no target-matched E4 baseline exists",
+        }
+    )
     environment = pinned_export_environment({})
     candidate_sha256 = hashlib.sha256(
         json.dumps(candidate.model_dump(mode="json"), sort_keys=True).encode("utf-8")
@@ -3275,6 +3416,7 @@ def run_e5(
         rubric_reference=rubric_reference,
         candidate_sha256=candidate_sha256,
         shared_draft_ref=shared_draft_ref,
+        baseline_ref=baseline_ref,
         pricing=pricing,
         # Frozen BEFORE the first live call: the validated approval identity
         # the lanes will run under (an invalid approval aborts before this
@@ -5270,6 +5412,7 @@ def run_e5(
             target_pdf,
             loop_record,
             label_catalog,
+            baseline_pdf=owner_baseline,
             approved_label_ids=[label.label_id for label in approved_label_catalog],
             target_sha256=target_sha256,
             catalog_sha256=catalog_sha256,
@@ -5542,14 +5685,15 @@ def _write_e5_owner_package(
     record: E5LoopRecord,
     presentation_labels: list[PresentationLabel] | None = None,
     *,
+    baseline_pdf: Path | None = None,
     approved_label_ids: list[str] | None = None,
     target_sha256: str | None = None,
     catalog_sha256: str | None = None,
     approval_provided: bool | None = None,
     approval_validated: bool | None = None,
 ) -> Path:
-    """The safe owner-review package (E5 work order): Resume I target, the E4
-    best-render baseline, and each lane's best render side by side per page,
+    """The safe owner-review package: target, optional target-matched baseline,
+    and each lane's best render side by side per page,
     plus probe outputs, costs, the shell-issued presentation-label table,
     remaining differences, and the non-claims."""
     from app.ingestion.pdf_reader import read_pdf_text
@@ -5558,8 +5702,6 @@ def _write_e5_owner_package(
     package.mkdir(exist_ok=True)
     target_pages = _render_pages(target_pdf, out_dir, "owner_target")
     page_count = len(target_pages)
-    e4_dir = RUNS / E5_RUNS_E4_BASELINE
-    e4_pdf = e4_dir / "render_2.pdf"
     # Resolve each lane's artifact through the explicit version state; the
     # label distinguishes a real BEST render from a defect-level active
     # version and from a mere latest attempt.
@@ -5573,12 +5715,10 @@ def _write_e5_owner_package(
     }
     for page in range(1, page_count + 1):
         columns: list[tuple[str, Path | None]] = [("TARGET", target_pages[page - 1])]
-        if (e4_dir / f"render_2_page_{page}.png").exists():
-            columns.append(("E4 BEST v2", e4_dir / f"render_2_page_{page}.png"))
-        elif (e4_pdf := e4_dir / "render_2.pdf").exists():
-            e4_pages = _render_pages(e4_pdf, out_dir, f"owner_e4_p{page}")
+        if baseline_pdf is not None and baseline_pdf.exists():
+            e4_pages = _render_pages(baseline_pdf, out_dir, "owner_e4_baseline")
             if e4_pages:
-                columns.append(("E4 BEST v2", e4_pages[min(page, len(e4_pages)) - 1]))
+                columns.append(("TARGET-MATCHED E4 BASELINE", e4_pages[min(page, len(e4_pages)) - 1]))
         for lane_id, lane_pdf in lane_pdfs.items():
             lane_page = out_dir / f"lane_{lane_id}" / f"{lane_pdf.stem}_page_{page}.png"
             if lane_page.exists():

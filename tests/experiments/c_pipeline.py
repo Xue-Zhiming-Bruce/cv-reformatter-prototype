@@ -625,7 +625,7 @@ def derive_body_scaffold(
             rule_gap_below_pt=float(rule["gap_below_pt"]) if rule and rule["gap_below_pt"] is not None else None,
             rule_stroke_pt=float(rule["stroke_pt"]) if rule else None,
             rule_color_hex=str(rule["color"]) if rule else None,
-            content_gap_below_pt=(following["top"] - line["bottom"]) if following else None,
+            content_gap_below_pt=max(0.0, following["top"] - line["bottom"]) if following else None,
             evidence_ids=[str(element["id"])],
         ))
     if not headings:
