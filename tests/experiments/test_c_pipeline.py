@@ -16,12 +16,6 @@ from tests.experiments.resume_layout.scaffold import (
 )
 from pydantic import ValidationError
 
-from tests.experiments.refinement import (
-    GateFailure,
-    HardGateResult,
-)
-
-
 
 
 
