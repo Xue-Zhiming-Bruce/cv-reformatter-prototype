@@ -36,10 +36,6 @@ SourceRole = Literal[
     "additional_details",
 ]
 
-ALL_SOURCES: tuple[SourceRole, ...] = (
-    "summary", "skills", "languages", "work_experience",
-    "education", "certifications", "additional_details",
-)
 
 # Default section-content shape per candidate source (smallest renderer-neutral
 # vocabulary; aligns with the product SectionLayoutSpec.layout vocabulary where

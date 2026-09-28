@@ -1618,11 +1618,6 @@ BUILDER_OWNED_ATTRIBUTION: tuple[str, str] = ("template_compilation", "confirmed
 # is not its own. Only those deterministic, typed facts may confirm it; absent
 # them the shell fails closed. The target document is never an input, so no
 # name/text blacklist decides this.
-CANDIDATE_BINDING_PROOF_KINDS = (
-    "foreign_leaf_identity",
-    "leaf_value_substituted",
-    "leaf_destination_mismatch",
-)
 
 # The documented candidate-only synthetic ledger identity for an unroutable
 # record with no bound candidate leaf (see `compile_render_plan`): a real

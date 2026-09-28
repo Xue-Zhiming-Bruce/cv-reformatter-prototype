@@ -102,7 +102,6 @@ from tests.experiments.resume_layout.text import _norm
 # Typed slot vocabulary
 # ---------------------------------------------------------------------------
 
-SIMPLE_SLOTS = ("candidate_name", "candidate_contact")
 COLLECTIONS = (
     "summary", "experience", "education", "skills", "languages",
     "certifications", "additional",
@@ -470,8 +469,6 @@ def validate_authored_template(
 # ---------------------------------------------------------------------------
 
 
-def _leaf_text_of(leaf: Any) -> str:
-    return (leaf.text or "").strip()
 
 
 def _esc(value: str | None) -> str:

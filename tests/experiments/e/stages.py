@@ -646,7 +646,6 @@ E2_IMPROVEMENT_TOLERANCE_PT = TOLERANCE_PT["local_gap"]
 
 # Bounded repair vocabulary (plan §8.4): each layer is one typed mutation; a
 # model cannot express arbitrary edits and cannot touch candidate facts.
-RepairLayer = Literal["plan_entry_gap", "state_style", "no_op"]
 
 
 class RepairProposal(EvidenceModel):
@@ -1506,9 +1505,7 @@ SIDEBAR_LABEL_MIN_HEIGHT_PT = 10.0  # glyph height above decorative marks
 SIDEBAR_LABEL_MIN_CLUSTER_COUNT = 2  # the shared right edge must repeat
 SIDEBAR_LABEL_RULE_WINDOW_PT = 20.0  # rule-search distance below the label
 SIDEBAR_COLUMN_MAX_WORD_COUNT = 4  # max words on a candidate label line
-SIDEBAR_LABEL_RIGHT_EDGE_TOLERANCE_PT = 2.0
 MAIN_COLUMN_MIN_X1_PT = 160.0  # content lives right of the sidebar column
-HEADER_NAME_LINE_HEIGHT_PT = 13.6  # measured name-row glyph height fallback
 
 
 def measure_sidebar_headings(

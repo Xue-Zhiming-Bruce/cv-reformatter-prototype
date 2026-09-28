@@ -910,13 +910,6 @@ def _apply_presentation_label_approval(
     ]
 
 
-def _approved_presentation_labels(
-    catalog: list[PresentationLabel],
-) -> list[PresentationLabel]:
-    """The ONLY renderable labels: the approved view of a validated approval.
-    A proposed entry is deliberately excluded (non-renderable, and not
-    privacy-excluded)."""
-    return [label for label in catalog if label.status == "approved"]
 
 
 def _e5_label_semantics(

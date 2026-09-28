@@ -107,18 +107,6 @@ def _rendered_lines(pdf_path: Path) -> list[dict[str, Any]]:
     return lines
 
 
-def _line_record(page_index: int, top: float, cluster: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "page": page_index,
-        "top": round(top, 3),
-        "bottom": round(max(char["bottom"] for char in cluster), 3),
-        "x0": round(min(char["x0"] for char in cluster), 3),
-        "x1": round(max(char["x1"] for char in cluster), 3),
-        "size": round(cluster[0]["size"], 3),
-        "font": cluster[0]["font"],
-        "text": "".join(char["text"] for char in cluster).strip(),
-        "chars": cluster,
-    }
 
 
 def _text_key(value: str) -> str:
