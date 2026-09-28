@@ -24,10 +24,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.experiments.c2_docx_renderer import (
-    binding_review_rows,
-    run_pair,
-)
+from tests.experiments.docx_lane.__main__ import run_pair
+from tests.experiments.docx_lane.review import binding_review_rows
 from tests.experiments.docx_lane.build import (
     FitAdjustments,
     MAX_FITTING_ITERATIONS,
@@ -3093,7 +3091,7 @@ def test_spike_render_artifacts_are_reviewable() -> None:
         inspection = inspect_docx(docx_path)
         inspection["reading_order_gate"] = reading_order_gate(plan, inspection)
         accounting = content_accounting(plan, inspection)
-        from tests.experiments.c2_docx_renderer import _preview_pdf
+        from tests.experiments.docx_lane.review import _preview_pdf
 
         preview = _preview_pdf(docx_path, shape_dir)
         # Semantic HTML + pinned Chrome PDF.
