@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import io
 import zipfile
 from pathlib import Path
 
@@ -161,6 +162,15 @@ def test_deterministic_bytes_across_two_compiles(tmp_path: Path) -> None:
     first = deterministic_docx_bytes(build_document(state, plan))
     second = deterministic_docx_bytes(build_document(state, plan))
     assert first == second
+    # Comparing two adjacent compiles only proves determinism *within one
+    # second*: zipfile stamps the current time on every entry, and both calls
+    # land in the same second. Assert the normalization itself, so a change
+    # that stops normalizing package metadata is caught here too. (Cross-process
+    # determinism -- two separate CLI runs minutes apart -- is the property the
+    # published docx_determinism.json sha256 in the golden probe establishes.)
+    with zipfile.ZipFile(io.BytesIO(first)) as archive:
+        assert {info.date_time for info in archive.infolist()} == {(1980, 1, 1, 0, 0, 0)}, (
+            "package metadata is not normalized to a fixed timestamp")
     path = _write_docx(state, plan, tmp_path)
     assert zipfile.is_zipfile(path)
 
