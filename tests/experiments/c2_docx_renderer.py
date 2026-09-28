@@ -71,7 +71,7 @@ from tests.experiments.resume_layout.target import (
     _analyze_target,
     build_format_summary,
 )
-from tests.experiments.c2_pipeline import (
+from tests.experiments.resume_layout.compile_state import (
     compile_layout_state,
     render_context_coverage,
 )
@@ -84,7 +84,7 @@ from tests.experiments.resume_layout.state import (
     _COMPOSITE_SPLIT,
     state_bytes,
 )
-from tests.experiments.c2_renderer import blank_page_gate
+from tests.experiments.resume_layout.gates import blank_page_gate
 from tests.experiments.resume_layout.plan import compile_render_plan
 from tests.experiments.docx_lane.build import (
     ConversionCompatibilityReport,

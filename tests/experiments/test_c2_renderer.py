@@ -21,7 +21,8 @@ from pathlib import Path
 
 import pytest
 
-import tests.experiments.c2_renderer as renderer_module
+import tests.experiments.resume_layout.gates as renderer_module
+import tests.experiments.resume_layout.html as resume_layout_html
 from tests.experiments.resume_layout.candidates import (
     CandidateDocument,
     CandidateLeaf,
@@ -33,7 +34,7 @@ from tests.experiments.resume_layout.state import (
     SectionContent,
     state_bytes,
 )
-from tests.experiments.c2_renderer import (
+from tests.experiments.resume_layout.gates import (
     blank_page_gate,
     candidate_accounting_gate,
     content_gate,
@@ -168,7 +169,9 @@ def test_no_seed_html_is_read_or_emitted() -> None:
     # asserted statically below.
     state, plan = plan_for()
     html = render_html(state, plan)
-    source = Path(renderer_module.__file__).read_text(encoding="utf-8")
+    # The seed-machinery scan targets the module that EMITS the HTML, not the
+    # gates: render_html moved to resume_layout/html.py in the phase-1 split.
+    source = Path(resume_layout_html.__file__).read_text(encoding="utf-8")
     assert "candidate_html" not in source
     assert "_seed_template" not in source and "compile_header_template" not in source
     assert "data-c1-" not in html and "c1-dna" not in html
@@ -259,7 +262,7 @@ def test_missing_and_duplicated_leaves_fail() -> None:
             ],
         )
     # A leaf that renders twice trips the ownership ledger guard.
-    from tests.experiments.c2_pipeline import own_leaf
+    from tests.experiments.resume_layout.compile_state import own_leaf
 
     ledger: dict[str, str] = {}
     failures: list[str] = []
@@ -561,7 +564,7 @@ def test_content_shapes_are_verified_against_measured_evidence() -> None:
 def test_rule_verification_resolves_the_measured_rule_bbox() -> None:
     """Evidence-boundary regression: the state rule stores the matched rule's
     OWN measured bbox (never the heading text bounds)."""
-    from tests.experiments.c2_pipeline import _resolve_above_heading_rule
+    from tests.experiments.resume_layout.compile_state import _resolve_above_heading_rule
     from tests.experiments.test_c2_pipeline import _heading
 
     heading = _heading("WORK EXPERIENCE", 140.0, "e.heading")  # text x1 = 171

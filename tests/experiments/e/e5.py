@@ -100,7 +100,7 @@ from tests.experiments.e.stages import (
 )
 
 from tests.experiments.resume_layout.target import build_format_summary
-from tests.experiments.c2_pipeline import compile_layout_state
+from tests.experiments.resume_layout.compile_state import compile_layout_state
 from tests.experiments.resume_layout.scaffold import (
     derive_body_scaffold,
     derive_body_tier_targets,
@@ -129,9 +129,9 @@ from tests.experiments.resume_layout.html import render_html
 from tests.experiments.resume_layout.plan import compile_render_plan
 from tests.experiments.resume_layout.state import state_bytes, validate_layout_state
 from tests.experiments.resume_layout.text import _norm
-import tests.experiments.c2_renderer as c2r
 import tests.experiments.resume_layout.text as resume_layout_text
 import tests.experiments.resume_layout.render as resume_layout_render
+import tests.experiments.resume_layout.gates as resume_layout_gates
 
 # ===========================================================================
 # E5 — Builder representation comparison (Phase 0 loop fixes + Lane A / Lane B)
@@ -2864,14 +2864,16 @@ E5_SOURCE_FILES = (
     "tests/experiments/resume_layout/plan.py",
     # The fixed HTML renderer.
     "tests/experiments/resume_layout/html.py",
-    # Delivery gates (content/privacy/structure/accounting/determinism).
-    "tests/experiments/c2_renderer.py",
+    # Delivery gates (content/privacy/structure/accounting/shape/blank-page)
+    # and the rendered measurements they read.
+    "tests/experiments/resume_layout/gates.py",
+    "tests/experiments/resume_layout/measure.py",
     # CandidateDocument, fixtures, UnroutableContent.
     "tests/experiments/resume_layout/candidates.py",
     # Layout-state (de)serialization + validation.
     "tests/experiments/resume_layout/state.py",
     # state_from_scaffolds + flow probes used by the two-column compile.
-    "tests/experiments/c2_pipeline.py",
+    "tests/experiments/resume_layout/compile_state.py",
     # TOLERANCE_PT imported at module level by e_pipeline_legacy.
     "tests/experiments/docx_lane/build.py",
     # Target measurement + deterministic rendering + text primitives, split out
@@ -3754,10 +3756,10 @@ def run_e5(
                         _export_pinned_html_to_pdf(probe_html_path, probe_pdf_second, environment)
                         pages = _render_pages(probe_pdf_path, lane_dir, f"probe_{profile}")
                         second_pages = _render_pages(probe_pdf_second, lane_dir, f"probe_{profile}_second")
-                        content = c2r.content_gate(plan, html, probe_pdf_path)
+                        content = resume_layout_gates.content_gate(plan, html, probe_pdf_path)
                         gates = {
                             "content_gate": content["passed"],
-                            "candidate_content_accounting": c2r.candidate_accounting_gate(
+                            "candidate_content_accounting": resume_layout_gates.candidate_accounting_gate(
                                 plan, content
                             )["passed"],
                             # The same COMMON privacy gate with the same
@@ -3769,7 +3771,7 @@ def run_e5(
                                     leaf.text for leaf in probe_candidate.leaves if leaf.text
                                 },
                             )["passed"],
-                            "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
+                            "no_blank_page": resume_layout_gates.blank_page_gate(probe_pdf_path)["passed"],
                             "deterministic_render": (
                                 all(
                                     resume_layout_text._sha256(left) == resume_layout_text._sha256(right)
@@ -3811,7 +3813,7 @@ def run_e5(
                                     leaf.text for leaf in probe_candidate.leaves if leaf.text
                                 },
                             )["passed"],
-                            "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
+                            "no_blank_page": resume_layout_gates.blank_page_gate(probe_pdf_path)["passed"],
                         }
                     entry["gates"] = gates
                     entry["pages"] = len(pages)
@@ -3942,11 +3944,11 @@ def run_e5(
                 pages = _render_pages(pdf_path, lane_dir, f"render_{index}")
                 second_pages = _render_pages(second, lane_dir, f"render_{index}_second")
                 stability = resume_layout_render._line_stability(pdf_path, second)
-                content = c2r.content_gate(plan, html, pdf_path)
+                content = resume_layout_gates.content_gate(plan, html, pdf_path)
                 # DIAGNOSTIC ONLY (see gate_details): the renderer gate keeps
                 # excluding plan-derived labels; the privacy DECISION is the
                 # common gate below.
-                privacy = c2r.privacy_gate(plan, privacy_baseline, html, pdf_path)
+                privacy = resume_layout_gates.privacy_gate(plan, privacy_baseline, html, pdf_path)
                 # The ONE common privacy gate: identical function and identical
                 # owner-approved label set for BOTH lanes, so the two lanes'
                 # privacy decisions are directly comparable.
@@ -3957,10 +3959,10 @@ def run_e5(
                     labels=approved_label_texts,
                     source_texts={leaf.text for leaf in candidate.leaves if leaf.text},
                 )
-                structure_gate = c2r.structure_gate(plan, state, html, pdf_path)
-                blank = c2r.blank_page_gate(pdf_path)
-                accounting = c2r.candidate_accounting_gate(plan, content)
-                shape = c2r.content_shape_verification(
+                structure_gate = resume_layout_gates.structure_gate(plan, state, html, pdf_path)
+                blank = resume_layout_gates.blank_page_gate(pdf_path)
+                accounting = resume_layout_gates.candidate_accounting_gate(plan, content)
+                shape = resume_layout_gates.content_shape_verification(
                     state, plan, body_scaffold, bullet_tiers, html, summary, pdf_path
                 )
                 gates = {
@@ -4100,7 +4102,7 @@ def run_e5(
                     labels=approved_label_texts,
                     source_texts={leaf.text for leaf in candidate.leaves if leaf.text},
                 )
-                blank = c2r.blank_page_gate(pdf_path)
+                blank = resume_layout_gates.blank_page_gate(pdf_path)
                 gates = {
                     "no_target_candidate_facts": common_privacy["passed"],
                     "candidate_content_accounting": not fill.missing_leaves,

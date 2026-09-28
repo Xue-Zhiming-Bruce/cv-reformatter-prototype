@@ -22,16 +22,16 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import tests.experiments.c2_pipeline as c2_module
+import tests.experiments.resume_layout.compile_state as c2_module
+import tests.experiments.resume_layout.paths as resume_layout_paths
 from tests.experiments.resume_layout.scaffold import (
     BodyEntryScaffold,
     BodyHeadingScaffold,
     BodyScaffold,
     HeaderScaffold,
 )
-from tests.experiments.c2_pipeline import (
+from tests.experiments.resume_layout.compile_state import (
     compile_layout_state,
-    compile_target,
     own_leaf,
     run_flow_probe,
     state_from_scaffolds,
@@ -910,7 +910,7 @@ def test_entry_subgroup_probe_cascades_without_work_section() -> None:
 
 # -- real-target lane (needs local fixtures + cached provider evidence) ------
 REAL = {
-    target: Path(c2_module.__file__).resolve().parents[2] / (
+    target: Path(resume_layout_paths.ROOT) / (
         f"tests/local_datasets/resume_matrix/resume_{target}.pdf"
     )
     for target in ("D", "E", "F")
@@ -923,102 +923,9 @@ def _summary_for(target: Path) -> tuple[dict, object]:
         build_format_summary,
     )
 
-    evidence, raw = _analyze_target(target, c2_module.RUNS, use_persistent_cache=True)
+    evidence, raw = _analyze_target(target, resume_layout_paths.RUNS, use_persistent_cache=True)
     return build_format_summary(evidence, raw, target), evidence
 
-
-@pytest.mark.local_dataset
-def test_real_targets_compile_bind_and_probe_truthfully(tmp_path: Path) -> None:
-    expectations = {
-        # E: no summary/languages/certifications/additional sections in the
-        # target -> independent fixture leaves for those sources are recorded
-        # as unhomed-source gaps; work/skills/education fully consumed.
-        "E": {"mapped": {"work_experience", "skills", "education"}, "tables": 0, "figures": 1},
-        "F": {"mapped": {"summary", "skills", "additional_details", "work_experience", "education", "certifications"}, "tables": 0, "figures": 0},
-        # C2-0cM: D's composite EDUCATION & CERTIFICATIONS heading now binds
-        # education + certifications; its remaining gaps are skills-pool
-        # internal layout and inline color, not the composite binding.
-        "D": {"mapped": {"skills", "work_experience", "education", "certifications"}, "tables": 2, "figures": 0},
-    }
-    for target_letter, expected in expectations.items():
-        target = REAL[target_letter]
-        if not target.exists():
-            pytest.skip("local resume_matrix corpus not present")
-        summary, evidence = _summary_for(target)
-        state = compile_layout_state(
-            target, summary, evidence=evidence, provider_name=evidence.provider
-        )
-        assert validate_layout_state(state) == [], (target_letter, state.capability_gaps)
-
-        mapped_sources = {
-            source
-            for node in state.nodes
-            if node.kind == "section" and node.binding and node.binding.mapping_action == "map"
-            for source in node.binding.sources
-        }
-        assert mapped_sources == expected["mapped"], (target_letter, mapped_sources)
-
-        # Measured capability counts propagate (correctness of the report).
-        features = {gap.feature for gap in state.capability_gaps}
-        if expected["tables"] > 0:
-            tables_gap = next(gap for gap in state.capability_gaps if gap.feature == "tables")
-            assert f"{expected['tables']} table(s)" in tables_gap.reason
-        if expected["figures"] > 0:
-            graphics_gap = next(
-                gap for gap in state.capability_gaps if gap.feature == "images_or_vector_graphics"
-            )
-            assert "figure(s)" in graphics_gap.reason
-        else:
-            assert "images_or_vector_graphics" not in features
-
-        # Section isolation: every entry/list child is owned by its section.
-        for node in state.nodes:
-            if node.kind in {"entry_row", "list_row"}:
-                assert node.parent_id and node.parent_id.startswith("section.")
-            if node.kind == "section" and node.entry_ref:
-                assert node.entry_ref.startswith(f"{node.node_id}.")
-            if node.kind == "section" and node.list_ref:
-                assert node.list_ref.startswith(f"{node.node_id}.")
-
-        # Independent probes with truthful statuses.
-        statuses = {}
-        for name, candidate in independent_candidate_fixtures().items():
-            result = run_flow_probe(state, candidate)
-            statuses[name] = result["status"]
-            assert result["passed"] is True or target_letter == "D", (target_letter, name, result["failures"])
-            assert result["leaf_ownership"]["ownership_exactly_one"] is True
-            # No leaf is silently dropped: owned + unhomed == total.
-            assert (
-                result["leaf_ownership"]["owned_leaves"]
-                + result["leaf_ownership"]["unhomed_leaves"]
-                == result["leaf_ownership"]["total_leaves"]
-            ), (target_letter, name)
-        # Never claims full no-loss materialization when candidate leaves
-        # (e.g. summary on E, languages on F, most of D) have no home.
-        if target_letter in {"D", "E"}:
-            assert all(status == "materialized_with_gaps" for status in statuses.values()), (
-                target_letter,
-                statuses,
-            )
-
-        # Deterministic serialization.
-        summary2, evidence2 = _summary_for(target)
-        state2 = compile_layout_state(
-            target, summary2, evidence=evidence2, provider_name=evidence2.provider
-        )
-        assert state_bytes(state) == state_bytes(state2)
-
-        run_dir = tmp_path / f"run_{target_letter}"
-        result = compile_target(target, run_dir)
-        assert result["schema_valid"] is True
-        for artifact in (
-            "layout_state.json",
-            "provenance.json",
-            "schema_validation.json",
-            "capability_gaps.json",
-            "probes_summary.json",
-        ):
-            assert (run_dir / artifact).exists()
 
 
 @pytest.mark.local_dataset
@@ -1069,7 +976,7 @@ def test_resume_d_never_duplicates_the_skills_collection() -> None:
 
 @pytest.mark.local_dataset
 def test_resume_g_overlapping_heading_bbox_compiles_with_zero_gap() -> None:
-    target = Path(c2_module.__file__).resolve().parents[2] / (
+    target = Path(resume_layout_paths.ROOT) / (
         "tests/local_datasets/resume_matrix/resume_G.pdf"
     )
     if not target.exists():

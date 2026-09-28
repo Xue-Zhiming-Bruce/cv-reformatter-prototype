@@ -2394,13 +2394,14 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
         assert hashes["files"][name] == e_shared._sha256_file(resume_layout_paths.ROOT / name), name
     for name in (
         "tests/experiments/d_pipeline.py",
-        "tests/experiments/c2_renderer.py",
+        "tests/experiments/resume_layout/gates.py",
+        "tests/experiments/resume_layout/measure.py",
         "tests/experiments/resume_layout/candidates.py",
         "tests/experiments/resume_layout/paths.py",
         "tests/experiments/resume_layout/text.py",
         "tests/experiments/resume_layout/render.py",
         "tests/experiments/resume_layout/target.py",
-        "tests/experiments/c2_pipeline.py",
+        "tests/experiments/resume_layout/compile_state.py",
         "tests/experiments/resume_layout/state.py",
     ):
         assert name in hashes["files"], f"missing direct runtime source: {name}"

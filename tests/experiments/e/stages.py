@@ -93,7 +93,7 @@ from tests.experiments.e.shared import (
 )
 
 from tests.experiments.resume_layout.target import build_format_summary
-from tests.experiments.c2_pipeline import (
+from tests.experiments.resume_layout.compile_state import (
     compile_layout_state,
     run_flow_probe,
     state_from_scaffolds,
@@ -122,9 +122,9 @@ from tests.experiments.resume_layout.state import (
     state_bytes,
     validate_layout_state,
 )
-import tests.experiments.c2_renderer as c2r
 import tests.experiments.resume_layout.render as resume_layout_render
 import tests.experiments.resume_layout.text as resume_layout_text
+import tests.experiments.resume_layout.gates as resume_layout_gates
 
 # --- E1: investigator prompt and scripted rehearsal ---------------------------
 
@@ -1115,11 +1115,11 @@ def run_e2(
         _export_pinned_html_to_pdf(html_path, second, environment)
         second_pages = _render_pages(second, out_dir, f"render_{len(versions) + 1}_second")
         stability = resume_layout_render._line_stability(pdf, second)
-        content = c2r.content_gate(plan, html, pdf)
-        privacy = c2r.privacy_gate(plan, privacy_target, html, pdf)
-        structure = c2r.structure_gate(plan, state, html, pdf)
-        blank = c2r.blank_page_gate(pdf)
-        accounting = c2r.candidate_accounting_gate(plan, content)
+        content = resume_layout_gates.content_gate(plan, html, pdf)
+        privacy = resume_layout_gates.privacy_gate(plan, privacy_target, html, pdf)
+        structure = resume_layout_gates.structure_gate(plan, state, html, pdf)
+        blank = resume_layout_gates.blank_page_gate(pdf)
+        accounting = resume_layout_gates.candidate_accounting_gate(plan, content)
         # Shape-verification evidence comes from THIS target's compile basis:
         # the E3 two-column compile (unfamiliar family) or the canonical
         # single-column scaffold derivation, chosen by what the evidence
@@ -1134,7 +1134,7 @@ def run_e2(
         except ValueError:
             _headings_scaffold, body_scaffold = compile_two_column_state_for_scaffold(target_pdf, summary)
             bullet_tiers = _two_column_bullet_tiers(_pdf_lines_and_marks(target_pdf)[0], summary)
-        shape = c2r.content_shape_verification(state, plan, body_scaffold, bullet_tiers, html, summary, pdf)
+        shape = resume_layout_gates.content_shape_verification(state, plan, body_scaffold, bullet_tiers, html, summary, pdf)
         gates = {
             # Canonical determinism contract (c2_renderer.determinism_gate):
             # page-RASTER hash equality + per-line stability; PDF bytes differ
@@ -2511,14 +2511,14 @@ def run_e3(
         _export_pinned_html_to_pdf(html_path, second, environment)
         second_pages = _render_pages(second, out_dir, f"render_{len(versions) + 1}_second")
         stability = resume_layout_render._line_stability(pdf, second)
-        content = c2r.content_gate(plan, html, pdf)
-        privacy = c2r.privacy_gate(plan, privacy_target, html, pdf)
-        structure_gate = c2r.structure_gate(plan, state, html, pdf)
-        blank = c2r.blank_page_gate(pdf)
-        accounting = c2r.candidate_accounting_gate(plan, content)
+        content = resume_layout_gates.content_gate(plan, html, pdf)
+        privacy = resume_layout_gates.privacy_gate(plan, privacy_target, html, pdf)
+        structure_gate = resume_layout_gates.structure_gate(plan, state, html, pdf)
+        blank = resume_layout_gates.blank_page_gate(pdf)
+        accounting = resume_layout_gates.candidate_accounting_gate(plan, content)
         _headings_scaffold, body_scaffold = compile_two_column_state_for_scaffold(target_pdf, summary)
         bullet_tiers = _two_column_bullet_tiers(_pdf_lines_and_marks(target_pdf)[0], summary)
-        shape = c2r.content_shape_verification(state, plan, body_scaffold, bullet_tiers, html, summary, pdf)
+        shape = resume_layout_gates.content_shape_verification(state, plan, body_scaffold, bullet_tiers, html, summary, pdf)
         gates = {
             "deterministic_render": all(
                 resume_layout_text._sha256(left) == resume_layout_text._sha256(right)
@@ -2629,7 +2629,7 @@ def run_e3(
         emitted: list[DefectFinding] = []
         if gates.get("content_gate"):
             return emitted
-        content = c2r.content_gate(plan, html, pdf)
+        content = resume_layout_gates.content_gate(plan, html, pdf)
         # One deterministic finding per failed-gate CLASS (deduplicated by the
         # suspected dimension), each bound to the exact versions and carrying
         # one typed measurement request the shell must execute on the actual
@@ -2637,7 +2637,7 @@ def run_e3(
         if content["missing_pdf"]:
             counter["finding"] += 1
             leaf_id = content["missing_pdf"][0]
-            text = c2r._leaf_text(plan, leaf_id)
+            text = resume_layout_gates._leaf_text(plan, leaf_id)
             prefix = " ".join(str(text).split())[:20]
             emitted.append(
                 DefectFinding(
@@ -3824,14 +3824,14 @@ def run_e4(
         _export_pinned_html_to_pdf(html_path, second, environment)
         second_pages = _render_pages(second, out_dir, f"render_{len(versions) + 1}_second")
         stability = resume_layout_render._line_stability(pdf, second)
-        content = c2r.content_gate(plan, html, pdf)
-        privacy = c2r.privacy_gate(plan, privacy_target, html, pdf)
-        structure_gate = c2r.structure_gate(plan, state, html, pdf)
-        blank = c2r.blank_page_gate(pdf)
-        accounting = c2r.candidate_accounting_gate(plan, content)
+        content = resume_layout_gates.content_gate(plan, html, pdf)
+        privacy = resume_layout_gates.privacy_gate(plan, privacy_target, html, pdf)
+        structure_gate = resume_layout_gates.structure_gate(plan, state, html, pdf)
+        blank = resume_layout_gates.blank_page_gate(pdf)
+        accounting = resume_layout_gates.candidate_accounting_gate(plan, content)
         _headings_scaffold, body_scaffold = compile_two_column_state_for_scaffold(target_pdf, summary)
         bullet_tiers = _two_column_bullet_tiers(_pdf_lines_and_marks(target_pdf)[0], summary)
-        shape = c2r.content_shape_verification(state, plan, body_scaffold, bullet_tiers, html, summary, pdf)
+        shape = resume_layout_gates.content_shape_verification(state, plan, body_scaffold, bullet_tiers, html, summary, pdf)
         gates = {
             "deterministic_render": all(
                 resume_layout_text._sha256(left) == resume_layout_text._sha256(right)
@@ -3876,7 +3876,7 @@ def run_e4(
             budget.spend_tool("compare_pdf_geometry")
             index = int(Path(pdf).stem.rsplit("_", 1)[-1])
             plan, html = render_contexts[index]
-            content = c2r.content_gate(plan, html, pdf)
+            content = resume_layout_gates.content_gate(plan, html, pdf)
             missing = content["missing_pdf"]
             result = MeasurementResult(
                 request_id=request_id,
@@ -4036,11 +4036,11 @@ def run_e4(
         emitted: list[DefectFinding] = []
         if gates.get("content_gate"):
             return emitted
-        content = c2r.content_gate(plan, html, pdf)
+        content = resume_layout_gates.content_gate(plan, html, pdf)
         if content["missing_pdf"]:
             counter["finding"] += 1
             leaf_id = content["missing_pdf"][0]
-            text = c2r._leaf_text(plan, leaf_id)
+            text = resume_layout_gates._leaf_text(plan, leaf_id)
             prefix = " ".join(str(text).split())[:20]
             emitted.append(
                 DefectFinding(

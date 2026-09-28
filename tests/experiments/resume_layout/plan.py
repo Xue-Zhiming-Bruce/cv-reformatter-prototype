@@ -21,7 +21,7 @@ from pydantic import ConfigDict, Field, model_validator
 from pathlib import Path
 
 from tests.experiments.resume_layout.text import _median
-from tests.experiments.c2_pipeline import own_leaf
+from tests.experiments.resume_layout.compile_state import own_leaf
 from tests.experiments.resume_layout.candidates import (
     CandidateDocument,
     CandidateLeaf,

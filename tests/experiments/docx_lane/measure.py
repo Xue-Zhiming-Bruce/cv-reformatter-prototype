@@ -26,12 +26,12 @@ from typing import Any
 from tests.experiments.resume_layout.paths import RUNS
 from tests.experiments.resume_layout.render import _render_pages
 from tests.experiments.resume_layout.text import _median
-from tests.experiments.c2_renderer import (
+from tests.experiments.resume_layout.gates import blank_page_gate
+from tests.experiments.resume_layout.measure import (
     _pdf_color_hex,
     _rendered_heading_positions,
     _rendered_rule_extents,
     _rule_in_section_region,
-    blank_page_gate,
 )
 from tests.experiments.resume_layout.text import _norm
 

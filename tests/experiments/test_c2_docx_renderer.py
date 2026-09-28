@@ -1390,7 +1390,7 @@ def test_unrelated_section_geometry_is_unchanged_by_the_edit() -> None:
 def _colored_state(colors: list[str | None], header_colors: dict[str, str] | None = None):
     """A synthetic state whose heading scaffolds (and optionally header rows)
     carry measured colors — the Resume-D shape without any pair-specific code."""
-    from tests.experiments.c2_pipeline import state_from_scaffolds
+    from tests.experiments.resume_layout.compile_state import state_from_scaffolds
     from tests.experiments.test_c2_pipeline import (
         BODY,
         HEADER,
@@ -1508,7 +1508,7 @@ def _heading_row(node: str, style_id: str, color: str | None) -> dict:
 
 
 def test_rendered_color_measured_from_pdf_and_compared() -> None:
-    from tests.experiments.c2_pipeline import state_from_scaffolds
+    from tests.experiments.resume_layout.compile_state import state_from_scaffolds
     from tests.experiments.test_c2_pipeline import (
         BODY,
         BULLET_TIERS,
@@ -1516,7 +1516,7 @@ def test_rendered_color_measured_from_pdf_and_compared() -> None:
         SUMMARY,
         TARGET_SHA,
     )
-    from tests.experiments.c2_renderer import _pdf_color_hex
+    from tests.experiments.resume_layout.measure import _pdf_color_hex
 
     # pdfplumber color normalization is deterministic (gray/RGB/CMYK).
     assert _pdf_color_hex(None) is None
