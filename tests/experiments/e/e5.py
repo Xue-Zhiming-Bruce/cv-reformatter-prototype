@@ -30,9 +30,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from pydantic import Field, model_validator
-from tests.experiments.a_pipeline import (
+from tests.experiments.resume_layout.paths import (
     ROOT,
     RUNS,
+)
+from tests.experiments.resume_layout.render import (
     _export_pinned_html_to_pdf,
     _render_pages,
 )
@@ -44,7 +46,7 @@ from tests.experiments.d_pipeline import (
     RunTrace,
     _record_usage,
 )
-from tests.experiments.c_pipeline import (
+from tests.experiments.resume_layout.scaffold import (
     _pdf_lines_and_marks,
     pinned_export_environment,
 )
@@ -97,9 +99,9 @@ from tests.experiments.e.stages import (
     compile_two_column_state_for_scaffold,
 )
 
-from tests.experiments.a_pipeline import build_format_summary
+from tests.experiments.resume_layout.target import build_format_summary
 from tests.experiments.c2_pipeline import compile_layout_state
-from tests.experiments.c_pipeline import (
+from tests.experiments.resume_layout.scaffold import (
     derive_body_scaffold,
     derive_body_tier_targets,
     derive_header_scaffold,
@@ -128,8 +130,8 @@ from tests.experiments.resume_layout.plan import compile_render_plan
 from tests.experiments.resume_layout.state import state_bytes, validate_layout_state
 from tests.experiments.resume_layout.text import _norm
 import tests.experiments.c2_renderer as c2r
-import tests.experiments.a_pipeline as a_pipeline
 import tests.experiments.resume_layout.text as resume_layout_text
+import tests.experiments.resume_layout.render as resume_layout_render
 
 # ===========================================================================
 # E5 — Builder representation comparison (Phase 0 loop fixes + Lane A / Lane B)
@@ -2855,8 +2857,9 @@ E5_SOURCE_FILES = (
     # Shell infrastructure imported by the Pipeline E modules: RunBudget/
     # RunTrace/EvidenceStore/RenderVersion/MeasureController/live-call plumbing.
     "tests/experiments/d_pipeline.py",
-    # Pinned Chrome export environment, scaffolds, line/marks measurement.
-    "tests/experiments/c_pipeline.py",
+    # Pinned Chrome export environment, scaffolds, category grid, per-line
+    # render-stability gate (split out of c_pipeline 2026-09-27).
+    "tests/experiments/resume_layout/scaffold.py",
     # Render-plan compilation incl. the header-overflow ownership closure.
     "tests/experiments/resume_layout/plan.py",
     # The fixed HTML renderer.
@@ -2871,8 +2874,12 @@ E5_SOURCE_FILES = (
     "tests/experiments/c2_pipeline.py",
     # TOLERANCE_PT imported at module level by e_pipeline_legacy.
     "tests/experiments/docx_lane/build.py",
-    # Format summary + page rendering/font injection helpers.
-    "tests/experiments/a_pipeline.py",
+    # Target measurement + deterministic rendering + text primitives, split out
+    # of a_pipeline 2026-09-27 into the responsibility-named library modules.
+    "tests/experiments/resume_layout/paths.py",
+    "tests/experiments/resume_layout/text.py",
+    "tests/experiments/resume_layout/render.py",
+    "tests/experiments/resume_layout/target.py",
     # Production evidence model directly consumed by the E5 compile basis.
     "app/template_analysis/commercial/models.py",
     # Production PDF text reader used by the content/privacy/presence gates.
@@ -3765,10 +3772,10 @@ def run_e5(
                             "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
                             "deterministic_render": (
                                 all(
-                                    a_pipeline._sha256(left) == a_pipeline._sha256(right)
+                                    resume_layout_text._sha256(left) == resume_layout_text._sha256(right)
                                     for left, right in zip(pages, second_pages)
                                 )
-                                and a_pipeline._line_stability(probe_pdf_path, probe_pdf_second)["passed"]
+                                and resume_layout_render._line_stability(probe_pdf_path, probe_pdf_second)["passed"]
                             ),
                         }
                     else:
@@ -3934,7 +3941,7 @@ def run_e5(
                 _export_pinned_html_to_pdf(html_path, second, environment)
                 pages = _render_pages(pdf_path, lane_dir, f"render_{index}")
                 second_pages = _render_pages(second, lane_dir, f"render_{index}_second")
-                stability = a_pipeline._line_stability(pdf_path, second)
+                stability = resume_layout_render._line_stability(pdf_path, second)
                 content = c2r.content_gate(plan, html, pdf_path)
                 # DIAGNOSTIC ONLY (see gate_details): the renderer gate keeps
                 # excluding plan-derived labels; the privacy DECISION is the
@@ -3958,7 +3965,7 @@ def run_e5(
                 )
                 gates = {
                     "deterministic_render": all(
-                        a_pipeline._sha256(left) == a_pipeline._sha256(right)
+                        resume_layout_text._sha256(left) == resume_layout_text._sha256(right)
                         for left, right in zip(pages, second_pages)
                     ) and stability["passed"],
                     # The COMMON privacy decision: the same gate function and
@@ -3988,8 +3995,8 @@ def run_e5(
                 gate_details = {
                     "deterministic_render": {
                         "passed": gates["deterministic_render"],
-                        "first_page_hashes": [a_pipeline._sha256(page) for page in pages],
-                        "second_page_hashes": [a_pipeline._sha256(page) for page in second_pages],
+                        "first_page_hashes": [resume_layout_text._sha256(page) for page in pages],
+                        "second_page_hashes": [resume_layout_text._sha256(page) for page in second_pages],
                         "line_stability": stability,
                     },
                     "no_target_candidate_facts": {

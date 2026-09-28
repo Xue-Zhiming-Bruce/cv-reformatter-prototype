@@ -65,10 +65,10 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 from pydantic import Field
 
-from tests.experiments.a_pipeline import (
-    RUNS,
+from tests.experiments.resume_layout.paths import RUNS
+from tests.experiments.resume_layout.render import _render_pages
+from tests.experiments.resume_layout.target import (
     _analyze_target,
-    _render_pages,
     build_format_summary,
 )
 from tests.experiments.c2_pipeline import (

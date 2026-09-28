@@ -24,9 +24,11 @@ from pathlib import Path
 from typing import Any, Literal
 from PIL import Image
 from pydantic import Field, model_validator
-from tests.experiments.a_pipeline import (
+from tests.experiments.resume_layout.paths import (
     ROOT,
     RUNS,
+)
+from tests.experiments.resume_layout.render import (
     _export_pinned_html_to_pdf,
     _render_pages,
 )
@@ -40,7 +42,7 @@ from tests.experiments.d_pipeline import (
     _record_usage,
 )
 from tests.experiments.docx_lane.build import TOLERANCE_PT
-from tests.experiments.c_pipeline import (
+from tests.experiments.resume_layout.scaffold import (
     BodyEntryScaffold,
     BodyHeadingScaffold,
     BodyScaffold,
@@ -90,13 +92,13 @@ from tests.experiments.e.shared import (
     redact_signed_urls,
 )
 
-from tests.experiments.a_pipeline import build_format_summary
+from tests.experiments.resume_layout.target import build_format_summary
 from tests.experiments.c2_pipeline import (
     compile_layout_state,
     run_flow_probe,
     state_from_scaffolds,
 )
-from tests.experiments.c_pipeline import (
+from tests.experiments.resume_layout.scaffold import (
     BULLET_GLYPHS,
     derive_body_scaffold as _derive_body_scaffold,
     derive_header_scaffold as _derive_header_scaffold,
@@ -121,7 +123,8 @@ from tests.experiments.resume_layout.state import (
     validate_layout_state,
 )
 import tests.experiments.c2_renderer as c2r
-import tests.experiments.a_pipeline as a_pipeline
+import tests.experiments.resume_layout.render as resume_layout_render
+import tests.experiments.resume_layout.text as resume_layout_text
 
 # --- E1: investigator prompt and scripted rehearsal ---------------------------
 
@@ -1111,7 +1114,7 @@ def run_e2(
         second = out_dir / f"render_{len(versions) + 1}_second.pdf"
         _export_pinned_html_to_pdf(html_path, second, environment)
         second_pages = _render_pages(second, out_dir, f"render_{len(versions) + 1}_second")
-        stability = a_pipeline._line_stability(pdf, second)
+        stability = resume_layout_render._line_stability(pdf, second)
         content = c2r.content_gate(plan, html, pdf)
         privacy = c2r.privacy_gate(plan, privacy_target, html, pdf)
         structure = c2r.structure_gate(plan, state, html, pdf)
@@ -1138,7 +1141,7 @@ def run_e2(
             # only in the export timestamp, which is inherent Chrome
             # nondeterminism (documented in the C2-0cS record).
             "deterministic_render": all(
-                a_pipeline._sha256(left) == a_pipeline._sha256(right)
+                resume_layout_text._sha256(left) == resume_layout_text._sha256(right)
                 for left, right in zip(pages, second_pages)
             )
             and stability["passed"],
@@ -2507,7 +2510,7 @@ def run_e3(
         second = out_dir / f"render_{len(versions) + 1}_second.pdf"
         _export_pinned_html_to_pdf(html_path, second, environment)
         second_pages = _render_pages(second, out_dir, f"render_{len(versions) + 1}_second")
-        stability = a_pipeline._line_stability(pdf, second)
+        stability = resume_layout_render._line_stability(pdf, second)
         content = c2r.content_gate(plan, html, pdf)
         privacy = c2r.privacy_gate(plan, privacy_target, html, pdf)
         structure_gate = c2r.structure_gate(plan, state, html, pdf)
@@ -2518,7 +2521,7 @@ def run_e3(
         shape = c2r.content_shape_verification(state, plan, body_scaffold, bullet_tiers, html, summary, pdf)
         gates = {
             "deterministic_render": all(
-                a_pipeline._sha256(left) == a_pipeline._sha256(right)
+                resume_layout_text._sha256(left) == resume_layout_text._sha256(right)
                 for left, right in zip(pages, second_pages)
             )
             and stability["passed"],
@@ -3820,7 +3823,7 @@ def run_e4(
         second = out_dir / f"render_{len(versions) + 1}_second.pdf"
         _export_pinned_html_to_pdf(html_path, second, environment)
         second_pages = _render_pages(second, out_dir, f"render_{len(versions) + 1}_second")
-        stability = a_pipeline._line_stability(pdf, second)
+        stability = resume_layout_render._line_stability(pdf, second)
         content = c2r.content_gate(plan, html, pdf)
         privacy = c2r.privacy_gate(plan, privacy_target, html, pdf)
         structure_gate = c2r.structure_gate(plan, state, html, pdf)
@@ -3831,7 +3834,7 @@ def run_e4(
         shape = c2r.content_shape_verification(state, plan, body_scaffold, bullet_tiers, html, summary, pdf)
         gates = {
             "deterministic_render": all(
-                a_pipeline._sha256(left) == a_pipeline._sha256(right)
+                resume_layout_text._sha256(left) == resume_layout_text._sha256(right)
                 for left, right in zip(pages, second_pages)
             )
             and stability["passed"],

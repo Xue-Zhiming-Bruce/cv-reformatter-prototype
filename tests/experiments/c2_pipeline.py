@@ -47,11 +47,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.template_analysis.commercial.bridge import _dominant_body
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
-from tests.experiments.a_pipeline import (
+from tests.experiments.resume_layout.target import (
     _analyze_target,
     build_format_summary,
 )
-from tests.experiments.c_pipeline import (
+from tests.experiments.resume_layout.scaffold import (
     BodyScaffold,
     derive_body_scaffold,
     derive_body_tier_targets,

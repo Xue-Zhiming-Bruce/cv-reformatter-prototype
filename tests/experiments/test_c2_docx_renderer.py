@@ -1845,7 +1845,7 @@ def _with_grid(state, columns: int = 2, split_x: float = 300.0):
 
 
 def test_category_grid_detection_pure() -> None:
-    from tests.experiments.c_pipeline import detect_category_grid
+    from tests.experiments.resume_layout.scaffold import detect_category_grid
 
     def word(text, x0, x1, top, bold):
         return {"x0": x0, "x1": x1, "top": top, "bold": bold}
@@ -3100,8 +3100,8 @@ def test_spike_render_artifacts_are_reviewable() -> None:
         html = render_html(state, plan)
         html_path = shape_dir / "c2_output.html"
         html_path.write_text(html, encoding="utf-8")
-        from tests.experiments.a_pipeline import _export_pinned_html_to_pdf
-        from tests.experiments.c_pipeline import pinned_export_environment
+        from tests.experiments.resume_layout.render import _export_pinned_html_to_pdf
+        from tests.experiments.resume_layout.scaffold import pinned_export_environment
 
         environment = pinned_export_environment(summary)
         chrome_pdf = _export_pinned_html_to_pdf(html_path, shape_dir / "c2_output_chrome.pdf", environment)

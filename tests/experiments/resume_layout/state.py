@@ -731,3 +731,15 @@ def state_bytes(state: C2LayoutState) -> bytes:
     return (payload + "\n").encode("utf-8")
 
 
+CONTACT_KIND_CHECKS = {
+    "phone": lambda value: len(re.findall(r"\d", value)) >= 7,
+    "envelope": lambda value: "@" in value,
+    "github": lambda value: "github" in value.casefold(),
+    "linkedin": lambda value: "linkedin" in value.casefold(),
+}
+
+
+_ROLE_WORDS = re.compile(
+    r"\b(?:senior|junior|engineer|manager|director|consultant|analyst|developer|designer|officer|specialist|lead|person)\b",
+    re.I,
+)

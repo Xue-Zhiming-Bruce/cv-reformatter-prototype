@@ -23,7 +23,7 @@ import pytest
 from pydantic import ValidationError
 
 import tests.experiments.c2_pipeline as c2_module
-from tests.experiments.c_pipeline import (
+from tests.experiments.resume_layout.scaffold import (
     BodyEntryScaffold,
     BodyHeadingScaffold,
     BodyScaffold,
@@ -918,7 +918,7 @@ REAL = {
 
 
 def _summary_for(target: Path) -> tuple[dict, object]:
-    from tests.experiments.a_pipeline import (
+    from tests.experiments.resume_layout.target import (
         _analyze_target,
         build_format_summary,
     )

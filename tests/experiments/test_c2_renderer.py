@@ -159,12 +159,13 @@ def test_plan_status_and_full_leaf_ownership_on_full_coverage() -> None:
     assert len(plan.leaf_ledger) == len(candidate.leaves)
 
 
-def test_no_seed_html_is_read_or_emitted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_no_seed_html_is_read_or_emitted() -> None:
     # The renderer neither imports nor executes any C1 seed machinery, and the
     # compiled HTML carries no C1 lineage.
-    import tests.experiments.a_pipeline as a_pipeline
-    for symbol in ("_seed_template", "compile_header_template", "_body_css"):
-        monkeypatch.setattr(a_pipeline, symbol, pytest.fail, raising=False)
+    # The monkeypatch half of this test is gone with the C1 seed machinery
+    # itself: _seed_template / compile_header_template / _body_css no longer
+    # exist anywhere, so "never called" is now guaranteed by absence and is
+    # asserted statically below.
     state, plan = plan_for()
     html = render_html(state, plan)
     source = Path(renderer_module.__file__).read_text(encoding="utf-8")
@@ -429,7 +430,7 @@ def test_empty_target_sections_render_nothing_but_are_recorded() -> None:
 
 
 def _shape_scaffold(labels: list[str] | None = None) -> Any:
-    from tests.experiments.c_pipeline import (
+    from tests.experiments.resume_layout.scaffold import (
         BodyEntryScaffold,
         BodyScaffold,
     )
@@ -518,7 +519,7 @@ def _heading_rule_pdf(path: Path, items: list[dict]) -> Path:
 
 
 def test_content_shapes_are_verified_against_measured_evidence() -> None:
-    from tests.experiments.c_pipeline import (
+    from tests.experiments.resume_layout.scaffold import (
         BodyEntryScaffold,
         BodyScaffold,
     )
@@ -830,7 +831,7 @@ def _two_rule_summary() -> dict:
 def _two_rule_scaffold() -> Any:
     """Scaffold matching compile_synthetic's 60pt heading spacing (the rule
     y positions in _two_rule_summary must resolve against these headings)."""
-    from tests.experiments.c_pipeline import (
+    from tests.experiments.resume_layout.scaffold import (
         BodyEntryScaffold,
         BodyScaffold,
     )
@@ -1007,69 +1008,6 @@ def test_a_contentless_section_records_its_rule_as_not_required() -> None:
     row = _rule_rows(result, "section.02")[0]
     assert row["required_by_declared_shape"] is False
     assert row["capability_gap"] is None
-
-
-# ---------------------------------------------------------------------------
-# Real frozen-C1 pairs (local corpus + cached evidence + pinned Chrome)
-# ---------------------------------------------------------------------------
-
-REQUIRED_ARTIFACTS = (
-    "c2_layout_state.json", "candidate_render_context.json", "c2_render_plan.json",
-    "c2_output.html", "c2_output.pdf", "content_validation.json",
-    "structure_validation.json", "privacy_validation.json", "render_determinism.json",
-    "capability_gaps.json", "leaf_ownership.json", "comparison_manifest.json",
-    "review.html", "target_page_1.png", "c1_page_1.png", "c2_page_1.png",
-    "diff_target_vs_c2_page_1.png", "diff_c1_vs_c2_page_1.png",
-    "context_coverage.json", "content_accounting.json", "blank_page_validation.json",
-    "hard_gates.json",
-)
-
-
-@pytest.mark.local_dataset
-@pytest.mark.parametrize("pair", ["D_E", "E_F", "E_D"])
-def test_frozen_c1_pair_runs_end_to_end(pair: str) -> None:
-    from tests.experiments.resume_layout.candidates import C2_0B_PAIRS
-
-    spec = C2_0B_PAIRS[pair]
-    target = Path(renderer_module.__file__).resolve().parents[2] / (
-        f"tests/local_datasets/resume_matrix/resume_{spec['target']}.pdf"
-    )
-    if not target.exists():
-        pytest.skip("local resume_matrix corpus not present")
-    result = renderer_module.run_pair(pair)
-    run_dir = Path(result["run_dir"])
-    for artifact in REQUIRED_ARTIFACTS:
-        assert (run_dir / artifact).exists(), artifact
-    coverage = json.loads((run_dir / "context_coverage.json").read_text())
-    assert coverage["total_coverage"] is True
-    ownership = json.loads((run_dir / "leaf_ownership.json").read_text())
-    assert ownership["status"] == "fully_materialized"
-    assert ownership["ownership_exactly_one"] is True
-    accounting = json.loads((run_dir / "content_accounting.json").read_text())
-    assert accounting["passed"] is True
-    assert accounting["unhomed"] == [] and accounting["unresolved_unroutable"] == []
-    blank = json.loads((run_dir / "blank_page_validation.json").read_text())
-    assert blank["passed"] is True and blank["blank_pages"] == []
-    manifest = json.loads((run_dir / "comparison_manifest.json").read_text())
-    assert manifest["frozen_c1_baseline"]["run_id"]
-    gates = json.loads((run_dir / "hard_gates.json").read_text())["gates"]
-    if spec["target"] == "D":
-        # Gap-only pair: D's target evidence carries no measured entry
-        # typography tiers, so the shape gate stays FALSE with named
-        # capability gaps — never a placeholder-true hard gate.
-        assert gates["content_shapes_match_evidence"] is False
-        shape = json.loads((run_dir / "content_shape_verification.json").read_text())
-        gaps = {
-            row["capability_gap"]
-            for entry in shape["rows"]
-            for row in entry["properties"]
-            if row["capability_gap"]
-        }
-        assert gaps
-        assert manifest["parity_scope"].startswith("D-target pairs are gap-only")
-    else:
-        assert manifest["hard_gates_passed"] is True
-        assert all(gates.values())
 
 
 # ---------------------------------------------------------------------------

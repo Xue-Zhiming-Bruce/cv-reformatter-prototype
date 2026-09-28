@@ -93,14 +93,14 @@ from pydantic_ai import BinaryContent
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import RunContext
 
-from tests.experiments.a_pipeline import (
-    RUNS,
+from tests.experiments.resume_layout.paths import RUNS
+from tests.experiments.resume_layout.render import (
     _export_pinned_html_to_pdf,
-    _html_text,
     _render_pages,
     _side_by_side,
 )
-from tests.experiments.c_pipeline import (
+from tests.experiments.resume_layout.text import _html_text
+from tests.experiments.resume_layout.scaffold import (
     _pdf_lines_and_marks,
     per_line_render_stability,
     pinned_export_environment,

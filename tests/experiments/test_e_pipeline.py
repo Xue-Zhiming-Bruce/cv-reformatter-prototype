@@ -971,7 +971,7 @@ def test_measure_sidebar_headings_are_generic_and_evidence_linked(tmp_path: Path
     ev = NormalizedLayoutEvidence.model_validate_json(
         (TARGET_I_CACHE / "enriched_evidence.json").read_text()
     )
-    from tests.experiments.a_pipeline import build_format_summary
+    from tests.experiments.resume_layout.target import build_format_summary
 
     summary = build_format_summary(ev, json.loads(raw_path.read_text()), TARGET_I)
     labels = e_stages.measure_sidebar_headings(TARGET_I, summary)
@@ -996,7 +996,7 @@ def test_compile_two_column_state_is_valid_and_candidate_safe(tmp_path: Path) ->
     ev = NormalizedLayoutEvidence.model_validate_json(
         (TARGET_I_CACHE / "enriched_evidence.json").read_text()
     )
-    from tests.experiments.a_pipeline import build_format_summary
+    from tests.experiments.resume_layout.target import build_format_summary
 
     summary = build_format_summary(ev, json.loads(raw_path.read_text()), TARGET_I)
     state, derived = e_stages.compile_two_column_state(TARGET_I, summary, ev)

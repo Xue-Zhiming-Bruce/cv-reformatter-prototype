@@ -16,7 +16,7 @@ from __future__ import annotations
 import html as html_lib
 from typing import Any
 
-from tests.experiments.a_pipeline import _inject_local_fonts
+from tests.experiments.resume_layout.render import _inject_local_fonts
 from tests.experiments.resume_layout.state import (
     C2LayoutState,
     PageState,

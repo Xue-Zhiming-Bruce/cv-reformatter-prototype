@@ -34,10 +34,8 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, NamedTuple, Sequence
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from tests.experiments.a_pipeline import (
-    ROOT,
-    _render_pages,
-)
+from tests.experiments.resume_layout.paths import ROOT
+from tests.experiments.resume_layout.render import _render_pages
 from tests.experiments.d_pipeline import (
     RunBudget,
     RunTrace,

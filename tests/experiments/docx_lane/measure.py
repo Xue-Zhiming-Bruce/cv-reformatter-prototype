@@ -23,11 +23,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from tests.experiments.a_pipeline import (
-    RUNS,
-    _median,
-    _render_pages,
-)
+from tests.experiments.resume_layout.paths import RUNS
+from tests.experiments.resume_layout.render import _render_pages
+from tests.experiments.resume_layout.text import _median
 from tests.experiments.c2_renderer import (
     _pdf_color_hex,
     _rendered_heading_positions,

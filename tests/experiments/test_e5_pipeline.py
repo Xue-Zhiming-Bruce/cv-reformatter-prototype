@@ -38,11 +38,11 @@ from tests.experiments.test_e_pipeline import (
 )
 
 import tests.experiments.e.lane_b_template as at
-import tests.experiments.a_pipeline as a_pipeline
 import tests.experiments.e.shared as e_shared
 import tests.experiments.e.stages as e_stages
 import tests.experiments.d_pipeline as d_pipeline
 import tests.experiments.e.e5 as e_e5
+import tests.experiments.resume_layout.paths as resume_layout_paths
 
 # ===========================================================================
 # E5 — Phase 0 loop fixes + Builder representation comparison (Lane A / Lane B)
@@ -1600,7 +1600,7 @@ def test_gate_and_builder_candidate_audits_are_version_bound() -> None:
 
 
 def test_lane_a_proposal_cites_only_known_state_nodes() -> None:
-    from tests.experiments.a_pipeline import build_format_summary
+    from tests.experiments.resume_layout.target import build_format_summary
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 
     normalized_path = (
@@ -2391,17 +2391,20 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     assert hashes["basis"] == "selected_critical_source_drift_detection"
     # the registered set covers the ACTUAL direct runtime dependencies
     for name in e_e5.E5_SOURCE_FILES:
-        assert hashes["files"][name] == e_shared._sha256_file(a_pipeline.ROOT / name), name
+        assert hashes["files"][name] == e_shared._sha256_file(resume_layout_paths.ROOT / name), name
     for name in (
         "tests/experiments/d_pipeline.py",
         "tests/experiments/c2_renderer.py",
         "tests/experiments/resume_layout/candidates.py",
-        "tests/experiments/a_pipeline.py",
+        "tests/experiments/resume_layout/paths.py",
+        "tests/experiments/resume_layout/text.py",
+        "tests/experiments/resume_layout/render.py",
+        "tests/experiments/resume_layout/target.py",
         "tests/experiments/c2_pipeline.py",
         "tests/experiments/resume_layout/state.py",
     ):
         assert name in hashes["files"], f"missing direct runtime source: {name}"
-    assert hashes["tracked_diff_sha256"] == e_e5._tracked_diff_sha256(a_pipeline.ROOT, e_e5.E5_SOURCE_FILES)
+    assert hashes["tracked_diff_sha256"] == e_e5._tracked_diff_sha256(resume_layout_paths.ROOT, e_e5.E5_SOURCE_FILES)
     assert record["summary"]["source_changed"] is False
     assert record["summary"]["source_identity_stable"] is True
     # offline rehearsal runs are NEVER auto-promoted to canonical by a
@@ -3022,7 +3025,7 @@ def _simulated_approval_for_test_target_catalog(
     supply approval to a live run."""
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 
-    from tests.experiments.a_pipeline import build_format_summary
+    from tests.experiments.resume_layout.target import build_format_summary
 
     target = target.resolve()
     cache = ROOT / "tests/experiments/runs/target_cache" / e_shared._sha256_file(target)
@@ -4399,7 +4402,7 @@ def test_authored_shell_uses_full_page_geometry_without_hidden_scale() -> None:
 
 def test_authored_full_page_pdf_keeps_declared_size_and_font(tmp_path: Path) -> None:
     import pdfplumber
-    from tests.experiments.a_pipeline import _export_pinned_html_to_pdf
+    from tests.experiments.resume_layout.render import _export_pinned_html_to_pdf
     from tests.experiments.resume_layout.candidates import (
         CandidateDocument,
         CandidateLeaf,

@@ -31,7 +31,7 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 from pydantic import Field
 
-from tests.experiments.a_pipeline import _median
+from tests.experiments.resume_layout.text import _median
 from tests.experiments.resume_layout.text import _norm
 from tests.experiments.resume_layout.state import (
     C2LayoutState,

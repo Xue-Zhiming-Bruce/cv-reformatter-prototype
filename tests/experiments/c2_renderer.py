@@ -50,21 +50,23 @@ from typing import Any, Literal
 from pydantic import ConfigDict, Field
 
 from app.ingestion.pdf_reader import read_pdf_text
-from tests.experiments.a_pipeline import (
-    RUNS,
-    _analyze_target,
-    _comparison_diff,
+from tests.experiments.resume_layout.paths import RUNS
+from tests.experiments.resume_layout.render import (
     _export_pinned_html_to_pdf,
-    _html_text,
-    _hyphen_free,
     _line_stability,
     _render_pages,
-    _sha256,
     _side_by_side,
-    _typography_delta,
+)
+from tests.experiments.resume_layout.target import (
+    _analyze_target,
     build_format_summary,
 )
-from tests.experiments.c_pipeline import pinned_export_environment
+from tests.experiments.resume_layout.text import (
+    _html_text,
+    _hyphen_free,
+    _sha256,
+)
+from tests.experiments.resume_layout.scaffold import pinned_export_environment
 from tests.experiments.c2_pipeline import (
     _below_heading_rule,
     _resolve_above_heading_rule,
@@ -1142,7 +1144,11 @@ def content_shape_verification(
 def run_pair(pair: str, out: Path | None = None, c1_runs_root: Path | None = None) -> dict[str, Any]:
     if pair not in C2_0B_PAIRS:
         raise KeyError(f"unknown pair {pair!r}; known: {sorted(C2_0B_PAIRS)}")
-    from tests.experiments.c_pipeline import derive_body_scaffold, derive_body_tier_targets, derive_header_scaffold
+    from tests.experiments.resume_layout.scaffold import (
+        derive_body_scaffold,
+        derive_body_tier_targets,
+        derive_header_scaffold,
+    )
 
     spec = C2_0B_PAIRS[pair]
     candidate = candidate_document_for_pair(pair)

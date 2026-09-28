@@ -93,11 +93,9 @@ from tests.experiments.e.shared import (
     PresentationLabel,
 )
 
-from tests.experiments.a_pipeline import (
-    _html_text,
-    _inject_local_fonts,
-)
-from tests.experiments.c_pipeline import pinned_export_environment
+from tests.experiments.resume_layout.render import _inject_local_fonts
+from tests.experiments.resume_layout.text import _html_text
+from tests.experiments.resume_layout.scaffold import pinned_export_environment
 from tests.experiments.resume_layout.text import _norm
 
 # ---------------------------------------------------------------------------

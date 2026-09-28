@@ -36,7 +36,7 @@ Reuse (no parallel runner, no second renderer, no second evidence store): the
 run-directory/`manifest.json` versioning conventions, its deterministic
 `owner_decide` promotion CLI, its `_limits`/`_record_usage` usage plumbing, and
 its injected-`base_html` `EvidenceStore`; page rendering comes from
-`tests.experiments.a_pipeline._render_pages` (pypdfium2, >=2x scale). E1 adds
+`tests.experiments.resume_layout.render._render_pages` (pypdfium2, >=2x scale). E1 adds
 only the evidence-access layer D lacks — `EvidenceStore` is constructed here
 directly rather than by calling `run_d0`, because D's shell begins with the
 heading-rule repair state machine, which is not what E1 exercises.
