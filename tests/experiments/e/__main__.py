@@ -102,7 +102,7 @@ Usage (E2):
     python -m tests.experiments.e_pipeline --e2 --target PDF \
         [--out DIR] [--live]
 
-Offline tests: `tests/experiments/test_e_pipeline.py`.
+Offline tests: `tests/experiments/test_e_stages.py`.
 
 ---
 MODULE LAYOUT (behaviour-neutral split, 2026-09-22)

@@ -1,8 +1,8 @@
 """Tests for the Pipeline E0/E1 evidence-grounded target-understanding experiment.
 
 Also owns the E2/E3/E4 tests and the shared fixtures (`ROOT`, `RESUME_I`,
-`TARGET_F`, `TARGET_F_CACHE`, `e2_skip`) that `test_e5_pipeline.py` imports.
-E5 tests live in `tests/experiments/test_e5_pipeline.py` (behaviour-neutral
+`TARGET_F`, `TARGET_F_CACHE`, `e2_skip`) that `test_e5.py` imports.
+E5 tests live in `tests/experiments/test_e5.py` (behaviour-neutral
 file split, 2026-09-22).
 
 Lanes:
@@ -13,7 +13,7 @@ Lanes:
   network, no provider, no model call).
 - No Chrome and no live provider call are required by any test in this file.
 
-Run: pytest tests/experiments/test_e_pipeline.py
+Run: pytest tests/experiments/test_e_stages.py
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from pathlib import Path
 
 import pytest
 
-import tests.experiments.e_pipeline as e
 from tests.experiments.resume_layout.runtime import RunBudget
 import tests.experiments.e.shared as e_shared
 import tests.experiments.e.stages as e_stages
@@ -482,7 +481,7 @@ def _access_records(run_dir: Path) -> list[dict]:
 # scanned it directly. The same source now lives in four runtime modules; the
 # tests read all four so the scanned surface is unchanged by the file split.
 PIPELINE_E_SOURCE_FILES = (
-    "e_pipeline.py",
+    "e/__main__.py",
     "e/shared.py",
     "e/stages.py",
     "e/e5.py",
@@ -1029,7 +1028,7 @@ def test_terminal_rename_ready_for_owner_review_reserved_delivered(tmp_path: Pat
     # `delivered` is reserved for explicit owner acceptance.
     from pathlib import Path as _P
 
-    source = (_P(__file__).resolve().parents[0] / "e_pipeline.py").read_text()
+    source = (_P(__file__).resolve().parents[0] / "e" / "__main__.py").read_text()
     assert "delivered_pending_owner" not in source
     assert "ready_for_owner_review" in source
 
@@ -1352,7 +1351,7 @@ def test_run_e4_budget_exhaustion_is_resumable_and_never_unsupported(
 
 
 def test_no_unsupported_terminal_state_exists() -> None:
-    source = (Path(__file__).resolve().parents[0] / "e_pipeline.py").read_text()
+    source = (Path(__file__).resolve().parents[0] / "e" / "__main__.py").read_text()
     # The terminal vocabulary: ready_for_owner_review / budget_exhausted /
     # operational_abort — never a bare 'unsupported' classification.
     for terminal in ("ready_for_owner_review", "budget_exhausted", "operational_abort"):

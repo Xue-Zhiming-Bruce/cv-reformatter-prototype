@@ -1,92 +1,121 @@
 # Pipeline experiments
 
-Status: the table at the top of
-[`PIPELINE_EVOLUTION_PROPOSAL.md`](PIPELINE_EVOLUTION_PROPOSAL.md) is the
-authority for which pipeline is current. As of 2026-09-15: A is frozen and
-archived, B is closed (hypothesis falsified), C1 is complete for D→E, C2 is the
-active experiment, and D is paused.
+Owner-authorized experiment area. **The authority for which pipeline is current
+is the table at the top of [`PIPELINE_EVOLUTION_PROPOSAL.md`](PIPELINE_EVOLUTION_PROPOSAL.md)**;
+this file only describes how the directory is organised and how to run things.
 
-**`a_pipeline.py` and `b_pipeline.py` are no longer run as workflows.** Their
-`main`/`run` entry points are retired; the modules remain in use as shared
-utility libraries by every later pipeline (`_render_pages`,
-`build_format_summary`, `_median`, `ROOT`, `RUNS`, `FinalReview`, …). Do not
-look for a runnable A or B command here.
+## What is alive
 
-The A experiment separated candidate content from target presentation:
-Adobe Extract measures the target PDF; a Builder creates and repairs the
-reusable HTML template; a Filler places source-referenced candidate content;
-deterministic content/render gates reject invalid candidates; a visual reviewer
-compares valid challengers and retains the champion.
+| Entry point | What it is |
+| --- | --- |
+| `python -m tests.experiments.e ...` | **Pipeline E** — the target-understanding and Builder-representation workflow (E1–E5). The one actively developed pipeline. |
+| `python -m tests.experiments.docx_lane --pair {D_E\|D_F\|E_D\|E_F\|F_D\|F_E}` | **The editable-DOCX lane** — the retained, owner-accepted bounded-capability lane (C2-0c/0cC/0cM/0cV/0cS). |
+| `python -m tests.experiments.d_pipeline (--fixture-out DIR \| --base-run DIR) [--live]` | **Pipeline D0** — the bounded agent-directed repair experiment. Paused with its acceptance open; retained, not deleted. |
 
-Run the parallel C1 D→E header pilot (one Architect call, one Filler call,
-bounded zero-API geometry fitting):
+Everything else in the pipeline lineage is retired. The A, B and C1 workflows
+(A/B entry points, the C1 topology search and fitting loop) and the C2-0a/0b
+CLIs are gone; their evidence and tracked reports remain as historical results.
+`docs/testing/TEST_STRUCTURE.md` is the authoritative list of which entry points
+are canonical.
 
-```bash
-.venv/bin/python -m tests.experiments.c_pipeline --live \
-  --render-budget 12 --time-budget-seconds 60
+## Layout
+
+```text
+tests/experiments/
+  e/                  Pipeline E: __main__.py (CLI), stages.py (E1-E4), e5.py (E5),
+                      shared.py (contracts/evidence layer/plumbing), lane_b_template.py
+  docx_lane/          the editable-DOCX lane: __main__.py (CLI), build.py (OOXML),
+                      measure.py (rendered measurement + fitting), review.py (review index)
+  resume_layout/      the shared library, named by responsibility:
+                        paths.py          canonical ROOT / RUNS anchors
+                        text.py           text normalisation primitives (imports nothing local)
+                        runtime.py        budgets, traces, evidence store, owner decision gate
+                        state.py          layout-state schema + validation + source vocabulary
+                        candidates.py     candidate fixtures + the frozen C1 / C2 pair registries
+                        target.py         target measurement: Adobe evidence -> format summary
+                        scaffold.py       measured header/body/category-grid scaffolds
+                        render.py         deterministic HTML -> PDF (pinned Chrome, local fonts)
+                        compile_state.py  scaffolds + candidate content -> validated state
+                        plan.py           render-plan schema + compilation
+                        html.py           the fixed HTML renderer
+                        measure.py        measurement of rendered HTML/PDF (colour, geometry)
+                        gates.py          delivery gates (content/privacy/structure/...)
+  d_pipeline.py       Pipeline D0's own workflow (it imports resume_layout/, never the reverse)
+  test_*.py           tests
+  assets/             OFL-licensed fonts (tracked with their licence text)
+  runs/               generated evidence, git-ignored (read-only inputs for the entry points)
+  *.md                proposals, plans, handoffs and per-milestone reports (historical)
 ```
 
-Generated evidence is ignored under `tests/experiments/runs/` or
-`tests/local_datasets/resume_matrix/runs/`. L2 always requires owner review of
-the target, champion PDF, and side-by-side image. The loop permits at most five
-Reviewer attempts and stops after two valid non-promotions or a repeated failed
-repair fingerprint.
+## Structural rules, enforced
 
-## Retained but not wired
+`test_structure.py` asserts three properties of the library, because every
+"is this symbol still used?" question depends on them:
 
-The modules below are **not dead code**. They are finished work that no current
-entry point calls yet. Treat them as retained capability: do not delete them,
-and do not "fix" them for being unreachable. They are listed here so that a
-reachability audit can tell deliberate parking apart from an oversight.
+- **R1** a module may only import a sibling symbol it reads itself — no
+  forwarding facades (they made symbol liveness a global fixed-point problem);
+- **R2** no sibling imports inside function bodies (they hide dependencies from
+  any reading of the file, and hoisting one later can silently change
+  monkeypatch semantics);
+- **R3** the module graph is acyclic.
 
-| Module | What it is | Why it is retained | What would wire it in |
-| --- | --- | --- | --- |
-| `c2_docx_build.py`, `c2_docx_compare.py`, `c2_docx_renderer.py` | C2's editable-DOCX lane: authored-DOCX build, OOXML inspection, rendered geometry/color measurement, bounded fitting loop | Owner-accepted bounded milestones (C2-0c, 0cC, 0cM, 0cV, 0cS). Pipeline E has no DOCX output yet; this is where it will come from | E needs editable DOCX delivery |
+Run them with the rest of the suite; they are fast and need no fixtures.
 
-When a retained module is finally wired in, move its row out of this table and
-treat it as live. When one is rejected, archive it together with its tests.
+## Pipelines
 
-## D-pipeline experiment (D0)
-
-`d_pipeline.py` is the bounded agent-directed repair experiment
-(`D_PIPELINE_PROPOSAL.md` §11; corrective report in
-`D0_EXPERIMENT_REPORT.md`): a deterministic outer state machine with a
-PydanticAI main agent at explicit checkpoints and three fixed specialist
-roles, repairing one known rule-placement defect via a single typed
-`SetHeadingRule` edit. Machine-gated candidates are held INACTIVE at
-`awaiting_owner_review`; only the deterministic owner CLI promotes:
+### Pipeline E (`tests.experiments.e`)
 
 ```bash
+.venv/bin/python -m tests.experiments.e --target <pdf> --e5 --lane both --out /tmp/e5
+.venv/bin/python -m tests.experiments.e --target <pdf> --adobe-json <json>            # E1
+.venv/bin/python -m tests.experiments.e --target <pdf> --e2 | --e3 | --e4            # stages
+.venv/bin/python -m tests.experiments.e --decide RUN_DIR --decision accept|reject    # owner gate
+```
+
+Offline by default: without `--live` the scripted agents run and still perform
+real rendering and real measurement. A live run additionally requires the
+authorization/policy gates and the declared `experiments` dependency extra
+(`pip install -e ".[experiments]"`). No automated gate promotes anything — the
+owner decides.
+
+E1–E4 read the frozen C1 run directories registered in `FROZEN_C1_RUNS`
+(`resume_layout/candidates.py`) and the cached provider-neutral evidence under
+`runs/target_cache/`; E5 additionally reads the shared draft in
+`runs/e_pipeline_e4_20260920T134946Z/`, which is required.
+
+### The editable-DOCX lane (`tests.experiments.docx_lane`)
+
+```bash
+.venv/bin/python -m tests.experiments.docx_lane --pair D_E --out /tmp/docx_D_E
+```
+
+Deterministic: the same pair and the same `--out` path produce byte-identical
+JSON artifacts and a byte-identical `.docx` (the LibreOffice preview PDF is not
+byte-stable). `--out` must not already exist. Hard gates are evidence, not a
+promotion: the D_E pair intentionally reports one remaining geometry delta, so
+its CLI exits 1 — the E_F pair exits 0.
+
+### Pipeline D0 (`tests.experiments.d_pipeline`)
+
+```bash
+.venv/bin/pip install -e ".[experiments]"     # experiment-only dependency
+.venv/bin/python -m tests.experiments.d_pipeline --fixture-out /tmp/d0-fixture
 .venv/bin/python -m tests.experiments.d_pipeline --decide RUN_DIR --decision accept|reject
 ```
 
-Dependency (experiment-only, never a product runtime dependency):
+Machine-gated candidates are held INACTIVE at `awaiting_owner_review`; only the
+deterministic owner CLI promotes. `--base-run` accepts an existing C1 run
+directory. `--live` adds live agents within the 5-request run budget.
 
-```bash
-.venv/bin/pip install -e ".[experiments]"
-```
+## Evidence and artefacts
 
-This installs `pydantic-ai-slim[openai]>=2.43,<3` and therefore upgrades the
-OpenAI SDK from the base `openai>=2.44` pin to `openai>=3.13` (recorded
-side effect; the full offline suite passes with it).
+Generated evidence is git-ignored under `runs/`. Some directories there are
+**read-only inputs** rather than output: `runs/target_cache/`,
+`runs/template_cache/`, the frozen C1 runs in `FROZEN_C1_RUNS`, and
+`runs/e_pipeline_e4_20260920T134946Z/`. `runs/` is registered in
+[`EVIDENCE_MANIFEST.json`](EVIDENCE_MANIFEST.json) so their absence is
+detectable. Do not clean them up as scratch.
 
-Run (clean checkout, no credentials, real Chrome renders):
-
-```bash
-.venv/bin/python -m tests.experiments.d_pipeline --fixture-out /tmp/d0-fixture
-```
-
-`--base-run` accepts an existing C1 run dir (e.g. the workspace-local
-`tests/experiments/runs/c1_matrix_ED_B_20260911T044203Z`, which is git-ignored
-local evidence, not committed). `--live` adds live DeepSeek-compatible agents
-within the 5-request run budget.
-
-Tests (`tests/experiments/test_d_pipeline.py`):
-
-- default lane (self-contained; no Chrome, no network, no credentials):
-  `pytest tests/experiments/test_d_pipeline.py -m "not local_dataset"`;
-- `local_dataset` lane (needs local headless Chrome; builds the synthetic
-  fixture at runtime, no ignored artifacts, no provider):
-  `pytest tests/experiments/test_d_pipeline.py -m local_dataset`;
-  one extra test re-measures workspace-local E→D artifacts and runs only
-  when `D_PIPELINE_BASE_RUN` is set.
+Historical reports (`C2_0*_REPORT.md`, `D0_*_REPORT.md`, the proposals and
+handoffs) are dated records: they describe the state at the time they were
+written and are not updated by later restructuring.

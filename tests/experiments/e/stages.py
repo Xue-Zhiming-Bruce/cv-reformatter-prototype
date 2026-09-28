@@ -1,6 +1,6 @@
 """Pipeline E legacy stages — E1, E2, E3 and E4.
 
-Behaviour-neutral module split of `tests/experiments/e_pipeline.py`
+Behaviour-neutral module split of `tests/experiments/e/__main__.py`
 (2026-09-22). E1 (evidence-linked target understanding), E2 (See -> Measure ->
 Attribute -> Repair -> Re-render), E3 (Resume I walkthrough) and E4 (live-agent
 convergence trial) keep their exact historical behaviour, prompts,

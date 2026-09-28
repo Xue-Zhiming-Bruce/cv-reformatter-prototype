@@ -11,8 +11,8 @@ LibreOffice previews (evaluation evidence only).
 
 Run:
 
-    pytest tests/experiments/test_c2_docx_renderer.py -m "not local_dataset"
-    pytest tests/experiments/test_c2_docx_renderer.py -m local_dataset
+    pytest tests/experiments/test_docx.py -m "not local_dataset"
+    pytest tests/experiments/test_docx.py -m local_dataset
 """
 
 from __future__ import annotations
@@ -56,12 +56,12 @@ from tests.experiments.resume_layout.plan import (
     LeafText,
     compile_render_plan,
 )
-from tests.experiments.test_c2_pipeline import (
+from tests.experiments.test_compile_state import (
     BULLET_TIERS,
     FULL_COVERAGE_LABELS,
     compile_synthetic,
 )
-from tests.experiments.test_c2_renderer import (
+from tests.experiments.test_gates import (
     _leaf,
     rich_candidate,
 )
@@ -275,7 +275,7 @@ def test_entry_rows_keep_left_right_topology_as_borderless_tables(tmp_path: Path
 
 
 def test_measured_rules_become_native_paragraph_borders(tmp_path: Path) -> None:
-    from tests.experiments.test_c2_renderer import _shape_summary
+    from tests.experiments.test_gates import _shape_summary
 
     summary = _shape_summary()
     state = compile_synthetic(
@@ -358,7 +358,7 @@ def test_reading_order_gate_fails_on_reordered_paragraphs(tmp_path: Path) -> Non
 
 
 def test_an_explicit_omission_is_never_rendered(tmp_path: Path) -> None:
-    from tests.experiments.test_c2_renderer import candidate_with_unroutable
+    from tests.experiments.test_gates import candidate_with_unroutable
 
     state = compile_synthetic()
     candidate = candidate_with_unroutable("omit")
@@ -412,7 +412,7 @@ def test_dropped_table_content_fails_the_accounting_gate(tmp_path: Path) -> None
 def test_every_exact_claim_is_output_verified(tmp_path: Path) -> None:
     # The measured-entry-elements state: entry tiers measured, no unresolved
     # bindings, no icons/tables/images -> nothing unsupported.
-    from tests.experiments.test_c2_renderer import _shape_summary
+    from tests.experiments.test_gates import _shape_summary
 
     summary = _shape_summary()
     state = compile_synthetic(
@@ -940,7 +940,7 @@ def _fake_rendered(state, plan, *, overrides=None, page_y_shift=0.0):
 def _shape_state_and_plan():
     """A state with measured heading gaps, entry tiers, and a rule (the
     _shape_summary evidence), so every declared basis exists."""
-    from tests.experiments.test_c2_renderer import _shape_summary
+    from tests.experiments.test_gates import _shape_summary
     summary = _shape_summary()
     state = compile_synthetic(
         ["WORK EXPERIENCE"], rules=summary["rules"], elements=summary["elements"]
@@ -987,7 +987,7 @@ def test_wrong_entry_column_x_and_metadata_right_edge_fail() -> None:
 
 def test_wrong_bullet_indent_and_heading_rule_gap_fail() -> None:
     from tests.experiments.docx_lane.measure import compare_geometry
-    from tests.experiments.test_c2_renderer import _shape_summary
+    from tests.experiments.test_gates import _shape_summary
 
     summary = _shape_summary()
     state = compile_synthetic(["WORK EXPERIENCE"], rules=summary["rules"], elements=summary["elements"])
@@ -1389,7 +1389,7 @@ def _colored_state(colors: list[str | None], header_colors: dict[str, str] | Non
     """A synthetic state whose heading scaffolds (and optionally header rows)
     carry measured colors — the Resume-D shape without any pair-specific code."""
     from tests.experiments.resume_layout.compile_state import state_from_scaffolds
-    from tests.experiments.test_c2_pipeline import (
+    from tests.experiments.test_compile_state import (
         BODY,
         HEADER,
         SUMMARY,
@@ -1507,7 +1507,7 @@ def _heading_row(node: str, style_id: str, color: str | None) -> dict:
 
 def test_rendered_color_measured_from_pdf_and_compared() -> None:
     from tests.experiments.resume_layout.compile_state import state_from_scaffolds
-    from tests.experiments.test_c2_pipeline import (
+    from tests.experiments.test_compile_state import (
         BODY,
         BULLET_TIERS,
         HEADER,
@@ -2952,7 +2952,7 @@ def _nested_docx_candidate(bullet_counts: tuple[int, ...], titles: tuple[str, ..
 
 
 def _nested_full_pipeline(tmp_path: Path, candidate):
-    from tests.experiments.test_c2_pipeline import _state_with_declared_subgroup_tier
+    from tests.experiments.test_compile_state import _state_with_declared_subgroup_tier
 
     state = _state_with_declared_subgroup_tier(["WORK EXPERIENCE"])
     plan = compile_render_plan(state, candidate)
@@ -3035,7 +3035,7 @@ def test_nested_two_subgroups_varying_lengths_zero_bullet_path(tmp_path: Path) -
 
 def test_nested_rendered_visual_rows_map_in_document_order() -> None:
     """The expected visual rows carry sub-group rows in document order."""
-    from tests.experiments.test_c2_pipeline import _state_with_declared_subgroup_tier
+    from tests.experiments.test_compile_state import _state_with_declared_subgroup_tier
 
     state = _state_with_declared_subgroup_tier(["WORK EXPERIENCE"])
     plan = compile_render_plan(state, _nested_docx_candidate((2, 1), ("Group A Title", "Group B Title"), with_meta=True))
@@ -3058,7 +3058,7 @@ def test_spike_render_artifacts_are_reviewable() -> None:
     run_dir = Path(out)
     run_dir.mkdir(parents=True, exist_ok=False)
 
-    from tests.experiments.test_c2_pipeline import _state_with_declared_subgroup_tier
+    from tests.experiments.test_compile_state import _state_with_declared_subgroup_tier
 
     shapes = {
         "shape_a_three_groups": (

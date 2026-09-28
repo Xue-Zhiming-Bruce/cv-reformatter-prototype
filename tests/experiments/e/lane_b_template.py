@@ -3,8 +3,8 @@
 Owner-authorized E5 milestone (PIPELINE_E_PLAN.md §10 second strategy;
 E5 work order). Not part of the active product architecture and not an
 approved roadmap item. This module is called ONLY by the existing Pipeline E
-runner (`e_pipeline_e5.run_e5`, reached through the `e_pipeline` compat
-facade); it is not a second runner and owns no
+runner (`tests.experiments.e.e5.run_e5`, reached from the `tests.experiments.e`
+entry point); it is not a second runner and owns no
 workflow of its own.
 
 What it is: the smallest deterministic boundary around a LIVE Builder's

@@ -1,10 +1,10 @@
 """Tests for the Pipeline E5 loop and Lane A/Lane B representation lanes.
 
-Split out of `test_e_pipeline.py` (behaviour-neutral file split, 2026-09-22):
+Split out of `test_e_stages.py` (behaviour-neutral file split, 2026-09-22):
 E1-E4 tests stay there, every E5 test lives here.
 
 Shared fixtures (`ROOT`, `RESUME_I`, `TARGET_F`, `TARGET_F_CACHE`, `e2_skip`)
-are imported from `test_e_pipeline.py` — the existing test file is the single
+are imported from `test_e_stages.py` — the existing test file is the single
 owner of the shared fixtures; nothing is duplicated.
 
 Lanes:
@@ -12,7 +12,7 @@ Lanes:
   call are required by any test in this file. Tests that need the shared E4
   draft / target cache carry `e5_skip`.
 
-Run: pytest tests/experiments/test_e5_pipeline.py
+Run: pytest tests/experiments/test_e5.py
 """
 
 from __future__ import annotations
@@ -25,10 +25,9 @@ from pathlib import Path
 import pytest
 
 import tests.experiments.e.lane_b_template as at
-import tests.experiments.e_pipeline as e
 import tests.experiments.e.e5 as e5
 from tests.experiments.resume_layout.runtime import RunBudget
-from tests.experiments.test_e_pipeline import (
+from tests.experiments.test_e_stages import (
     RESUME_I,
     ROOT,
     TARGET_F,
@@ -2414,7 +2413,7 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     assert "canonical" not in record["summary"]
     # any drift between frozen identity and current source is detected
     drifted = json.loads(json.dumps(config))
-    drifted["source_hashes"]["files"]["tests/experiments/e_pipeline.py"] = "0" * 64
+    drifted["source_hashes"]["files"]["tests/experiments/e/__main__.py"] = "0" * 64
     assert e_e5._source_hashes_changed(drifted) is True
     # a changed tracked diff (same file hashes is impossible then, but a
     # tampered diff hash must also be detected)
@@ -4170,7 +4169,7 @@ def test_run_e5_pdf_presence_failure_is_diagnostic_and_owner_reviewable(
 def test_recoverable_tool_input_error_returns_to_the_model(tmp_path: Path) -> None:
     """A bad page comes back as a bounded tool RESULT (traced), and a real
     defect still raises — the boundary must not swallow genuine failures."""
-    from tests.experiments.test_e_pipeline import _pod
+    from tests.experiments.test_e_stages import _pod
 
     def pod_tools(pod: object, trace: object) -> dict[str, object]:
         return {

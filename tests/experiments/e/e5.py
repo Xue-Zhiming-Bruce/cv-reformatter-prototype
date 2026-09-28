@@ -1,6 +1,6 @@
 """Pipeline E5 — Builder representation comparison (Lane A / Lane B).
 
-Behaviour-neutral module split of `tests/experiments/e_pipeline.py`
+Behaviour-neutral module split of `tests/experiments/e/__main__.py`
 (2026-09-22). This module owns the E5 milestones: constants, prompts, the
 presentation-label approval contract logic, the defect ledger, the Lane A/Lane
 B schemas, the live builders, the agent-message audit call sites, repair
@@ -2845,7 +2845,7 @@ E5_SOURCE_FILES = (
     # Split 2026-09-22: the single `e_pipeline.py` monolith became a thin
     # compat facade + three real modules; all FOUR are direct runtime sources
     # of an E5 run, so all four are registered.
-    "tests/experiments/e_pipeline.py",
+    "tests/experiments/e/__main__.py",
     # Shared contracts, evidence layer, live-model plumbing, agent-call audit.
     "tests/experiments/e/shared.py",
     # E1-E4 stages (shared E2 records, review/measure/repair helpers).

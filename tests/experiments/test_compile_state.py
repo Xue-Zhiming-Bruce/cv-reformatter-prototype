@@ -8,8 +8,8 @@ truthful probe statuses.
 
 Run:
 
-    pytest tests/experiments/test_c2_pipeline.py -m "not local_dataset"
-    pytest tests/experiments/test_c2_pipeline.py -m local_dataset
+    pytest tests/experiments/test_compile_state.py -m "not local_dataset"
+    pytest tests/experiments/test_compile_state.py -m local_dataset
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Pipeline E — shared contracts, evidence layer, and runtime plumbing.
 
-Behaviour-neutral module split of `tests/experiments/e_pipeline.py`
+Behaviour-neutral module split of `tests/experiments/e/__main__.py`
 (2026-09-22). This module is the LEAF of the Pipeline E import graph: it
 imports no other Pipeline E module. It holds only what two or more of the
 remaining modules need:

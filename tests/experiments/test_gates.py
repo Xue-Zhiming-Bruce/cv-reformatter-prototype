@@ -8,8 +8,8 @@ live provider call — the target evidence comes from the persistent cache).
 
 Run:
 
-    pytest tests/experiments/test_c2_renderer.py -m "not local_dataset"
-    pytest tests/experiments/test_c2_renderer.py -m local_dataset
+    pytest tests/experiments/test_gates.py -m "not local_dataset"
+    pytest tests/experiments/test_gates.py -m local_dataset
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ from tests.experiments.resume_layout.plan import (
     OVERFLOW_POLICY,
     compile_render_plan,
 )
-from tests.experiments.test_c2_pipeline import (
+from tests.experiments.test_compile_state import (
     BODY,
     BULLET_TIERS,
     FULL_COVERAGE_LABELS,
@@ -437,7 +437,7 @@ def _shape_scaffold(labels: list[str] | None = None) -> Any:
         BodyEntryScaffold,
         BodyScaffold,
     )
-    from tests.experiments.test_c2_pipeline import _heading
+    from tests.experiments.test_compile_state import _heading
 
     return BodyScaffold(
         headings=[
@@ -526,7 +526,7 @@ def test_content_shapes_are_verified_against_measured_evidence() -> None:
         BodyEntryScaffold,
         BodyScaffold,
     )
-    from tests.experiments.test_c2_pipeline import _heading
+    from tests.experiments.test_compile_state import _heading
 
     state, plan = plan_for()
     html = render_html(state, plan)
@@ -565,7 +565,7 @@ def test_rule_verification_resolves_the_measured_rule_bbox() -> None:
     """Evidence-boundary regression: the state rule stores the matched rule's
     OWN measured bbox (never the heading text bounds)."""
     from tests.experiments.resume_layout.compile_state import _resolve_above_heading_rule
-    from tests.experiments.test_c2_pipeline import _heading
+    from tests.experiments.test_compile_state import _heading
 
     heading = _heading("WORK EXPERIENCE", 140.0, "e.heading")  # text x1 = 171
     summary = _shape_summary()
@@ -838,7 +838,7 @@ def _two_rule_scaffold() -> Any:
         BodyEntryScaffold,
         BodyScaffold,
     )
-    from tests.experiments.test_c2_pipeline import _heading
+    from tests.experiments.test_compile_state import _heading
 
     return BodyScaffold(
         headings=[
@@ -1148,7 +1148,7 @@ def _subgrouped_plan_candidate(bullet_counts: tuple[int, ...], titles: tuple[str
 
 
 def _plan_state_with_subgroup_tier() -> C2LayoutState:
-    from tests.experiments.test_c2_pipeline import _state_with_declared_subgroup_tier
+    from tests.experiments.test_compile_state import _state_with_declared_subgroup_tier
 
     return _state_with_declared_subgroup_tier(["WORK EXPERIENCE"])
 
@@ -1170,7 +1170,7 @@ def test_plan_compiles_titled_subgroups_in_document_order() -> None:
 
 
 def test_plan_fails_closed_without_a_declared_subgroup_tier() -> None:
-    from tests.experiments.test_c2_pipeline import compile_synthetic
+    from tests.experiments.test_compile_state import compile_synthetic
 
     state = compile_synthetic(["WORK EXPERIENCE"])  # no declared sub-group tier
     plan = compile_render_plan(state, _subgrouped_plan_candidate((1,), ("Group A Title",)))
