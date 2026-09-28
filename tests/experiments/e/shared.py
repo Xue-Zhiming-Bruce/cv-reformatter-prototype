@@ -36,12 +36,12 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from tests.experiments.resume_layout.paths import ROOT
 from tests.experiments.resume_layout.render import _render_pages
-from tests.experiments.d_pipeline import (
+from tests.experiments.resume_layout.runtime import (
     RunBudget,
     RunTrace,
 )
 
-from tests.experiments.d_pipeline import _live_model
+from tests.experiments.resume_layout.runtime import _live_model
 
 POD_SCHEMA_VERSION = "pipeline-e-evidence-pod/1"
 DRAFT_SCHEMA_VERSION = "pipeline-e-structure-draft/1"

@@ -27,7 +27,7 @@ import pytest
 import tests.experiments.e.lane_b_template as at
 import tests.experiments.e_pipeline as e
 import tests.experiments.e.e5 as e5
-from tests.experiments.d_pipeline import RunBudget
+from tests.experiments.resume_layout.runtime import RunBudget
 from tests.experiments.test_e_pipeline import (
     RESUME_I,
     ROOT,
@@ -43,6 +43,7 @@ import tests.experiments.e.stages as e_stages
 import tests.experiments.d_pipeline as d_pipeline
 import tests.experiments.e.e5 as e_e5
 import tests.experiments.resume_layout.paths as resume_layout_paths
+import tests.experiments.resume_layout.runtime as resume_layout_runtime
 
 # ===========================================================================
 # E5 — Phase 0 loop fixes + Builder representation comparison (Lane A / Lane B)
@@ -590,7 +591,7 @@ def test_agent_audit_success_keeps_full_history_and_redacts_images(tmp_path: Pat
     the call_id matches the persisted trace artifact."""
     import json
 
-    trace = d_pipeline.RunTrace(tmp_path)
+    trace = resume_layout_runtime.RunTrace(tmp_path)
     trace.add(agent="shell", phase="e0", action="lane_started")
     image_ref = {
         "path": "review_target_page_1.png", "page": 1, "role": "target",
@@ -652,7 +653,7 @@ def test_agent_audit_reference_less_image_is_hashed_and_marked_redacted(
     serialized = json.loads(ModelMessagesTypeAdapter.dump_json(messages))
     encoded = serialized[0]["parts"][0]["content"][1]["data"]
     assert "-" in encoded or "_" in encoded
-    trace = d_pipeline.RunTrace(tmp_path)
+    trace = resume_layout_runtime.RunTrace(tmp_path)
     e_shared._e5_agent_audit_record(
         trace, _audit_spec(image_refs=()),
         input_messages=messages, run_result=_FakeRunResult(messages), error=None,
@@ -686,7 +687,7 @@ def test_agent_audit_keeps_validation_retry_and_tool_traffic(tmp_path: Path) -> 
         ModelRequest(parts=[RetryPromptPart(content="schema error")]),
         ModelResponse(parts=[TextPart(content="ok")]),
     ]
-    trace = d_pipeline.RunTrace(tmp_path)
+    trace = resume_layout_runtime.RunTrace(tmp_path)
     spec = _audit_spec(agent="attribution_investigator", phase="attribute")
     e_shared._e5_agent_audit_record(
         trace, spec, input_messages=messages, run_result=_FakeRunResult(messages), error=None
@@ -705,7 +706,7 @@ def test_agent_audit_failed_call_records_error_not_a_fake_response(tmp_path: Pat
     from pydantic_ai.messages import ModelRequest, UserPromptPart
 
     messages = [ModelRequest(parts=[UserPromptPart(content="prompt")])]
-    trace = d_pipeline.RunTrace(tmp_path)
+    trace = resume_layout_runtime.RunTrace(tmp_path)
     spec = _audit_spec(agent="lane_b_builder", lane="b", phase="repair")
     e_shared._e5_agent_audit_record(
         trace, spec, input_messages=messages, run_result=None,
@@ -732,7 +733,7 @@ def test_agent_audit_withholds_content_on_secret_or_signed_url(tmp_path: Path) -
             parts=[TextPart(content="https://s3.amazonaws.com/x?X-Amz-Security-Token=SECRET")]
         ),
     ]
-    trace = d_pipeline.RunTrace(tmp_path)
+    trace = resume_layout_runtime.RunTrace(tmp_path)
     e_shared._e5_agent_audit_record(
         trace, _audit_spec(), input_messages=poisoned,
         run_result=_FakeRunResult(poisoned), error=None,
@@ -760,8 +761,8 @@ def test_agent_audit_withholds_content_on_secret_or_signed_url(tmp_path: Path) -
 
 
 def test_agent_audit_lane_files_are_isolated(tmp_path: Path) -> None:
-    trace_a = d_pipeline.RunTrace(tmp_path / "lane_a")
-    trace_b = d_pipeline.RunTrace(tmp_path / "lane_b")
+    trace_a = resume_layout_runtime.RunTrace(tmp_path / "lane_a")
+    trace_b = resume_layout_runtime.RunTrace(tmp_path / "lane_b")
     trace_a.out_dir.mkdir(); trace_b.out_dir.mkdir()
     from pydantic_ai.messages import ModelRequest, UserPromptPart
 
@@ -784,7 +785,7 @@ def test_agent_audit_lane_files_are_isolated(tmp_path: Path) -> None:
 def test_agent_audit_call_id_binds_trace_and_render_version(tmp_path: Path) -> None:
     import json
 
-    trace = d_pipeline.RunTrace(tmp_path)
+    trace = resume_layout_runtime.RunTrace(tmp_path)
     trace.add(agent="shell", phase="loop", action="review_gate", output={"render_version": "render-v1"})
     from pydantic_ai.messages import ModelRequest, UserPromptPart
 
@@ -2009,8 +2010,8 @@ def test_measurement_tool_budget_consumed_once_per_measurement(tmp_path: Path) -
         encoding="utf-8",
     )
     pod = e_shared.DualSourcePod(TARGET_F, raw_path, tmp_path, render_pdf=None)
-    budget = d_pipeline.RunBudget(max_model_requests=4, max_tool_calls=48)
-    trace = d_pipeline.RunTrace(tmp_path)
+    budget = resume_layout_runtime.RunBudget(max_model_requests=4, max_tool_calls=48)
+    trace = resume_layout_runtime.RunTrace(tmp_path)
     controller = e_stages.MeasureController(pod, budget, trace)
     request = e_shared.MeasurementRequest(
         request_id="measure-budget-001", metric="role_gap", page=1,
@@ -4179,7 +4180,7 @@ def test_recoverable_tool_input_error_returns_to_the_model(tmp_path: Path) -> No
             )
         }
 
-    trace = d_pipeline.RunTrace(tmp_path)
+    trace = resume_layout_runtime.RunTrace(tmp_path)
     tools = pod_tools(_pod(tmp_path), trace)
     result = tools["inspect_page_overview"](99)
     assert isinstance(result, dict) and result["status"] == "error"
@@ -4192,7 +4193,7 @@ def test_recoverable_tool_input_error_returns_to_the_model(tmp_path: Path) -> No
     broken = _pod(tmp_path)
     broken.inspect_page_overview = exploding_renderer  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="renderer itself failed"):
-        pod_tools(broken, d_pipeline.RunTrace(tmp_path))["inspect_page_overview"](1)
+        pod_tools(broken, resume_layout_runtime.RunTrace(tmp_path))["inspect_page_overview"](1)
 
 
 def test_e5_reviewer_message_carries_exact_scope_without_candidate_text() -> None:

@@ -126,7 +126,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from tests.experiments.d_pipeline import owner_decide
+from tests.experiments.resume_layout.runtime import owner_decide
 
 
 from tests.experiments.e.stages import (

@@ -30,19 +30,22 @@ from pydantic import ValidationError
 import tests.experiments.d_pipeline as d
 from tests.experiments.d_pipeline import (
     ReviewerFinding,
-    RunBudget,
     ScriptedAgents,
-    SetHeadingRuleEdit,
     ValidationReport,
     _validate_patch_policy,
     apply_set_heading_rule,
+    run_d0,
+)
+from tests.experiments.resume_layout.runtime import (
+    RunBudget,
+    SetHeadingRuleEdit,
     discover_section_nodes,
     owner_decide,
-    run_d0,
 )
 import tests.experiments.resume_layout.render as resume_layout_render
 import tests.experiments.resume_layout.scaffold as resume_layout_scaffold
 import tests.experiments.resume_layout.text as resume_layout_text
+import tests.experiments.resume_layout.runtime as resume_layout_runtime
 
 SMALL_HTML = """<html><body>
 <header class="c1-header">J. Doe</header><hr class="hr">
@@ -143,11 +146,11 @@ def test_apply_edit_without_matching_node_raises() -> None:
 # --- policy validation (shell enforces the edit vocabulary) ---------------------
 
 
-def _offline_store(tmp_path: Path) -> d.EvidenceStore:
+def _offline_store(tmp_path: Path) -> resume_layout_runtime.EvidenceStore:
     out = tmp_path / "store"
     out.mkdir(parents=True)
     (out / "filled.html").write_text(SMALL_HTML, encoding="utf-8")
-    return d.EvidenceStore(out, out)
+    return resume_layout_runtime.EvidenceStore(out, out)
 
 
 def test_policy_rejects_stale_base_version(tmp_path) -> None:
@@ -246,7 +249,7 @@ def test_reviewer_location_resolver_maps_canonical_node_only(tmp_path) -> None:
 # --- deterministic hypothesis resolution (three explicit outcomes) --------------
 
 
-def _measured_fact(**overrides: Any) -> d.HeadingRuleFact:
+def _measured_fact(**overrides: Any) -> resume_layout_runtime.HeadingRuleFact:
     base: dict[str, Any] = {
         "node_id": "section.skills.heading",
         "heading_verbatim": "Skills",
@@ -257,11 +260,11 @@ def _measured_fact(**overrides: Any) -> d.HeadingRuleFact:
         "evidence_ids": ["render.line.p1.top100.0"],
     }
     base.update(overrides)
-    return d.HeadingRuleFact(**base)
+    return resume_layout_runtime.HeadingRuleFact(**base)
 
 
-def _design() -> d.TargetRuleDesign:
-    return d.TargetRuleDesign(
+def _design() -> resume_layout_runtime.TargetRuleDesign:
+    return resume_layout_runtime.TargetRuleDesign(
         placement="below", gap_heading_to_rule_pt=1.742, gap_rule_to_content_pt=10.463
     )
 
@@ -349,18 +352,18 @@ def test_owner_report_preserves_unresolved_claimed_location(tmp_path) -> None:
 # --- full state machine, offline routing (monkeypatched deterministic layer) -----
 
 
-def _route_facts(pdf: Path, node_id: str, heading_verbatim: str) -> d.HeadingRuleFact | None:
+def _route_facts(pdf: Path, node_id: str, heading_verbatim: str) -> resume_layout_runtime.HeadingRuleFact | None:
     """Scripted measurement: the v1 render shows rules above, every post-edit
     render shows the repaired below-placement with in-tolerance gaps."""
     if "layout_v1" in pdf.name and "second" not in pdf.name:
-        return d.HeadingRuleFact(
+        return resume_layout_runtime.HeadingRuleFact(
             node_id=node_id,
             heading_verbatim=heading_verbatim,
             page=1,
             placement="above",
             gap_rule_above_pt=4.078,
         )
-    return d.HeadingRuleFact(
+    return resume_layout_runtime.HeadingRuleFact(
         node_id=node_id,
         heading_verbatim=heading_verbatim,
         page=1,
@@ -412,7 +415,7 @@ def _script_offline_layer(monkeypatch, tmp_path: Path, name: str, html: str) -> 
     monkeypatch.setattr(
         d,
         "measure_target_design",
-        lambda target_pdf, base_dir: d.TargetRuleDesign(
+        lambda target_pdf, base_dir: resume_layout_runtime.TargetRuleDesign(
             placement="below", gap_heading_to_rule_pt=1.742, gap_rule_to_content_pt=10.463
         ),
     )
@@ -590,7 +593,7 @@ def test_defect_not_reproduced_ends_needs_human_review(offline_state_machine, tm
     monkeypatch.setattr(
         d,
         "measure_target_design",
-        lambda *a, **k: d.TargetRuleDesign(placement="above", gap_heading_to_rule_pt=1.0, gap_rule_to_content_pt=1.0),
+        lambda *a, **k: resume_layout_runtime.TargetRuleDesign(placement="above", gap_heading_to_rule_pt=1.0, gap_rule_to_content_pt=1.0),
     )
     out = tmp_path / "run"
     run_dir, terminal = run_d0(offline_state_machine, out, live=False)
@@ -603,7 +606,7 @@ def test_defect_not_reproduced_ends_needs_human_review(offline_state_machine, tm
 def test_unsupported_defect_is_a_capability_gap_with_no_mutation(offline_state_machine, tmp_path) -> None:
     """Counterfactual: evidence that does not match the supported defect class
     must end in needs_human_review with NO candidate mutation."""
-    diagnosis = d.DefectDiagnosis(
+    diagnosis = resume_layout_runtime.DefectDiagnosis(
         defect_class="unclassified",
         node_ids=["section.skills.heading"],
         claim="the contact row spacing looks wrong",
@@ -704,7 +707,7 @@ def test_d0_r_regression_observation_survives_rejected_hypothesis(
     )
     out = tmp_path / "run"
     # scripted agents must target the experience node of this base run
-    diagnosis = d.DefectDiagnosis(
+    diagnosis = resume_layout_runtime.DefectDiagnosis(
         defect_class=d.DEFECT_CLASS,
         node_ids=["section.experience.heading"],
         claim="section rules placed above headings; target places them below",

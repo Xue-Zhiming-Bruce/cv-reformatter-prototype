@@ -32,7 +32,7 @@ from tests.experiments.resume_layout.render import (
     _export_pinned_html_to_pdf,
     _render_pages,
 )
-from tests.experiments.d_pipeline import (
+from tests.experiments.resume_layout.runtime import (
     BudgetExhausted,
     CheckpointBudgetExceeded,
     EvidenceStore,
@@ -103,7 +103,7 @@ from tests.experiments.resume_layout.scaffold import (
     derive_body_scaffold as _derive_body_scaffold,
     derive_header_scaffold as _derive_header_scaffold,
 )
-from tests.experiments.d_pipeline import _live_model
+from tests.experiments.resume_layout.runtime import _live_model
 from tests.experiments.resume_layout.candidates import (
     UnroutableContent,
     candidate_resume_E as _cand_E,

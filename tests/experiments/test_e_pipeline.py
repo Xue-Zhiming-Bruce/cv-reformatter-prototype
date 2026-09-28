@@ -26,10 +26,11 @@ from pathlib import Path
 import pytest
 
 import tests.experiments.e_pipeline as e
-from tests.experiments.d_pipeline import RunBudget
+from tests.experiments.resume_layout.runtime import RunBudget
 import tests.experiments.e.shared as e_shared
 import tests.experiments.e.stages as e_stages
 import tests.experiments.d_pipeline as d_pipeline
+import tests.experiments.resume_layout.runtime as resume_layout_runtime
 
 ROOT = Path(__file__).resolve().parents[2]
 RESUME_I = ROOT / "tests/local_datasets/resume_matrix/resume_I.pdf"
@@ -712,8 +713,8 @@ def test_role_gap_measurement_binds_actual_final_pdf_content(tmp_path: Path) -> 
         encoding="utf-8",
     )
     pod = e_shared.DualSourcePod(TARGET_F, raw_path, tmp_path, render_pdf=None)
-    budget = d_pipeline.RunBudget(max_model_requests=4, max_tool_calls=48)
-    trace = d_pipeline.RunTrace(tmp_path)
+    budget = resume_layout_runtime.RunBudget(max_model_requests=4, max_tool_calls=48)
+    trace = resume_layout_runtime.RunTrace(tmp_path)
     controller = e_stages.MeasureController(pod, budget, trace)
     request = e_shared.MeasurementRequest(
         request_id="measure-001",
@@ -741,8 +742,8 @@ def test_measurement_evidence_missing_is_recorded_not_faked(tmp_path: Path) -> N
         encoding="utf-8",
     )
     pod = e_shared.DualSourcePod(TARGET_F, raw_path, tmp_path, render_pdf=None)
-    budget = d_pipeline.RunBudget(max_model_requests=4, max_tool_calls=48)
-    trace = d_pipeline.RunTrace(tmp_path)
+    budget = resume_layout_runtime.RunBudget(max_model_requests=4, max_tool_calls=48)
+    trace = resume_layout_runtime.RunTrace(tmp_path)
     controller = e_stages.MeasureController(pod, budget, trace)
     request = e_shared.MeasurementRequest(
         request_id="measure-002",
@@ -839,7 +840,7 @@ def test_run_e2_never_stops_on_stall_but_returns_budget_exhausted_when_budget_en
     # Exhausted model budget BEFORE the loop: the run must end budget_exhausted
     # (never success/unsupported), preserve resumable state, and record the
     # blocked strategy — a stall is an escalation signal, not a terminal.
-    budget = d_pipeline.RunBudget(max_model_requests=0, max_tool_calls=48)
+    budget = resume_layout_runtime.RunBudget(max_model_requests=0, max_tool_calls=48)
     run_dir, terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run", budget=budget)
     assert terminal == "budget_exhausted"
     assert record["summary"]["best_render_version"] is None or record["summary"]
@@ -1089,7 +1090,7 @@ def test_run_e3_operational_abort_never_classifies_unsupported(tmp_path: Path) -
 
 @e3_skip
 def test_run_e3_tool_budget_exhaustion_is_resumable(tmp_path: Path) -> None:
-    budget = d_pipeline.RunBudget(max_model_requests=6, max_tool_calls=4)
+    budget = resume_layout_runtime.RunBudget(max_model_requests=6, max_tool_calls=4)
     _run_dir, terminal, record = e_stages.run_e3(
         TARGET_I, tmp_path / "run", budget=budget, max_repair_attempts=1,
     )
@@ -1123,9 +1124,9 @@ e4_skip = e3_skip  # the same authorized corpus + cached evidence + pinned Chrom
 def test_budget_counts_live_and_scripted_calls_separately() -> None:
     """Phase 0: 'model requests' must not merge scripted agent invocations
     with live provider calls; token usage belongs to live calls only."""
-    from tests.experiments.d_pipeline import BudgetExhausted
+    from tests.experiments.resume_layout.runtime import BudgetExhausted
 
-    budget = d_pipeline.RunBudget(max_model_requests=3, max_tool_calls=8)
+    budget = resume_layout_runtime.RunBudget(max_model_requests=3, max_tool_calls=8)
     budget.spend_model("visual_reviewer")  # scripted invocation (default mode)
     budget.spend_model("visual_reviewer", mode="scripted")
     class _Usage:
@@ -1340,7 +1341,7 @@ def test_run_e4_promotes_only_verified_improvement_and_records_ceilings(
 def test_run_e4_budget_exhaustion_is_resumable_and_never_unsupported(
     tmp_path: Path,
 ) -> None:
-    budget = d_pipeline.RunBudget(max_model_requests=0, max_tool_calls=48)
+    budget = resume_layout_runtime.RunBudget(max_model_requests=0, max_tool_calls=48)
     run_dir, terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run", budget=budget)
     assert terminal == "budget_exhausted"
     state = json.loads((run_dir / "e4_state.json").read_text())
