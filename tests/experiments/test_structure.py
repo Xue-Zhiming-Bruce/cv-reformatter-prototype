@@ -15,8 +15,7 @@ later question ("is this still used?", "what does this module depend on?")
 depends on them holding.
 
 Only structural facts are asserted, so the tests do not need to agree with any
-list of module names. If a failure message is not obvious, run
-tools/../check_structure.py — it prints the same findings as a report.
+list of module names.
 """
 from __future__ import annotations
 
@@ -87,11 +86,16 @@ def function_local_imports(tree: ast.Module) -> list[tuple[int, str]]:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for sub in ast.walk(node):
-            if not isinstance(sub, ast.ImportFrom):
-                continue
-            source = sub.module or ""
-            if source.startswith(PKG + ".") or source == PKG:
-                found.append((sub.lineno, source))
+            if isinstance(sub, ast.ImportFrom):
+                source = sub.module or ""
+                if source.startswith(PKG + ".") or source == PKG:
+                    found.append((sub.lineno, source))
+            elif isinstance(sub, ast.Import):
+                found.extend(
+                    (sub.lineno, alias.name)
+                    for alias in sub.names
+                    if alias.name.startswith(PKG + ".")
+                )
     return found
 
 
@@ -126,6 +130,18 @@ def test_no_function_local_sibling_imports() -> None:
                              "move it to module level")
     assert not offenders, ("function-local sibling imports hide the graph:\n  "
                            + "\n  ".join(sorted(offenders)))
+
+
+def test_function_local_import_detector_covers_both_import_forms() -> None:
+    tree = ast.parse(
+        "def f():\n"
+        "    from tests.experiments import pipeline\n"
+        "    import tests.experiments.resume_layout.runtime as runtime\n"
+    )
+    assert function_local_imports(tree) == [
+        (2, "tests.experiments"),
+        (3, "tests.experiments.resume_layout.runtime"),
+    ]
 
 
 def test_import_graph_is_acyclic() -> None:

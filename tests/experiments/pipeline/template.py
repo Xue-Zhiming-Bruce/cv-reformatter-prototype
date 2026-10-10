@@ -2,8 +2,8 @@
 
 Owner-authorized E5 milestone (PIPELINE_E_PLAN.md §10 second strategy;
 E5 work order). Not part of the active product architecture and not an
-approved roadmap item. This module is called ONLY by the existing Pipeline E
-runner (`tests.experiments.e.e5.run_e5`, reached from the `tests.experiments.e`
+approved roadmap item. This module is called ONLY by the existing Pipeline
+runner (`tests.experiments.pipeline.template_build.build_template`, reached from the `tests.experiments.pipeline`
 entry point); it is not a second runner and owns no
 workflow of its own.
 
@@ -24,18 +24,17 @@ Slot vocabulary (declared, typed, shell-filled — no template engine):
   `{{item_detail}}`, `{{item_meta}}`, `{{item_bullets}}`.
 - Missing optional content renders empty; no conditional syntax exists.
 
-Presentation labels (owner decision 2026-09-21):
+Presentation labels (owner direction 2026-10-03):
 
-- `{{label:<label_id>}}` renders ONE owner-approved presentation label (the
-  measured section heading). The id must be a member of the owner-approved
+- `{{label:<label_id>}}` renders ONE shell-qualified presentation label (the
+  measured section heading). The id must be a member of the renderable
   subset of the shell-owned catalog passed to validation/fill; a `proposed`
-  label (measured but not yet explicitly approved by the owner) is NOT
+  label (measured but not safely qualified) is NOT
   renderable and fails closed. The TEXT always comes from the catalog,
   is HTML-escaped by the shell, and is inserted in a SECOND pass after every
   candidate slot is resolved — so a label value can never be re-parsed as a
   candidate slot, markup, or template syntax.
-- The Builder can only REFERENCE ids: a fixed visible text node is rejected
-  outright, even when its words are generic resume vocabulary.
+- The Builder can only REFERENCE ids: every fixed visible text node is rejected.
 - HONEST LIMIT: the direct visible-text channel is closed, but the authored
   HTML/CSS representation still carries inherent steganographic risk
   (encoding, spacing, attribute choices) that no string gate enumerates.
@@ -47,8 +46,8 @@ Hard safety boundary enforced by `validate_authored_template`:
 - no remote or network-loaded URLs (http/https/protocol-relative), no
   `url(...)` CSS functions, no `@import`, no data: URLs, no src/href
   attributes at all (the template loads no external assets of any kind);
-- no target-person literals and no candidate facts hardcoded into the
-  HTML/CSS (candidate values enter ONLY through slot filling);
+- no fixed visible text, including target-person literals, and no candidate
+  facts hardcoded into the HTML/CSS (candidate values enter ONLY through slot filling);
 - NO comments in the reusable artifact (HTML `<!-- -->` and CSS `/* */`
   are rejected — a comment is free persistent text with no rendering
   value), and no CSS `content:` property (fixed visible text outside the
@@ -88,7 +87,7 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from tests.experiments.resume_layout.candidates import CandidateDocument
-from tests.experiments.e.shared import (
+from tests.experiments.pipeline.shared import (
     EvidenceModel,
     PresentationLabel,
 )
@@ -115,6 +114,7 @@ _TOKEN_RE = re.compile(r"\{\{([a-z_:]+)\}\}")
 # Builder may reference an id but can never submit the text it renders.
 _LABEL_MARKER_RE = re.compile(r"\{\{label:([a-z0-9_.\-]+)\}\}")
 _FORBIDDEN_PATTERNS = (
+    ("@page", "shell-owned page geometry override"),
     ("<script", "javascript element"),
     ("javascript:", "javascript URL"),
     ("<iframe", "embeddable frame"),
@@ -143,53 +143,12 @@ _ATTR_URL_RE = re.compile(r"\b(?:src|href)\s*=", re.IGNORECASE)
 _EVAL_RE = re.compile(r"\b(?:eval|fetch|xmlhttprequest)\b", re.IGNORECASE)
 
 # Evidence refs must be members of the SHELL-ISSUED evidence id vocabulary
-# (`EvidenceStore._next_id` -> `ev.<kind>.<seq>`). The string shape below is
+# (`ev.<kind>.<seq>`). The string shape below is
 # only the first filter; validate_authored_template also requires every ref
 # to be an id the shell actually recorded (`known_evidence_ids`).
 _EVIDENCE_ID_RE = re.compile(
     r"^ev\.(page_overview|region_crop|adobe_element|local_measurement|coverage_audit)\.[0-9]+$"
 )
-
-# Generic resume presentation vocabulary. DIAGNOSTIC ONLY (owner decision
-# 2026-09-21): it is used to decide which target words are 'person facts' for
-# the heuristic literal diagnostic below. It is NOT an authorization for the
-# Builder to write visible text — every fixed visible text node is now
-# rejected by `validate_authored_template`, whether or not its words are in
-# this list. Fixed visible text may only enter through `{{label:<id>}}` with a
-# shell-issued id.
-_TEMPLATE_GENERIC_VOCABULARY = {
-    "summary", "profile", "experience", "education", "skills", "languages",
-    "certifications", "certification", "projects", "achievements", "awards",
-    "scholarships", "interests", "additional", "details", "references",
-    "available", "upon", "request", "contact", "resume", "curriculum",
-    "vitae", "university", "college", "institute", "school", "degree",
-    "bachelor", "master", "science", "computer", "engineering", "business",
-    "january", "february", "march", "april", "may", "june", "july",
-    "august", "september", "october", "november", "december", "present",
-    "united", "states", "city", "province", "phone", "email", "envelope",
-    "github", "linkedin", "website", "portfolio", "location", "address",
-    "name", "candidate", "section", "entry", "item", "content", "main",
-    "header", "footer", "label", "rail", "column", "grid", "page", "body",
-    "html", "class", "div", "span", "style", "font", "text", "title",
-    "list", "item_head", "item_detail", "item_meta", "item_bullets",
-    "padding", "margin", "width", "height", "display", "flex",
-    "color", "size", "weight", "family", "sans", "serif",
-    "border", "background", "line", "left", "right", "top", "bottom",
-    "none", "solid", "important", "media", "print", "between", "justify",
-    "space", "center", "align", "items", "wrap", "direction", "auto", "table",
-    "cell", "bold", "italic", "letter", "spacing", "transform", "uppercase",
-    "stretch", "gap", "rows", "value", "values", "generic",
-    # Common generic resume section labels that may appear verbatim in a
-    # target document (presentation labels, never person facts):
-    "about", "conferences", "publications", "articles", "posters",
-    "courses", "coursework", "hobbies", "volunteer", "volunteering",
-    "internships", "objective", "strengths", "affiliations", "honors",
-    "activities", "workshops", "talks", "accomplishments", "expertise",
-    "proficiencies", "competencies", "technical", "personal",
-    "professional", "academic", "career", "employment", "work", "history",
-    "objective", "mission", "vision", "full", "name", "first", "last",
-}
-
 
 class AuthoredSlot(EvidenceModel):
     """One declared typed slot: what value category may be bound here. The
@@ -198,7 +157,8 @@ class AuthoredSlot(EvidenceModel):
     category, and any extra string would be an unused person-fact channel."""
 
     category: Literal[
-        "candidate_name", "candidate_contact", "summary", "experience",
+        "candidate_name", "candidate_given_name", "candidate_family_name",
+        "candidate_contact", "candidate_skills_heading", "summary", "experience",
         "education", "skills", "languages", "certifications", "additional",
     ]
     repeating: bool = False
@@ -256,14 +216,14 @@ def _occurrences(haystack: str, needle: str) -> int:
 
 
 def _label_index(labels: list[PresentationLabel] | None) -> dict[str, PresentationLabel]:
-    """Shell-approved label id -> entry. A `proposed` entry is NOT renderable
-    (only an explicit owner approval makes a label usable), and a duplicated
+    """Shell-qualified label id -> entry. A `proposed` entry is NOT renderable,
+    and a duplicated
     id is ambiguous (two texts for one marker). Both fail closed."""
     index: dict[str, PresentationLabel] = {}
     for label in labels or []:
-        if label.status != "approved":
+        if label.status not in {"approved", "evidence_qualified"}:
             raise ValueError(
-                f"presentation label {label.label_id!r} is not owner-approved "
+                f"presentation label {label.label_id!r} is not renderable "
                 "(proposed labels are not renderable)"
             )
         if label.label_id in index:
@@ -279,16 +239,6 @@ def presentation_label_markers(html: str) -> list[str]:
     spellings), in document order — the shell records which labels a lane
     actually referenced."""
     return _LABEL_MARKER_RE.findall(_normalize_slot_markers(html))
-
-
-def _target_person_words(target_pdf: Path) -> set[str]:
-    """Distinctive words of the TARGET document (>=4 letters) minus the
-    generic template vocabulary. These are presentation-diagnostic evidence
-    only; none of them may become fixed template text."""
-    from app.ingestion.pdf_reader import read_pdf_text
-
-    words = re.findall(r"[A-Za-z]{4,}", read_pdf_text(target_pdf))
-    return {word.casefold() for word in words} - _TEMPLATE_GENERIC_VOCABULARY
 
 
 def validate_authored_template(
@@ -332,10 +282,8 @@ def validate_authored_template(
             "unknown presentation label marker (the shell issues label ids): "
             + ", ".join(repr(marker) for marker in unknown_markers[:6])
         )
-    # Direct fixed-visible-text closure: strip the declared slot markers and
-    # the presentation-label markers, then the remaining VISIBLE text must be
-    # whitespace/punctuation only. A rejected word cannot be "authorized" by
-    # the generic vocabulary — only a shell-issued label id can carry text.
+    # Strip declared slot and presentation-label markers. Remaining visible
+    # text must be whitespace or punctuation; only shell-issued labels carry text.
     marker_free_html = _TOKEN_RE.sub(
         " ", _LABEL_MARKER_RE.sub(" ", normalized_html)
     )
@@ -372,13 +320,19 @@ def validate_authored_template(
         match.group(2) for match in _EACH_RE.finditer(normalized_html)
     )
     outside_html = _EACH_RE.sub("", normalized_html)
-    allowed_outside = {"candidate:name", "candidate:contact"}
+    allowed_outside = {"candidate:name", "candidate:given_name", "candidate:family_name", "candidate:contact", "candidate:skills_heading"}
     for token in sorted(set(_TOKEN_RE.findall(outside_html))):
         if token.replace("_", ":") not in allowed_outside and token not in allowed_outside:
             violations.append(f"undeclared slot token: {token!r}")
         elif token.replace("_", ":") == "candidate:name" and "candidate_name" not in declared_categories:
             violations.append(f"slot token {token!r} has no declared slot")
+        elif token == "candidate:given_name" and "candidate_given_name" not in declared_categories:
+            violations.append(f"slot token {token!r} has no declared slot")
+        elif token == "candidate:family_name" and "candidate_family_name" not in declared_categories:
+            violations.append(f"slot token {token!r} has no declared slot")
         elif token.replace("_", ":") == "candidate:contact" and "candidate_contact" not in declared_categories:
+            violations.append(f"slot token {token!r} has no declared slot")
+        elif token == "candidate:skills_heading" and "candidate_skills_heading" not in declared_categories:
             violations.append(f"slot token {token!r} has no declared slot")
     inside_tokens = set(_TOKEN_RE.findall(regions_html))
     for token in sorted(inside_tokens - set(ITEM_TOKENS)):
@@ -393,6 +347,16 @@ def validate_authored_template(
         elif name not in declared_categories:
             violations.append(f"each-region {name!r} has no declared slot")
     declared = {slot.category for slot in candidate.slots}
+    split_tokens = {"candidate:given_name", "candidate:family_name"}
+    used_split = split_tokens & set(_TOKEN_RE.findall(outside_html))
+    if used_split:
+        profile = render_candidate.profile if render_candidate is not None else None
+        if used_split != split_tokens or "candidate:name" in _TOKEN_RE.findall(outside_html):
+            violations.append("split name requires both typed parts instead of candidate:name")
+        if not profile or not profile.given_name or not profile.family_name or not profile.full_name or (
+            f"{profile.given_name} {profile.family_name}" != profile.full_name
+        ):
+            violations.append("split name requires explicit CandidateProfile parts matching the reviewed full name")
 
     # Evidence refs must cite SHELL-ISSUED evidence ids (membership, not
     # string shape). Without a known-id set, any ref fails closed.
@@ -412,29 +376,12 @@ def validate_authored_template(
                     + ", ".join(unknown_refs[:6])
                 )
 
-    # Target-person literal check: DIAGNOSTIC ONLY (the fixed-visible-text
-    # closure above already rejects every literal text node; this list only
-    # names which target words a rejected template used).
-    target_words = _target_person_words(target_pdf)
-    metadata_text = " ".join(candidate.evidence_refs)
-    static_words = {
-        word.casefold()
-        for word in re.findall(
-            r"[A-Za-z]{5,}", visible_text + " " + metadata_text
-        )
-        if word.casefold() not in _TEMPLATE_GENERIC_VOCABULARY
-    }
-    contaminated = sorted(static_words & target_words)
-    if contaminated:
-        violations.append(
-            "target-person literals in fixed template text: " + ", ".join(contaminated[:8])
-        )
-
     # Candidate facts may not be hardcoded: no candidate leaf text may appear
     # in the pre-fill template (the same check covers the restricted metadata
     # fields — a typed ID cannot smuggle candidate values, but the gate stays
     # as a second layer).
     if render_candidate is not None:
+        metadata_text = " ".join(candidate.evidence_refs)
         payload_norm = _norm_text(
             candidate.html + " " + candidate.css + " " + metadata_text
         )
@@ -457,7 +404,7 @@ def validate_authored_template(
         "presentation_labels": sorted(label_index),
         "checks": [
             "no_javascript", "no_event_handlers", "no_remote_urls", "no_css_imports",
-            "no_data_urls", "no_unsafe_elements", "no_target_person_literals",
+            "no_data_urls", "no_unsafe_elements",
             "no_candidate_facts", "declared_slots_only",
             "no_fixed_visible_text", "known_presentation_labels_only",
         ],
@@ -492,9 +439,15 @@ def render_context_values(candidate: CandidateDocument) -> dict[str, Any]:
     header = {leaf.slot: leaf.text for leaf in candidate.leaves if leaf.kind == "header_field"}
     values: dict[str, Any] = {
         "candidate_name": _esc(header.get("name", "")),
+        "candidate_given_name": _esc(candidate.profile.given_name if candidate.profile else None),
+        "candidate_family_name": _esc(candidate.profile.family_name if candidate.profile else None),
         "candidate_contact": " · ".join(
             _esc(text) for slot, text in sorted(header.items()) if slot != "name" and text
         ),
+        "candidate_skills_heading": _esc(next(
+            (section.heading for section in candidate.sections if section.source == "skills" and section.heading),
+            "",
+        )),
     }
 
     def _entry_items(parent_kind: str) -> list[dict[str, Any]]:
@@ -503,17 +456,30 @@ def render_context_values(candidate: CandidateDocument) -> dict[str, Any]:
             if leaf.kind != parent_kind:
                 continue
             kids = children.get(leaf.leaf_id, [])
+            paired_meta = {kid.paired_leaf_id: kid for kid in kids if kid.paired_leaf_id}
+            detail_lines = []
+            for kid in kids:
+                if kid.kind != "entry_detail":
+                    continue
+                meta = paired_meta.get(kid.leaf_id)
+                detail_lines.append(
+                    '<div class="candidate-detail-row"><span>' + _esc(kid.text)
+                    + '</span><span>' + _esc(meta.text) + '</span></div>'
+                    if meta else (
+                        '<div class="candidate-detail-row"><span>' + _esc(kid.text)
+                        + '</span></div>' if paired_meta else _esc(kid.text)
+                    )
+                )
             items.append(
                 {
                     # Scalar candidate texts are escaped; `<br>`/`<li>` markup
                     # below is generated by this shell, never by the text.
                     "item": _esc(leaf.text),
                     "item_head": _esc(leaf.text),
-                    "item_detail": "<br>".join(
-                        _esc(kid.text) for kid in kids if kid.kind == "entry_detail"
-                    ),
+                    "item_detail": ("" if paired_meta else "<br>").join(detail_lines),
                     "item_meta": "<br>".join(
-                        _esc(kid.text) for kid in kids if kid.kind == "entry_meta"
+                        _esc(kid.text) for kid in kids
+                        if kid.kind == "entry_meta" and not kid.paired_leaf_id
                     ),
                     "item_bullets": "".join(
                         f"<li>{_esc(kid.text)}</li>" for kid in kids if kid.kind == "work_bullet"
@@ -644,8 +610,10 @@ def fill_authored_template(
         token = match.group(1).replace(":", "_")
         if token == "candidate_name":
             return str(values.get("candidate_name", ""))
-        if token == "candidate_contact":
-            return str(values.get("candidate_contact", ""))
+        if token in {"candidate_given_name", "candidate_family_name"}:
+            return str(values.get(token, ""))
+        if token in {"candidate_contact", "candidate_skills_heading"}:
+            return str(values.get(token, ""))
         return match.group(0)
 
     html = _TOKEN_RE.sub(_substitute_simple, html)
@@ -725,6 +693,7 @@ def build_authored_document(
         + page_css
         + "\n"
         + template.css
+        + "\n.candidate-detail-row { display: grid; grid-template-columns: minmax(0, 1fr) max-content; column-gap: 10pt; break-inside: avoid; }\n"
         + "\n</style>\n</head>\n<body>\n"
         + fill.html_filled
         + "\n</body>\n</html>"
@@ -802,10 +771,24 @@ def authored_pdf_presence_gate(
     from app.ingestion.pdf_reader import read_pdf_text
 
     normalized_pdf = _norm_text(read_pdf_text(pdf)).replace("- ", "").replace("-", "")
+    paired_meta = {leaf.paired_leaf_id: leaf for leaf in candidate.leaves if leaf.paired_leaf_id}
     missing = []
     for leaf in candidate.leaves:
         text = _norm_text(leaf.text or "").replace("-", "")
-        if text and _occurrences(normalized_pdf, text) < 1:
+        split_name_present = False
+        profile = candidate.profile
+        if leaf.kind == "header_field" and leaf.slot == "name" and profile and profile.given_name and profile.family_name and leaf.text == profile.full_name:
+            given = r"\s*".join(map(re.escape, profile.given_name.casefold()))
+            family = r"\s*".join(map(re.escape, profile.family_name.casefold()))
+            split_name_present = bool(re.search(rf"(?<!\w){given}\s+{family}(?!\w)", normalized_pdf))
+        paired_date = paired_meta.get(leaf.leaf_id)
+        # PDF text extraction can interleave a right-column date inside a
+        # wrapped left-column degree. The date is still checked as its own leaf.
+        without_paired_date = (
+            _norm_text(normalized_pdf.replace(_norm_text(paired_date.text or "").replace("-", ""), ""))
+            if paired_date else normalized_pdf
+        )
+        if text and _occurrences(normalized_pdf, text) < 1 and _occurrences(without_paired_date, text) < 1 and not split_name_present:
             missing.append(leaf.leaf_id)
     return {"passed": not missing, "missing_pdf_leaves": missing}
 

@@ -1,27 +1,7 @@
-"""Pipeline E — shared contracts, evidence layer, and runtime plumbing.
+"""Shared evidence contracts, read-only pods, and bounded model-call plumbing.
 
-Behaviour-neutral module split of `tests/experiments/e/__main__.py`
-(2026-09-22). This module is the LEAF of the Pipeline E import graph: it
-imports no other Pipeline E module. It holds only what two or more of the
-remaining modules need:
-
-- the versioned typed contracts (`EvidenceModel` family, the E2
-  measurement/finding/attribution/render-version records shared by E3-E5);
-- the Lane B `PresentationLabel` contract (imported by
-  `e/lane_b_template.py` directly — never through the compat facade);
-- the read-only `EvidencePod` / `DualSourcePod` evidence layer, the bounded
-  local-measurement helpers, and the E0 frozen-input set;
-- the shared live-model plumbing (`_call_limits`, `_live_model_settings`,
-  `_live_visual_model`, `_model_identity`) and the read-only evidence tools
-  (`_pod_tools`);
-- the agent-call message audit (`E5AgentAuditSpec` + JSONL writer) used by the
-  E2 live reviewer and the E5 live builders;
-- the single live-hypothesis -> `AttributionRecord` conversion shared by the
-  E4 single-finding path and the E5 batched path.
-
-Nothing here decides product behaviour; every constant, prompt text, schema
-and algorithm was moved verbatim. Terminal states, budgets, gates, privacy
-rules and artifact layouts are unchanged.
+This is the leaf of the Pipeline import graph. Historical E1–E5 schema names
+remain in persisted artifacts; current callers are organized by responsibility.
 """
 
 from __future__ import annotations
@@ -1094,7 +1074,7 @@ class MeasurementRequest(EvidenceModel):
     records `evidence_missing` for re-verification."""
 
     request_id: str
-    metric: Literal["role_gap", "header_vertical_rule_geometry"]
+    metric: Literal["role_gap", "header_vertical_rule_geometry", "page_overflow", "pdf_font_size", "pdf_font_role", "heading_continuation"]
     page: int = Field(ge=1)
     from_text: str = ""
     to_text: str = ""
@@ -1425,14 +1405,7 @@ def _model_identity() -> dict[str, Any]:
         and os.environ.get("VISUAL_API_KEY")
         and os.environ.get("A_PIPELINE_VISUAL_MODEL")
     )
-    text_model = (
-        os.environ.get("D_PIPELINE_MODEL")
-        or os.environ.get("C_PIPELINE_MODEL")
-        or os.environ.get("B_PIPELINE_MODEL")
-        or os.environ.get("A_PIPELINE_MODEL")
-        or "deepseek-flash"  # DeepSeek-V4.1-Flash (canonical id; the retired
-        # vision-exp alias is no longer used for E roles, owner direction 2026-09-20)
-    )
+    text_model = os.environ.get("PIPELINE_MODEL") or "deepseek-flash"
     return {
         "runtime": "pydantic_ai Agent(OpenAIChatModel) — existing D/E runtime path",
         "vision_model": (
@@ -1574,13 +1547,14 @@ PRESENTATION_LABEL_KINDS = ("section_heading",)
 class PresentationLabel(EvidenceModel):
     """One shell-PROPOSED presentation label (owner decision 2026-09-21):
     fixed visible template text taken from target structure evidence. The
-    Builder can only REFERENCE an ``approved`` ``label_id`` — it can never
-    submit label text, and a `proposed` entry is not renderable at all."""
+    Builder can only REFERENCE an ``approved`` or ``evidence_qualified``
+    ``label_id`` — it can never submit label text, and a `proposed` entry is
+    not renderable at all."""
 
     label_id: str
     text: str
     kind: Literal["section_heading"]
-    status: Literal["proposed", "approved"] = "proposed"
+    status: Literal["proposed", "approved", "evidence_qualified"] = "proposed"
     evidence_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -1597,7 +1571,7 @@ class PresentationLabel(EvidenceModel):
 
 
 # The ONLY legal builder-owned attribution (observed in the deterministic
-# _e5_default_attribution / run_e4 / run_e5 conversions): the Builder may only
+# _e5_default_attribution / review and template build conversions): the Builder may only
 # change the compilation/plan layer, so builder ownership requires a CONFIRMED
 # template_compilation attribution. Any other triple claiming the Builder would
 # hand a binding/renderer/evidence-owned defect to the Builder.

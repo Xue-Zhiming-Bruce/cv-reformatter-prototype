@@ -6,6 +6,7 @@ from app.extraction.candidate_schema import CandidateProfile
 SYSTEM_PROMPT = """You extract recruiter candidate profiles from resumes.
 Return only valid JSON that matches the provided schema.
 Do not invent facts. If a fact is not clearly present, use null or an empty list.
+Set given_name and family_name to null unless the source explicitly identifies each part; never split full_name yourself.
 Missing recruiter follow-up fields should remain null; downstream validation will flag them.
 """
 

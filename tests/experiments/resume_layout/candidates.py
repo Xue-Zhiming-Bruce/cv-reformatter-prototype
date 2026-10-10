@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import Field, model_validator
+from app.extraction.candidate_schema import CandidateProfile
 
 from tests.experiments.resume_layout.state import (
     SourceRole,
@@ -59,6 +60,7 @@ class CandidateLeaf(StateModel):
     source: SourceRole | None = None  # None for header fields only
     slot: str | None = None  # header fields only
     parent_leaf_id: str | None = None
+    paired_leaf_id: str | None = None  # explicit source-backed detail/date association
     text: str | None = None
 
     @model_validator(mode="after")
@@ -68,6 +70,8 @@ class CandidateLeaf(StateModel):
                 raise ValueError(f"{self.leaf_id}: header fields carry a slot, no source")
         elif self.source is None:
             raise ValueError(f"{self.leaf_id}: non-header leaves declare their source")
+        if self.paired_leaf_id is not None and self.kind != "entry_meta":
+            raise ValueError(f"{self.leaf_id}: only entry metadata may pair with a detail")
         return self
 
 
@@ -131,18 +135,31 @@ class CandidateDocument(StateModel):
     """
 
     candidate_id: str = Field(pattern=r"^[a-z0-9_-]+$")
+    profile: CandidateProfile | None = None
     leaves: list[CandidateLeaf] = Field(min_length=1)
     sections: list[CandidateSection] = Field(default_factory=list)
     unroutable: list[UnroutableContent] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def parents_exist(self) -> "CandidateDocument":
-        ids = {leaf.leaf_id for leaf in self.leaves}
+        by_id = {leaf.leaf_id: leaf for leaf in self.leaves}
+        ids = set(by_id)
         if len(ids) != len(self.leaves):
             raise ValueError("candidate leaf ids must be unique")
+        if self.profile is not None:
+            names = [leaf.text for leaf in self.leaves if leaf.kind == "header_field" and leaf.slot == "name"]
+            if names != [self.profile.full_name]:
+                raise ValueError("CandidateProfile.full_name must match the reviewed name leaf")
         for leaf in self.leaves:
             if leaf.parent_leaf_id is not None and leaf.parent_leaf_id not in ids:
                 raise ValueError(f"{leaf.leaf_id}: unknown parent leaf")
+            if leaf.paired_leaf_id is not None:
+                paired = by_id.get(leaf.paired_leaf_id)
+                if paired is None or paired.kind != "entry_detail" or paired.parent_leaf_id != leaf.parent_leaf_id:
+                    raise ValueError(f"{leaf.leaf_id}: paired detail must belong to the same entry")
+        pairs = [leaf.paired_leaf_id for leaf in self.leaves if leaf.paired_leaf_id]
+        if len(pairs) != len(set(pairs)):
+            raise ValueError("each entry detail may have only one paired metadata leaf")
         for section in self.sections:
             unknown = set(section.leaf_ids) - ids
             if unknown:
@@ -521,13 +538,16 @@ def candidate_resume_E() -> CandidateDocument:
         _leaf("education.e1.d2", "entry_detail", "education", parent="education.e1",
               text="B.S. Computer Engineering (Minor in Economics) (GPA: 3.77/4.00)"),
         _leaf("education.e1.m1", "entry_meta", "education", parent="education.e1", text="Bethlehem, PA"),
-        _leaf("education.e1.m2", "entry_meta", "education", parent="education.e1",
-              text="August 2013 – May 2014"),
-        _leaf("education.e1.m3", "entry_meta", "education", parent="education.e1",
-              text="August 2009 – May 2013"),
+        CandidateLeaf(leaf_id="education.e1.m2", kind="entry_meta", source="education",
+                      parent_leaf_id="education.e1", paired_leaf_id="education.e1.d1",
+                      text="August 2013 – May 2014"),
+        CandidateLeaf(leaf_id="education.e1.m3", kind="entry_meta", source="education",
+                      parent_leaf_id="education.e1", paired_leaf_id="education.e1.d2",
+                      text="August 2009 – May 2013"),
     ]
     return CandidateDocument(
         candidate_id="resume-e",
+        profile=CandidateProfile(full_name="Daniel Phang", given_name="Daniel", family_name="Phang"),
         leaves=leaves,
         unroutable=[
             _unroutable(
@@ -683,5 +703,3 @@ def candidate_document_for_pair(pair: str) -> CandidateDocument:
     if candidate_letter == "F":
         return candidate_resume_F()
     return candidate_resume_E()
-
-

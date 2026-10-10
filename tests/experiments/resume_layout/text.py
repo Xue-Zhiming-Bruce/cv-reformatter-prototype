@@ -4,8 +4,7 @@
 is a leaf operation, and importing it from the gate module closed an import
 cycle:
 
-    docx_lane.build -> c2_renderer -> resume_layout.html
-                    -> resume_layout.plan -> docx_lane.build
+    resume_layout.plan -> resume_layout.text
 
 This module imports nothing from ``tests.experiments`` and must stay that way so
 that anything may depend on it.

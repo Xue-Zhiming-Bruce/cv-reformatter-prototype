@@ -1,15 +1,4 @@
-"""Bounded agent-run runtime shared by the pipeline experiments.
-
-Split out of ``d_pipeline`` (2026-09-27): the budget/trace/usage shell, the live
-model plumbing, the owner decision gate, and the ``EvidenceStore`` that Pipeline
-E's evidence layer is built on. The store is typed to the typed-edit records
-(``HeadingRuleFact`` / ``SetHeadingRuleEdit`` / ``TargetRuleDesign``) introduced
-by Pipeline D; those records travel with it because they are its payload.
-
-What stayed in ``d_pipeline`` is D's own workflow: the orchestrator and
-specialist agents, the heading-rule fitting, the synthetic fixture, the reports.
-That module imports this one, never the other way round.
-"""
+"""Bounded model budget, trace, and run-manifest plumbing for Pipeline."""
 
 from __future__ import annotations
 
@@ -19,79 +8,14 @@ import os
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from lxml import html as lxml_html
 from pathlib import Path
-from pydantic import BaseModel, Field
-from typing import Any, Literal
-
-
-MAX_MODEL_REQUESTS = 5  # work order: ≤5 total live model requests per run
-
-
-MAX_TOOL_CALLS = 24  # global tool-call budget for the whole run
-
-
-MAX_RAW_EVIDENCE_EXPANSIONS_PER_ATTEMPT = 1
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[3]
-
-
-class HeadingRuleFact(BaseModel):
-    """Measured rule relation for one rendered/target section heading."""
-
-    node_id: str
-    heading_verbatim: str
-    page: int
-    placement: Literal["below", "above", "none"]
-    gap_heading_to_rule_pt: float | None = None  # below: rule.top - heading.bottom
-    gap_rule_above_pt: float | None = None  # above: heading.top - rule.bottom
-    gap_rule_to_content_pt: float | None = None
-    gap_prev_content_to_heading_pt: float | None = None  # informational
-    rule_x0_pt: float | None = None
-    rule_x1_pt: float | None = None
-    evidence_ids: list[str] = Field(default_factory=list)
-
-
-class TargetRuleDesign(BaseModel):
-    """Content-independent local gap targets measured from the target PDF."""
-
-    placement: Literal["below", "above", "none"]
-    gap_heading_to_rule_pt: float
-    gap_rule_to_content_pt: float
-    rule_x0_pt: float | None = None
-    rule_x1_pt: float | None = None
-    per_heading: list[HeadingRuleFact] = Field(default_factory=list)
-    evidence_ids: list[str] = Field(default_factory=list)
-
-
-class SetHeadingRuleChanges(BaseModel):
-    placement: Literal["below", "above"]
-    gap_heading_pt: float = Field(ge=0.0, le=40.0)
-    gap_content_pt: float = Field(ge=0.0, le=40.0)
-
-
-class SetHeadingRuleEdit(BaseModel):
-    """The single supported EditAction type for D0 (proposal §11 item 5)."""
-
-    type: Literal["SetHeadingRule"]
-    target_node_id: str
-    scope: Literal["node", "template_role"]
-    base_layout_version_id: str
-    changes: SetHeadingRuleChanges
-    evidence_ids: list[str] = Field(default_factory=list)
-    rationale: str = ""
-
-
-class DefectDiagnosis(BaseModel):
-    defect_class: Literal[
-        "section_heading_rule_placement_mismatch",
-        "unclassified",
-    ]
-    node_ids: list[str]
-    claim: str
-    measurable: bool
-    evidence_ids: list[str] = Field(default_factory=list)
+MAX_MODEL_REQUESTS = 5
+MAX_TOOL_CALLS = 24
+MAX_RAW_EVIDENCE_EXPANSIONS_PER_ATTEMPT = 1
 
 
 class BudgetExhausted(RuntimeError):
@@ -104,8 +28,6 @@ class CheckpointBudgetExceeded(BudgetExhausted):
 
 @dataclass
 class RunBudget:
-    """One global budget for the whole run: main agent, specialists, retries."""
-
     max_model_requests: int = MAX_MODEL_REQUESTS
     max_tool_calls: int = MAX_TOOL_CALLS
     model_requests: int = 0
@@ -114,11 +36,9 @@ class RunBudget:
     repair_attempt_count: int = 0
     calls_by_agent: dict[str, int] = field(default_factory=Counter)
     calls_by_tool: dict[str, int] = field(default_factory=Counter)
-    # Pipeline E4 evidence bookkeeping (Phase 0): scripted agent invocations and
-    # LIVE provider model calls are counted separately. spend_model defaults to
-    # "scripted" (offline rehearsals); the PydanticAI live paths report
-    # mode="live" through _record_usage.
-    calls_by_mode: dict[str, int] = field(default_factory=lambda: Counter({"live": 0, "scripted": 0}))
+    calls_by_mode: dict[str, int] = field(
+        default_factory=lambda: Counter({"live": 0, "scripted": 0})
+    )
     usage: dict[str, int] = field(
         default_factory=lambda: {
             "input_tokens": 0,
@@ -134,8 +54,6 @@ class RunBudget:
     def spend_model(
         self, agent: str, requests: int = 1, usage: Any = None, mode: str = "scripted"
     ) -> None:
-        """Hard pre-execution cap: reject BEFORE incrementing when the action
-        would exceed the limit, so persisted executed counts never do."""
         if self.model_requests + requests > self.max_model_requests:
             raise BudgetExhausted(
                 f"global model budget exhausted: {self.model_requests}+{requests} "
@@ -151,7 +69,6 @@ class RunBudget:
             self.usage["tool_calls"] += int(getattr(usage, "tool_calls", 0) or 0)
 
     def spend_tool(self, tool: str) -> None:
-        """Hard pre-execution cap, as spend_model."""
         if self.tool_calls + 1 > self.max_tool_calls:
             raise BudgetExhausted(
                 f"global tool budget exhausted: {self.tool_calls}+1 would exceed {self.max_tool_calls}"
@@ -160,7 +77,6 @@ class RunBudget:
         self.calls_by_tool[tool] += 1
 
     def spend_raw_evidence_expansion(self) -> None:
-        """Hard pre-execution cap on raw-evidence expansions (≤1 per attempt)."""
         allowed = MAX_RAW_EVIDENCE_EXPANSIONS_PER_ATTEMPT * max(1, self.repair_attempt_count)
         if self.raw_evidence_expansion_count + 1 > allowed:
             raise BudgetExhausted("raw-evidence expansion budget exceeded")
@@ -182,8 +98,6 @@ class RunBudget:
 
 
 class RunTrace:
-    """Compact structured decision/tool trace, persisted as trace.json."""
-
     def __init__(self, out_dir: Path) -> None:
         self.out_dir = out_dir
         self.entries: list[dict[str, Any]] = []
@@ -229,30 +143,6 @@ class RunTrace:
         )
 
 
-def discover_section_nodes(candidate_html: str) -> list[dict[str, str]]:
-    """Stable logical node inventory (proposal §16.5): section.<name>.heading."""
-    tree = lxml_html.document_fromstring(candidate_html)
-    nodes: list[dict[str, str]] = []
-    for section in tree.xpath("//div[@class='section']"):
-        headings = section.xpath("./h2[contains(@class,'section-heading')]")
-        if not headings:
-            continue
-        heading = headings[0]
-        text = " ".join(str(heading.text_content()).split())
-        nodes.append(
-            {
-                "node_id": f"section.{section.get('data-section')}.heading",
-                "heading_verbatim": text,
-                "data_source_line": heading.get("data-source-line") or "",
-            }
-        )
-    return nodes
-
-
-def _facts_brief(facts: list[HeadingRuleFact]) -> str:
-    return json.dumps([f.model_dump(mode="json") for f in facts], ensure_ascii=False, indent=1)
-
-
 def _limits(budget: RunBudget) -> Any:
     from pydantic_ai.usage import UsageLimits
 
@@ -266,7 +156,7 @@ def _record_usage(
     budget: RunBudget, trace: RunTrace, agent: str, phase: str, result: Any
 ) -> None:
     usage = result.usage
-    if callable(usage):  # pydantic-ai version differences: property vs method
+    if callable(usage):
         usage = usage()
     budget.spend_model(agent, requests=int(usage.requests or 1), usage=usage, mode="live")
     trace.add(
@@ -282,70 +172,40 @@ def _record_usage(
 
 
 def _live_model() -> Any:
-    """DeepSeek-compatible model via PydanticAI's OpenAI provider."""
     from dotenv import load_dotenv
     from openai import AsyncOpenAI
     from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openai import OpenAIProvider
 
-    load_dotenv(ROOT / ".env")  # experiment-only credential loading
+    load_dotenv(ROOT / ".env")
     api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("Missing live configuration: DEEPSEEK_API_KEY or OPENAI_API_KEY")
-    base_url = os.environ.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
-    model_name = (
-        os.environ.get("D_PIPELINE_MODEL")
-        or os.environ.get("C_PIPELINE_MODEL")
-        or os.environ.get("B_PIPELINE_MODEL")
-        or os.environ.get("A_PIPELINE_MODEL")
-        or "deepseek-flash"
-    )
     provider = OpenAIProvider(
-        openai_client=AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=300)
+        openai_client=AsyncOpenAI(
+            api_key=api_key,
+            base_url=os.environ.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com",
+            timeout=300,
+        )
     )
-    return OpenAIChatModel(model_name, provider=provider)
+    return OpenAIChatModel(
+        os.environ.get("PIPELINE_MODEL") or "deepseek-flash",
+        provider=provider,
+    )
 
 
 def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-class EvidenceStore:
-    """References and authority for the run — never uncontrolled file access.
-
-    `base_html` may be injected for runs that have no C1 base render (Pipeline E1
-    target understanding has no `filled.html`); the default path keeps reading
-    the D0/D1 base run unchanged.
-    """
-
-    def __init__(self, base_run_dir: Path, out_dir: Path, *, base_html: str | None = None) -> None:
-        self.base_run_dir = base_run_dir
+class RunStore:
+    def __init__(self, out_dir: Path) -> None:
         self.out_dir = out_dir
-        if base_html is None:
-            base_html = (base_run_dir / "filled.html").read_text(encoding="utf-8")
-            base_html_sha256 = _sha256_file(base_run_dir / "filled.html")
-        else:
-            base_html_sha256 = hashlib.sha256(base_html.encode("utf-8")).hexdigest()
-        self.base_html = base_html
-        self.nodes = discover_section_nodes(self.base_html)
-        self.target_design: TargetRuleDesign | None = None
-        self.base_facts: list[HeadingRuleFact] = []
-        self.active_facts: list[HeadingRuleFact] = []
-        self.reviewing_version_id = "layout_v1"
-        self.current_phase = "evidence"
-        self.diagnosis: DefectDiagnosis | None = None
-        self.proposals: list[SetHeadingRuleEdit] = []
-        self.next_finding_seq = 1  # shell-assigned run-scoped finding ids
         self.manifest: dict[str, Any] = {
-            "experiment": "d_pipeline_d0",
-            "pipeline_phase": "d1_0",
-            "base_run_dir": str(base_run_dir),
-            "base_html_sha256": base_html_sha256,
             "versions": [],
             "active_layout_version_id": "layout_v1",
             "pending_candidate_id": None,
             "state_history": [],
-            "attempts": 0,
         }
 
     def register_version(self, version_id: str, path: Path, note: str) -> None:
@@ -357,108 +217,3 @@ class EvidenceStore:
         self.manifest["state_history"].append(
             {"state": state, "ts": datetime.now(UTC).isoformat(timespec="seconds"), "note": note}
         )
-
-    def node_by_id(self, node_id: str) -> dict[str, str] | None:
-        return next((n for n in self.nodes if n["node_id"] == node_id), None)
-
-    def facts_for(self, node_id: str) -> HeadingRuleFact | None:
-        return next((f for f in self.active_facts if f.node_id == node_id), None)
-
-    def set_active_view(self, version_id: str, facts: list[HeadingRuleFact]) -> None:
-        """Point the agent-facing evidence tools at the version under review.
-        Rejection/rollback calls this again with layout_v1's measured facts."""
-        self.reviewing_version_id = version_id
-        self.active_facts = facts
-
-    def compare(self, node_id: str) -> dict[str, Any]:
-        fact = self.facts_for(node_id)
-        design = self.target_design
-        return {
-            "node_id": node_id,
-            "reviewing_version": self.reviewing_version_id,
-            "target_design": design.model_dump(mode="json") if design else None,
-            "active_render_fact": fact.model_dump(mode="json") if fact else None,
-            "delta": (
-                {"placement": f"target={design.placement} render={fact.placement}"}
-                if design and fact
-                else None
-            ),
-        }
-
-    def diagnosis_prompt(self) -> str:
-        return (
-            "Classify the defect from these measured facts.\n"
-            f"Target design:\n{self.target_design.model_dump_json(indent=1)}\n"
-            f"Active render facts:\n{_facts_brief(self.active_facts)}\n"
-            f"Node inventory: {json.dumps(self.nodes, ensure_ascii=False)}"
-        )
-
-    def repair_prompt(self) -> str:
-        return (
-            "Propose ONE SetHeadingRule edit fixing the diagnosed defect.\n"
-            f"Diagnosis: {self.diagnosis.model_dump_json() if self.diagnosis else None}\n"
-            f"Target design:\n{self.target_design.model_dump_json(indent=1)}\n"
-            f"Active version id: {self.manifest['active_layout_version_id']}\n"
-            f"Node inventory: {json.dumps(self.nodes, ensure_ascii=False)}\n"
-            "Use scope='template_role' when the defect affects the section-heading "
-            "role generally, or scope='node' for exactly one node."
-        )
-
-    def review_prompt_nodes(self) -> str:
-        return json.dumps(self.nodes, ensure_ascii=False)
-
-
-def owner_decide(run_dir: Path, decision: Literal["accept", "reject"], note: str = "") -> str:
-    """Explicit deterministic owner decision — the ONLY path that promotes.
-
-    accept: promotes the pending candidate version; reject: leaves layout_v1
-    active. Refuses to act on runs not in `awaiting_owner_review`.
-    """
-    manifest_path = run_dir / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("terminal_state") != "awaiting_owner_review":
-        raise RuntimeError(
-            f"run {run_dir.name} is not awaiting owner review "
-            f"(terminal_state={manifest.get('terminal_state')!r})"
-        )
-    pending = manifest.get("pending_candidate_id")
-    if not pending:
-        raise RuntimeError("no pending candidate recorded")
-    if decision == "accept":
-        manifest["active_layout_version_id"] = pending
-    # reject: active layout version stays layout_v1
-    manifest["pending_candidate_id"] = None
-    manifest["terminal_state"] = "accepted" if decision == "accept" else "rejected"
-    manifest["owner_decision"] = {
-        "decision": decision,
-        "note": note,
-        "source": "cli:deterministic_owner_decision",
-        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
-    }
-    manifest["state_history"].append(
-        {
-            "state": manifest["terminal_state"],
-            "ts": manifest["owner_decision"]["ts"],
-            "note": f"owner decision ({decision}); source=cli",
-        }
-    )
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    trace_path = run_dir / "trace.json"
-    if trace_path.exists():
-        trace_entries = json.loads(trace_path.read_text(encoding="utf-8"))
-        trace_entries.append(
-            {
-                "sequence": len(trace_entries) + 1,
-                "agent": "owner",
-                "phase": "final",
-                "action": "decision",
-                "input": {"decision": decision, "note": note},
-                "output_artifact": "OWNER_DECISION.json",
-                "timestamp": manifest["owner_decision"]["ts"],
-            }
-        )
-        trace_path.write_text(json.dumps(trace_entries, ensure_ascii=False, indent=1), encoding="utf-8")
-    (run_dir / "OWNER_DECISION.json").write_text(
-        json.dumps(manifest["owner_decision"], ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return manifest["terminal_state"]

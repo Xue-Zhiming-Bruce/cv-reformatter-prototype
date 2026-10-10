@@ -1,8 +1,8 @@
-"""Tests for the Pipeline E0/E1 evidence-grounded target-understanding experiment.
+"""Tests for the Pipeline stages 1 and 2 evidence-grounded target-understanding experiment.
 
 Also owns the E2/E3/E4 tests and the shared fixtures (`ROOT`, `RESUME_I`,
-`TARGET_F`, `TARGET_F_CACHE`, `e2_skip`) that `test_e5.py` imports.
-E5 tests live in `tests/experiments/test_e5.py` (behaviour-neutral
+`TARGET_F`, `TARGET_F_CACHE`, `e2_skip`) that `test_pipeline_comparison.py` imports.
+E5 tests live in `tests/experiments/test_pipeline_comparison.py` (behaviour-neutral
 file split, 2026-09-22).
 
 Lanes:
@@ -13,7 +13,7 @@ Lanes:
   network, no provider, no model call).
 - No Chrome and no live provider call are required by any test in this file.
 
-Run: pytest tests/experiments/test_e_stages.py
+Run: pytest tests/experiments/test_pipeline.py
 """
 
 from __future__ import annotations
@@ -26,9 +26,12 @@ from pathlib import Path
 import pytest
 
 from tests.experiments.resume_layout.runtime import RunBudget
-import tests.experiments.e.shared as e_shared
-import tests.experiments.e.stages as e_stages
-import tests.experiments.d_pipeline as d_pipeline
+import tests.experiments.pipeline.shared as e_shared
+import tests.experiments.pipeline.measurement_loop as e_measurement
+import tests.experiments.pipeline.layout_walkthrough as e_walkthrough
+import tests.experiments.pipeline.review_loop as e_review_loop
+import tests.experiments.pipeline.evidence as e_evidence
+import tests.experiments.pipeline.__main__ as e_cli
 import tests.experiments.resume_layout.runtime as resume_layout_runtime
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -284,7 +287,7 @@ def test_target_facts_are_marked_diagnostic_only_not_candidate_data() -> None:
 
 
 def test_run_e1_emits_evidence_linked_draft_without_live_calls(tmp_path: Path) -> None:
-    run_dir, terminal, draft = e_stages.run_e1(
+    run_dir, terminal, draft = e_evidence.build_structure_draft(
         RESUME_I,
         RESUME_I_RAW,
         tmp_path / "run",
@@ -323,7 +326,7 @@ def test_run_e1_emits_evidence_linked_draft_without_live_calls(tmp_path: Path) -
 
 
 def test_run_e1_artifact_has_no_lossy_normalization_substitute(tmp_path: Path) -> None:
-    run_dir, _terminal, _draft = e_stages.run_e1(
+    run_dir, _terminal, _draft = e_evidence.build_structure_draft(
         RESUME_I,
         RESUME_I_RAW,
         tmp_path / "run",
@@ -348,7 +351,7 @@ def test_run_e1_artifact_has_no_lossy_normalization_substitute(tmp_path: Path) -
 
 
 def test_run_e1_records_unavailable_sources_as_records_not_failures(tmp_path: Path) -> None:
-    run_dir, _terminal, _draft = e_stages.run_e1(
+    run_dir, _terminal, _draft = e_evidence.build_structure_draft(
         RESUME_I,
         RESUME_I_RAW,
         tmp_path / "run",
@@ -362,7 +365,7 @@ def test_run_e1_records_unavailable_sources_as_records_not_failures(tmp_path: Pa
 
 
 def test_run_e1_is_understanding_only_and_never_promotes(tmp_path: Path) -> None:
-    run_dir, _terminal, _draft = e_stages.run_e1(RESUME_I, RESUME_I_RAW, tmp_path / "run")
+    run_dir, _terminal, _draft = e_evidence.build_structure_draft(RESUME_I, RESUME_I_RAW, tmp_path / "run")
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["active_layout_version_id"] == "layout_v1"
     assert manifest["pending_candidate_id"] is None
@@ -377,7 +380,7 @@ def test_run_e1_is_understanding_only_and_never_promotes(tmp_path: Path) -> None
 
 def test_run_e1_budget_counts_every_tool_call(tmp_path: Path) -> None:
     budget = RunBudget()
-    run_dir, _terminal, _draft = e_stages.run_e1(
+    run_dir, _terminal, _draft = e_evidence.build_structure_draft(
         RESUME_I, RESUME_I_RAW, tmp_path / "run", budget=budget
     )
     manifest = json.loads((run_dir / "manifest.json").read_text())
@@ -406,11 +409,11 @@ def test_run_e1_live_uses_its_bounded_investigator_budget(
             ),
         )
 
-    monkeypatch.setattr(e_stages, "_run_live_investigator", fake_investigator)
-    e_stages.run_e1(RESUME_I, RESUME_I_RAW, tmp_path / "run", live=True)
+    monkeypatch.setattr(e_evidence, "_run_live_investigator", fake_investigator)
+    e_evidence.build_structure_draft(RESUME_I, RESUME_I_RAW, tmp_path / "run", live=True)
     assert captured == {
-        "global": e_stages.E1_INVESTIGATOR_MAX_REQUESTS,
-        "per_call": e_stages.E1_INVESTIGATOR_MAX_REQUESTS,
+        "global": e_evidence.E1_INVESTIGATOR_MAX_REQUESTS,
+        "per_call": e_evidence.E1_INVESTIGATOR_MAX_REQUESTS,
         "preloaded": True,
     }
 
@@ -435,7 +438,7 @@ def test_e1_stop_gate_treats_confident_ok_without_confirmation_as_needs_owner_re
         unresolved=[],
         self_reported=e_shared.SelfReportedStatus(status="ok"),
     )
-    assert e_stages.check_e1_stop_gates(draft, pod) == "needs_owner_review"
+    assert e_evidence.check_e1_stop_gates(draft, pod) == "needs_owner_review"
 
 
 def test_e1_stop_gate_flags_claims_citing_uncollected_evidence(tmp_path: Path) -> None:
@@ -455,7 +458,7 @@ def test_e1_stop_gate_flags_claims_citing_uncollected_evidence(tmp_path: Path) -
         unresolved=[],
         self_reported=e_shared.SelfReportedStatus(status="partial"),
     )
-    assert e_stages.check_e1_stop_gates(draft, pod) == "needs_owner_review"
+    assert e_evidence.check_e1_stop_gates(draft, pod) == "needs_owner_review"
 
 
 def test_frozen_case_hashes_the_inputs_before_inspection(tmp_path: Path) -> None:
@@ -472,20 +475,6 @@ def test_frozen_case_hashes_the_inputs_before_inspection(tmp_path: Path) -> None
 def _access_records(run_dir: Path) -> list[dict]:
     manifest = json.loads((run_dir / "manifest.json").read_text())
     return manifest["evidence_access"]["records"]
-
-
-# The whole Pipeline E runtime source, as one string.
-#
-# Split 2026-09-22: this used to be the single `e_pipeline.py` monolith, so
-# the "no target-specific rules / no hardcoded approval list" assertions below
-# scanned it directly. The same source now lives in four runtime modules; the
-# tests read all four so the scanned surface is unchanged by the file split.
-PIPELINE_E_SOURCE_FILES = (
-    "e/__main__.py",
-    "e/shared.py",
-    "e/stages.py",
-    "e/e5.py",
-)
 
 
 # Every target-specific literal the original substring scans looked for: the
@@ -631,8 +620,8 @@ def _scan_source_for_hardcoded_target_data(
     return findings
 
 
-def _pipeline_e_semantic_findings() -> dict[str, list[str]]:
-    """`_scan_source_for_hardcoded_target_data` over every Pipeline E runtime
+def _pipeline_semantic_findings() -> dict[str, list[str]]:
+    """`_scan_source_for_hardcoded_target_data` over every Pipeline runtime
     module (the pre-split single-file scan surface)."""
     findings: dict[str, list[str]] = {
         "hardcoded_literal_collections": [],
@@ -642,9 +631,10 @@ def _pipeline_e_semantic_findings() -> dict[str, list[str]]:
         "forbidden_names": [],
     }
     base = Path(__file__).resolve().parents[0]
-    for filename in PIPELINE_E_SOURCE_FILES:
+    for path in sorted((base / "pipeline").glob("*.py")):
+        filename = path.relative_to(base).as_posix()
         for key, hits in _scan_source_for_hardcoded_target_data(
-            filename, (base / filename).read_text(encoding="utf-8")
+            filename, path.read_text(encoding="utf-8")
         ).items():
             findings[key].extend(hits)
     return findings
@@ -673,7 +663,7 @@ e2_skip = pytest.mark.skipif(
 
 def test_repair_proposal_rejects_candidate_fact_mutation() -> None:
     with pytest.raises(ValueError, match="candidate fact mutation is forbidden"):
-        e_stages.RepairProposal(
+        e_measurement.RepairProposal(
             finding_id="f1",
             base_render_version="render-resume_F-v1",
             layer="state_style",
@@ -686,7 +676,7 @@ def test_repair_proposal_rejects_candidate_fact_mutation() -> None:
 
 def test_repair_proposal_rejects_unbounded_mutations() -> None:
     with pytest.raises(ValueError, match="non-zero gap_delta_pt"):
-        e_stages.RepairProposal(
+        e_measurement.RepairProposal(
             finding_id="f1",
             base_render_version="v1",
             layer="plan_entry_gap",
@@ -695,7 +685,7 @@ def test_repair_proposal_rejects_unbounded_mutations() -> None:
             agent="scripted",
         )
     with pytest.raises(ValueError, match="requires style_updates"):
-        e_stages.RepairProposal(
+        e_measurement.RepairProposal(
             finding_id="f1",
             base_render_version="v1",
             layer="state_style",
@@ -714,7 +704,7 @@ def test_role_gap_measurement_binds_actual_final_pdf_content(tmp_path: Path) -> 
     pod = e_shared.DualSourcePod(TARGET_F, raw_path, tmp_path, render_pdf=None)
     budget = resume_layout_runtime.RunBudget(max_model_requests=4, max_tool_calls=48)
     trace = resume_layout_runtime.RunTrace(tmp_path)
-    controller = e_stages.MeasureController(pod, budget, trace)
+    controller = e_measurement.MeasureController(pod, budget, trace)
     request = e_shared.MeasurementRequest(
         request_id="measure-001",
         metric="role_gap",
@@ -743,7 +733,7 @@ def test_measurement_evidence_missing_is_recorded_not_faked(tmp_path: Path) -> N
     pod = e_shared.DualSourcePod(TARGET_F, raw_path, tmp_path, render_pdf=None)
     budget = resume_layout_runtime.RunBudget(max_model_requests=4, max_tool_calls=48)
     trace = resume_layout_runtime.RunTrace(tmp_path)
-    controller = e_stages.MeasureController(pod, budget, trace)
+    controller = e_measurement.MeasureController(pod, budget, trace)
     request = e_shared.MeasurementRequest(
         request_id="measure-002",
         metric="role_gap",
@@ -762,7 +752,7 @@ def test_measurement_evidence_missing_is_recorded_not_faked(tmp_path: Path) -> N
 def test_run_e2_delivers_verified_repair_with_versions_and_repeat_measurement(
     tmp_path: Path,
 ) -> None:
-    run_dir, terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, terminal, record = e_measurement.run_measurement_loop(TARGET_F, tmp_path / "run")
     assert terminal == "ready_for_owner_review"
     versions = record["render_versions"]
     assert len(versions) >= 2  # first render + at least one repaired candidate
@@ -789,7 +779,7 @@ def test_run_e2_delivers_verified_repair_with_versions_and_repeat_measurement(
 
 @e2_skip
 def test_run_e2_findings_bind_exact_versions(tmp_path: Path) -> None:
-    run_dir, _terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, _terminal, record = e_measurement.run_measurement_loop(TARGET_F, tmp_path / "run")
     target_id = record["target_id"]
     for finding in record["findings"]:
         assert finding["target_version"] == target_id
@@ -801,7 +791,7 @@ def test_run_e2_findings_bind_exact_versions(tmp_path: Path) -> None:
 
 @e2_skip
 def test_run_e2_failed_repair_is_rolled_back_and_best_is_preserved(tmp_path: Path) -> None:
-    run_dir, _terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, _terminal, record = e_measurement.run_measurement_loop(TARGET_F, tmp_path / "run")
     # The second scripted attempt repeats the first action with the same
     # evidence; the shell rejects/rolls it back instead of promoting it.
     non_improving = [s for s in record["attempted_strategies"] if "rolled_back" in s]
@@ -815,7 +805,7 @@ def test_run_e2_failed_repair_is_rolled_back_and_best_is_preserved(tmp_path: Pat
 def test_run_e2_repeats_the_identical_measurement_request_after_repair(
     tmp_path: Path,
 ) -> None:
-    run_dir, _terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, _terminal, record = e_measurement.run_measurement_loop(TARGET_F, tmp_path / "run")
     trace = json.loads((run_dir / "trace.json").read_text())
     measurements = [
         json.loads((run_dir / entry["output_artifact"]).read_text())
@@ -840,7 +830,7 @@ def test_run_e2_never_stops_on_stall_but_returns_budget_exhausted_when_budget_en
     # (never success/unsupported), preserve resumable state, and record the
     # blocked strategy — a stall is an escalation signal, not a terminal.
     budget = resume_layout_runtime.RunBudget(max_model_requests=0, max_tool_calls=48)
-    run_dir, terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run", budget=budget)
+    run_dir, terminal, record = e_measurement.run_measurement_loop(TARGET_F, tmp_path / "run", budget=budget)
     assert terminal == "budget_exhausted"
     assert record["summary"]["best_render_version"] is None or record["summary"]
     manifest = json.loads((run_dir / "manifest.json").read_text())
@@ -854,13 +844,11 @@ def test_run_e2_never_stops_on_stall_but_returns_budget_exhausted_when_budget_en
 def test_run_e2_operational_abort_returns_typed_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tests.experiments.e import stages as legacy
-
     def fail_environment(_env: dict[str, str]) -> dict[str, str]:
         raise RuntimeError("chrome unavailable")
 
-    monkeypatch.setattr(legacy, "pinned_export_environment", fail_environment)
-    run_dir, terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
+    monkeypatch.setattr(e_measurement, "pinned_export_environment", fail_environment)
+    run_dir, terminal, record = e_measurement.run_measurement_loop(TARGET_F, tmp_path / "run")
     assert terminal == "operational_abort"
     assert record["schema_version"] == "pipeline-e-e2-state/1"
     assert record["summary"]["abort"]["operation"] == "pinned_chrome_environment"
@@ -869,7 +857,7 @@ def test_run_e2_operational_abort_returns_typed_state(
 
 @e2_skip
 def test_run_e2_target_person_facts_cannot_enter_candidate_output(tmp_path: Path) -> None:
-    run_dir, _terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, _terminal, record = e_measurement.run_measurement_loop(TARGET_F, tmp_path / "run")
     best = record["best_render_version"]
     manifest = json.loads((run_dir / "manifest.json").read_text())
     best_entry = next(v for v in manifest["versions"] if v["id"] == best)
@@ -883,7 +871,7 @@ def test_run_e2_target_person_facts_cannot_enter_candidate_output(tmp_path: Path
 
 @e2_skip
 def test_run_e2_best_render_is_owner_reviewable_and_probes_pass(tmp_path: Path) -> None:
-    run_dir, terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, terminal, record = e_measurement.run_measurement_loop(TARGET_F, tmp_path / "run")
     best = record["best_render_version"]
     manifest = json.loads((run_dir / "manifest.json").read_text())
     best_entry = next(v for v in manifest["versions"] if v["id"] == best)
@@ -899,7 +887,7 @@ def test_run_e2_best_render_is_owner_reviewable_and_probes_pass(tmp_path: Path) 
 
 @e2_skip
 def test_run_e2_no_target_specific_rules_and_frozen_chain_reuse(tmp_path: Path) -> None:
-    run_dir, _terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, _terminal, record = e_measurement.run_measurement_loop(TARGET_F, tmp_path / "run")
     state = json.loads((run_dir / "c2_layout_state.json").read_text())
     assert state["schema_version"] == "layout-state/1"
     assert state["provenance"]["provider"] == "adobe"
@@ -912,7 +900,7 @@ def test_run_e2_no_target_specific_rules_and_frozen_chain_reuse(tmp_path: Path) 
 def test_run_e2_reviewer_cannot_approve_its_own_repair(tmp_path: Path) -> None:
     """No model promotes: the shell (not the reviewer) promotes a repaired
     candidate, and the reviewer/repair roles are distinct agents."""
-    run_dir, _terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, _terminal, record = e_measurement.run_measurement_loop(TARGET_F, tmp_path / "run")
     trace = json.loads((run_dir / "trace.json").read_text())
     finding_agents = {entry["agent"] for entry in trace if entry.get("action") == "finding"}
     proposal_agents = {entry["agent"] for entry in trace if entry.get("action") == "proposal"}
@@ -927,7 +915,7 @@ def test_run_e2_reviewer_cannot_approve_its_own_repair(tmp_path: Path) -> None:
 def test_run_e2_measurements_inspect_real_final_content_not_probes(tmp_path: Path) -> None:
     """§9 rule 1: measurements inspect the final PDF the owner sees; method
     provenance names the pdfplumber word-row method and carries the page."""
-    run_dir, _terminal, record = e_stages.run_e2(TARGET_F, tmp_path / "run")
+    run_dir, _terminal, record = e_measurement.run_measurement_loop(TARGET_F, tmp_path / "run")
     for result in record["measurement_results"]:
         assert result["method"].startswith("pdfplumber_word_rows_role_gap/")
         assert result["status"] in {
@@ -974,7 +962,7 @@ def test_measure_sidebar_headings_are_generic_and_evidence_linked(tmp_path: Path
     from tests.experiments.resume_layout.target import build_format_summary
 
     summary = build_format_summary(ev, json.loads(raw_path.read_text()), TARGET_I)
-    labels = e_stages.measure_sidebar_headings(TARGET_I, summary)
+    labels = e_measurement.measure_sidebar_headings(TARGET_I, summary)
     # The clustered sidebar-label evidence recovers the section boundaries
     # (9 measured labels across the page break) without target-specific code.
     assert len(labels) == 9
@@ -999,7 +987,7 @@ def test_compile_two_column_state_is_valid_and_candidate_safe(tmp_path: Path) ->
     from tests.experiments.resume_layout.target import build_format_summary
 
     summary = build_format_summary(ev, json.loads(raw_path.read_text()), TARGET_I)
-    state, derived = e_stages.compile_two_column_state(TARGET_I, summary, ev)
+    state, derived = e_measurement.compile_two_column_state(TARGET_I, summary, ev)
     from tests.experiments.resume_layout.state import validate_layout_state
 
     assert validate_layout_state(state) == []
@@ -1026,16 +1014,16 @@ def test_terminal_rename_ready_for_owner_review_reserved_delivered(tmp_path: Pat
     # The work order terminology correction: waiting for the owner is a
     # resumable pause (`ready_for_owner_review`), never `delivered_pending_owner`;
     # `delivered` is reserved for explicit owner acceptance.
-    from pathlib import Path as _P
-
-    source = (_P(__file__).resolve().parents[0] / "e" / "__main__.py").read_text()
+    source = "\n".join(
+        path.read_text() for path in (Path(__file__).resolve().parent / "pipeline").glob("*.py")
+    )
     assert "delivered_pending_owner" not in source
     assert "ready_for_owner_review" in source
 
 
 @e3_skip
 def test_run_e3_walkthrough_records_the_loop_trajectory(tmp_path: Path) -> None:
-    run_dir, terminal, record = e_stages.run_e3(TARGET_I, tmp_path / "run")
+    run_dir, terminal, record = e_walkthrough.run_layout_walkthrough(TARGET_I, tmp_path / "run")
     assert terminal in {"ready_for_owner_review", "budget_exhausted"}
     # Frozen inputs before examination: hashes + run config persisted.
     frozen = json.loads((run_dir / "frozen_case.json").read_text())
@@ -1069,28 +1057,17 @@ def test_run_e3_walkthrough_records_the_loop_trajectory(tmp_path: Path) -> None:
 
 
 @e3_skip
-def test_run_e3_no_target_specific_rules(tmp_path: Path) -> None:
-    """The E3 shell derives structure from evidence: no Resume-I title, target
-    name, or approval constant may exist as EXECUTABLE DATA (the scripted
-    reviewer scenario records are runtime data keyed by the target id, not
-    production rules). Semantic AST check — a docstring, comment or audit
-    sentence that merely CONTAINS a title word is not code data."""
-    findings = _pipeline_e_semantic_findings()
-    assert not any(findings.values()), findings
-
-
-@e3_skip
 def test_run_e3_operational_abort_never_classifies_unsupported(tmp_path: Path) -> None:
     # Missing cached evidence → operational_abort describing the failed
     # operation, never 'unsupported'.
     with pytest.raises(RuntimeError, match="target PDF not found"):
-        e_stages.run_e3(tmp_path / "missing.pdf", tmp_path / "run")
+        e_walkthrough.run_layout_walkthrough(tmp_path / "missing.pdf", tmp_path / "run")
 
 
 @e3_skip
 def test_run_e3_tool_budget_exhaustion_is_resumable(tmp_path: Path) -> None:
     budget = resume_layout_runtime.RunBudget(max_model_requests=6, max_tool_calls=4)
-    _run_dir, terminal, record = e_stages.run_e3(
+    _run_dir, terminal, record = e_walkthrough.run_layout_walkthrough(
         TARGET_I, tmp_path / "run", budget=budget, max_repair_attempts=1,
     )
     assert terminal == "budget_exhausted"
@@ -1099,7 +1076,7 @@ def test_run_e3_tool_budget_exhaustion_is_resumable(tmp_path: Path) -> None:
 
 @e3_skip
 def test_run_e3_reviewer_cannot_approve_its_own_repair(tmp_path: Path) -> None:
-    run_dir, _terminal, record = e_stages.run_e3(TARGET_I, tmp_path / "run")
+    run_dir, _terminal, record = e_walkthrough.run_layout_walkthrough(TARGET_I, tmp_path / "run")
     trace = json.loads((run_dir / "trace.json").read_text())
     finding_agents = {entry["agent"] for entry in trace if entry.get("action") == "finding"}
     proposal_agents = {entry["agent"] for entry in trace if entry.get("action") == "proposal"}
@@ -1171,7 +1148,7 @@ def test_repair_counts_agree_across_state_trace_and_report(
 ) -> None:
     """Phase 0: repair_attempt_count was 0 while a repair/rollback was
     recorded; now state, trace, budget, and evaluation report agree."""
-    run_dir, _terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, _terminal, record = e_review_loop.run_review_loop(TARGET_I, tmp_path / "run")
     executed = [a for a in record["repair_attempts"] if "layer" in a]
     budget_state = record["budget_state"]
     assert budget_state["repair_attempt_count"] == len(executed)
@@ -1193,7 +1170,7 @@ def test_repair_counts_agree_across_state_trace_and_report(
         "sections_bound_to_candidate_sources": 4,
         "unresolved_items": [],
     }
-    report = e_stages.write_evaluation_report(
+    report = e_review_loop.write_evaluation_report(
         run_dir,
         record,
         structure_evaluation=structure_evaluation,
@@ -1238,7 +1215,7 @@ def test_signed_provider_urls_never_enter_shareable_artifacts(
     # cache file keeps its signed content and is byte-unchanged by the run.
     original = TARGET_I_CACHE / "adobe_raw.json"
     before = original.read_bytes()
-    run_dir, _terminal, _record = e_stages.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, _terminal, _record = e_review_loop.run_review_loop(TARGET_I, tmp_path / "run")
     run_raw = json.loads((run_dir / "adobe_raw.json").read_text())
     assert "X-Amz" not in (run_dir / "adobe_raw.json").read_text()
     assert original.read_bytes() == before
@@ -1249,7 +1226,7 @@ def test_signed_provider_urls_never_enter_shareable_artifacts(
 
 @e4_skip
 def test_run_e4_freezes_config_before_first_live_call(tmp_path: Path) -> None:
-    run_dir, terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, terminal, record = e_review_loop.run_review_loop(TARGET_I, tmp_path / "run")
     config = json.loads((run_dir / "run_config.json").read_text())
     assert config["frozen_before_first_live_call"] is True
     assert config["target_sha256"] == e_shared._sha256_file(TARGET_I)
@@ -1278,7 +1255,7 @@ def test_run_e4_freezes_config_before_first_live_call(tmp_path: Path) -> None:
 
 @e4_skip
 def test_run_e4_records_the_live_loop_trajectory(tmp_path: Path) -> None:
-    run_dir, terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, terminal, record = e_review_loop.run_review_loop(TARGET_I, tmp_path / "run")
     assert terminal in {"ready_for_owner_review", "budget_exhausted"}
     assert record["schema_version"] == "pipeline-e-e4-state/1"
     assert record["findings"] and record["measurement_results"] and record["attributions"]
@@ -1298,7 +1275,7 @@ def test_run_e4_records_the_live_loop_trajectory(tmp_path: Path) -> None:
 def test_run_e4_repeats_the_identical_measurement_after_repair(
     tmp_path: Path,
 ) -> None:
-    run_dir, _terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, _terminal, record = e_review_loop.run_review_loop(TARGET_I, tmp_path / "run")
     promoted = [entry for entry in record["render_versions"] if entry["promoted"]]
     assert promoted, record["attempted_strategies"]
     wrap_results = [
@@ -1322,7 +1299,7 @@ def test_run_e4_repeats_the_identical_measurement_after_repair(
 def test_run_e4_promotes_only_verified_improvement_and_records_ceilings(
     tmp_path: Path,
 ) -> None:
-    run_dir, terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, terminal, record = e_review_loop.run_review_loop(TARGET_I, tmp_path / "run")
     promoted = [v for v in record["render_versions"] if v["promoted"]]
     if promoted:
         # A promoted defect-level repair improved its confirmed defect without
@@ -1341,7 +1318,7 @@ def test_run_e4_budget_exhaustion_is_resumable_and_never_unsupported(
     tmp_path: Path,
 ) -> None:
     budget = resume_layout_runtime.RunBudget(max_model_requests=0, max_tool_calls=48)
-    run_dir, terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run", budget=budget)
+    run_dir, terminal, record = e_review_loop.run_review_loop(TARGET_I, tmp_path / "run", budget=budget)
     assert terminal == "budget_exhausted"
     state = json.loads((run_dir / "e4_state.json").read_text())
     assert state["schema_version"] == "pipeline-e-e4-state/1"
@@ -1351,7 +1328,10 @@ def test_run_e4_budget_exhaustion_is_resumable_and_never_unsupported(
 
 
 def test_no_unsupported_terminal_state_exists() -> None:
-    source = (Path(__file__).resolve().parents[0] / "e" / "__main__.py").read_text()
+    pipeline_dir = Path(__file__).resolve().parents[0] / "pipeline"
+    source = "\n".join(
+        path.read_text() for path in pipeline_dir.glob("*.py")
+    )
     # The terminal vocabulary: ready_for_owner_review / budget_exhausted /
     # operational_abort — never a bare 'unsupported' classification.
     for terminal in ("ready_for_owner_review", "budget_exhausted", "operational_abort"):
@@ -1361,13 +1341,13 @@ def test_no_unsupported_terminal_state_exists() -> None:
 def test_live_reviewer_and_builder_outputs_cannot_promote() -> None:
     """No agent output type can express promotion; only the shell promotes."""
     assert "promoted" not in e_shared.DefectFinding.model_fields
-    assert "promoted" not in e_stages.LiveBuilderRepair.model_fields
+    assert "promoted" not in e_review_loop.LiveBuilderRepair.model_fields
     assert "promoted" not in e_shared.LiveAttributionHypothesis.model_fields
 
 
 def test_builder_cannot_modify_candidate_facts_or_unbounded_layers() -> None:
     with pytest.raises(ValueError, match="candidate fact mutation"):
-        e_stages.RepairProposal(
+        e_measurement.RepairProposal(
             finding_id="f1",
             base_render_version="v1",
             layer="state_style",
@@ -1377,7 +1357,7 @@ def test_builder_cannot_modify_candidate_facts_or_unbounded_layers() -> None:
             agent="llm",
         )
     with pytest.raises(ValueError, match="bounded 'title_row' placement"):
-        e_stages.RepairProposal(
+        e_measurement.RepairProposal(
             finding_id="f1",
             base_render_version="v1",
             layer="plan_entry_meta_placement",
@@ -1386,7 +1366,7 @@ def test_builder_cannot_modify_candidate_facts_or_unbounded_layers() -> None:
             agent="llm",
         )
     with pytest.raises(ValueError, match="state_style layer"):
-        e_stages.RepairProposal(
+        e_measurement.RepairProposal(
             finding_id="f1",
             base_render_version="v1",
             layer="plan_entry_gap",
@@ -1400,9 +1380,7 @@ def test_builder_cannot_modify_candidate_facts_or_unbounded_layers() -> None:
 
 def test_accepted_region_recheck_rolls_a_regression_back() -> None:
     """An accepted region regressing beyond tolerance fails the recheck."""
-    from tests.experiments.docx_lane.build import TOLERANCE_PT
-
-    tolerance = TOLERANCE_PT["local_gap"]
+    tolerance = e_measurement.E2_IMPROVEMENT_TOLERANCE_PT
 
     def holds(prior_delta: float, repeat_delta: float) -> bool:
         prior = e_shared.MeasurementResult(
@@ -1425,7 +1403,7 @@ def test_accepted_region_recheck_rolls_a_regression_back() -> None:
 
 @e4_skip
 def test_run_e4_promotion_rechecks_accepted_regions(tmp_path: Path) -> None:
-    run_dir, _terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, _terminal, record = e_review_loop.run_review_loop(TARGET_I, tmp_path / "run")
     trace = json.loads((run_dir / "trace.json").read_text())
     promoted = [entry for entry in trace if entry.get("action") == "promoted"]
     assert promoted, record["attempted_strategies"]
@@ -1434,12 +1412,6 @@ def test_run_e4_promotion_rechecks_accepted_regions(tmp_path: Path) -> None:
     # promoted version's own repeat measurement shows the defect improvement.
     assert all(entry["held"] for entry in data["accepted_region_rechecks"])
     assert data["before"]["request_id"] == data["after"]["request_id"]
-
-
-@e4_skip
-def test_run_e4_no_target_specific_rules() -> None:
-    findings = _pipeline_e_semantic_findings()
-    assert not any(findings.values()), findings
 
 
 def test_hardcoded_target_data_scan_catches_data_but_not_prose() -> None:
@@ -1481,7 +1453,7 @@ F"""verdict for {name}: JOB TITLE"""
 
 
 def test_promotion_requires_shell_not_any_agent(tmp_path: Path) -> None:
-    run_dir, _terminal, record = e_stages.run_e4(TARGET_I, tmp_path / "run")
+    run_dir, _terminal, record = e_review_loop.run_review_loop(TARGET_I, tmp_path / "run")
     trace = json.loads((run_dir / "trace.json").read_text())
     finding_agents = {entry["agent"] for entry in trace if entry.get("action") == "finding"}
     proposal_agents = {entry["agent"] for entry in trace if entry.get("action") == "proposal"}
@@ -1489,3 +1461,22 @@ def test_promotion_requires_shell_not_any_agent(tmp_path: Path) -> None:
     assert finding_agents <= {"visual_reviewer"}
     assert proposal_agents == {"builder"}
     assert promotion_agents <= {"shell"}
+
+
+@pytest.mark.parametrize("selector", [("--task", "measure-repair"), ("--stage", "2")])
+def test_cli_task_and_historical_stage_use_one_runner(
+    monkeypatch: pytest.MonkeyPatch, selector: tuple[str, str], tmp_path: Path
+) -> None:
+    calls: list[tuple[Path, Path | None, bool]] = []
+
+    def fake_runner(target: Path, out: Path | None, *, live: bool):
+        calls.append((target, out, live))
+        return tmp_path / "run", "ready_for_owner_review", {
+            "summary": {"total_findings": 0},
+            "best_render_version": None,
+            "budget_state": {},
+        }
+
+    monkeypatch.setattr(e_cli, "run_measurement_loop", fake_runner)
+    assert e_cli.main([*selector, "--target", str(tmp_path / "target.pdf")]) == 0
+    assert calls == [(tmp_path / "target.pdf", None, False)]

@@ -33,11 +33,10 @@ from tests.experiments.resume_layout.state import (
     SectionContent,
     StateModel,
 )
-
-from tests.experiments.docx_lane.build import (
+from tests.experiments.resume_layout.fonts import (
     FAMILY_ALIASES,
-    _FONT_SEARCH_DIRS,
-    _font_is_installed,
+    FONT_SEARCH_DIRS,
+    font_is_installed,
 )
 
 
@@ -372,7 +371,7 @@ def _preflight_font(
     # measured family is written verbatim; an unavailable one is written as
     # the portable fallback. The preflight measures what will RENDER — the
     # written family, never the bare requested one.
-    written = family if _font_is_installed(family) else "Arial"
+    written = family if font_is_installed(family) else "Arial"
     key = written.casefold().replace(" ", "")
     cache_key = (key, str(round(float(size_pt), 3)), bool(bold))
     if cache_key in _GRID_FONT_CACHE:
@@ -382,7 +381,7 @@ def _preflight_font(
     if alias:
         wanted_keys.append(alias)
     files: dict[str, Path] = {}
-    for directory in _FONT_SEARCH_DIRS:
+    for directory in FONT_SEARCH_DIRS:
         if not Path(directory).is_dir():
             continue
         for path in Path(directory).rglob("*"):
@@ -1663,5 +1662,4 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         failures=failures,
         status=status,
     )
-
 

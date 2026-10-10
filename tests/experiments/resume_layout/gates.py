@@ -305,6 +305,54 @@ def blank_page_gate(pdf: Path) -> dict[str, Any]:
     }
 
 
+def orphan_tail_page_gate(pdf: Path) -> dict[str, Any]:
+    """Flag a tiny final text fragment after an otherwise filled page."""
+    import pdfplumber
+
+    with pdfplumber.open(pdf) as document:
+        counts = [len(page.extract_words()) for page in document.pages]
+        if len(document.pages) < 2:
+            return {"passed": True, "page_count": len(counts), "tail_words": 0}
+        tail = document.pages[-1]
+        words = tail.extract_words()
+        bottom = max((float(word["bottom"]) for word in words), default=0.0)
+        orphan = bool(words) and len(words) <= 60 and bottom <= float(tail.height) * 0.18 and counts[-2] >= 100
+        return {
+            "passed": not orphan,
+            "page_count": len(counts),
+            "tail_words": len(words),
+            "tail_bottom_pt": round(bottom, 2),
+            "orphan_page": len(counts) if orphan else None,
+        }
+
+
+def readable_body_gate(pdf: Path, minimum_pt: float = 10.0) -> dict[str, Any]:
+    """Report the actual PDF median glyph size; CSS declarations can be scaled."""
+    import pdfplumber
+    from statistics import median
+
+    with pdfplumber.open(pdf) as document:
+        sizes = [float(char["size"]) for page in document.pages for char in page.chars if str(char["text"]).isalnum()]
+    actual = round(median(sizes), 2) if sizes else 0.0
+    return {"passed": actual >= minimum_pt, "median_text_size_pt": actual, "minimum_pt": minimum_pt}
+
+
+def orphan_heading_gate(pdf: Path) -> dict[str, Any]:
+    """Catch a section label stranded at a page end and repeated on the next."""
+    import pdfplumber
+
+    with pdfplumber.open(pdf) as document:
+        lines = [[line.strip() for line in (page.extract_text() or "").splitlines() if line.strip()] for page in document.pages]
+    orphans = [
+        {"page": index + 1, "heading": before[-1]}
+        for index, (before, after) in enumerate(zip(lines, lines[1:]))
+        if before and after and before[-1] == after[0]
+        and len(before[-1]) <= 60 and any(c.isalpha() for c in before[-1])
+        and before[-1] == before[-1].upper()
+    ]
+    return {"passed": not orphans, "orphan_headings": orphans}
+
+
 def candidate_accounting_gate(
     plan: C2RenderPlan, content: dict[str, Any]
 ) -> dict[str, Any]:
