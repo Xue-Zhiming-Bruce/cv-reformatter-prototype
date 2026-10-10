@@ -4,7 +4,7 @@ Status: `Active contract`
 
 Owner: Backend
 
-Last reviewed: August 28, 2026
+Last reviewed: October 11, 2026 (generation revision compatibility repair)
 
 This document records the current MVP-compatible backend interface used by the
 frontend. It is not a complete versioned OpenAPI replacement; the FastAPI
@@ -28,6 +28,7 @@ extractable text.
 Response fields:
 
 - `artifact_id`;
+- `profile_revision_id` — immutable initial revision for preview generation;
 - `profile`;
 - `ledger`;
 - `original_text` — the preserved extracted text, stored as
@@ -86,7 +87,21 @@ The `target_format` object includes:
 
 Generation can reload the saved target format using the same `artifact_id`.
 
-## Approve Candidate Profile (mandatory before generation)
+## Save Candidate Profile Revision
+
+```text
+POST /api/artifacts/{artifact_id}/profiles/revisions
+```
+
+Request JSON contains `profile`. The response includes `profile_revision_id`,
+`artifact_id`, `schema_version`, `profile_sha256`, `source_draft_sha256`, and
+`created_at`. Saving an edit creates an immutable revision in the existing
+version store and preserves the extraction draft. The existing segmentation
+and source-coverage checks still apply. Legacy approval file/schema names are
+storage compatibility details; saving a revision does not accept the final
+HTML/PDF.
+
+## Approve Candidate Profile (legacy compatibility)
 
 ```text
 POST /api/artifacts/{artifact_id}/profiles/approve
@@ -115,8 +130,9 @@ explicit `show` or `hide` disposition. Omitting a source block returns HTTP 409
 with `error_code=source_content_unaccounted` and the unaccounted block ids.
 
 Generation never accepts an extraction draft or a directly supplied
-`CandidateProfile`: every final generation path requires a current,
-non-superseded approved profile version for the artifact.
+`CandidateProfile`: it requires a current, non-superseded persisted version
+for the artifact. Both profile endpoints use the existing immutable version
+store. Final client-ready acceptance is a separate operation below.
 
 ## Generate Client Outputs
 
@@ -126,8 +142,11 @@ POST /api/generate
 
 Request JSON:
 
-- `approved_profile_version_id` — **required**. The immutable
-  `profile_version_id` returned by `POST /api/artifacts/{artifact_id}/profiles/approve`;
+- `profile_revision_id` — the immutable revision returned by processing or
+  saving edits;
+- `approved_profile_version_id` — compatibility alias for clients using
+  `POST /api/artifacts/{artifact_id}/profiles/approve`. At least one ID is
+  required; if both are supplied they must be identical;
 - `client_display_rules`;
 - `blind_profile`;
 - `template_name`;
@@ -149,9 +168,9 @@ designer to the measured artifact-root template. The fallback is recorded in
 both `production_render_plan.json` and `generation_metadata.json`.
 
 The legacy `profile` request field is ignored; generation always renders from
-the persisted approved profile bound to `approved_profile_version_id`, merged
-with the request's disclosure choices. There is no silent fallback to an
-unapproved template.
+the persisted profile bound to the requested revision, merged with the
+request's disclosure choices. There is no silent fallback to an unapproved
+template.
 
 Response fields:
 
@@ -165,7 +184,10 @@ Response fields:
 - `visual_comparison_artifact_urls`;
 - `followup_message`;
 - `missing_fields`;
-- `debug_artifacts`.
+- `debug_artifacts`;
+- `profile_revision_id`, `profile_sha256`, `layout_template_version`,
+  `layout_spec_sha256`, `html_sha256`, and `pdf_sha256`;
+- `client_ready` — false until the current output has explicit final acceptance.
 
 Every successful generation also persists `production_render_plan.json`. It
 binds the current immutable approved profile version and checksum to the exact
@@ -175,7 +197,7 @@ approved profile. Preserved optional/custom source blocks enter generated
 content only after the recruiter approves their explicit `show` disposition;
 `hide` entries remain accounted for but are not rendered.
 
-The HTML surface and Adobe-exported PDF are generated from the same approved
+The HTML surface and Chrome-exported PDF are generated from the same persisted
 profile, disclosure rules, blind-profile state, and target-format reference.
 Every successful generation persists `content_validation.json`. If approved
 source-owned content is absent from the PDF, generation returns HTTP 500 with
@@ -189,7 +211,8 @@ profile version:
 
 | Case | Status | `error_code` |
 | --- | --- | --- |
-| No `approved_profile_version_id` in the request, or none for the artifact | 409 | `approved_profile_missing` |
+| Neither revision ID nor compatibility ID is provided | 409 | `approved_profile_missing` |
+| Both IDs are supplied but differ | 400 | `profile_revision_conflict` |
 | Referenced version is superseded by a newer approval | 409 | `approved_profile_superseded` |
 | Version id does not resolve to an approved profile | 400 | `approved_profile_invalid` |
 | Approval belongs to a different artifact | 400 | `approved_profile_artifact_mismatch` |
@@ -205,7 +228,22 @@ failed, or mismatched proofs return HTTP 409 with `layout_proof_*` error
 codes. Design-driven generation additionally requires an approved design
 (`design_not_approved`, `design_profile_mismatch`, `design_inventory_mismatch`).
 
-### Generated-profile artifact and draft preservation
+## Accept Final Output
+
+```text
+POST /api/artifacts/{artifact_id}/final-acceptance
+```
+
+The recruiter accepts the exact preview by submitting the six identity fields
+returned by generation: `profile_revision_id`, `profile_sha256`,
+`layout_template_version`, `layout_spec_sha256`, `html_sha256`, and
+`pdf_sha256`, with an optional `reviewer_note`. A successful response includes
+`client_ready=true`. Missing output returns 409 `final_output_unavailable`;
+a changed preview returns 409 `final_acceptance_identity_mismatch`.
+Regenerating after a profile, template, HTML or PDF change invalidates the
+previous acceptance. Generating a preview alone never constitutes acceptance.
+
+## Generated-profile artifact and draft preservation
 
 Generation never overwrites the extraction draft: `candidate_profile.json`
 (the file the profile-approval checksum is computed from) is written only by

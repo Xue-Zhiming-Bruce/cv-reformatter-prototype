@@ -68,7 +68,6 @@ from app.profile_approval import (
     is_current_approved_profile,
     load_approved_profile_version,
     load_current_approved_profile,
-    load_profile_revision,
     profile_sha256,
     save_approved_profile,
     save_profile_revision,
@@ -260,11 +259,7 @@ class TargetFormatUploadResponse(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    #: Required immutable recruiter-approved profile version bound to this
-    #: artifact (see POST /api/artifacts/{artifact_id}/profiles/approve).
-    #: Generation always renders from the persisted approved profile; a
-    #: CandidateProfile supplied directly in the request is never accepted
-    #: (the legacy ``profile`` field is ignored for backward compatibility).
+    # Preview renders a persisted revision; final acceptance binds the output.
     profile_revision_id: str | None = None
     # Transitional read only; remove after clients migrate to profile_revision_id.
     approved_profile_version_id: str | None = None
@@ -346,8 +341,7 @@ class DesignRequestCreate(BaseModel):
     designer: str | None = None
     #: Immutable approved profile version the design must be built from. The
     #: extraction draft (candidate_profile.json) is never used implicitly.
-    profile_revision_id: str | None = None
-    approved_profile_version_id: str | None = None
+    approved_profile_version_id: str
 
 
 class ProfileApproveRequest(BaseModel):
@@ -1229,13 +1223,24 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
                 },
             )
 
-    profile_revision_id = _requested_profile_revision_id(
-        request.profile_revision_id, request.approved_profile_version_id
-    )
-    profile_revision = _require_profile_revision(
+    if (
+        request.profile_revision_id is not None
+        and request.approved_profile_version_id is not None
+        and request.profile_revision_id != request.approved_profile_version_id
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "profile_revision_conflict",
+                "message": "profile_revision_id and approved_profile_version_id must identify the same revision.",
+            },
+        )
+    profile_revision = _require_approved_profile(
         artifact_dir=artifact_dir,
         artifact_id=artifact_id,
-        profile_revision_id=profile_revision_id,
+        approved_profile_version_id=(
+            request.profile_revision_id or request.approved_profile_version_id
+        ),
     )
     merged_profile = profile_revision.profile.model_copy(
         update={
@@ -1292,7 +1297,6 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     if design_id is not None:
         design_state = _load_approved_design(
             artifact_id, artifact_dir, design_id, reviewed_profile,
-            profile_revision,
         )
         style_spec = load_layout_template_spec(
             design_dir_for(artifact_dir, design_id) / "layout_template_spec.json"

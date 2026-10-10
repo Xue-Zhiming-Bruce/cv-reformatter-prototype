@@ -131,3 +131,44 @@ layout degradation unchanged.
 
 This report creates no new runner or corpus, approves no provider/renderer
 contract, and changes no product behavior or roadmap acceptance status.
+
+## Generation API repair — October 11, 2026
+
+Run ID: `generation_revision_repair_20261011`.
+
+The inherited generation migration is repaired in the integration branch:
+
+- Generation resolves the new revision ID or its legacy approval-ID alias
+  through the existing `_require_approved_profile` validation boundary.
+  No duplicate loader was introduced. Artifact ownership, draft checksum and
+  superseded-version rejection remain enforced.
+- Supplying different revision and compatibility IDs returns HTTP 400
+  `profile_revision_conflict` before writing an output. The existing API test
+  module now covers both agreement and conflict.
+- The approved-design call again matches its existing four-argument loader;
+  that loader retains profile-version, checksum and inventory validation.
+- The design-request approval ID is required again. Its unused, unimplemented
+  revision-ID field was removed; a missing ID returns the existing HTTP 422
+  contract instead of reaching the handler and returning HTTP 400.
+- Preview generation and identity-bound final acceptance retain their
+  existing behavior. The API contract now documents revisions, compatibility
+  and the final-acceptance endpoint that were already in the saved source.
+
+Validation used the existing Python environment and external socket blocking:
+
+| Existing pytest selection | Result | Terminal log under `tests/test_results/pytest/` |
+| --- | --- | --- |
+| `test_structure.py`, candidate-schema and missing-field unit tests, profile-approval and generation-approval integration tests | 48 passed, 4 warnings; includes all 19 previously failing generation cases and two new alias cases | `20261010T164844Z_generation_revision_repair.txt` |
+| `test_api_generate.py`, `test_draft_preservation.py`, `test_design_api.py`, `test_layout_proof_approval.py` | Initially 52 passed, 1 failed; the failure exposed the inherited design-request required-field drift | `20261010T164957Z_generation_connected_paths.txt` |
+| `test_design_api.py`, after repairing that request definition | 17 passed; includes the sole failed connected-path case | `20261010T165257Z_design_contract_repair.txt` |
+
+The four warnings in the first selection come from pre-existing test fixtures
+serializing dictionary/enum substitutes with Pydantic. No warning, negative
+test or validation gate was suppressed to obtain a pass.
+
+`git diff --check` passed. Changed Python files parse; desktop source bytes
+still match the preservation inventory. No dependency, frontend, live-provider
+or visual-quality change was made, and no full offline suite was run.
+This closes the recorded generation repair prerequisite, not Stage B0 or the
+frontend/Pipeline integration. The original snapshot refs and evidence backup
+remain unchanged.

@@ -285,6 +285,27 @@ def test_profile_revision_generates_preview_without_intermediate_approval(
     assert "Request Override" not in html
 
 
+@pytest.mark.parametrize("same_revision", [True, False])
+def test_generation_revision_and_legacy_id_must_agree(
+    tmp_path: Path, same_revision: bool
+) -> None:
+    artifact_id, artifact_dir, version_id = _make_artifact_with_approval(tmp_path)
+    response = _generate(
+        artifact_id,
+        version_id,
+        profile_revision_id=version_id if same_revision else "profile_v_other",
+    )
+    if same_revision:
+        assert response.status_code == 200, response.text
+        assert response.json()["profile_revision_id"] == version_id
+        assert response.json()["client_ready"] is False
+    else:
+        assert response.status_code == 400
+        assert response.json()["detail"]["error_code"] == "profile_revision_conflict"
+        assert not (artifact_dir / "candidate_profile.html").exists()
+        assert not (artifact_dir / "candidate_profile.pdf").exists()
+
+
 def test_final_acceptance_is_identity_bound_and_invalidates_on_revision_change(
     tmp_path: Path,
 ) -> None:
