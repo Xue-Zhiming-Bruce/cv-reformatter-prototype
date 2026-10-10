@@ -2,7 +2,7 @@
 
 Status: `Active contract`
 
-Last reviewed: September 29, 2026 (one canonical Pipeline experiment; retired D0 and DOCX entry points removed)
+Last reviewed: October 11, 2026 (reviewed-profile and fresh-target inputs for the existing Pipeline)
 
 This document is the authoritative structural contract for tests, evaluation
 workflows, fixtures, and generated evidence. It exists to prevent separate
@@ -58,7 +58,7 @@ usage, scoring, manifests, and reporting stay under `tests/commercial_api/`.
 | Explicit live smoke tests | pytest tests under `tests/live/` with `live_provider` marker and opt-in | synthetic or authorized input | `tests/test_results/pytest/` terminal log |
 | Commercial provider comparison | `python -m tests.commercial_api.cli` | committed synthetic corpus or authorized local Resume A-F targets | `tests/test_results/commercial_api/<run_id>/` |
 | Resume transformation matrix | `scripts/run_abc_live_matrix.py` (API-driven; supersedes the retired `run_block_aware_matrix.py` offline runner) | authorized `tests/local_datasets/resume_matrix/` inputs | versioned matrix run defined by `TEST_RESULT_FORMAT.md`; run reports under `data/generated_outputs/abc_live_matrix/` |
-| Current Pipeline experiment (owner-authorized `tests/experiments/` path) | `python -m tests.experiments.pipeline --task structure-draft\|measure-repair\|layout-walkthrough\|review-repair\|template-build --target <pdf> [--adobe-json <json>] [--live]` (`--stage 1`–`5` remains a compatibility selector) | authorized `tests/local_datasets/resume_matrix/` targets, cached provider-neutral evidence under `tests/experiments/runs/target_cache/`, registered frozen input runs, and the shared E4 draft required by template building; no live provider call without `--live` | `tests/experiments/runs/e_pipeline_e{1,2,3,4,5}_<ts>/`; template building runs Lane B only. Terminal state is `ready_for_owner_review`, `budget_exhausted` (resumable), or `operational_abort`. Automated gates do not accept delivery. Executable code lives only in `tests/experiments/pipeline/` and its responsibility-named `resume_layout/` library. E1–E5 run names and schema identifiers remain historical compatibility vocabulary, not alternate workflows. |
+| Current Pipeline experiment (owner-authorized `tests/experiments/` path) | `python -m tests.experiments.pipeline --task structure-draft\|measure-repair\|layout-walkthrough\|review-repair\|template-build --target <pdf> [--adobe-json <json>] [--live]` (`--stage 1`–`5` remains a compatibility selector) | authorized `tests/local_datasets/resume_matrix/` targets and registered frozen inputs; template building optionally accepts strict reviewed `CandidateProfile` JSON (`--candidate-profile`, optional `--blind-profile`), reuses cached target evidence/drafts, and prepares missing evidence through the existing Adobe/E1 stages only with `--live`; no live provider call without explicit opt-in | `tests/experiments/runs/e_pipeline_e{1,2,3,4,5}_<ts>/`; template building runs Lane B only. Terminal state is `ready_for_owner_review`, `budget_exhausted` (resumable), or `operational_abort`. Automated gates do not accept delivery. Executable code lives only in `tests/experiments/pipeline/` and its responsibility-named `resume_layout/` library. E1–E5 run names and schema identifiers remain historical compatibility vocabulary, not alternate workflows. |
 
 Older A-D, C2, D0, and editable-DOCX CLIs are retired. Their accepted evidence
 and tracked reports remain historical inputs where the current Pipeline names

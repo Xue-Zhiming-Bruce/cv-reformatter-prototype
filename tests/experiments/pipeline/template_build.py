@@ -16,6 +16,7 @@ from datetime import (
 )
 from pathlib import Path
 from typing import Any
+from app.extraction.candidate_schema import CandidateProfile
 from tests.experiments.resume_layout.paths import RUNS
 from tests.experiments.resume_layout.runtime import (
     RunStore,
@@ -75,7 +76,8 @@ from tests.experiments.pipeline.setup import (
     _target_rubric_reference,
     _target_structure_draft_source,
 )
-from tests.experiments.resume_layout.target import build_format_summary
+from tests.experiments.resume_layout.target import _analyze_target, build_format_summary
+from tests.experiments.pipeline.evidence import build_structure_draft
 from tests.experiments.resume_layout.fonts import target_font_roles
 from tests.experiments.pipeline.template_lane import (
     E5_REVIEWER_INSTRUCTIONS,
@@ -83,7 +85,7 @@ from tests.experiments.pipeline.template_lane import (
     LaneContext,
     run_template_lane,
 )
-from tests.experiments.resume_layout.candidates import candidate_resume_E
+from tests.experiments.resume_layout.candidates import candidate_from_profile, candidate_resume_E
 from tests.experiments.resume_layout.state import (
     state_bytes,
     validate_layout_state,
@@ -133,6 +135,8 @@ def build_template(
     structure_draft_path: Path | None = None,
     rubric_path: Path | None = None,
     preflight_only: bool = False,
+    candidate_profile: CandidateProfile | None = None,
+    blind_profile: bool = False,
 ) -> tuple[Path, str, dict[str, Any]]:
     """E5: build an authored template for one target with Lane B.
 
@@ -148,6 +152,8 @@ def build_template(
 
     if lanes != ("b",):
         raise ValueError("Lane A is retired; only Lane B is supported")
+    if blind_profile and candidate_profile is None:
+        raise ValueError("blind_profile requires candidate_profile")
 
     started = time.time()
     started_at = datetime.now(UTC).isoformat(timespec="seconds")
@@ -177,7 +183,12 @@ def build_template(
     raw_path = target_cache_dir / "adobe_raw.json"
     normalized_path = target_cache_dir / "enriched_evidence.json"
     if not raw_path.exists() or not normalized_path.exists():
-        return abort("target_evidence_cache", RuntimeError("no cached Adobe response for this target"))
+        if not live:
+            return abort("target_evidence_cache", RuntimeError("no cached Adobe response for this target; analysis requires --live"))
+        try:
+            _analyze_target(target_pdf, out_dir)
+        except Exception as error:
+            return abort("target_analysis", RuntimeError(f"target analysis failed ({type(error).__name__})"))
     (out_dir / "adobe_raw.json").write_text(
         json.dumps(
             redact_signed_urls(json.loads(raw_path.read_text(encoding="utf-8"))),
@@ -278,12 +289,21 @@ def build_template(
     except Exception as error:
         return abort("target_structure_draft", error)
     if draft_source is None:
-        return abort(
-            "target_structure_draft",
-            FileNotFoundError(
-                "no target-matched StructureDraft; run E1 for this target or pass --structure-draft"
-            ),
-        )
+        if not live:
+            return abort(
+                "target_structure_draft",
+                FileNotFoundError("no target-matched StructureDraft; run E1 for this target or pass --structure-draft"),
+            )
+        try:
+            draft_dir, draft_terminal, _ = build_structure_draft(
+                target_pdf, raw_path, out_dir / "target_understanding",
+                live=True, normalized_path=normalized_path, budget=budget,
+            )
+            if draft_terminal != "awaiting_owner_review":
+                raise ValueError("target structure claims require evidence review")
+            draft_source = draft_dir / "structure_draft.json"
+        except Exception as error:
+            return abort("target_structure_draft", error)
     draft = TargetStructureDraft.model_validate_json(draft_source.read_text(encoding="utf-8"))
     (out_dir / "structure_draft.json").write_text(draft.model_dump_json(indent=2), encoding="utf-8")
     shared_draft_ref = {
@@ -294,15 +314,17 @@ def build_template(
     page_height = _page_pt_size(target_pdf, 1)[1]
     region_spans = _region_spans_from_draft(draft, page_height)
 
-    candidate = candidate_resume_E()
+    candidate = (
+        candidate_from_profile(candidate_profile, blind_profile=blind_profile)
+        if candidate_profile is not None else candidate_resume_E()
+    )
     # Generic header-overflow disposition (E3 shell transition, reused for
     # the main candidate AND every content-shape probe): the compiled
     # two-column state hosts the contact rows inside section content.
     candidate = _apply_header_overflow_disposition(candidate, state)
-    frozen_dir = RUNS / "c_pipeline_D_to_E_20260910T195515Z"
-    if not (frozen_dir / "target.pdf").exists():
-        return abort("frozen_c1_baseline", FileNotFoundError(str(frozen_dir / "target.pdf")))
-    privacy_baseline = frozen_dir / "target.pdf"
+    # The current target owns privacy; historical comparisons are optional.
+    privacy_baseline = target_pdf
+    (out_dir / "candidate_render_context.json").write_text(candidate.model_dump_json(indent=2), encoding="utf-8")
     owner_baseline = _matching_run_artifact(
         target_sha256, "render_2.pdf", pattern="e_pipeline_e4_*"
     )

@@ -108,6 +108,10 @@ def _slot_shape_contract() -> dict[str, Any]:
             "item": "skill_group", "item_head": "skill_group",
             "item_text": "skill_children_only",
         },
+        "additional": {
+            "item_head": "section heading",
+            "item_text": "shell-rendered entries with titles, links, and description lists",
+        },
     }
 
 
@@ -124,7 +128,12 @@ def _candidate_layout_footprint(candidate: Any) -> dict[str, Any]:
         roots = [leaf for leaf in section_leaves if leaf.parent_leaf_id is None]
         items = []
         for root in roots:
-            children = [leaf for leaf in section_leaves if leaf.parent_leaf_id == root.leaf_id]
+            children = []
+            parents = {root.leaf_id}
+            while parents:
+                level = [leaf for leaf in section_leaves if leaf.parent_leaf_id in parents]
+                children.extend(level)
+                parents = {leaf.leaf_id for leaf in level}
             length = sum(len(leaf.text or "") for leaf in [root, *children])
             items.append({
                 "child_count": len(children),
@@ -132,12 +141,11 @@ def _candidate_layout_footprint(candidate: Any) -> dict[str, Any]:
                 "character_length": length,
                 "length_band": _length_band(length),
             })
-        total = sum(item["character_length"] for item in items)
-        result[section.source] = {
-            "entry_count": len(roots), "items": items,
-            "total_character_length": total,
-            "may_cross_page": total > 1800 or len(roots) > 4,
-        }
+        role = result.setdefault(section.source, {"entry_count": 0, "items": [], "total_character_length": 0})
+        role["entry_count"] += len(roots)
+        role["items"].extend(items)
+        role["total_character_length"] += sum(item["character_length"] for item in items)
+        role["may_cross_page"] = role["total_character_length"] > 1800 or role["entry_count"] > 4
     return result
 
 

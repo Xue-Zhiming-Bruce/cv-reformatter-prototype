@@ -172,3 +172,56 @@ or visual-quality change was made, and no full offline suite was run.
 This closes the recorded generation repair prerequisite, not Stage B0 or the
 frontend/Pipeline integration. The original snapshot refs and evidence backup
 remain unchanged.
+
+## Reviewed-profile and fresh-target input bridge — October 11, 2026
+
+Run ID: `e_input_bridge_20261011`.
+
+The existing template-build entry now accepts strict `CandidateProfile` JSON
+through `--candidate-profile`, with optional `--blind-profile`. Python callers
+can supply the same reviewed model. The existing client-facing mapper applies
+disclosure and blinding before E receives values. The original profile is
+unchanged; structured extra entries retain titles, links and description lists.
+The content-free layout footprint aggregates sections sharing a role and
+includes nested entry content, instead of overwriting earlier sections or
+under-counting their children.
+
+Without a profile, the old candidate remains a regression fixture; blind mode
+cannot use that unmasked fixture. A missing target cache requires explicit
+live opt-in and uses the existing Adobe adapter. A missing structure draft
+then uses the existing E1 stage. Provider failure is explicit and does not
+expose its private exception text. The required historical C1 privacy input
+was removed; privacy is checked against the actual current target. Earlier
+E4 outputs remain optional comparison evidence. The exact safe candidate
+input is saved as `candidate_render_context.json` in the run.
+
+| Check | Result | Terminal log under `tests/test_results/pytest/` |
+| --- | --- | --- |
+| Initial profile/disclosure, provider opt-in/failure and package-structure checks | 8 passed | `20261010T171007Z_e_input_bridge.txt` |
+| Authorized PDF upload replay through the real compiler and Chrome exporter, with a new blind profile | 1 passed | `20261010T171146Z_e_uncached_profile_pdf.txt` |
+| E stages, E template comparison and structural regression selection, excluding `local_dataset` | 149 passed, 68 skipped, 1 missing local evidence fixture; 3 deselected | `20261010T171412Z_e_input_regression.txt` |
+| Missing fixture restored byte-for-byte; failing case, disclosure/failure cases and structural guards repeated | 11 passed | `20261010T171910Z_e_input_followup.txt` |
+| CLI JSON validation and argument forwarding | 2 passed | `20261010T171950Z_e_cli_profile.txt` |
+| Final changed behavior, real PDF replay, CLI, footprint and structural checks | 15 passed | `20261010T172914Z_e_input_final_checks.txt` |
+
+The upload replay uses the authorized text-based Resume I PDF with a
+metadata-only appended comment, producing a new checksum and empty cache key.
+Adobe and model seams replay evidence or scripted responses; Chrome actually
+renders the new candidate. It verifies input wiring and masked-content absence,
+not live provider availability, unseen-layout generalization or visual parity.
+The replay does not need a C1 directory. Strict invalid JSON stops before the
+builder. A negative control confirmed the new multi-section/footprint test
+fails with the original footprint function.
+
+Skipped regression cases still require other local inputs/history, and are not
+counted as passing. No test was weakened to address the missing fixture.
+Only the explicitly referenced ignored Resume I/cache/draft files and one
+older Adobe fixture were restored into this checkout. The desktop source
+still matches its preservation inventory. No real external provider was called.
+
+This closes input preparation inside the canonical E experiment. The product
+API and frontend still use their existing path. Product promotion needs the
+explicit designer/rendering-boundary revision required by E plan section 5.7;
+the concrete proposal is
+[ADR 0007](../../docs/decisions/0007-pipeline-e-local-integration.md), currently
+Proposed. No product contract, accepted ADR or roadmap exit status was changed.

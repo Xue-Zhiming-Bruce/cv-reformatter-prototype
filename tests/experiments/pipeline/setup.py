@@ -289,7 +289,7 @@ def _freeze_e5_config(
         "target_sha256": target_frozen.target_sha256,
         "adobe_json_sha256": target_frozen.adobe_json_sha256,
         "candidate_input": {
-            "role": "reviewed render context (candidate_resume_E render content)",
+            "role": "reviewed client-facing candidate render context",
             "sha256": candidate_sha256,
             "builder_boundary": "candidate facts are never editable by any agent",
         },

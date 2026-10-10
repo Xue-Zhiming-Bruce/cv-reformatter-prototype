@@ -8,6 +8,7 @@ This directory has one current workflow:
 .venv/bin/python -m tests.experiments.pipeline --task layout-walkthrough --target <pdf>
 .venv/bin/python -m tests.experiments.pipeline --task review-repair --target <pdf>
 .venv/bin/python -m tests.experiments.pipeline --task template-build --target <pdf>
+.venv/bin/python -m tests.experiments.pipeline --task template-build --target <pdf> --candidate-profile <reviewed-profile.json> --blind-profile --live
 ```
 
 `--stage 1` through `--stage 5` remain compatibility selectors for old commands.
@@ -16,6 +17,21 @@ the current CLI and source modules use their actual responsibilities.
 
 Runs are offline unless `--live` is supplied. Automated gates produce evidence;
 they never make the owner's visual-acceptance decision.
+
+Template building accepts a strict reviewed `CandidateProfile` JSON through
+`--candidate-profile`. Candidate facts pass through the existing
+`ClientFacingRenderContext`, so disclosure and blind-profile rules apply before
+E receives any leaves. Extra sections retain entries, titles, links and
+description lists. With no profile argument, the existing frozen candidate is
+retained for regression comparisons; it is not an upload-processing path.
+
+A missing target cache is analyzed through the existing Adobe adapter only
+with `--live`. A missing target-matched structure draft then runs the existing
+structure-draft stage. Provider failure stops explicitly, and offline runs do
+not fetch missing evidence. Template building no longer requires a historical
+C1 directory: the current target owns its privacy check; prior E4 comparison
+renders are optional. The run saves its exact client-facing input as
+`candidate_render_context.json`.
 
 For any evaluation of generated visual quality, run with `--live` so the API/LLM
 actually builds and reviews the output. Do not impose a token or cost-saving
@@ -63,5 +79,7 @@ names are persisted compatibility vocabulary, not alternate runnable pipelines.
 
 Current tasks read the frozen run directories registered in
 `resume_layout/candidates.py`, provider-neutral evidence under
-`runs/target_cache/`, and the registered shared stage-4 draft. These retained
-artifacts are inputs to Pipeline, not live legacy entry points.
+`runs/target_cache/`, and target-matched structure drafts. Earlier tasks retain
+their frozen inputs; template building can prepare missing evidence and drafts
+with explicit live opt-in. These retained artifacts are inputs to Pipeline,
+not live legacy entry points.

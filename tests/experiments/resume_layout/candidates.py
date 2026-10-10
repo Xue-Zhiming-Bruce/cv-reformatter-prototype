@@ -18,6 +18,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 from app.extraction.candidate_schema import CandidateProfile
+from app.generation.template_mapper import build_client_render_context
 
 from tests.experiments.resume_layout.state import (
     SourceRole,
@@ -309,6 +310,105 @@ def _unroutable(
     slot: str | None = None,
 ) -> UnroutableContent:
     return UnroutableContent(text=text, reason=reason, before_leaf_id=before, disposition=disposition, slot=slot)
+
+
+def candidate_from_profile(
+    profile: CandidateProfile, *, blind_profile: bool = False
+) -> CandidateDocument:
+    """Project reviewed facts through disclosure rules before creating E leaves."""
+    context = build_client_render_context(profile, blind_profile=blind_profile)
+    leaves = [_leaf("header.name", "header_field", slot="name", text=context.candidate_heading)]
+    for item in context.contact_items:
+        leaves.append(_leaf(f"header.{item.field}", "header_field", slot=item.field, text=item.value))
+    if context.candidate_subheading:
+        leaves.append(_leaf("header.title", "header_field", slot="title", text=context.candidate_subheading))
+    sections: list[CandidateSection] = []
+
+    def section(section_id: str, source: SourceRole, kind: Literal["paragraph", "entries", "item_list"], start: int, heading: str | None = None) -> None:
+        if len(leaves) > start:
+            sections.append(CandidateSection(
+                section_id=section_id, source=source, content_kind=kind,
+                heading=heading or source.replace("_", " ").title(),
+                leaf_ids=[leaf.leaf_id for leaf in leaves[start:]],
+            ))
+
+    start = len(leaves)
+    if context.professional_summary:
+        leaves.append(_leaf("summary.0", "summary_paragraph", "summary", text=context.professional_summary))
+    section("summary", "summary", "paragraph", start)
+
+    start = len(leaves)
+    for index, group in enumerate(context.skill_groups):
+        parent = f"skills.group.{index}"
+        leaves.append(_leaf(parent, "skill_group", "skills", text=group.label))
+        for child, value in enumerate(group.skills):
+            leaves.append(_leaf(f"{parent}.{child}", "skill", "skills", parent=parent, text=value))
+    for index, value in enumerate(context.skills):
+        leaves.append(_leaf(f"skills.item.{index}", "skill_group", "skills", text=value))
+    section("skills", "skills", "item_list", start)
+
+    for source, entries, kind, head_field, detail_fields in (
+        ("work_experience", context.work_experience, "work_entry", "company", ("title",)),
+        ("education", context.education, "education_entry", "institution", ("degree", "field_of_study")),
+    ):
+        start = len(leaves)
+        for index, entry in enumerate(entries):
+            parent = f"{source}.{index}"
+            leaves.append(_leaf(parent, kind, source, text=getattr(entry, head_field)))
+            for field in detail_fields:
+                value = getattr(entry, field)
+                if value:
+                    leaves.append(_leaf(f"{parent}.{field}", "entry_detail", source, parent=parent, text=value))
+            for field in ("location", "date_range"):
+                value = getattr(entry, field, None)
+                if value:
+                    leaves.append(_leaf(f"{parent}.{field}", "entry_meta", source, parent=parent, text=value))
+            for child, value in enumerate(getattr(entry, "description", [])):
+                leaves.append(_leaf(f"{parent}.description.{child}", "work_bullet", source, parent=parent, text=value))
+        section(source, source, "entries", start)
+
+    for source, values, kind in (
+        ("languages", context.languages, "language"),
+        ("certifications", context.certifications, "certification_item"),
+    ):
+        start = len(leaves)
+        for index, value in enumerate(values):
+            leaves.append(_leaf(f"{source}.{index}", kind, source, text=value))
+        section(source, source, "item_list", start)
+
+    start = len(leaves)
+    if context.additional_details:
+        parent = "additional.details"
+        leaves.append(_leaf(parent, "additional_section", "additional_details", text="additional_details".replace("_", " ").title()))
+        for index, detail in enumerate(context.additional_details):
+            leaves.append(_leaf(f"{parent}.{index}", "additional_item", "additional_details", parent=parent, text=f"{detail.label}: {detail.value}"))
+    section("additional_details", "additional_details", "entries", start)
+
+    for index, extra in enumerate(context.additional_sections):
+        start = len(leaves)
+        parent = f"additional.section.{index}"
+        leaves.append(_leaf(parent, "additional_section", "additional_details", text=extra.heading))
+        for child, entry in enumerate(extra.entries):
+            subgroup = f"{parent}.entry.{child}"
+            leaves.append(_leaf(subgroup, "entry_subgroup", "additional_details", parent=parent, text=entry.title))
+            for field, values, kind in (
+                ("links", entry.links, "entry_meta"),
+                ("description", entry.description, "work_bullet"),
+            ):
+                for item, value in enumerate(values):
+                    leaves.append(_leaf(f"{subgroup}.{field}.{item}", kind, "additional_details", parent=subgroup, text=value))
+        section(f"additional_{index}", "additional_details", "entries", start, extra.heading)
+
+    split_name = (
+        not blind_profile and profile.given_name and profile.family_name
+        and f"{profile.given_name} {profile.family_name}" == context.candidate_heading
+    )
+    safe_name = CandidateProfile(
+        full_name=context.candidate_heading,
+        given_name=profile.given_name if split_name else None,
+        family_name=profile.family_name if split_name else None,
+    )
+    return CandidateDocument(candidate_id="reviewed-profile", profile=safe_name, leaves=leaves, sections=sections)
 
 
 def candidate_resume_D() -> CandidateDocument:

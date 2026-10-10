@@ -456,6 +456,18 @@ def render_context_values(candidate: CandidateDocument) -> dict[str, Any]:
             if leaf.kind != parent_kind:
                 continue
             kids = children.get(leaf.leaf_id, [])
+            extra_text = []
+            for kid in kids:
+                if kid.kind == "additional_item":
+                    extra_text.append(_esc(kid.text))
+                elif kid.kind == "entry_subgroup":
+                    group = children.get(kid.leaf_id, [])
+                    links = "".join(f'<p class="candidate-link">{_esc(item.text)}</p>' for item in group if item.kind == "entry_meta")
+                    bullets = "".join(f"<li>{_esc(item.text)}</li>" for item in group if item.kind == "work_bullet")
+                    extra_text.append(
+                        '<div class="candidate-additional-entry">'
+                        f'<strong>{_esc(kid.text)}</strong>{links}<ul>{bullets}</ul></div>'
+                    )
             paired_meta = {kid.paired_leaf_id: kid for kid in kids if kid.paired_leaf_id}
             detail_lines = []
             for kid in kids:
@@ -484,9 +496,7 @@ def render_context_values(candidate: CandidateDocument) -> dict[str, Any]:
                     "item_bullets": "".join(
                         f"<li>{_esc(kid.text)}</li>" for kid in kids if kid.kind == "work_bullet"
                     ),
-                    "item_text": "<br>".join(
-                        _esc(kid.text) for kid in kids if kid.kind in {"additional_item"}
-                    ),
+                    "item_text": "<br>".join(extra_text),
                     "_leaf_ids": [leaf.leaf_id, *(kid.leaf_id for kid in kids)],
                 }
             )
@@ -514,6 +524,9 @@ def render_context_values(candidate: CandidateDocument) -> dict[str, Any]:
                     consumed[kid.leaf_id] += 1
             elif leaf.kind == "skill_group":
                 consumed[leaf.leaf_id] += 1
+                for kid in children.get(leaf.leaf_id, []):
+                    consumed[kid.leaf_id] += 1
+            elif leaf.kind == "entry_subgroup":
                 for kid in children.get(leaf.leaf_id, []):
                     consumed[kid.leaf_id] += 1
             elif leaf.kind in {"language", "certification_item"}:
@@ -825,7 +838,7 @@ SCRIPTED_AUTHORED_TEMPLATE = AuthoredTemplateCandidate(
         "{{each:certifications}}<p class=\"rsv-line\">{{item}}</p>{{/each}}\n"
         "{{each:additional}}\n"
         "  <p class=\"rsv-head\">{{item_head}}</p>\n"
-        "  <p class=\"rsv-line\">{{item_text}}</p>\n"
+        "  <div class=\"rsv-line\">{{item_text}}</div>\n"
         "{{/each}}\n"
     ),
     css=(

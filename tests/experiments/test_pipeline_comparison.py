@@ -72,6 +72,43 @@ def test_retired_lane_a_is_rejected(tmp_path: Path) -> None:
         e_e5.build_template(tmp_path / "target.pdf", lanes=("a",))
 
 
+def test_blind_build_cannot_use_the_unmasked_regression_candidate(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="blind_profile requires candidate_profile"):
+        e5.build_template(tmp_path / "target.pdf", tmp_path / "run", blind_profile=True)
+    assert not (tmp_path / "run").exists()
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_cli_profile_json_is_validated_before_template_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, valid: bool
+) -> None:
+    from pydantic import ValidationError
+    import tests.experiments.pipeline.__main__ as cli
+
+    payload = {"full_name": "CLI Candidate"}
+    if not valid:
+        payload["unknown_fact"] = "unsupported"
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(payload))
+    calls = []
+
+    def build(pdf, out, **kwargs):
+        calls.append(kwargs)
+        return tmp_path / "run", "ready_for_owner_review", {"lanes": {}, "budget_state": {}}
+
+    monkeypatch.setattr(cli, "build_template", build)
+    args = ["--task", "template-build", "--target", str(tmp_path / "target.pdf"), "--candidate-profile", str(path), "--blind-profile"]
+    if valid:
+        assert cli.main(args) == 0
+        assert calls[0]["candidate_profile"].full_name == "CLI Candidate"
+        assert calls[0]["blind_profile"] is True
+        assert calls[0]["live"] is False
+    else:
+        with pytest.raises(ValidationError):
+            cli.main(args)
+        assert not calls
+
+
 @pytest.mark.local_dataset
 def test_pipeline_comparison_preflight_reuses_standard_compiler_for_resume_d(tmp_path: Path) -> None:
     target = ROOT / "tests/local_datasets/resume_matrix/resume_D.pdf"
@@ -123,6 +160,153 @@ def _base_authored_template() -> "at.AuthoredTemplateCandidate":
     from tests.experiments.pipeline.template import SCRIPTED_AUTHORED_TEMPLATE
 
     return SCRIPTED_AUTHORED_TEMPLATE.model_copy(deep=True)
+
+
+@pytest.mark.parametrize("blind", [False, True])
+def test_reviewed_profile_fill_preserves_content_and_disclosure(blind: bool) -> None:
+    from app.extraction.candidate_schema import CandidateProfile
+    from tests.experiments.resume_layout.candidates import candidate_from_profile
+
+    profile = CandidateProfile(
+        full_name="Ada Example", given_name="Ada", family_name="Example",
+        email="ada@example.test", phone="+65 1234 5678", location="Example City",
+        professional_summary="Builds dependable systems.",
+        skills=["Rust"], skill_groups=[{"label": "Tools", "skills": ["Python", "SQL"]}],
+        languages=[{"name": "English", "proficiency": "Fluent"}],
+        work_experience=[{"company": "Sample Systems", "title": "Engineer", "location": "Remote", "start_date": "2020", "end_date": "2024", "description": ["Built <safe> APIs."]}],
+        education=[{"institution": "Sample University", "degree": "BS", "field_of_study": "Computing", "start_date": "2016", "end_date": "2020"}],
+        certifications=[{"name": "Sample Certification", "issuer": "Sample Institute", "date": "2021"}],
+        salary_expectation="Private salary", notice_period="Four weeks",
+        client_display_rules={"salary_expectation": "hide", "notice_period": "show"},
+        additional_sections=[
+            {"section_type": "projects", "source_heading": "Selected Work", "source_block_id": "project-block", "entries": [
+                {"title": "First Tool", "links": ["https://example.test/tool"], "description": ["Built a useful tool."]},
+                {"title": "Second Tool", "description": ["Maintained another tool."]},
+            ]},
+            {"section_type": "awards", "source_heading": "Private Awards", "source_block_id": "award-block", "disposition": "hide", "entries": [{"title": "Private award"}]},
+        ],
+    )
+    original = profile.model_dump_json()
+    candidate = candidate_from_profile(profile, blind_profile=blind)
+    fill = at.fill_authored_template(_base_authored_template(), candidate)
+    assert not fill.missing_leaves
+    assert all(count == 1 for count in fill.leaf_counts.values())
+    for value in ("Rust", "Python", "SQL", "Fluent", "Sample Systems", "Engineer", "Sample University", "Computing", "Sample Certification", "Four weeks", "Selected Work", "First Tool", "Second Tool", "https://example.test/tool"):
+        assert value in fill.html_filled
+    assert "Built &lt;safe&gt; APIs." in fill.html_filled
+    assert fill.html_filled.count('class="candidate-additional-entry"') == 2
+    assert "<strong>First Tool</strong>" in fill.html_filled
+    assert "<li>Maintained another tool.</li>" in fill.html_filled
+    footprint = e5_candidate_boundary._candidate_layout_footprint(candidate)["additional_details"]
+    assert footprint["entry_count"] == 2
+    assert sum(item["bullet_count"] for item in footprint["items"]) == 2
+    assert "Private salary" not in candidate.model_dump_json()
+    assert "Private award" not in candidate.model_dump_json()
+    if blind:
+        for value in ("Ada Example", "ada@example.test", "+65 1234 5678"):
+            assert value not in candidate.model_dump_json()
+            assert value not in fill.html_filled
+        assert "Candidate A" in fill.html_filled
+        assert candidate.profile.given_name is None
+        assert candidate.profile.family_name is None
+    else:
+        assert "Ada Example" in fill.html_filled
+        assert candidate.profile.given_name == "Ada"
+    assert profile.model_dump_json() == original
+
+
+@pytest.mark.parametrize("live", [False, True])
+def test_uncached_target_requires_opt_in_and_provider_failure_is_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, live: bool
+) -> None:
+    from tests.helpers.synthetic_pdf import build_styled_target_pdf
+
+    target = build_styled_target_pdf(tmp_path / "incoming.pdf")
+    monkeypatch.setattr(e5, "RUNS", tmp_path / "evidence")
+    calls = []
+
+    def failed_provider(pdf, out):
+        calls.append(pdf)
+        raise RuntimeError("private-provider-detail")
+
+    monkeypatch.setattr(e5, "_analyze_target", failed_provider)
+    run, terminal, record = e5.build_template(target, tmp_path / "run", live=live)
+    assert terminal == "operational_abort"
+    assert record["summary"]["abort"]["operation"] == ("target_analysis" if live else "target_evidence_cache")
+    assert calls == ([target.resolve()] if live else [])
+    assert "private-provider-detail" not in (run / "e5_state.json").read_text()
+    assert not (run / "lane_b").exists()
+
+
+@pytest.mark.local_dataset
+@e5_skip
+def test_uncached_upload_and_reviewed_profile_reach_real_pdf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Authorized PDF replay tests wiring; mocked agents make no quality claim."""
+    from app.extraction.candidate_schema import CandidateProfile
+    from app.template_analysis.commercial.models import NormalizedLayoutEvidence
+    import tests.experiments.resume_layout.target as target_analysis
+    from app.ingestion.pdf_reader import read_pdf_text
+
+    source_cache = ROOT / "tests/experiments/runs/target_cache" / e_shared._sha256_file(RESUME_I)
+    normalized = NormalizedLayoutEvidence.model_validate_json((source_cache / "enriched_evidence.json").read_text())
+    raw = json.loads((source_cache / "adobe_raw.json").read_text())
+    incoming = tmp_path / "incoming.pdf"
+    incoming.write_bytes(RESUME_I.read_bytes() + b"\n% metadata-only new upload\n")
+    assert e_shared._sha256_file(incoming) != e_shared._sha256_file(RESUME_I)
+    evidence_root = tmp_path / "evidence"
+    monkeypatch.setattr(e5, "RUNS", evidence_root)
+    monkeypatch.setattr(e5_setup, "RUNS", evidence_root)
+    monkeypatch.setattr(target_analysis, "RUNS", evidence_root)
+    operations = []
+
+    def adobe_replay(pdf):
+        assert pdf == incoming.resolve()
+        operations.append("adobe")
+        return normalized, raw, b""
+
+    def structure_replay(pdf, adobe_json, out, **kwargs):
+        assert pdf == incoming.resolve()
+        assert kwargs["live"] is True
+        operations.append("structure")
+        out.mkdir()
+        draft_path = ROOT / "tests/experiments/runs/e_pipeline_e4_20260920T134946Z/structure_draft.json"
+        draft = e_shared.TargetStructureDraft.model_validate_json(draft_path.read_text())
+        (out / "structure_draft.json").write_text(draft.model_dump_json())
+        (out / "frozen_case.json").write_text(json.dumps({"target_sha256": e_shared._sha256_file(pdf)}))
+        return out, "awaiting_owner_review", draft
+
+    def builder_replay(_budget, _trace, *, template_id, **kwargs):
+        operations.append("builder")
+        assert "Sample Candidate" not in json.dumps(kwargs["payload"])
+        return _base_authored_template().model_copy(update={"template_id": template_id})
+
+    monkeypatch.setattr(target_analysis, "run_adobe_layout", adobe_replay)
+    monkeypatch.setattr(e5, "build_structure_draft", structure_replay)
+    monkeypatch.setattr(e5_lane, "_live_lane_b_builder", builder_replay)
+    profile = CandidateProfile(
+        full_name="Sample Candidate", email="hidden@example.test",
+        skills=["Rust"], professional_summary="Develops reliable services.",
+        work_experience=[{"company": "Sample Systems", "title": "Engineer", "description": ["Built a useful service."]}],
+    )
+    run, terminal, record = e5.build_template(
+        incoming, tmp_path / "run", live=True, max_repair_rounds=0,
+        candidate_profile=profile, blind_profile=True,
+    )
+    assert terminal in {"ready_for_owner_review", "budget_exhausted"}, record["summary"]
+    assert operations[:3] == ["adobe", "structure", "builder"]
+    candidate_json = (run / "candidate_render_context.json").read_text()
+    assert "Sample Candidate" not in candidate_json
+    assert "hidden@example.test" not in candidate_json
+    text = read_pdf_text(run / "lane_b/render_1.pdf")
+    for value in ("Candidate A", "Rust", "Sample Systems", "Built a useful service."):
+        assert value in text
+    assert "Daniel Phang" not in text
+    assert "hidden@example.test" not in text
+    assert "Sample Candidate" not in text
+    gates = next((run / "lane_b").glob("hard_gates_*.json"))
+    assert json.loads(gates.read_text())["details"]["candidate_content_accounting"]["passed"] is True
 
 
 def test_lane_b_can_opt_into_thinking_without_changing_other_live_roles() -> None:
