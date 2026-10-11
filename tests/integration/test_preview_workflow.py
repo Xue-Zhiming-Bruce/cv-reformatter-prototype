@@ -227,6 +227,8 @@ def test_admission_retains_unqualified_heading_as_gap_without_sample_facts(workf
         {"node_id": "section.unknown", "kind": "section", "reading_order": 1, "label": "Target Person", "binding": {"mapping_action": "unresolved", "sources": [], "evidence_ids": ["synthetic.unknown"]}, "evidence_ids": ["synthetic.unknown"]},
         {"node_id": "section.unknown.heading", "kind": "heading", "reading_order": 2, "parent_id": "section.unknown", "label": "Target Person", "style_id": "style.body", "evidence_ids": ["synthetic.unknown"]},
     ]
+    payload["rules"] = [{"rule_id": "rule.unknown", "x0_pt": 36, "x1_pt": 100, "stroke_pt": 1, "color_hex": "#000000", "evidence_ids": ["synthetic.unknown"]}]
+    payload["nodes"][-1]["rule_id"] = "rule.unknown"
     payload["capability_gaps"] = [{"feature": "unresolved_section_binding:section.unknown", "reason": "Unresolved target heading", "evidence_ids": ["synthetic.unknown"]}]
     run = directory / "synthetic_admission_run"
     run.mkdir()
@@ -239,6 +241,29 @@ def test_admission_retains_unqualified_heading_as_gap_without_sample_facts(workf
     admit_run(run, target, admitted)
     spec = LayoutTemplateSpec.model_validate_json((admitted / "layout_template_spec.json").read_text())
     assert all(node.node_id != "section.unknown.heading" for node in spec.nodes)
+    assert not spec.rules
     assert any(gap.feature == "unqualified_presentation_heading:section.unknown.heading" and gap.evidence_ids == ["synthetic.unknown"] for gap in spec.capability_gaps)
     assert "Target Person" not in (admitted / "layout_template_spec.json").read_text()
     assert "Target Person" not in (admitted / "renderer_artifact.json").read_text()
+
+
+@pytest.mark.parametrize("populated_parent, empty_text", [(False, ""), (True, ""), (True, "\n")])
+def test_empty_child_hiding_cannot_conceal_candidate_values(workflow, populated_parent: bool, empty_text: str) -> None:
+    client, directory, profile, revision, cache = workflow
+    renderer = RendererArtifact.model_validate_json((cache / "renderer_artifact.json").read_text())
+    summary = '{{each:summary}}<p class="rsv-summary">{{item}}</p>{{/each}}'
+    renderer.template.html = renderer.template.html.replace(summary, '<section class="optional-section"><div class="optional-region">' + summary + '</div></section>')
+    renderer.template.css += '.optional-section:has(.optional-region:empty){display:none}'
+    if populated_parent:
+        renderer.template.html = renderer.template.html.replace('{{candidate:name}}', '<section class="optional-section">{{candidate:name}}<div class="optional-region">' + empty_text + '</div></section>', 1)
+    (cache / "renderer_artifact.json").write_text(renderer.model_dump_json())
+    job = preview(client, revision, succeeds=not populated_parent)
+    if populated_parent:
+        assert "would hide populated candidate content" in job["error"]["message"]
+        assert not (directory / "candidate_profile.pdf").exists()
+    else:
+        edited = profile.model_copy(update={"professional_summary": None})
+        saved = client.post("/api/artifacts/artifact_preview/profiles/revisions", json={"profile": edited.model_dump(mode="json")})
+        result = preview(client, saved.json()["profile_revision_id"])["result"]
+        assert result["client_ready"] is False
+        assert client.get(result["pdf_preview_url"]).status_code == 200

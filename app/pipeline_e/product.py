@@ -6,6 +6,7 @@ import json
 import re
 import uuid
 from collections import Counter
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Literal
@@ -114,6 +115,8 @@ def admit_run(run_dir: Path, target: Path, destination: Path) -> None:
                 omitted_headings.append(node)
     # Unqualified labels remain evidence/capability gaps, never empty or invented headings.
     payload["nodes"] = [node for node in payload["nodes"] if node not in omitted_headings]
+    used_rules = {node.get("rule_id") for node in payload["nodes"]}
+    payload["rules"] = [rule for rule in payload["rules"] if rule["rule_id"] in used_rules]
     for node in omitted_headings:
         payload["capability_gaps"].append({"feature": "unqualified_presentation_heading:" + node["node_id"], "reason": "Heading remains non-renderable until evidence is reviewed.", "evidence_ids": node["evidence_ids"]})
     # Detailed analysis explanations stay in evidence; the neutral contract keeps gaps explicit.
@@ -153,15 +156,66 @@ def admit_run(run_dir: Path, target: Path, destination: Path) -> None:
     (destination / "renderer_artifact.json").write_text(artifact.model_dump_json(indent=2))
 
 
+@dataclass
+class _Element:
+    tag: str
+    classes: set[str]
+    parent: int | None
+    children: list[int] = field(default_factory=list)
+    candidate_ids: set[str] = field(default_factory=set)
+    text: str = ""
+
+
 class LeafParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.counts: Counter[str] = Counter()
+        self.nodes: list[_Element] = []
+        self.stack: list[int] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        value = dict(attrs).get("data-candidate-leaf")
+        values = dict(attrs)
+        value = values.get("data-candidate-leaf")
+        node = _Element(tag, set((values.get("class") or "").split()), self.stack[-1] if self.stack else None)
+        index = len(self.nodes)
+        self.nodes.append(node)
+        if node.parent is not None:
+            self.nodes[node.parent].children.append(index)
         if value:
             self.counts[value] += 1
+            for ancestor in self.stack + [index]:
+                self.nodes[ancestor].candidate_ids.add(value)
+        if tag not in {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}:
+            self.stack.append(index)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        for position in range(len(self.stack) - 1, -1, -1):
+            if self.nodes[self.stack[position]].tag == tag:
+                del self.stack[position:]
+                break
+
+    def handle_data(self, data: str) -> None:
+        for index in self.stack:
+            self.nodes[index].text += data
+
+    def require_empty_parent(self, parent_class: str, child_class: str, labels: set[str]) -> None:
+        for index, parent in enumerate(self.nodes):
+            if parent_class not in parent.classes:
+                continue
+            if parent.tag not in {"section", "div"}:
+                raise ValueError("Empty-parent selectors require section/div containers")
+            descendants = list(parent.children)
+            while descendants:
+                child = self.nodes[descendants.pop()]
+                descendants.extend(child.children)
+                if child_class in child.classes and not child.children and not child.text.strip():
+                    if parent.candidate_ids or (parent.text.strip() and parent.text.strip() not in labels):
+                        raise ValueError("An empty-child selector would hide populated candidate content")
+
 
 
 def material_geometry(pdf: Path, labels: set[str]) -> dict[str, object]:
@@ -202,6 +256,9 @@ def render_preview(directory: Path, output: Path, target: Path, profile: Candida
             "slots": [slot for slot in template.slots if slot.category not in {"candidate_given_name", "candidate_family_name"}] + [AuthoredSlot(category="candidate_name", required=True)],
         })
         name_binding = "full_name"
+    fill = fill_authored_template(template, candidate, artifact.labels)
+    parser = LeafParser()
+    parser.feed(fill.html_filled)
     # Product content cannot use CSS concealment or spoof shell-owned identities.
     # Empty optional boxes may disappear; populated candidate boxes may not.
     css = template.css
@@ -209,13 +266,19 @@ def render_preview(directory: Path, output: Path, target: Path, profile: Candida
         selectors = match.group(1).strip().split(",")
         if all(re.fullmatch(r"[.#a-zA-Z0-9_\- :>]+:empty", selector.strip()) for selector in selectors):
             css = css.replace(match.group(0), "")
+        else:
+            parent_empty = [re.fullmatch(r"\.([a-zA-Z_][\w-]*):has\(\.([a-zA-Z_][\w-]*):empty\)", selector.strip()) for selector in selectors]
+            if all(parent_empty) and re.fullmatch(r"\s*display\s*:\s*none\s*;?\s*", match.group(2), re.I):
+                for selector in parent_empty:
+                    assert selector is not None
+                    parser.require_empty_parent(selector.group(1), selector.group(2), {label.text for label in artifact.labels})
+                css = css.replace(match.group(0), "")
+
     if re.search(r'(?:overflow(?:-[xy])?\s*:\s*(?:hidden|clip)|visibility\s*:\s*hidden|display\s*:\s*none|opacity\s*:\s*0(?:\D|$)|(?:clip|clip-path|text-overflow)\s*:)', css, re.I) or re.search(r'data-(?:candidate-leaf|field)\s*=', template.html, re.I):
         raise ValueError("Template uses concealment or reserved candidate identities")
     if "\\" in css or re.search(r"(?:opacity|filter|clip|mask|z-index)\s*:|color\s*:\s*transparent", css, re.I):
         raise ValueError("Template uses unsupported concealed/layered text styling")
     validate_authored_template(template, target_pdf=target, render_candidate=candidate, labels=artifact.labels, known_evidence_ids=set())
-    fill = fill_authored_template(template, candidate, artifact.labels)
-    parser = LeafParser(); parser.feed(fill.html_filled)
     leaf_ids = {leaf.leaf_id for leaf in candidate.leaves if leaf.text}
     bad_leaves = sorted({key for key in leaf_ids if parser.counts[key] != 1} | (set(parser.counts) - leaf_ids))
     if fill.missing_leaves or bad_leaves:
