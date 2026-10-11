@@ -214,3 +214,31 @@ def test_final_confirmation_reuses_source_coverage_gate(workflow) -> None:
     assert response.json()["detail"]["error_code"] == "segmentation_coverage_failed"
     assert client.get(result["pdf_download_url"]).status_code == 409
     assert not (directory / "final_acceptance.json").exists()
+
+
+def test_admission_retains_unqualified_heading_as_gap_without_sample_facts(workflow) -> None:
+    from app.pipeline_e.product import admit_run
+    client, directory, _, _, cache = workflow
+    target = directory / "target_format_reference.pdf"
+    payload = json.loads((cache / "layout_template_spec.json").read_text())
+    payload["schema_version"] = "layout-state/1"
+    payload.pop("structure_contract")
+    payload["nodes"] += [
+        {"node_id": "section.unknown", "kind": "section", "reading_order": 1, "label": "Target Person", "binding": {"mapping_action": "unresolved", "sources": [], "evidence_ids": ["synthetic.unknown"]}, "evidence_ids": ["synthetic.unknown"]},
+        {"node_id": "section.unknown.heading", "kind": "heading", "reading_order": 2, "parent_id": "section.unknown", "label": "Target Person", "style_id": "style.body", "evidence_ids": ["synthetic.unknown"]},
+    ]
+    payload["capability_gaps"] = [{"feature": "unresolved_section_binding:section.unknown", "reason": "Unresolved target heading", "evidence_ids": ["synthetic.unknown"]}]
+    run = directory / "synthetic_admission_run"
+    run.mkdir()
+    renderer = json.loads((cache / "renderer_artifact.json").read_text())
+    record = {"summary": {"source_identity_stable": True}, "lanes": {"b": {"best_render_version": "v1", "builder_candidates": [{"candidate_render_version": "v1", "validation": {"passed": True}, "typed_candidate": renderer["template"]}]}}}
+    files = {"e5_state.json": record, "run_config.json": {"presentation_label_approval": {"renderable_label_ids": [], "approved_label_ids": []}}, "target_preflight.json": {"proposed_presentation_labels": []}, "c2_layout_state.json": payload, "target_font_roles.json": renderer["font_roles"]}
+    for name, value in files.items():
+        (run / name).write_text(json.dumps(value))
+    admitted = directory / "admitted"
+    admit_run(run, target, admitted)
+    spec = LayoutTemplateSpec.model_validate_json((admitted / "layout_template_spec.json").read_text())
+    assert all(node.node_id != "section.unknown.heading" for node in spec.nodes)
+    assert any(gap.feature == "unqualified_presentation_heading:section.unknown.heading" and gap.evidence_ids == ["synthetic.unknown"] for gap in spec.capability_gaps)
+    assert "Target Person" not in (admitted / "layout_template_spec.json").read_text()
+    assert "Target Person" not in (admitted / "renderer_artifact.json").read_text()

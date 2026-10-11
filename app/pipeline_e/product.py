@@ -106,9 +106,16 @@ def admit_run(run_dir: Path, target: Path, destination: Path) -> None:
     state = C2LayoutState.model_validate_json((run_dir / "c2_layout_state.json").read_text())
     safe_text = {label.text for label in labels}
     payload = state.model_dump(mode="json", exclude={"schema_version", "warnings"})
+    omitted_headings = []
     for node in payload["nodes"]:
         if node.get("label") and node["label"] not in safe_text:
             node["label"] = None
+            if node["kind"] == "heading":
+                omitted_headings.append(node)
+    # Unqualified labels remain evidence/capability gaps, never empty or invented headings.
+    payload["nodes"] = [node for node in payload["nodes"] if node not in omitted_headings]
+    for node in omitted_headings:
+        payload["capability_gaps"].append({"feature": "unqualified_presentation_heading:" + node["node_id"], "reason": "Heading remains non-renderable until evidence is reviewed.", "evidence_ids": node["evidence_ids"]})
     # Detailed analysis explanations stay in evidence; the neutral contract keeps gaps explicit.
     for gap in payload["capability_gaps"]:
         gap["reason"] = "Unsupported presentation feature; inspect target evidence before reuse."
