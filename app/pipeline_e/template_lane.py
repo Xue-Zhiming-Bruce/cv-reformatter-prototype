@@ -161,6 +161,8 @@ E5_LANE_B_BUILDER_INSTRUCTIONS = (
     "{{each:languages}}/{{each:certifications}}/{{each:additional}} closed\n"
     "with {{/each}}; inside a region use {{item}}, {{item_head}},\n"
     "{{item_detail}}, {{item_meta}}, {{item_bullets}}, {{item_text}}.\n"
+    "Summary, languages and certifications contain scalar items: use only {{item}}.\n"
+    "The item_head/item_text/detail/meta/bullets tokens are for structured collections.\n"
     "`{{item_bullets}}` already expands to <li> nodes whose source text owns\n"
     "its bullet glyph. Put it directly inside a <ul>, set list-style:none,\n"
     "and NEVER add a native, background, image, or pseudo-element marker.\n"

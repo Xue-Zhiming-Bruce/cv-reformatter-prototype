@@ -241,7 +241,7 @@ def render_preview(directory: Path, output: Path, target: Path, profile: Candida
 
 
 def construct_template(target: Path, directory: Path, profile: CandidateProfile, *, blind: bool, live: bool) -> None:
-    run, terminal, _ = build_template(target, directory / ("construction_" + uuid.uuid4().hex), candidate_profile=profile, blind_profile=blind, live=live)
+    run, terminal, _ = build_template(target, directory / ("construction_" + uuid.uuid4().hex), candidate_profile=profile, blind_profile=blind, live=live, max_repair_rounds=3)
     if terminal != "ready_for_owner_review":
         raise ValueError(f"Template construction stopped: {terminal}; inspect the local construction evidence")
     admit_run(run, target, directory)

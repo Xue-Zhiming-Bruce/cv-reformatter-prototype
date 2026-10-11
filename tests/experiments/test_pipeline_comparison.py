@@ -1730,6 +1730,18 @@ def test_education_dates_follow_explicit_source_pairs(monkeypatch: pytest.Monkey
         CandidateDocument.model_validate(invalid)
 
 
+@pytest.mark.parametrize("collection", ["summary", "languages", "certifications"])
+def test_scalar_collection_rejects_tokens_that_would_render_empty(collection: str) -> None:
+    template = _base_authored_template().model_copy(update={
+        "html": "{{candidate:name}}{{each:" + collection + "}}<p>{{item_text}}</p>{{/each}}",
+        "slots": [at.AuthoredSlot(category="candidate_name", required=True), at.AuthoredSlot(category=collection, repeating=True)],
+    })
+    with pytest.raises(ValueError, match="unsupported item token for " + collection):
+        at.validate_authored_template(template, target_pdf=Path("target.pdf"))
+    valid = template.model_copy(update={"html": template.html.replace("{{item_text}}", "{{item}}")})
+    assert at.validate_authored_template(valid, target_pdf=Path("target.pdf"))["passed"]
+
+
 def test_authored_rendering_uses_a_network_disabled_chrome_environment() -> None:
     environment = at.authored_network_disabled_environment()
     assert any("--host-resolver-rules=MAP * ~NOTFOUND" in flag for flag in environment["flags"])

@@ -330,6 +330,11 @@ def validate_authored_template(
             violations.append(f"slot token {token!r} has no declared slot")
         elif token == "candidate:skills_heading" and "candidate_skills_heading" not in declared_categories:
             violations.append(f"slot token {token!r} has no declared slot")
+    for region in _EACH_RE.finditer(normalized_html):
+        if region.group(1) in {"summary", "languages", "certifications"}:
+            unsupported = set(_TOKEN_RE.findall(region.group(2))) - {"item"}
+            if unsupported:
+                violations.append(f"unsupported item token for {region.group(1)}: {sorted(unsupported)}; use {{{{item}}}}")
     inside_tokens = set(_TOKEN_RE.findall(regions_html))
     for token in sorted(inside_tokens - set(ITEM_TOKENS)):
         violations.append(f"non-standard item token inside a region: {token!r}")
