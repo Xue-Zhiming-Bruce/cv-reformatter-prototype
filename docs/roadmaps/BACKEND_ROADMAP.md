@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: August 28, 2026
+Last reviewed: October 11, 2026 (ADR 0007 local integration approved)
 
 This is the active engineering roadmap after completion of the MVP and PDF
 demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
@@ -44,6 +44,29 @@ Recruiter target PDF
 
 Do not restart the MVP or replace working components without a benchmark that
 shows a material quality, reliability, privacy, or operational benefit.
+
+### Approved Local Pipeline E Integration
+
+Owner-approved local scope: [ADR 0007](../decisions/0007-pipeline-e-local-integration.md).
+This sequence connects E to the co-founder frontend without declaring B0–B5,
+provider policy, persistence, security or deployment gates complete.
+
+- [x] Preserve recoverable backend/frontend source snapshots and close E's
+      reviewed-profile input gap; evidence is in the
+      [integration record](../../tests/experiments/PRE_INTEGRATION_SNAPSHOT_20261011.md).
+- [x] Obtain explicit approval for the local designer/rendering amendment.
+- [ ] Represent E's measured layout in a versioned neutral template contract
+      and bind its separate rendering artifact to template/renderer/font identity.
+- [ ] Promote reusable runtime code from experiments without duplication;
+      retain the canonical experiment runner and evaluation-only inputs in tests.
+- [ ] Connect inspectable construction jobs and the existing revision/output
+      lifecycle to the API; report failure and interruption explicitly.
+- [ ] Make PDF content, privacy, template safety and material structural gates
+      blocking before API delivery.
+- [ ] Align frontend progress, profile edits, HTML preview and PDF export;
+      replace automatic approvals with explicit final-file acceptance.
+- [ ] Produce reviewable corpus outcomes and obtain owner visual acceptance
+      before replacing the accepted default; verify explicit rollback.
 
 ## Product-Standard Definition
 

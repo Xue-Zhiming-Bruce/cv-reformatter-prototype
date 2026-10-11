@@ -4,7 +4,7 @@ Status: `Active contract`
 
 Owner: Backend
 
-Last reviewed: August 24, 2026
+Last reviewed: October 11, 2026 (scoped local E amendment)
 
 > **Decision record:** [ADR 0001](../decisions/0001-claude-template-designer-boundary.md)
 > was ruled **Accepted** by the owner on 2026-08-24, with one generalization:
@@ -13,6 +13,12 @@ Last reviewed: August 24, 2026
 > Preferred next adapter: OpenAI, reusing the existing extraction integration.
 > This document is the single operational home for the boundary; the ADR is
 > the immutable decision record.
+
+This document governs the existing labels-and-references designer route.
+[ADR 0007](../decisions/0007-pipeline-e-local-integration.md) separately
+authorizes the local E prototype's page inspection, iterative repair and
+constrained HTML/CSS artifact. It does not relax candidate truth, measured
+geometry, provider opt-in or human approval, or switch the default API route.
 
 Related roadmap stages: B1 (template fidelity contract), B4 (AI quality
 layer). This vertical slice implements a bounded "LLM as the main template

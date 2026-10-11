@@ -4,6 +4,16 @@ Status: `Accepted` (owner ruling, 2026-08-24; originally proposed 2026-08-09)
 
 Owner: Backend
 
+## Scoped Amendment — October 11, 2026
+
+[ADR 0007](0007-pipeline-e-local-integration.md) permits the local Pipeline E
+prototype to inspect target/generated pages and author a separate, constrained
+HTML/CSS rendering artifact. Its neutral template contract, measured evidence,
+candidate facts, validation and human approval remain independently controlled.
+The labels-and-references-only boundary below continues to govern the existing
+designer route. The local exception does not authorize confidential provider
+inputs or production deployment.
+
 ## Context
 
 Boutique-recruiter CV formatting needs controlled presentation driven by

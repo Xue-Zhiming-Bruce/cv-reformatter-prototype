@@ -122,7 +122,9 @@ hypothesis concerns the process used to produce and validate it.
    separate experiment.
 7. VLM access to target images/body text, an iterative designer, or product
    persistence of authored HTML/CSS exceeds parts of ADR 0001/0006. Product
-   integration requires explicit revisions.
+   integration requires explicit revisions. The owner approved the scoped
+   local integration revision in [ADR 0007](../../docs/decisions/0007-pipeline-e-local-integration.md)
+   on October 11, 2026; corpus acceptance and production promotion remain gated.
 8. Preserve the accepted baseline until a replacement passes the agreed corpus,
    owner review, and rollback gate.
 

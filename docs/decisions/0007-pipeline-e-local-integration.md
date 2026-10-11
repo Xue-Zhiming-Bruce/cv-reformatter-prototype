@@ -1,6 +1,6 @@
 # ADR 0007: Pipeline E local frontend integration
 
-Status: `Proposed; owner approval pending`
+Status: `Accepted` (explicit product-owner approval in chat, October 11, 2026)
 
 Date: October 11, 2026
 
@@ -18,10 +18,15 @@ Those capabilities exceed ADR 0001's labels-and-references designer boundary.
 [Pipeline E plan, section 5.7](../../tests/experiments/PIPELINE_E_PLAN.md)
 explicitly requires ADR revisions before product integration.
 
-This proposal authorizes a local integration prototype, not a production
+This decision authorizes a local integration prototype, not a production
 provider selection, hosting release, or visual-quality acceptance.
 
-## Proposed decision
+It amends ADR 0001's designer input/output boundary and ADR 0006's renderer
+artifact and verification boundary only within this local scope. Their other
+requirements remain in force. Approval authorizes implementation; it does not
+claim the integration or its acceptance gates are complete.
+
+## Decision
 
 1. Keep `CandidateProfile` authoritative. The API passes an artifact-scoped,
    current persisted revision through `ClientFacingRenderContext` into E.
@@ -99,7 +104,7 @@ local E integration explicitly until corpus and owner acceptance gates pass.
 Failure never silently switches a requested target to the old renderer or a
 built-in style. Rollback is an explicit build/configuration choice.
 
-## Follow-up after approval
+## Implementation follow-up
 
 Promote reusable E code without duplication; define its neutral-template and
 renderer-artifact binding; connect the API's revision, job and artifact

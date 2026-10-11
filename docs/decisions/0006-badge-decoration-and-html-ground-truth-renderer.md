@@ -9,6 +9,15 @@ Owner: Backend
 
 Approver: Product owner
 
+## Scoped Amendment — October 11, 2026
+
+[ADR 0007](0007-pipeline-e-local-integration.md) permits a local Pipeline E
+HTML/CSS artifact bound separately to the neutral template checksum, renderer
+version and font identity. HTML and Chrome PDF remain the output path. Actual
+PDF content, privacy and material structural failures must block API delivery;
+valid HTML alone cannot pass those gates. This amendment does not accept E's
+visual quality or replace the measured baseline.
+
 ## Context
 
 Resume C expresses short list items as filled rounded chips. The previous

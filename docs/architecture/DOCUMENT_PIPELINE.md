@@ -2,11 +2,17 @@
 
 Status: `Active contract`
 
-Last reviewed: August 28, 2026
+Last reviewed: October 11, 2026 (approved local Pipeline E integration scope)
 
 This document defines the provider-neutral boundaries of the CV Reformatter
 backend. The [Product Specification](../product/PRODUCT_SPEC.md) remains the
 authority for product behavior.
+
+[ADR 0007](../decisions/0007-pipeline-e-local-integration.md) authorizes a local
+Pipeline E prototype with a separately bound authored rendering artifact and
+target/generated-page inspection. It preserves the neutral template and
+candidate boundaries below. This is an implementation direction, not evidence
+that the product API has switched or the baseline has been replaced.
 
 ## End-To-End Pipeline
 
