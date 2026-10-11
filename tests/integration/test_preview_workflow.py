@@ -1,0 +1,216 @@
+"""Local preview/edit/export behavior with real Chrome PDFs, no provider calls."""
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import main
+from app.extraction.candidate_schema import CandidateProfile
+from app.final_acceptance import FinalOutputIdentity
+from app.ingestion.pdf_reader import read_pdf_text
+from app.pipeline_e.product import FontRole, LayoutTemplateSpec, RendererArtifact, font_manifest, spec_checksum
+from app.pipeline_e.shared import _sha256_file
+from app.pipeline_e.template import SCRIPTED_AUTHORED_TEMPLATE
+from tests.helpers.synthetic_pdf import build_text_pdf_pages
+
+pytestmark = pytest.mark.integration
+
+
+@pytest.fixture
+def workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")
+    monkeypatch.setattr(main, "LOCAL_DATABASE_PATH", tmp_path / "metadata.sqlite3")
+    monkeypatch.setenv("TEMPLATE_DESIGN_STRATEGY", "pipeline_e")
+    monkeypatch.delenv("PIPELINE_E_LIVE_ENABLED", raising=False)
+    client = TestClient(main.app)
+    directory = tmp_path / "outputs/artifact_preview"
+    directory.mkdir(parents=True)
+    profile = CandidateProfile(
+        full_name="Avery Candidate", email="avery@example.test", location="Singapore",
+        professional_summary="Builds reliable document workflows.", skills=["Python", "SQL"],
+        work_experience=[{"company": "Sample Systems", "title": "Engineer", "start_date": "2020", "end_date": "2024", "description": ["Preserved every approved candidate value."]}],
+        education=[{"institution": "Example University", "degree": "BSc"}],
+        client_display_rules={key: "hide" for key in ["salary_expectation", "notice_period", "work_authorization", "interview_availability"]},
+    )
+    (directory / "candidate_profile.json").write_text(profile.model_dump_json())
+    (directory / "raw_extracted_text.txt").write_text("Original synthetic evidence stays unchanged.")
+    saved = client.post("/api/artifacts/artifact_preview/profiles/revisions", json={"profile": profile.model_dump(mode="json")})
+    assert saved.status_code == 200, saved.text
+    target = tmp_path / "target.pdf"
+    page = {"width_pt": 612, "height_pt": 792, "margin_top_pt": 36, "margin_left_pt": 36, "margin_bottom_pt": 36, "margin_right_pt": 36}
+    build_text_pdf_pages(target, ["Target Person\nTarget employer facts must never appear."], **page)
+    upload = client.post("/api/target-format", data={"artifact_id": "artifact_preview"}, files={"file": ("target.pdf", target.read_bytes(), "application/pdf")})
+    assert upload.status_code == 200, upload.text
+    assert upload.json()["target_format"]["analysis_status"] == "pending"
+    target_hash = _sha256_file(target)
+    spec = LayoutTemplateSpec(
+        template_version="synthetic-workflow/1",
+        provenance={"provider": "synthetic", "measurement_policy": "API fixture, not a layout-fidelity evaluation", "target_sha256": target_hash},
+        page={**page, "page_count": 1, "evidence_ids": ["synthetic.page"]},
+        styles=[{"style_id": "style.body", "font_family": "Lato", "font_size_pt": 10, "evidence_ids": ["synthetic.body"]}],
+        nodes=[{"node_id": "header.name", "kind": "header_row", "reading_order": 0, "top_pt": 36, "style_id": "style.body", "slots": ["name"], "evidence_ids": ["synthetic.header"]}],
+    )
+    roles = {key: FontRole(target_family="Lato", required_family="Lato", font_size_pt=size, bold=False, substitution=False, visual_review_required=False) for key, size in [("body", 10.0), ("name", 16.0)]}
+    template = SCRIPTED_AUTHORED_TEMPLATE.model_copy(update={"css": SCRIPTED_AUTHORED_TEMPLATE.css.replace("Arial", "Lato")})
+    renderer = RendererArtifact(layout_spec_sha256=spec_checksum(spec), target_sha256=target_hash, font_manifest=font_manifest(roles), template=template, labels=[], font_roles=roles)
+    cache = tmp_path / "outputs/pipeline_e_templates" / target_hash
+    cache.mkdir(parents=True)
+    (cache / "layout_template_spec.json").write_text(spec.model_dump_json())
+    (cache / "renderer_artifact.json").write_text(renderer.model_dump_json())
+    return client, directory, profile, saved.json()["profile_revision_id"], cache
+
+
+def preview(client: TestClient, revision: str, *, blind: bool = False, succeeds: bool = True):
+    response = client.post("/api/artifacts/artifact_preview/preview-jobs", json={"profile_revision_id": revision, "blind_profile": blind})
+    assert response.status_code == 202, response.text
+    job_id = response.json()["job_id"]
+    deadline = time.monotonic() + 40
+    while time.monotonic() < deadline:
+        job = client.get(f"/api/artifacts/artifact_preview/preview-jobs/{job_id}").json()
+        if job["state"] not in {"queued", "running"}:
+            assert (job["state"] == "succeeded") == succeeds, job
+            return job
+        time.sleep(.05)
+    pytest.fail("Local preview job did not finish")
+
+
+def identity(result: dict) -> dict:
+    return {key: result[key] for key in FinalOutputIdentity.model_fields}
+
+
+def test_real_pdf_edit_final_confirmation_and_blinding(workflow) -> None:
+    client, directory, profile, revision, _ = workflow
+    source = (directory / "candidate_profile.json").read_bytes()
+    original = (directory / "raw_extracted_text.txt").read_bytes()
+    first = preview(client, revision)["result"]
+    assert first["client_ready"] is False
+    generated = CandidateProfile.model_validate_json((directory / "generated_profile.json").read_text())
+    assert generated.model_dump(exclude={"missing_fields"}) == profile.model_dump(exclude={"missing_fields"})
+    assert [field.model_dump(mode="json") for field in generated.missing_fields] == first["missing_fields"]
+    assert client.get(first["pdf_download_url"]).status_code == 409
+    assert client.get(first["pdf_preview_url"]).status_code == 200
+    html = client.get(first["html_surface_url"]).text
+    assert 'data-field="work_experience.0.company"' in html
+    assert "default-src 'none'" in client.get(first["html_surface_url"]).headers["content-security-policy"]
+    assert "Target Person" not in html
+    accepted = client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(first))
+    assert accepted.status_code == 200, accepted.text
+    assert client.get(first["pdf_download_url"]).status_code == 200
+    assert "attachment" in client.get(first["pdf_download_url"]).headers["content-disposition"]
+    old_pdf = client.get(first["pdf_preview_url"]).content
+    edited = profile.model_copy(update={"professional_summary": "Edited and reviewed by the recruiter."})
+    saved = client.post("/api/artifacts/artifact_preview/profiles/revisions", json={"profile": edited.model_dump(mode="json")})
+    assert saved.status_code == 200, saved.text
+    new_revision = saved.json()["profile_revision_id"]
+    assert client.get(first["pdf_download_url"]).status_code == 409
+    assert client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(first)).status_code == 409
+    second = preview(client, new_revision)["result"]
+    assert second["profile_revision_id"] == new_revision and not second["client_ready"]
+    assert second["pdf_sha256"] != first["pdf_sha256"]
+    assert "Edited and reviewed" in client.get(second["html_surface_url"]).text
+    assert client.get(first["pdf_preview_url"]).content == old_pdf
+    assert client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(first)).status_code == 409
+    assert client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(second)).status_code == 200
+    blind = preview(client, new_revision, blind=True)["result"]
+    pdf = directory / "blind.pdf"; pdf.write_bytes(client.get(blind["pdf_preview_url"]).content)
+    text = read_pdf_text(pdf)
+    assert "Candidate A" in text
+    assert "Avery Candidate" not in text and "avery@example.test" not in text
+    assert client.get(blind["pdf_download_url"]).status_code == 409
+    assert (directory / "candidate_profile.json").read_bytes() == source
+    assert (directory / "raw_extracted_text.txt").read_bytes() == original
+
+
+@pytest.mark.parametrize("failure", ["duplicate", "font_identity", "concealment"])
+def test_unsafe_reuse_never_publishes_a_pdf(workflow, failure: str) -> None:
+    client, directory, _, revision, cache = workflow
+    renderer = RendererArtifact.model_validate_json((cache / "renderer_artifact.json").read_text())
+    if failure == "duplicate":
+        renderer.template.html += "{{each:summary}}<p>{{item}}</p>{{/each}}"
+    elif failure == "font_identity":
+        renderer.font_manifest[next(iter(renderer.font_manifest))] = "0" * 64
+    else:
+        renderer.template.css += ".rsv-summary {opacity:0;}"
+    (cache / "renderer_artifact.json").write_text(renderer.model_dump_json())
+    job = preview(client, revision, succeeds=False)
+    assert job["error"]["error_code"] == "pipeline_e_preview_blocked"
+    assert not (directory / "candidate_profile.pdf").exists()
+    assert not (directory / "final_acceptance.json").exists()
+
+
+def test_missing_cache_requires_opt_in_and_job_input_is_strict(workflow) -> None:
+    client, directory, _, revision, cache = workflow
+    (cache / "renderer_artifact.json").unlink()
+    job = preview(client, revision, succeeds=False)
+    assert job["error"]["error_code"] == "pipeline_e_live_disabled"
+    for extra in [{"profile": {}}, {"live": True}, {"blind_profile": "false"}]:
+        response = client.post("/api/artifacts/artifact_preview/preview-jobs", json={"profile_revision_id": revision, **extra})
+        assert response.status_code == 422, response.text
+    interrupted = directory / "preview_jobs" / ("f" * 32)
+    interrupted.mkdir(parents=True)
+    record = {"job_id": "f" * 32, "artifact_id": "artifact_preview", "profile_revision_id": revision, "state": "running", "stage": "building", "created_at": "2026-10-11", "updated_at": "2026-10-11"}
+    (interrupted / "status.json").write_text(json.dumps(record))
+    resumed = client.get("/api/artifacts/artifact_preview/preview-jobs/" + "f" * 32)
+    assert resumed.status_code == 200 and resumed.json()["state"] == "interrupted"
+
+
+def test_replacing_target_invalidates_confirmed_export(workflow) -> None:
+    client, directory, _, revision, _ = workflow
+    result = preview(client, revision)["result"]
+    assert client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(result)).status_code == 200
+    target = directory / "target_format_reference.pdf"
+    target.write_bytes(target.read_bytes() + b"\n% changed target identity\n")
+    assert client.get(result["pdf_download_url"]).status_code == 409
+    assert client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(result)).status_code == 409
+    assert client.get(result["pdf_preview_url"]).status_code == 200
+
+
+def test_duplicate_jobs_share_work_and_block_concurrent_mutation(workflow, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+    client, _, profile, revision, _ = workflow
+    entered, release = threading.Event(), threading.Event()
+    real_generate = main._generate_outputs
+    calls = []
+    def held(request):
+        calls.append(request.profile_revision_id)
+        entered.set()
+        assert release.wait(15)
+        return real_generate(request)
+    monkeypatch.setattr(main, "_generate_outputs", held)
+    body = {"profile_revision_id": revision}
+    first = client.post("/api/artifacts/artifact_preview/preview-jobs", json=body)
+    assert first.status_code == 202
+    assert entered.wait(5)
+    try:
+        duplicate = client.post("/api/artifacts/artifact_preview/preview-jobs", json=body)
+        assert duplicate.status_code == 202 and duplicate.json()["job_id"] == first.json()["job_id"]
+        conflicting = client.post("/api/artifacts/artifact_preview/preview-jobs", json={**body, "blind_profile": True})
+        assert conflicting.status_code == 409
+        assert client.post("/api/artifacts/artifact_preview/profiles/revisions", json={"profile": profile.model_dump(mode="json")}).status_code == 409
+        assert client.post("/api/generate", json={"artifact_id": "artifact_preview", **body}).status_code == 409
+    finally:
+        release.set()
+    deadline = time.monotonic() + 40
+    while time.monotonic() < deadline:
+        state = client.get(f"/api/artifacts/artifact_preview/preview-jobs/{first.json()['job_id']}").json()
+        if state["state"] not in {"queued", "running"}: break
+        time.sleep(.05)
+    assert state["state"] == "succeeded", state
+    assert calls == [revision]
+
+
+def test_final_confirmation_reuses_source_coverage_gate(workflow) -> None:
+    from app.extraction.coverage_audit import audit_segmentation_lines
+    client, directory, _, revision, _ = workflow
+    audit = audit_segmentation_lines("Preserved original line", ["Altered original line"])
+    (directory / "segmentation_audit.json").write_text(audit.model_dump_json())
+    result = preview(client, revision)["result"]
+    response = client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(result))
+    assert response.status_code == 409
+    assert response.json()["detail"]["error_code"] == "segmentation_coverage_failed"
+    assert client.get(result["pdf_download_url"]).status_code == 409
+    assert not (directory / "final_acceptance.json").exists()

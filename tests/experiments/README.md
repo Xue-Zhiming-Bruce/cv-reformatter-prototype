@@ -49,22 +49,23 @@ does not imply visual acceptance of the generated PDF.
 ## Layout
 
 ```text
+app/pipeline_e/       reusable E runtime, including resume_layout/ and licensed font assets
 tests/experiments/
-  pipeline/           one CLI; evidence, measurement, review, template, and export support
-  resume_layout/      target analysis, layout state, render plan, HTML/PDF and gates
-  test_pipeline*.py   end-to-end stage and Lane B coverage
+  pipeline/           canonical CLI only; imports the runtime
+  candidate_fixtures.py  evaluation-only candidates and frozen run registry
+  test_pipeline*.py   stage and Lane B regression coverage
   test_compile_state.py
   test_gates.py
   test_scaffold.py
   test_structure.py
-  assets/             tracked OFL-licensed fonts
   runs/               ignored generated evidence and registered read-only inputs
-  *.md                dated historical evidence; not executable workflows
+  *.md                tracked plans and curated evidence
 ```
 
-`resume_layout/` is part of the current Pipeline implementation, despite the
-historical C2 names still present in some schemas and evidence fields. Those
-names are persisted compatibility vocabulary, not alternate runnable pipelines.
+Runtime modules are promoted once, with no forwarding copies under tests.
+Historical C2/E schema names remain persisted compatibility vocabulary. Font
+assets preserve their supplied license notices (Charter's Bitstream/XCharter
+notice; Lato and Roboto's OFL notices).
 
 ## Structural rules
 
@@ -78,8 +79,21 @@ names are persisted compatibility vocabulary, not alternate runnable pipelines.
 ## Evidence inputs
 
 Current tasks read the frozen run directories registered in
-`resume_layout/candidates.py`, provider-neutral evidence under
+`candidate_fixtures.py`, provider-neutral evidence under
 `runs/target_cache/`, and target-matched structure drafts. Earlier tasks retain
 their frozen inputs; template building can prepare missing evidence and drafts
 with explicit live opt-in. These retained artifacts are inputs to Pipeline,
 not live legacy entry points.
+
+## Local frontend integration
+
+ADR 0007 enables the API strategy `TEMPLATE_DESIGN_STRATEGY=pipeline_e`.
+Product runs use `data/generated_outputs/`; the CLI retains its existing
+`tests/experiments/runs/` location. `PIPELINE_E_LIVE_ENABLED=1` is a separate,
+explicit provider opt-in for constructing an uncached target. Offline template
+reuse does not contact providers and never falls back to another target style.
+The neutral v3 measured layout and separate renderer artifact are checksum-bound
+to the target, template, renderer version and font files. The API fills typed
+slots from the persisted profile, checks the actual PDF, and delivers an
+immutable preview. Human final confirmation gates the PDF download. DOCX upload
+remains supported; DOCX export is visible but disabled until a later release.

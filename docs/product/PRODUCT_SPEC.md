@@ -57,6 +57,12 @@ Candidate resume
 The recruiter must review candidate information before an output is treated as
 client-ready.
 
+Owner-approved local integration scope (October 11, 2026): connect preview,
+editing, PDF export and explicit final-file confirmation. DOCX export remains a
+future requirement; this round keeps its interface entry marked “Not launched”
+and disabled without calling generation. Existing DOCX upload is retained.
+
+
 ## Candidate Content Contract
 
 `CandidateProfile` is the authoritative internal source for candidate facts in

@@ -12,15 +12,17 @@
   "hero": {
     "headlineBefore": "Any resume",
     "headlineAfter": "any format.",
-    "sub": "Upload your resume — get it reformatted into any template, ready to send.",
+    "sub": "Upload a resume and target format, then review and edit the preview before confirming the PDF.",
     "uploadCta": "Upload resume",
     "uploadHint": "or drop it here · PDF, DOCX",
-    "trustLine": "Nothing lost, nothing stored.",
+    "trustLine": "Original preserved. Recruiter approved.",
     "baaBeforeLabel": "BEFORE",
     "baaAfterLabel": "AFTER",
     "sampleLink": "Try a sample resume →",
     "sampleLoading": "Loading…",
-    "dropOverlay": "Drop to upload resume"
+    "dropOverlay": "Drop to upload resume",
+    "uploadLegalNotice": "By uploading, you confirm you have the right to process this candidate's data. See our {{privacy}}.",
+    "uploadLegalNoticePrivacyLabel": "Privacy Policy"
   },
   "converter": {
     "badgeChange": "Change",
@@ -34,7 +36,7 @@
   },
   "how": {
     "heading": "How it works",
-    "sub": "Three steps. About 20 seconds.",
+    "sub": "Review the original, edit the preview, and confirm the final PDF.",
     "steps": [
       {
         "title": "Upload any resume",
@@ -206,13 +208,20 @@
     "exportPdf": "Export PDF",
     "exportGenerating": "Generating…",
     "exportConfirm": "{{count}} fields need review — export anyway?",
+    "clickToEditHint": "Click any field to edit",
+    "generatingPreview": "Generating preview…",
+    "previewUnavailable": "Preview unavailable",
+    "overlaySave": "Save",
+    "overlayCancel": "Cancel",
+    "exportConfirmTitle": "{{count}} fields still need review",
+    "exportConfirmBody": "Some fields are empty or marked for confirmation. The exported resume may be incomplete. Do you want to export anyway?",
     "exportConfirmAction": "Export anyway",
     "exportCancel": "Cancel",
     "exportError": "Export failed — try again",
     "chipExtracted": "Extracted {{count}}",
     "chipPlaced": "Placed {{count}}",
     "chipNeedsReview": "Needs review {{count}}",
-    "chipAllReviewed": "All reviewed ✓",
+    "chipAllReviewed": "No required fields missing",
     "emailDraftBtn": "Draft email",
     "emailCandidateBtn": "Email candidate",
     "emailPopoverTitle": "Request missing details",
@@ -221,7 +230,32 @@
     "emailCopy": "Copy",
     "emailCopied": "Copied",
     "emailOpen": "Open in email app",
-    "emailLoading": "Drafting…"
+    "emailLoading": "Drafting…",
+    "notLaunched": "Not yet available",
+    "savingEdits": "Saving changes…",
+    "previewQueued": "Preview queued…",
+    "buildingPreview": "Building and checking preview…",
+    "previewFailed": "Preview failed. Please retry.",
+    "regeneratePreview": "Generate preview",
+    "showHtml": "Edit content",
+    "showPdf": "Review PDF",
+    "confirmingFinal": "Confirming…",
+    "confirmFinal": "Confirm this final file",
+    "editsNeedPreview": "Changes need a new preview.",
+    "finalConfirmed": "Final file confirmed. PDF export available.",
+    "previewNotConfirmed": "Preview — awaiting your final confirmation.",
+    "reviewFields": "Review candidate fields",
+    "disclosure": "Client disclosure",
+    "targetProofsNeeded": "This target needs your layout review first.",
+    "prepareTargetProofs": "Prepare layout samples",
+    "approveTargetProofs": "I reviewed and approve these layouts",
+    "addValue": "Add value",
+    "sectionVisibility": "Section visibility",
+    "sectionShow": "Show",
+    "sectionHide": "Hide",
+    "sectionReview": "Recruiter review",
+    "sectionPending": "Pending review",
+    "sectionReviewed": "Reviewed"
   },
   "auth": {
     "loginTitle": "Welcome back",
@@ -241,81 +275,74 @@
     "noAccount": "Don't have an account?",
     "hasAccount": "Already have an account?",
     "switchToSignup": "Sign up",
-    "switchToLogin": "Log in"
+    "switchToLogin": "Log in",
+    "logout": "Log out",
+    "errorEmailTaken": "Email already registered.",
+    "errorInvalidCredentials": "Invalid email or password.",
+    "errorPasswordTooShort": "Password must be at least 8 characters.",
+    "errorGeneric": "Something went wrong — please try again.",
+    "gateTitle": "3 free conversions used",
+    "gateBody": "Create a free account to keep going.",
+    "consentText": "I agree to the {{terms}} and {{privacy}}.",
+    "consentTermsLabel": "Terms of Service",
+    "consentPrivacyLabel": "Privacy Policy"
+  },
+  "legal": {
+    "draftBanner": "DRAFT — placeholder content, not legally reviewed. Do not rely on this.",
+    "toBeCompleted": "[to be completed]"
   },
   "privacy": {
     "title": "Privacy Policy",
-    "lastUpdated": "Last updated: July 18, 2026",
     "sections": [
       {
-        "heading": "Information we process",
-        "body": "(1) Resume files you upload and the information in them (name, contact details, work history, etc.). (2) Your email address when you create an account. (3) Basic usage records (timestamps, conversion counts). Payments are handled by our payment processor; we never store card numbers."
+        "heading": "What we collect"
       },
       {
-        "heading": "How we use it",
-        "body": "To provide the resume conversion service, manage accounts, process billing, and improve the service through aggregate statistics."
+        "heading": "How we use it"
       },
       {
-        "heading": "Retention and deletion",
-        "body": "Uploaded resume files and extracted content are deleted immediately after processing and are not stored on our servers. Account data is deleted without delay when you close your account. Records we are legally required to keep (e.g. billing) are retained for the statutory period."
+        "heading": "AI processing & third-party providers"
       },
       {
-        "heading": "Service providers",
-        "body": "We use third-party providers for hosting [Vercel / Render — TBD], AI document processing [TBD], and payments [TBD]."
+        "heading": "Data retention"
       },
       {
-        "heading": "No selling of data",
-        "body": "We do not sell or share your personal information with third parties, except where required by law."
+        "heading": "International transfers"
       },
       {
-        "heading": "Your rights",
-        "body": "You may request access, correction, deletion, or restriction of your personal data at any time via the contact below."
+        "heading": "Your rights"
       },
       {
-        "heading": "Contact",
-        "body": "[contact@domain]"
-      },
-      {
-        "heading": "Changes",
-        "body": "We will post any changes to this policy on this page at least 7 days before they take effect."
+        "heading": "Contact"
       }
     ]
   },
   "terms": {
     "title": "Terms of Service",
-    "lastUpdated": "Last updated: July 18, 2026",
     "sections": [
       {
-        "heading": "The service",
-        "body": "Reform converts resumes you upload into the template you choose."
+        "heading": "The service"
       },
       {
-        "heading": "Your responsibilities",
-        "body": "Only upload documents you have the right to use. If you upload someone else's resume (e.g. as a recruiter), you confirm you are legally permitted to process that information."
+        "heading": "Your responsibilities"
       },
       {
-        "heading": "Review your output",
-        "body": "Results are generated automatically and may contain errors. You are responsible for reviewing output before using or submitting it. We do not guarantee accuracy or completeness."
+        "heading": "AI-generated output & accuracy"
       },
       {
-        "heading": "Intellectual property",
-        "body": "You own your uploaded documents and the converted output. We own the service itself (software, design, trademarks)."
+        "heading": "Fees & cancellation"
       },
       {
-        "heading": "Prohibited use",
-        "body": "No reverse engineering, bulk automated requests, or processing of others' personal data without authorization."
+        "heading": "Intellectual property"
       },
       {
-        "heading": "Fees and cancellation",
-        "body": "Paid plans are billed monthly and can be cancelled anytime; cancellation stops future charges. Fees already paid are non-refundable except where required by law."
+        "heading": "Limitation of liability"
       },
       {
-        "heading": "Limitation of liability",
-        "body": "To the extent permitted by law, our liability is limited to the amount you paid us in the previous 3 months."
+        "heading": "Governing law"
       },
       {
-        "heading": "Changes and governing law",
-        "body": "We will announce changes 7 days before they take effect. These terms are governed by the laws of [jurisdiction — TBD]."
+        "heading": "Contact"
       }
     ]
   },

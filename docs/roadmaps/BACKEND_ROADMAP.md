@@ -55,18 +55,25 @@ provider policy, persistence, security or deployment gates complete.
       reviewed-profile input gap; evidence is in the
       [integration record](../../tests/experiments/PRE_INTEGRATION_SNAPSHOT_20261011.md).
 - [x] Obtain explicit approval for the local designer/rendering amendment.
-- [ ] Represent E's measured layout in a versioned neutral template contract
+- [x] Represent E's measured layout in a versioned neutral template contract
       and bind its separate rendering artifact to template/renderer/font identity.
-- [ ] Promote reusable runtime code from experiments without duplication;
+- [x] Promote reusable runtime code from experiments without duplication;
       retain the canonical experiment runner and evaluation-only inputs in tests.
-- [ ] Connect inspectable construction jobs and the existing revision/output
+- [x] Connect inspectable construction jobs and the existing revision/output
       lifecycle to the API; report failure and interruption explicitly.
-- [ ] Make PDF content, privacy, template safety and material structural gates
+- [x] Make PDF content, privacy, template safety and material structural gates
       blocking before API delivery.
-- [ ] Align frontend progress, profile edits, HTML preview and PDF export;
+- [x] Align frontend progress, profile edits, HTML preview and PDF export;
       replace automatic approvals with explicit final-file acceptance.
 - [ ] Produce reviewable corpus outcomes and obtain owner visual acceptance
       before replacing the accepted default; verify explicit rollback.
+
+Local workflow and actual Chrome PDF checks are complete (October 12, 2026).
+DOCX export remains a later requirement: retain the disabled “Not launched”
+entry and current DOCX ingestion. Owner PDF visual acceptance, live corpus
+parity and replacement of the accepted default remain open. The template's
+contact layout, heading typography and spacing can still differ visibly from
+the target; successful deterministic checks do not close that quality gate.
 
 ## Product-Standard Definition
 

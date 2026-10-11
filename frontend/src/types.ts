@@ -34,7 +34,20 @@ export interface MissingField {
 
 export type DisplayRule = "show" | "hide" | "pending_confirmation" | "available_upon_request"
 
+export interface AdditionalSection {
+  source_heading: string
+  source_block_id: string
+  section_type: string
+  disposition: "show" | "hide"
+  review_state: "pending_review" | "reviewed"
+  entries: Array<{ title: string | null; links: string[]; description: string[]; source_block_ids: string[] }>
+}
+
 export interface CandidateProfile {
+  given_name?: string | null
+  family_name?: string | null
+  additional_sections?: AdditionalSection[]
+
   full_name: string | null
   email: string | null
   phone: string | null
@@ -63,6 +76,7 @@ export interface LedgerSummary {
 
 export interface ProcessResponse {
   artifact_id: string
+  profile_revision_id: string
   profile: CandidateProfile
   ledger: LedgerSummary
   original_text: string
@@ -97,8 +111,14 @@ export interface TargetFormatUploadResponse {
 
 export interface GenerateResponse {
   artifact_id: string
-  template_id: string
-  docx_download_url: string
+  html_surface_url: string
+  profile_revision_id: string
+  profile_sha256: string
+  layout_template_version: string
+  layout_spec_sha256: string
+  html_sha256: string
+  pdf_sha256: string
+  client_ready: boolean
   pdf_download_url: string
   pdf_preview_url: string
   artifact_metadata_url: string

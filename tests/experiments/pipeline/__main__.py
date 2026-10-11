@@ -6,17 +6,21 @@ acceptance decision.
 """
 
 from __future__ import annotations
+from tests.experiments.candidate_fixtures import candidate_resume_E
+
+from pathlib import Path
+import os
+os.environ.setdefault("PIPELINE_E_RUNS_DIR", str(Path(__file__).resolve().parents[1] / "runs"))
 
 import argparse
-from pathlib import Path
 from app.extraction.candidate_schema import CandidateProfile
 
-from tests.experiments.pipeline.evidence import build_structure_draft
-from tests.experiments.pipeline.measurement_loop import run_measurement_loop
-from tests.experiments.pipeline.layout_walkthrough import run_layout_walkthrough
+from app.pipeline_e.evidence import build_structure_draft
+from app.pipeline_e.measurement_loop import run_measurement_loop
+from app.pipeline_e.layout_walkthrough import run_layout_walkthrough
 
-from tests.experiments.pipeline.template_build import build_template
-from tests.experiments.pipeline.review_loop import run_review_loop
+from app.pipeline_e.template_build import build_template
+from app.pipeline_e.review_loop import run_review_loop
 
 TASK_BY_STAGE = {
     1: "structure-draft",
@@ -62,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
             args.target,
             args.out,
             live=args.live,
-        )
+         candidate_document=candidate_resume_E())
         print(f"Measure-repair run {run_dir.name}: terminal state {terminal}")
         print(
             f"  findings={record['summary']['total_findings']} "
@@ -77,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     if task == "review-repair":
         run_dir, terminal, record = run_review_loop(
             args.target, args.out, live=args.live,
-        )
+         candidate_document=candidate_resume_E())
         print(f"Review-repair run {run_dir.name}: terminal state {terminal}")
         print(
             f"  findings={record.get('summary', {}).get('total_findings')} "
@@ -91,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if task == "layout-walkthrough":
-        run_dir, terminal, record = run_layout_walkthrough(args.target, args.out)
+        run_dir, terminal, record = run_layout_walkthrough(args.target, args.out, candidate_document=candidate_resume_E())
         print(f"Layout-walkthrough run {run_dir.name}: terminal state {terminal}")
         print(
             f"  findings={record['summary']['total_findings']} "
@@ -114,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             rubric_path=args.rubric,
             preflight_only=args.preflight,
             candidate_profile=profile,
+            candidate_document=candidate_resume_E() if profile is None else None,
             blind_profile=args.blind_profile,
         )
         print(f"Template-build run {run_dir.name}: terminal state {terminal}")

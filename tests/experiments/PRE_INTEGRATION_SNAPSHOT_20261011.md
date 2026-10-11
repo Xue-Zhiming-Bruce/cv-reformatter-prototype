@@ -225,3 +225,82 @@ explicit designer/rendering-boundary revision required by E plan section 5.7;
 the concrete proposal is
 [ADR 0007](../../docs/decisions/0007-pipeline-e-local-integration.md), currently
 Proposed. No product contract, accepted ADR or roadmap exit status was changed.
+
+
+## Approved local runtime/API/frontend integration — October 12, 2026
+
+ADR 0007 was explicitly accepted in chat and committed as `2ffe550`. Reusable
+E modules now live once under `app/pipeline_e/`; the existing CLI imports them,
+while frozen candidate inputs and run registries remain evaluation-only.
+Vendored font files moved with their original notices; Lato's embedded copyright
+and OFL notice are now included. Installed system fonts are hashed, not copied.
+The wheel includes the runtime and font assets without importing test packages.
+
+The local API admits the selected valid E renderer into a measured neutral v3
+layout specification plus a separately checksum-bound renderer artifact.
+Persisted profile revisions supply all candidate values. Strict typed slots,
+exact leaf cardinality, independent actual-PDF content/privacy/font checks and
+material geometry gates block publication. Immutable preview jobs report restart
+interruption; identical active requests join rather than spend twice. An edit,
+changed target/template/font or changed output revokes final download access.
+Final acceptance also reuses segmentation coverage and pending source-section
+review checks. Original source text and draft profile stay unchanged.
+
+The co-founder review interface now saves edits, polls preview jobs, switches
+between editable HTML and actual PDF, and requires human final-file confirmation
+before PDF download. Optional/custom sections have explicit show/hide and review
+controls. DOCX export is visible, marked not launched and disabled without a
+request. DOCX upload remains supported. No auth/billing/backend wholesale merge
+or deployment is included.
+
+| Verification | Result | Ignored terminal evidence (`tests/test_results/pytest/`) |
+| --- | --- | --- |
+| Promoted E stage/comparison/schema/gate/import regression, `-m 'not local_dataset'` | 306 passed, 1 skipped, 6 deselected; one default zero-margin serialization regression found | `20261011T160924Z_e_promoted_runtime.txt` |
+| Current preview workflow, legacy layout-proof file routes, profile/generation approval and content validation | 56 passed, 4 existing fixture serializer warnings | `20261011T160300Z_e_final_workflow.txt` |
+| Zero-margin compatibility fix, final workflow with real Chrome PDFs and runtime graph guards | 14 passed | `20261011T162200Z_e_final_verified.txt` |
+| Earlier broad API/checked-output regression | 68 passed, 4 existing fixture warnings | `20261011T092237Z_e_checked_output_workflow.txt` |
+| Package build (isolated setuptools build; no dependency installation into the existing runtime) | wheel built; runtime + 16 font assets/notices present; no test package included | `20261011T162500Z_e_final_package.txt` |
+| Frontend `npm run build` and `npm run lint` | passed | terminal result; generated frontend build ignored |
+| One-off Playwright browser check against actual local API | upload, edit/new revision, new PDF, explicit confirmation/download, blind reset; disabled DOCX sends no request; edit overlay closes | ignored browser artifacts below |
+
+Pytest commands use the existing Python 3.12 environment, `-o addopts= -q` and
+named files under `tests/experiments/`, `tests/integration/` and `tests/unit/`.
+This extends the canonical pytest/CLI paths; no new runner or corpus was added.
+The sole skipped runtime case and six deselected local-dataset cases are not
+counted as passing. Historical missing ignored fixtures were restored exactly
+from the authorized desktop checkout; assertions were not weakened.
+
+Directly reviewable outcome directory:
+`data/generated_outputs/e_integration_review_20261011/`
+
+- `reviewed_pipeline_e_preview.pdf`: actual local API/browser output, still
+  `client_ready=false`, for owner visual judgment;
+- `owner_preview_identity.json`: exact revision/template/HTML/PDF identities;
+- `owner_pdf_page-1.png`: raster inspection of the actual one-page PDF;
+- `target_and_output.png`: target I alongside the fictional candidate output;
+- `owner_preview_ui.png`: the integrated review interface;
+- `ui_confirmed_test.pdf`: separate browser-test artifact exercising confirmation;
+- `template/`: candidate-free admitted template from the previous live E run
+  `e_pipeline_e5_font_roles_I_round2_20261005`.
+
+The outcome starts with a fictional DOCX, uses the existing deterministic mock
+extractor with a real source-line audit, and reuses a previously live-built E
+renderer. In the interface the reviewer cleared the mock's mistaken phone value
+(a work date range) and explicitly entered the fictional given/family names.
+Chrome actually generated the final output. No external provider was called in
+this integration; this verifies workflow/reuse, not fresh live target fidelity.
+Original desktop source still matches all 47 preservation-inventory entries.
+
+Visible limitations remain: target I's contact layout, heading typography and
+spacing differ; the contact header retains the existing context mapper's role
+and location composition. This template does not support every content shape,
+and the first-page frame is reused for continuation pages. Unsupported candidate
+leaves block generation instead of disappearing. The owner has not accepted
+visual quality. No live corpus parity, production provider policy, hosting,
+durable queue, authentication or DOCX export gate is declared complete.
+
+Rollback remains explicit through the preserved source tags and configuration:
+leave `TEMPLATE_DESIGN_STRATEGY=pipeline_e` only for the approved local prototype;
+select the accepted strategy explicitly to restore the baseline. Provider opt-in
+`PIPELINE_E_LIVE_ENABLED=1` is separate and must use authorized inputs. The local
+review server uses mock extraction and live construction disabled.

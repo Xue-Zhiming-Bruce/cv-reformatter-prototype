@@ -41,13 +41,18 @@ def validate_generated_content(
     *,
     pdf_path: str | Path,
     layout_spec: LayoutTemplateSpec | None = None,
+    contact_values_only: bool = False,
 ) -> ContentValidationReport:
     """Fail closed when approved render-context text vanishes from an output."""
 
+    if contact_values_only:
+        context = context.model_copy(update={"contact_lines": [item.value for item in context.contact_items]})
     expected = _expected_items(context, layout_spec)
-    checks = [
-        _check("pdf", _read_pdf_text(Path(pdf_path)), expected),
-    ]
+    text = _read_pdf_text(Path(pdf_path))
+    # PDF extractors may insert spaces between letters when the name uses tracking.
+    name_pattern = r"(?<!\w)" + r"\s+".join(r"\s*".join(map(re.escape, word)) for word in context.candidate_heading.split()) + r"(?!\w)"
+    text = re.sub(name_pattern, lambda _: context.candidate_heading, text, flags=re.IGNORECASE)
+    checks = [_check("pdf", text, expected)]
     return ContentValidationReport(
         passed=all(check.passed for check in checks),
         expected_item_count=len(expected),

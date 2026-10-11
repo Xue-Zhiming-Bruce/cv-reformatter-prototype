@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.experiments.resume_layout.scaffold import (
+from app.pipeline_e.resume_layout.scaffold import (
     BodyEntryScaffold,
     BodyHeadingScaffold,
     BodyScaffold,

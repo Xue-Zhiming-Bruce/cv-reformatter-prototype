@@ -79,6 +79,11 @@ def _create_and_approve(client, artifact_id: str, artifact_dir: Path) -> None:
     """
     response = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})
     assert response.status_code == 200, response.text
+    for variant in ("short", "medium", "long"):
+        pdf = client.get(f"/api/artifacts/{artifact_id}/layout-proofs/{variant}/pdf")
+        html = client.get(f"/api/artifacts/{artifact_id}/layout-proofs/{variant}/html")
+        assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
+        assert html.status_code == 200 and "<html" in html.text
     response = client.post(
         f"/api/artifacts/{artifact_id}/layout-proofs/approve",
         json={"state": "approved", "reviewer_id": "reviewer-1"},

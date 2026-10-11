@@ -79,3 +79,14 @@ def test_pdf_no_loss_gate_covers_approved_urls_and_bullets(tmp_path: Path) -> No
     failed = validate_generated_content(context, pdf_path=incomplete_pdf)
     assert failed.passed is False
     assert failed.checks[0].missing_items == ["https://example.test/demo"]
+
+
+def test_tracked_name_and_value_only_contact_preserve_facts(tmp_path: Path) -> None:
+    context = build_client_render_context(CandidateProfile(full_name="Avery Candidate", email="avery@example.test"))
+    pdf = tmp_path / "tracked.pdf"
+    build_text_pdf_pages(pdf, ["A v e r y Candidate", "avery@example.test"], **PAGE)
+    assert validate_generated_content(context, pdf_path=pdf, contact_values_only=True).passed
+    # Value-only presentation is explicit; the old labeled-contact contract remains.
+    assert not validate_generated_content(context, pdf_path=pdf).passed
+    build_text_pdf_pages(pdf, ["A v e r y Different", "avery@example.test"], **PAGE)
+    assert not validate_generated_content(context, pdf_path=pdf, contact_values_only=True).passed

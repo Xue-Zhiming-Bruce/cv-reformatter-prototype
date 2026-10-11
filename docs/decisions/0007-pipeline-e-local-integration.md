@@ -113,3 +113,9 @@ fact preservation, additional-section structure, disclosure, blind profiles,
 target contamination, failure, editing and explicit final acceptance through
 the canonical tests and directly reviewable outputs. Billing, DOCX output and
 deployment remain outside this first PDF integration.
+
+
+Owner clarification, October 11, 2026: retain DOCX upload and the DOCX export
+entry. Export is marked “Not launched”, disabled, and makes no generation call.
+DOCX export remains required later. The owner will judge the actual PDF after
+preview, editing, export and final-confirmation wiring is complete.

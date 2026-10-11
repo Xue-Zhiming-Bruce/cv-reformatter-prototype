@@ -23,21 +23,24 @@ import ast
 import pathlib
 
 PKG = "tests.experiments"
+RUNTIME_PKG = "app.pipeline_e"
 PACKAGE_DIR = pathlib.Path(__file__).resolve().parent
+RUNTIME_DIR = PACKAGE_DIR.parents[1] / "app/pipeline_e"
 SKIP_DIRS = {"runs", "__pycache__", "assets"}
 
 
 def production_modules() -> dict[str, pathlib.Path]:
     """Fully-qualified name -> path for every non-test module in the package."""
     out: dict[str, pathlib.Path] = {}
-    for path in sorted(PACKAGE_DIR.rglob("*.py")):
-        parts = path.relative_to(PACKAGE_DIR).parts
-        if set(parts[:-1]) & SKIP_DIRS:
-            continue
-        stem = parts[-1][:-3]
-        if stem == "__init__" or stem.startswith("test_"):
-            continue
-        out[f"{PKG}." + ".".join(parts)[:-3].replace("/", ".")] = path
+    for package, directory in ((PKG, PACKAGE_DIR), (RUNTIME_PKG, RUNTIME_DIR)):
+        for path in sorted(directory.rglob("*.py")):
+            parts = path.relative_to(directory).parts
+            if set(parts[:-1]) & SKIP_DIRS:
+                continue
+            stem = parts[-1][:-3]
+            if stem == "__init__" or stem.startswith("test_"):
+                continue
+            out[package + "." + ".".join(parts)[:-3].replace("/", ".")] = path
     return out
 
 
@@ -54,12 +57,12 @@ def module_level_imports(tree: ast.Module) -> dict[str, tuple[str, str | None]]:
             if source == PKG:
                 for alias in node.names:
                     table[alias.asname or alias.name] = (f"{PKG}.{alias.name}", None)
-            elif source.startswith(PKG + "."):
+            elif source.startswith((PKG + ".", RUNTIME_PKG + ".")):
                 for alias in node.names:
                     table[alias.asname or alias.name] = (source, alias.name)
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.startswith(PKG + "."):
+                if alias.name.startswith((PKG + ".", RUNTIME_PKG + ".")):
                     parts = alias.name.split(".")
                     table[alias.asname or parts[-1]] = (alias.name, None)
     return table
@@ -88,13 +91,13 @@ def function_local_imports(tree: ast.Module) -> list[tuple[int, str]]:
         for sub in ast.walk(node):
             if isinstance(sub, ast.ImportFrom):
                 source = sub.module or ""
-                if source.startswith(PKG + ".") or source == PKG:
+                if source.startswith((PKG + ".", RUNTIME_PKG + ".")) or source == PKG:
                     found.append((sub.lineno, source))
             elif isinstance(sub, ast.Import):
                 found.extend(
                     (sub.lineno, alias.name)
                     for alias in sub.names
-                    if alias.name.startswith(PKG + ".")
+                    if alias.name.startswith((PKG + ".", RUNTIME_PKG + "."))
                 )
     return found
 
@@ -136,11 +139,11 @@ def test_function_local_import_detector_covers_both_import_forms() -> None:
     tree = ast.parse(
         "def f():\n"
         "    from tests.experiments import pipeline\n"
-        "    import tests.experiments.resume_layout.runtime as runtime\n"
+        "    import app.pipeline_e.resume_layout.runtime as runtime\n"
     )
     assert function_local_imports(tree) == [
         (2, "tests.experiments"),
-        (3, "tests.experiments.resume_layout.runtime"),
+        (3, "app.pipeline_e.resume_layout.runtime"),
     ]
 
 

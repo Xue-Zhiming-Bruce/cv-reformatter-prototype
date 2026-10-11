@@ -21,20 +21,20 @@ from pathlib import Path
 
 import pytest
 
-import tests.experiments.resume_layout.gates as renderer_module
-import tests.experiments.resume_layout.html as resume_layout_html
-from tests.experiments.resume_layout.candidates import (
+import app.pipeline_e.resume_layout.gates as renderer_module
+import app.pipeline_e.resume_layout.html as resume_layout_html
+from app.pipeline_e.resume_layout.candidates import (
     CandidateDocument,
     CandidateLeaf,
     CandidateSection,
     UnroutableContent,
 )
-from tests.experiments.resume_layout.state import (
+from app.pipeline_e.resume_layout.state import (
     C2LayoutState,
     SectionContent,
     state_bytes,
 )
-from tests.experiments.resume_layout.gates import (
+from app.pipeline_e.resume_layout.gates import (
     blank_page_gate,
     candidate_accounting_gate,
     content_gate,
@@ -42,8 +42,8 @@ from tests.experiments.resume_layout.gates import (
     privacy_gate,
     structure_gate,
 )
-from tests.experiments.resume_layout.html import render_html
-from tests.experiments.resume_layout.plan import (
+from app.pipeline_e.resume_layout.html import render_html
+from app.pipeline_e.resume_layout.plan import (
     C2RenderPlan,
     OVERFLOW_POLICY,
     compile_render_plan,
@@ -262,7 +262,7 @@ def test_missing_and_duplicated_leaves_fail() -> None:
             ],
         )
     # A leaf that renders twice trips the ownership ledger guard.
-    from tests.experiments.resume_layout.compile_state import own_leaf
+    from app.pipeline_e.resume_layout.compile_state import own_leaf
 
     ledger: dict[str, str] = {}
     failures: list[str] = []
@@ -374,7 +374,7 @@ def test_unsupported_and_nonmaterializable_composite_fail_closed() -> None:
         [label for label in FULL_COVERAGE_LABELS if label != "EDUCATION"],
         include_unmatched=False,
     )[0].model_copy(deep=True)
-    from tests.experiments.resume_layout.state import SectionBinding
+    from app.pipeline_e.resume_layout.state import SectionBinding
 
     index = work_section(composite)
     node = composite.nodes[index]
@@ -433,7 +433,7 @@ def test_empty_target_sections_render_nothing_but_are_recorded() -> None:
 
 
 def _shape_scaffold(labels: list[str] | None = None) -> Any:
-    from tests.experiments.resume_layout.scaffold import (
+    from app.pipeline_e.resume_layout.scaffold import (
         BodyEntryScaffold,
         BodyScaffold,
     )
@@ -522,7 +522,7 @@ def _heading_rule_pdf(path: Path, items: list[dict]) -> Path:
 
 
 def test_content_shapes_are_verified_against_measured_evidence() -> None:
-    from tests.experiments.resume_layout.scaffold import (
+    from app.pipeline_e.resume_layout.scaffold import (
         BodyEntryScaffold,
         BodyScaffold,
     )
@@ -564,7 +564,7 @@ def test_content_shapes_are_verified_against_measured_evidence() -> None:
 def test_rule_verification_resolves_the_measured_rule_bbox() -> None:
     """Evidence-boundary regression: the state rule stores the matched rule's
     OWN measured bbox (never the heading text bounds)."""
-    from tests.experiments.resume_layout.compile_state import _resolve_above_heading_rule
+    from app.pipeline_e.resume_layout.compile_state import _resolve_above_heading_rule
     from tests.experiments.test_compile_state import _heading
 
     heading = _heading("WORK EXPERIENCE", 140.0, "e.heading")  # text x1 = 171
@@ -834,7 +834,7 @@ def _two_rule_summary() -> dict:
 def _two_rule_scaffold() -> Any:
     """Scaffold matching compile_synthetic's 60pt heading spacing (the rule
     y positions in _two_rule_summary must resolve against these headings)."""
-    from tests.experiments.resume_layout.scaffold import (
+    from app.pipeline_e.resume_layout.scaffold import (
         BodyEntryScaffold,
         BodyScaffold,
     )

@@ -1,5 +1,9 @@
 """Repository-wide offline provider guardrails."""
 
+import os
+from pathlib import Path
+os.environ.setdefault("PIPELINE_E_RUNS_DIR", str(Path(__file__).resolve().parent / "experiments/runs"))
+
 import pytest
 
 from app import main

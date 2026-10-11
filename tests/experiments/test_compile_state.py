@@ -22,25 +22,25 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import tests.experiments.resume_layout.compile_state as c2_module
-import tests.experiments.resume_layout.paths as resume_layout_paths
-from tests.experiments.resume_layout.scaffold import (
+import app.pipeline_e.resume_layout.compile_state as c2_module
+import app.pipeline_e.resume_layout.paths as resume_layout_paths
+from app.pipeline_e.resume_layout.scaffold import (
     BodyEntryScaffold,
     BodyHeadingScaffold,
     BodyScaffold,
     HeaderScaffold,
 )
-from tests.experiments.resume_layout.compile_state import (
+from app.pipeline_e.resume_layout.compile_state import (
     compile_layout_state,
     own_leaf,
     run_flow_probe,
     state_from_scaffolds,
 )
-from tests.experiments.resume_layout.candidates import (
+from app.pipeline_e.resume_layout.candidates import (
     CandidateDocument,
     independent_candidate_fixtures,
 )
-from tests.experiments.resume_layout.state import (
+from app.pipeline_e.resume_layout.state import (
     C2LayoutState,
     LayoutNode,
     SectionBinding,
@@ -48,8 +48,8 @@ from tests.experiments.resume_layout.state import (
     state_bytes,
     validate_layout_state,
 )
-import tests.experiments.resume_layout.candidates as resume_layout_candidates
-import tests.experiments.resume_layout.state as resume_layout_state
+import app.pipeline_e.resume_layout.candidates as resume_layout_candidates
+import app.pipeline_e.resume_layout.state as resume_layout_state
 
 TARGET_SHA = hashlib.sha256(b"c2-0a-synthetic-target").hexdigest()
 
@@ -918,7 +918,7 @@ REAL = {
 
 
 def _summary_for(target: Path) -> tuple[dict, object]:
-    from tests.experiments.resume_layout.target import (
+    from app.pipeline_e.resume_layout.target import (
         _analyze_target,
         build_format_summary,
     )

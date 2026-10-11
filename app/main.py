@@ -51,11 +51,15 @@ from app.generation.followup_message_generator import generate_followup_message
 from app.generation.html_renderer import HtmlRenderingError, render_html
 from app.generation.render_plan import build_production_render_plan
 from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME, build_client_render_context
+from app import preview_jobs
+from app.pipeline_e import product as pipeline_e
+
 from app.final_acceptance import (
     FinalOutputAcceptance,
     FinalOutputIdentity,
     current_output_identity,
     is_final_acceptance_current,
+    load_final_acceptance,
     save_final_acceptance,
 )
 from app.ingestion.docx_reader import read_docx
@@ -87,6 +91,7 @@ from app.template_analysis.layout_proof_service import (
     create_proof_variants,
     layout_spec_checksum,
     load_layout_proof_approval,
+    load_layout_proof_render_result,
     load_variant_evidence,
     reject_layout_proof,
     render_candidate_document,
@@ -274,6 +279,13 @@ class GenerateRequest(BaseModel):
     design_id: str | None = None
     allow_existing_template: bool = False
     allow_built_in_fallback: bool = False
+
+
+class PreviewRequest(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    profile_revision_id: str
+    blind_profile: bool = False
+    client_display_rules: dict[str, Literal["show", "hide", "pending_confirmation", "available_upon_request"]] = Field(default_factory=dict)
 
 
 class GenerateResponse(BaseModel):
@@ -647,9 +659,22 @@ async def upload_target_format(
 
     resolved_artifact_id = artifact_id or _new_artifact_id()
     artifact_dir = _prepare_artifact_dir(resolved_artifact_id, allow_existing=True)
+    preview_jobs.assert_idle(artifact_dir)
     contents = await file.read()
     analyzed_style_spec: LayoutTemplateSpec | None = None
-    if suffix == ".pdf":
+    if suffix == ".pdf" and os.getenv("TEMPLATE_DESIGN_STRATEGY") == "pipeline_e":
+        try:
+            with tempfile.TemporaryDirectory() as temporary_dir:
+                path = Path(temporary_dir) / "target.pdf"; path.write_bytes(contents)
+                read_pdf_text(path)
+        except (CorruptedPdfError, EmptyPdfTextError, UnsupportedPdfTypeError, ValueError) as error:
+            raise HTTPException(400, "A supported text-based target PDF is required.") from error
+        target_format = _store_target_format(artifact_id=resolved_artifact_id, artifact_dir=artifact_dir, input_filename=file.filename, suffix=suffix, contents=contents)
+        target_format = target_format.model_copy(update={
+            "generation_strategy": "pipeline_e", "analysis_status": "pending",
+            "note": "Pipeline E prepares the target template during the first preview job; this upload is not a fidelity acceptance.",
+        })
+    elif suffix == ".pdf":
         try:
             with tempfile.TemporaryDirectory() as temporary_dir:
                 temporary_pdf = Path(temporary_dir) / "target.pdf"
@@ -766,7 +791,7 @@ async def upload_target_format(
         "target_format": str(metadata_path),
         target_format.role: str(artifact_dir / target_format.stored_filename),
     }
-    if suffix == ".pdf":
+    if suffix == ".pdf" and target_format.generation_strategy != "pipeline_e":
         debug_artifacts.update({
             "normalized_layout_evidence": str(artifact_dir / NORMALIZED_LAYOUT_FILENAME),
             "target_layout_evidence": str(artifact_dir / TARGET_EVIDENCE_FILENAME),
@@ -797,23 +822,7 @@ async def upload_target_format(
     )
 
 
-@app.post(
-    "/api/artifacts/{artifact_id}/profiles/approve",
-    response_model=ProfileApproveResponse,
-)
-def approve_profile(artifact_id: str, body: ProfileApproveRequest) -> ProfileApproveResponse:
-    """Approve a (possibly corrected) CandidateProfile as an immutable version
-    under the artifact-store boundary. Never calls the designer; the original
-    extraction draft (candidate_profile.json) is preserved untouched."""
-    if not _is_safe_artifact_id(artifact_id):
-        raise HTTPException(status_code=404, detail="Artifact not found.")
-    artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
-    if not artifact_dir.exists():
-        raise HTTPException(status_code=404, detail="Artifact not found.")
-    try:
-        source_draft_sha256 = draft_sha256(artifact_dir)
-    except ProfileApprovalError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+def _require_profile_review(artifact_dir: Path, profile: CandidateProfile) -> None:
     segmentation_audit_path = artifact_dir / "segmentation_audit.json"
     if segmentation_audit_path.exists():
         try:
@@ -845,8 +854,8 @@ def approve_profile(artifact_id: str, body: ProfileApproveRequest) -> ProfileApp
                 },
             )
     normalized_document = _load_normalized_candidate_document(artifact_dir)
-    missing_blocks = unaccounted_source_blocks(body.profile, normalized_document)
-    unreviewed_blocks = unreviewed_source_blocks(body.profile, normalized_document)
+    missing_blocks = unaccounted_source_blocks(profile, normalized_document)
+    unreviewed_blocks = unreviewed_source_blocks(profile, normalized_document)
     if missing_blocks or unreviewed_blocks:
         raise HTTPException(
             status_code=409,
@@ -876,25 +885,48 @@ def approve_profile(artifact_id: str, body: ProfileApproveRequest) -> ProfileApp
                 ],
             },
         )
-    try:
-        version = save_approved_profile(
-            artifact_dir,
+
+
+@app.post(
+    "/api/artifacts/{artifact_id}/profiles/approve",
+    response_model=ProfileApproveResponse,
+)
+def approve_profile(artifact_id: str, body: ProfileApproveRequest) -> ProfileApproveResponse:
+    preview_jobs.assert_idle(GENERATED_OUTPUTS_DIR / artifact_id)
+    with preview_jobs.artifact_lock(artifact_id):
+        preview_jobs.assert_idle(GENERATED_OUTPUTS_DIR / artifact_id)
+        """Approve a (possibly corrected) CandidateProfile as an immutable version
+        under the artifact-store boundary. Never calls the designer; the original
+        extraction draft (candidate_profile.json) is preserved untouched."""
+        if not _is_safe_artifact_id(artifact_id):
+            raise HTTPException(status_code=404, detail="Artifact not found.")
+        artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
+        if not artifact_dir.exists():
+            raise HTTPException(status_code=404, detail="Artifact not found.")
+        try:
+            source_draft_sha256 = draft_sha256(artifact_dir)
+        except ProfileApprovalError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _require_profile_review(artifact_dir, body.profile)
+        try:
+            version = save_approved_profile(
+                artifact_dir,
+                artifact_id=artifact_id,
+                profile=body.profile,
+                source_draft_sha256=source_draft_sha256,
+                reviewer_note=body.reviewer_note,
+            )
+        except ProfileApprovalError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return ProfileApproveResponse(
+            profile_version_id=version.profile_version_id,
             artifact_id=artifact_id,
-            profile=body.profile,
-            source_draft_sha256=source_draft_sha256,
-            reviewer_note=body.reviewer_note,
+            schema_version=version.schema_version,
+            profile_sha256=version.profile_sha256,
+            source_draft_sha256=version.source_draft_sha256,
+            approved_at=version.approved_at,
+            reviewer_note=version.reviewer_note,
         )
-    except ProfileApprovalError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return ProfileApproveResponse(
-        profile_version_id=version.profile_version_id,
-        artifact_id=artifact_id,
-        schema_version=version.schema_version,
-        profile_sha256=version.profile_sha256,
-        source_draft_sha256=version.source_draft_sha256,
-        approved_at=version.approved_at,
-        reviewer_note=version.reviewer_note,
-    )
 
 
 @app.post(
@@ -904,18 +936,21 @@ def approve_profile(artifact_id: str, body: ProfileApproveRequest) -> ProfileApp
 def create_profile_revision(
     artifact_id: str, body: ProfileRevisionRequest
 ) -> ProfileRevisionResponse:
-    """Persist an edited profile as an immutable revision without approval."""
-    legacy = approve_profile(
-        artifact_id, ProfileApproveRequest(profile=body.profile, reviewer_note=None)
-    )
-    return ProfileRevisionResponse(
-        profile_revision_id=legacy.profile_version_id,
-        artifact_id=legacy.artifact_id,
-        schema_version=legacy.schema_version,
-        profile_sha256=legacy.profile_sha256,
-        source_draft_sha256=legacy.source_draft_sha256,
-        created_at=legacy.approved_at,
-    )
+    preview_jobs.assert_idle(GENERATED_OUTPUTS_DIR / artifact_id)
+    with preview_jobs.artifact_lock(artifact_id):
+        preview_jobs.assert_idle(GENERATED_OUTPUTS_DIR / artifact_id)
+        """Persist an edited profile as an immutable revision without approval."""
+        legacy = approve_profile(
+            artifact_id, ProfileApproveRequest(profile=body.profile, reviewer_note=None)
+        )
+        return ProfileRevisionResponse(
+            profile_revision_id=legacy.profile_version_id,
+            artifact_id=legacy.artifact_id,
+            schema_version=legacy.schema_version,
+            profile_sha256=legacy.profile_sha256,
+            source_draft_sha256=legacy.source_draft_sha256,
+            created_at=legacy.approved_at,
+        )
 
 
 @app.post("/api/designs/request", response_model=DesignResponse)
@@ -1123,6 +1158,22 @@ def get_layout_proof_status(artifact_id: str) -> LayoutProofStatusResponse:
     return _layout_proof_status(artifact_id, artifact_dir)
 
 
+@app.get("/api/artifacts/{artifact_id}/layout-proofs/{variant}/{file_format}")
+def preview_layout_proof(artifact_id: str, variant: LengthVariant, file_format: Literal["html", "pdf"]) -> FileResponse:
+    _require_artifact(artifact_id)
+    directory = GENERATED_OUTPUTS_DIR / artifact_id
+    try:
+        result = load_layout_proof_render_result(directory, variant, artifact_id=artifact_id)
+        _, spec, _, target_checksum = _layout_proof_context(directory, artifact_id, None)
+        if result.target_checksum != target_checksum or result.layout_spec_checksum != layout_spec_checksum(spec):
+            raise LayoutProofMismatchError("The target style changed; rebuild the proof previews.")
+    except (LayoutProofIncompleteError, LayoutProofMismatchError, LayoutProofValidationError) as error:
+        raise HTTPException(409, str(error)) from error
+    filename = result.html_filename if file_format == "html" else result.pdf_filename
+    path = directory / "layout_proofs" / result.proof_id / filename
+    return FileResponse(path, media_type="text/html" if file_format == "html" else "application/pdf", content_disposition_type="inline")
+
+
 @app.post(
     "/api/artifacts/{artifact_id}/layout-proofs/approve",
     response_model=LayoutProofStatusResponse,
@@ -1188,8 +1239,74 @@ def approve_layout_proofs(
     return _layout_proof_status(artifact_id, artifact_dir)
 
 
+@app.post("/api/artifacts/{artifact_id}/preview-jobs", response_model=preview_jobs.PreviewJob, status_code=202)
+def create_preview_job(artifact_id: str, body: PreviewRequest) -> preview_jobs.PreviewJob:
+    _require_artifact(artifact_id)
+    directory = GENERATED_OUTPUTS_DIR / artifact_id
+    _require_approved_profile(artifact_dir=directory, artifact_id=artifact_id, approved_profile_version_id=body.profile_revision_id)
+    request = GenerateRequest(artifact_id=artifact_id, profile_revision_id=body.profile_revision_id, blind_profile=body.blind_profile, client_display_rules=body.client_display_rules)
+    return preview_jobs.start_job(directory, artifact_id, body.profile_revision_id, request.model_dump(mode="json"), lambda: _job_preview_result(request))
+
+
+def _job_preview_result(request: GenerateRequest) -> dict[str, object]:
+    result = _generate_outputs(request)
+    directory = GENERATED_OUTPUTS_DIR / result.artifact_id
+    version_id = uuid.uuid4().hex
+    version_dir = directory / "preview_versions" / version_id
+    version_dir.mkdir(parents=True)
+    for filename in ("candidate_profile.html", "candidate_profile.pdf", "generation_metadata.json"):
+        shutil.copy2(directory / filename, version_dir / filename)
+    if current_output_identity(version_dir) != FinalOutputIdentity.model_validate(result.model_dump(include=set(FinalOutputIdentity.model_fields))):
+        raise HTTPException(409, "Preview changed while creating the immutable version; retry.")
+    # This marker is written only after the existing generate gates and identity check.
+    (version_dir / "delivered_preview.json").write_text(json.dumps(result.model_dump(mode="json")))
+    base = f"/api/artifacts/{result.artifact_id}/preview-versions/{version_id}"
+    return result.model_copy(update={"html_surface_url": base + "/candidate_profile.html", "pdf_preview_url": base + "/candidate_profile.pdf", "pdf_download_url": base + "/candidate_profile.pdf?download=1"}).model_dump(mode="json")
+
+
+@app.get("/api/artifacts/{artifact_id}/preview-versions/{version_id}/{filename}")
+def download_preview_version(artifact_id: str, version_id: str, filename: str, download: bool = False) -> FileResponse:
+    _require_artifact(artifact_id)
+    if not preview_jobs.re_valid_job_id(version_id) or filename not in {"candidate_profile.html", "candidate_profile.pdf"}:
+        raise HTTPException(400, "Invalid preview file reference.")
+    directory = GENERATED_OUTPUTS_DIR / artifact_id / "preview_versions" / version_id
+    try:
+        delivered = GenerateResponse.model_validate_json((directory / "delivered_preview.json").read_text())
+        expected = delivered.html_sha256 if filename.endswith(".html") else delivered.pdf_sha256
+        if target_checksum_from_bytes((directory / filename).read_bytes()) != expected:
+            raise ValueError("Preview bytes changed")
+    except (OSError, ValueError) as error:
+        raise HTTPException(404, "A checked immutable preview is unavailable.") from error
+    if download:
+        if filename != "candidate_profile.pdf":
+            raise HTTPException(400, "Only PDF export is available.")
+        root = GENERATED_OUTPUTS_DIR / artifact_id
+        accepted = load_final_acceptance(root)
+        identity = FinalOutputIdentity.model_validate(delivered.model_dump(include=set(FinalOutputIdentity.model_fields)))
+        if accepted is None or not is_final_acceptance_current(root) or FinalOutputIdentity.model_validate(accepted.model_dump(include=set(FinalOutputIdentity.model_fields))) != identity:
+            raise HTTPException(409, "Review and confirm this exact PDF before exporting it.")
+        _require_current_output(artifact_id, root, identity)
+    return FileResponse(directory / filename, media_type="text/html" if filename.endswith(".html") else "application/pdf", content_disposition_type="attachment" if download else "inline", filename="resume.pdf" if download else None, headers={"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:; frame-ancestors 'self'; base-uri 'none'"} if filename.endswith(".html") else None)
+
+
+@app.get("/api/artifacts/{artifact_id}/preview-jobs/{job_id}", response_model=preview_jobs.PreviewJob)
+def get_preview_job(artifact_id: str, job_id: str) -> preview_jobs.PreviewJob:
+    _require_artifact(artifact_id)
+    return preview_jobs.read_job(GENERATED_OUTPUTS_DIR / artifact_id, job_id)
+
+
 @app.post("/api/generate")
 def generate_outputs(request: GenerateRequest) -> GenerateResponse:
+    artifact_id = request.artifact_id or (request.target_format.artifact_id if request.target_format else None)
+    if artifact_id is None:
+        return _generate_outputs(request)
+    preview_jobs.assert_idle(GENERATED_OUTPUTS_DIR / artifact_id)
+    with preview_jobs.artifact_lock(artifact_id):
+        preview_jobs.assert_idle(GENERATED_OUTPUTS_DIR / artifact_id)
+        return _generate_outputs(request)
+
+
+def _generate_outputs(request: GenerateRequest) -> GenerateResponse:
     target_format = request.target_format
     artifact_id = request.artifact_id or (target_format.artifact_id if target_format else None) or _new_artifact_id()
     artifact_dir = _prepare_artifact_dir(
@@ -1200,6 +1317,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         target_format = _load_saved_target_format(artifact_dir)
     if target_format is not None and target_format.artifact_id != artifact_id:
         raise HTTPException(status_code=400, detail="target_format.artifact_id must match artifact_id.")
+    target_sha256: str | None = None
     fallback_warnings: list[str] = []
     if request.allow_built_in_fallback:
         fallback_warnings.append(
@@ -1209,6 +1327,13 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         )
     if target_format is not None:
         _validate_target_format_reference(artifact_id, artifact_dir, target_format)
+        saved = _load_saved_target_format(artifact_dir)
+        if saved is not None:
+            if saved.generation_strategy != target_format.generation_strategy:
+                raise HTTPException(400, "Target strategy must match the stored upload.")
+            target_format = saved
+            _validate_target_format_reference(artifact_id, artifact_dir, target_format)
+        target_sha256 = target_checksum_from_bytes((artifact_dir / target_format.stored_filename).read_bytes())
         if target_format.analysis_status == "fallback_to_built_in":
             raise HTTPException(
                 status_code=409,
@@ -1257,6 +1382,8 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         blind_profile=request.blind_profile,
         template_name=request.template_name,
     )
+    if target_format is not None and target_format.generation_strategy == "pipeline_e":
+        return _generate_e_preview(artifact_id, artifact_dir, target_format, request, profile_revision, reviewed_profile)
     style_spec = None
     if (
         target_format is not None
@@ -1396,6 +1523,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         generation_metadata_path,
         {
             "profile_revision_id": profile_revision.profile_revision_id,
+            "target_sha256": target_sha256,
             "profile_sha256": profile_revision.profile_sha256,
             "layout_template_version": effective_layout_spec.template_version,
             "layout_spec_sha256": production_render_plan.layout_spec_sha256,
@@ -1583,6 +1711,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     output_identity = current_output_identity(artifact_dir)
+    _write_json(artifact_dir / "checked_output.json", output_identity.model_dump(mode="json"))
     client_ready = is_final_acceptance_current(artifact_dir)
 
     return GenerateResponse(
@@ -1609,6 +1738,39 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     )
 
 
+def _require_current_output(artifact_id: str, artifact_dir: Path, current: FinalOutputIdentity) -> None:
+    try:
+        checked = FinalOutputIdentity.model_validate_json((artifact_dir / "checked_output.json").read_text())
+        if checked != current:
+            raise ValueError("Output identity is not the checked preview")
+    except (OSError, ValueError) as error:
+        raise HTTPException(409, "Generate and review a complete checked preview before final confirmation.") from error
+    revision = _require_approved_profile(artifact_dir=artifact_dir, artifact_id=artifact_id, approved_profile_version_id=current.profile_revision_id)
+    _require_profile_review(artifact_dir, revision.profile)
+    metadata = json.loads((artifact_dir / "generation_metadata.json").read_text())
+    saved_target = _load_saved_target_format(artifact_dir)
+    if saved_target and metadata.get("target_sha256") and metadata["target_sha256"] != target_checksum_from_bytes((artifact_dir / saved_target.stored_filename).read_bytes()):
+        raise HTTPException(409, "The target changed; regenerate and review the current preview.")
+    if metadata.get("renderer_version") == "pipeline-e-html/1":
+        try:
+            spec = pipeline_e.LayoutTemplateSpec.model_validate_json((artifact_dir / "pipeline_e_template" / metadata["target_sha256"] / "layout_template_spec.json").read_text())
+            renderer = pipeline_e.RendererArtifact.model_validate_json((artifact_dir / "pipeline_e_template" / metadata["target_sha256"] / "renderer_artifact.json").read_text())
+            gates = json.loads((artifact_dir / "quality_gates.json").read_text())
+            if pipeline_e.spec_checksum(spec) != current.layout_spec_sha256 or renderer.font_manifest != pipeline_e.font_manifest(renderer.font_roles) or not all(item["passed"] for item in gates.values()) or metadata.get("renderer_artifact_sha256") != target_checksum_from_bytes((artifact_dir / "pipeline_e_template" / metadata["target_sha256"] / "renderer_artifact.json").read_bytes()):
+                raise ValueError("Template or output checks changed")
+        except (OSError, ValueError, KeyError) as error:
+            raise HTTPException(409, "The template or output checks changed; regenerate the preview.") from error
+    if saved_target is not None and metadata.get("renderer_version") != "pipeline-e-html/1":
+        try:
+            design_id = metadata.get("design_id")
+            path = design_dir_for(artifact_dir, design_id) / LAYOUT_SPEC_FILENAME if design_id else artifact_dir / LAYOUT_SPEC_FILENAME
+            spec = load_layout_template_spec(path)
+            if layout_spec_checksum(spec) != current.layout_spec_sha256:
+                raise ValueError("Layout changed")
+        except (OSError, ValueError, TargetAnalysisArtifactError) as error:
+            raise HTTPException(409, "The target layout changed; regenerate and review the preview.") from error
+
+
 @app.post(
     "/api/artifacts/{artifact_id}/final-acceptance",
     response_model=FinalAcceptanceResponse,
@@ -1616,34 +1778,38 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
 def accept_final_output(
     artifact_id: str, body: FinalAcceptanceRequest
 ) -> FinalAcceptanceResponse:
-    _require_artifact(artifact_id)
-    artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
-    try:
-        current = current_output_identity(artifact_dir)
-    except (OSError, KeyError, json.JSONDecodeError, ValueError) as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "final_output_unavailable",
-                "message": f"No complete generated preview is available: {exc}",
-            },
-        ) from exc
-    requested = FinalOutputIdentity.model_validate(
-        body.model_dump(exclude={"reviewer_note"})
-    )
-    if requested != current:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "final_acceptance_identity_mismatch",
-                "message": "The preview changed; review and accept the current HTML/PDF.",
-                "current": current.model_dump(mode="json"),
-            },
+    preview_jobs.assert_idle(GENERATED_OUTPUTS_DIR / artifact_id)
+    with preview_jobs.artifact_lock(artifact_id):
+        preview_jobs.assert_idle(GENERATED_OUTPUTS_DIR / artifact_id)
+        _require_artifact(artifact_id)
+        artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
+        try:
+            current = current_output_identity(artifact_dir)
+        except (OSError, KeyError, json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "final_output_unavailable",
+                    "message": f"No complete generated preview is available: {exc}",
+                },
+            ) from exc
+        requested = FinalOutputIdentity.model_validate(
+            body.model_dump(exclude={"reviewer_note"})
         )
-    acceptance = save_final_acceptance(
-        artifact_dir, current, reviewer_note=body.reviewer_note
-    )
-    return FinalAcceptanceResponse(**acceptance.model_dump(), client_ready=True)
+        if requested != current:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "final_acceptance_identity_mismatch",
+                    "message": "The preview changed; review and accept the current HTML/PDF.",
+                    "current": current.model_dump(mode="json"),
+                },
+            )
+        _require_current_output(artifact_id, artifact_dir, current)
+        acceptance = save_final_acceptance(
+            artifact_dir, current, reviewer_note=body.reviewer_note
+        )
+        return FinalAcceptanceResponse(**acceptance.model_dump(), client_ready=True)
 
 
 @app.post("/api/followup", response_model=FollowupResponse)
@@ -1702,6 +1868,61 @@ def download_generated_artifact(artifact_id: str, filename: str) -> FileResponse
         filename=filename,
         content_disposition_type="attachment" if suffix == ".docx" else "inline",
     )
+
+
+def _generate_e_preview(artifact_id: str, directory: Path, target_format: TargetFormatMetadata, request: GenerateRequest, revision: ApprovedProfileVersion, profile: CandidateProfile) -> GenerateResponse:
+    target = directory / target_format.stored_filename
+    target_hash = target_checksum_from_bytes(target.read_bytes())
+    template_dir = directory / "pipeline_e_template" / target_hash
+    cache = GENERATED_OUTPUTS_DIR / "pipeline_e_templates" / target_hash
+    try:
+        with preview_jobs.artifact_lock(artifact_id):
+            if not (template_dir / "renderer_artifact.json").exists():
+                if (cache / "renderer_artifact.json").exists():
+                    template_dir.mkdir(parents=True, exist_ok=True)
+                    for filename in ("layout_template_spec.json", "renderer_artifact.json"):
+                        shutil.copy2(cache / filename, template_dir / filename)
+                else:
+                    live = os.getenv("PIPELINE_E_LIVE_ENABLED", "").lower() in {"1", "true", "yes"}
+                    if not live:
+                        raise HTTPException(503, {"error_code": "pipeline_e_live_disabled", "message": "No reusable E template exists for this target. Explicit local model opt-in is required to build it."})
+                    pipeline_e.construct_template(target, template_dir, profile, blind=request.blind_profile, live=True)
+            output = directory / "preview_versions" / uuid.uuid4().hex
+            identity = pipeline_e.render_preview(template_dir, output, target, profile, blind=request.blind_profile)
+            # Changes during construction cannot publish an obsolete profile or target.
+            _require_approved_profile(artifact_dir=directory, artifact_id=artifact_id, approved_profile_version_id=revision.profile_revision_id)
+            if target_hash != target_checksum_from_bytes(target.read_bytes()):
+                raise HTTPException(409, "Target changed during preview construction; retry.")
+            metadata = {**identity, "profile_revision_id": revision.profile_revision_id, "profile_sha256": revision.profile_sha256, "target_sha256": target_hash, "blind_profile": request.blind_profile, "client_display_rules": {k: v.value for k, v in profile.client_display_rules.items()}}
+            _write_json(output / "generation_metadata.json", metadata)
+            for filename in ("candidate_profile.html", "candidate_profile.pdf", "quality_gates.json", "generation_metadata.json"):
+                shutil.copy2(output / filename, directory / filename)
+            shutil.copy2(template_dir / "layout_template_spec.json", directory / LAYOUT_SPEC_FILENAME)
+            spec = pipeline_e.LayoutTemplateSpec.model_validate_json((template_dir / "layout_template_spec.json").read_text())
+            _write_json(directory / "target_format.json", target_format.model_copy(update={
+                "used_as_template_source": True, "analysis_status": "analyzed", "structure_contract": "measured",
+                "style_spec_url": _artifact_url(artifact_id, LAYOUT_SPEC_FILENAME),
+                "unsupported_features": [gap.feature for gap in spec.capability_gaps],
+                "analysis_warnings": [gap.reason for gap in spec.capability_gaps],
+            }).model_dump(mode="json"))
+            if not cache.exists():
+                cache.mkdir(parents=True)
+                for filename in ("layout_template_spec.json", "renderer_artifact.json"):
+                    shutil.copy2(template_dir / filename, cache / filename)
+    except HTTPException:
+        raise
+    except (ValueError, OSError) as error:
+        raise HTTPException(409, {"error_code": "pipeline_e_preview_blocked", "message": str(error)}) from error
+    html_url = _artifact_url(artifact_id, "candidate_profile.html"); pdf_url = _artifact_url(artifact_id, "candidate_profile.pdf")
+    debug = {"pipeline_e_template": str(template_dir), "preview_version": str(output), "quality_gates": str(directory / "quality_gates.json")}
+    debug.update(_write_debug_artifacts(artifact_dir=directory, profile=profile, render_context=build_client_render_context(profile, blind_profile=request.blind_profile), original_text=None, profile_filename="generated_profile.json"))
+    try:
+        _local_artifact_store().record_generated_outputs(artifact_id=artifact_id, artifact_dir=directory, template_name="pipeline_e", blind_profile=request.blind_profile, html_surface_url=html_url, pdf_download_url=pdf_url, pdf_preview_url=pdf_url, missing_fields=profile.missing_fields, debug_artifacts=debug)
+    except LocalDatabaseError as error:
+        raise HTTPException(500, "Preview metadata could not be saved.") from error
+    result = current_output_identity(directory)
+    _write_json(directory / "checked_output.json", result.model_dump(mode="json"))
+    return GenerateResponse(artifact_id=artifact_id, html_surface_url=html_url, pdf_download_url=pdf_url, pdf_preview_url=pdf_url, artifact_metadata_url=_artifact_metadata_url(artifact_id), followup_message=_draft_followup(profile), missing_fields=profile.missing_fields, debug_artifacts=debug, profile_sha256=revision.profile_sha256, **result.model_dump(exclude={"profile_sha256"}), client_ready=is_final_acceptance_current(directory))
 
 
 def _build_ledger(profile: CandidateProfile) -> LedgerSummary:

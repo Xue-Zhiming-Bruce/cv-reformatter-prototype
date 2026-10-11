@@ -228,6 +228,49 @@ failed, or mismatched proofs return HTTP 409 with `layout_proof_*` error
 codes. Design-driven generation additionally requires an approved design
 (`design_not_approved`, `design_profile_mismatch`, `design_inventory_mismatch`).
 
+## Local Preview Jobs (ADR 0007)
+
+The frontend uses `POST /api/artifacts/{artifact_id}/preview-jobs` with strict
+JSON: required `profile_revision_id`, optional boolean `blind_profile`, and
+optional `client_display_rules`. Additional fields are rejected. The current
+persisted revision is the only candidate-data input; previews do not approve it.
+The response is HTTP 202 with `job_id`, `state`, `stage`, timestamps and, when
+complete, `result` or a safe structured `error`. Poll
+`GET /api/artifacts/{artifact_id}/preview-jobs/{job_id}`. States are `queued`,
+`running`, `succeeded`, `failed`, or `interrupted`. An identical active request
+joins the same job; a conflicting request or edit during construction returns
+409. Restarted in-flight work is reported interrupted, never silently retried.
+This local single-worker implementation is not a durable production queue.
+
+Successful jobs return generation's output identity and immutable
+`/api/artifacts/{artifact_id}/preview-versions/{version_id}/{filename}` URLs.
+HTML has a restrictive content security policy; PDF preview remains inspectable
+before acceptance. The PDF download URL adds `?download=1`, returns an attachment,
+and requires final acceptance of that exact, current, successfully checked
+output. Edits or changes to the target/template/output invalidate download
+permission; an earlier immutable draft remains available for comparison.
+
+With `TEMPLATE_DESIGN_STRATEGY=pipeline_e`, PDF targets are stored as pending
+before construction. The neutral `LayoutTemplateSpec` v3 stores measured layout,
+not HTML/CSS. A separate `e-renderer-artifact/1` binds authored typed slots to
+specification/target checksums, `pipeline-e-html/1` and font hashes. Reuse is local;
+uncached targets require explicit `PIPELINE_E_LIVE_ENABLED=1`. Disabled live
+construction returns `pipeline_e_live_disabled`; failed checks return
+`pipeline_e_preview_blocked`. There is no silent baseline fallback.
+Content, privacy, leaf identity, fonts, blank pages and material geometry checks
+block delivery; visual differences and unsupported layout features still need
+owner review. Successful E generation persists `quality_gates.json` and
+`generation_metadata.json`; the older renderer's production-render-plan claims
+above apply to that renderer only. The baseline strategy remains available for
+explicit rollback and still requires its existing layout/design proofs. Their
+actual files can be inspected through
+`GET /api/artifacts/{artifact_id}/layout-proofs/{short|medium|long}/{html|pdf}`
+before manual approval.
+
+DOCX upload remains supported. The frontend DOCX export entry is marked
+“Not launched”, disabled, and sends no generation request. This release connects
+HTML editing, real PDF preview, explicit final confirmation and PDF download.
+
 ## Accept Final Output
 
 ```text
@@ -241,7 +284,12 @@ returned by generation: `profile_revision_id`, `profile_sha256`,
 `client_ready=true`. Missing output returns 409 `final_output_unavailable`;
 a changed preview returns 409 `final_acceptance_identity_mismatch`.
 Regenerating after a profile, template, HTML or PDF change invalidates the
-previous acceptance. Generating a preview alone never constitutes acceptance.
+previous acceptance. Generating a preview alone never constitutes acceptance. Final confirmation and
+PDF attachment access revalidate current revision/source-draft identity, the
+successful output marker, current target/template/font identity, and the same
+segmentation coverage and source-section review gates as profile approval.
+Pending custom sections need an explicit show/hide decision and recruiter review.
+
 
 ## Generated-profile artifact and draft preservation
 
