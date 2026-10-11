@@ -1742,6 +1742,23 @@ def test_scalar_collection_rejects_tokens_that_would_render_empty(collection: st
     assert at.validate_authored_template(valid, target_pdf=Path("target.pdf"))["passed"]
 
 
+def test_generic_section_css_class_is_not_a_hardcoded_candidate_fact() -> None:
+    from app.pipeline_e.resume_layout.candidates import CandidateDocument, CandidateLeaf
+    candidate = CandidateDocument(candidate_id="section-css", leaves=[
+        CandidateLeaf(leaf_id="header.name", kind="header_field", slot="name", text="Avery Candidate"),
+        CandidateLeaf(leaf_id="additional.section.0", kind="additional_section", source="additional_details", text="PROJECTS"),
+    ])
+    template = _base_authored_template().model_copy(update={"css": _base_authored_template().css + ".projects{margin-top:4pt}"})
+    assert at.validate_authored_template(template, target_pdf=Path("target.pdf"), render_candidate=candidate)["passed"]
+    named_projects = candidate.model_copy(update={"leaves": [candidate.leaves[0].model_copy(update={"text": "PROJECTS"}), candidate.leaves[1]]})
+    with pytest.raises(ValueError, match="hardcoded.*header.name"):
+        at.validate_authored_template(template, target_pdf=Path("target.pdf"), render_candidate=named_projects)
+    custom = candidate.model_copy(update={"leaves": [candidate.leaves[0], candidate.leaves[1].model_copy(update={"text": "Internal Projects"})]})
+    custom_template = template.model_copy(update={"css": template.css + ".internal projects{margin:0}"})
+    with pytest.raises(ValueError, match="hardcoded.*additional.section.0"):
+        at.validate_authored_template(custom_template, target_pdf=Path("target.pdf"), render_candidate=custom)
+
+
 def test_authored_rendering_uses_a_network_disabled_chrome_environment() -> None:
     environment = at.authored_network_disabled_environment()
     assert any("--host-resolver-rules=MAP * ~NOTFOUND" in flag for flag in environment["flags"])

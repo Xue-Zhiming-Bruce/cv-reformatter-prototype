@@ -82,6 +82,7 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
+from app.extraction.candidate_schema import SectionType
 from app.pipeline_e.resume_layout.candidates import CandidateDocument, CandidateLeaf
 from app.pipeline_e.shared import (
     EvidenceModel,
@@ -386,10 +387,12 @@ def validate_authored_template(
         payload_norm = _norm_text(
             candidate.html + " " + candidate.css + " " + metadata_text
         )
+        generic_section_titles = {_norm_text(section.value) for section in SectionType}
         hardcoded = [
             leaf.leaf_id
             for leaf in render_candidate.leaves
             if leaf.text and len(_norm_text(leaf.text)) >= 8 and _norm_text(leaf.text) in payload_norm
+            and not (leaf.kind == "additional_section" and _norm_text(leaf.text) in generic_section_titles)
         ]
         if hardcoded:
             violations.append(

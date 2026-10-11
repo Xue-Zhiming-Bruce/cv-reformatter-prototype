@@ -31,3 +31,8 @@ def test_e_review_retains_failed_and_unrun_pairs(tmp_path: Path, monkeypatch) ->
     assert json.loads((output / "content_preservation_verification.json").read_text())["passed"] == 0
     assert (output / "transformations/A__to__B/result.json").exists()
     assert (output / "transformations/A__to__C/result.json").exists()
+    matrix._write_e_review(output, {
+        "pairs_requested": ["A:B"], "pairs": [], "llm_provider": "openai",
+        "started_at": "2026-10-12T00:00:00Z",
+    })
+    assert json.loads((output / "run_manifest.json").read_text())["state"] == "running"
