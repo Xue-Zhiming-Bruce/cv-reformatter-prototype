@@ -558,12 +558,15 @@ def derive_header_scaffold(
     # line starts at the left margin (its leading icon glyph), so the cap must
     # not bind at the contact line. Only non-contact margin-aligned lines
     # start the body.
+    # A measured header title may itself be left aligned; it is not a body boundary.
+    title_boxes = [row["bbox_pt"] for row in header_elements if row.get("structural_role") == "title" and row.get("bbox_pt") and row.get("page", 1) == 1]
     margin_line_tops = [
         float(row["top"])
         for row in all_header_candidates
         if row["words"]
         and abs(min(float(word["x0"]) for word in row["words"]) - margin_left) <= 2
         and not _cap_line_is_contact(row)
+        and not any(box["top"] <= row["top"] <= box["bottom"] and box["x0"] <= min(float(word["x0"]) for word in row["words"]) < box["x1"] for box in title_boxes)
     ]
     cutoff = min(candidate_cutoff, min(margin_line_tops, default=math.inf))
     lines = [row for row in all_header_candidates if float(row["top"]) < cutoff]

@@ -456,13 +456,14 @@ def test_contact_separator_stays_none_when_standalone_element_appears_once(monke
 
 
 
-def test_header_scaffold_rows_carry_their_own_measured_style(monkeypatch) -> None:
+@pytest.mark.parametrize("name_x0", [261.5, 36.0])
+def test_header_scaffold_rows_carry_their_own_measured_style(monkeypatch, name_x0) -> None:
     """E→D cold start (2026-09-11): each header row compiles from the style
     of its own measured line, not the positional group heuristic that gave
     the contact row the tagline's style when the corpus allowed it."""
     import pdfplumber
     words = [
-        {"text": "J. Doe", "top": 19.1, "bottom": 48.85, "x0": 261.5, "x1": 332.4},
+        {"text": "J. Doe", "top": 19.1, "bottom": 48.85, "x0": name_x0, "x1": name_x0 + 70.9},
         {"text": "Senior Person", "top": 56.0, "bottom": 73.25, "x0": 250.0, "x1": 344.0},
         {"text": "(cid:131)example@example.com—github.com/USER", "top": 86.1, "bottom": 97.0, "x0": 68.1, "x1": 523.8},
         {"text": "EXPERIENCE", "top": 120.0, "bottom": 134.0, "x0": 36.0, "x1": 106.0},
@@ -486,7 +487,7 @@ def test_header_scaffold_rows_carry_their_own_measured_style(monkeypatch) -> Non
         },
         "elements": [
             {"id": "adobe.1", "page": 1, "section_path": "//Document/Sect[1]/Sect/Header",
-             "text_sample": "J. Doe", "bbox_pt": {"x0": 261.5, "top": 19.1, "x1": 332.4, "bottom": 48.85}},
+             "text_sample": "J. Doe", "structural_role": "title", "bbox_pt": {"x0": name_x0, "top": 19.1, "x1": name_x0 + 70.9, "bottom": 48.85}},
             {"id": "adobe.2", "page": 1, "style_id": "style_h", "structural_role": "heading_candidate",
              "text_sample": "EXPERIENCE", "entry_path": None, "bbox_pt": {"x0": 36.0, "top": 120.0, "x1": 106.0, "bottom": 134.0}},
         ],
@@ -496,6 +497,7 @@ def test_header_scaffold_rows_carry_their_own_measured_style(monkeypatch) -> Non
     scaffold = derive_header_scaffold(Path("target.pdf"), summary)
     by_role = {row.role: row for row in scaffold}
     assert by_role["name"].font_size_pt == 24.787 and by_role["name"].bold
+    assert by_role["name"].alignment == ("left" if name_x0 == 36.0 else "center")
     assert by_role["contact"].font_size_pt == 8.966  # the row's own style, not the tagline's 14.346
     assert not by_role["contact"].bold
 
