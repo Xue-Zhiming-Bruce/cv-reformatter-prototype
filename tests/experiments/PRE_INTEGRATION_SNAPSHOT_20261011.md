@@ -304,3 +304,70 @@ leave `TEMPLATE_DESIGN_STRATEGY=pipeline_e` only for the approved local prototyp
 select the accepted strategy explicitly to restore the baseline. Provider opt-in
 `PIPELINE_E_LIVE_ENABLED=1` is separate and must use authorized inputs. The local
 review server uses mock extraction and live construction disabled.
+
+
+## Real resume-matrix trial — October 12, 2026
+
+Owner requested existing matrix samples. The canonical API matrix runner now
+supports E; its reporting remains under the existing matrix format. No mock
+extractor or scripted model response was used for the live attempts. Inputs
+remain the owner-attested public/fake PDF corpus, not confidential submissions.
+
+| Attempt | Actual result | Local run directory under `tests/local_datasets/resume_matrix/runs/` |
+| --- | --- | --- |
+| F→B; A→I | B preflight rejected a left-aligned header; A extraction omitted three introductory source lines, correctly blocked by coverage audit | `matrix_20261011T172341Z_pipeline_e_api` |
+| F→B; F→I after header repair | B's scalar summary token failed accounting; I repair retained content but failed font-size checks | `matrix_20261011T172849Z_pipeline_e_header_fix` |
+| F→B; F→I after slot repair | B validator falsely classified a generic projects CSS class as a candidate fact; I builder returned a connection error after 602.4 seconds | `matrix_20261011T173839Z_pipeline_e_scalar_fix` |
+| F→B after CSS repair | Genuine E construction reached ready_for_owner_review in 85.2 seconds; API admission exposed unqualified empty-heading conversion errors | `matrix_20261011T175549Z_pipeline_e_css_fix` |
+| Deterministic continuation after adapter fixes | 1/1 checked preview completed; eight actual-PDF gates passed; final acceptance remains absent | `matrix_20261011T183108Z_pipeline_e_live_review` |
+
+The successful continuation reuses the immutable profile and selected template
+from the genuine live run. It does not call providers again and does not forge
+or rewrite the prior E construction state. Original Adobe measurement calls
+were real; later rebuilds reused their checksum-matched evidence. Full source,
+model usage, template and output identities remain local in these runs.
+
+Closed defects:
+
+- measured header titles may be left aligned without being mistaken for body;
+- scalar collections reject item tokens that would render empty; Builder
+  instructions agree with the shell; API construction allows three repair rounds;
+- generic additional-section vocabulary may appear in structural CSS, while
+  candidate names and custom headings remain protected;
+- unqualified target headings and their unused decorations become explicit
+  capability gaps, rather than illegal empty headings or invented text;
+- narrowly parsed empty-parent rules are permitted only when filled content has
+  no candidate identities or non-label text; populated and whitespace-empty
+  controls are blocked;
+- privacy uses all evidence-qualified presentation headings, matching E,
+  instead of flagging a source skill-group word as a target-person leak.
+
+| Focused check | Result | Log in `tests/test_results/pytest/` |
+| --- | --- | --- |
+| Canonical matrix reporting and existing measurement helpers | 7 passed | `20261011T172305Z_e_matrix_harness_final.txt` |
+| Header and layout-state regressions | 46 passed, 3 missing-local-fixture skips | `20261011T172748Z_e_left_header.txt` |
+| Scalar binding, repair scheduling and actual PDF workflow selection | 27 passed, 137 deselected | `20261011T173738Z_e_scalar_repair.txt` |
+| Authored-template, structural graph and generic-heading controls | 24 passed, 139 deselected | `20261011T175419Z_e_css_heading_green.txt` |
+| Final API workflow, empty-section safety and privacy positive/negative controls | 13 passed | `20261011T183850Z_e_privacy_lines_verified.txt` |
+
+Commands use the existing Python 3.12 environment and canonical pytest paths,
+with `-o addopts= -q`. Matrix calls use
+`scripts/run_abc_live_matrix.py --strategy pipeline_e --pairs F:B A:I`
+(or F:B F:I); the final continuation invokes that same runner's API/report
+helpers on the persisted real artifacts with live construction disabled.
+No second runner or corpus was created. Generated evidence and PDFs are ignored.
+
+Review entry point:
+`tests/local_datasets/resume_matrix/runs/matrix_20261011T183108Z_pipeline_e_live_review/RESULTS_INDEX.md`.
+The actual two-page PDF is at
+`transformations/F__to__B/generation/candidate_profile.pdf` below that run;
+per-page PNGs, diffs and side-by-side images are in its `comparison/` folder.
+
+Visual inspection has NOT accepted this result. Joined words originate in
+F's default PDF text extraction and persist in the authoritative profile;
+a read-only comparison with `x_tolerance_ratio=0.15` recovered readable spaces.
+No ingestion setting was changed in this trial. The projects heading appears
+twice, and the second page contains only certifications. These are material
+quality gaps despite all deterministic gates passing. A's extraction omission
+and I's font/connection failures remain open. No default replacement, owner
+quality acceptance, confidential-data handling or deployment gate is closed.

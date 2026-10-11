@@ -296,7 +296,7 @@ def render_preview(directory: Path, output: Path, target: Path, profile: Candida
     gates = {
         "content": content.model_dump(mode="json"),
         "pdf_presence": authored_pdf_presence_gate(fill, candidate, pdf),
-        "privacy": authored_privacy_gate(doc, pdf, target, labels=labels, source_texts={leaf.text for leaf in candidate.leaves if leaf.text}),
+        "privacy": authored_privacy_gate(doc, pdf, target, labels={label.text for label in artifact.labels}, source_texts={leaf.text for leaf in candidate.leaves if leaf.text}),
         "blank_pages": blank_page_gate(pdf),
         "tail_page": orphan_tail_page_gate(pdf),
         "readable_body": readable_body_gate(pdf, minimum_pt=min(10.0, artifact.font_roles["body"].font_size_pt)),

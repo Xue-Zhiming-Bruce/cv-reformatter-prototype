@@ -42,7 +42,7 @@ def workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     assert saved.status_code == 200, saved.text
     target = tmp_path / "target.pdf"
     page = {"width_pt": 612, "height_pt": 792, "margin_top_pt": 36, "margin_left_pt": 36, "margin_bottom_pt": 36, "margin_right_pt": 36}
-    build_text_pdf_pages(target, ["Target Person\nTarget employer facts must never appear."], **page)
+    build_text_pdf_pages(target, ["Target Person", "Target employer facts must never appear."], **page)
     upload = client.post("/api/target-format", data={"artifact_id": "artifact_preview"}, files={"file": ("target.pdf", target.read_bytes(), "application/pdf")})
     assert upload.status_code == 200, upload.text
     assert upload.json()["target_format"]["analysis_status"] == "pending"
@@ -267,3 +267,30 @@ def test_empty_child_hiding_cannot_conceal_candidate_values(workflow, populated_
         result = preview(client, saved.json()["profile_revision_id"])["result"]
         assert result["client_ready"] is False
         assert client.get(result["pdf_preview_url"]).status_code == 200
+
+
+def test_unused_qualified_heading_is_not_a_target_person_fact(workflow) -> None:
+    from app.pipeline_e.product import render_preview
+    from app.pipeline_e.shared import PresentationLabel
+    from app.pipeline_e.template import authored_privacy_gate
+    _, directory, profile, _, cache = workflow
+    target = directory / "target_format_reference.pdf"
+    spec = LayoutTemplateSpec.model_validate_json((cache / "layout_template_spec.json").read_text())
+    page = spec.page.model_dump(include={"width_pt", "height_pt", "margin_top_pt", "margin_left_pt", "margin_bottom_pt", "margin_right_pt"})
+    build_text_pdf_pages(target, ["Target Person", "LANGUAGES", "English"], **page)
+    assert "LANGUAGES" in read_pdf_text(target).splitlines() and "English" in read_pdf_text(target).splitlines()
+    target_hash = _sha256_file(target)
+    spec = spec.model_copy(update={"provenance": spec.provenance.model_copy(update={"target_sha256": target_hash})})
+    renderer = RendererArtifact.model_validate_json((cache / "renderer_artifact.json").read_text())
+    renderer.target_sha256 = target_hash
+    renderer.layout_spec_sha256 = spec_checksum(spec)
+    renderer.labels = [PresentationLabel(label_id="label.languages", text="LANGUAGES", kind="section_heading", status="evidence_qualified", evidence_ids=["synthetic.target.languages"])]
+    (cache / "layout_template_spec.json").write_text(spec.model_dump_json())
+    (cache / "renderer_artifact.json").write_text(renderer.model_dump_json())
+    output = directory / "unused_label_preview"
+    render_preview(cache, output, target, profile.model_copy(update={"skills": ["Programming Languages"]}), blind=False)
+    gates = json.loads((output / "quality_gates.json").read_text())
+    assert gates["privacy"]["passed"]
+    assert not gates["privacy"]["leaked_target_lines"]
+    control = authored_privacy_gate("<html><body><p>English</p></body></html>", output / "candidate_profile.pdf", target, labels={"LANGUAGES"}, source_texts={"Programming Languages"})
+    assert not control["passed"] and control["leaked_target_lines"] == ["English"]

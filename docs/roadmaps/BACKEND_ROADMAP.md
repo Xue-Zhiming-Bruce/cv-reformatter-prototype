@@ -75,6 +75,12 @@ parity and replacement of the accepted default remain open. The template's
 contact layout, heading typography and spacing can still differ visibly from
 the target; successful deterministic checks do not close that quality gate.
 
+October 12 real matrix trial: F→B now passes all API gates after integration
+fixes, but visual review found joined source words, duplicate headings and
+poor pagination. A→I failed source coverage; F→I failed font checks and later
+provider connectivity. See the integration record above. These results do not
+close the remaining corpus/owner/default-replacement checkbox.
+
 ## Product-Standard Definition
 
 “Product standard” means that the backend is measurably reliable across the
