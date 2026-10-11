@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
 import json
 import os
 import shutil
@@ -22,12 +24,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.main import GENERATED_OUTPUTS_DIR, app  # noqa: E402
+from app import main as main_api  # noqa: E402
+from app.main import app  # noqa: E402
 from app.template_analysis.commercial import (  # noqa: E402
     NormalizedLayoutEvidence,
     enrich_badges_from_local_pdf,
 )
 from app.template_analysis.visual_comparator import (  # noqa: E402
+    compare_pdf_layouts,
     build_side_by_side_comparison,
 )
 
@@ -447,7 +451,7 @@ def _nonempty(path: Path) -> dict[str, Any]:
     }
 
 
-def _run_pair(client: TestClient, source: str, target: str) -> dict[str, Any]:
+def _run_pair(client: TestClient, source: str, target: str, *, strategy: str = "legacy", run_dir: Path | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {
         "pair": f"{source}→{target}",
         "artifact_id": None,
@@ -481,7 +485,7 @@ def _run_pair(client: TestClient, source: str, target: str) -> dict[str, Any]:
         return result
     artifact_id = process["artifact_id"]
     result["artifact_id"] = artifact_id
-    artifact_dir = (PROJECT_ROOT / GENERATED_OUTPUTS_DIR / artifact_id).resolve()
+    artifact_dir = (PROJECT_ROOT / main_api.GENERATED_OUTPUTS_DIR / artifact_id).resolve()
     segmentation_metadata_path = artifact_dir / "candidate_segmentation.json"
     if segmentation_metadata_path.exists():
         result["candidate_segmentation"] = json.loads(
@@ -491,6 +495,10 @@ def _run_pair(client: TestClient, source: str, target: str) -> dict[str, Any]:
         result["observations"].append(
             f"original_preview_error: {process['original_preview_error']}"
         )
+
+    if strategy == "pipeline_e":
+        assert run_dir is not None
+        return _run_e_pair(client, source, target, process, result, run_dir)
 
     profile = process["profile"]
     pending_sections = [
@@ -780,6 +788,120 @@ def _run_pair(client: TestClient, source: str, target: str) -> dict[str, Any]:
     return result
 
 
+
+def _run_e_pair(client: TestClient, source: str, target: str, process: dict[str, Any], result: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    directory = main_api.GENERATED_OUTPUTS_DIR / process["artifact_id"]
+    source_dir = run_dir / "shared/source_analysis" / source
+    source_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("candidate_profile.json", "raw_extracted_text.txt", "segmentation_audit.json", "candidate_segmentation.json", "candidate_field_evidence.json"):
+        shutil.copy2(directory / name, source_dir / name)
+    audit = json.loads((directory / "segmentation_audit.json").read_text())
+    if audit["status"] != "passed":
+        result["steps"]["process_source"] = {"status": "fail", "error_code": "segmentation_coverage_failed", "error": "Source-line audit failed; no approval or conversion attempted."}
+        return result
+    target_path = DATASET_DIR / f"resume_{target}.pdf"
+    upload = _request(client, result, "upload_target", "POST", "/api/target-format", data={"artifact_id": process["artifact_id"]}, files={"file": (target_path.name, target_path.read_bytes(), "application/pdf")})
+    if upload is None:
+        return result
+    result["observations"].append("Preview uses the persisted extraction revision. No profile, layout or final-file approval is automated.")
+    started = time.monotonic()
+    response = client.post(f"/api/artifacts/{process['artifact_id']}/preview-jobs", json={"profile_revision_id": process["profile_revision_id"], "blind_profile": False})
+    if response.status_code != 202:
+        result["steps"]["generate"] = {"status": "fail", "error": _response_error(response)}
+        return result
+    job = response.json()
+    while job["state"] in {"queued", "running"}:
+        time.sleep(2)
+        response = client.get(f"/api/artifacts/{process['artifact_id']}/preview-jobs/{job['job_id']}")
+        response.raise_for_status()
+        job = response.json()
+    result["preview_job"] = job
+    result["steps"]["generate"] = {"status": "pass" if job["state"] == "succeeded" else "fail", "elapsed_seconds": round(time.monotonic() - started, 3)}
+    if job["state"] != "succeeded":
+        result["steps"]["generate"].update(job["error"] or {"error": job["state"]})
+        return result
+    generated = job["result"]
+    assert not generated["client_ready"]
+    output = run_dir / "transformations" / f"{source}__to__{target}" / "generation"
+    output.mkdir(parents=True, exist_ok=True)
+    for name in ("candidate_profile.html", "candidate_profile.pdf", "client_render_context.json", "generated_profile.json", "layout_template_spec.json", "quality_gates.json", "generation_metadata.json"):
+        shutil.copy2(directory / name, output / ("effective_layout_template_spec.json" if name == "layout_template_spec.json" else name))
+    template_dir = directory / "pipeline_e_template" / json.loads((directory / "generation_metadata.json").read_text())["target_sha256"]
+    target_dir = run_dir / "shared/target_analysis" / target
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("layout_template_spec.json", "renderer_artifact.json"):
+        shutil.copy2(template_dir / name, target_dir / name)
+    shutil.copy2(template_dir / "renderer_artifact.json", output / "renderer_artifact.json")
+    comparison_dir = output.parent / "comparison"
+    comparison = compare_pdf_layouts(target_path, output / "candidate_profile.pdf", comparison_dir)
+    result["visual_comparison"] = comparison.model_dump(mode="json")
+    result["files"]["side_by_side"] = [str(comparison_dir / name) for name in build_side_by_side_comparison(target_path, output / "candidate_profile.pdf", comparison_dir)]
+    gates = json.loads((output / "quality_gates.json").read_text())
+    result["content_validation"] = gates["content"]
+    result["quality_gates"] = gates
+    result["generated"] = generated
+    result["output_paths"] = {"pdf": str(output / "candidate_profile.pdf"), "diff": str(comparison_dir / "comparison_page_001_diff.png"), "renderer": str(output / "renderer_artifact.json")}
+    result["output_checksums"] = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in [("pdf", output / "candidate_profile.pdf"), ("html", output / "candidate_profile.html"), ("renderer", output / "renderer_artifact.json")]}
+    return result
+
+
+def _write_e_review(run_dir: Path, report: dict[str, Any]) -> None:
+    rows = []
+    for pair in report["pairs_requested"]:
+        source, target = pair.split(":")
+        result = next((item for item in report["pairs"] if item["pair"] == pair.replace(":", "→")), None)
+        failed = next((value for value in result["steps"].values() if value["status"] == "fail"), None) if result else {"error": "Not run"}
+        status = "completed" if result and result.get("generated") and not failed else "failed"
+        comparison = result.get("visual_comparison", {}) if result else {}
+        paths = {key: str(Path(value).relative_to(run_dir)) for key, value in result.get("output_paths", {}).items()} if result else {}
+        row = {"transformation_id": source + "__to__" + target, "source_id": source, "target_id": target, "status": status, "latency_seconds": sum(step.get("elapsed_seconds", 0) for step in result["steps"].values()) if result else 0, "average_layout_similarity": comparison.get("average_layout_similarity"), "baseline_layout_similarity": None, "layout_similarity_delta": None, "generated_page_count": comparison.get("generated_page_count"), "target_page_count": comparison.get("target_page_count"), "added_section_ids": [], "recovered_candidate_block_ids": [], "generated_pdf": paths.get("pdf", ""), "output_paths": paths, "checksums": result.get("output_checksums", {}) if result else {}, "warnings": comparison.get("warnings", []), "error_message": (failed.get("error") or failed.get("message") or str(failed)) if failed else "", "error": failed}
+        rows.append(row)
+        folder = run_dir / "transformations" / row["transformation_id"]
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "result.json").write_text(json.dumps({**row, "api_evidence": result}, indent=2, ensure_ascii=False))
+    inputs = []
+    for identifier in sorted({name for pair in report["pairs_requested"] for name in pair.split(":")}):
+        path = DATASET_DIR / f"resume_{identifier}.pdf"
+        with pdfplumber.open(path) as pdf:
+            pages = len(pdf.pages)
+        inputs.append({"id": identifier, "filename": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "page_count": pages, "size_bytes": path.stat().st_size})
+    manifest = {"execution_schema_version": "pipeline-e-api-matrix/1", "result_format_version": "resume-matrix-review-1.0", "dataset_classification": "owner_attested_fake_resume_corpus", "state": "completed" if all(row["status"] == "completed" for row in rows) else "completed_with_failures", "started_at": report["started_at"], "completed_at": report.get("completed_at"), "method": "live extraction -> audited CandidateProfile revision -> fresh E template construction -> real Chrome -> checked immutable preview", "network_calls": "Real configured extraction, Adobe and E builder/reviewer; details in local API/construction records.", "llm_calls": {"extraction_provider": report["llm_provider"], "pipeline_model": os.getenv("PIPELINE_MODEL", "deepseek-flash")}, "review_policy": "Unreviewed. No final acceptance, no visual winner, no automatic source-section review.", "inputs": inputs, "transformations": rows, "layout_proofs": {"evidence_version": "pipeline-e-content-shape-probes/1", "approval_state": "not_approved", "note": "E construction uses its canonical content-shape probes. Legacy template proof approvals are not applicable and are not fabricated."}}
+    (run_dir / "run_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
+    columns = "transformation_id source_id target_id status average_layout_similarity baseline_layout_similarity layout_similarity_delta generated_page_count added_section_ids recovered_candidate_block_ids generated_pdf error_message".split()
+    with (run_dir / "transformation_matrix.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, columns, extrasaction="ignore"); writer.writeheader(); writer.writerows(rows)
+    completed = [row for row in rows if row["status"] == "completed"]
+    preservation = {"passed": len(completed), "total": len(rows), "checks": "Only PDFs admitted by actual E content, leaf-identity, privacy, font and material geometry checks are counted. Failed/not-run cases are not passes.", "transformations": [{"id": row["transformation_id"], "passed": row["status"] == "completed"} for row in rows]}
+    (run_dir / "content_preservation_verification.json").write_text(json.dumps(preservation, indent=2))
+    counts = f"Completed {len(completed)} / {len(rows)}; failed {len(rows)-len(completed)}; content checks {len(completed)}/{len(rows)}; negative delta unmeasured (no baseline); page-count differences {sum(row['generated_page_count'] != row['target_page_count'] for row in completed)}."
+    text = ["# Pipeline E live matrix review", "", "Automated run: " + manifest["state"] + ". Manual review: all pending. No final acceptance.", "", counts, "", "Layout similarity is diagnostic, not a quality gate. Delta is unmeasured without a comparable baseline.", "", "## Input key", ""]
+    text += [f"- {item['id']}: {item['filename']} ({item['page_count']} pages)" for item in inputs]
+    text += ["", "## Score matrix", "", "| Source → Target | Diagnostic score / PDF |", "| --- | --- |"]
+    text += [f"| {row['source_id']} → {row['target_id']} | " + (f"[{row['average_layout_similarity']:.4f}]({row['generated_pdf']})" if row['status']=='completed' else "Failed") + " |" for row in rows]
+    text += ["", "## Review first", ""]
+    text += [f"- [{row['transformation_id']}](transformations/{row['transformation_id']}/result.json): {row['error_message']}" for row in rows if row['status']=='failed'] or ["- Inspect contact layout, typography, spacing and page flow in every output."]
+    for source in sorted({row['source_id'] for row in rows}):
+        text += ["", "## Source " + source, "", "| Check | # | Target design | Automated result | Pages | Score | Delta | Recovered | Added | Open |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+        for number, row in enumerate(rows, 1):
+            if row['source_id'] != source: continue
+            links = f"[failure](transformations/{row['transformation_id']}/result.json)"
+            if row['status']=='completed':
+                links = " · ".join(f"[{key}]({path})" for key,path in row['output_paths'].items())
+            score = f"{row['average_layout_similarity']:.4f}" if row['status']=='completed' else "—"
+            flag = " · pages" if row['status']=='completed' and row['generated_page_count']!=row['target_page_count'] else ""
+            text.append(f"| ☐ | {number} | {row['target_id']} / resume_{row['target_id']}.pdf | {row['status']}{flag} | {row['generated_page_count'] or '—'} / {row['target_page_count'] or '—'} | {score} | — | unmeasured | unmeasured | {links} |")
+    text += ["", "## Construction probes", "", "Canonical E content-shape probes and model usage are in api_artifacts/*/pipeline_e_template/*/construction_*/. No legacy proof approval or owner acceptance is asserted.", "", "[Run summary](RUN_README.md) · [CSV](transformation_matrix.csv) · [Content checks](content_preservation_verification.json) · [Manifest](run_manifest.json)"]
+    (run_dir / "RESULTS_INDEX.md").write_text("\n".join(text)+"\n")
+    (run_dir / "RUN_README.md").write_text("# Live E API matrix\n\n" + counts + "\n\nSource and target are the authorized public/fake PDF corpus. Only candidate profile facts enter output. Raw provider evidence stays local. Outputs are pending human review. No final acceptance is recorded.\n")
+    assert len(rows) == len(set(row['transformation_id'] for row in rows)) == len(report['pairs_requested'])
+    assert sum(1 for _ in csv.DictReader((run_dir / 'transformation_matrix.csv').open())) == len(rows)
+    for row in completed:
+        assert all((run_dir / path).is_file() for path in row['output_paths'].values())
+    import re
+    for link in re.findall(r"\]\(([^)]+)\)", (run_dir / 'RESULTS_INDEX.md').read_text()):
+        assert (run_dir / link).exists(), link
+    print("Matrix report validated:", counts, flush=True)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the authorized ABC live API matrix.")
     parser.add_argument(
@@ -788,15 +910,29 @@ def main() -> int:
         default=["A:B"],
         help="Pairs such as A:B A:C, or 'all'. Defaults to the required first gate A:B.",
     )
+    parser.add_argument("--strategy", choices=["legacy", "pipeline_e"], default="legacy")
+    parser.add_argument("--run-dir", type=Path, help="E matrix review directory under the canonical resume-matrix runs path.")
     parser.add_argument("--report", type=Path, help="Optional JSON report path.")
     args = parser.parse_args()
     pairs = ALL_PAIRS if args.pairs == ["all"] else args.pairs
-    if any(pair not in ALL_PAIRS for pair in pairs):
+    allowed_pairs = ALL_PAIRS if args.strategy == "legacy" else [f"{a}:{b}" for a in "ABCDFEI" for b in "ABCDFEI" if a != b and (DATASET_DIR / f"resume_{a}.pdf").exists() and (DATASET_DIR / f"resume_{b}.pdf").exists()]
+    if len(set(pairs)) != len(pairs) or any(pair not in allowed_pairs for pair in pairs):
         parser.error(f"pairs must come from {', '.join(ALL_PAIRS)}")
 
     provider = (os.getenv("API_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "openai").lower()
     if provider == "mock":
         parser.error("Live matrix refuses API_LLM_PROVIDER/LLM_PROVIDER=mock.")
+
+    if args.strategy == "pipeline_e":
+        if not args.run_dir or not args.run_dir.resolve().is_relative_to((DATASET_DIR / "runs").resolve()):
+            parser.error("E requires --run-dir under tests/local_datasets/resume_matrix/runs/")
+        if os.getenv("PIPELINE_E_LIVE_ENABLED", "").lower() not in {"1", "true", "yes"}:
+            parser.error("E live matrix requires PIPELINE_E_LIVE_ENABLED=1.")
+        args.run_dir = args.run_dir.resolve()
+        args.run_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
+        main_api.GENERATED_OUTPUTS_DIR = args.run_dir / "api_artifacts"
+        main_api.LOCAL_DATABASE_PATH = args.run_dir / "metadata.sqlite3"
+        os.environ["TEMPLATE_DESIGN_STRATEGY"] = "pipeline_e"
 
     report: dict[str, Any] = {
         "started_at": datetime.now(timezone.utc).isoformat(),
@@ -817,12 +953,16 @@ def main() -> int:
         for pair in pairs:
             source, target = pair.split(":")
             print(f"RUN {source}→{target}", flush=True)
-            result = _run_pair(client, source, target)
+            result = _run_pair(client, source, target, strategy=args.strategy, run_dir=args.run_dir)
             report["pairs"].append(result)
-            print(json.dumps(result, ensure_ascii=False, sort_keys=True), flush=True)
-            if any(step["status"] == "fail" for step in result["steps"].values()):
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True) if args.strategy == "legacy" else f"{pair}: generate={result['steps']['generate']['status']}", flush=True)
+            if args.strategy == "pipeline_e":
+                _write_e_review(args.run_dir, report)
+            if args.strategy == "legacy" and any(step["status"] == "fail" for step in result["steps"].values()):
                 break
     report["completed_at"] = datetime.now(timezone.utc).isoformat()
+    if args.strategy == "pipeline_e":
+        _write_e_review(args.run_dir, report)
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

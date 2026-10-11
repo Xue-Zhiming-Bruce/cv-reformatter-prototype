@@ -200,3 +200,20 @@ comparison history. The root `tests/local_datasets/resume_matrix/README.md`
 must point to that run. Delete superseded generated runs only with explicit
 user approval because local dataset artifacts are intentionally ignored by Git
 and may not be recoverable.
+
+
+## ADR 0007 local Pipeline E extension (October 12, 2026)
+
+The canonical `scripts/run_abc_live_matrix.py --strategy pipeline_e` also accepts
+available authorized corpus IDs outside A–C. It uses actual API preview jobs,
+not a second runner. The same review index, manifest, CSV, validation and failure
+folder contract above applies. No final acceptance or legacy layout-proof
+approval is automated. E's canonical construction content-shape probes are
+recorded as `pipeline-e-content-shape-probes/1`, with approval `not_approved`;
+this is distinct from the legacy short/medium/long proof approval mechanism.
+The E generation folder contains the actual neutral specification, separate
+renderer artifact, persisted render context, and blocking quality-gate record.
+Links to the renderer artifact replace legacy RenderPlan links; no placeholder
+binding plan or legacy proof files are synthesized. Baseline scores/deltas and
+legacy added/recovered counts are explicitly unmeasured when unavailable.
+All expected pairs, including interrupted/not-run cases, remain in the report.
