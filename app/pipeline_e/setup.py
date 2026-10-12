@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import pdfplumber
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,27 @@ from app.pipeline_e.measurement_loop import (
     _two_column_bullet_tiers, compile_two_column_state,
     compile_two_column_state_for_scaffold,
 )
+from app.pipeline_e.resume_layout.state import PageState
+
+
+def measured_page_frame(target: Path, page: PageState) -> PageState:
+    """Freeze the target's visible first-page frame before authoring or rendering."""
+    with pdfplumber.open(target) as document:
+        first = document.pages[0]
+        boxes = [char for char in first.chars if str(char.get("text", "")).strip()]
+        boxes += [obj for obj in first.lines + first.rects + first.curves
+                  if (obj["width"] >= 1 or obj["height"] >= 10)
+                  and not (obj["x0"] <= .5 and obj["x1"] >= first.width - .5
+                           and obj["top"] <= .5 and obj["bottom"] >= first.height - .5)]
+        if not boxes:
+            raise ValueError("Target has no measurable first-page content frame")
+        return PageState.model_validate({**page.model_dump(),
+            "margin_left_pt": max(0, min(float(box["x0"]) for box in boxes)),
+            "margin_right_pt": max(0, page.width_pt - max(float(box["x1"]) for box in boxes)),
+            "margin_top_pt": max(0, min(float(box["top"]) for box in boxes)),
+            "margin_bottom_pt": max(0, page.height_pt - max(float(box["bottom"]) for box in boxes)),
+            "evidence_ids": ["local_pdf.first_page_content_frame"],
+        })
 
 
 # 2026-09-21 owner direction: the model budget must not again be the primary
@@ -265,6 +287,7 @@ def _freeze_e5_config(
     baseline_ref: dict[str, Any],
     pricing: dict[str, Any] | None,
     presentation_label_approval_record: dict[str, Any] | None = None,
+    render_page: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Frozen BEFORE the first live call (E5 work order): shared target/
     candidate/evidence/model/prompts/budgets plus per-lane budgets. Model
@@ -292,6 +315,7 @@ def _freeze_e5_config(
             "sha256": candidate_sha256,
             "builder_boundary": "candidate facts are never editable by any agent",
         },
+        "render_page": render_page,
         "shared_structure_draft": shared_draft_ref,
         "presentation_label_approval": presentation_label_approval_record or {
             "provided": False,

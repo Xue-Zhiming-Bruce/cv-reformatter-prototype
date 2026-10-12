@@ -24,6 +24,8 @@ import re
 from pathlib import Path
 
 import pytest
+import pdfplumber
+from app.pipeline_e.resume_layout.state import PageState
 
 import app.pipeline_e.template as at
 import app.pipeline_e.template_build as e5
@@ -318,7 +320,10 @@ def test_uncached_upload_and_reviewed_profile_reach_real_pdf(
     def builder_replay(_budget, _trace, *, template_id, **kwargs):
         operations.append("builder")
         assert "Sample Candidate" not in json.dumps(kwargs["payload"])
-        return _base_authored_template().model_copy(update={"template_id": template_id})
+        page = kwargs["payload"]["render_page"]
+        assert page["content_width_pt"] < page["width_pt"]
+        assert page["content_height_pt"] < page["height_pt"]
+        return _base_authored_template().model_copy(update={"template_id": template_id, "evidence_refs": page["evidence_ids"]})
 
     monkeypatch.setattr(target_analysis, "run_adobe_layout", adobe_replay)
     monkeypatch.setattr(e5, "build_structure_draft", structure_replay)
@@ -345,6 +350,14 @@ def test_uncached_upload_and_reviewed_profile_reach_real_pdf(
     assert "Sample Candidate" not in text
     gates = next((run / "lane_b").glob("hard_gates_*.json"))
     assert json.loads(gates.read_text())["details"]["candidate_content_accounting"]["passed"] is True
+    frozen_page = json.loads((run / "run_config.json").read_text())["render_page"]
+    assert frozen_page == json.loads((run / "c2_layout_state.json").read_text())["page"]
+    with pdfplumber.open(run / "lane_b/render_1.pdf") as rendered:
+        assert all(word["x0"] >= frozen_page["margin_left_pt"] - .5
+                   for page in rendered.pages for word in page.extract_words())
+    probes = json.loads((run / "lane_b/content_shape_probes.json").read_text())
+    assert "missing_fields" in probes
+    assert all("geometry" in item["gates"] for key, item in probes.items() if not key.startswith("_"))
 
 
 def test_lane_b_can_opt_into_thinking_without_changing_other_live_roles() -> None:
@@ -1048,6 +1061,7 @@ def test_builder_evidence_package_is_representation_neutral() -> None:
         binding = Binding()
 
     class State:
+        page = PageState(width_pt=612, height_pt=792, margin_top_pt=36, margin_right_pt=36, margin_bottom_pt=36, margin_left_pt=36, page_count=1, evidence_ids=["synthetic.frame"])
         nodes = [Node()]
 
     draft = e_shared.TargetStructureDraft(
@@ -1077,6 +1091,7 @@ def test_builder_evidence_package_is_representation_neutral() -> None:
 
 def test_initial_builder_keeps_structure_claims_independent_of_wording() -> None:
     class State:
+        page = PageState(width_pt=612, height_pt=792, margin_top_pt=36, margin_right_pt=36, margin_bottom_pt=36, margin_left_pt=36, page_count=1, evidence_ids=["synthetic.frame"])
         nodes = []
 
     statements = (
@@ -1364,6 +1379,7 @@ def test_target_body_text_color_context_uses_character_volume(tmp_path: Path) ->
 
 def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
     class State:
+        page = PageState(width_pt=612, height_pt=792, margin_top_pt=36, margin_right_pt=36, margin_bottom_pt=36, margin_left_pt=36, page_count=1, evidence_ids=["synthetic.frame"])
         nodes = []
 
     finding = _e5_finding("f1", "experience", "gap")
@@ -1632,7 +1648,7 @@ def test_run_e5_offline_lane_b_authored_template_loop(tmp_path: Path) -> None:
         "diagnostics",
     }
     assert set(gate_record["details"]["diagnostics"]) == {
-        "pdf_presence", "no_blank_page", "no_orphan_tail_page", "readable_body", "no_orphan_heading", "font_roles",
+        "pdf_presence", "no_blank_page", "no_orphan_tail_page", "readable_body", "no_orphan_heading", "font_roles", "geometry",
     }
     assert lane["content_shape_probes_passed"] is True
     # The authored render chain ran through Chrome with network disabled.

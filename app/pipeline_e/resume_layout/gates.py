@@ -985,3 +985,29 @@ def structure_gate(
         "invalid_node_references": invalid_parent_refs,
         "unresolved_sections_rendered": unresolved_rendered,
     }
+
+
+def material_geometry(pdf: Path, labels: set[str], *, page_margins_pt: tuple[float, float, float, float] = (0, 0, 0, 0)) -> dict[str, object]:
+    import pdfplumber
+
+    frame_top, frame_right, frame_bottom, frame_left = page_margins_pt
+    outside: list[dict[str, object]] = []
+    overlaps: list[dict[str, object]] = []
+    orphans: list[dict[str, object]] = []
+    with pdfplumber.open(pdf) as document:
+        for index, page in enumerate(document.pages, 1):
+            words = page.extract_words()
+            for word in words:
+                if word["x0"] < frame_left - 0.5 or word["top"] < frame_top - 0.5 or word["x1"] > page.width - frame_right + 0.5 or word["bottom"] > page.height - frame_bottom + 0.5:
+                    outside.append({"page": index, "text": word["text"]})
+            for i, left in enumerate(words):
+                for right in words[i + 1:]:
+                    dx = min(left["x1"], right["x1"]) - max(left["x0"], right["x0"])
+                    dy = min(left["bottom"], right["bottom"]) - max(left["top"], right["top"])
+                    area = min((left["x1"]-left["x0"])*(left["bottom"]-left["top"]), (right["x1"]-right["x0"])*(right["bottom"]-right["top"]))
+                    if dx > 0 and dy > 0 and area > 0 and dx * dy / area > 0.5:
+                        overlaps.append({"page": index, "left": left["text"], "right": right["text"]})
+            lines = (page.extract_text() or "").strip().splitlines()
+            if lines and lines[-1].strip() in labels:
+                orphans.append({"page": index, "heading": lines[-1].strip()})
+    return {"passed": not outside and not overlaps and not orphans, "outside_page": outside, "overlap": overlaps, "orphan_headings": orphans}

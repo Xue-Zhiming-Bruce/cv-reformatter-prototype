@@ -1751,7 +1751,7 @@ def _require_current_output(artifact_id: str, artifact_dir: Path, current: Final
     saved_target = _load_saved_target_format(artifact_dir)
     if saved_target and metadata.get("target_sha256") and metadata["target_sha256"] != target_checksum_from_bytes((artifact_dir / saved_target.stored_filename).read_bytes()):
         raise HTTPException(409, "The target changed; regenerate and review the current preview.")
-    if metadata.get("renderer_version") in {"pipeline-e-html/1", "pipeline-e-html/2", "pipeline-e-html/3"}:
+    if metadata.get("renderer_version") in {"pipeline-e-html/1", "pipeline-e-html/2", "pipeline-e-html/3", "pipeline-e-html/4"}:
         try:
             spec = pipeline_e.LayoutTemplateSpec.model_validate_json((artifact_dir / "pipeline_e_template" / metadata["target_sha256"] / "layout_template_spec.json").read_text())
             renderer = pipeline_e.RendererArtifact.model_validate_json((artifact_dir / "pipeline_e_template" / metadata["target_sha256"] / "renderer_artifact.json").read_text())
@@ -1760,7 +1760,7 @@ def _require_current_output(artifact_id: str, artifact_dir: Path, current: Final
                 raise ValueError("Template or output checks changed")
         except (OSError, ValueError, KeyError) as error:
             raise HTTPException(409, "The template or output checks changed; regenerate the preview.") from error
-    if saved_target is not None and metadata.get("renderer_version") not in {"pipeline-e-html/1", "pipeline-e-html/2", "pipeline-e-html/3"}:
+    if saved_target is not None and metadata.get("renderer_version") not in {"pipeline-e-html/1", "pipeline-e-html/2", "pipeline-e-html/3", "pipeline-e-html/4"}:
         try:
             design_id = metadata.get("design_id")
             path = design_dir_for(artifact_dir, design_id) / LAYOUT_SPEC_FILENAME if design_id else artifact_dir / LAYOUT_SPEC_FILENAME
@@ -1877,16 +1877,22 @@ def _generate_e_preview(artifact_id: str, directory: Path, target_format: Target
     cache = GENERATED_OUTPUTS_DIR / "pipeline_e_templates" / target_hash
     try:
         with preview_jobs.artifact_lock(artifact_id):
-            if not (template_dir / "renderer_artifact.json").exists():
-                if (cache / "renderer_artifact.json").exists():
+            available = template_dir if (template_dir / "renderer_artifact.json").exists() else cache
+            missing = pipeline_e.missing_candidate_leaves(available, profile, blind=request.blind_profile) if (available / "renderer_artifact.json").exists() else []
+            built = False
+            if not (template_dir / "renderer_artifact.json").exists() or missing:
+                if (cache / "renderer_artifact.json").exists() and not missing:
                     template_dir.mkdir(parents=True, exist_ok=True)
                     for filename in ("layout_template_spec.json", "renderer_artifact.json"):
                         shutil.copy2(cache / filename, template_dir / filename)
                 else:
                     live = os.getenv("PIPELINE_E_LIVE_ENABLED", "").lower() in {"1", "true", "yes"}
                     if not live:
+                        if missing:
+                            raise ValueError("Candidate values must be rendered exactly once: " + ", ".join(missing) + "; rebuild this target template for the reviewed profile")
                         raise HTTPException(503, {"error_code": "pipeline_e_live_disabled", "message": "No reusable E template exists for this target. Explicit local model opt-in is required to build it."})
                     pipeline_e.construct_template(target, template_dir, profile, blind=request.blind_profile, live=True)
+                    built = True
             output = directory / "preview_versions" / uuid.uuid4().hex
             identity = pipeline_e.render_preview(template_dir, output, target, profile, blind=request.blind_profile)
             # Changes during construction cannot publish an obsolete profile or target.
@@ -1905,7 +1911,7 @@ def _generate_e_preview(artifact_id: str, directory: Path, target_format: Target
                 "unsupported_features": [gap.feature for gap in spec.capability_gaps],
                 "analysis_warnings": [gap.reason for gap in spec.capability_gaps],
             }).model_dump(mode="json"))
-            if not cache.exists():
+            if built or not cache.exists():
                 cache.mkdir(parents=True)
                 for filename in ("layout_template_spec.json", "renderer_artifact.json"):
                     shutil.copy2(template_dir / filename, cache / filename)

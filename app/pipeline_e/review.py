@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from app.pipeline_e.resume_layout.render import _render_pages, _export_pinned_html_to_pdf
-from app.pipeline_e.resume_layout.candidates import independent_candidate_fixtures
+from app.pipeline_e.resume_layout.candidates import CandidateDocument, CandidateLeaf, independent_candidate_fixtures
+from app.pipeline_e.candidate_boundary import _apply_header_overflow_disposition
 import app.pipeline_e.resume_layout.gates as resume_layout_gates
 from app.pipeline_e.setup import _e5_blocking_gates
 from app.pipeline_e.template import (
@@ -609,7 +610,10 @@ def _probe_candidate_with_text(fixture: Any) -> Any:
     Synthetic placeholder text is authorized probe content — never a target
     or candidate fact."""
     leaves = [
-        leaf.model_copy(update={"text": f"probe value {index:03d}"})
+        leaf.model_copy(update={"text": f"probe value {index:03d}" + (
+            " with a longer heading or description to exercise wrapping inside the actual content frame"
+            if fixture.candidate_id == "independent_long" else ""
+        )})
         for index, leaf in enumerate(fixture.leaves, 1)
     ]
     return fixture.model_copy(update={"leaves": leaves})
@@ -623,6 +627,8 @@ def _run_content_shape_probes(
     diagnostic_probes: bool,
     target_pdf: Path,
     page_size: tuple[float, float],
+    page_margins_pt: tuple[float, float, float, float],
+    state: Any,
     known_evidence_ids: set[str],
     renderable_label_catalog: list[PresentationLabel],
     renderable_label_texts: set[str],
@@ -632,8 +638,12 @@ def _run_content_shape_probes(
         "_selected_version": selected_id,
         "_probe_mode": "diagnostic" if diagnostic_probes else "promotion_evidence",
     }
-    for profile, fixture in independent_candidate_fixtures().items():
-        probe_candidate = _probe_candidate_with_text(fixture)
+    fixtures = independent_candidate_fixtures()
+    fixtures["missing_fields"] = CandidateDocument(candidate_id="independent_missing_fields", leaves=[
+        CandidateLeaf(leaf_id="header.name", kind="header_field", slot="name")
+    ])
+    for profile, fixture in fixtures.items():
+        probe_candidate = _apply_header_overflow_disposition(_probe_candidate_with_text(fixture), state)
         entry: dict[str, Any] = {
             "passed": False,
             "diagnostic": diagnostic_probes,
@@ -662,7 +672,7 @@ def _run_content_shape_probes(
                 selected_representation, probe_candidate,
                 labels=renderable_label_catalog,
             )
-            doc = build_authored_document(selected_representation, fill, page_size)
+            doc = build_authored_document(selected_representation, fill, page_size, page_margins_pt=page_margins_pt)
             probe_html_path.write_text(doc, encoding="utf-8")
             net_env = authored_network_disabled_environment()
             _export_pinned_html_to_pdf(probe_html_path, probe_pdf_path, net_env)
@@ -680,6 +690,9 @@ def _run_content_shape_probes(
                     },
                 )["passed"],
                 "no_blank_page": resume_layout_gates.blank_page_gate(probe_pdf_path)["passed"],
+                "geometry": resume_layout_gates.material_geometry(probe_pdf_path, renderable_label_texts, page_margins_pt=page_margins_pt)["passed"],
+                "readable_body": resume_layout_gates.readable_body_gate(probe_pdf_path)["passed"],
+                "no_orphan_tail_page": resume_layout_gates.orphan_tail_page_gate(probe_pdf_path)["passed"],
             }
             entry["gates"] = gates
             entry["pages"] = len(pages)

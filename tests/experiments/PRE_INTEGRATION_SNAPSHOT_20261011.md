@@ -695,3 +695,68 @@ model reliability and owner visual acceptance remain limitations. Do not
 begin Stage 4 until the required Stage 3 outcomes and owner review are closed;
 then start with a read-only caller inventory of legacy generation/approval
 entry points and verify the preserved explicit rollback before deletion.
+
+
+## October 13 Stage 3: freeze the page frame before template construction
+
+Read-only diagnosis confirmed that the genuine A construction and its blocked
+API preview had identical filled candidate HTML and identical CSS except for
+`@page` margins. Construction/probes used 595.276×841.890pt with zero margins;
+API delivery used 494.939×737.594pt after admission changed the frame. SKILLS
+moved from roughly 626pt to 791pt and fragmented at the page boundary.
+
+The shared target-frame measurement now runs before template authoring. The
+frame is frozen in `run_config.json` and the measured state, exposed to the
+Builder with usable width/height and coordinate origin, and used unchanged by
+construction, probes, product admission and API preview. Admission rejects
+frame drift or failed content-shape probes, then runs the real eight product
+PDF checks before publishing a candidate-free renderer artifact. Geometry
+checks also inspect the usable frame. Experiment `ready_for_owner_review`
+retains its exploratory meaning; it is not product admission or acceptance.
+
+Long probes now contain genuinely long text and a missing-field probe exercises
+empty optional collections. Probes inspect geometry, actual readable size and
+orphan tails. Empty source-less sections carrying only presentation labels are
+removed in the shared fill; sections owning candidate leaves remain intact.
+A cached renderer must account for the current profile before selection. An
+incompatible cache is blocked without live opt-in; with opt-in it triggers
+canonical reconstruction, preserving the existing cache if that fails.
+
+Rendering records `pipeline-e-html/4`; historical `/1`, `/2`, `/3` artifacts
+remain readable and current-output confirmation continues to validate their
+actual template/output identity. No frontend changes, automatic final
+acceptance, provider switch, deployment, or Stage 4 cleanup was introduced.
+
+Regression evidence:
+
+- `20261012T175356Z_frame_regressions_before_validated.txt`: original HEAD
+  admission/fill replay produces three intended failures (unsafe PDF admission,
+  silent page-frame drift, and orphan heading for empty skills). Only the
+  admission call signature is adapted for the replay; original behavior runs.
+- `20261012T175427Z_frame_final_serial.txt`: 273 passed, three skipped, six
+  deselected; one diagnostic-report contract assertion needed the new geometry
+  key. That assertion was updated; it was not a production PDF failure.
+- `20261012T175932Z_frame_gate_final.txt`: seven focused tests pass, including
+  product admission rejection, unchanged rendered word coordinates on reuse,
+  failed rebuild preservation and canonical I target replay with frozen frame.
+
+A new canonical matrix run is prepared at
+`tests/local_datasets/resume_matrix/runs/matrix_20261012T175536Z_frozen_page_frame/`.
+It preserves the original A/F extraction drafts, raw text, field evidence and
+reviewed revisions; F retains its genuine selected renderer. A reconstruction
+will reuse cached Adobe evidence and the target-matched structure draft. The
+matrix outcome and owner review remain pending until actual checked PDFs exist.
+
+Final affected backend command (serial, before the real model construction):
+
+```text
+PYTHONDONTWRITEBYTECODE=1 /Users/xuezhiming/Desktop/CV converter prototype/.venv/bin/python -m pytest -o addopts= -q tests/integration/test_preview_workflow.py tests/experiments/test_pipeline_comparison.py tests/experiments/test_gates.py tests/integration/test_generate_approval.py tests/integration/test_api_process.py tests/unit/test_chrome_html_to_pdf.py tests/unit/test_pdf_reader.py -m 'not local_dataset and not live_provider'
+```
+
+`20261012T180141Z_frame_complete_serial.txt`: **274 passed, 3 skipped, 6
+deselected**, four existing fixture serializer warnings. The separate canonical
+I replay remains in the seven-pass focused log. A new construction is attempted
+first; if admitted, F then reuses that same new template. The original F
+renderer remains preserved under its copied artifact's
+`preserved_original_template/` and the prior review run. No historical
+construction state is edited or relabeled.

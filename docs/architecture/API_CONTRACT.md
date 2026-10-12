@@ -262,9 +262,17 @@ With `TEMPLATE_DESIGN_STRATEGY=pipeline_e`, PDF targets are stored as pending
 before construction. The neutral `LayoutTemplateSpec` v3 stores measured layout,
 not HTML/CSS. A separate `e-renderer-artifact/1` binds authored typed slots to
 specification/target checksums, renderer version and font hashes. Current
-generation records `pipeline-e-html/3`; existing `/1` and `/2` artifacts remain readable.
-Reuse is local;
-uncached targets require explicit `PIPELINE_E_LIVE_ENABLED=1`. Disabled live
+generation records `pipeline-e-html/4`; existing `/1`, `/2` and `/3` artifacts remain readable.
+Construction freezes the measured first-page frame before authoring. Builder
+renders, short/medium/long and missing-field probes, product admission and API
+preview use that same frame. Admission rejects frame drift, failed probes or
+failed actual product PDF checks before publishing a rendering artifact.
+Geometry checks include the usable page frame, not just physical page edges.
+Continuation-page frame differences still require visual review.
+Reuse is local. Cached templates must account for the current candidate before
+selection; an incompatible cache requires a new target-template construction,
+with the original cache preserved if construction fails.
+Uncached or incompatible targets require explicit `PIPELINE_E_LIVE_ENABLED=1`. Disabled live
 construction returns `pipeline_e_live_disabled`; failed checks return
 `pipeline_e_preview_blocked`. There is no silent baseline fallback.
 Content, privacy, leaf identity, fonts, blank pages and material geometry checks

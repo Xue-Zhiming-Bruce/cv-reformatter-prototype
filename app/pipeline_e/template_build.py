@@ -75,6 +75,7 @@ from app.pipeline_e.setup import (
     _source_hashes_changed,
     _target_rubric_reference,
     _target_structure_draft_source,
+    measured_page_frame,
 )
 from app.pipeline_e.resume_layout.target import _analyze_target, build_format_summary
 from app.pipeline_e.evidence import build_structure_draft
@@ -222,6 +223,7 @@ def build_template(
         state, derived, body_scaffold, bullet_tiers, layout_family = _compile_e5_state(
             target_pdf, summary, normalized
         )
+        state = state.model_copy(update={"page": measured_page_frame(target_pdf, state.page)})
     except Exception as error:
         return abort("layout_preflight", error)
     state_errors = validate_layout_state(state)
@@ -375,6 +377,7 @@ def build_template(
         shared_draft_ref=shared_draft_ref,
         baseline_ref=baseline_ref,
         pricing=pricing,
+        render_page=state.page.model_dump(mode="json"),
         # Frozen BEFORE the first live call: the validated approval identity
         # the lanes will run under (an invalid approval aborts before this
         # freeze, so `validated` mirrors `provided` here).

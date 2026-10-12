@@ -702,6 +702,17 @@ def fill_authored_template(
     for token, value in placeholders.items():
         html = html.replace(token, value)
 
+    # Empty collections must not leave target-only section headings behind.
+    label_texts = {_norm_text(label.text) for label in label_index.values()}
+    def omit_empty_section(match: re.Match[str]) -> str:
+        section = match.group()
+        text, _ = _html_text(section)
+        if 'data-candidate-leaf="' not in section and (_norm_text(text) in label_texts or not text.strip()):
+            return ""
+        return section
+
+    html = re.sub(r"<section\b[^>]*>(?:(?!</?section\b).)*</section>", omit_empty_section, html, flags=re.I | re.S)
+
     # Accounting: every candidate leaf is consumed by exactly one region
     # instance BY CONSTRUCTION (recorded per leaf); its verbatim value must
     # be present in the filled HTML.

@@ -176,6 +176,11 @@ E5_LANE_B_BUILDER_INSTRUCTIONS = (
     "heading, name, or rule styles.\n"
     "Missing optional fields must not leave broken visual artifacts (empty\n"
     "regions render nothing). Long content must not disappear. Keep body\n"
+    "A reusable template must include repeating summary, experience, education,\n"
+    "skills, languages, certifications, and additional slots even when the\n"
+    "current candidate has no values there. Empty collections render nothing.\n"
+    "Use render_page's content width and height; body coordinates are inside\n"
+    "the shell's margins, so do not add target page offsets a second time.\n"
     "type readable (at least 10pt for a 10pt target body). The shell owns\n"
     "@page size and margins; do not declare @page. Fit a near-empty overflow\n"
     "page by adjusting section,\n"
@@ -370,6 +375,8 @@ def run_template_lane(lane: str, context: LaneContext) -> E5LaneRecord:
     max_repair_rounds = context.max_repair_rounds
     out_dir = context.out_dir
     page_size = context.page_size
+    page_margins = (context.state.page.margin_top_pt, context.state.page.margin_right_pt,
+                    context.state.page.margin_bottom_pt, context.state.page.margin_left_pt)
     pod = context.pod
     privacy_baseline = context.privacy_baseline
     region_spans = context.region_spans
@@ -386,7 +393,7 @@ def run_template_lane(lane: str, context: LaneContext) -> E5LaneRecord:
         """The evidence ids the shell ACTUALLY issued (pod access records +
         the shared draft's cited refs). Authored-template evidence_refs must
         be members of this set — string shape alone is never enough."""
-        ids: set[str] = set()
+        ids: set[str] = set(state.page.evidence_ids)
         for record in getattr(pod, "records", []) or []:
             record_id = (
                 record.get("evidence_id")
@@ -613,6 +620,8 @@ def run_template_lane(lane: str, context: LaneContext) -> E5LaneRecord:
             diagnostic_probes=diagnostic_probes,
             target_pdf=target_pdf,
             page_size=page_size,
+            page_margins_pt=page_margins,
+            state=state,
             known_evidence_ids=_known_evidence_ids(),
             renderable_label_catalog=renderable_label_catalog,
             renderable_label_texts=renderable_label_texts,
@@ -727,7 +736,7 @@ def run_template_lane(lane: str, context: LaneContext) -> E5LaneRecord:
             template, candidate, labels=renderable_label_catalog
         )
         index = len(versions) + 1
-        doc = build_authored_document(template, fill, page_size)
+        doc = build_authored_document(template, fill, page_size, page_margins_pt=page_margins)
         html_path = lane_dir / f"render_{index}.html"
         html_path.write_text(doc, encoding="utf-8")
         pdf_path = lane_dir / f"render_{index}.pdf"
@@ -759,7 +768,8 @@ def run_template_lane(lane: str, context: LaneContext) -> E5LaneRecord:
         blank = resume_layout_gates.blank_page_gate(pdf_path)
         orphan_tail = resume_layout_gates.orphan_tail_page_gate(pdf_path)
         readable_body = resume_layout_gates.readable_body_gate(pdf_path)
-        orphan_heading = resume_layout_gates.orphan_heading_gate(pdf_path)
+        geometry = resume_layout_gates.material_geometry(pdf_path, renderable_label_texts, page_margins_pt=page_margins)
+        orphan_heading = {"passed": not geometry["orphan_headings"], "orphan_headings": geometry["orphan_headings"]}
         font_role_result = (
             pdf_font_role_gate(
                 pdf_path, font_roles, candidate,
@@ -784,6 +794,7 @@ def run_template_lane(lane: str, context: LaneContext) -> E5LaneRecord:
             "no_orphan_tail_page": orphan_tail,
             "readable_body": readable_body,
             "no_orphan_heading": orphan_heading,
+            "geometry": geometry,
             "font_roles": font_role_result,
             "candidate_content_accounting": {
                 "passed": not fill.missing_leaves,
@@ -796,6 +807,7 @@ def run_template_lane(lane: str, context: LaneContext) -> E5LaneRecord:
                 "no_orphan_tail_page": orphan_tail,
                 "readable_body": readable_body,
                 "no_orphan_heading": orphan_heading,
+                "geometry": geometry,
                 "font_roles": font_role_result,
             },
         }

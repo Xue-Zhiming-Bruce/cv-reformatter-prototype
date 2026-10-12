@@ -310,6 +310,12 @@ def _e5_builder_evidence_package(
         ],
         "candidate_review_scope": candidate_review_scope or {},
         "slot_shape_contract": _slot_shape_contract(),
+        "render_page": {
+            **state.page.model_dump(mode="json"),
+            "content_width_pt": state.page.width_pt - state.page.margin_left_pt - state.page.margin_right_pt,
+            "content_height_pt": state.page.height_pt - state.page.margin_top_pt - state.page.margin_bottom_pt,
+            "coordinate_system": "Authored body coordinates start inside the page margins; do not add target page offsets again.",
+        },
         "current_render_version": current_render_version,
         "findings": [finding.model_dump(mode="json") for finding in findings or []],
         "measurements": [result.model_dump(mode="json") for result in measurements or []],

@@ -88,7 +88,7 @@ def test_real_pdf_edit_final_confirmation_and_blinding(workflow) -> None:
     original = (directory / "raw_extracted_text.txt").read_bytes()
     first = preview(client, revision)["result"]
     assert first["client_ready"] is False
-    assert json.loads((directory / "generation_metadata.json").read_text())["renderer_version"] == "pipeline-e-html/3"
+    assert json.loads((directory / "generation_metadata.json").read_text())["renderer_version"] == "pipeline-e-html/4"
     generated = CandidateProfile.model_validate_json((directory / "generated_profile.json").read_text())
     assert generated.model_dump(exclude={"missing_fields"}) == profile.model_dump(exclude={"missing_fields"})
     assert [field.model_dump(mode="json") for field in generated.missing_fields] == first["missing_fields"]
@@ -167,7 +167,7 @@ def test_missing_cache_requires_opt_in_and_job_input_is_strict(workflow) -> None
     assert resumed.status_code == 200 and resumed.json()["state"] == "interrupted"
 
 
-@pytest.mark.parametrize("renderer_version", ["pipeline-e-html/1", "pipeline-e-html/2"])
+@pytest.mark.parametrize("renderer_version", ["pipeline-e-html/1", "pipeline-e-html/2", "pipeline-e-html/3"])
 def test_replacing_target_invalidates_confirmed_export(workflow, renderer_version: str) -> None:
     client, directory, _, revision, cache = workflow
     renderer = RendererArtifact.model_validate_json((cache / "renderer_artifact.json").read_text())
@@ -285,11 +285,19 @@ def test_final_confirmation_reuses_source_coverage_gate(workflow) -> None:
     assert not (directory / "final_acceptance.json").exists()
 
 
-def test_admission_retains_unqualified_heading_as_gap_without_sample_facts(workflow) -> None:
+@pytest.mark.parametrize("failure", [None, "overflow", "frame_drift", "failed_probes"])
+def test_admission_retains_unqualified_heading_as_gap_without_sample_facts(workflow, failure: str | None) -> None:
     from app.pipeline_e.product import admit_run
-    client, directory, _, _, cache = workflow
+    client, directory, profile, _, cache = workflow
     target = directory / "target_format_reference.pdf"
+    from reportlab.pdfgen.canvas import Canvas
+    canvas = Canvas(str(target), pagesize=(612, 792))
+    canvas.rect(36, 36, 540, 720)
+    canvas.drawString(50, 740, "Target Person")
+    canvas.save()
     payload = json.loads((cache / "layout_template_spec.json").read_text())
+    payload["provenance"]["target_sha256"] = _sha256_file(target)
+    payload["page"]["evidence_ids"] = ["local_pdf.first_page_content_frame"]
     payload["schema_version"] = "layout-state/1"
     payload.pop("structure_contract")
     payload["nodes"] += [
@@ -302,18 +310,64 @@ def test_admission_retains_unqualified_heading_as_gap_without_sample_facts(workf
     run = directory / "synthetic_admission_run"
     run.mkdir()
     renderer = json.loads((cache / "renderer_artifact.json").read_text())
-    record = {"summary": {"source_identity_stable": True}, "lanes": {"b": {"best_render_version": "v1", "builder_candidates": [{"candidate_render_version": "v1", "validation": {"passed": True}, "typed_candidate": renderer["template"]}]}}}
-    files = {"e5_state.json": record, "run_config.json": {"presentation_label_approval": {"renderable_label_ids": [], "approved_label_ids": []}}, "target_preflight.json": {"proposed_presentation_labels": []}, "c2_layout_state.json": payload, "target_font_roles.json": renderer["font_roles"]}
+    if failure == "overflow":
+        renderer["template"]["css"] += "body { position: relative; left: 540pt; }"
+    render_page = dict(payload["page"])
+    if failure == "frame_drift":
+        payload["page"]["margin_left_pt"] = 0
+    record = {"summary": {"source_identity_stable": True}, "lanes": {"b": {"content_shape_probes_passed": True, "best_render_version": "v1", "builder_candidates": [{"candidate_render_version": "v1", "validation": {"passed": True}, "typed_candidate": renderer["template"]}]}}}
+    if failure == "failed_probes":
+        record["lanes"]["b"]["content_shape_probes_passed"] = False
+    files = {"e5_state.json": record, "run_config.json": {"render_page": render_page, "presentation_label_approval": {"renderable_label_ids": [], "approved_label_ids": []}}, "target_preflight.json": {"proposed_presentation_labels": []}, "c2_layout_state.json": payload, "target_font_roles.json": renderer["font_roles"]}
     for name, value in files.items():
         (run / name).write_text(json.dumps(value))
     admitted = directory / "admitted"
-    admit_run(run, target, admitted)
+    if failure:
+        expected = {"overflow": "PDF failed required checks", "frame_drift": "Construction page frame", "failed_probes": "content-shape probes"}[failure]
+        with pytest.raises(ValueError, match=expected):
+            admit_run(run, target, admitted, profile)
+        assert not (admitted / "renderer_artifact.json").exists()
+        return
+    admit_run(run, target, admitted, profile)
     spec = LayoutTemplateSpec.model_validate_json((admitted / "layout_template_spec.json").read_text())
+    assert spec.page.model_dump(mode="json") == render_page
     assert all(node.node_id != "section.unknown.heading" for node in spec.nodes)
     assert not spec.rules
     assert any(gap.feature == "unqualified_presentation_heading:section.unknown.heading" and gap.evidence_ids == ["synthetic.unknown"] for gap in spec.capability_gaps)
     assert "Target Person" not in (admitted / "layout_template_spec.json").read_text()
     assert "Target Person" not in (admitted / "renderer_artifact.json").read_text()
+    from app.pipeline_e.product import render_preview
+    import pdfplumber
+    output = directory / "admitted_reuse"
+    render_preview(admitted, output, target, profile, blind=False)
+    checked = run / "product_validation/preview"
+    assert (checked / "candidate_profile.html").read_bytes() == (output / "candidate_profile.html").read_bytes()
+    with pdfplumber.open(checked / "candidate_profile.pdf") as before, pdfplumber.open(output / "candidate_profile.pdf") as after:
+        assert [[(word["text"], round(word["x0"], 2), round(word["top"], 2)) for word in page.extract_words()] for page in before.pages] == [[(word["text"], round(word["x0"], 2), round(word["top"], 2)) for word in page.extract_words()] for page in after.pages]
+
+
+def test_incompatible_cache_rebuild_failure_preserves_the_existing_template(workflow, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, directory, profile, _, cache = workflow
+    renderer = RendererArtifact.model_validate_json((cache / "renderer_artifact.json").read_text())
+    renderer.template.html = renderer.template.html.replace('{{each:languages}}<p class="rsv-line">{{item}}</p>{{/each}}', '')
+    (cache / "renderer_artifact.json").write_text(renderer.model_dump_json())
+    original = (cache / "renderer_artifact.json").read_bytes()
+    edited = CandidateProfile.model_validate({**profile.model_dump(), "languages": [{"name": "English"}]})
+    saved = client.post("/api/artifacts/artifact_preview/profiles/revisions", json={"profile": edited.model_dump(mode="json")})
+    monkeypatch.setenv("PIPELINE_E_LIVE_ENABLED", "1")
+    attempts = []
+
+    def failed_construction(target, destination, candidate, *, blind, live):
+        attempts.append(candidate.model_dump(exclude={"missing_fields"}))
+        raise ValueError("Rebuild deliberately failed")
+
+    monkeypatch.setattr(main.pipeline_e, "construct_template", failed_construction)
+    job = preview(client, saved.json()["profile_revision_id"], succeeds=False)
+    assert attempts == [edited.model_dump(exclude={"missing_fields"})]
+    assert "Rebuild deliberately failed" in job["error"]["message"]
+    assert (cache / "renderer_artifact.json").read_bytes() == original
+    assert not (directory / "candidate_profile.pdf").exists()
+    assert not (directory / "final_acceptance.json").exists()
 
 
 @pytest.mark.parametrize("populated_parent, empty_text", [(False, ""), (True, ""), (True, "\n")])
@@ -369,7 +423,7 @@ def test_unused_qualified_heading_and_source_substrings_are_not_target_facts(wor
     assert not control["passed"] and control["leaked_target_lines"] == [target_value]
 
 
-@pytest.mark.parametrize("group_count", [2, 24])
+@pytest.mark.parametrize("group_count", [0, 2, 24])
 def test_skill_columns_and_long_sections_reflow_in_actual_pdf(tmp_path: Path, group_count: int) -> None:
     import pdfplumber
     from app.pipeline_e.product import material_geometry
@@ -381,7 +435,7 @@ def test_skill_columns_and_long_sections_reflow_in_actual_pdf(tmp_path: Path, gr
         authored_pdf_presence_gate, build_authored_document, fill_authored_template,
     )
 
-    labels = ["Programming Languages", "Deep Learning Frameworks"]
+    labels = ["Programming Languages", "Deep Learning Frameworks"] if group_count else []
     if group_count > 2:
         labels += [f"Group {index} with a longer heading that exceeds the available column width" for index in range(2, group_count)]
     candidate = candidate_from_profile(CandidateProfile(
@@ -415,6 +469,11 @@ def test_skill_columns_and_long_sections_reflow_in_actual_pdf(tmp_path: Path, gr
     assert authored_pdf_presence_gate(fill, candidate, pdf)["passed"]
     assert material_geometry(pdf, {"SKILLS"})["passed"]
     with pdfplumber.open(pdf) as document:
+        if not group_count:
+            assert len(document.pages) == 1
+            text = document.pages[0].extract_text()
+            assert "Synthetic Candidate" in text and "SKILLS" not in text
+            return
         assert 2 <= len(document.pages) <= (2 if group_count == 2 else 9)
         assert all((page.extract_text() or "").strip() for page in document.pages)
         sizes = [char["size"] for page in document.pages for char in page.chars if char["text"].strip()]

@@ -11,7 +11,6 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Literal
 
-import pdfplumber
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.extraction.candidate_schema import CandidateProfile
@@ -20,7 +19,7 @@ from app.generation.template_mapper import build_client_render_context
 from app.pipeline_e.candidate_boundary import _apply_header_overflow_disposition
 from app.pipeline_e.resume_layout.candidates import candidate_from_profile
 from app.pipeline_e.resume_layout.fonts import font_file_for_family, pdf_font_role_gate
-from app.pipeline_e.resume_layout.gates import blank_page_gate, orphan_tail_page_gate, readable_body_gate
+from app.pipeline_e.resume_layout.gates import blank_page_gate, orphan_tail_page_gate, readable_body_gate, material_geometry
 from app.pipeline_e.resume_layout.render import _export_pinned_html_to_pdf
 from app.pipeline_e.resume_layout.state import C2LayoutState, validate_layout_state
 from app.pipeline_e.shared import PresentationLabel, _sha256_file
@@ -30,6 +29,7 @@ from app.pipeline_e.template import (
     fill_authored_template, presentation_label_markers, validate_authored_template,
 )
 from app.pipeline_e.template_build import build_template
+from app.pipeline_e.setup import measured_page_frame
 
 
 class LayoutTemplateSpec(C2LayoutState):
@@ -53,7 +53,7 @@ class FontRole(BaseModel):
 class RendererArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal["e-renderer-artifact/1"] = "e-renderer-artifact/1"
-    renderer_version: Literal["pipeline-e-html/1", "pipeline-e-html/2", "pipeline-e-html/3"] = "pipeline-e-html/3"
+    renderer_version: Literal["pipeline-e-html/1", "pipeline-e-html/2", "pipeline-e-html/3", "pipeline-e-html/4"] = "pipeline-e-html/4"
     layout_spec_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     font_manifest: dict[str, str]
@@ -86,12 +86,14 @@ def font_manifest(roles: dict[str, FontRole]) -> dict[str, str]:
     return manifest
 
 
-def admit_run(run_dir: Path, target: Path, destination: Path) -> None:
+def admit_run(run_dir: Path, target: Path, destination: Path, profile: CandidateProfile, *, blind: bool = False) -> None:
     """Bind the selected, evidence-qualified template; never adopt the last attempt."""
     record = json.loads((run_dir / "e5_state.json").read_text())
     if not record["summary"].get("source_identity_stable"):
         raise ValueError("Pipeline source changed during construction; rebuild the template")
     lane = record["lanes"]["b"]
+    if not lane.get("content_shape_probes_passed"):
+        raise ValueError("Template content-shape probes failed; inspect the construction before reuse")
     selected = lane["best_render_version"]
     attempts = [item for item in lane["builder_candidates"] if item["candidate_render_version"] == selected and item["validation"].get("passed")]
     if not selected or len(attempts) != 1:
@@ -122,26 +124,11 @@ def admit_run(run_dir: Path, target: Path, destination: Path) -> None:
     # Detailed analysis explanations stay in evidence; the neutral contract keeps gaps explicit.
     for gap in payload["capability_gaps"]:
         gap["reason"] = "Unsupported presentation feature; inspect target evidence before reuse."
-    # Old C2 margins describe a body scaffold. V3 page margins describe the
-    # visible full-page frame, including measured sidebar labels and rules.
-    with pdfplumber.open(target) as document:
-        first = document.pages[0]
-        boxes = [char for char in first.chars if str(char.get("text", "")).strip()]
-        boxes += [obj for obj in first.lines + first.rects + first.curves
-                  if (obj["width"] >= 1 or obj["height"] >= 10)
-                  and not (obj["x0"] <= .5 and obj["x1"] >= first.width - .5 and obj["top"] <= .5 and obj["bottom"] >= first.height - .5)]
-        if not boxes:
-            raise ValueError("Target has no measurable first-page content frame")
-        page = payload["page"]
-        page.update({
-            "margin_left_pt": max(0, min(float(box["x0"]) for box in boxes)),
-            "margin_right_pt": max(0, page["width_pt"] - max(float(box["x1"]) for box in boxes)),
-            "margin_top_pt": max(0, min(float(box["top"]) for box in boxes)),
-            "margin_bottom_pt": max(0, page["height_pt"] - max(float(box["bottom"]) for box in boxes)),
-            "evidence_ids": ["local_pdf.first_page_content_frame"],
-        })
-        if len(document.pages) > 1:
-            payload["capability_gaps"].append({"feature": "per_page_frame_variants", "reason": "The local prototype reuses the measured first-page frame; continuation-page variants require visual review.", "evidence_ids": ["local_pdf.first_page_content_frame"]})
+    # Admission must preserve the exact page used by construction and probes.
+    if config.get("render_page") != state.page.model_dump(mode="json") or state.page != measured_page_frame(target, state.page):
+        raise ValueError("Construction page frame differs from the product frame; rebuild the template")
+    if state.page.page_count > 1:
+        payload["capability_gaps"].append({"feature": "per_page_frame_variants", "reason": "The local prototype reuses the measured first-page frame; continuation-page variants require visual review.", "evidence_ids": ["local_pdf.first_page_content_frame"]})
     spec = LayoutTemplateSpec.model_validate(payload)
     if validate_layout_state(spec) or spec.provenance.target_sha256 != _sha256_file(target):
         raise ValueError("Measured layout contract does not validate against the target")
@@ -151,9 +138,15 @@ def admit_run(run_dir: Path, target: Path, destination: Path) -> None:
         font_manifest=font_manifest(roles), template=template, labels=labels,
         font_roles=roles,
     )
+    validation = run_dir / "product_validation"
+    validation.mkdir(parents=True, exist_ok=True)
+    (validation / "layout_template_spec.json").write_text(spec.model_dump_json(indent=2))
+    (validation / "renderer_artifact.json").write_text(artifact.model_dump_json(indent=2))
+    render_preview(validation, validation / "preview", target, profile, blind=blind)
     destination.mkdir(parents=True, exist_ok=True)
     (destination / "layout_template_spec.json").write_text(spec.model_dump_json(indent=2))
     (destination / "renderer_artifact.json").write_text(artifact.model_dump_json(indent=2))
+
 
 
 @dataclass
@@ -218,27 +211,13 @@ class LeafParser(HTMLParser):
 
 
 
-def material_geometry(pdf: Path, labels: set[str]) -> dict[str, object]:
-    outside: list[dict[str, object]] = []
-    overlaps: list[dict[str, object]] = []
-    orphans: list[dict[str, object]] = []
-    with pdfplumber.open(pdf) as document:
-        for index, page in enumerate(document.pages, 1):
-            words = page.extract_words()
-            for word in words:
-                if word["x0"] < -0.5 or word["top"] < -0.5 or word["x1"] > page.width + 0.5 or word["bottom"] > page.height + 0.5:
-                    outside.append({"page": index, "text": word["text"]})
-            for i, left in enumerate(words):
-                for right in words[i + 1:]:
-                    dx = min(left["x1"], right["x1"]) - max(left["x0"], right["x0"])
-                    dy = min(left["bottom"], right["bottom"]) - max(left["top"], right["top"])
-                    area = min((left["x1"]-left["x0"])*(left["bottom"]-left["top"]), (right["x1"]-right["x0"])*(right["bottom"]-right["top"]))
-                    if dx > 0 and dy > 0 and area > 0 and dx * dy / area > 0.5:
-                        overlaps.append({"page": index, "left": left["text"], "right": right["text"]})
-            lines = (page.extract_text() or "").strip().splitlines()
-            if lines and lines[-1].strip() in labels:
-                orphans.append({"page": index, "heading": lines[-1].strip()})
-    return {"passed": not outside and not overlaps and not orphans, "outside_page": outside, "overlap": overlaps, "orphan_headings": orphans}
+
+def missing_candidate_leaves(directory: Path, profile: CandidateProfile, *, blind: bool) -> list[str]:
+    """Check candidate coverage before selecting a local or shared cached template."""
+    spec = LayoutTemplateSpec.model_validate_json((directory / "layout_template_spec.json").read_text())
+    artifact = RendererArtifact.model_validate_json((directory / "renderer_artifact.json").read_text())
+    candidate = _apply_header_overflow_disposition(candidate_from_profile(profile, blind_profile=blind), spec)
+    return fill_authored_template(artifact.template, candidate, artifact.labels).missing_leaves
 
 
 def render_preview(directory: Path, output: Path, target: Path, profile: CandidateProfile, *, blind: bool) -> dict[str, object]:
@@ -300,18 +279,18 @@ def render_preview(directory: Path, output: Path, target: Path, profile: Candida
         "blank_pages": blank_page_gate(pdf),
         "tail_page": orphan_tail_page_gate(pdf),
         "readable_body": readable_body_gate(pdf, minimum_pt=min(10.0, artifact.font_roles["body"].font_size_pt)),
-        "geometry": material_geometry(pdf, labels),
+        "geometry": material_geometry(pdf, labels, page_margins_pt=(spec.page.margin_top_pt, spec.page.margin_right_pt, spec.page.margin_bottom_pt, spec.page.margin_left_pt)),
         "font_roles": pdf_font_role_gate(pdf, {key: value.model_dump() for key, value in artifact.font_roles.items()}, candidate, [label for label in artifact.labels if label.label_id in referenced]),
     }
     (output / "quality_gates.json").write_text(json.dumps(gates, indent=2))
     if not all(gate["passed"] for gate in gates.values()):
         failed = [key for key, gate in gates.items() if not gate["passed"]]
         raise ValueError("PDF failed required checks: " + ", ".join(failed))
-    return {"layout_template_version": spec.template_version, "layout_spec_sha256": spec_checksum(spec), "renderer_version": "pipeline-e-html/3", "chrome_version": environment["version"], "font_manifest": artifact.font_manifest, "quality_gates_passed": True, "renderer_artifact_sha256": _sha256_file(directory / "renderer_artifact.json"), "header_name_binding": name_binding}
+    return {"layout_template_version": spec.template_version, "layout_spec_sha256": spec_checksum(spec), "renderer_version": "pipeline-e-html/4", "chrome_version": environment["version"], "font_manifest": artifact.font_manifest, "quality_gates_passed": True, "renderer_artifact_sha256": _sha256_file(directory / "renderer_artifact.json"), "header_name_binding": name_binding}
 
 
 def construct_template(target: Path, directory: Path, profile: CandidateProfile, *, blind: bool, live: bool) -> None:
     run, terminal, _ = build_template(target, directory / ("construction_" + uuid.uuid4().hex), candidate_profile=profile, blind_profile=blind, live=live, max_repair_rounds=3)
     if terminal != "ready_for_owner_review":
         raise ValueError(f"Template construction stopped: {terminal}; inspect the local construction evidence")
-    admit_run(run, target, directory)
+    admit_run(run, target, directory, profile, blind=blind)
