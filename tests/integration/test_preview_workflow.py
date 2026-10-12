@@ -203,6 +203,62 @@ def test_duplicate_jobs_share_work_and_block_concurrent_mutation(workflow, monke
     assert calls == [revision]
 
 
+@pytest.mark.parametrize("diagnostics_writable", [True, False])
+def test_failed_job_records_exception_locations_without_private_text(workflow, monkeypatch: pytest.MonkeyPatch, diagnostics_writable: bool) -> None:
+    import subprocess
+
+    client, directory, _, revision, _ = workflow
+    private = "private-candidate-and-provider-credential"
+
+    def failed_generate(_request):
+        try:
+            raise subprocess.TimeoutExpired(private, 120, output=private, stderr=private)
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(private) from error
+
+    monkeypatch.setattr(main, "_generate_outputs", failed_generate)
+    real_write = Path.write_text
+    def write(path, *args, **kwargs):
+        if not diagnostics_writable and path.name == "failure.json":
+            raise OSError(private)
+        return real_write(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "write_text", write)
+    job = preview(client, revision, succeeds=False)
+    assert job["error"]["error_code"] == "preview_failed"
+    assert job["error"].get("diagnostic_write_failed", False) is not diagnostics_writable
+    if diagnostics_writable:
+        evidence = (directory / "preview_jobs" / job["job_id"] / "failure.json").read_text()
+        chain = json.loads(evidence)["exception_chain"]
+        assert [item["exception_type"] for item in chain] == ["RuntimeError", "TimeoutExpired"]
+        assert chain[1]["timeout_seconds"] == 120
+        assert any(frame["function"] == "failed_generate" and frame["line"] > 0 for frame in chain[0]["frames"])
+        assert private not in evidence
+    assert private not in json.dumps(job)
+    assert not (directory / "checked_output.json").exists()
+
+
+def test_parallel_chrome_exports_preserve_each_document(tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from app.pipeline_e.resume_layout.render import _export_pinned_html_to_pdf
+    from app.pipeline_e.template import authored_network_disabled_environment
+
+    environment = authored_network_disabled_environment()
+    barrier = Barrier(8)
+
+    def render(index: int) -> str:
+        html = tmp_path / f"parallel_{index}.html"
+        pdf = html.with_suffix(".pdf")
+        html.write_text(f'<html><head><style>@page{{size:A4;margin:36pt}}body{{font-family:Times;font-size:10.5pt}}</style></head><body>Parallel document {index}</body></html>')
+        barrier.wait(timeout=20)
+        _export_pinned_html_to_pdf(html, pdf, environment)
+        return read_pdf_text(pdf)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        texts = list(executor.map(render, range(8)))
+    assert texts == [f"Parallel document {index}" for index in range(8)]
+
+
 def test_final_confirmation_reuses_source_coverage_gate(workflow) -> None:
     from app.extraction.coverage_audit import audit_segmentation_lines
     client, directory, _, revision, _ = workflow

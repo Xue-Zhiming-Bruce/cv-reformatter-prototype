@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
+import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -69,6 +71,25 @@ def assert_idle(directory: Path) -> None:
             raise HTTPException(409, {"error_code": "preview_running", "message": "Wait for the current preview before editing or accepting it."})
 
 
+def _failure_evidence(error: BaseException | None) -> list[dict[str, object]]:
+    # Exception text, source lines and locals can contain candidate data or credentials.
+    chain: list[dict[str, object]] = []
+    seen: set[int] = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        item: dict[str, object] = {
+            "exception_type": type(error).__name__,
+            "frames": [{"file": Path(frame.filename).name, "line": frame.lineno, "function": frame.name} for frame in traceback.extract_tb(error.__traceback__)],
+        }
+        if isinstance(error, subprocess.TimeoutExpired):
+            item["timeout_seconds"] = error.timeout
+        if isinstance(error, subprocess.CalledProcessError):
+            item["returncode"] = error.returncode
+        chain.append(item)
+        error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+    return chain
+
+
 def start_job(directory: Path, artifact_id: str, revision_id: str, request: dict[str, object], generate: Callable[[], dict[str, object]]) -> PreviewJob:
     with _guard:
         for path in (directory / "preview_jobs").glob("*/status.json"):
@@ -95,14 +116,18 @@ def start_job(directory: Path, artifact_id: str, revision_id: str, request: dict
                 result = generate()
                 with _guard:
                     job.result = result; job.state = "succeeded"; job.stage = "ready_for_review"
-        except HTTPException as error:
+        except Exception as error:
+            failed_stage = job.stage
             with _guard:
                 job.state = "failed"; job.stage = "failed"
-                job.error = error.detail if isinstance(error.detail, dict) else {"error_code": "preview_failed", "message": str(error.detail)}
-        except Exception:
-            with _guard:
-                job.state = "failed"; job.stage = "failed"
-                job.error = {"error_code": "preview_failed", "message": "Preview failed. Inspect the local job evidence and retry."}
+                if isinstance(error, HTTPException):
+                    job.error = error.detail if isinstance(error.detail, dict) else {"error_code": "preview_failed", "message": str(error.detail)}
+                else:
+                    job.error = {"error_code": "preview_failed", "message": "Preview failed. Inspect the local job evidence and retry."}
+                try:
+                    (folder / "failure.json").write_text(json.dumps({"job_id": job_id, "stage": failed_stage, "exception_chain": _failure_evidence(error)}, indent=2))
+                except OSError:
+                    job.error["diagnostic_write_failed"] = True
         finally:
             with _guard:
                 job.updated_at = datetime.now(UTC).isoformat(); _save(path, job); _active.discard(job_id)

@@ -242,6 +242,14 @@ joins the same job; a conflicting request or edit during construction returns
 409. Restarted in-flight work is reported interrupted, never silently retried.
 This local single-worker implementation is not a durable production queue.
 
+Failed jobs also save local `preview_jobs/{job_id}/failure.json`: the failing
+stage, exception types, code filenames/functions/line numbers and, where
+available, subprocess timeout or exit-code metadata. Exception messages,
+source lines, locals, commands and subprocess output are excluded. This file
+is not served through artifact downloads. If writing diagnostic evidence
+fails, the job still terminates as failed and its safe error includes
+`diagnostic_write_failed: true`; the original error code is retained.
+
 Successful jobs return generation's output identity and immutable
 `/api/artifacts/{artifact_id}/preview-versions/{version_id}/{filename}` URLs.
 HTML has a restrictive content security policy; PDF preview remains inspectable
@@ -253,7 +261,9 @@ permission; an earlier immutable draft remains available for comparison.
 With `TEMPLATE_DESIGN_STRATEGY=pipeline_e`, PDF targets are stored as pending
 before construction. The neutral `LayoutTemplateSpec` v3 stores measured layout,
 not HTML/CSS. A separate `e-renderer-artifact/1` binds authored typed slots to
-specification/target checksums, `pipeline-e-html/1` and font hashes. Reuse is local;
+specification/target checksums, renderer version and font hashes. Current
+generation records `pipeline-e-html/2`; existing `/1` artifacts remain readable.
+Reuse is local;
 uncached targets require explicit `PIPELINE_E_LIVE_ENABLED=1`. Disabled live
 construction returns `pipeline_e_live_disabled`; failed checks return
 `pipeline_e_preview_blocked`. There is no silent baseline fallback.

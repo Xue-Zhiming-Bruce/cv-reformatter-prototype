@@ -429,3 +429,55 @@ the local workflow result, not concurrent-render reliability. That operational
 gap, other matrix failures, broader corpus parity and owner visual acceptance
 remain open. The original Desktop checkout still matches all 47 preserved
 inventory entries. DOCX export, deployment and default replacement are deferred.
+
+## Preview failure diagnostics — October 12, 2026
+
+Owner authorized investigation of the two parallel failures before the next
+corpus step. The old worker discarded unclassified exceptions; retained
+status records therefore cannot establish whether those historical failures
+were Chrome export errors, timeouts or another exception. Their cause is not
+retroactively reconstructed from duration or a later successful run.
+
+`app/preview_jobs.py` now saves a local `failure.json` alongside each failed
+job's status. It records the failing stage, exception chain, code locations,
+subprocess timeout and exit-code metadata. It excludes exception messages,
+commands, subprocess output, source lines and local variables. Public error
+codes and terminal states are preserved. An unwritable diagnostic file sets
+a safe flag without turning the failed job into a running/interrupted job.
+Existing HTTP exceptions retain their structured error. Diagnostic files are
+outside the download allowlist and generated evidence remains ignored.
+
+The existing API workflow test now covers an exception whose message, command,
+output and stderr contain a synthetic private marker, including the diagnostic
+write-failure case. The same canonical integration file also exports eight
+distinct HTML documents simultaneously through actual pinned, network-disabled
+Chrome and checks each PDF's own content. No new runner, corpus, dependency,
+renderer setting or retry was introduced. These are export isolation checks,
+not owner layout-fidelity acceptance.
+
+| Check | Result | Log in `tests/test_results/pytest/` |
+| --- | --- | --- |
+| New failure cases against original HEAD worker | Two intended failures: missing diagnostic file and missing diagnostic-write failure flag | `20261012T081835Z_preview_failure_before_fix.txt` |
+| Initial safe failure evidence and existing structured error path | 2 passed | `20261012T080323Z_preview_failure_evidence.txt` |
+| Repeat of the original affected modules with eight workers | 225 passed, 3 skipped; old failures did not recur | `20261012T080455Z_parallel_preview_diagnosis.txt` |
+| Final diagnostic safety/write-failure cases plus eight simultaneous Chrome exports | 3 passed | `20261012T080943Z_parallel_chrome_stress.txt` |
+| Final mixed parallel API lifecycle, export stress and exporter error contract | 24 passed | `20261012T081327Z_preview_parallel_final.txt` |
+
+The repeated cohort command is `python -m pytest -n 8
+tests/unit/test_pdf_reader.py tests/integration/test_api_process.py
+tests/integration/test_preview_workflow.py tests/experiments/test_gates.py
+tests/experiments/test_pipeline_comparison.py -m 'not local_dataset and not
+live_provider'`. The final mixed command is `python -m pytest -n 8
+tests/integration/test_preview_workflow.py tests/unit/test_chrome_html_to_pdf.py
+--durations=10`. The focused stress command is `python -m pytest -o addopts= -q
+tests/integration/test_preview_workflow.py -k 'parallel_chrome or
+failed_job_records'`. All use the existing Python 3.12 environment and no
+external provider call. The old-worker negative control uses the same pytest
+cases, replacing only `start_job` with its original HEAD function in memory.
+
+The targeted and repeated parallel checks passed; the original defect remains
+unreproduced and its root cause unconfirmed. This closes the missing diagnostic
+evidence gap, not production reliability or the historical failure itself.
+No current owner-review PDF, candidate profile, default strategy or original
+Desktop checkout was changed. A→I source coverage and F→I font/provider issues
+are the next corpus work; DOCX export remains deferred.

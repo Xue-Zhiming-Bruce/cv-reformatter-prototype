@@ -89,6 +89,13 @@ The serial focused suite passes 224 tests; an eight-worker run had two generic
 preview-job failures, so parallel-render reliability is still open. Owner
 visual acceptance and the A/I failures above remain pending.
 
+October 12 diagnostics follow-up: preview failures now preserve safe local
+exception chains and code locations. Repeating the affected eight-worker suite
+passed 225 tests with three skips; eight simultaneous real PDF exports and a
+24-test mixed parallel workflow also passed. The original two failures did not
+recur, so their root cause remains unconfirmed. No renderer adjustment or
+production-reliability completion is claimed; A/I corpus work remains open.
+
 ## Product-Standard Definition
 
 “Product standard” means that the backend is measurably reliable across the
