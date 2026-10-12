@@ -81,6 +81,14 @@ poor pagination. A→I failed source coverage; F→I failed font checks and late
 provider connectivity. See the integration record above. These results do not
 close the remaining corpus/owner/default-replacement checkbox.
 
+October 12 follow-up: font-relative PDF word extraction, exact matching
+additional-heading binding and inline skill-group values close those three
+F→B defects. Fresh live extraction plus the unchanged real template produces
+a one-page checked PDF under `matrix_20261012T071913Z_pipeline_e_readability_fix`.
+The serial focused suite passes 224 tests; an eight-worker run had two generic
+preview-job failures, so parallel-render reliability is still open. Owner
+visual acceptance and the A/I failures above remain pending.
+
 ## Product-Standard Definition
 
 “Product standard” means that the backend is measurably reliable across the

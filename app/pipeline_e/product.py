@@ -53,7 +53,7 @@ class FontRole(BaseModel):
 class RendererArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal["e-renderer-artifact/1"] = "e-renderer-artifact/1"
-    renderer_version: Literal["pipeline-e-html/1"] = "pipeline-e-html/1"
+    renderer_version: Literal["pipeline-e-html/1", "pipeline-e-html/2"] = "pipeline-e-html/2"
     layout_spec_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     font_manifest: dict[str, str]
@@ -307,7 +307,7 @@ def render_preview(directory: Path, output: Path, target: Path, profile: Candida
     if not all(gate["passed"] for gate in gates.values()):
         failed = [key for key, gate in gates.items() if not gate["passed"]]
         raise ValueError("PDF failed required checks: " + ", ".join(failed))
-    return {"layout_template_version": spec.template_version, "layout_spec_sha256": spec_checksum(spec), "renderer_version": artifact.renderer_version, "chrome_version": environment["version"], "font_manifest": artifact.font_manifest, "quality_gates_passed": True, "renderer_artifact_sha256": _sha256_file(directory / "renderer_artifact.json"), "header_name_binding": name_binding}
+    return {"layout_template_version": spec.template_version, "layout_spec_sha256": spec_checksum(spec), "renderer_version": "pipeline-e-html/2", "chrome_version": environment["version"], "font_manifest": artifact.font_manifest, "quality_gates_passed": True, "renderer_artifact_sha256": _sha256_file(directory / "renderer_artifact.json"), "header_name_binding": name_binding}
 
 
 def construct_template(target: Path, directory: Path, profile: CandidateProfile, *, blind: bool, live: bool) -> None:

@@ -371,3 +371,61 @@ twice, and the second page contains only certifications. These are material
 quality gaps despite all deterministic gates passing. A's extraction omission
 and I's font/connection failures remain open. No default replacement, owner
 quality acceptance, confidential-data handling or deployment gate is closed.
+
+## Readability and pagination repair — October 12, 2026
+
+Owner authorized repair of the three visible F→B defects. PDF ingestion now
+uses font-relative word gaps (`x_tolerance_ratio=0.15`). Original PDF bytes
+and raw extraction are stored with a new artifact; earlier profiles and runs
+were not rewritten. One fresh OpenAI extraction request used `gpt-5.4-mini`
+(4,584 input and 1,765 output tokens); the deterministic source audit passed.
+The exact neutral template and separate renderer artifact from the genuine
+live B construction were reused unchanged. No new Adobe/designer call occurred.
+
+The shared fill now joins each skill group's values inline. Where a single
+additional section has exactly the same heading as its enclosing qualified
+target heading, its source leaf owns that visible heading once. Different
+headings and multiple source sections are preserved; general per-section
+mapping remains a future capability. Candidate values remain escaped, every
+source leaf is checked once, and the profile is not edited by rendering.
+The actual fill/export implementation is recorded as `pipeline-e-html/2`;
+existing renderer artifacts remain readable and final acceptance still checks
+their bound template/font identities.
+
+Current review:
+`tests/local_datasets/resume_matrix/runs/matrix_20261012T071913Z_pipeline_e_readability_fix/RESULTS_INDEX.md`.
+Its `transformations/F__to__B/generation/candidate_profile.pdf` is one page,
+with readable word spacing, one PROJECTS heading and certifications on that
+page. Every final page was inspected as a raster image. All eight output gates
+pass, without font-size reduction, content removal or automatic final
+acceptance. The target contains two pages with different content; matching its
+page count is not imposed. Its diagnostic similarity score is not acceptance.
+Contact composition and other fidelity decisions still need owner judgment.
+
+| Check | Result | Log in `tests/test_results/pytest/` |
+| --- | --- | --- |
+| New regressions against original HEAD functions | Four intended failures reproduce joined words, duplicate heading and line-per-skill flow; three controls pass | `20261012T072226Z_readability_before_fix.txt` |
+| Focused ingestion, fill and actual API workflow | 40 passed, 1 skipped | `20261012T071936Z_readability_workflow.txt` |
+| Expanded suite, eight workers | 222 passed, 3 skipped, two generic preview-job failures | `20261012T072149Z_readability_regression.txt` |
+| Same affected modules, serial offline lane | 224 passed, 3 skipped, 6 local/live cases deselected | `20261012T072619Z_readability_regression_serial.txt` |
+| Preview/edit/confirmation/download/blinding, serial | 13 passed | `20261012T072502Z_readability_preview_serial.txt` |
+| Final exact-heading and multiple-section controls | 4 passed | `20261012T073242Z_readability_binding_final.txt` |
+| Canonical report records actual calls instead of assumed model configuration | 1 passed | `20261012T072958Z_readability_matrix_metadata.txt` |
+| Matrix links, hashes, gates, template reuse and absent final acceptance | Passed | `20261012T073146Z_readability_matrix_validation.txt` |
+
+The affected-module command is `python -m pytest -o addopts= -q
+tests/unit/test_pdf_reader.py tests/integration/test_api_process.py
+tests/integration/test_preview_workflow.py tests/experiments/test_gates.py
+tests/experiments/test_pipeline_comparison.py -m 'not local_dataset and not
+live_provider'`, using the existing Python 3.12 environment. New regressions
+also exercised the original HEAD functions through that same pytest lane.
+The canonical matrix API/report helpers performed extraction and regeneration;
+no parallel harness was added. The current run's manifest records one source
+model call and zero fresh template-model calls explicitly.
+
+The two parallel failures returned generic `preview_failed`; the original
+job records do not expose the underlying exception. Serial checks establish
+the local workflow result, not concurrent-render reliability. That operational
+gap, other matrix failures, broader corpus parity and owner visual acceptance
+remain open. The original Desktop checkout still matches all 47 preserved
+inventory entries. DOCX export, deployment and default replacement are deferred.

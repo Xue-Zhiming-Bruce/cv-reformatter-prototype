@@ -19,6 +19,18 @@ PDF_RESUME_DATASETS = [
 ]
 
 
+@pytest.mark.parametrize("font_size", [8, 11, 20])
+def test_read_pdf_text_preserves_tight_word_gaps(tmp_path: Path, font_size: int) -> None:
+    from tests.helpers.synthetic_pdf import _write_single_page_pdf
+
+    path = tmp_path / "tight.pdf"
+    _write_single_page_pdf(path, [
+        f"BT /F1 {font_size} Tf 36 740 Td [(Machine) -180 (Learning)] TJ ET",
+        f"BT /F1 {font_size} Tf 36 700 Td (TensorFlow Python SQL) Tj ET",
+    ])
+    assert read_pdf_text(path).splitlines() == ["Machine Learning", "TensorFlow Python SQL"]
+
+
 def test_read_pdf_text_extracts_text_from_dataset_sample(tmp_path: Path) -> None:
     dataset_path = _require_pdf_resume_dataset()
     pdf_path = _copy_zip_member(

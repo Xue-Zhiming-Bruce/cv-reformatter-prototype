@@ -550,7 +550,7 @@ def render_context_values(candidate: CandidateDocument) -> dict[str, Any]:
         {
             "item": _leaf_html(leaf),
             "item_head": _leaf_html(leaf),
-            "item_text": "<br>".join(
+            "item_text": ", ".join(
                 _leaf_html(kid) for kid in children.get(leaf.leaf_id, []) if kid.kind == "skill"
             ),
         }
@@ -611,6 +611,29 @@ def fill_authored_template(
     values = render_context_values(candidate)
     html = _normalize_slot_markers(template.html)
 
+    # A source heading matching its enclosing target heading owns that one
+    # visible heading, including its leaf identity; candidate facts stay intact.
+    heading_binding: dict[str, str] = {}
+    additional = values["additional"]
+    # shortcut: coalesce only one enclosed section; multiple sections need explicit section bindings.
+    if len(additional) == 1 and len(re.findall(r"\{\{each:additional\}\}", html)) == 1:
+        source_heading = next(leaf.text for leaf in candidate.leaves if leaf.kind == "additional_section")
+        for section in re.finditer(r"<section\b[^>]*>(?:(?!</?section\b).)*</section>", html, re.I | re.S):
+            region = _EACH_RE.search(section.group())
+            if not region or region.group(1) != "additional":
+                continue
+            headings = re.findall(r"<h[1-6]\b[^>]*>\s*(\{\{label:([^}]+)\}\})\s*</h[1-6]>", section.group()[:region.start()], re.I)
+            if len(headings) != 1:
+                continue
+            marker, label_id = headings[0]
+            label = label_index.get(label_id)
+            if not label or label.text != source_heading or html.count(marker) != 1:
+                continue
+            if sum(region.group(2).count("{{" + token + "}}") for token in ("item", "item_head")) != 1:
+                continue
+            heading_binding[label_id] = additional[0]["item_head"]
+            additional[0]["item"] = additional[0]["item_head"] = ""
+
     # Presentation labels resolve to opaque PLACEHOLDERS first and are
     # substituted LAST: a label's text therefore can never be re-parsed as a
     # candidate slot, another marker, or markup. An unlisted id fails closed.
@@ -624,7 +647,7 @@ def fill_authored_template(
                 f"the shell, fail closed): {match.group(1)!r}"
             )
         token = f"\x00label{len(placeholders)}\x00"
-        placeholders[token] = _esc(label.text)
+        placeholders[token] = heading_binding.get(label.label_id, _esc(label.text))
         return token
 
     html = _LABEL_MARKER_RE.sub(_sub_label, html)
@@ -667,7 +690,7 @@ def fill_authored_template(
     # slot tokens) catches values like `{{Foo}}`/`{{ x }}` that the slot
     # grammar would not match. Label placeholders carry no braces, so an
     # inserted label value can never reach this check.
-    residual = re.findall(r"\{\{.*?\}\}", html, flags=re.DOTALL)
+    residual = re.findall(r"\{\{.*?\}\}", html + "".join(heading_binding.values()), flags=re.DOTALL)
     if residual:
         raise ValueError(
             f"unfilled slot tokens remain after fill (fail closed; candidate "

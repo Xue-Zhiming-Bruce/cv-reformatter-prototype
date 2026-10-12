@@ -168,6 +168,38 @@ def _base_authored_template() -> "at.AuthoredTemplateCandidate":
     return SCRIPTED_AUTHORED_TEMPLATE.model_copy(deep=True)
 
 
+@pytest.mark.parametrize("heading, section_count, projects_count", [("PROJECTS", 1, 1), ("SELECTED WORK", 1, 1), ("PROJECTS", 2, 3)])
+def test_additional_heading_binds_once_without_losing_source_identity(heading: str, section_count: int, projects_count: int) -> None:
+    from app.extraction.candidate_schema import CandidateProfile
+    from app.pipeline_e.resume_layout.candidates import candidate_from_profile
+
+    profile = CandidateProfile(full_name="Synthetic Candidate", additional_sections=[{
+        "section_type": "projects", "source_heading": "PROJECTS",
+        "source_block_id": f"source.projects.{index}", "entries": [{"title": "Safe <project>", "description": ["Kept every detail."]}],
+    } for index in range(section_count)])
+    candidate = candidate_from_profile(profile)
+    template = _base_authored_template().model_copy(update={"html": '<section><h2>{{label:projects}}</h2>{{each:additional}}<div>{{item_head}}</div><div>{{item_text}}</div>{{/each}}</section>'})
+    labels = [e_shared.PresentationLabel(label_id="projects", text=heading, kind="section_heading", status="approved", evidence_ids=["synthetic.heading"])]
+    filled = at.fill_authored_template(template, candidate, labels)
+    assert filled.html_filled.count("PROJECTS") == projects_count
+    assert heading in filled.html_filled
+    assert filled.html_filled.count('data-candidate-leaf="additional.section.0"') == 1
+    assert "Safe &lt;project&gt;" in filled.html_filled and "Kept every detail." in filled.html_filled
+    assert profile.additional_sections[0].source_heading == "PROJECTS"
+
+
+def test_skill_group_values_flow_inline_without_splitting_skills() -> None:
+    from app.extraction.candidate_schema import CandidateProfile
+    from app.pipeline_e.resume_layout.candidates import candidate_from_profile
+
+    candidate = candidate_from_profile(CandidateProfile(full_name="Synthetic Candidate", skill_groups=[{"label": "Tools", "skills": ["Python", "SQL"]}]))
+    template = _base_authored_template().model_copy(update={"html": '{{each:skills}}<p>{{item_head}} {{item_text}}</p>{{/each}}'})
+    filled = at.fill_authored_template(template, candidate)
+    assert "<br>" not in filled.html_filled
+    assert "Python</span>, <span" in filled.html_filled
+    assert filled.html_filled.count('data-candidate-leaf="skills.group.0.') == 2
+
+
 @pytest.mark.parametrize("blind", [False, True])
 def test_reviewed_profile_fill_preserves_content_and_disclosure(blind: bool) -> None:
     from app.extraction.candidate_schema import CandidateProfile
