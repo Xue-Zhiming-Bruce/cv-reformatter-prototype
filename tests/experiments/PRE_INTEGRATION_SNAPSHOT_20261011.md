@@ -760,3 +760,49 @@ first; if admitted, F then reuses that same new template. The original F
 renderer remains preserved under its copied artifact's
 `preserved_original_template/` and the prior review run. No historical
 construction state is edited or relabeled.
+
+
+### Actual frame-aligned construction and PDF reading-order closure
+
+The genuine `construction_20261012T180711Z_frozen_frame` completed on source
+`6e9bf33`, stable throughout the run, with two real Builder candidates and
+selected `render-target_format_reference-laneB-v2`. It took 230.8 seconds and
+recorded six completed model requests (45,071 input / 19,301 output tokens).
+No source extraction or Adobe call occurred. Both candidate renders passed
+material geometry under the final frame. Product admission correctly refused
+publication because short/medium/long probes failed PDF presence; the
+missing-field probe passed. The actual main PDF also reported missing
+`skills.group.2`. This is preserved as real failed evidence, not relabeled.
+
+Inspection isolated two issues in the shared output boundary: adjacent skill
+head/value boxes could join words without a gap, and geometric PDF line sorting
+interleaved a wrapped left-column additional heading with right-column body
+text. The controlled shell now adds a font-relative skill gap inside the usable
+width, avoiding Chrome shrink. Actual complete values may also be verified in
+PDF content-stream order when coordinate-order extraction interleaves columns;
+verified leaf ids are persisted. Missing words remain missing, and independent
+geometry/blank/readability/font checks continue to block delivery. The source
+reader, extraction drafts and recruiter revisions are unchanged.
+
+`pipeline-e-html/5` identifies this output change; `/1`–`/4` artifacts remain
+readable. `20261012T182252Z_column_presence_before.txt` records the joined-word
+and interleaved-column regressions; the missing-word control remains blocked
+but previously misreported the intact adjacent body as missing too.
+`20261012T182735Z_column_presence_width_bounded.txt` passes 15 focused checks,
+including the actual missing-word rejection and unchanged 10pt long-skill PDF
+text. A first gap-only trial caused Chrome shrink at long labels; its width was
+bounded before retaining the fix, rather than weakening the font assertion.
+
+The selected genuine template will be replayed through the existing canonical
+build workflow in explicit offline mode on the fixed runtime, without modifying
+its HTML/CSS or original construction state. Replay metadata identifies the
+source selected artifact and records zero new model calls; product admission
+still measures actual fonts and all eight real PDF gates. This distinguishes
+cached-template qualification from a new model construction or owner approval.
+
+Final `/5` affected serial cohort: **280 passed, 3 skipped, 6 deselected**,
+four existing fixture serializer warnings, 285.04 seconds. The command is the
+same affected-module command above. Log:
+`20261012T182926Z_frame_and_columns_final_serial.txt`.
+The runtime is committed before replay/qualification so its source identity
+remains stable for the whole canonical run.

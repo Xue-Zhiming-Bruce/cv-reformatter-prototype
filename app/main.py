@@ -1751,7 +1751,7 @@ def _require_current_output(artifact_id: str, artifact_dir: Path, current: Final
     saved_target = _load_saved_target_format(artifact_dir)
     if saved_target and metadata.get("target_sha256") and metadata["target_sha256"] != target_checksum_from_bytes((artifact_dir / saved_target.stored_filename).read_bytes()):
         raise HTTPException(409, "The target changed; regenerate and review the current preview.")
-    if metadata.get("renderer_version") in {"pipeline-e-html/1", "pipeline-e-html/2", "pipeline-e-html/3", "pipeline-e-html/4"}:
+    if metadata.get("renderer_version") in {"pipeline-e-html/1", "pipeline-e-html/2", "pipeline-e-html/3", "pipeline-e-html/4", "pipeline-e-html/5"}:
         try:
             spec = pipeline_e.LayoutTemplateSpec.model_validate_json((artifact_dir / "pipeline_e_template" / metadata["target_sha256"] / "layout_template_spec.json").read_text())
             renderer = pipeline_e.RendererArtifact.model_validate_json((artifact_dir / "pipeline_e_template" / metadata["target_sha256"] / "renderer_artifact.json").read_text())
@@ -1760,7 +1760,7 @@ def _require_current_output(artifact_id: str, artifact_dir: Path, current: Final
                 raise ValueError("Template or output checks changed")
         except (OSError, ValueError, KeyError) as error:
             raise HTTPException(409, "The template or output checks changed; regenerate the preview.") from error
-    if saved_target is not None and metadata.get("renderer_version") not in {"pipeline-e-html/1", "pipeline-e-html/2", "pipeline-e-html/3", "pipeline-e-html/4"}:
+    if saved_target is not None and metadata.get("renderer_version") not in {"pipeline-e-html/1", "pipeline-e-html/2", "pipeline-e-html/3", "pipeline-e-html/4", "pipeline-e-html/5"}:
         try:
             design_id = metadata.get("design_id")
             path = design_dir_for(artifact_dir, design_id) / LAYOUT_SPEC_FILENAME if design_id else artifact_dir / LAYOUT_SPEC_FILENAME

@@ -88,7 +88,7 @@ def test_real_pdf_edit_final_confirmation_and_blinding(workflow) -> None:
     original = (directory / "raw_extracted_text.txt").read_bytes()
     first = preview(client, revision)["result"]
     assert first["client_ready"] is False
-    assert json.loads((directory / "generation_metadata.json").read_text())["renderer_version"] == "pipeline-e-html/4"
+    assert json.loads((directory / "generation_metadata.json").read_text())["renderer_version"] == "pipeline-e-html/5"
     generated = CandidateProfile.model_validate_json((directory / "generated_profile.json").read_text())
     assert generated.model_dump(exclude={"missing_fields"}) == profile.model_dump(exclude={"missing_fields"})
     assert [field.model_dump(mode="json") for field in generated.missing_fields] == first["missing_fields"]
@@ -167,7 +167,7 @@ def test_missing_cache_requires_opt_in_and_job_input_is_strict(workflow) -> None
     assert resumed.status_code == 200 and resumed.json()["state"] == "interrupted"
 
 
-@pytest.mark.parametrize("renderer_version", ["pipeline-e-html/1", "pipeline-e-html/2", "pipeline-e-html/3"])
+@pytest.mark.parametrize("renderer_version", ["pipeline-e-html/1", "pipeline-e-html/2", "pipeline-e-html/3", "pipeline-e-html/4"])
 def test_replacing_target_invalidates_confirmed_export(workflow, renderer_version: str) -> None:
     client, directory, _, revision, cache = workflow
     renderer = RendererArtifact.model_validate_json((cache / "renderer_artifact.json").read_text())
@@ -424,7 +424,8 @@ def test_unused_qualified_heading_and_source_substrings_are_not_target_facts(wor
 
 
 @pytest.mark.parametrize("group_count", [0, 2, 24])
-def test_skill_columns_and_long_sections_reflow_in_actual_pdf(tmp_path: Path, group_count: int) -> None:
+@pytest.mark.parametrize("value_padding", [0, 14])
+def test_skill_columns_and_long_sections_reflow_in_actual_pdf(tmp_path: Path, group_count: int, value_padding: int) -> None:
     import pdfplumber
     from app.pipeline_e.product import material_geometry
     from app.pipeline_e.resume_layout.candidates import candidate_from_profile
@@ -455,7 +456,7 @@ def test_skill_columns_and_long_sections_reflow_in_actual_pdf(tmp_path: Path, gr
             'section{display:grid;grid-template-columns:20% 5% 75%}'
             'h2{grid-column:1;font-size:10pt}.body{grid-column:3;padding-top:16pt}'
             '.row{display:flex;align-items:baseline;margin-bottom:5pt}'
-            '.head{flex:0 0 26%}.values{flex:1 1 auto;min-width:0;padding-left:14pt}'
+            '.head{flex:0 0 26%}' + f'.values{{flex:1 1 auto;min-width:0;padding-left:{value_padding}pt}}'
         ),
         slots=[AuthoredSlot(category="candidate_name"), AuthoredSlot(category="skills", repeating=True)],
     )
@@ -485,3 +486,30 @@ def test_skill_columns_and_long_sections_reflow_in_actual_pdf(tmp_path: Path, gr
         for heading in labels[:2]:
             tops = [next(word["top"] for word in words if word["text"] == token) for token in heading.split()]
             assert max(tops) - min(tops) < .5
+
+
+@pytest.mark.parametrize("missing_word", [False, True])
+def test_pdf_presence_handles_columns_without_accepting_a_missing_word(tmp_path: Path, missing_word: bool) -> None:
+    from reportlab.pdfgen.canvas import Canvas
+    from app.pipeline_e.resume_layout.candidates import CandidateDocument, CandidateLeaf
+    from app.pipeline_e.template import AuthoredSlot, AuthoredTemplateCandidate, fill_authored_template, authored_pdf_presence_gate
+
+    candidate = CandidateDocument(candidate_id="column_presence", leaves=[
+        CandidateLeaf(leaf_id="additional.heading", kind="additional_section", source="additional_details", text="A long source section heading"),
+        CandidateLeaf(leaf_id="summary.0", kind="summary_paragraph", source="summary", text="A separate body paragraph remains whole"),
+    ])
+    template = AuthoredTemplateCandidate(template_id="column-presence", html='{{each:additional}}<aside>{{item_head}}</aside>{{/each}}{{each:summary}}<p>{{item}}</p>{{/each}}', css="", slots=[AuthoredSlot(category="additional", repeating=True), AuthoredSlot(category="summary", repeating=True)])
+    fill = fill_authored_template(template, candidate)
+    assert not fill.missing_leaves
+    pdf = tmp_path / "columns.pdf"
+    canvas = Canvas(str(pdf), pagesize=(612, 792))
+    canvas.setFont("Helvetica", 10)
+    canvas.drawString(36, 700, "A long source")
+    canvas.drawString(36, 686, "section" if missing_word else "section heading")
+    canvas.drawString(200, 700, "A separate body")
+    canvas.drawString(200, 686, "paragraph remains whole")
+    canvas.save()
+    assert "A long source section heading" not in read_pdf_text(pdf)
+    gate = authored_pdf_presence_gate(fill, candidate, pdf)
+    assert gate["passed"] is not missing_word
+    assert gate["missing_pdf_leaves"] == (["additional.heading"] if missing_word else [])

@@ -757,7 +757,7 @@ def build_authored_document(
         # Fit skill headings before wrapping values; oversized sections may still split.
         + 'section { break-inside: avoid; }\n'
         + '[data-candidate-kind="skill_group"] { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }\n'
-        + ':has(> [data-candidate-kind="skill_group"]) { display: inline-block; width: max-content; max-width: 100%; }\n'
+        + ':has(> [data-candidate-kind="skill_group"]) { display: inline-block; width: max-content; max-width: calc(100% - .35em); margin-right: .35em; }\n'
         + ':has(> * > [data-candidate-kind="skill_group"]) { display: block; break-inside: avoid; }\n'
         + "\n</style>\n</head>\n<body>\n"
         + fill.html_filled
@@ -855,7 +855,22 @@ def authored_pdf_presence_gate(
         )
         if text and _occurrences(normalized_pdf, text) < 1 and _occurrences(without_paired_date, text) < 1 and not split_name_present:
             missing.append(leaf.leaf_id)
-    return {"passed": not missing, "missing_pdf_leaves": missing}
+    stream_verified = []
+    if missing:
+        # A multi-column row can interleave text geometrically; drawing order
+        # must still contain each complete value, never just a bag of words.
+        from pypdf import PdfReader
+        from pypdf.errors import PdfReadError
+        try:
+            stream_text = _norm_text(_norm_text("\n".join(page.extract_text() or "" for page in PdfReader(pdf).pages)).replace("- ", "").replace("-", ""))
+        except (OSError, PdfReadError):
+            stream_text = ""
+        for leaf in candidate.leaves:
+            text = _norm_text(_norm_text(leaf.text or "").replace("-", ""))
+            if leaf.leaf_id in missing and text and _occurrences(stream_text, text) > 0:
+                stream_verified.append(leaf.leaf_id)
+        missing = [leaf_id for leaf_id in missing if leaf_id not in stream_verified]
+    return {"passed": not missing, "missing_pdf_leaves": missing, "stream_verified_leaves": stream_verified}
 
 
 # ---------------------------------------------------------------------------
