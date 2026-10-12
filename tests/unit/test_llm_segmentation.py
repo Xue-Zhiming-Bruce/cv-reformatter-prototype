@@ -72,3 +72,23 @@ def test_materialized_profile_and_blocks_keep_llm_section_lineage() -> None:
     projects = profile.additional_sections[0]
     assert projects.source_block_id == "candidate-block-002"
     assert projects.entries[0].source_block_ids == ["candidate-block-002"]
+
+
+def test_unheaded_summary_preserves_lines_and_structured_text_does_not_waive_audit() -> None:
+    lines = ["Builds reliable document", "workflows with strict validation."]
+    output = LLMSegmentationOutput.model_validate({"sections": [
+        {"heading": None, "section_type": "contact", "items": ["Synthetic Candidate"], "full_name": "Synthetic Candidate"},
+        {"heading": None, "section_type": "summary", "items": lines, "professional_summary": " ".join(lines)},
+    ]})
+    source = "\n".join(["Synthetic Candidate", *lines])
+    assert audit_segmentation_lines(source, segmentation_output_lines(output)).status == "passed"
+    profile, document = materialize_llm_segmentation(source, output)
+    assert profile.professional_summary == "Builds reliable document workflows with strict validation."
+    summary = document.blocks[1]
+    assert summary.candidate_source == "summary" and summary.source_heading is None
+    assert summary.items == lines and (summary.source_line_start, summary.source_line_end) == (2, 3)
+
+    output.sections[1].items = lines[:1]
+    audit = audit_segmentation_lines(source, segmentation_output_lines(output))
+    assert audit.approval_blocked and [item.line for item in audit.missing_lines] == [lines[1]]
+    assert output.sections[1].professional_summary == profile.professional_summary

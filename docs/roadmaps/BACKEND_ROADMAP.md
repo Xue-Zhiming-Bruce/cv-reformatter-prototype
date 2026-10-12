@@ -96,6 +96,16 @@ passed 225 tests with three skips; eight simultaneous real PDF exports and a
 recur, so their root cause remains unconfirmed. No renderer adjustment or
 production-reliability completion is claimed; A/I corpus work remains open.
 
+October 12 source follow-up: A's three introductory lines were present in the
+structured summary but absent from its verbatim segmentation ledger. Prompt
+`llm-segmentation/2` now places unheaded narrative in the existing summary
+section shape and explicitly retains its physical lines. Two fresh real
+extractions both cover all 47 lines and bind summary evidence; 44 focused
+offline tests pass. A fresh old-prompt control also passed, so this is not proof
+of deterministic model reliability. The source gate remains blocking. I
+construction was deliberately disabled in these source-only evaluations;
+A→I PDF completion, I's font/provider problems and owner acceptance remain open.
+
 ## Product-Standard Definition
 
 “Product standard” means that the backend is measurably reliable across the

@@ -481,3 +481,65 @@ evidence gap, not production reliability or the historical failure itself.
 No current owner-review PDF, candidate profile, default strategy or original
 Desktop checkout was changed. A→I source coverage and F→I font/provider issues
 are the next corpus work; DOCX export remains deferred.
+
+## Unheaded-summary source audit — October 12, 2026
+
+The original A→I attempt preserved A's three introductory lines in raw
+extracted text and the structured `professional_summary`, but omitted them
+from segmentation `items`. Its 44/47 coverage failure therefore correctly
+blocked the workflow; the audit was not a false positive. The old prompt forced
+all unheaded narrative into contact and prohibited a separate unheaded summary,
+despite the existing schema supporting that shape.
+
+`app/extraction/llm_segmentation.py` now records prompt
+`llm-segmentation/2`; response schema `llm_segmentation/1` and CandidateProfile
+remain unchanged. It directs introductory narrative to the existing
+`heading=null, section_type=summary` shape and requires each physical source
+line in `items`, independently of the joined structured summary. The supplied
+schema's field descriptions repeat that distinction. No post-model source
+insertion, audit waiver, semantic fallback, implicit retry or provider change
+was added. Old persisted outputs and their failed audits were not rewritten.
+
+Three fresh source API calls used the current PDF reader and configured real
+OpenAI extraction model `gpt-5.4-mini`. The old-prompt control also passed;
+the historic omission did not reproduce in that control. The two new-prompt
+calls both returned 47/47 lines, a distinct unheaded summary with all three
+verbatim physical lines, the joined source-supported summary and resolved
+section-level evidence. This is two successful checks, not a statistical
+reliability result or a guarantee that the model cannot omit future lines.
+
+| Prompt/check | Source result | Run under `tests/local_datasets/resume_matrix/runs/` |
+| --- | --- | --- |
+| `/1` fresh control | 47/47 lines; historical omission did not recur | `matrix_20261012T083124Z_a_coverage_control` |
+| `/2` first fresh call | 47/47 lines; unheaded summary and original-text evidence retained | `matrix_20261012T083354Z_a_summary_prompt_1` |
+| `/2` second fresh call | Same coverage and summary-evidence checks pass | `matrix_20261012T083409Z_a_summary_prompt_2` |
+
+Each run uses the canonical matrix API/report helpers, reports one real source
+request and zero Adobe/designer calls, and retains the source PDF, raw text,
+model output, profile, evidence, prompt/model/usage metadata and coverage audit.
+I template construction is deliberately disabled for this source-only check.
+Thus the A→I transformation rows remain failed at generation with
+`pipeline_e_live_disabled`, not completed. No placeholder PDF is created;
+the current F→B owner-review PDF and index remain the current deliverable.
+
+| Test | Result | Log in `tests/test_results/pytest/` |
+| --- | --- | --- |
+| Segmentation, normalization and API source handling | 21 passed | `20261012T083301Z_unheaded_summary_contract.txt` |
+| Same modules plus approval/generation blocking | 44 passed, 4 existing fixture serializer warnings | `20261012T083648Z_summary_approval_regression.txt` |
+| All three live calls: raw-line multisets, source bytes, summary/evidence, actual calls and matrix links | Passed | `20261012T083650Z_a_summary_live_validation.txt` |
+
+The new unit contract covers unheaded summary materialization and verifies
+that a complete structured summary cannot excuse a missing physical source
+line. It exercises an already-supported schema shape; model behavior is
+checked by the real calls rather than a fake provider implementing the desired
+result. The focused offline command is `python -m pytest -n 8
+tests/unit/test_llm_segmentation.py tests/unit/test_candidate_document_analyzer.py
+tests/integration/test_api_process.py tests/integration/test_generate_approval.py
+-m 'not local_dataset and not live_provider'`, using the existing Python 3.12
+environment. The canonical `_run_pair(... strategy='pipeline_e')` and
+`_write_e_review` produced all run projections; no parallel harness was added.
+
+A source coverage passes these reruns, while actual I PDF generation/font
+repair, broader source reliability, historical parallel-failure diagnosis and
+owner/default-replacement decisions remain open. No DOCX export or deployment
+work occurred in this milestone.

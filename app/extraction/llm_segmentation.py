@@ -35,7 +35,7 @@ from app.extraction.llm_extractor import LLMClient, LLMExtractionError
 from app.validation.missing_fields import apply_missing_field_detection
 
 
-LLM_SEGMENTATION_PROMPT_VERSION = "llm-segmentation/1"
+LLM_SEGMENTATION_PROMPT_VERSION = "llm-segmentation/2"
 
 
 class SegmentationRunMetadata(BaseModel):
@@ -75,7 +75,10 @@ class LLMSegmentedSection(BaseModel):
 
     heading: str | None
     section_type: LLMSegmentType
-    items: list[str] = Field(min_length=1)
+    items: list[str] = Field(
+        min_length=1,
+        description="Every verbatim physical source line assigned to this section, excluding its heading. Structured fields never replace these items.",
+    )
     review_state: SectionReviewState = SectionReviewState.REVIEWED
     full_name: str | None = None
     email: str | None = None
@@ -83,7 +86,10 @@ class LLMSegmentedSection(BaseModel):
     location: str | None = None
     linkedin_url: str | None = None
     portfolio_url: str | None = None
-    professional_summary: str | None = None
+    professional_summary: str | None = Field(
+        default=None,
+        description="Summary supported by this section's items. Keep every supporting source line in items, even when this field joins multiple lines.",
+    )
     skills: list[str] = Field(default_factory=list)
     skill_groups: list[SkillGroup] = Field(default_factory=list)
     languages: list[Language] = Field(default_factory=list)
@@ -122,7 +128,7 @@ class LLMSegmentationOutput(BaseModel):
 
 
 SYSTEM_PROMPT = f"""You segment and extract a candidate resume in one operation.
-Return only the strict {LLM_SEGMENTATION_PROMPT_VERSION} response schema.
+Prompt version: {LLM_SEGMENTATION_PROMPT_VERSION}. Return only the strict llm_segmentation/1 response schema.
 
 Completeness rules:
 - Every non-empty source line must appear exactly once, verbatim, either as one section heading or one item.
@@ -130,8 +136,8 @@ Completeness rules:
 - The SOURCE LINES JSON array is the authoritative checklist: consume every array value exactly once. A line used as heading must not also appear in items.
 - A heading is a standalone source line. Use heading=null only for contact/header or an unheaded summary.
 - Keep intra-section content such as skill-group labels, employers, job titles, and project titles inside items.
-- Keep all unheaded introductory text before the first explicit section heading in the contact section; do not create a separate unheaded summary section.
-- The contact section items must include every source line before the first explicit section heading, including narrative professional-summary lines. Structured fields never replace verbatim items.
+- Put an unheaded introductory professional summary in its own section_type=summary section with heading=null, after the contact/header section, in source order.
+- Keep every physical summary line verbatim in that section's items. professional_summary may join those lines into readable prose, but never replaces the items. Contact/header items keep the name and contact lines.
 - A line such as "SUMMARY — narrative text" is not a standalone heading because it contains body text; keep the whole line once in items and use heading=null.
 
 Extraction rules:
