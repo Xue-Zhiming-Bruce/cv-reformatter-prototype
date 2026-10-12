@@ -29,9 +29,11 @@ class _FakeRun:
         self.stderr = stderr
         self.write_pdf = write_pdf
         self.commands: list[list[str]] = []
+        self.profiles_present: list[bool] = []
 
     def __call__(self, command, **_kwargs):
         self.commands.append(command)
+        self.profiles_present.extend(Path(arg.split("=", 1)[1]).is_dir() for arg in command if arg.startswith("--user-data-dir="))
         if self.returncode == 0 and self.write_pdf:
             for arg in command:
                 if arg.startswith("--print-to-pdf="):
@@ -90,6 +92,23 @@ def test_fake_output_is_text_bearing(tmp_path: Path, fake_chrome: _FakeRun) -> N
     assert FAKE_PDF_TEXT in extracted
 
 
+@pytest.mark.parametrize("pinned", [False, True])
+def test_each_export_has_a_private_profile_removed_after_exit(tmp_path: Path, fake_chrome: _FakeRun, pinned: bool) -> None:
+    from app.pipeline_e.resume_layout.render import _export_pinned_html_to_pdf
+
+    html = _write_html(tmp_path)
+    for index in range(2):
+        output = tmp_path / f"output_{index}.pdf"
+        if pinned:
+            _export_pinned_html_to_pdf(html, output, {"executable": "/fake/chrome", "flags": ["--headless=new"], "timezone": "UTC"})
+        else:
+            mod.export_html_to_pdf(html, output)
+    profiles = [Path(arg.split("=", 1)[1]) for command in fake_chrome.commands for arg in command if arg.startswith("--user-data-dir=")]
+    assert len(profiles) == len(set(profiles)) == 2
+    assert fake_chrome.profiles_present == [True, True]
+    assert all(not profile.exists() for profile in profiles)
+
+
 def test_missing_html_raises(tmp_path: Path) -> None:
     with pytest.raises(mod.HtmlToPdfExportError, match="does not exist"):
         mod.export_html_to_pdf(tmp_path / "missing.html", tmp_path / "out.pdf")
@@ -120,6 +139,26 @@ def test_empty_output_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     )
     with pytest.raises(mod.HtmlToPdfExportError, match="produced no PDF"):
         mod.export_html_to_pdf(_write_html(tmp_path), tmp_path / "out.pdf")
+
+
+@pytest.mark.parametrize("failure", ["timeout", "nonzero", "empty"])
+def test_pinned_export_rejects_failure_and_removes_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    from app.pipeline_e.resume_layout.render import _export_pinned_html_to_pdf
+
+    profiles = []
+    fake = _FakeRun(returncode=1 if failure == "nonzero" else 0, write_pdf=False)
+    def run(command, **kwargs):
+        profiles.extend(Path(arg.split("=", 1)[1]) for arg in command if arg.startswith("--user-data-dir="))
+        assert profiles[-1].is_dir()
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return fake(command, **kwargs)
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    with pytest.raises(mod.HtmlToPdfExportError, match="timed out" if failure == "timeout" else "failed"):
+        _export_pinned_html_to_pdf(_write_html(tmp_path), tmp_path / "out.pdf", {
+            "executable": "/fake/chrome", "flags": ["--headless=new"], "timezone": "UTC",
+        })
+    assert len(profiles) == 1 and not profiles[0].exists()
 
 
 def test_chrome_bin_override(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -433,7 +433,8 @@ def _leaf_html(leaf: CandidateLeaf | None, *, text: str | None = None, field_pat
         return ""
     path = field_path or leaf.field_path
     field = f' data-field="{_esc(path)}"' if path else ""
-    return f'<span data-candidate-leaf="{leaf.leaf_id}"{field}>{_esc(text if text is not None else leaf.text)}</span>'
+    kind = ' data-candidate-kind="skill_group"' if leaf.kind == "skill_group" else ""
+    return f'<span data-candidate-leaf="{leaf.leaf_id}"{field}{kind}>{_esc(text if text is not None else leaf.text)}</span>'
 
 
 def render_context_values(candidate: CandidateDocument) -> dict[str, Any]:
@@ -742,6 +743,11 @@ def build_authored_document(
         + "\n"
         + template.css
         + "\n.candidate-detail-row { display: grid; grid-template-columns: minmax(0, 1fr) max-content; column-gap: 10pt; break-inside: avoid; }\n"
+        # Fit skill headings before wrapping values; oversized sections may still split.
+        + 'section { break-inside: avoid; }\n'
+        + '[data-candidate-kind="skill_group"] { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }\n'
+        + ':has(> [data-candidate-kind="skill_group"]) { display: inline-block; width: max-content; max-width: 100%; }\n'
+        + ':has(> * > [data-candidate-kind="skill_group"]) { display: block; break-inside: avoid; }\n'
         + "\n</style>\n</head>\n<body>\n"
         + fill.html_filled
         + "\n</body>\n</html>"
@@ -798,7 +804,7 @@ def authored_privacy_gate(
         token = _norm(line)
         if token in excluded or token in source:
             continue
-        hit = token in normalized_html or token in normalized_pdf
+        hit = _occurrences(normalized_html, token) > 0 or _occurrences(normalized_pdf, token) > 0
         checked.append({"line": line, "hit": hit})
         if hit:
             leaked.append(line)

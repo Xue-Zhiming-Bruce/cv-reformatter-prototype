@@ -262,7 +262,7 @@ With `TEMPLATE_DESIGN_STRATEGY=pipeline_e`, PDF targets are stored as pending
 before construction. The neutral `LayoutTemplateSpec` v3 stores measured layout,
 not HTML/CSS. A separate `e-renderer-artifact/1` binds authored typed slots to
 specification/target checksums, renderer version and font hashes. Current
-generation records `pipeline-e-html/2`; existing `/1` artifacts remain readable.
+generation records `pipeline-e-html/3`; existing `/1` and `/2` artifacts remain readable.
 Reuse is local;
 uncached targets require explicit `PIPELINE_E_LIVE_ENABLED=1`. Disabled live
 construction returns `pipeline_e_live_disabled`; failed checks return

@@ -88,6 +88,7 @@ def test_real_pdf_edit_final_confirmation_and_blinding(workflow) -> None:
     original = (directory / "raw_extracted_text.txt").read_bytes()
     first = preview(client, revision)["result"]
     assert first["client_ready"] is False
+    assert json.loads((directory / "generation_metadata.json").read_text())["renderer_version"] == "pipeline-e-html/3"
     generated = CandidateProfile.model_validate_json((directory / "generated_profile.json").read_text())
     assert generated.model_dump(exclude={"missing_fields"}) == profile.model_dump(exclude={"missing_fields"})
     assert [field.model_dump(mode="json") for field in generated.missing_fields] == first["missing_fields"]
@@ -125,19 +126,27 @@ def test_real_pdf_edit_final_confirmation_and_blinding(workflow) -> None:
     assert (directory / "raw_extracted_text.txt").read_bytes() == original
 
 
-@pytest.mark.parametrize("failure", ["duplicate", "font_identity", "concealment"])
+@pytest.mark.parametrize("failure", ["duplicate", "font_identity", "concealment", "missing_languages"])
 def test_unsafe_reuse_never_publishes_a_pdf(workflow, failure: str) -> None:
-    client, directory, _, revision, cache = workflow
+    client, directory, profile, revision, cache = workflow
     renderer = RendererArtifact.model_validate_json((cache / "renderer_artifact.json").read_text())
     if failure == "duplicate":
         renderer.template.html += "{{each:summary}}<p>{{item}}</p>{{/each}}"
     elif failure == "font_identity":
         renderer.font_manifest[next(iter(renderer.font_manifest))] = "0" * 64
+    elif failure == "missing_languages":
+        renderer.template.html = renderer.template.html.replace('{{each:languages}}<p class="rsv-line">{{item}}</p>{{/each}}', '')
+        edited = CandidateProfile.model_validate({**profile.model_dump(), "languages": [{"name": "English"}, {"name": "Mandarin"}]})
+        saved = client.post("/api/artifacts/artifact_preview/profiles/revisions", json={"profile": edited.model_dump(mode="json")})
+        assert saved.status_code == 200, saved.text
+        revision = saved.json()["profile_revision_id"]
     else:
         renderer.template.css += ".rsv-summary {opacity:0;}"
     (cache / "renderer_artifact.json").write_text(renderer.model_dump_json())
     job = preview(client, revision, succeeds=False)
     assert job["error"]["error_code"] == "pipeline_e_preview_blocked"
+    if failure == "missing_languages":
+        assert "languages.0, languages.1" in job["error"]["message"]
     assert not (directory / "candidate_profile.pdf").exists()
     assert not (directory / "final_acceptance.json").exists()
 
@@ -158,8 +167,12 @@ def test_missing_cache_requires_opt_in_and_job_input_is_strict(workflow) -> None
     assert resumed.status_code == 200 and resumed.json()["state"] == "interrupted"
 
 
-def test_replacing_target_invalidates_confirmed_export(workflow) -> None:
-    client, directory, _, revision, _ = workflow
+@pytest.mark.parametrize("renderer_version", ["pipeline-e-html/1", "pipeline-e-html/2"])
+def test_replacing_target_invalidates_confirmed_export(workflow, renderer_version: str) -> None:
+    client, directory, _, revision, cache = workflow
+    renderer = RendererArtifact.model_validate_json((cache / "renderer_artifact.json").read_text())
+    renderer.renderer_version = renderer_version
+    (cache / "renderer_artifact.json").write_text(renderer.model_dump_json())
     result = preview(client, revision)["result"]
     assert client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(result)).status_code == 200
     target = directory / "target_format_reference.pdf"
@@ -325,7 +338,11 @@ def test_empty_child_hiding_cannot_conceal_candidate_values(workflow, populated_
         assert client.get(result["pdf_preview_url"]).status_code == 200
 
 
-def test_unused_qualified_heading_is_not_a_target_person_fact(workflow) -> None:
+@pytest.mark.parametrize("heading, target_value, source_value", [
+    ("LANGUAGES", "English", "Programming Languages"),
+    ("SKILLS", "one", "Components"),
+])
+def test_unused_qualified_heading_and_source_substrings_are_not_target_facts(workflow, heading: str, target_value: str, source_value: str) -> None:
     from app.pipeline_e.product import render_preview
     from app.pipeline_e.shared import PresentationLabel
     from app.pipeline_e.template import authored_privacy_gate
@@ -333,20 +350,79 @@ def test_unused_qualified_heading_is_not_a_target_person_fact(workflow) -> None:
     target = directory / "target_format_reference.pdf"
     spec = LayoutTemplateSpec.model_validate_json((cache / "layout_template_spec.json").read_text())
     page = spec.page.model_dump(include={"width_pt", "height_pt", "margin_top_pt", "margin_left_pt", "margin_bottom_pt", "margin_right_pt"})
-    build_text_pdf_pages(target, ["Target Person", "LANGUAGES", "English"], **page)
-    assert "LANGUAGES" in read_pdf_text(target).splitlines() and "English" in read_pdf_text(target).splitlines()
+    build_text_pdf_pages(target, ["Target Person", heading, target_value], **page)
+    assert heading in read_pdf_text(target).splitlines() and target_value in read_pdf_text(target).splitlines()
     target_hash = _sha256_file(target)
     spec = spec.model_copy(update={"provenance": spec.provenance.model_copy(update={"target_sha256": target_hash})})
     renderer = RendererArtifact.model_validate_json((cache / "renderer_artifact.json").read_text())
     renderer.target_sha256 = target_hash
     renderer.layout_spec_sha256 = spec_checksum(spec)
-    renderer.labels = [PresentationLabel(label_id="label.languages", text="LANGUAGES", kind="section_heading", status="evidence_qualified", evidence_ids=["synthetic.target.languages"])]
+    renderer.labels = [PresentationLabel(label_id="label.section", text=heading, kind="section_heading", status="evidence_qualified", evidence_ids=["synthetic.target.section"])]
     (cache / "layout_template_spec.json").write_text(spec.model_dump_json())
     (cache / "renderer_artifact.json").write_text(renderer.model_dump_json())
     output = directory / "unused_label_preview"
-    render_preview(cache, output, target, profile.model_copy(update={"skills": ["Programming Languages"]}), blind=False)
+    render_preview(cache, output, target, profile.model_copy(update={"skills": [source_value]}), blind=False)
     gates = json.loads((output / "quality_gates.json").read_text())
     assert gates["privacy"]["passed"]
     assert not gates["privacy"]["leaked_target_lines"]
-    control = authored_privacy_gate("<html><body><p>English</p></body></html>", output / "candidate_profile.pdf", target, labels={"LANGUAGES"}, source_texts={"Programming Languages"})
-    assert not control["passed"] and control["leaked_target_lines"] == ["English"]
+    control = authored_privacy_gate(f"<html><body><p>{target_value}</p></body></html>", output / "candidate_profile.pdf", target, labels={heading}, source_texts={source_value})
+    assert not control["passed"] and control["leaked_target_lines"] == [target_value]
+
+
+@pytest.mark.parametrize("group_count", [2, 24])
+def test_skill_columns_and_long_sections_reflow_in_actual_pdf(tmp_path: Path, group_count: int) -> None:
+    import pdfplumber
+    from app.pipeline_e.product import material_geometry
+    from app.pipeline_e.resume_layout.candidates import candidate_from_profile
+    from app.pipeline_e.resume_layout.render import _export_pinned_html_to_pdf
+    from app.pipeline_e.shared import PresentationLabel
+    from app.pipeline_e.template import (
+        AuthoredSlot, AuthoredTemplateCandidate, authored_network_disabled_environment,
+        authored_pdf_presence_gate, build_authored_document, fill_authored_template,
+    )
+
+    labels = ["Programming Languages", "Deep Learning Frameworks"]
+    if group_count > 2:
+        labels += [f"Group {index} with a longer heading that exceeds the available column width" for index in range(2, group_count)]
+    candidate = candidate_from_profile(CandidateProfile(
+        full_name="Synthetic Candidate",
+        skill_groups=[{"label": label, "skills": [f"Tool {index}", f"Library {index}"]} for index, label in enumerate(labels)],
+    ))
+    template = AuthoredTemplateCandidate(
+        template_id="skill-pagination-regression",
+        html=(
+            '<header>{{candidate:name}}</header><div class="space"></div>'
+            '<section><h2>{{label:label.skills}}</h2><div class="body">'
+            '{{each:skills}}<div class="row"><span class="head">{{item_head}}</span>'
+            '<span class="values">{{item_text}}</span></div>{{/each}}</div></section>'
+        ),
+        css=(
+            'body{font-family:Lato;font-size:10pt;line-height:1.5}.space{height:235pt}'
+            'section{display:grid;grid-template-columns:20% 5% 75%}'
+            'h2{grid-column:1;font-size:10pt}.body{grid-column:3;padding-top:16pt}'
+            '.row{display:flex;align-items:baseline;margin-bottom:5pt}'
+            '.head{flex:0 0 26%}.values{flex:1 1 auto;min-width:0;padding-left:14pt}'
+        ),
+        slots=[AuthoredSlot(category="candidate_name"), AuthoredSlot(category="skills", repeating=True)],
+    )
+    fill = fill_authored_template(template, candidate, [PresentationLabel(
+        label_id="label.skills", text="SKILLS", kind="section_heading",
+        status="evidence_qualified", evidence_ids=["synthetic.skills"],
+    )])
+    html, pdf = tmp_path / "skills.html", tmp_path / "skills.pdf"
+    html.write_text(build_authored_document(template, fill, (400, 360), page_margins_pt=(36, 36, 36, 36)))
+    _export_pinned_html_to_pdf(html, pdf, authored_network_disabled_environment())
+    assert authored_pdf_presence_gate(fill, candidate, pdf)["passed"]
+    assert material_geometry(pdf, {"SKILLS"})["passed"]
+    with pdfplumber.open(pdf) as document:
+        assert 2 <= len(document.pages) <= (2 if group_count == 2 else 9)
+        assert all((page.extract_text() or "").strip() for page in document.pages)
+        sizes = [char["size"] for page in document.pages for char in page.chars if char["text"].strip()]
+        assert min(sizes) == pytest.approx(10, abs=.05)
+        assert max(sizes) == pytest.approx(10, abs=.05)
+        skills_page = next(page for page in document.pages if "SKILLS" in (page.extract_text() or ""))
+        assert "Tool 0" in skills_page.extract_text()
+        words = skills_page.extract_words()
+        for heading in labels[:2]:
+            tops = [next(word["top"] for word in words if word["text"] == token) for token in heading.split()]
+            assert max(tops) - min(tops) < .5

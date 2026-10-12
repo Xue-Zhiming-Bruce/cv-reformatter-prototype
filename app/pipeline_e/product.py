@@ -53,7 +53,7 @@ class FontRole(BaseModel):
 class RendererArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal["e-renderer-artifact/1"] = "e-renderer-artifact/1"
-    renderer_version: Literal["pipeline-e-html/1", "pipeline-e-html/2"] = "pipeline-e-html/2"
+    renderer_version: Literal["pipeline-e-html/1", "pipeline-e-html/2", "pipeline-e-html/3"] = "pipeline-e-html/3"
     layout_spec_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     font_manifest: dict[str, str]
@@ -274,7 +274,7 @@ def render_preview(directory: Path, output: Path, target: Path, profile: Candida
                     parser.require_empty_parent(selector.group(1), selector.group(2), {label.text for label in artifact.labels})
                 css = css.replace(match.group(0), "")
 
-    if re.search(r'(?:overflow(?:-[xy])?\s*:\s*(?:hidden|clip)|visibility\s*:\s*hidden|display\s*:\s*none|opacity\s*:\s*0(?:\D|$)|(?:clip|clip-path|text-overflow)\s*:)', css, re.I) or re.search(r'data-(?:candidate-leaf|field)\s*=', template.html, re.I):
+    if re.search(r'(?:overflow(?:-[xy])?\s*:\s*(?:hidden|clip)|visibility\s*:\s*hidden|display\s*:\s*none|opacity\s*:\s*0(?:\D|$)|(?:clip|clip-path|text-overflow)\s*:)', css, re.I) or re.search(r'data-(?:candidate-leaf|candidate-kind|field)\s*=', template.html, re.I):
         raise ValueError("Template uses concealment or reserved candidate identities")
     if "\\" in css or re.search(r"(?:opacity|filter|clip|mask|z-index)\s*:|color\s*:\s*transparent", css, re.I):
         raise ValueError("Template uses unsupported concealed/layered text styling")
@@ -307,7 +307,7 @@ def render_preview(directory: Path, output: Path, target: Path, profile: Candida
     if not all(gate["passed"] for gate in gates.values()):
         failed = [key for key, gate in gates.items() if not gate["passed"]]
         raise ValueError("PDF failed required checks: " + ", ".join(failed))
-    return {"layout_template_version": spec.template_version, "layout_spec_sha256": spec_checksum(spec), "renderer_version": "pipeline-e-html/2", "chrome_version": environment["version"], "font_manifest": artifact.font_manifest, "quality_gates_passed": True, "renderer_artifact_sha256": _sha256_file(directory / "renderer_artifact.json"), "header_name_binding": name_binding}
+    return {"layout_template_version": spec.template_version, "layout_spec_sha256": spec_checksum(spec), "renderer_version": "pipeline-e-html/3", "chrome_version": environment["version"], "font_manifest": artifact.font_manifest, "quality_gates_passed": True, "renderer_artifact_sha256": _sha256_file(directory / "renderer_artifact.json"), "header_name_binding": name_binding}
 
 
 def construct_template(target: Path, directory: Path, profile: CandidateProfile, *, blind: bool, live: bool) -> None:

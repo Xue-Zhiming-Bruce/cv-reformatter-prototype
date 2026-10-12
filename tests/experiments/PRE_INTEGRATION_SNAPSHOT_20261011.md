@@ -543,3 +543,75 @@ A source coverage passes these reruns, while actual I PDF generation/font
 repair, broader source reliability, historical parallel-failure diagnosis and
 owner/default-replacement decisions remain open. No DOCX export or deployment
 work occurred in this milestone.
+
+## Stage 3 I pagination and template reuse — October 13, 2026 (Singapore)
+
+Work continues in the preserved `10b4` integration checkout, on
+`codex/integrate-e-frontend-20261011`. The handed-off HEAD and three uncommitted
+Chrome-isolation files matched inspection. Both exporters now use a distinct
+temporary browser profile per export; timeout, nonzero-exit and empty-PDF
+rejection remain intact, including cleanup after failure.
+
+The shared authored fill marks skill-group leaves with a shell-owned kind.
+Document assembly keeps their headings at natural width and uses block text
+flow for the enclosing rows, allowing long values and oversized headings to
+wrap without interleaving. Semantic sections avoid page breaks when they fit;
+oversized sections remain splittable. No candidate values, target CSS artifact,
+font sizes or required content gates were edited. Current output metadata is
+`pipeline-e-html/3`; genuine `/1` and `/2` artifacts still validate and can be
+regenerated, accepted and invalidated through the existing lifecycle.
+
+Current run:
+`tests/local_datasets/resume_matrix/runs/matrix_20261012T154306Z_i_shared_flow/`.
+Its canonical API/report helpers reuse the immutable real A/F extraction
+artifacts and the real I renderer selected by construction
+`construction_474ab09321e04bd8bacf78a65400c6eb`, version
+`render-target_format_reference-laneB-v2`. Template/spec/target/font checksums
+and the selected candidate were verified before reuse. Original source files
+and profiles were copied without modification, and no fresh extraction or
+Adobe request was made. The original Desktop source still matches all 47
+preserved inventory entries.
+
+F→I now has a two-page actual API outcome with all eight output gates passing,
+10.96pt body text, continuous Programming Languages / Deep Learning Frameworks
+headings and no orphan SKILLS heading. Both final pages were rasterized with
+the canonical comparator and Poppler and inspected. Contact remains a flat
+joined string, the source full name remains unsplit, heading weight/tracking,
+summary leading and continuation frames still differ from the target.
+`Avenir Next` substitutes for target `Avenir Next Cyr` and requires visual
+review. These are owner-review observations, not visual acceptance.
+
+The same I template cannot render A's two languages: its authored HTML has no
+languages collection. API leaf identity correctly blocks delivery; no fields
+were removed and no fallback was used. One canonical live construction with
+A, cached Adobe evidence and the original structure draft produced two genuine
+render candidates, but ended `budget_exhausted` / `repair_round_budget` with
+no best-valid version. It used two Builder calls and one Reviewer call (30,702
+input / 20,782 output tokens), with one recorded connection retry. The repaired
+candidate passed accounting/font gates but privacy flagged target word `one`
+inside source-supported `components`. The shared privacy check now uses word
+boundaries; a real-PDF positive/negative control allows Components and still
+rejects a copied standalone one. Failed construction states are not rewritten.
+A subsequent canonical construction is pending; A→I is not yet a deliverable.
+
+Validation evidence under `tests/test_results/pytest/`:
+
+- `20261012T153918Z_skill_pagination_before.txt`: two actual-PDF failures on
+  the original implementation, reproducing skill-label loss.
+- `20261012T155248Z_stage3_serial.txt`: 266 passed, 3 skipped, 6 deselected;
+  includes real Chrome editing/acceptance/blinding, old renderer cache reuse,
+  long-section pagination, exporter failure/cleanup and concurrent export tests.
+- Privacy boundary positive/negative controls: two passed; original HEAD's
+  substring implementation fails the Components case for the intended reason.
+- Frontend build and lint passed. No frontend source changes or new browser
+  walkthrough were needed for this backend-only repair.
+
+Overlapping eight-worker and separate Chrome cohorts were an unreliable test
+setup: 22 and five failures respectively included Chrome exporter failures and
+macOS display-link warnings. The serial cohort passed. Their logs remain local;
+do not claim this establishes production parallel-render reliability or a root
+cause for the earlier October 12 failures. Source-line audit, missing collection,
+privacy, fonts, geometry and explicit final acceptance remain blocking.
+No source/provider caches, resumes, output PDFs, credentials or generated test
+logs are committed. Stage 4 cleanup, DOCX export, default replacement and
+deployment have not started.

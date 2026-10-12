@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 class HtmlToPdfExportError(RuntimeError):
@@ -62,12 +63,14 @@ def export_html_to_pdf(html_path: str | Path, output_path: str | Path) -> Path:
         html_path.resolve().as_uri(),
     ]
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        with TemporaryDirectory(prefix="cv-chrome-") as browser_profile:
+            command.insert(-1, f"--user-data-dir={browser_profile}")
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
     except subprocess.TimeoutExpired as exc:
         raise HtmlToPdfExportError(
             f"Chrome print-to-pdf timed out after {timeout} seconds."

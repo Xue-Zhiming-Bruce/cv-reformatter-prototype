@@ -18,6 +18,7 @@ import re
 import subprocess
 from app.generation.chrome_html_to_pdf import HtmlToPdfExportError, _find_chrome
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 
@@ -68,7 +69,9 @@ def _export_pinned_html_to_pdf(html_path: Path, output_path: Path, environment: 
     ]
     process_environment = {**os.environ, "LANG": "en_US.UTF-8", "TZ": environment["timezone"]}
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=120, env=process_environment)
+        with TemporaryDirectory(prefix="cv-chrome-") as browser_profile:
+            command.insert(-1, f"--user-data-dir={browser_profile}")
+            result = subprocess.run(command, capture_output=True, text=True, timeout=120, env=process_environment)
     except subprocess.TimeoutExpired as error:
         raise HtmlToPdfExportError("Pinned Chrome PDF render timed out after 120 seconds") from error
     if result.returncode or not output_path.exists() or output_path.stat().st_size == 0:
