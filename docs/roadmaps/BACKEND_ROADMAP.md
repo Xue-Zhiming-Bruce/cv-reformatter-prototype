@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 11, 2026 (ADR 0007 local integration approved)
+Last reviewed: October 13, 2026 (local Stage 3 checked F output and blocked A outcome)
 
 This is the active engineering roadmap after completion of the MVP and PDF
 demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
@@ -105,6 +105,22 @@ offline tests pass. A fresh old-prompt control also passed, so this is not proof
 of deterministic model reliability. The source gate remains blocking. I
 construction was deliberately disabled in these source-only evaluations;
 A→I PDF completion, I's font/provider problems and owner acceptance remain open.
+
+October 13 local Stage 3 follow-up: shared skill text flow, section pagination
+and isolated Chrome profiles produce a checked two-page F→I outcome with all
+eight gates passing and unchanged 10.96pt body text. Current rendering is
+`pipeline-e-html/3`; historical `/1` and `/2` artifacts remain readable. Privacy
+checks now distinguish the target word `one` from source `components`, while
+still rejecting a copied standalone target word. The final serial cohort is
+268 passed / 3 skipped; frontend build/lint passed. The original I renderer
+cannot bind A's languages. A genuine reconstruction using cached evidence
+closes that content gap, but its actual API PDF still has an orphan SKILLS
+heading and remains blocked at geometry. Unsuccessful pagination trials were
+withdrawn rather than promoted. Stage 3 is therefore incomplete; owner visual
+acceptance, parallel-render reliability and default replacement remain open.
+Stage 4 cleanup has not started. Evidence and the next bounded repair target
+are in the integration record and
+`matrix_20261012T154306Z_i_shared_flow/RESULTS_INDEX.md`.
 
 ## Product-Standard Definition
 

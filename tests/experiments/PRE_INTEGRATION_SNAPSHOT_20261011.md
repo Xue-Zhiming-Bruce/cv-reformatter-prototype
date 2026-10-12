@@ -592,7 +592,7 @@ candidate passed accounting/font gates but privacy flagged target word `one`
 inside source-supported `components`. The shared privacy check now uses word
 boundaries; a real-PDF positive/negative control allows Components and still
 rejects a copied standalone one. Failed construction states are not rewritten.
-A subsequent canonical construction is pending; A→I is not yet a deliverable.
+A→I is not yet a deliverable. The continuation below records the final state.
 
 Validation evidence under `tests/test_results/pytest/`:
 
@@ -615,3 +615,83 @@ privacy, fonts, geometry and explicit final acceptance remain blocking.
 No source/provider caches, resumes, output PDFs, credentials or generated test
 logs are committed. Stage 4 cleanup, DOCX export, default replacement and
 deployment have not started.
+
+### Final Stage 3 state — October 13, 2026 (Singapore)
+
+The same current run now records F→I as completed and A→I as failed, with
+content preservation 1/2. F uses the original genuinely selected I renderer;
+the new A-compatible renderer is not silently substituted into its successful
+outcome. Both source artifacts, raw text, profiles, coverage/evidence and the
+original target/construction records remain unchanged. No final acceptance
+has been submitted. The canonical manifest, CSV, review links, output hashes
+and source preservation are revalidated in the final local validation log.
+Log: `20261012T171317Z_stage3_matrix_validation.txt` under the canonical pytest
+results folder; unique rows/links/hashes, immutable sources/revisions, genuine
+construction identity, absent final acceptance and Desktop 47/47 checks pass.
+
+Three additional canonical I constructions reused the original Adobe evidence
+and structure draft, without extraction or Adobe calls:
+
+| Construction suffix | Actual terminal state | Source stable | Completed model usage requests | Input / output tokens |
+| --- | --- | --- | --- | --- |
+| `20261012T154821Z_a_collections` | budget_exhausted | yes | 3 | 30,702 / 20,782 |
+| `20261012T160051Z_a_privacy_boundary` | ready_for_owner_review, not admissible | no | 7 | 49,236 / 16,888 |
+| `20261012T160725Z_stable_source` | ready_for_owner_review | yes | 5 | 39,684 / 14,662 |
+
+The middle run's source flag is false because the agent committed registered
+runtime source during construction. Its successful gates do not waive that
+flag; admission was refused and a clean-source run was performed. All three
+states and best-version records remain genuine and unedited. Completed SDK
+usage counts total 15; one connection retry is separately traced. Unobserved
+SDK transport retries are not represented as exact network-call counts.
+
+The stable construction genuinely selected
+`render-target_format_reference-laneB-v2`. Its admitted authored renderer
+fills A's language and additional-section values. A fresh product API job
+passes content, PDF presence, privacy, blank-page, tail-page, readability and
+font-role gates, but fails geometry: SKILLS is the last line on page 1 and
+appears again on page 2; the raster pages also show its clipped fragments at
+the printable-frame boundary. No outside-page text or overlapping words were
+reported. Thus no A outcome PDF is linked as completed and no placeholder
+PDF is fabricated. The actual blocked API files are copied unchanged into
+the run's `debug/blocked_A__to__I/`, clearly diagnostic only.
+
+CSS keep/align/flow variants and a measured-DOM pagination prototype did not
+resolve that actual A failure consistently. One CSS variant produced a nearly
+empty first page despite passing the existing eight gates; visual inspection
+rejected it. None was promoted into product code. The full withdrawn diff
+is preserved in the ignored run's `debug/withdrawn_pagination.patch`, alongside
+diagnostic files. Runtime, API contract and tests were restored exactly to
+the validated `7a71c8c` source (`pipeline-e-html/3`). This is withdrawal of
+unaccepted new code, not Stage 4 deletion or a rollback of the handed-off
+Chrome isolation changes.
+
+Final backend command:
+`PYTHONDONTWRITEBYTECODE=1 <existing Python 3.12> -m pytest -o addopts= -q
+tests/integration/test_preview_workflow.py tests/unit/test_chrome_html_to_pdf.py
+tests/experiments/test_pipeline_comparison.py tests/experiments/test_gates.py
+tests/integration/test_generate_approval.py tests/integration/test_api_process.py
+tests/unit/test_pdf_reader.py -m 'not local_dataset and not live_provider'`.
+It passed **268 tests, with 3 skipped and 6 deselected**, plus four existing
+fixture serializer warnings. Log:
+`20261012T160052Z_stage3_privacy_final_serial.txt`.
+The original privacy matcher negative control is
+`20261012T155944Z_privacy_before_fix.txt` (one intended failure, one pass);
+the fixed actual-PDF controls are
+`20261012T155821Z_privacy_word_boundary.txt` (two passes).
+Fresh frontend `npm run build` / `npm run lint` passed, recorded in
+`20261012T155249Z_stage3_frontend_final.txt`. No additional browser walkthrough
+or frontend source edit was performed. Restoring the exact already-tested
+runtime did not require repeating the broad cohort.
+
+**Stage 3 is incomplete.** The recruiter lifecycle, content/privacy failure
+blocking, old-output identity rejection, DOCX upload and disabled DOCX export
+are verified; F→B and F→I have directly inspectable checked previews. A→I
+still needs a bounded shared-rendering repair that keeps the sidebar title
+and its first content together in actual Chrome, preserving long sections,
+font sizes, candidate facts and every current gate. Its failed PDF is evidence
+for that repair, not owner acceptance. Concurrent-render reliability, source
+model reliability and owner visual acceptance remain limitations. Do not
+begin Stage 4 until the required Stage 3 outcomes and owner review are closed;
+then start with a read-only caller inventory of legacy generation/approval
+entry points and verify the preserved explicit rollback before deletion.
