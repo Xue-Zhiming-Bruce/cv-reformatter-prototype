@@ -817,3 +817,41 @@ The cache creation is now idempotent. The API rebuild test exercises both
 successful publication and failed-construction preservation.
 `20261012T184301Z_cache_publication_final.txt`: **34 passed** across the complete
 actual-PDF preview workflow file.
+
+
+### Final checked A/F outcomes on the same admitted template
+
+After the cache publication correction, actual API jobs complete for both A→I
+and F→I in `matrix_20261012T175536Z_frozen_page_frame`. Each has two pages,
+10.96pt median body text, all eight gates passing, and no final acceptance.
+The renderer artifact SHA-256 is identical for both:
+`e0c0459af19960bbed09ff1263b5f863dcc601a7a6de3f62153fb7e65072c3de`.
+A's 67 and F's 62 non-empty candidate leaves are each consumed once. Source
+extraction drafts, original text, evidence, segmentation and saved revision
+files match the prior run byte-for-byte. The authored HTML/CSS matches the
+unchanged genuine live-selected candidate; the explicit offline replay passes
+all four probes and records stable critical runtime source. Actual product
+admission checks fonts even though offline construction's font diagnostic
+explicitly makes no visual claim.
+
+- Final matrix/index/CSV/links, output identity, source/revision preservation,
+  identical template, exact selected candidate, four probes and absent
+  acceptance: `20261012T185702Z_frozen_frame_matrix_validation.txt`.
+- Cache regression against the previous function reproduces the actual
+  `File exists` failed job: `20261012T184708Z_cache_publication_before.txt`.
+- Final caller workflow after its one-line correction: 34 passed; the broader
+  `/5` cohort before that correction was 280 passed / 3 skipped / 6 deselected.
+- The initial six model requests are the only new paid construction activity;
+  qualification and final API retries have zero additional provider calls.
+- All four generated pages and both target pages were visually inspected. No
+  clipped/orphan SKILLS heading, joined skill words, overlap or blank page was
+  observed. Qualified previews remain pending owner quality acceptance.
+
+Visual differences remain: flat contacts versus the target's label/value
+columns; full atomic name versus split-name typography; heading color/tracking;
+company/title emphasis and entry bullets; candidate-only grouping; substituted
+Avenir Next fonts; first-page frame reused on continuations. Target skill-rating
+dots are not copied without candidate rating values. The current run's
+`MANUAL_OBSERVATIONS.md` records these limits. No fidelity winner or client-ready
+state is declared. Full browser interaction and concurrency reliability were
+not rerun in this scope. Stage 4 and default replacement remain unstarted/open.

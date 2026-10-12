@@ -122,6 +122,25 @@ Stage 4 cleanup has not started. Evidence and the next bounded repair target
 are in the integration record and
 `matrix_20261012T154306Z_i_shared_flow/RESULTS_INDEX.md`.
 
+
+October 13 frame-contract follow-up: construction, probes, product admission and
+API now use one frozen measured page frame. Admission rejects failed probes or
+actual product PDF gates; cache selection verifies the current profile, and a
+successful rebuild can update an existing cache. Shared skill spacing and
+complete-value PDF drawing-order verification close the observed output-text
+failures while retaining missing-word, geometry, font and privacy blocking.
+Current runtime is `pipeline-e-html/5`, with `/1`–`/4` readable. The affected
+serial cohort passes 280 tests with three skips; the final API caller workflow
+passes 34 tests after the cache publication correction. A→I and F→I both
+produce checked two-page outcomes from the same genuine selected template,
+qualified through an explicit provider-free canonical replay, with 10.96pt
+body text and all eight API gates passing. All four content probes pass and
+sources/revisions are unchanged. Evidence is in
+`matrix_20261012T175536Z_frozen_page_frame/RESULTS_INDEX.md` and the integration
+record. The previous A pagination/content/cache blockers are closed; Stage 3
+still awaits owner visual acceptance and unresolved concurrency assurance.
+No final acceptance, default replacement or Stage 4 cleanup is recorded.
+
 ## Product-Standard Definition
 
 “Product standard” means that the backend is measurably reliable across the
