@@ -806,3 +806,14 @@ same affected-module command above. Log:
 `20261012T182926Z_frame_and_columns_final_serial.txt`.
 The runtime is committed before replay/qualification so its source identity
 remains stable for the whole canonical run.
+
+
+The explicit cached-template replay passed **short, medium, long and
+missing-field probes**, plus all eight actual product admission checks. API
+publication then exposed an integration omission: rebuilding into an existing
+shared-cache directory used `mkdir` without `exist_ok=True`. The real failed
+job and qualified files remain preserved; no failed job is reported complete.
+The cache creation is now idempotent. The API rebuild test exercises both
+successful publication and failed-construction preservation.
+`20261012T184301Z_cache_publication_final.txt`: **34 passed** across the complete
+actual-PDF preview workflow file.

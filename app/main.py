@@ -1912,7 +1912,7 @@ def _generate_e_preview(artifact_id: str, directory: Path, target_format: Target
                 "analysis_warnings": [gap.reason for gap in spec.capability_gaps],
             }).model_dump(mode="json"))
             if built or not cache.exists():
-                cache.mkdir(parents=True)
+                cache.mkdir(parents=True, exist_ok=True)
                 for filename in ("layout_template_spec.json", "renderer_artifact.json"):
                     shutil.copy2(template_dir / filename, cache / filename)
     except HTTPException:

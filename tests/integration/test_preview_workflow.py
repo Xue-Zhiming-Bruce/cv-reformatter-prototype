@@ -346,9 +346,11 @@ def test_admission_retains_unqualified_heading_as_gap_without_sample_facts(workf
         assert [[(word["text"], round(word["x0"], 2), round(word["top"], 2)) for word in page.extract_words()] for page in before.pages] == [[(word["text"], round(word["x0"], 2), round(word["top"], 2)) for word in page.extract_words()] for page in after.pages]
 
 
-def test_incompatible_cache_rebuild_failure_preserves_the_existing_template(workflow, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("succeeds", [False, True])
+def test_incompatible_cache_rebuild_preserves_failure_and_publishes_success(workflow, monkeypatch: pytest.MonkeyPatch, succeeds: bool) -> None:
     client, directory, profile, _, cache = workflow
     renderer = RendererArtifact.model_validate_json((cache / "renderer_artifact.json").read_text())
+    complete_template = renderer.template.model_copy(deep=True)
     renderer.template.html = renderer.template.html.replace('{{each:languages}}<p class="rsv-line">{{item}}</p>{{/each}}', '')
     (cache / "renderer_artifact.json").write_text(renderer.model_dump_json())
     original = (cache / "renderer_artifact.json").read_bytes()
@@ -357,16 +359,26 @@ def test_incompatible_cache_rebuild_failure_preserves_the_existing_template(work
     monkeypatch.setenv("PIPELINE_E_LIVE_ENABLED", "1")
     attempts = []
 
-    def failed_construction(target, destination, candidate, *, blind, live):
+    def construction(target, destination, candidate, *, blind, live):
         attempts.append(candidate.model_dump(exclude={"missing_fields"}))
-        raise ValueError("Rebuild deliberately failed")
+        if not succeeds:
+            raise ValueError("Rebuild deliberately failed")
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "layout_template_spec.json").write_bytes((cache / "layout_template_spec.json").read_bytes())
+        rebuilt = renderer.model_copy(update={"template": complete_template.model_copy(update={"template_id": "rebuilt-compatible"})})
+        (destination / "renderer_artifact.json").write_text(rebuilt.model_dump_json())
 
-    monkeypatch.setattr(main.pipeline_e, "construct_template", failed_construction)
-    job = preview(client, saved.json()["profile_revision_id"], succeeds=False)
+    monkeypatch.setattr(main.pipeline_e, "construct_template", construction)
+    job = preview(client, saved.json()["profile_revision_id"], succeeds=succeeds)
     assert attempts == [edited.model_dump(exclude={"missing_fields"})]
-    assert "Rebuild deliberately failed" in job["error"]["message"]
-    assert (cache / "renderer_artifact.json").read_bytes() == original
-    assert not (directory / "candidate_profile.pdf").exists()
+    if succeeds:
+        assert (cache / "renderer_artifact.json").read_bytes() != original
+        assert "English" in read_pdf_text(directory / "candidate_profile.pdf")
+        assert not job["result"]["client_ready"]
+    else:
+        assert "Rebuild deliberately failed" in job["error"]["message"]
+        assert (cache / "renderer_artifact.json").read_bytes() == original
+        assert not (directory / "candidate_profile.pdf").exists()
     assert not (directory / "final_acceptance.json").exists()
 
 
