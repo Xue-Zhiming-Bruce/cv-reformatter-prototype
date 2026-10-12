@@ -855,3 +855,10 @@ dots are not copied without candidate rating values. The current run's
 `MANUAL_OBSERVATIONS.md` records these limits. No fidelity winner or client-ready
 state is declared. Full browser interaction and concurrency reliability were
 not rerun in this scope. Stage 4 and default replacement remain unstarted/open.
+
+Final Desktop preservation check also passes all 47 inventory entries: 31
+existing source files retain their recorded SHA-256 values and the 16 recorded
+historical deletions remain absent. Log:
+`20261012T232828Z_desktop_preservation_final.txt`. The check reads the original
+checkout and writes its report only in the integration checkout; it makes no
+source or staging changes in the original checkout.
