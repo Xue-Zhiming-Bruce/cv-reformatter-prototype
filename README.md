@@ -130,6 +130,12 @@ frontend to the home screen even though the backend preserves the revision
 and job. Review recovery is a known gap; do not claim the browser checklist
 fully passes until that behavior is resolved or explicitly accepted.
 
+Original PDF display also depends on the browser's native PDF viewer. The
+Codex in-app browser showed a black original-preview pane during this handoff.
+The identical PDF displays directly in standard Chrome, but that does not
+establish successful embedding in the review page. Original-preview visibility
+remains a separate browser acceptance gap; an HTTP 200 is not visual proof.
+
 The offline extraction demo remains available:
 
 ```bash

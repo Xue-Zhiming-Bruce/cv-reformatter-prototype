@@ -310,6 +310,14 @@ edits require explicit owner authorization under `AGENTS.md`. Browser handoff
 remains incomplete until recovery is fixed or the limitation is accepted.
 Retrying never grants automatic final-file acceptance.
 
+Original-preview visibility must also be checked in the browser. For the F
+handoff artifact, the API serves the byte-identical uploaded PDF with HTTP 200,
+`application/pdf` and inline disposition. It displays directly in standard
+Chrome, while the current native-PDF `<object>` shows a black pane in the Codex
+in-app browser. This is an unresolved display/compatibility gap, not a missing
+source document. File identity or availability checks cannot accept this UI
+behavior; standard Chrome review-page embedding has not yet been verified.
+
 ## Accept Final Output
 
 ```text

@@ -1029,7 +1029,7 @@ extractions, not relabeled cached responses or proof of model determinism.
 
 | Browser/API behavior | Actual result |
 | --- | --- |
-| A upload, I, checked preview, explicit initial confirmation/download | Pass; eight gates, original comparison visible; downloaded bytes match PDF SHA. |
+| A upload, I, checked preview, explicit initial confirmation/download | API/output checks pass; eight gates and downloaded bytes match PDF SHA. Original PDF route was available, but the in-app embedded pane was black; original visual comparison is not passed. |
 | A name-format edit in rendered HTML, save/new revision and generation | Pass; export disabled immediately; new persisted revision and PDF identities. |
 | Refresh while A preview is queued/generated | **UI recovery fails**: homepage replaces review. API saves the edited revision and succeeded job. Old attachment is 409; old preview is 200; current unconfirmed attachment stays 409. |
 | F upload, I, name-format edit, new revision/PDF, confirmation/download | Pass; eight gates; browser download matches SHA; old attachment 409 and old immutable preview 200. |
@@ -1102,3 +1102,32 @@ Desktop inventory remains 47/47; the accepted matrix is unchanged. No remote
 push/PR, external messaging, default replacement, frontend edit, confidential
 document processing or deployment accompanies this handoff. Local servers and
 the browser remain available for the pending recovery decision.
+
+### Owner-reported black original-preview pane: evidence correction
+
+The owner correctly reported that “Original resume preview” is absent in the
+displayed screenshot. The earlier record confused file availability with actual
+visual display; the table above, README, API contract and roadmap now identify
+this as another unresolved browser acceptance gap.
+
+Independent F source check: `original_resume_preview.pdf` exists, is 81,466
+bytes, has one page with extractable text and is byte-identical to the uploaded
+authorized `resume_F.pdf`. The actual Vite-proxied URL returns HTTP 200,
+`Content-Type: application/pdf`, inline disposition and those exact bytes.
+Actual standard Chrome directly displays this URL; the screenshot
+`original_pdf_chrome_visible.jpg` is in the same ignored review directory.
+No source reconstruction, replacement data or provider call is involved.
+
+ReviewScreen currently uses `<object type="application/pdf">` and native PDF
+viewer fragments for the original. The in-app browser screenshot is black;
+direct standard Chrome display alone does not verify review-page embedding.
+That component check was not completed during the native file-selection flow;
+user browser activity resumed and native control was not forced. The temporary
+application test tab was closed; the original PDF tab remains as the requested
+visible result. No extension permission was changed and no further extraction
+or model call occurred.
+
+No frontend fix or cross-browser preview acceptance is claimed. The accepted
+matrix, uploaded source, revision facts and source-evidence bytes are untouched.
+Fixing refresh recovery and making original preview reliably visible remain
+separate browser tasks; content/geometry output gates do not validate either.

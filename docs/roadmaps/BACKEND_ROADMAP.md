@@ -186,6 +186,14 @@ browser handoff, default replacement or production readiness complete. Evidence
 is in the integration record and
 `data/generated_outputs/e_integration_review_20261013/`.
 
+Owner correction to browser evidence: the original-resume pane in the handoff
+screenshot is black. The original F PDF is present, byte-identical to its
+uploaded source and directly visible in standard Chrome, but Codex in-app
+embedding fails to display it. Original-preview visibility is another open
+browser handoff gap. The earlier “original comparison visible” wording is
+corrected; HTTP availability is not visual acceptance. No renderer or frontend
+change is claimed from this diagnostic check.
+
 ## Product-Standard Definition
 
 “Product standard” means that the backend is measurably reliable across the
