@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 13, 2026 (local Stage 3 checked F output and blocked A outcome)
+Last reviewed: October 13, 2026 (local A/F owner review and bounded Stage 3 closure)
 
 This is the active engineering roadmap after completion of the MVP and PDF
 demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
@@ -140,6 +140,23 @@ sources/revisions are unchanged. Evidence is in
 record. The previous A pagination/content/cache blockers are closed; Stage 3
 still awaits owner visual acceptance and unresolved concurrency assurance.
 No final acceptance, default replacement or Stage 4 cleanup is recorded.
+
+October 13 owner acceptance and bounded closure: the owner reviewed the current
+A→I / F→I outputs and said “我觉得可以了”, then authorized continuation into
+the proposed cleanup sequence. This accepts those two outcomes and their
+reported visual differences; it does not approve every target, change the
+accepted default, or write final-file acceptance records for candidate artifacts.
+Current eight-worker tests pass 70 cases, including actual parallel Chrome
+exports, preview lifecycle and retained baseline approval paths. Two additional
+API tests pass: concurrent requests on a shared target cache retain separate
+profiles/output identities despite one failed job; explicit measured rollback
+retains existing upload strategy and requires proof approval after re-analysis.
+The bounded local Stage 3 work is complete. Historical parallel failures still
+have no confirmed root cause; production multi-process reliability and broad
+live corpus parity remain separate requirements. Stage 4 starts with a recorded
+caller inventory and a small batch of unused pre-HTML remnants; baseline/API
+compatibility and old-output readers must remain. Evidence and exact scope are
+in the integration record.
 
 ## Product-Standard Definition
 

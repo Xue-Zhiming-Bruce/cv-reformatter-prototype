@@ -272,6 +272,109 @@ def test_parallel_chrome_exports_preserve_each_document(tmp_path: Path) -> None:
     assert texts == [f"Parallel document {index}" for index in range(8)]
 
 
+def test_concurrent_api_jobs_keep_profiles_separate_on_shared_cache(workflow) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    client, directory, profile, _, cache = workflow
+    cached = {name: (cache / name).read_bytes() for name in ("layout_template_spec.json", "renderer_artifact.json")}
+    cases = []
+    for index in range(4):
+        artifact_id = f"artifact_parallel_{index}"
+        folder = directory.parent / artifact_id
+        folder.mkdir()
+        (folder / "candidate_profile.json").write_bytes((directory / "candidate_profile.json").read_bytes())
+        (folder / "raw_extracted_text.txt").write_bytes((directory / "raw_extracted_text.txt").read_bytes())
+        edited = profile.model_copy(update={"full_name": f"Parallel Candidate {index}", "professional_summary": f"Reviewed isolated document {index}."})
+        saved = client.post(f"/api/artifacts/{artifact_id}/profiles/revisions", json={"profile": edited.model_dump(mode="json")})
+        assert saved.status_code == 200, saved.text
+        upload = client.post("/api/target-format", data={"artifact_id": artifact_id}, files={"file": ("target.pdf", (directory / "target_format_reference.pdf").read_bytes(), "application/pdf")})
+        assert upload.status_code == 200, upload.text
+        if index == 1:
+            local = folder / "pipeline_e_template" / cache.name
+            local.mkdir(parents=True)
+            (local / "layout_template_spec.json").write_bytes(cached["layout_template_spec.json"])
+            renderer = RendererArtifact.model_validate_json(cached["renderer_artifact.json"])
+            renderer.font_manifest[next(iter(renderer.font_manifest))] = "0" * 64
+            (local / "renderer_artifact.json").write_text(renderer.model_dump_json())
+        cases.append((artifact_id, folder, saved.json()["profile_revision_id"], index))
+
+    def submit(case):
+        artifact_id, _, revision, _ = case
+        response = client.post(f"/api/artifacts/{artifact_id}/preview-jobs", json={"profile_revision_id": revision})
+        assert response.status_code == 202, response.text
+        return response.json()["job_id"]
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        job_ids = list(executor.map(submit, cases))
+    assert len(set(job_ids)) == 4
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        jobs = [client.get(f"/api/artifacts/{case[0]}/preview-jobs/{job_id}").json() for case, job_id in zip(cases, job_ids)]
+        if all(job["state"] not in {"queued", "running"} for job in jobs):
+            break
+        time.sleep(.05)
+    for (artifact_id, folder, revision, index), job in zip(cases, jobs):
+        assert job["artifact_id"] == artifact_id and job["profile_revision_id"] == revision
+        assert (folder / "candidate_profile.json").read_bytes() == (directory / "candidate_profile.json").read_bytes()
+        assert (folder / "raw_extracted_text.txt").read_bytes() == (directory / "raw_extracted_text.txt").read_bytes()
+        if index == 1:
+            assert job["state"] == "failed", job
+            assert job["error"]["error_code"] == "pipeline_e_preview_blocked"
+            assert not (folder / "checked_output.json").exists()
+            continue
+        assert job["state"] == "succeeded", job
+        result = job["result"]
+        assert result["artifact_id"] == artifact_id and result["profile_revision_id"] == revision
+        assert result["client_ready"] is False
+        assert client.get(result["pdf_download_url"]).status_code == 409
+        pdf = folder / "checked.pdf"
+        pdf.write_bytes(client.get(result["pdf_preview_url"]).content)
+        text = read_pdf_text(pdf)
+        assert f"Parallel Candidate {index}" in text and f"Reviewed isolated document {index}." in text
+        assert all(f"Parallel Candidate {other}" not in text for other in range(4) if other != index)
+        assert _sha256_file(pdf) == result["pdf_sha256"]
+        assert client.post(f"/api/artifacts/{artifact_id}/final-acceptance", json=identity(result)).status_code == 200
+        assert client.get(result["pdf_download_url"]).status_code == 200
+    assert {name: (cache / name).read_bytes() for name in cached} == cached
+
+
+def test_explicit_measured_rollback_keeps_e_upload_bound_and_requires_proofs(workflow, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.template_analysis import layout_proof_service
+    from tests.helpers.layout_proof import create_and_approve_proofs, make_proof_pdf_exporter
+
+    client, directory, _, revision, _ = workflow
+    source = (directory / "candidate_profile.json").read_bytes()
+    original = (directory / "raw_extracted_text.txt").read_bytes()
+    e_result = preview(client, revision)["result"]
+    assert client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(e_result)).status_code == 200
+    monkeypatch.setenv("TEMPLATE_DESIGN_STRATEGY", "measured")
+    # Existing uploads retain their stored strategy; changing configuration cannot silently replace them.
+    unchanged = client.post("/api/generate", json={"artifact_id": "artifact_preview", "profile_revision_id": revision})
+    assert unchanged.status_code == 200, unchanged.text
+    assert json.loads((directory / "generation_metadata.json").read_text())["renderer_version"] == "pipeline-e-html/5"
+    upload = client.post("/api/target-format", data={"artifact_id": "artifact_preview"}, files={"file": ("target.pdf", (directory / "target_format_reference.pdf").read_bytes(), "application/pdf")})
+    assert upload.status_code == 200, upload.text
+    assert upload.json()["target_format"]["generation_strategy"] != "pipeline_e"
+    assert client.get(e_result["pdf_download_url"]).status_code == 409
+    request = {"artifact_id": "artifact_preview", "profile_revision_id": revision}
+    blocked = client.post("/api/generate", json=request)
+    assert blocked.status_code == 409 and blocked.json()["detail"]["error_code"].startswith("layout_proof_")
+    # Proofs use the canonical offline exporter; the final candidate PDF uses real Chrome.
+    with monkeypatch.context() as proof_patch:
+        proof_patch.setattr(layout_proof_service, "export_html_to_pdf", make_proof_pdf_exporter())
+        create_and_approve_proofs(client, "artifact_preview", directory)
+    generated = client.post("/api/generate", json=request)
+    assert generated.status_code == 200, generated.text
+    result = generated.json()
+    assert result["profile_revision_id"] == revision and result["client_ready"] is False
+    assert "Avery Candidate" in read_pdf_text(directory / "candidate_profile.pdf")
+    assert client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(result)).status_code == 200
+    assert client.get(result["pdf_download_url"]).status_code == 200
+    assert client.get(e_result["pdf_preview_url"]).status_code == 200
+    assert (directory / "candidate_profile.json").read_bytes() == source
+    assert (directory / "raw_extracted_text.txt").read_bytes() == original
+
+
 def test_final_confirmation_reuses_source_coverage_gate(workflow) -> None:
     from app.extraction.coverage_audit import audit_segmentation_lines
     client, directory, _, revision, _ = workflow

@@ -288,6 +288,15 @@ actual files can be inspected through
 `GET /api/artifacts/{artifact_id}/layout-proofs/{short|medium|long}/{html|pdf}`
 before manual approval.
 
+Explicit local rollback uses `TEMPLATE_DESIGN_STRATEGY=measured` for subsequent
+target analysis. Existing uploads retain their stored `generation_strategy`;
+changing configuration alone does not silently switch them. Re-upload/re-analysis
+under the measured strategy is an explicit target change and invalidates E
+acceptance/download identity. The measured path still requires its normal
+proof approval, current persisted revision, checked output and final-file
+confirmation. Earlier immutable E previews remain inspectable. This is a local
+rollback mechanism, not approval to replace the accepted default.
+
 DOCX upload remains supported. The frontend DOCX export entry is marked
 “Not launched”, disabled, and sends no generation request. This release connects
 HTML editing, real PDF preview, explicit final confirmation and PDF download.

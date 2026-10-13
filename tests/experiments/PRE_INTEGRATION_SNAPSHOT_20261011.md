@@ -862,3 +862,76 @@ historical deletions remain absent. Log:
 `20261012T232828Z_desktop_preservation_final.txt`. The check reads the original
 checkout and writes its report only in the integration checkout; it makes no
 source or staging changes in the original checkout.
+
+## October 13 owner review, local Stage 3 closure and Stage 4 inventory
+
+Owner chat: “我觉得可以了，下一步是什么”, followed by “好的，那继续”
+after the proposed concurrency/rollback checks and incremental cleanup sequence.
+Visual acceptance covers the current A→I and F→I PDFs in
+`matrix_20261012T175536Z_frozen_page_frame` and the differences recorded above.
+It does not claim arbitrary-target fidelity, replace the accepted default, or
+create final-file acceptance records in the matrix artifacts. Original matrix
+evidence and source snapshots remain untouched.
+
+Verification on runtime `3d3516f`:
+
+- `20261013T123945Z_stage3_parallel_and_rollback.txt`: 70 passed, four existing
+  fixture serializer warnings. Command: `python -m pytest -o addopts= -n 8 -q
+  tests/integration/test_preview_workflow.py tests/unit/test_chrome_html_to_pdf.py
+  tests/integration/test_generate_approval.py -m 'not local_dataset and not
+  live_provider'`. Real eight-way Chrome exports and independent API lifecycle
+  cases run under the current `/5` runtime; baseline approval paths are retained.
+- `20261013T124623Z_stage3_shared_cache_and_rollback_final.txt`: two passed,
+  34 deselected. Command: `python -m pytest -o addopts= -q
+  tests/integration/test_preview_workflow.py -k 'concurrent_api_jobs or
+  explicit_measured_rollback'`. The existing integration file owns both new
+  proofs: four concurrent HTTP submissions sharing a target cache preserve each
+  revision/HTML/PDF identity, three successful outputs and one genuine font
+  identity rejection, immutable source bytes, unchanged shared-cache bytes and
+  explicit download confirmation. A failed job does not block unrelated jobs.
+  The local executor remains one worker; this is queue isolation, not a
+  multi-process cache publication test.
+- Explicit rollback changes configuration to `measured` in a temporary test
+  context, verifies an existing E upload stays E, then re-analyzes the target.
+  E download permission is invalidated; missing baseline proofs block generation.
+  The canonical offline proof exporter supplies measured proof fixtures, while
+  the final baseline candidate PDF is exported by actual Chrome and must pass
+  content/structure checks and final confirmation. Historical E preview access
+  remains. Neither proof fixtures nor this test claim target fidelity.
+- The initial new concurrency case incorrectly expected adding languages to
+  fail even though the fixture template supports them. That test-data mistake
+  is corrected to an actual invalid local font manifest; production code did
+  not change. The failed initial log remains
+  `20261013T124521Z_stage3_shared_cache_and_explicit_rollback.txt`.
+
+All Python commands use the existing Desktop virtualenv with
+`PYTHONDONTWRITEBYTECODE=1`. No provider calls, dependency installation or
+frontend edits occur. The bounded local Stage 3 work can close; the historical
+unreproduced parallel failures do not acquire a retrospective root cause, and
+production queue/cache concurrency, source-model determinism and broad corpus
+parity remain limitations rather than cleanup gates for this local scope.
+
+### Read-only caller inventory before deletion
+
+`20261013T124710Z_stage4_legacy_inventory_before.txt` records a full tracked-file
+reference pass on `3d3516f`, before deletion. An independent code pass followed
+the actual API, frontend, experiment and script callers; no test is deleted.
+
+| Boundary / exact candidate | Decision and evidence | Remaining behavior owner / validation |
+| --- | --- | --- |
+| `app/main.py` generation, profile approval, revisions, layout proofs and final acceptance | Retain. Preview jobs call `_generate_outputs`; revision creation calls `approve_profile`; baseline/design paths still use proofs. Frontend calls revisions/jobs/confirmation and baseline proof routes; canonical matrix also uses generation. | Existing preview, generation/profile/design/proof integration suites; explicit rollback test above. |
+| `app/profile_approval.py`, `app/final_acceptance.py` | Retain. Immutable revision storage, current identity and download permission remain shared. Compatibility field names are still in the API contract. | Current revision/identity, stale acceptance, source coverage and artifact-mismatch tests. |
+| `app/generation/html_renderer.py`, render plan/content gates; legacy spec readers and `pipeline-e-html/1`–`/4` readers | Retain. Explicit baseline rollback and historical artifact access require them. | HTML/mapper/content/render-plan unit tests; API/proof tests and legacy E target-identity parametrization. |
+| `scripts/run_backend_template_smoke.py` | Delete as one retired entry point, 170 lines. Its only imports for rendering are missing `docx_renderer` and `pdf_exporter`; ADR 0006 retired that path. No tracked caller or current workflow registration exists. Introduced in `40d7aba` before HTML adoption. | Canonical API/matrix and proof workflows replace this obsolete DOCX producer. DOCX upload remains; disabled DOCX export is unchanged. |
+| `app/generation/target_format_blueprint.py` | Delete its 144-line dead registration/validation module with the retired script. Its sole external Python caller is that script; there are no test callers. The only prose mention is the obsolete pre-MVP reconstruction design. | Provider-neutral `LayoutTemplateSpec` remains in baseline/E owners; current template compilation/API/render tests. |
+| `app/templates/apex_standard/blueprint.json`, `app/templates/client_10554236_v1/blueprint.json` | Delete the 43/46-line static data owned only by the removed registry. Full reference pass finds no other loader; setuptools does not package them. The live built-in spec is constructed in `app/template_analysis/schemas.py`, independently of this data. | Built-in baseline generation and explicit measured rollback tests. |
+| `app/generation/template_mapper.py::map_profile_to_template_context` | Delete four-line zero-caller serialization wrapper. No source/test/docs callers or API export. Keep the typed `build_client_render_context` used by both renderers and candidate conversion. | Existing disclosure, blind profile, grouped skills and source section mapper tests plus real preview checks. |
+| `docs/PDF_TEMPLATE_RECONSTRUCTION.md` | Retain unique historical proposal; label superseded and replace broken authority pointers. Its pre-MVP temporary export snapshot and blueprint claims must not guide current work. | Current product, architecture, API and ADR 0006/0007 govern behavior. |
+
+This is the first bounded cleanup batch, not a whole-repository deletion audit.
+Rollback has two layers: explicit `measured` target re-analysis with retained
+proof gates, or reverting the cleanup commit to restore these unused source/data
+files. Preserved pre-integration Git refs and the original local evidence backup
+remain available. No original Desktop checkout, local input, provider cache,
+matrix artifact, frontend, credentials, deployment or default activation is
+part of deletion scope.
