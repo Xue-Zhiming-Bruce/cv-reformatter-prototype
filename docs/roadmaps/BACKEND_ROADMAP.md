@@ -173,6 +173,19 @@ and restore paths are recorded in the integration report. No default activation,
 frontend edit, provider call or deployment occurred. Further cleanup must have
 the same caller evidence; working rollback paths are not deletion candidates.
 
+October 13 browser handoff: actual A/F uploads with I reuse the unchanged
+qualified template; both fresh extractions pass coverage and edited previews
+pass eight gates. F's edit/confirmation/download and explicit cache-miss
+failure/retry pass, with old downloads blocked. A's original download passes,
+but refreshing after saving an edit loses the frontend review screen while the
+API preserves its new revision and succeeded job. Browser recovery remains an
+open handoff gap; no frontend changes were made without explicit authorization.
+README/configuration and rollback instructions are refreshed; frontend build,
+lint and the canonical `measured_template` rollback check pass. Do not mark full
+browser handoff, default replacement or production readiness complete. Evidence
+is in the integration record and
+`data/generated_outputs/e_integration_review_20261013/`.
+
 ## Product-Standard Definition
 
 “Product standard” means that the backend is measurably reliable across the

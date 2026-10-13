@@ -1010,3 +1010,95 @@ note while keeping the Mock API correction. Existing recovery refs and local
 backups remain untouched. No remote push/PR, frontend edit, final matrix-file
 acceptance write, default switch, production deployment, provider call, input
 deletion or generated-artifact cleanup accompanies this milestone.
+
+## October 13 browser handoff and refresh recovery gap
+
+The owner authorized real-browser verification and run/recovery documentation.
+Runtime/browser source is `05f6a83` in the same `10b4` integration branch. Actual
+Vite at `127.0.0.1:5173` proxies to actual FastAPI at `127.0.0.1:8000`; this does
+not use `scripts.mock_api`. Server artifacts and transitional metadata are
+isolated in `data/generated_outputs/e_integration_review_20261013/`. The original
+Desktop `.env` is read only, never printed or copied. Frontend source is unchanged.
+
+The isolated shared cache receives byte-identical copies of the admitted target
+I template from the accepted matrix. `PIPELINE_E_LIVE_ENABLED=0` prevents new
+construction: zero target-analysis or template-model calls. A and F upload
+through browser file choosers and use exactly two fresh OpenAI extraction calls,
+one each. Source coverage passes A 47/47 and F 40/40 lines; these are real new
+extractions, not relabeled cached responses or proof of model determinism.
+
+| Browser/API behavior | Actual result |
+| --- | --- |
+| A upload, I, checked preview, explicit initial confirmation/download | Pass; eight gates, original comparison visible; downloaded bytes match PDF SHA. |
+| A name-format edit in rendered HTML, save/new revision and generation | Pass; export disabled immediately; new persisted revision and PDF identities. |
+| Refresh while A preview is queued/generated | **UI recovery fails**: homepage replaces review. API saves the edited revision and succeeded job. Old attachment is 409; old preview is 200; current unconfirmed attachment stays 409. |
+| F upload, I, name-format edit, new revision/PDF, confirmation/download | Pass; eight gates; browser download matches SHA; old attachment 409 and old immutable preview 200. |
+| DOCX export and missing-information confirmation | DOCX remains disabled. A/F show four/five pending fields; test-only explicit “Export anyway” follows final confirmation. No facts are invented. |
+| No reusable cache with live construction disabled | Terminal `pipeline_e_live_disabled` and readable UI message; no silent fallback or provider call. |
+| Restore cache and retry F | Pass; retry first remains unconfirmed, then explicit browser confirmation succeeds. |
+
+The cache control temporarily renames only the two JSONs in the isolated F
+local template and isolated shared cache to `.browser_failure_backup`, preserves
+the actual failed job, then restores the exact JSON bytes. Owner matrix caches
+and templates are untouched. Confirmations belong only to these independent
+browser artifacts; no matrix final-acceptance records are written.
+
+Computer-use controls perform actual upload, iframe edit, confirmation and
+download actions. Independent API checks validate hashes, revisions, eight gates,
+old-download rejection and source preservation. No React state or internal
+browser values are injected to bypass failed recovery.
+
+Evidence in the ignored review directory:
+
+- `browser_validation.json`, also summarized in pytest terminal evidence
+  `20261013T134942Z_browser_handoff_validation.txt`.
+- `A_initial_confirmed.pdf`, `A_initial_identity.json`,
+  `A_after_refresh_identity.json`, `F_edited_confirmed.pdf`,
+  `F_edited_identity.json`, `F_retry_confirmed.pdf`, `F_cache_miss_failure.json`.
+- Screenshots: `A_dirty_export_blocked.jpg`, `A_refresh_loses_review.jpg`,
+  `F_confirmed.jpg`, `F_cache_miss_error.jpg`, `F_retry_confirmed.jpg`.
+- Original source, drafts, evidence, saved revisions, terminal jobs, checked
+  files and immutable previews under isolated `api_artifacts/`.
+
+App's review state and ReviewScreen's job/output/edit state currently live only
+in React memory. Proposed bounded recovery: read current artifact/revision/job
+state from the backend and rehydrate the frontend, without repeating extraction
+or target construction. The owner was asked asynchronously to authorize
+`frontend/src/App.tsx`, `frontend/src/screens/ReviewScreen.tsx`,
+`frontend/src/types.ts` and the associated backend contract. No affirmative reply
+is recorded at this checkpoint; `AGENTS.md` explicitly prohibits frontend edits
+without the user's request. Full browser handoff is not declared complete.
+
+The homepage also advertises “about 20 seconds”, “any format” and “Files deleted
+after processing”. The local prototype retains evidence, rejects unsupported
+formats and takes longer for uncached construction. Record these concrete copy
+issues for the frontend owner before an external demo; marketing/retention-policy
+changes are outside this handoff scope.
+
+README now explains the actual Chrome exporter, Adobe analyzer, E cache/live
+activation, ports/proxy, metadata/artifacts, tests, recovery points and known
+refresh gap. `.env.example` removes the retired deterministic segmentation flag
+and adds blank-key E adapter names. No credential is copied. PostgreSQL and
+hosting remain future work behind security and operational gates.
+
+The earlier rollback setting `measured` was unsupported and defaulted through
+`get_design_strategy` to the measured baseline. Its workflow proof remains valid,
+but current instructions/test use the canonical supported `measured_template`
+without changing runtime behavior. Verification:
+
+- `20261013T134422Z_handoff_canonical_rollback_setting.txt`: one passed, 35
+  deselected, actual Chrome output plus retained proof gates. Command:
+  `python -m pytest -o addopts= -q tests/integration/test_preview_workflow.py
+  -k explicit_measured_rollback`, existing Desktop Python,
+  `PYTHONDONTWRITEBYTECODE=1`.
+- `20261013T134422Z_handoff_frontend_build.txt`: `npm run build` passes.
+- `20261013T134422Z_handoff_frontend_lint.txt`: `npm run lint` passes.
+- Local startup, `/health`, config names, Node/Vite requirements, README links
+  and blank-key example were verified. Fresh dependency installation was not
+  rerun; the existing environments are reused. The 629-test broad regression is
+  the prior cleanup milestone, not a new result from this documentation handoff.
+
+Desktop inventory remains 47/47; the accepted matrix is unchanged. No remote
+push/PR, external messaging, default replacement, frontend edit, confidential
+document processing or deployment accompanies this handoff. Local servers and
+the browser remain available for the pending recovery decision.

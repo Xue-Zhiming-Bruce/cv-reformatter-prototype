@@ -347,7 +347,7 @@ def test_explicit_measured_rollback_keeps_e_upload_bound_and_requires_proofs(wor
     original = (directory / "raw_extracted_text.txt").read_bytes()
     e_result = preview(client, revision)["result"]
     assert client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(e_result)).status_code == 200
-    monkeypatch.setenv("TEMPLATE_DESIGN_STRATEGY", "measured")
+    monkeypatch.setenv("TEMPLATE_DESIGN_STRATEGY", "measured_template")
     # Existing uploads retain their stored strategy; changing configuration cannot silently replace them.
     unchanged = client.post("/api/generate", json={"artifact_id": "artifact_preview", "profile_revision_id": revision})
     assert unchanged.status_code == 200, unchanged.text

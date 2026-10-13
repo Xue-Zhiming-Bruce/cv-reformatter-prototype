@@ -1,176 +1,170 @@
 # CV Reformatter
 
-CV Reformatter is a document-processing backend that helps boutique recruiters
-turn inconsistent candidate resumes into reviewed candidate data and
-recruiter-branded HTML surfaces and PDF submissions.
+CV Reformatter helps boutique recruiters turn candidate resumes into reviewed
+candidate data and client-facing HTML/PDF submissions in an uploaded target
+format. The recruiter compares the original, edits fields, reviews the PDF and
+explicitly confirms that exact file before downloading.
 
-The accepted workflow preserves candidate content separately from target
-presentation:
+**Original preserved. Recruiter approved.**
+
+Candidate facts and target presentation stay separate:
 
 ```text
-Candidate resume -> CandidateProfile -> recruiter review -> client content
-Target document -> reusable layout specification
-Client content + layout specification -> editable HTML surface -> Adobe PDF
+Candidate PDF/DOCX -> preserved text and evidence -> CandidateProfile revision
+Target document -> measured LayoutTemplateSpec + separate rendering artifact
+Reviewed client content + template -> HTML -> headless Chrome -> checked PDF
 ```
 
-The MVP and target-PDF demo were accepted on July 26, 2026. Current work focuses
-on measurable information accuracy, target-layout fidelity, safe content
-reflow, reproducibility, and backend production readiness.
+## Current Local Integration
 
-## Database And Hosting Direction
+The co-founder frontend connects to FastAPI for candidate PDF/DOCX upload,
+source comparison, field editing, revision-bound preview jobs, blind profiles
+and disclosure, PDF inspection, explicit final-file confirmation and download.
+DOCX export is marked “Not yet available” and disabled; DOCX ingestion remains.
 
-- PostgreSQL is the target MVP database and should run locally during MVP development and testing.
-- The existing SQLite artifact index is transitional and should not be expanded as the primary persistence model.
-- Local document and debug artifacts remain on the local filesystem during the MVP.
-- After the local MVP is complete, the selected initial hosting provider is DigitalOcean:
-  - App Platform for the containerized FastAPI backend and frontend hosting;
-  - Managed PostgreSQL for separate staging and production databases;
-  - Spaces for private resume, extracted-text, DOCX, PDF, and debug artifacts.
+Pipeline E is an explicit local strategy under
+[ADR 0007](docs/decisions/0007-pipeline-e-local-integration.md). Its neutral
+layout contract stores measured presentation; a separately bound artifact
+stores candidate-free authored HTML/CSS. Actual content, privacy, fonts and
+material geometry checks block unsafe outputs. Automated checks do not approve
+visual fidelity or replace recruiter confirmation.
 
-DigitalOcean deployment begins only after the end-to-end synthetic demo and local PostgreSQL persistence path work successfully. Real candidate data must not be hosted before authentication, authorization, private object access, retention/deletion behavior, and backup/restore procedures are in place.
+The owner accepted the current A→I and F→I matrix PDFs and their reported
+visual differences. This is bounded local evidence, not arbitrary-target
+acceptance or replacement of the accepted baseline. Cleanup regression on
+October 13, 2026: **629 passed, 3 skipped**, with four existing fixture serializer
+warnings. Exact commands, inputs, limitations and recovery references are in
+[the integration record](tests/experiments/PRE_INTEGRATION_SNAPSHOT_20261011.md).
+Generated documents, screenshots, provider caches and local inputs stay ignored.
 
-## What The Backend Does
-
-- Reads candidate DOCX and text-based PDF resumes.
-- Extracts and strictly validates `CandidateProfile` data.
-- Flags recruiter-critical missing information.
-- Applies recruiter-controlled disclosure and blind-profile rules.
-- Analyzes supported target DOCX/PDF files for reusable presentation evidence.
-- Generates the editable interface HTML and exports PDF through Adobe HTML-to-PDF.
-- Saves diagnostic layout, preview, comparison, and workflow artifacts.
-- Exposes FastAPI endpoints for processing, target upload, generation,
-  previews, downloads, and artifact metadata.
-
-Scanned PDFs, arbitrary PDF editing, hosted real-candidate workflows, billing,
-ATS integrations, and searchable talent-pool features are not currently
-supported.
-
-## Documentation
-
-Start with the [Documentation Guide](docs/README.md).
-
-- [Product Specification](docs/product/PRODUCT_SPEC.md) — authoritative product
-  behavior and guardrails.
-- [Document Pipeline](docs/architecture/DOCUMENT_PIPELINE.md) — accepted backend
-  boundaries.
-- [Backend API Contract](docs/architecture/API_CONTRACT.md) — current frontend
-  integration interface.
-- [Backend Roadmap](docs/roadmaps/BACKEND_ROADMAP.md) — sole active engineering
-  checklist.
-
-## Requirements
+## Requirements And Setup
 
 - Python 3.12 or later.
-- Adobe PDF Services credentials for live HTML-to-PDF export.
-- An OpenAI or Anthropic API key for real semantic extraction; mock mode works
-  without an external provider.
+- Installed Google Chrome/Chromium for PDF export. `CHROME_BIN` can select a
+  specific executable; Adobe is the target analyzer, not the PDF exporter.
+- Node.js 22.12 or later and npm for the Vite frontend.
+- Extraction credentials for actual resume interpretation; deterministic mock
+  extraction is available for offline development.
+- Adobe analysis and configured text/visual model credentials when constructing
+  an uncached Pipeline E target. Construction is explicit opt-in.
 
-PostgreSQL is planned as the first production-oriented persistence foundation.
-The accepted baseline still uses local files and a transitional SQLite metadata
-index.
-
-## Setup
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-Create a local `.env` only when real-provider extraction is needed:
-
-```env
-LLM_PROVIDER=openai
-OPENAI_API_KEY=
-OPENAI_EXTRACT_MODEL=gpt-5.4-mini
-
-# Optional stage-specific key; otherwise OPENAI_API_KEY is used.
-OPENAI_EXTRACT_API_KEY=
-```
-
-For Anthropic, use `LLM_PROVIDER=anthropic` with
-`ANTHROPIC_EXTRACT_API_KEY`/`ANTHROPIC_API_KEY` and an optional
-`ANTHROPIC_EXTRACT_MODEL`/`ANTHROPIC_MODEL`.
-
-Never commit `.env`, API keys, provider licenses, real resumes, or generated
-candidate data.
-
-## Run The Backend
-
-For an offline local API using deterministic mock extraction:
+From the repository root:
 
 ```bash
-API_LLM_PROVIDER=mock uvicorn app.main:app --reload
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
+cd frontend
+npm ci
+cd ..
+cp .env.example .env
 ```
 
-For configured real-provider extraction:
+Set only the credentials needed for the chosen lane. The example contains
+names and blank keys. Never commit `.env`, credentials, confidential documents
+or generated candidate data. Public/fictional local test inputs have documented
+clearance; it does not cover new private uploads or authorize provider transfer.
+
+## Start Backend And Frontend
+
+In one terminal, start the actual backend from the repository root:
 
 ```bash
-uvicorn app.main:app --reload
+PYTHONDONTWRITEBYTECODE=1 TEMPLATE_DESIGN_STRATEGY=pipeline_e PIPELINE_E_LIVE_ENABLED=0 .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-The development frontend is expected to call the backend on its configured
-local port. Frontend implementation is maintained separately by the frontend
-owner.
+The application reads `.env` from the current checkout. Extraction uses
+`API_LLM_PROVIDER` when supplied, otherwise `LLM_PROVIDER`. Add
+`API_LLM_PROVIDER=mock` for offline extraction; mock interpretation is a
+fixture, not an accuracy or fidelity evaluation.
 
-## Run The CLI Demo
+With live construction disabled, E reuses qualified templates in
+`data/generated_outputs/pipeline_e_templates/<target_sha256>/`. A missing or
+candidate-incompatible cache returns a clear error. To construct an authorized
+uncached target, configure its Adobe/text/visual adapters and explicitly set
+`PIPELINE_E_LIVE_ENABLED=1`. It never silently uses baseline presentation.
+See the [Pipeline plan](tests/experiments/PIPELINE_E_PLAN.md) and
+[API contract](docs/architecture/API_CONTRACT.md) for construction boundaries.
 
-The offline demo creates a synthetic DOCX input when the default sample is
-missing:
+In another terminal:
 
 ```bash
-python scripts/run_demo.py --mock
+cd frontend
+npm run dev -- --host 127.0.0.1 --port 5173 --strictPort
 ```
 
-To process another synthetic DOCX or text-based PDF:
+Open `http://127.0.0.1:5173/`. Vite proxies `/api` to
+`http://127.0.0.1:8000`; retain that backend port unless the frontend owner
+changes the proxy. `GET http://127.0.0.1:8000/health` should return
+`{"status":"ok"}`. Upload an authorized resume and target, then inspect the
+actual preview.
+
+The separate `scripts.mock_api:app` is an in-memory frontend development tool
+with provisional mock routes. It is not the E server, and its mock DOCX/layout
+editing routes are not product capabilities.
+
+## Verify And Hand Off
+
+The canonical serial offline command does not require pytest-xdist:
 
 ```bash
-python scripts/run_demo.py --input path/to/synthetic_resume.docx --mock
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -o addopts= -q tests/unit tests/integration tests/experiments/test_pipeline_comparison.py tests/experiments/test_gates.py -m 'not local_dataset and not live_provider'
 ```
 
-Artifacts are written to `data/generated_outputs/`.
-
-## Run Tests
+It uses real Chrome locally and excludes live providers and local-corpus cases.
+Recorded parallel evidence uses the existing pytest-xdist development runtime
+with `-n 8`. Save terminal logs with actual UTC timestamps under
+`tests/test_results/pytest/`; the
+[test-structure contract](docs/testing/TEST_STRUCTURE.md) governs runners,
+fixtures and artifact locations.
 
 ```bash
-.venv/bin/python -m pytest -m "not integration and not local_dataset and not live_provider"
+cd frontend
+npm run build
+npm run lint
 ```
 
-This is the fast offline lane. Before handing off a broad backend change, run
-the full offline lane with `.venv/bin/python -m pytest -m "not live_provider"`.
-Local-corpus and
-live-provider checks are separate, explicit lanes; see the
-[Repository Test Structure Contract](docs/testing/TEST_STRUCTURE.md)
-for commands, artifact locations, retention, and safe cleanup.
+Browser handoff checks: upload, edit, generate a new revision/PDF, confirm the
+current file, download, reject old download identity, retain disabled DOCX
+export and show terminal failures clearly. Refresh currently returns the
+frontend to the home screen even though the backend preserves the revision
+and job. Review recovery is a known gap; do not claim the browser checklist
+fully passes until that behavior is resolved or explicitly accepted.
 
-Optional local dataset tests run only when the expected local-only datasets are
-present under `tests/local_datasets/`. Commercial-provider evaluation
-instructions are in
-[tests/commercial_api/README.md](tests/commercial_api/README.md).
-The current local-corpus provenance and live-provider authorization are recorded
-in [tests/local_datasets/README.md](tests/local_datasets/README.md); do not infer
-the same classification for newly added files.
+The offline extraction demo remains available:
 
-When agents run tests for repository changes, they save timestamped terminal
-output under `tests/test_results/pytest/`; those generated reports are not
-product documentation. The canonical workflow registry and test taxonomy are
-defined in
-[docs/testing/TEST_STRUCTURE.md](docs/testing/TEST_STRUCTURE.md).
+```bash
+.venv/bin/python scripts/run_demo.py --mock
+```
 
-## Current Engineering Direction
+It creates the default synthetic DOCX if absent and writes local artifacts;
+it does not exercise target-template construction or final-file confirmation.
 
-The active backend sequence is:
+## Artifacts, Recovery And Limits
 
-1. Freeze and measure the accepted synthetic baseline.
-2. Define evidence, versioned layout, compilation, job, policy, and artifact
-   contracts.
-3. Evaluate analyzers and renderers against the same corpus.
-4. Complete content, privacy, structural, visual, reliability, performance, and
-   cost gates.
-5. Add PostgreSQL, durable production jobs, private artifact storage, and API
-   hardening.
-6. Add authentication, organizations, retention, deletion, auditing, and tested
-   recovery before hosting real candidate data.
+Artifacts default to `data/generated_outputs/`; `GENERATED_OUTPUTS_DIR` can
+isolate a review run. `LOCAL_DATABASE_PATH` selects the transitional SQLite
+metadata index. Drafts, original text, evidence, revisions, jobs and immutable
+previews remain separate. A persisted edit, template change or changed output
+invalidates the old file's download permission.
 
-See the [Backend Roadmap](docs/roadmaps/BACKEND_ROADMAP.md) for checklist and
-exit-gate details.
+Explicit rollback uses `TEMPLATE_DESIGN_STRATEGY=measured_template` and target
+re-analysis with retained baseline proof approval. Existing uploads keep their
+stored strategy; configuration alone does not switch them. Source freeze
+`b7ed981` and pre-cleanup correction `dd5d087` remain local recovery points.
+The [integration record](tests/experiments/PRE_INTEGRATION_SNAPSHOT_20261011.md)
+also names the original source/evidence backup, which must be preserved.
+
+This is a local prototype: one in-process preview worker, no durable production
+queue, authentication or organization authorization. Scanned resumes, arbitrary
+PDF editing, billing, ATS integrations and production hosting are outside this
+handoff. PostgreSQL is the planned structured store. DigitalOcean hosting follows
+the persistence, security, privacy and operational gates.
+
+## Authoritative Documents
+
+Start with the [documentation guide](docs/README.md), then the
+[product specification](docs/product/PRODUCT_SPEC.md),
+[document pipeline](docs/architecture/DOCUMENT_PIPELINE.md),
+[API contract](docs/architecture/API_CONTRACT.md) and
+[backend roadmap](docs/roadmaps/BACKEND_ROADMAP.md). The roadmap is the sole
+active checklist; this README is a run/verification guide.

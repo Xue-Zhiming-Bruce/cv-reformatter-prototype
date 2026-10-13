@@ -288,7 +288,7 @@ actual files can be inspected through
 `GET /api/artifacts/{artifact_id}/layout-proofs/{short|medium|long}/{html|pdf}`
 before manual approval.
 
-Explicit local rollback uses `TEMPLATE_DESIGN_STRATEGY=measured` for subsequent
+Explicit local rollback uses `TEMPLATE_DESIGN_STRATEGY=measured_template` for subsequent
 target analysis. Existing uploads retain their stored `generation_strategy`;
 changing configuration alone does not silently switch them. Re-upload/re-analysis
 under the measured strategy is an explicit target change and invalidates E
@@ -300,6 +300,15 @@ rollback mechanism, not approval to replace the accepted default.
 DOCX upload remains supported. The frontend DOCX export entry is marked
 “Not launched”, disabled, and sends no generation request. This release connects
 HTML editing, real PDF preview, explicit final confirmation and PDF download.
+
+October 13 browser handoff limitation: the API preserves saved revisions and
+terminal preview-job records across a page refresh, but the frontend currently
+stores its review state only in React memory and returns to the upload screen.
+There is no browser task/review-state restoration. The existing job GET endpoint
+can inspect a known job; that is not complete UI recovery. Frontend recovery
+edits require explicit owner authorization under `AGENTS.md`. Browser handoff
+remains incomplete until recovery is fixed or the limitation is accepted.
+Retrying never grants automatic final-file acceptance.
 
 ## Accept Final Output
 
