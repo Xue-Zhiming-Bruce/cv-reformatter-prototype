@@ -966,3 +966,47 @@ empty experience does not retain the old title. No schema field, compatibility
 alias, renderer feature or frontend change is introduced.
 `20261013T125438Z_stage4_mock_schema_fix.txt`: 15 passed across the Mock API and
 candidate schema owners. A final broad run follows this separate defect repair.
+
+### First Stage 4 batch complete
+
+The inventory's exact deletion batch is applied: 314 Python lines in the dead
+registry/script, 89 lines of registry-only static JSON, and the four-line mapper
+wrapper (407 total). No tests are removed. The historical reconstruction note
+keeps its unique proposal and has five working links to current authority.
+The typed client-facing context, built-in spec, both current renderers,
+approval/revision/proof APIs, old artifact readers, canonical experiment/matrix
+workflow, DOCX upload and disabled product DOCX export remain.
+
+Final command (existing Desktop virtualenv, `PYTHONDONTWRITEBYTECODE=1`):
+
+```text
+python -m pytest -o addopts= -n 8 -q tests/unit tests/integration tests/experiments/test_pipeline_comparison.py tests/experiments/test_gates.py -m 'not local_dataset and not live_provider'
+```
+
+`20261013T125637Z_stage4_first_batch_final.txt`: **629 passed, three skipped**,
+four existing fixture serializer warnings, 210.11 seconds. This includes the
+local shared-cache/API isolation, explicit rollback, actual parallel Chrome,
+baseline/proof/design contracts and Mock API repair. It does not run external
+providers or the broader live/local corpus; it does not establish production
+multi-process cache or durable queue behavior.
+
+Preservation and independent reference evidence:
+
+- `20261013T125002Z_stage4_preservation_and_references.txt`: zero remaining
+  Python callers of the removed registry/wrapper/entry point; all removed
+  source/data available in `b7ed981`; only the six approved cleanup paths differ
+  at that checkpoint; original Desktop 47/47 inventory entries preserved.
+  Current A/F outcome PDF hashes are recorded without editing either artifact.
+- `20261013T130055Z_stage4_final_integrity.txt`: Desktop inventory still 47/47;
+  historical proposal authority links and eight new evidence-log references
+  resolve; core generation, approval, HTML/Chrome/E owners are byte-identical
+  to the Stage 3 freeze. Only the subsequently documented Mock API correction
+  extends the original six-file cleanup scope.
+
+Local restore points: `b7ed981` freezes accepted Stage 3 checks plus inventory;
+`dd5d087` contains the separately verified Mock API repair before the deletion
+commit. Reverting the deletion commit restores its source/data and historical
+note while keeping the Mock API correction. Existing recovery refs and local
+backups remain untouched. No remote push/PR, frontend edit, final matrix-file
+acceptance write, default switch, production deployment, provider call, input
+deletion or generated-artifact cleanup accompanies this milestone.

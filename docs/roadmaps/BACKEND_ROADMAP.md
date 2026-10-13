@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 13, 2026 (local A/F owner review and bounded Stage 3 closure)
+Last reviewed: October 13, 2026 (bounded local Stage 3 closure and first cleanup batch)
 
 This is the active engineering roadmap after completion of the MVP and PDF
 demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
@@ -157,6 +157,21 @@ live corpus parity remain separate requirements. Stage 4 starts with a recorded
 caller inventory and a small batch of unused pre-HTML remnants; baseline/API
 compatibility and old-output readers must remain. Evidence and exact scope are
 in the integration record.
+
+October 13 first Stage 4 batch complete: caller inventory confirms the retired
+DOCX smoke entry point, blueprint registry/static JSON and an unused mapper
+wrapper have no remaining runtime callers; they are removed. The obsolete
+reconstruction proposal is marked historical with current authority links.
+Baseline generation/proofs, approval/revision compatibility and legacy output
+readers are retained. Broad validation also exposed a pre-existing Mock API
+schema mismatch, reproduced on the pre-cleanup source and fixed separately
+without relaxing `CandidateProfile`. Final offline unit/integration and current
+Pipeline/gate regression: 629 passed, three skipped, four existing fixture
+warnings, using eight workers. The local Stage 3 freeze is `b7ed981`; pre-cleanup
+source with the Mock API correction is `dd5d087`. Source/evidence preservation
+and restore paths are recorded in the integration report. No default activation,
+frontend edit, provider call or deployment occurred. Further cleanup must have
+the same caller evidence; working rollback paths are not deletion candidates.
 
 ## Product-Standard Definition
 

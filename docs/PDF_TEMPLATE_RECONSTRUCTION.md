@@ -1,10 +1,15 @@
-# PDF Template Reconstruction — Post-MVP Design
+# PDF Template Reconstruction — Historical Proposal
 
-Use this document with:
+Status: `Historical` (superseded; classified October 13, 2026)
 
-- `docs/MVP_PRODUCT_SPEC.md`
-- `docs/MVP_BUILD_ROADMAP.md`
-- `docs/FRONTEND_BACKEND_ALIGNMENT.md`
+The pre-MVP blueprint/DOCX and temporary export-snapshot design below is kept
+for historical context. Its unused registry and smoke script were removed;
+it does not describe the current generation API or authorize restoring them.
+Current behavior is defined by the [Product Specification](product/PRODUCT_SPEC.md),
+[Document Pipeline](architecture/DOCUMENT_PIPELINE.md),
+[API Contract](architecture/API_CONTRACT.md),
+[ADR 0006](decisions/0006-badge-decoration-and-html-ground-truth-renderer.md) and
+[ADR 0007](decisions/0007-pipeline-e-local-integration.md).
 
 ## Delivery Boundary
 
