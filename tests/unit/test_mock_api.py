@@ -47,6 +47,23 @@ def test_pdf_workflow_requires_approval_and_returns_preview() -> None:
     preview = client.get(generated.json()["pdf_preview_url"])
     assert preview.status_code == 200
     assert len(PdfReader(io.BytesIO(preview.content)).pages) == 1
+    surface = client.get(generated.json()["html_surface_url"])
+    assert surface.status_code == 200
+    assert "Senior Product Designer" in surface.text
+
+    processed["profile"]["work_experience"] = []
+    edited = client.post(
+        f"/api/artifacts/{artifact_id}/profiles/approve",
+        json={"profile": processed["profile"]},
+    )
+    assert edited.status_code == 200
+    empty = client.post(
+        "/api/generate",
+        json={"artifact_id": artifact_id, "approved_profile_version_id": edited.json()["approved_profile_version_id"]},
+    )
+    assert empty.status_code == 200
+    empty_surface = client.get(empty.json()["html_surface_url"])
+    assert empty_surface.status_code == 200 and "Senior Product Designer" not in empty_surface.text
 
 
 def test_docx_workflow_returns_a_valid_download() -> None:

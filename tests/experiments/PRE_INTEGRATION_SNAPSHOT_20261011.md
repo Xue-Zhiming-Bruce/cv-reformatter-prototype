@@ -935,3 +935,34 @@ files. Preserved pre-integration Git refs and the original local evidence backup
 remain available. No original Desktop checkout, local input, provider cache,
 matrix artifact, frontend, credentials, deployment or default activation is
 part of deletion scope.
+
+### Broad validation exposed a retained Mock API schema defect
+
+`20261013T124914Z_stage4_first_batch_regression.txt`: the broad eight-worker
+unit/integration plus current Pipeline/gate suite reports 624 passed, three
+skipped and five failed (four existing fixture serializer warnings). All five
+failures belong to `tests/unit/test_mock_api.py`: `scripts/mock_api.py` passes
+the removed `current_title` field into strict `CandidateProfile`. This module
+is a separately supported in-memory frontend development tool, not the product
+renderer; its provisional mock DOCX/layout-edit features are not product claims.
+It must not be deleted just to remove failing tests.
+
+`20261013T125337Z_stage4_mock_api_pre_cleanup_control.txt` restores all six
+cleanup paths from `b7ed981`, runs the unchanged Mock API tests and reproduces
+the same five schema failures; a `finally` block restores the pending cleanup
+bytes exactly. Thus the failure precedes deletion. The old `_surface` also
+accesses `profile.current_title`, which would fail after fixing only the
+constructor. `20261013T125520Z_stage4_mock_surface_before.txt` uses that unchanged
+baseline surface with the corrected constructor through the HTTP route and
+confirms the intended `AttributeError`; no production files are mutated for
+that control.
+
+The small corrective scope is `scripts/mock_api.py` and its existing
+`tests/unit/test_mock_api.py`. Remove the invalid duplicate constructor value
+and use the first reviewed work-experience title in the mock HTML (empty when
+there is no experience). Retain strict profile validation and all five tests;
+extend the existing PDF workflow to inspect the actual HTML surface and verify
+empty experience does not retain the old title. No schema field, compatibility
+alias, renderer feature or frontend change is introduced.
+`20261013T125438Z_stage4_mock_schema_fix.txt`: 15 passed across the Mock API and
+candidate schema owners. A final broad run follows this separate defect repair.
