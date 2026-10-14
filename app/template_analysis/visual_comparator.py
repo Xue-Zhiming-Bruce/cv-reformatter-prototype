@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
@@ -10,6 +11,8 @@ from app.template_analysis.schemas import PageComparison, VisualComparisonReport
 
 COMPARISON_FILENAME = "visual_comparison.json"
 RENDER_DPI = 144
+# PDFium is not thread-safe; original-page requests share it with preview workers.
+PDF_RENDER_LOCK = threading.RLock()
 
 
 class VisualComparisonError(RuntimeError):
@@ -254,18 +257,21 @@ def _render_pdf(
 
     filenames: list[str] = []
     try:
-        document = pdfium.PdfDocument(str(path))
-        scale = dpi / 72
-        for page_index in range(len(document)):
-            page = document[page_index]
-            bitmap = page.render(scale=scale)
-            image = bitmap.to_pil().convert("RGB")
-            filename = f"{filename_prefix}_{page_index + 1:03d}.png"
-            image.save(output_dir / filename, format="PNG")
-            filenames.append(filename)
-            bitmap.close()
-            page.close()
-        document.close()
+        with PDF_RENDER_LOCK, pdfium.PdfDocument(str(path)) as document:
+            scale = dpi / 72
+            for page_index in range(len(document)):
+                page = document[page_index]
+                try:
+                    bitmap = page.render(scale=scale)
+                    try:
+                        image = bitmap.to_pil().convert("RGB")
+                        filename = f"{filename_prefix}_{page_index + 1:03d}.png"
+                        image.save(output_dir / filename, format="PNG")
+                        filenames.append(filename)
+                    finally:
+                        bitmap.close()
+                finally:
+                    page.close()
     except Exception as exc:
         raise VisualComparisonError(f"PDF pages could not be rendered for comparison: {path}") from exc
     return filenames

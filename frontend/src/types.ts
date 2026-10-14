@@ -81,6 +81,7 @@ export interface ProcessResponse {
   ledger: LedgerSummary
   original_text: string
   original_pdf_preview_url: string | null
+  original_page_preview_urls?: string[]
   original_preview_error: string | null
   debug_artifacts: Record<string, string>
   artifact_metadata_url: string
@@ -125,4 +126,19 @@ export interface GenerateResponse {
   followup_message: string
   missing_fields: MissingField[]
   debug_artifacts: Record<string, string>
+}
+
+export interface PreviewJob {
+  job_id: string
+  state: "queued" | "running" | "succeeded" | "failed" | "interrupted"
+  result: GenerateResponse | null
+  error: { message?: string; error_code?: string } | null
+}
+
+export interface ReviewStateResponse {
+  data: ProcessResponse
+  source_filename: string
+  target_format: TargetFormatMetadata | null
+  preview_job: PreviewJob | null
+  blind_profile: boolean
 }

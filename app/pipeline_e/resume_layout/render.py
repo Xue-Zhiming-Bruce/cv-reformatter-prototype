@@ -17,6 +17,7 @@ import pdfplumber
 import re
 import subprocess
 from app.generation.chrome_html_to_pdf import HtmlToPdfExportError, _find_chrome
+from app.template_analysis.visual_comparator import PDF_RENDER_LOCK
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -80,12 +81,20 @@ def _export_pinned_html_to_pdf(html_path: Path, output_path: Path, environment: 
 
 
 def _render_pages(pdf_path: Path, output_dir: Path, prefix: str) -> list[Path]:
-    document = pdfium.PdfDocument(pdf_path)
     paths: list[Path] = []
-    for index, page in enumerate(document):
-        path = output_dir / f"{prefix}_page_{index + 1}.png"
-        page.render(scale=2).to_pil().convert("RGB").save(path)
-        paths.append(path)
+    with PDF_RENDER_LOCK, pdfium.PdfDocument(pdf_path) as document:
+        for index in range(len(document)):
+            page = document[index]
+            try:
+                bitmap = page.render(scale=2)
+                try:
+                    path = output_dir / f"{prefix}_page_{index + 1}.png"
+                    bitmap.to_pil().convert("RGB").save(path)
+                    paths.append(path)
+                finally:
+                    bitmap.close()
+            finally:
+                page.close()
     return paths
 
 

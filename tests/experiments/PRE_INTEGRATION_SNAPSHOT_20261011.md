@@ -1131,3 +1131,89 @@ No frontend fix or cross-browser preview acceptance is claimed. The accepted
 matrix, uploaded source, revision facts and source-evidence bytes are untouched.
 Fixing refresh recovery and making original preview reliably visible remain
 separate browser tasks; content/geometry output gates do not validate either.
+
+### October 14: original display and saved-review recovery repaired
+
+Owner direction to continue authorizes this bounded frontend/backend repair.
+The integration stays in worktree `10b4`; `origin/heelim/db-auth` remains the
+confirmed frontend source `3898b95`. No wholesale frontend replacement,
+additional cleanup, provider selection, deployment or push is included.
+
+- Original previews use ordered PNG pages rendered from the preserved original
+  PDF with existing PDFium, a 1600-pixel maximum edge, lazy image loading,
+  extracted-text access and an original-PDF link. Failed page loads explicitly
+  show the text fallback. DOCX ingestion/text comparison stays supported.
+  PDFium calls across original-page requests and existing comparison/Pipeline
+  rendering share one process lock; page/bitmap resources close on failure.
+- `GET /api/artifacts/{id}/review` returns the current saved revision and latest
+  job for that revision. Successful results recheck the current output/target
+  identity and recompute exact final acceptance. Stale, failed and interrupted
+  jobs do not become downloadable successes. Recovery creates no revision,
+  extraction or generation; the frontend resumes polling the same active job.
+  A saved revision without a job waits for an explicit Generate preview action.
+- Review URLs retain only the artifact reference. Candidate data is restored
+  from the existing server artifacts; no browser profile-data store is added.
+  Unsaved browser edits get leave/refresh warnings and are not auto-persisted.
+
+Regression ownership stays in existing `test_api_process.py` and
+`test_preview_workflow.py`: real PNG page order/colors, bounds, corruption and
+source preservation; existing revision/edit/export lifecycle now also verifies
+no-job, running, successful, confirmed, failed and stale recovery. Temporarily
+restoring only pre-fix `app/main.py` makes the three selected regressions fail
+for the intended missing page/recovery interfaces. The current file is restored
+byte-exact afterward. No old behavior is loosened to make tests pass.
+
+Commands (with `PYTHONDONTWRITEBYTECODE=1` and the authorized desktop venv):
+
+```text
+python -m pytest -o addopts= -n 8 -q tests/integration/test_api_process.py tests/integration/test_preview_workflow.py -m 'not local_dataset and not live_provider'
+# 43 passed, 45.02s
+python -m pytest -o addopts= -n 8 -q tests/integration/test_api_process.py tests/integration/test_preview_workflow.py tests/unit/test_chrome_html_to_pdf.py tests/experiments/test_pipeline_comparison.py tests/experiments/test_gates.py -m 'not local_dataset and not live_provider'
+# 255 passed, 1 skipped, 141.30s
+cd frontend
+npm run build
+npm run lint
+# both pass
+```
+
+Logs: `tests/test_results/pytest/20261014T031000Z_review_recovery.txt`,
+`20261014T031323Z_review_recovery_before_fix.txt` (3 expected failures), and
+`20261014T031431Z_review_recovery_final.txt`. The first attempt stopped at
+import because PyMuPDF was not installed; it was removed before verification,
+with no new dependency installed.
+
+Actual Vite/FastAPI browser evidence reuses the October 13 artifacts under
+`data/generated_outputs/e_integration_review_20261013/`:
+
+| Case | Actual observation | File/job identity |
+| --- | --- | --- |
+| F restored and refreshed in IAB | Original is visible; existing confirmed file retained | Same revision/job/PDF; 4 jobs before and after; download 200 |
+| A restored in Chrome | Original appears in the review page; current edited file stays unconfirmed | Existing revision/PDF retained; no new job from recovery |
+| A edited in IAB, then generated/refreshed | Name casing `JOHN DOE` → `John Doe`; two original pages visible; new preview survives repeated refresh without auto-confirmation | Exactly one new revision/job (2 → 3 jobs); new and prior download both 409 |
+
+New A revision `profile_vec2da0944663`, job
+`01bd34a7d4fd405c866d10e0d926982c`, PDF SHA-256
+`115b6513851e28595023e55dba16d0115d90305ba9eb1e2be97808bf66ead442`.
+Its checked PDF remains an unconfirmed preview under
+`api_artifacts/artifact_5c505043d6e8491895eac0d4e022a266/preview_versions/d330029bc1f443fa83f3caffaac1cdd3/candidate_profile.pdf`.
+A and F pass all eight current gates. Each source resume, original preview PDF,
+extraction draft and raw text checksum is unchanged. No external provider call
+was needed; regeneration uses the existing target cache and the existing mock
+follow-up client in this local verification server. API extraction remains
+configured separately; it was not invoked.
+
+Machine-readable evidence: `review_recovery_before_20261014.json` and
+`review_recovery_validation_20261014.json`. Screenshots:
+`F_recovered_original_20261014.jpg`, `A_recovered_chrome_20261014.png`,
+`A_edit_refresh_recovered_20261014.png`,
+`A_original_second_page_20261014.png`.
+
+The Chrome unsaved-leave confirm dialog was observed, but cancellation was not
+verified after browser control stalled while the user continued using Chrome.
+Further editing/refresh checks ran in IAB without forcing native browser focus.
+Safari/Firefox/mobile, automatic unsaved-draft recovery, product-copy alignment,
+and production durable-job/security gates were not expanded into this repair.
+The two reported local browser gaps are closed for these A/F observations;
+this does not claim all-browser or production acceptance, or new owner PDF
+layout acceptance. The full 629-test cohort is the earlier cleanup milestone,
+not a new run for this change.

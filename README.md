@@ -125,16 +125,22 @@ npm run lint
 
 Browser handoff checks: upload, edit, generate a new revision/PDF, confirm the
 current file, download, reject old download identity, retain disabled DOCX
-export and show terminal failures clearly. Refresh currently returns the
-frontend to the home screen even though the backend preserves the revision
-and job. Review recovery is a known gap; do not claim the browser checklist
-fully passes until that behavior is resolved or explicitly accepted.
+export and show terminal failures clearly. The review URL now contains
+`#review/<artifact_id>`. Refresh reloads the current saved revision and latest
+matching preview job from the API, resumes polling active jobs, and preserves
+the exact file's confirmation state. Recovery does not start extraction or a
+new preview job; a missing, interrupted, failed or stale preview requires an
+explicit Generate preview action. Edits not saved to a revision are not
+automatically persisted; leaving or refreshing warns about pending changes.
 
-Original PDF display also depends on the browser's native PDF viewer. The
-Codex in-app browser showed a black original-preview pane during this handoff.
-The identical PDF displays directly in standard Chrome, but that does not
-establish successful embedding in the review page. Original-preview visibility
-remains a separate browser acceptance gap; an HTTP 200 is not visual proof.
+Original PDF pages now display as bounded PNG previews rendered by the existing
+PDFium dependency, with lazy loading, an original-PDF link and preserved text
+available for comparison. This avoids the native PDF viewer that showed a black
+pane in the Codex browser. A's two-page original and F's original were visually
+checked in the in-app browser; A's review page was also checked in Chrome.
+DOCX continues to show preserved extracted text when no original PDF exists.
+October 14 recovery evidence is recorded in the integration report; this is
+local browser validation, not production or all-browser acceptance.
 
 The offline extraction demo remains available:
 

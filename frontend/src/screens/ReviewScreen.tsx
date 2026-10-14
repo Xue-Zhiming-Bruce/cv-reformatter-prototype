@@ -1,15 +1,15 @@
-import { useState, useEffect, useMemo, useRef } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { LogoIcon, PencilIcon } from "../components/icons"
-import type { ProcessResponse, GenerateResponse, TargetFormatMetadata } from "../types"
+import type { ProcessResponse, GenerateResponse, PreviewJob } from "../types"
 import "./ReviewScreen.css"
 
 type ReviewScreenProps = {
   data: ProcessResponse
-  resumeFile: File
   resumeFileName: string
   formatName: string
-  targetFormat: TargetFormatMetadata
+  previewJob?: PreviewJob | null
+  initialBlindProfile: boolean
   onBack: () => void
 }
 
@@ -132,10 +132,10 @@ type EditOverlay = {
   multiline: boolean
 }
 
-export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onBack }: ReviewScreenProps) {
+export function ReviewScreen({ data, resumeFileName, formatName, previewJob, initialBlindProfile, onBack }: ReviewScreenProps) {
   const { t, i18n } = useTranslation()
   const [edits, setEdits] = useState<Record<string, string>>({})
-  const [blindProfile, setBlindProfile] = useState(false)
+  const [blindProfile, setBlindProfile] = useState(initialBlindProfile)
   const [exportState, setExportState] = useState<"idle" | "confirm" | "generating" | "error">("idle")
   const [pendingFormat, setPendingFormat] = useState<"pdf" | null>(null)
   const [dropdownOpen, setDropdownOpen] = useState(false)
@@ -166,8 +166,16 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
 
   const missingNames = new Set(profile.missing_fields.map(field => field.field_name))
 
-  const objectUrl = useMemo(() => URL.createObjectURL(resumeFile), [resumeFile])
-  useEffect(() => () => URL.revokeObjectURL(objectUrl), [objectUrl])
+  const [originalPageError, setOriginalPageError] = useState(false)
+
+  useEffect(() => {
+    function warnUnsaved(event: BeforeUnloadEvent) {
+      if (!dirty && !editOverlay && !document.activeElement?.matches(".ef-input")) return
+      event.preventDefault(); event.returnValue = ""
+    }
+    window.addEventListener("beforeunload", warnUnsaved)
+    return () => window.removeEventListener("beforeunload", warnUnsaved)
+  }, [dirty, editOverlay])
 
   useEffect(() => {
     if (!dropdownOpen) return
@@ -191,9 +199,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [emailPopoverOpen])
 
-  const isPdf = /\.pdf$/i.test(resumeFile.name) || resumeFile.type === "application/pdf"
-  const originalPreviewUrl = data.original_pdf_preview_url ?? (isPdf ? objectUrl : null)
-  const originalPdfViewerUrl = originalPreviewUrl ? pdfViewerUrl(originalPreviewUrl) : null
+  const originalPages = data.original_page_preview_urls ?? []
 
   function handleEdit(path: string, value: string) {
     if (autoGenerating || confirming) return
@@ -331,6 +337,31 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
 
   const operation = useRef(0)
   const currentRevision = useRef(data.profile_revision_id)
+  async function finishPreview(initialJob: PreviewJob, token: number) {
+    let job = initialJob
+    while (job.state === "queued" || job.state === "running") {
+      setGenerateStep(t(job.state === "queued" ? "review.previewQueued" : "review.buildingPreview"))
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      if (token !== operation.current) return
+      job = await apiJson(`/api/artifacts/${data.artifact_id}/preview-jobs/${job.job_id}`)
+    }
+    if (token !== operation.current) return
+    if (job.state !== "succeeded" || !job.result) {
+      setProofsNeeded(job.error?.error_code === "layout_proof_required")
+      throw new Error(job.error?.message ?? t("review.previewFailed"))
+    }
+    setProofsNeeded(false)
+    setOutput(job.result); setDirty(false)
+    setHtmlUrl(job.result.html_surface_url + "?v=" + job.result.html_sha256)
+  }
+
+  async function resumePreview(job: PreviewJob) {
+    const token = ++operation.current
+    try { await finishPreview(job, token) }
+    catch (error) { if (token === operation.current) setPreviewError(String(error)) }
+    finally { if (token === operation.current) { setAutoGenerating(false); setGenerateStep(null) } }
+  }
+
   async function runGenerate() {
     if (autoGenerating && htmlUrl) return
     const token = ++operation.current
@@ -346,24 +377,11 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
         revisionId = revision.profile_revision_id
         currentRevision.current = revisionId
       }
-      let job = await apiJson<{ job_id: string; state: string; result?: GenerateResponse; error?: { message?: string; error_code?: string } }>(`/api/artifacts/${data.artifact_id}/preview-jobs`, {
+      const job = await apiJson<PreviewJob>(`/api/artifacts/${data.artifact_id}/preview-jobs`, {
         method: "POST", headers: json,
         body: JSON.stringify({ profile_revision_id: revisionId, blind_profile: blindProfile }),
       })
-      while (job.state === "queued" || job.state === "running") {
-        setGenerateStep(t(job.state === "queued" ? "review.previewQueued" : "review.buildingPreview"))
-        await new Promise(resolve => setTimeout(resolve, 1000))
-        if (token !== operation.current) return
-        job = await apiJson(`/api/artifacts/${data.artifact_id}/preview-jobs/${job.job_id}`)
-      }
-      if (token !== operation.current) return
-      if (job.state !== "succeeded" || !job.result) {
-        setProofsNeeded(job.error?.error_code === "layout_proof_required")
-        throw new Error(job.error?.message ?? t("review.previewFailed"))
-      }
-      setProofsNeeded(false)
-      setOutput(job.result); setDirty(false)
-      setHtmlUrl(job.result.html_surface_url + "?v=" + job.result.html_sha256)
+      await finishPreview(job, token)
     } catch (error) {
       if (token === operation.current) setPreviewError(String(error))
     } finally {
@@ -372,7 +390,12 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
   }
 
   useEffect(() => {
-    runGenerate()
+    if (previewJob) resumePreview(previewJob)
+    else if (previewJob === null) {
+      setAutoGenerating(false)
+      setPreviewError("No preview has been generated for this saved revision. Generate a preview to continue.")
+    }
+    else runGenerate()
     return () => { operation.current++ }
   }, []) // Initial preview uses the already persisted extraction revision.
 
@@ -504,7 +527,9 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
 
       {/* ── Header ── */}
       <header className="rv-header">
-        <button type="button" className="brand brand--link rv-brand" onClick={onBack}>
+        <button type="button" className="brand brand--link rv-brand" onClick={() => {
+          if (!dirty || window.confirm("Leave this review? Edits not saved to a revision will be lost.")) onBack()
+        }}>
           <LogoIcon className="brand__icon" />
           <span className="brand__name">Reform</span>
         </button>
@@ -676,14 +701,21 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
         {/* Left — original file */}
         <div className="rv-pane rv-pane--left">
           <div className="pane-label">{t("review.leftLabel")}</div>
-          <div className={`pane-body${originalPdfViewerUrl ? " pane-body--pdf" : ""}`}>
-            {originalPdfViewerUrl ? (
-              <object data={originalPdfViewerUrl} type="application/pdf" className="pdf-embed">
-                <p className="pane-fallback">{t("review.pdfFallback")}</p>
-              </object>
+          <div className="pane-body">
+            {data.original_pdf_preview_url && <a href={data.original_pdf_preview_url} target="_blank" rel="noreferrer">Open original PDF</a>}
+            {originalPages.length > 0 && !originalPageError && <details className="original-source-text">
+              <summary>Read extracted original text</summary>
+              <pre className="original-text-preview__body">{data.original_text}</pre>
+            </details>}
+            {originalPages.length > 0 && !originalPageError ? (
+              <div className="original-pages">
+                {originalPages.map((url, index) => <img key={url} src={url} className="original-page" loading="lazy"
+                  alt={`Original resume, page ${index + 1}`} onError={() => setOriginalPageError(true)} />)}
+              </div>
             ) : (
               <div className="original-text-preview">
                 <p className="original-text-preview__title">{t("review.originalTextFallbackTitle")}</p>
+                {originalPageError && <p role="alert">Original page preview could not load. Open the original PDF above or compare the preserved text below.</p>}
                 {data.original_preview_error && (
                   <p className="original-text-preview__note">{data.original_preview_error}</p>
                 )}

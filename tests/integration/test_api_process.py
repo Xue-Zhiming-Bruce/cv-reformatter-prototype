@@ -2,6 +2,9 @@ import json
 from pathlib import Path
 
 import pytest
+from io import BytesIO
+from PIL import Image
+from reportlab.pdfgen import canvas
 from docx import Document
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
@@ -172,6 +175,10 @@ def test_process_accepts_text_pdf_upload(tmp_path: Path, monkeypatch: MonkeyPatc
     assert "Jane Candidate" in body["original_text"]
     assert body["original_pdf_preview_url"] == f"/api/artifacts/{body['artifact_id']}/original_resume_preview.pdf"
     assert body["original_preview_error"] is None
+    assert body["original_page_preview_urls"] == [f"/api/artifacts/{body['artifact_id']}/original-pages/1"]
+    page = client.get(body["original_page_preview_urls"][0])
+    assert page.status_code == 200 and page.headers["content-type"] == "image/png"
+    assert page.content.startswith(b"\x89PNG\r\n\x1a\n")
     assert body["artifact_metadata_url"] == f"/api/artifacts/{body['artifact_id']}/metadata"
     assert (artifact_dir / "source_resume.pdf").exists()
     assert (artifact_dir / "original_resume_preview.pdf").read_bytes() == resume_path.read_bytes()
@@ -185,6 +192,34 @@ def test_process_accepts_text_pdf_upload(tmp_path: Path, monkeypatch: MonkeyPatc
     metadata = metadata_response.json()
     assert metadata["status"] == "processed"
     assert metadata["source_file_type"] == "pdf"
+
+
+def test_original_page_preview_preserves_pages_and_rejects_invalid_references(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    directory = tmp_path / "artifact_pages"
+    directory.mkdir()
+    pdf = directory / "original_resume_preview.pdf"
+    document = canvas.Canvas(str(pdf), pagesize=(600, 800))
+    for color in [(1, 0, 0), (0, 0, 1)]:
+        document.setFillColorRGB(*color)
+        document.rect(0, 0, 600, 800, fill=1, stroke=0)
+        document.showPage()
+    document.save()
+    original = pdf.read_bytes()
+    for number, expected in [(1, (255, 0, 0)), (2, (0, 0, 255))]:
+        response = client.get(f"/api/artifacts/artifact_pages/original-pages/{number}")
+        assert response.status_code == 200
+        image = Image.open(BytesIO(response.content)).convert("RGB")
+        assert image.size == (1200, 1600)
+        assert image.getpixel((600, 800)) == expected
+        assert response.headers["cache-control"] == "no-store"
+    for number in [0, -1, 3]:
+        assert client.get(f"/api/artifacts/artifact_pages/original-pages/{number}").status_code == 404
+    assert client.get("/api/artifacts/artifact_missing/original-pages/1").status_code == 404
+    assert client.get("/api/artifacts/not-safe/original-pages/1").status_code == 404
+    assert pdf.read_bytes() == original
+    pdf.write_bytes(b"corrupt PDF")
+    assert client.get("/api/artifacts/artifact_pages/original-pages/1").status_code == 422
 
 
 def test_llm_first_unavailable_fails_closed_with_structured_error(

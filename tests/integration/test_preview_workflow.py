@@ -86,7 +86,17 @@ def test_real_pdf_edit_final_confirmation_and_blinding(workflow) -> None:
     client, directory, profile, revision, _ = workflow
     source = (directory / "candidate_profile.json").read_bytes()
     original = (directory / "raw_extracted_text.txt").read_bytes()
+    restored = client.get("/api/artifacts/artifact_preview/review")
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["data"]["profile_revision_id"] == revision
+    assert restored.json()["preview_job"] is None
+    assert not (directory / "preview_jobs").exists()
     first = preview(client, revision)["result"]
+    job_count = len(list((directory / "preview_jobs").iterdir()))
+    recovered = client.get("/api/artifacts/artifact_preview/review").json()
+    assert recovered["preview_job"]["result"] == first
+    assert recovered["data"]["original_text"] == original.decode()
+    assert recovered["target_format"]["input_filename"] == "target.pdf"
     assert first["client_ready"] is False
     assert json.loads((directory / "generation_metadata.json").read_text())["renderer_version"] == "pipeline-e-html/5"
     generated = CandidateProfile.model_validate_json((directory / "generated_profile.json").read_text())
@@ -101,22 +111,36 @@ def test_real_pdf_edit_final_confirmation_and_blinding(workflow) -> None:
     accepted = client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(first))
     assert accepted.status_code == 200, accepted.text
     assert client.get(first["pdf_download_url"]).status_code == 200
+    recovered = client.get("/api/artifacts/artifact_preview/review").json()
+    assert recovered["preview_job"]["result"]["client_ready"] is True
+    assert recovered["preview_job"]["result"]["pdf_sha256"] == first["pdf_sha256"]
+    assert len(list((directory / "preview_jobs").iterdir())) == job_count
     assert "attachment" in client.get(first["pdf_download_url"]).headers["content-disposition"]
     old_pdf = client.get(first["pdf_preview_url"]).content
     edited = profile.model_copy(update={"professional_summary": "Edited and reviewed by the recruiter."})
     saved = client.post("/api/artifacts/artifact_preview/profiles/revisions", json={"profile": edited.model_dump(mode="json")})
     assert saved.status_code == 200, saved.text
     new_revision = saved.json()["profile_revision_id"]
+    recovered = client.get("/api/artifacts/artifact_preview/review").json()
+    assert recovered["data"]["profile_revision_id"] == new_revision
+    assert recovered["data"]["profile"]["professional_summary"] == "Edited and reviewed by the recruiter."
+    assert recovered["preview_job"] is None
     assert client.get(first["pdf_download_url"]).status_code == 409
     assert client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(first)).status_code == 409
     second = preview(client, new_revision)["result"]
     assert second["profile_revision_id"] == new_revision and not second["client_ready"]
     assert second["pdf_sha256"] != first["pdf_sha256"]
+    recovered = client.get("/api/artifacts/artifact_preview/review").json()
+    assert recovered["preview_job"]["result"]["pdf_sha256"] == second["pdf_sha256"]
+    assert recovered["preview_job"]["result"]["client_ready"] is False
     assert "Edited and reviewed" in client.get(second["html_surface_url"]).text
     assert client.get(first["pdf_preview_url"]).content == old_pdf
     assert client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(first)).status_code == 409
     assert client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(second)).status_code == 200
     blind = preview(client, new_revision, blind=True)["result"]
+    recovered = client.get("/api/artifacts/artifact_preview/review").json()
+    assert recovered["blind_profile"] is True
+    assert recovered["preview_job"]["result"]["pdf_sha256"] == blind["pdf_sha256"]
     pdf = directory / "blind.pdf"; pdf.write_bytes(client.get(blind["pdf_preview_url"]).content)
     text = read_pdf_text(pdf)
     assert "Candidate A" in text
@@ -156,6 +180,9 @@ def test_missing_cache_requires_opt_in_and_job_input_is_strict(workflow) -> None
     (cache / "renderer_artifact.json").unlink()
     job = preview(client, revision, succeeds=False)
     assert job["error"]["error_code"] == "pipeline_e_live_disabled"
+    recovered = client.get("/api/artifacts/artifact_preview/review").json()
+    assert recovered["preview_job"]["job_id"] == job["job_id"]
+    assert recovered["preview_job"]["state"] == "failed"
     for extra in [{"profile": {}}, {"live": True}, {"blind_profile": "false"}]:
         response = client.post("/api/artifacts/artifact_preview/preview-jobs", json={"profile_revision_id": revision, **extra})
         assert response.status_code == 422, response.text
@@ -163,6 +190,7 @@ def test_missing_cache_requires_opt_in_and_job_input_is_strict(workflow) -> None
     interrupted.mkdir(parents=True)
     record = {"job_id": "f" * 32, "artifact_id": "artifact_preview", "profile_revision_id": revision, "state": "running", "stage": "building", "created_at": "2026-10-11", "updated_at": "2026-10-11"}
     (interrupted / "status.json").write_text(json.dumps(record))
+    (interrupted / "request.json").write_text(json.dumps({"profile_revision_id": revision, "blind_profile": True}))
     resumed = client.get("/api/artifacts/artifact_preview/preview-jobs/" + "f" * 32)
     assert resumed.status_code == 200 and resumed.json()["state"] == "interrupted"
 
@@ -180,6 +208,10 @@ def test_replacing_target_invalidates_confirmed_export(workflow, renderer_versio
     assert client.get(result["pdf_download_url"]).status_code == 409
     assert client.post("/api/artifacts/artifact_preview/final-acceptance", json=identity(result)).status_code == 409
     assert client.get(result["pdf_preview_url"]).status_code == 200
+    recovered = client.get("/api/artifacts/artifact_preview/review").json()
+    assert recovered["preview_job"]["state"] == "failed"
+    assert recovered["preview_job"]["result"] is None
+    assert recovered["preview_job"]["error"]["error_code"] == "preview_stale"
 
 
 def test_duplicate_jobs_share_work_and_block_concurrent_mutation(workflow, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -199,6 +231,9 @@ def test_duplicate_jobs_share_work_and_block_concurrent_mutation(workflow, monke
     assert first.status_code == 202
     assert entered.wait(5)
     try:
+        recovered = client.get("/api/artifacts/artifact_preview/review").json()
+        assert recovered["preview_job"]["job_id"] == first.json()["job_id"]
+        assert recovered["preview_job"]["state"] == "running"
         duplicate = client.post("/api/artifacts/artifact_preview/preview-jobs", json=body)
         assert duplicate.status_code == 202 and duplicate.json()["job_id"] == first.json()["job_id"]
         conflicting = client.post("/api/artifacts/artifact_preview/preview-jobs", json={**body, "blind_profile": True})

@@ -34,6 +34,7 @@ Response fields:
 - `original_text` — the preserved extracted text, stored as
   `raw_extracted_text.txt`;
 - `original_pdf_preview_url`;
+- `original_page_preview_urls` — ordered, one-based original-PDF PNG page URLs;
 - `original_preview_error`;
 - `debug_artifacts`;
 - `artifact_metadata_url`.
@@ -86,6 +87,37 @@ The `target_format` object includes:
 - `analysis_warnings`.
 
 Generation can reload the saved target format using the same `artifact_id`.
+
+## Recover A Saved Review
+
+```text
+GET /api/artifacts/{artifact_id}/review
+GET /api/artifacts/{artifact_id}/original-pages/{page_number}
+```
+
+Review recovery returns `data` with the current persisted profile revision,
+ledger and immutable original text/preview references; `source_filename`;
+`target_format`; the latest `preview_job` for that revision (or null); and its
+saved `blind_profile` choice. It never creates a revision, provider call or
+preview job. Active jobs retain their identity for polling; interrupted and
+failed jobs remain explicit failures. A succeeded result is rechecked against
+the current checked output and target/template identity, and its
+`client_ready` is recomputed from exact final acceptance. A stale result is
+returned as a failed recovery state without a downloadable result. Invalid
+saved data returns a clear error rather than restarting processing.
+
+Original-page URLs render only the preserved original PDF, with a maximum
+1600-pixel edge and `Cache-Control: no-store`. Page numbers start at one;
+missing artifacts, absent PDF previews and out-of-range pages return 404;
+unrenderable page data returns 422. No candidate facts or source PDF bytes are
+changed. The frontend shows an explicit text/PDF-link fallback if an image
+fails, and DOCX retains its extracted-text comparison. PDFium calls share a
+process lock with existing preview/comparison rendering.
+
+The frontend saves only the artifact reference in the review URL, then reads
+server state on reload. Unsaved browser edits are not a persisted revision;
+the UI warns before leaving them. Recovery is local-prototype behavior and
+does not add durable production jobs or organization authorization.
 
 ## Save Candidate Profile Revision
 

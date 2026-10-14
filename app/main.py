@@ -5,16 +5,18 @@ import shutil
 import tempfile
 import time
 import uuid
+from io import BytesIO
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 import httpx
+import pypdfium2 as pdfium
 
 from app.extraction.candidate_document_analyzer import (
     CandidateFieldEvidenceLedger,
@@ -112,6 +114,7 @@ from app.template_analysis.schemas import (
     built_in_layout_template_spec,
 )
 from app.template_analysis.visual_comparator import (
+    PDF_RENDER_LOCK,
     COMPARISON_FILENAME,
     VisualComparisonError,
     compare_pdf_layouts,
@@ -251,6 +254,7 @@ class ProcessResponse(BaseModel):
     ledger: LedgerSummary
     original_text: str
     original_pdf_preview_url: str | None = None
+    original_page_preview_urls: list[str] = Field(default_factory=list)
     original_preview_error: str | None = None
     debug_artifacts: dict[str, str] = Field(default_factory=dict)
     artifact_metadata_url: str
@@ -309,6 +313,14 @@ class GenerateResponse(BaseModel):
     html_sha256: str
     pdf_sha256: str
     client_ready: bool = False
+
+
+class ReviewStateResponse(BaseModel):
+    data: ProcessResponse
+    source_filename: str
+    target_format: TargetFormatMetadata | None
+    preview_job: preview_jobs.PreviewJob | None
+    blind_profile: bool = False
 
 
 class FollowupRequest(BaseModel):
@@ -636,6 +648,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
         ledger=_build_ledger(profile),
         original_text=extracted_text,
         original_pdf_preview_url=original_pdf_preview_url,
+        original_page_preview_urls=_original_page_preview_urls(artifact_id, artifact_dir),
         original_preview_error=original_preview_error,
         debug_artifacts=debug_artifacts,
         artifact_metadata_url=_artifact_metadata_url(artifact_id),
@@ -1849,6 +1862,86 @@ def get_artifact_metadata(artifact_id: str) -> ArtifactMetadataResponse:
         **artifact,
         "client_ready": is_final_acceptance_current(artifact["artifact_dir"]),
     })
+
+
+@app.get("/api/artifacts/{artifact_id}/review", response_model=ReviewStateResponse)
+def get_review_state(artifact_id: str) -> ReviewStateResponse:
+    _require_artifact(artifact_id)
+    directory = GENERATED_OUTPUTS_DIR / artifact_id
+    try:
+        revision = load_current_approved_profile(directory)
+        if revision is None:
+            raise ValueError("No saved revision")
+        _require_approved_profile(artifact_dir=directory, artifact_id=artifact_id, approved_profile_version_id=revision.profile_revision_id)
+        original_text = (directory / "raw_extracted_text.txt").read_text(encoding="utf-8")
+        jobs = [preview_jobs.read_job(directory, path.parent.name) for path in (directory / "preview_jobs").glob("*/status.json")]
+        job = max((item for item in jobs if item.profile_revision_id == revision.profile_revision_id), key=lambda item: item.created_at, default=None)
+        blind = False
+        if job is not None:
+            request = GenerateRequest.model_validate_json((directory / "preview_jobs" / job.job_id / "request.json").read_text())
+            blind = request.blind_profile
+            if job.state == "succeeded" and job.result:
+                result = GenerateResponse.model_validate(job.result)
+                try:
+                    identity = FinalOutputIdentity.model_validate(result.model_dump(include=set(FinalOutputIdentity.model_fields)))
+                    if identity != current_output_identity(directory):
+                        raise ValueError("Preview changed")
+                    _require_current_output(artifact_id, directory, identity)
+                    result.client_ready = is_final_acceptance_current(directory)
+                    job = job.model_copy(update={"result": result.model_dump(mode="json")})
+                except (HTTPException, OSError, ValueError, KeyError):
+                    job = job.model_copy(update={"state": "failed", "result": None, "error": {"error_code": "preview_stale", "message": "The saved preview changed. Regenerate and review it before exporting."}})
+        metadata = _local_artifact_store().get_artifact(artifact_id) or {}
+        has_pdf = (directory / "original_resume_preview.pdf").is_file()
+        return ReviewStateResponse(
+            data=ProcessResponse(artifact_id=artifact_id, profile_revision_id=revision.profile_revision_id, profile=revision.profile,
+                ledger=_build_ledger(revision.profile), original_text=original_text,
+                original_pdf_preview_url=_artifact_url(artifact_id, "original_resume_preview.pdf") if has_pdf else None,
+                original_page_preview_urls=_original_page_preview_urls(artifact_id, directory),
+                original_preview_error=metadata.get("original_preview_error"), artifact_metadata_url=_artifact_metadata_url(artifact_id)),
+            source_filename=metadata.get("source_filename") or "Resume", target_format=_load_saved_target_format(directory),
+            preview_job=job, blind_profile=blind,
+        )
+    except (OSError, ValueError, ProfileApprovalError, LocalDatabaseError) as error:
+        raise HTTPException(409, "Saved review data is unavailable or invalid. No extraction or generation was restarted.") from error
+
+
+def _original_page_preview_urls(artifact_id: str, directory: Path) -> list[str]:
+    path = directory / "original_resume_preview.pdf"
+    if not path.is_file():
+        return []
+    try:
+        with PDF_RENDER_LOCK, pdfium.PdfDocument(path) as document:
+            return [f"/api/artifacts/{artifact_id}/original-pages/{number + 1}" for number in range(len(document))]
+    except (OSError, ValueError, pdfium.PdfiumError):
+        return []
+
+
+@app.get("/api/artifacts/{artifact_id}/original-pages/{page_number}")
+def preview_original_page(artifact_id: str, page_number: int) -> Response:
+    _require_artifact(artifact_id)
+    path = GENERATED_OUTPUTS_DIR / artifact_id / "original_resume_preview.pdf"
+    if not path.is_file():
+        raise HTTPException(404, "Original PDF preview is unavailable.")
+    try:
+        with PDF_RENDER_LOCK, pdfium.PdfDocument(path) as document:
+            if not 1 <= page_number <= len(document):
+                raise HTTPException(404, "Original PDF page not found.")
+            page = document[page_number - 1]
+            try:
+                scale = min(2, 1600 / max(page.get_size()))
+                bitmap = page.render(scale=scale)
+                try:
+                    buffer = BytesIO()
+                    bitmap.to_pil().convert("RGB").save(buffer, format="PNG")
+                    png = buffer.getvalue()
+                finally:
+                    bitmap.close()
+            finally:
+                page.close()
+    except (OSError, ValueError, RuntimeError, pdfium.PdfiumError) as error:
+        raise HTTPException(422, "Original PDF page could not be displayed. Open the original PDF or use the preserved text.") from error
+    return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/artifacts/{artifact_id}/{filename}")

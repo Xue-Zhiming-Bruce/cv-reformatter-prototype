@@ -1,10 +1,10 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { MainScreen } from "./screens/MainScreen"
 import { ReviewScreen } from "./screens/ReviewScreen"
 import { AuthScreen } from "./screens/AuthScreen"
 import { PricingScreen } from "./screens/PricingScreen"
 import { LegalScreen } from "./screens/LegalScreen"
-import type { ProcessResponse, TargetFormatMetadata, TargetFormatUploadResponse } from "./types"
+import type { ProcessResponse, PreviewJob, ReviewStateResponse } from "./types"
 import "./App.css"
 
 type AuthFrom = "idle" | "pricing" | "terms" | "privacy"
@@ -18,17 +18,44 @@ type AppState =
   | { status: "signup"; from: AuthFrom }
   | { status: "loading"; fileName: string; targetFormatName: string }
   | { status: "error"; message: string }
+  | { status: "restoring" }
   | {
       status: "done"
       data: ProcessResponse
       fileName: string
       targetFormatName: string
-      targetFormat: TargetFormatMetadata
-      resumeFile: File
+      previewJob?: PreviewJob | null
+      blindProfile: boolean
     }
 
 export default function App() {
-  const [state, setState] = useState<AppState>({ status: "idle" })
+  const [state, setState] = useState<AppState>(() => ({ status: location.hash.startsWith("#review/") ? "restoring" : "idle" }))
+
+  function goHome() {
+    history.replaceState(null, "", location.pathname + location.search)
+    setState({ status: "idle" })
+  }
+
+  useEffect(() => {
+    if (!location.hash.startsWith("#review/")) return
+    let cancelled = false
+    async function restore() {
+      try {
+        const artifactId = location.hash.slice("#review/".length)
+        if (!/^artifact_[a-zA-Z0-9_-]+$/.test(artifactId)) throw new Error("Invalid saved review link.")
+        const response = await fetch(`/api/artifacts/${artifactId}/review`)
+        const body = await response.json()
+        if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : "Could not restore the saved review.")
+        const saved = body as ReviewStateResponse
+        if (!cancelled) setState({ status: "done", data: saved.data, fileName: saved.source_filename,
+          targetFormatName: saved.target_format?.input_filename ?? "Standard format", previewJob: saved.preview_job, blindProfile: saved.blind_profile })
+      } catch (error) {
+        if (!cancelled) setState({ status: "error", message: String(error) })
+      }
+    }
+    restore()
+    return () => { cancelled = true }
+  }, [])
 
   async function handleConvert(resumeFile: File, targetFile: File) {
     setState({ status: "loading", fileName: resumeFile.name, targetFormatName: targetFile.name })
@@ -63,14 +90,13 @@ export default function App() {
         return
       }
 
-      const targetData: TargetFormatUploadResponse = await targetRes.json()
+      history.replaceState(null, "", `${location.pathname}${location.search}#review/${data.artifact_id}`)
       setState({
         status: "done",
         data,
         fileName: resumeFile.name,
         targetFormatName: targetFile.name,
-        targetFormat: targetData.target_format,
-        resumeFile,
+        blindProfile: false,
       })
     } catch {
       setState({
@@ -95,14 +121,16 @@ export default function App() {
     return (
       <ReviewScreen
         data={state.data}
-        resumeFile={state.resumeFile}
         resumeFileName={state.fileName}
         formatName={state.targetFormatName}
-        targetFormat={state.targetFormat}
-        onBack={() => setState({ status: "idle" })}
+        previewJob={state.previewJob}
+        initialBlindProfile={state.blindProfile}
+        onBack={goHome}
       />
     )
   }
+
+  if (state.status === "restoring") return <p role="status">Restoring saved review…</p>
 
   if (state.status === "pricing") {
     return (
@@ -137,7 +165,7 @@ export default function App() {
       onConvert={handleConvert}
       isLoading={state.status === "loading"}
       error={state.status === "error" ? state.message : null}
-      onDismissError={() => setState({ status: "idle" })}
+      onDismissError={goHome}
       onLogin={() => setState({ status: "login", from: "idle" })}
       onSignup={() => setState({ status: "signup", from: "idle" })}
       onPricing={() => setState({ status: "pricing" })}

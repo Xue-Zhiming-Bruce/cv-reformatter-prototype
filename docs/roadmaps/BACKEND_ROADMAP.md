@@ -194,6 +194,22 @@ browser handoff gap. The earlier “original comparison visible” wording is
 corrected; HTTP availability is not visual acceptance. No renderer or frontend
 change is claimed from this diagnostic check.
 
+October 14 browser-gap repair (owner direction to continue): the original pane
+now displays bounded PDFium-rendered pages with preserved text and original-PDF
+access. The review URL restores the current saved revision and existing job;
+refresh does not start extraction or generation, and exact final acceptance is
+recomputed. A's original pages are visible in the in-app browser and Chrome;
+an A name-case edit creates one new revision/job and survives refresh while
+remaining unconfirmed. F restores its unchanged confirmed file without a new
+job. Original source/draft/text hashes are unchanged, both outputs pass eight
+gates, and old A export remains blocked. Focused API/Chrome/Pipeline regression:
+255 passed, one skipped; frontend build/lint pass. These two local browser gaps
+are closed for the inspected A/F cases. Unsaved inputs are warned about rather
+than automatically persisted; Chrome's leave-confirm dialog was observed but
+its cancellation was not verified after browser control stalled. Broader
+browser/device coverage, product-copy alignment and production gates remain
+outside this repair. See the integration record for commands and evidence.
+
 ## Product-Standard Definition
 
 “Product standard” means that the backend is measurably reliable across the
