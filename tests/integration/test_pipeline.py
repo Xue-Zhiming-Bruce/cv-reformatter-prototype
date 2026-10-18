@@ -7,83 +7,12 @@ from pathlib import Path
 
 import pdfplumber
 import pytest
-from reportlab.pdfbase.pdfmetrics import stringWidth
 
-from app.pipeline.candidate_content import CandidateDocument, CandidateLeaf, CandidateSection
-from app.pipeline.evidence import TargetStructureDraft, SelfReportedStatus
 from app.pipeline.service import run_e5
-from app.template_analysis.commercial.models import NormalizedLayoutEvidence, NormalizedPage, NormalizedBox, NormalizedTextBlock, NormalizedRule, MeasurementProvenance
-from tests.helpers.synthetic_pdf import _write_single_page_pdf
+from tests.helpers.pipeline import synthetic_pipeline_inputs as _inputs, synthetic_pipeline_candidate as _candidate
 
 
 pytestmark = pytest.mark.integration
-
-
-def _inputs(tmp_path: Path) -> dict:
-    operations = ["BT /F2 20 Tf 180 740 Td (Target Person) Tj ET"]
-    rules = []
-    for heading, y in (("SUMMARY", 650), ("EXPERIENCE", 550)):
-        x = 140 - stringWidth(heading, "Helvetica-Bold", 12)
-        operations.extend([
-            f"BT /F2 12 Tf {x} {y} Td ({heading}) Tj ET",
-            f"BT /F1 10 Tf 180 {y - 25} Td (Target facts only) Tj ET",
-            f"0.5 w 180 {y - 5} m 560 {y - 5} l S",
-        ])
-        rules.append(NormalizedRule(
-            element_id=f"rule.{heading.lower()}", page_number=1,
-            bbox=NormalizedBox(x0=180 / 612, x1=560 / 612,
-                               top=(792 - y + 5) / 792, bottom=(792 - y + 5) / 792),
-            stroke_width_pt=0.5, color_hex="#000000",
-            provenance=MeasurementProvenance(source="local_pdf", provider="synthetic", method="fixture"),
-        ))
-    target = _write_single_page_pdf(tmp_path / "target.pdf", operations,
-                                    regular_font="Helvetica", bold_font="Helvetica-Bold")
-    blocks = []
-    elements = []
-    with pdfplumber.open(target) as pdf:
-        words = pdf.pages[0].extract_words(extra_attrs=["fontname", "size"])
-    for index, word in enumerate(words):
-        bold = "Bold" in word["fontname"]
-        blocks.append(NormalizedTextBlock(
-            element_id=f"adobe.page.1.element.{index}", text=word["text"], page_number=1,
-            reading_order=index,
-            bbox=NormalizedBox(x0=word["x0"] / 612, x1=word["x1"] / 612,
-                               top=word["top"] / 792, bottom=word["bottom"] / 792),
-            font_family="Helvetica", font_size_pt=word["size"], bold=bold,
-            line_height_pt=word["size"] * 1.2,
-            color_hex="#000000",
-        ))
-        elements.append({"Path": f"//Document/Sect/P[{index}]", "Text": word["text"],
-                         "Page": 0, "ObjectID": index,
-                         "Bounds": [word["x0"], 792 - word["bottom"], word["x1"], 792 - word["top"]]})
-    raw = tmp_path / "adobe.json"
-    raw.write_text(json.dumps({"structured_data": {
-        "pages": [{"page_number": 0, "width": 612, "height": 792}], "elements": elements,
-    }}))
-    normalized = tmp_path / "normalized.json"
-    normalized.write_text(NormalizedLayoutEvidence(
-        provider="synthetic", page_count=1,
-        pages=[NormalizedPage(page_number=1, width_pt=612, height_pt=792)],
-        full_text="\n".join(word["text"] for word in words), text_blocks=blocks, rules=rules,
-    ).model_dump_json())
-    draft = tmp_path / "draft.json"
-    draft.write_text(TargetStructureDraft(
-        target_id="target-target-v1", investigator="scripted",
-        self_reported=SelfReportedStatus(status="ok"),
-    ).model_dump_json())
-    return {"target_pdf": target, "adobe_json": raw,
-            "normalized_evidence": normalized, "structure_draft": draft}
-
-
-def _candidate(name: str) -> CandidateDocument:
-    return CandidateDocument(
-        candidate_id="reviewed-candidate",
-        leaves=[CandidateLeaf(leaf_id="header.name", kind="header_field", slot="name", text=name),
-                CandidateLeaf(leaf_id="summary.item", kind="summary_paragraph", source="summary",
-                              text="Builds reliable systems")],
-        sections=[CandidateSection(section_id="summary", source="summary", content_kind="paragraph",
-                                   leaf_ids=["summary.item"])],
-    )
 
 
 @pytest.mark.parametrize("name", ["Candidate Alpha", "Candidate Beta"])
@@ -92,7 +21,7 @@ def test_cli_uses_explicit_content_without_experiment_imports(tmp_path: Path, na
     candidate_path = tmp_path / "candidate.json"
     candidate_path.write_text(_candidate(name).model_dump_json())
     out_dir = tmp_path / "result"
-    # A forbidden import must fail even when the checkout still contains the old files.
+    # Production must stay independent of repository test fixtures.
     script = """
 import sys, runpy
 class NoExperiments:
@@ -112,6 +41,10 @@ runpy.run_module('app.pipeline', run_name='__main__')
                                    (out_dir / "e5_state.json").read_text())
     state = json.loads((out_dir / "e5_state.json").read_text())
     assert state["summary"]["terminal_state"] == "ready_for_owner_review"
+    manifest = json.loads((out_dir / "manifest.json").read_text())
+    assert manifest["pipeline_phase"] == "e5"
+    assert manifest["versions"] and all(item["sha256"] for item in manifest["versions"])
+    assert manifest["state_history"][-1]["state"] == "ready_for_owner_review"
     with pdfplumber.open(out_dir / "lane_b/render_1.pdf") as pdf:
         text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     assert name in text and "Builds reliable systems" in text

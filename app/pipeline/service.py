@@ -3127,9 +3127,7 @@ def run_e5(
         },
     )
 
-    store = EvidenceStore(out_dir, out_dir, base_html="<html><body></body></html>")
-    store.manifest["experiment"] = "e_pipeline_e5"
-    store.manifest["pipeline_phase"] = "e5"
+    store = EvidenceStore(out_dir)
     store.register_version("structure_draft_v1", out_dir / "structure_draft.json", "shared evidence-linked draft")
     page_size = _page_pt_size(target_pdf, 1)
     shared_target_images = _overview_pngs(target_pdf, out_dir, "builder_target_shared")

@@ -1,18 +1,7 @@
-"""Tests for the Pipeline E5 loop and Lane A/Lane B representation lanes.
+"""Retained loop, authorization, rollback, and authored-template safety regressions.
 
-Split out of `test_e_pipeline.py` (behaviour-neutral file split, 2026-09-22):
-E1-E4 tests stay there, every E5 test lives here.
-
-Shared fixtures (`ROOT`, `RESUME_I`, `TARGET_F`, `TARGET_F_CACHE`, `e2_skip`)
-are imported from `test_e_pipeline.py` — the existing test file is the single
-owner of the shared fixtures; nothing is duplicated.
-
-Lanes:
-- Default (no markers): fully offline. No Chrome download and no live provider
-  call are required by any test in this file. Tests that need the shared E4
-  draft / target cache carry `e5_skip`.
-
-Run: pytest tests/experiments/test_e5_pipeline.py
+Synthetic targets are generated per test. Optional full-loop corpus cases use
+only the explicit input bundle documented in tests/README.md.
 """
 
 from __future__ import annotations
@@ -24,40 +13,35 @@ from pathlib import Path
 
 import pytest
 
-import tests.experiments.e_authored_template as at
-import tests.experiments.e_pipeline as e
-import tests.experiments.e_pipeline_e5 as e5
-from tests.experiments.d_pipeline import RunBudget
+import app.pipeline.authored_template as at
+import app.pipeline.service as e
+import app.pipeline.service as e5
+from app.pipeline.runtime import RunBudget
+import app.pipeline.evidence as evidence
 from tests.helpers.pipeline import (
-    run_pipeline_fixture as _run_e5,
-    RESUME_I,
-    ROOT,
-    TARGET_F,
-    TARGET_F_CACHE,
-    _pipeline_e_semantic_findings,
-    e2_skip,
+    ROOT, LOCAL_TARGET as TARGET_PDF, LOCAL_INPUTS,
+    local_pipeline, run_pipeline_fixture as _run_e5,
+    _pipeline_e_semantic_findings, synthetic_pipeline_inputs, synthetic_pipeline_candidate,
 )
 
-import tests.experiments.e_authored_template as at
 
 # ===========================================================================
-# E5 — Phase 0 loop fixes + Builder representation comparison (Lane A / Lane B)
-# Offline only: no Chrome requirement beyond the same offline lane as E3/E4,
-# no live provider call.
+# Retained Lane A / Lane B loop and boundary regressions.
+# Real PDF exports use local Chrome; provider calls are stubbed or disabled.
 # ===========================================================================
 
-e5_skip = pytest.mark.skipif(
-    not (
-        RESUME_I.exists()
-        and (ROOT / "tests/experiments/runs/target_cache").exists()
-        and (ROOT / "tests/experiments/runs/e_pipeline_e4_20260920T134946Z/structure_draft.json").exists()
-    ),
-    reason="authorized Resume I corpus, target cache, and shared E4 draft are not present",
-)
+pytestmark = pytest.mark.integration
+
+@pytest.fixture(autouse=True)
+def _target_fixture(tmp_path, monkeypatch, request):
+    if request.node.get_closest_marker("local_dataset"):
+        return
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    monkeypatch.setitem(globals(), "TARGET_PDF", inputs["target_pdf"])
 
 
 def _base_authored_template() -> "at.AuthoredTemplateCandidate":
-    from tests.experiments.e_authored_template import SCRIPTED_AUTHORED_TEMPLATE
+    from app.pipeline.authored_template import SCRIPTED_AUTHORED_TEMPLATE
 
     return SCRIPTED_AUTHORED_TEMPLATE.model_copy(deep=True)
 
@@ -122,11 +106,13 @@ def test_role_gap_binding_does_not_measure_an_unrelated_visual_dimension() -> No
     assert contact_result.status == "not_measurable"
 
 
+@pytest.mark.local_dataset
+@local_pipeline
 def test_measurement_binding_resolves_against_actual_final_pdf_objects(tmp_path: Path) -> None:
     """Phase 0: binding resolves the semantic intent into REAL final-PDF
     objects (render anchors come from the render's own entry-head rows)."""
     run_dir, _terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
     )
     lane = record["lanes"]["a"]
     confirmed = [r for r in lane["measurement_results"] if r["status"] == "confirmed"]
@@ -140,7 +126,7 @@ def test_measurement_binding_resolves_against_actual_final_pdf_objects(tmp_path:
 def test_stable_duplicate_findings_are_deduplicated_before_attribution() -> None:
     finding = e.DefectFinding(
         finding_id="finding-001",
-        target_version="target-resume_I-v1",
+        target_version="target-fixture-v1",
         render_version="render-v1",
         page=1,
         region="section.04",
@@ -169,7 +155,7 @@ def test_stable_duplicate_findings_are_deduplicated_before_attribution() -> None
 def test_changed_findings_reopen_in_the_ledger() -> None:
     finding = e.DefectFinding(
         finding_id="finding-001",
-        target_version="target-resume_I-v1",
+        target_version="target-fixture-v1",
         render_version="render-v2",
         page=1,
         region="section.04",
@@ -330,7 +316,7 @@ def test_exact_candidate_accounting_failure_enters_repair_with_gate_evidence() -
             "missing_leaves": ["header.name", "work.e1.b1"],
         },
     }
-    items = e._e5_gate_repair_items("b", "target-resume_I-v1", "render-v1", gates)
+    items = e._e5_gate_repair_items("b", "target-fixture-v1", "render-v1", gates)
     assert len(items) == 1
     finding, result, request, attribution = items[0]
     assert finding.region == "candidate_content_accounting"
@@ -390,7 +376,8 @@ def test_lane_b_only_candidate_truth_and_privacy_are_render_gates() -> None:
     assert e._e5_blocking_gates_passed("b", gates) is False
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_reviewer_failure_does_not_starve_shell_confirmed_gate_repair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -416,7 +403,7 @@ def test_reviewer_failure_does_not_starve_shell_confirmed_gate_repair(
     monkeypatch.setattr(e5, "_with_connection_retry", lambda call, **_kwargs: call())
 
     run_dir, _terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=True, lanes=("b",), max_repair_rounds=1,
+        TARGET_PDF, tmp_path / "run", live=True, lanes=("b",), max_repair_rounds=1,
     )
     lane = record["lanes"]["b"]
     assert len(builder_payloads) >= 2, "initial build plus hard-gate repair"
@@ -779,7 +766,8 @@ def test_lane_a_rejects_target_specific_identifiers_and_invalid_fields() -> None
             )
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_builder_entries_receive_identical_initial_payload_and_image_hashes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -812,7 +800,7 @@ def test_builder_entries_receive_identical_initial_payload_and_image_hashes(
 
     monkeypatch.setattr(e5, "_live_reviewer_findings", reviewer)
     _run_e5(
-        RESUME_I, tmp_path / "run", live=True, lanes=("a", "b"), max_repair_rounds=0,
+        TARGET_PDF, tmp_path / "run", live=True, lanes=("a", "b"), max_repair_rounds=0,
     )
     assert received["a"] == received["b"]
     payload = received["a"]["payload"]
@@ -843,7 +831,7 @@ def test_builder_evidence_package_is_representation_neutral() -> None:
         investigator="scripted",
         structure=[],
         unresolved=[],
-        self_reported=e.SelfReportedStatus(status="partial"),
+        self_reported=evidence.SelfReportedStatus(status="partial"),
     )
     package_a = e._e5_builder_evidence_package(
         draft=draft,
@@ -982,7 +970,7 @@ def test_lane_b_routes_confirmed_presentation_residual_directly_to_builder() -> 
 
 
 def test_reviewer_does_not_request_target_only_candidate_sections() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.helpers.pipeline_candidates import candidate_resume_E
 
     labels = [
         e.PresentationLabel(
@@ -1011,7 +999,7 @@ def test_reviewer_does_not_request_target_only_candidate_sections() -> None:
 def test_candidate_shape_filter_keeps_real_skills_layout_and_page_local_residuals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.helpers.pipeline_candidates import candidate_resume_E
 
     scope = e5._candidate_review_scope(candidate_resume_E(), [])
     no_language_shape = _e5_finding("f1", "skills", "content_presence").model_copy(update={
@@ -1200,7 +1188,7 @@ def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
             investigator="scripted",
             structure=[],
             unresolved=[],
-            self_reported=e.SelfReportedStatus(status="partial"),
+            self_reported=evidence.SelfReportedStatus(status="partial"),
         ),
         state=State(),
         derived={},
@@ -1223,7 +1211,7 @@ def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
         target_id="target-v1",
         investigator="scripted",
         structure=[
-            e.StructuralRelation(
+            evidence.StructuralRelation(
                 claim_id="header-typography",
                 relation="reading_order",
                 statement=(
@@ -1234,7 +1222,7 @@ def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
             )
         ],
         unresolved=[],
-        self_reported=e.SelfReportedStatus(status="partial"),
+        self_reported=evidence.SelfReportedStatus(status="partial"),
     )
     header_finding = finding.model_copy(update={
         "region": "header_name",
@@ -1548,21 +1536,16 @@ def test_gate_and_builder_candidate_audits_are_version_bound() -> None:
     assert candidate_record["action_fingerprint"] == "experience:gap:8.0"
 
 
-def test_lane_a_proposal_cites_only_known_state_nodes() -> None:
-    from tests.experiments.a_pipeline import build_format_summary
+def test_lane_a_proposal_cites_only_known_state_nodes(tmp_path: Path) -> None:
+    from app.pipeline.rendering import build_format_summary
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 
-    normalized_path = (
-        ROOT / "tests/experiments/runs/c2_resume_i_blind_20260917T115551Z/enriched_evidence.json"
-    )
-    raw_path = (
-        ROOT / "tests/experiments/runs/c2_resume_i_blind_20260917T115551Z/adobe_raw.json"
-    )
-    if not (normalized_path.exists() and raw_path.exists()):
-        pytest.skip("cached Resume I evidence not present")
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    normalized_path = inputs["normalized_evidence"]
+    raw_path = inputs["adobe_json"]
     normalized = NormalizedLayoutEvidence.model_validate_json(normalized_path.read_text(encoding="utf-8"))
-    summary = build_format_summary(normalized, json.loads(raw_path.read_text(encoding="utf-8")), RESUME_I)
-    state, _derived = e.compile_two_column_state(RESUME_I, summary, evidence=normalized)
+    summary = build_format_summary(normalized, json.loads(raw_path.read_text(encoding="utf-8")), TARGET_PDF)
+    state, _derived = e.compile_two_column_state(TARGET_PDF, summary, evidence=normalized)
     proposal = e.LaneAStructureProposal(
         proposal_id="p1",
         sections=[e.E5LaneASection(section_node_id="section.99", heading_in_rail=True, rail_label_width_pt=90.0)],
@@ -1581,10 +1564,11 @@ def test_lane_a_proposal_cites_only_known_state_nodes() -> None:
     assert all(item.section_node_id in known for item in valid.sections)
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
     run_dir, terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
         presentation_label_approval=_simulated_approval_for_test_target_catalog(),
     )
     # Terminal semantics (2026-09-23): `budget_exhausted` now means a
@@ -1601,10 +1585,11 @@ def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
     assert (run_dir / "comparison_report.json").exists()
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_offline_lane_b_authored_template_loop(tmp_path: Path) -> None:
     run_dir, terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     assert terminal in {"ready_for_owner_review", "budget_exhausted"}
     lane = record["lanes"]["b"]
@@ -1636,7 +1621,8 @@ def test_run_e5_offline_lane_b_authored_template_loop(tmp_path: Path) -> None:
     assert (run_dir / "lane_b" / "residuals.jsonl").exists()
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_validator_rejected_builder_candidate_is_auditable_but_never_active(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1648,7 +1634,7 @@ def test_validator_rejected_builder_candidate_is_auditable_but_never_active(
 
     monkeypatch.setattr(e5, "_scripted_lane_b_template", rejected_template)
     run_dir, _terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     lane = record["lanes"]["b"]
     rejected = [item for item in lane["builder_candidates"] if item["outcome"] == "validator_rejected"]
@@ -1660,7 +1646,7 @@ def test_validator_rejected_builder_candidate_is_auditable_but_never_active(
 
 def test_lane_b_rejects_unsafe_content_and_undeclared_slots(tmp_path: Path) -> None:
     base = _base_authored_template()
-    ok = at.validate_authored_template(base, target_pdf=RESUME_I)
+    ok = at.validate_authored_template(base, target_pdf=TARGET_PDF)
     assert ok["passed"]
     violations = {
         "<script>alert(1)</script>": "javascript element",
@@ -1673,14 +1659,14 @@ def test_lane_b_rejects_unsafe_content_and_undeclared_slots(tmp_path: Path) -> N
     for payload, label in violations.items():
         candidate = base.model_copy(update={"html": base.html + "\n" + payload})
         with pytest.raises(ValueError, match="authored template rejected"):
-            at.validate_authored_template(candidate, target_pdf=RESUME_I)
+            at.validate_authored_template(candidate, target_pdf=TARGET_PDF)
 
 
 def test_lane_b_rejects_target_person_literals() -> None:
     base = _base_authored_template()
     from app.ingestion.pdf_reader import read_pdf_text
 
-    target_words = re.findall(r"[A-Za-z]{5,}", read_pdf_text(RESUME_I))
+    target_words = re.findall(r"[A-Za-z]{5,}", read_pdf_text(TARGET_PDF))
     outside_vocab = [
         word for word in target_words
         if word.casefold() not in at._TEMPLATE_GENERIC_VOCABULARY
@@ -1688,20 +1674,20 @@ def test_lane_b_rejects_target_person_literals() -> None:
     assert outside_vocab, "expected at least one distinctive target word to guard"
     injected = base.model_copy(update={"html": base.html + f"\n<!-- {outside_vocab[0]} -->"})
     with pytest.raises(ValueError, match="target-person literals"):
-        at.validate_authored_template(injected, target_pdf=RESUME_I)
+        at.validate_authored_template(injected, target_pdf=TARGET_PDF)
 
 
 def test_lane_b_candidate_facts_come_only_from_the_render_context(tmp_path: Path) -> None:
     base = _base_authored_template()
     # A template that hardcodes a candidate fact is rejected.
     hardcoded = base.model_copy(update={"html": base.html + "\n<span>example@example.com</span>"})
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.helpers.pipeline_candidates import candidate_resume_E
 
     with pytest.raises(ValueError, match="candidate facts"):
-        at.validate_authored_template(hardcoded, target_pdf=RESUME_I, render_candidate=candidate_resume_E())
+        at.validate_authored_template(hardcoded, target_pdf=TARGET_PDF, render_candidate=candidate_resume_E())
     # The fill reads ONLY the candidate render context: two different
     # candidates produce different values through the same template.
-    from tests.experiments.c2_candidates import independent_candidate_fixtures
+    from tests.helpers.pipeline_candidates import independent_candidate_fixtures
 
     fill_a = at.fill_authored_template(base, candidate_resume_E())
     fixture = at.fill_authored_template(base, e._probe_candidate_with_text(independent_candidate_fixtures()["short"]))
@@ -1710,7 +1696,7 @@ def test_lane_b_candidate_facts_come_only_from_the_render_context(tmp_path: Path
 
 
 def test_authored_accounting_is_complete_and_fails_on_missing_leaves() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.helpers.pipeline_candidates import candidate_resume_E
 
     base = _base_authored_template()
     fill = at.fill_authored_template(base, candidate_resume_E())
@@ -1727,13 +1713,14 @@ def test_authored_rendering_uses_a_network_disabled_chrome_environment() -> None
     assert any("--host-resolver-rules=MAP * ~NOTFOUND" in flag for flag in environment["flags"])
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_repeats_the_identical_measurement_after_repair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _force_scripted_builder_attribution(monkeypatch)
     _run_dir, _terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
     lane = record["lanes"]["b"]
     results = lane["measurement_results"]
@@ -1741,10 +1728,11 @@ def test_run_e5_repeats_the_identical_measurement_after_repair(
     assert len(request_ids) != len(set(request_ids)), "the identical request was not repeated after repair"
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_rolls_back_regressions_and_records_the_ledger(tmp_path: Path) -> None:
     run_dir, terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=2,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=2,
     )
     for lane_id, lane in record["lanes"].items():
         assert lane["ledger"], "the persistent defect ledger is empty"
@@ -1754,11 +1742,12 @@ def test_run_e5_rolls_back_regressions_and_records_the_ledger(tmp_path: Path) ->
     assert terminal in {"ready_for_owner_review", "budget_exhausted"}
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_tiny_repair_budget_still_returns_the_safety_valid_output(tmp_path: Path) -> None:
     tiny = RunBudget(max_model_requests=1, max_tool_calls=8)
     run_dir, terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
         budget=tiny,
     )
     assert terminal == "ready_for_owner_review"
@@ -1776,26 +1765,6 @@ def test_neither_lane_can_emit_an_unsupported_terminal_state() -> None:
         e.E5LaneRecord(lane="a", representation="x", terminal_state="unsupported")
 
 
-@e5_skip
-def test_run_e5_prompts_never_carry_rubric_answers(tmp_path: Path) -> None:
-    run_dir, _terminal, _record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
-    )
-    prompts = (run_dir / "prompts.json").read_text(encoding="utf-8")
-    config = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
-    assert config["evaluation_rubric_reference"]["not_given_to_agents"] is True
-    rubric = (
-        ROOT / "tests/experiments/C2_RESUME_I_BLIND_STRUCTURE_AUDIT.md"
-    ).read_text(encoding="utf-8")
-    rubric_lines = [
-        line.strip() for line in rubric.splitlines()
-        if len(line.strip()) > 40 and not line.strip().startswith("#")
-    ]
-    assert rubric_lines
-    for line in rubric_lines[:20]:
-        assert line not in prompts, "rubric answer text leaked into agent prompts"
-
-
 def test_owner_acceptance_is_never_inferred() -> None:
     from pydantic import ValidationError
 
@@ -1811,7 +1780,7 @@ def test_lane_b_candidate_text_cannot_inject_html() -> None:
     candidate values are text nodes only — `<li>`/`<br>` markup comes from
     the shell, and no candidate-supplied element, event attribute, closing
     tag, or entity survives as markup."""
-    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+    from app.pipeline.candidate_content import CandidateDocument, CandidateLeaf
 
     malicious = CandidateDocument(
         candidate_id="malicious_probe",
@@ -1869,7 +1838,7 @@ def test_lane_b_candidate_text_cannot_inject_html() -> None:
 def test_lane_b_candidate_values_are_never_rescanned_as_slot_syntax() -> None:
     """One substitution pass: a candidate value carrying `{{...}}` cannot
     inject slot tokens; the fill fails closed on the residual-token check."""
-    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+    from app.pipeline.candidate_content import CandidateDocument, CandidateLeaf
 
     hostile = CandidateDocument(
         candidate_id="token_probe",
@@ -1888,36 +1857,33 @@ def test_lane_b_candidate_values_are_never_rescanned_as_slot_syntax() -> None:
         at.fill_authored_template(_base_authored_template(), hostile)
 
 
-@e2_skip
 def test_measurement_tool_budget_consumed_once_per_measurement(tmp_path: Path) -> None:
     """The MeasureController is the SINGLE tool-budget consumer for a
     deterministic measurement: one execute -> exactly one tool call."""
-    raw_path = tmp_path / "adobe_raw.json"
-    raw_path.write_text(
-        json.dumps(json.loads((TARGET_F_CACHE / "adobe_raw.json").read_text())),
-        encoding="utf-8",
-    )
-    pod = e.DualSourcePod(TARGET_F, raw_path, tmp_path, render_pdf=None)
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    target = inputs["target_pdf"]
+    pod = e.DualSourcePod(target, inputs["adobe_json"], tmp_path, render_pdf=None)
     budget = e.RunBudget(max_model_requests=4, max_tool_calls=48)
     trace = e.RunTrace(tmp_path)
     controller = e.MeasureController(pod, budget, trace)
     request = e.MeasurementRequest(
         request_id="measure-budget-001", metric="role_gap", page=1,
-        from_text="ImageCaptioningSystem", to_text="SentimentAnalysisAPI",
-        render_from_text="ImageCaptioningSystem", render_to_text="SentimentAnalysisAPI",
+        from_text="Target Person", to_text="Target facts only",
+        render_from_text="Target Person", render_to_text="Target facts only",
     )
-    controller.execute(request, current_pdf=TARGET_F)
+    controller.execute(request, current_pdf=target)
     assert budget.tool_calls == 1
     assert budget.calls_by_tool["compare_pdf_geometry"] == 1
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_measurement_tool_count_matches_actual_measurements(tmp_path: Path) -> None:
     """No caller-side double consumption: the lane's compare_pdf_geometry
     tool count equals the number of actual measurement records traced by the
     MeasureController (one trace record per deterministic measurement)."""
     _run_dir, _terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     trace = json.loads((tmp_path / "run" / "lane_b" / "trace.json").read_text())
     measured = [
@@ -1965,7 +1931,8 @@ def test_best_valid_version_selection_follows_explicit_rule() -> None:
     assert e._best_defect_level_version_id([v1, v2], excluded={"v1"}) is None
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_rejected_render_stays_in_history_and_next_round_uses_old_active(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1981,7 +1948,7 @@ def test_run_e5_rejected_render_stays_in_history_and_next_round_uses_old_active(
 
     monkeypatch.setattr(e5, "_scripted_lane_b_template", non_improving_template)
     run_dir, terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
     lane = record["lanes"]["b"]
     # Repair stagnation is recorded below, but it no longer suppresses the
@@ -2011,7 +1978,8 @@ def test_run_e5_rejected_render_stays_in_history_and_next_round_uses_old_active(
     assert lane["best_render_version"] != rolled_back_id
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_promoted_render_becomes_active_and_best_matches_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2021,7 +1989,7 @@ def test_run_e5_promoted_render_becomes_active_and_best_matches_artifact(
     bytes on disk."""
     _force_scripted_builder_attribution(monkeypatch)
     run_dir, _terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     lane = record["lanes"]["b"]
     assert lane["best_render_version"] is not None, "the scripted improvement must promote"
@@ -2042,7 +2010,8 @@ def test_run_e5_promoted_render_becomes_active_and_best_matches_artifact(
     assert post_findings
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
     tmp_path: Path,
 ) -> None:
@@ -2051,7 +2020,7 @@ def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
     EXACT selected representation — recorded by id, with real PDF
     artifacts — never a default-state or string-fill-only claim."""
     run_dir, _terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=1,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=1,
         presentation_label_approval=_simulated_approval_for_test_target_catalog(),
     )
     for lane_id, expected_token in (("a", "proposal"), ("b", "template")):
@@ -2087,7 +2056,8 @@ def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
             assert selected_id == lane["active_render_version"]
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path) -> None:
     """Without a best-valid render (and no defect-level promotion), the
     owner package shows the lane's ACTIVE version as ACTIVE UNPROMOTED
@@ -2095,7 +2065,7 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
     with a best render, the package copies exactly the best version's
     artifact."""
     run_dir, _terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=1,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=1,
     )
     package = run_dir / "owner_review"
     lanes = record["lanes"]
@@ -2213,18 +2183,20 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
         assert row["target_specific_code_status"] == "not_evaluated"
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -> None:
     """The owner package resolves artifacts through best_render_version —
     a best render that is NOT the last version must be copied, never
     silently replaced by `render_versions[-1]`."""
     # build a record whose best is v1 of two versions, with real artifacts
-    target = RESUME_I
+    target = TARGET_PDF
     out_dir = tmp_path / "pkg"
     out_dir.mkdir()
     lane_dir = out_dir / "lane_a"
     lane_dir.mkdir()
-    from tests.experiments.e_pipeline import RenderVersion, E5LaneRecord, E5LoopRecord
+    from app.pipeline.evidence import RenderVersion
+    from app.pipeline.service import E5LaneRecord, E5LoopRecord
 
     v1_pdf = lane_dir / "render_1.pdf"
     v2_pdf = lane_dir / "render_2.pdf"
@@ -2232,23 +2204,23 @@ def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -
     v2_pdf.write_bytes(b"%PDF-1.4 latest")
     versions = [
         RenderVersion(
-            version_id="render-resume_I-laneA-v1", html_sha256="h1",
+            version_id="render-fixture-laneA-v1", html_sha256="h1",
             pdf_sha256=e._sha256_file(v1_pdf), page_count=2,
             hard_gates_passed=True, promoted=True, note="best",
         ),
         RenderVersion(
-            version_id="render-resume_I-laneA-v2", html_sha256="h2",
+            version_id="render-fixture-laneA-v2", html_sha256="h2",
             pdf_sha256=e._sha256_file(v2_pdf), page_count=2,
             hard_gates_passed=True, promoted=False, note="latest",
         ),
     ]
     lane = E5LaneRecord(
         lane="a", representation="lane A", render_versions=versions,
-        best_render_version="render-resume_I-laneA-v1",
-        active_render_version="render-resume_I-laneA-v1",
+        best_render_version="render-fixture-laneA-v1",
+        active_render_version="render-fixture-laneA-v1",
     )
     record = E5LoopRecord(
-        target_id="target-resume_I-v1", target_sha256="0" * 64, lanes={"a": lane},
+        target_id="target-fixture-v1", target_sha256="0" * 64, lanes={"a": lane},
         summary={"terminal_state": "budget_exhausted"},
     )
     package = e._write_e5_owner_package(out_dir, target, record)
@@ -2260,15 +2232,16 @@ def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -
     assert not (package / "lane_a_latest_attempt.pdf").exists()
 
 
-@e5_skip
 def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) -> None:
     """The run config records the source identity (file SHA-256 + tracked-diff
     hash relative to HEAD + untracked hashes) of the critical DIRECT runtime
     sources BEFORE the first live call; any drift is detected and the run is
     NOT source-identity stable. Source stability never promotes a run to
     'canonical' — the field is `source_identity_stable`, nothing more."""
-    run_dir, _terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    run_dir, _terminal, record = e.run_e5(
+        **inputs, out_dir=tmp_path / "run", candidate=synthetic_pipeline_candidate("Candidate Alpha"),
+        live=False, lanes=("b",), max_repair_rounds=0,
     )
     config = json.loads((run_dir / "run_config.json").read_text())
     hashes = config["source_hashes"]
@@ -2277,15 +2250,9 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     # the registered set covers the ACTUAL direct runtime dependencies
     for name in e.E5_SOURCE_FILES:
         assert hashes["files"][name] == e._sha256_file(e.ROOT / name), name
-    for name in (
-        "tests/experiments/d_pipeline.py",
-        "tests/experiments/c2_renderer.py",
-        "tests/experiments/c2_candidates.py",
-        "tests/experiments/a_pipeline.py",
-        "tests/experiments/c2_pipeline.py",
-        "tests/experiments/c2_state.py",
-    ):
-        assert name in hashes["files"], f"missing direct runtime source: {name}"
+    for name in ("runtime.py", "quality.py", "candidate_content.py", "rendering.py", "layout_compiler.py", "layout_state.py"):
+        assert f"app/pipeline/{name}" in hashes["files"], f"missing direct runtime source: {name}"
+    assert all(not name.startswith("tests/") for name in hashes["files"])
     assert hashes["tracked_diff_sha256"] == e._tracked_diff_sha256(e.ROOT, e.E5_SOURCE_FILES)
     assert record["summary"]["source_changed"] is False
     assert record["summary"]["source_identity_stable"] is True
@@ -2294,7 +2261,7 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     assert "canonical" not in record["summary"]
     # any drift between frozen identity and current source is detected
     drifted = json.loads(json.dumps(config))
-    drifted["source_hashes"]["files"]["tests/experiments/e_pipeline.py"] = "0" * 64
+    drifted["source_hashes"]["files"]["app/pipeline/service.py"] = "0" * 64
     assert e._source_hashes_changed(drifted) is True
     # a changed tracked diff (same file hashes is impossible then, but a
     # tampered diff hash must also be detected)
@@ -2343,7 +2310,7 @@ def test_source_diff_identity_ignores_unrelated_files(tmp_path: Path) -> None:
 def test_summarize_e5_state_reads_one_run_only() -> None:
     """The deterministic ledger summarizer reads a single e5_state.json and
     reports exactly that run's numbers (no cross-run splicing possible)."""
-    from tests.experiments.e_pipeline import E5LaneRecord, E5LoopRecord, summarize_e5_state
+    from app.pipeline.service import E5LaneRecord, E5LoopRecord, summarize_e5_state
     import tempfile
 
     lane = E5LaneRecord(
@@ -2377,7 +2344,8 @@ def test_summarize_e5_state_reads_one_run_only() -> None:
 # --- fail-closed token fill, source identity, restricted metadata -------------
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_rollback_binds_next_round_to_the_active_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2386,7 +2354,7 @@ def test_run_e5_rollback_binds_next_round_to_the_active_version(
     against the OLD ACTIVE version — PDF, RenderPlan, and gates — and the
     rejected representation never enters the probe basis or best selection."""
     _force_scripted_builder_attribution(monkeypatch)
-    from tests.experiments.e_pipeline import LaneAStructureProposal
+    from app.pipeline.service import LaneAStructureProposal
 
     # a scripted proposal that changes nothing -> the identical render ->
     # the identical measurement -> deterministic non-improving rollback
@@ -2408,7 +2376,7 @@ def test_run_e5_rollback_binds_next_round_to_the_active_version(
     monkeypatch.setattr(e5, "_scripted_lane_a_proposal", non_improving_proposal)
     monkeypatch.setattr(e5, "ScriptedReviewer", RoundDistinctReviewer)
     run_dir, terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=2,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=2,
     )
     lane = record["lanes"]["a"]
     assert terminal == "budget_exhausted"
@@ -2500,7 +2468,7 @@ def test_owner_package_labels_defect_level_active_version_never_best(tmp_path: P
     version, stem, label = e._selected_lane_artifact(lane)
     assert label == "ACTIVE DEFECT-LEVEL VERSION"
     assert version.version_id == "v2" and stem == "render_2"
-    package = e._write_e5_owner_package(out_dir, RESUME_I, record)
+    package = e._write_e5_owner_package(out_dir, TARGET_PDF, record)
     assert (package / "lane_a_active_defect_level.pdf").read_bytes() == v2_pdf.read_bytes()
     assert not (package / "lane_a_best.pdf").exists()
     assert not (package / "lane_a_latest_attempt.pdf").exists()
@@ -2518,7 +2486,7 @@ def test_candidate_token_syntax_fails_closed_in_every_slot_region() -> None:
     """A candidate value carrying `{{...}}` must fail closed in EVERY slot
     region — never silently stripped — and the original CandidateDocument
     stays byte-identical."""
-    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+    from app.pipeline.candidate_content import CandidateDocument, CandidateLeaf
 
     def entry_candidate(entry_text, *children) -> CandidateDocument:
         return CandidateDocument(
@@ -2637,14 +2605,14 @@ def test_lane_b_metadata_fields_are_restricted_not_free_text() -> None:
     # a string that merely LOOKS like an evidence id is rejected unless the
     # shell actually issued it (membership, not shape)
     with pytest.raises(ValueError, match="shell never issued|no known evidence ids"):
-        at.validate_authored_template(plausible, target_pdf=RESUME_I)
+        at.validate_authored_template(plausible, target_pdf=TARGET_PDF)
     with pytest.raises(ValueError, match="shell never issued"):
         at.validate_authored_template(
-            plausible, target_pdf=RESUME_I,
+            plausible, target_pdf=TARGET_PDF,
             known_evidence_ids={"ev.region_crop.002"},
         )
     report = at.validate_authored_template(
-        plausible, target_pdf=RESUME_I,
+        plausible, target_pdf=TARGET_PDF,
         known_evidence_ids={"ev.page_overview.001", "ev.region_crop.002"},
     )
     assert report["passed"] is True
@@ -2664,7 +2632,7 @@ def test_lane_b_metadata_fields_are_restricted_not_free_text() -> None:
         else:
             probe = base.model_copy(update={"html": base.html + "\n" + payload})
         with pytest.raises(ValueError, match="authored template rejected"):
-            at.validate_authored_template(probe, target_pdf=RESUME_I)
+            at.validate_authored_template(probe, target_pdf=TARGET_PDF)
 
     # document text — see the fixed-visible-text closure above.
     # FIXED-VISIBLE-TEXT CLOSURE (owner decision 2026-09-21): a literal text
@@ -2674,13 +2642,13 @@ def test_lane_b_metadata_fields_are_restricted_not_free_text() -> None:
     # may only enter through a shell-issued presentation-label marker.
     number_probe = base.model_copy(update={"html": base.html + "\n<span>555-0199</span>"})
     with pytest.raises(ValueError, match="fixed visible text"):
-        at.validate_authored_template(number_probe, target_pdf=RESUME_I)
+        at.validate_authored_template(number_probe, target_pdf=TARGET_PDF)
     non_english_probe = base.model_copy(update={"html": base.html + "\n<span>王小明 北京大学</span>"})
     with pytest.raises(ValueError, match="fixed visible text"):
-        at.validate_authored_template(non_english_probe, target_pdf=RESUME_I)
+        at.validate_authored_template(non_english_probe, target_pdf=TARGET_PDF)
     generic_word_probe = base.model_copy(update={"html": base.html + "\n<div>EXPERIENCE</div>"})
     with pytest.raises(ValueError, match="fixed visible text"):
-        at.validate_authored_template(generic_word_probe, target_pdf=RESUME_I)
+        at.validate_authored_template(generic_word_probe, target_pdf=TARGET_PDF)
 
 
 # --- Owner decision 2026-09-21: shell-issued presentation labels ---------
@@ -2716,7 +2684,7 @@ def test_authored_template_rejects_direct_fixed_visible_text() -> None:
     ):
         with pytest.raises(ValueError, match="fixed visible text"):
             at.validate_authored_template(
-                _minimal_template(literal), target_pdf=RESUME_I,
+                _minimal_template(literal), target_pdf=TARGET_PDF,
                 labels=_presentation_labels(),
             )
 
@@ -2724,7 +2692,7 @@ def test_authored_template_rejects_direct_fixed_visible_text() -> None:
 def test_authored_template_accepts_known_presentation_label_marker() -> None:
     report = at.validate_authored_template(
         _minimal_template("{{label:label.section.p1.top221.5}}"),
-        target_pdf=RESUME_I,
+        target_pdf=TARGET_PDF,
         labels=_presentation_labels(),
     )
     assert report["passed"] is True
@@ -2738,14 +2706,14 @@ def test_authored_template_rejects_unknown_presentation_label_marker() -> None:
     with pytest.raises(ValueError, match="unknown presentation label marker"):
         at.validate_authored_template(
             _minimal_template("{{label:label.section.p9.top999.0}}"),
-            target_pdf=RESUME_I,
+            target_pdf=TARGET_PDF,
             labels=_presentation_labels(),
         )
     # without a catalog EVERY marker is unissued (fail closed by default)
     with pytest.raises(ValueError, match="unknown presentation label marker"):
         at.validate_authored_template(
             _minimal_template("{{label:label.section.p1.top221.5}}"),
-            target_pdf=RESUME_I,
+            target_pdf=TARGET_PDF,
         )
 
 
@@ -2798,7 +2766,7 @@ def test_presentation_labels_come_only_from_measured_evidence() -> None:
     with pytest.raises(ValueError, match="unknown presentation label marker"):
         at.validate_authored_template(
             _minimal_template("{{label:label.section.p1.top221.5}}"),
-            target_pdf=RESUME_I,
+            target_pdf=TARGET_PDF,
             labels=[],
         )
     with pytest.raises(ValueError, match="non-empty text"):
@@ -2821,7 +2789,7 @@ def test_measurement_alone_never_approves_a_label() -> None:
     presentation label rather than a person fact. The catalog is purely
     evidence-derived: EVERY entry stays `proposed`, and only a typed owner
     approval (target-bound) can flip ids into the approved view."""
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.helpers.pipeline_candidates import candidate_resume_E
 
     catalog = e._presentation_label_catalog(
         {
@@ -2846,7 +2814,7 @@ def test_measurement_alone_never_approves_a_label() -> None:
         with pytest.raises(ValueError, match="unknown presentation label marker"):
             at.validate_authored_template(
                 _minimal_template(f"{{{{label:{label.label_id}}}}}"),
-                target_pdf=RESUME_I,
+                target_pdf=TARGET_PDF,
                 labels=[],
             )
         # ... and the boundary refuses a proposed entry outright
@@ -2884,7 +2852,7 @@ def _approval_for(
 
 
 def _simulated_approval_for_test_target_catalog(
-    target: Path = RESUME_I,
+    target: Path | None = None,
 ) -> e.PresentationLabelApproval:
     """Simulate owner approval so offline tests can exercise the approved path.
 
@@ -2900,13 +2868,13 @@ def _simulated_approval_for_test_target_catalog(
     supply approval to a live run."""
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 
-    from tests.experiments.a_pipeline import build_format_summary
+    from app.pipeline.rendering import build_format_summary
 
-    target = target.resolve()
-    cache = ROOT / "tests/experiments/runs/target_cache" / e._sha256_file(target)
-    raw = json.loads((cache / "adobe_raw.json").read_text(encoding="utf-8"))
+    target = (target or TARGET_PDF).resolve()
+    cache = LOCAL_INPUTS
+    raw = json.loads((cache / "resume_I.adobe.json").read_text(encoding="utf-8"))
     normalized = NormalizedLayoutEvidence.model_validate_json(
-        (cache / "enriched_evidence.json").read_text(encoding="utf-8")
+        (cache / "resume_I.normalized.json").read_text(encoding="utf-8")
     )
     summary = build_format_summary(normalized, raw, target)
     _state, derived = e.compile_two_column_state(target, summary, evidence=normalized)
@@ -3059,7 +3027,7 @@ def test_frozen_e5_config_records_the_presentation_label_approval(tmp_path: Path
     """The validated approval identity is frozen into run_config.json BEFORE
     the first live call — a mid-run crash still proves what the lanes saw.
     No approval -> the same shape freezes provided=False, approved=[]."""
-    from tests.experiments.e_pipeline import _freeze_e5_config
+    from app.pipeline.service import _freeze_e5_config
 
     target_frozen = e.FrozenCase(
         case_id="x",
@@ -3071,7 +3039,7 @@ def test_frozen_e5_config_records_the_presentation_label_approval(tmp_path: Path
     )
     kwargs = dict(
         out_dir=tmp_path,
-        target_id="target-resume_I-v1",
+        target_id="target-fixture-v1",
         target_frozen=target_frozen,
         lanes=("a", "b"),
         max_repair_rounds=1,
@@ -3133,7 +3101,7 @@ def test_source_has_no_hardcoded_resume_i_approval_list() -> None:
 
 
 def test_presentation_label_text_is_escaped_and_never_reparsed() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.helpers.pipeline_candidates import candidate_resume_E
 
     candidate = candidate_resume_E()
     catalog = [
@@ -3163,7 +3131,7 @@ def test_presentation_label_text_is_escaped_and_never_reparsed() -> None:
 
 
 def test_label_marker_and_candidate_slot_fill_from_their_own_sources() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.helpers.pipeline_candidates import candidate_resume_E
 
     candidate = candidate_resume_E()
     name = next(
@@ -3179,12 +3147,12 @@ def test_label_marker_and_candidate_slot_fill_from_their_own_sources() -> None:
 
 
 def test_residual_or_malformed_label_marker_fails_closed() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.helpers.pipeline_candidates import candidate_resume_E
 
     malformed = _minimal_template("{{label:NOT_A_CATALOG_ID}}")
     with pytest.raises(ValueError, match="fixed visible text"):
         at.validate_authored_template(
-            malformed, target_pdf=RESUME_I, labels=_presentation_labels()
+            malformed, target_pdf=TARGET_PDF, labels=_presentation_labels()
         )
     with pytest.raises(ValueError, match="unfilled slot tokens remain"):
         at.fill_authored_template(malformed, candidate_resume_E(), labels=_presentation_labels())
@@ -3240,10 +3208,10 @@ def test_lane_gates_share_one_shell_owned_label_catalog() -> None:
     assert hand_built["excluded_outside_approved"] == ["section.01"]
     assert hand_built["approved_texts_never_excluded"] == ["experience"]
     # the Lane B gate reports its exclusions so the audit can compare them
-    from tests.experiments.e_authored_template import authored_privacy_gate
+    from app.pipeline.authored_template import authored_privacy_gate
 
     gate = authored_privacy_gate(
-        "<html><body></body></html>", RESUME_I, RESUME_I, labels={"EXPERIENCE"}
+        "<html><body></body></html>", TARGET_PDF, TARGET_PDF, labels={"EXPERIENCE"}
     )
     assert gate["excluded_labels"] == ["experience"]
 
@@ -3322,7 +3290,7 @@ def _finding(vid: str, *, finding_id: str, region: str = "section.05",
              dimension: str = "role_gap", observation: str = "gap looks larger") -> e.DefectFinding:
     return e.DefectFinding(
         finding_id=finding_id,
-        target_version="target-resume_I-v1",
+        target_version="target-fixture-v1",
         render_version=vid,
         page=1,
         region=region,
@@ -3383,7 +3351,8 @@ def test_ledger_is_the_single_open_closed_source() -> None:
     assert e._open_ledger_finding_ids(list(ledger.entries.values())) == []
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_deduped_repair_does_not_reopen_in_open_findings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3394,7 +3363,7 @@ def test_run_e5_deduped_repair_does_not_reopen_in_open_findings(
     finding id per round with the same ledger key + observation class."""
     _force_scripted_builder_attribution(monkeypatch)
     _run_dir, _terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
     lane = record["lanes"]["b"]
     finding_ids = [f["finding_id"] for f in lane["findings"]]
@@ -3409,7 +3378,8 @@ def test_run_e5_deduped_repair_does_not_reopen_in_open_findings(
     )
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_accepted_region_recheck_fails_closed_on_missing_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3470,7 +3440,7 @@ def test_run_e5_accepted_region_recheck_fails_closed_on_missing_evidence(
     monkeypatch.setattr(e5, "MeasureController", ScriptedMeasurements)
     monkeypatch.setattr(e5, "ScriptedReviewer", DimensionShiftReviewer)
     _run_dir, _terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
     lane = record["lanes"]["b"]
     assert any(
@@ -3520,7 +3490,7 @@ def test_owner_package_shows_active_unpromoted_never_rolled_back(tmp_path: Path)
         target_id="t", target_sha256="0" * 64, lanes={"a": lane},
         summary={"terminal_state": "budget_exhausted"},
     )
-    package = e._write_e5_owner_package(out_dir, RESUME_I, record)
+    package = e._write_e5_owner_package(out_dir, TARGET_PDF, record)
     copied = package / "lane_a_active_unpromoted.pdf"
     assert copied.exists()
     assert copied.read_bytes() == v1_pdf.read_bytes(), (
@@ -3558,10 +3528,10 @@ def test_authored_slot_carries_no_token_and_no_free_text() -> None:
     # scripted template still declares slots by category and validates
     base = _base_authored_template()
     assert not hasattr(base.slots[0], "token")
-    report = at.validate_authored_template(base, target_pdf=RESUME_I)
+    report = at.validate_authored_template(base, target_pdf=TARGET_PDF)
     assert report["passed"] is True
     assert report["declared_slots"] == sorted(slot.category for slot in base.slots)
-    from tests.experiments.c2_candidates import candidate_resume_E as _candidate_resume_E
+    from tests.helpers.pipeline_candidates import candidate_resume_E as _candidate_resume_E
 
     fill = at.fill_authored_template(base, _candidate_resume_E())
     assert not fill.missing_leaves
@@ -3585,7 +3555,7 @@ def test_authored_slot_carries_no_token_and_no_free_text() -> None:
 
 def _e5_lineage_candidate():
     """A small typed candidate for deterministic lineage probes."""
-    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+    from app.pipeline.candidate_content import CandidateDocument, CandidateLeaf
 
     return CandidateDocument(
         candidate_id="lineage_probe",
@@ -3795,35 +3765,6 @@ def test_builder_never_receives_a_rebind_or_target_copy_repair() -> None:
     assert "representation capability gap" in prompt
 
 
-def test_live_lane_a_render_lineage_is_clean_in_the_recorded_run() -> None:
-    """Highest-fidelity regression evidence: replay the LIVE run's recorded
-    Lane A leaf ledger against the real reviewed candidate. It resolves cleanly,
-    which is exactly why the three `candidate_binding` confirmations were wrong.
-    Skips when the (git-ignored) run artifacts are absent."""
-    run_dir = ROOT / "tests/experiments/runs/e_pipeline_e5_20260922T090821Z/lane_a"
-    gates_path = run_dir / "hard_gates_render-resume_I-laneA-v1.json"
-    target_path = TARGET_F_CACHE
-    if not gates_path.exists() or not target_path.exists():
-        pytest.skip("recorded live E5 run artifacts are not present in this checkout")
-    from tests.experiments.c2_candidates import candidate_resume_E
-
-    details = json.loads(gates_path.read_text(encoding="utf-8"))["details"]
-    lineage = e5._e5_candidate_binding_lineage(
-        candidate_resume_E(),
-        "render-resume_I-laneA-v1",
-        details["content_gate"]["leaf_records"],
-        representation_ceiling_gates=[
-            name for name in e5.E5_REPRESENTATION_CEILING_GATES
-            if details.get(name, {}).get("passed") is False
-        ],
-    )
-    assert lineage.proofs == [], "the recorded live render bound no foreign or mis-slotted leaf"
-    assert lineage.resolved_leaves == lineage.checked_leaf_records - 1, (
-        "only the documented candidate-only synthetic unroutable identity is unresolvable"
-    )
-    assert lineage.representation_ceiling_gates == ["content_shapes_match_evidence"]
-
-
 # ===========================================================================
 # E5 owner work order 2026-09-22 — fix 2: the quarantined repair branch
 #
@@ -3951,7 +3892,8 @@ def _inject_scripted_pdf_presence_failures(
     monkeypatch.setattr(at, "authored_pdf_presence_gate", wrapper)
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_run_e5_pdf_presence_failure_is_diagnostic_and_owner_reviewable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3959,7 +3901,7 @@ def test_run_e5_pdf_presence_failure_is_diagnostic_and_owner_reviewable(
     safety-valid authored output or fabricate a Builder repair."""
     _inject_scripted_pdf_presence_failures(monkeypatch, [5])
     run_dir, terminal, record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=0,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=0,
     )
     lane = record["lanes"]["b"]
     version = lane["render_versions"][0]
@@ -3989,11 +3931,10 @@ def test_run_e5_pdf_presence_failure_is_diagnostic_and_owner_reviewable(
 # ===========================================================================
 
 
-@e5_skip
 def test_recoverable_tool_input_error_returns_to_the_model(tmp_path: Path) -> None:
     """A bad page comes back as a bounded tool RESULT (traced), and a real
     defect still raises — the boundary must not swallow genuine failures."""
-    from tests.experiments.test_e_pipeline import _pod
+    from tests.helpers.pipeline import _pod
 
     def pod_tools(pod: object, trace: object) -> dict[str, object]:
         return {
@@ -4020,7 +3961,7 @@ def test_recoverable_tool_input_error_returns_to_the_model(tmp_path: Path) -> No
 
 
 def test_e5_reviewer_message_carries_exact_scope_without_candidate_text() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.helpers.pipeline_candidates import candidate_resume_E
 
     candidate = candidate_resume_E()
     message = e5._e5_reviewer_message(
@@ -4066,7 +4007,7 @@ def test_reviewer_receives_existing_deterministic_presentation_facts(monkeypatch
 
 
 def test_lane_b_content_free_shape_and_footprint_contracts() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.helpers.pipeline_candidates import candidate_resume_E
 
     candidate = candidate_resume_E()
     shape = e5._slot_shape_contract()
@@ -4089,10 +4030,11 @@ def test_lane_b_content_free_shape_and_footprint_contracts() -> None:
             assert leaf.text not in serialized
 
 
-@e5_skip
+@pytest.mark.local_dataset
+@local_pipeline
 def test_initial_lane_b_context_is_candidate_compatible_and_compact(tmp_path: Path) -> None:
     run_dir, _terminal, _record = _run_e5(
-        RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=0,
+        TARGET_PDF, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=0,
     )
     payload = json.loads((run_dir / "builder_evidence_initial.json").read_text())
     draft = payload["structure_draft"]
@@ -4154,7 +4096,7 @@ def test_reviewer_findings_must_bind_one_catalog_region_and_dimension() -> None:
 
 
 def test_accounting_repair_maps_missing_skills_to_real_region_and_page(monkeypatch) -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.helpers.pipeline_candidates import candidate_resume_E
 
     candidate = candidate_resume_E()
     monkeypatch.setattr(e5, "_candidate_role_page", lambda *_args: 2)
@@ -4173,7 +4115,7 @@ def test_accounting_repair_maps_missing_skills_to_real_region_and_page(monkeypat
 
 
 def test_every_lane_b_repair_gets_a_minimal_boundary() -> None:
-    from tests.experiments.c2_candidates import candidate_resume_E
+    from tests.helpers.pipeline_candidates import candidate_resume_E
 
     candidate = candidate_resume_E()
     finding = e.DefectFinding(
@@ -4202,7 +4144,7 @@ def test_every_lane_b_repair_gets_a_minimal_boundary() -> None:
 
 
 def test_authored_shell_uses_full_page_geometry_without_hidden_scale() -> None:
-    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+    from app.pipeline.candidate_content import CandidateDocument, CandidateLeaf
 
     template = _base_authored_template().model_copy(update={
         "template_id": "full-page",
@@ -4224,8 +4166,8 @@ def test_authored_shell_uses_full_page_geometry_without_hidden_scale() -> None:
 
 def test_authored_full_page_pdf_keeps_declared_size_and_font(tmp_path: Path) -> None:
     import pdfplumber
-    from tests.experiments.a_pipeline import _export_pinned_html_to_pdf
-    from tests.experiments.c2_candidates import CandidateDocument, CandidateLeaf
+    from app.pipeline.rendering import _export_pinned_html_to_pdf
+    from app.pipeline.candidate_content import CandidateDocument, CandidateLeaf
 
     template = _base_authored_template().model_copy(update={
         "template_id": "full-page-pdf",

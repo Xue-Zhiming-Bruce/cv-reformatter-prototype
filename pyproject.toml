@@ -30,8 +30,6 @@ dependencies = [
 dev = [
     "pytest>=8.2.0",
 ]
-# Compatibility for the retained historical install command; removed with D.
-experiments = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

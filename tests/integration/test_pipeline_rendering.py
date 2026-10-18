@@ -1,57 +1,20 @@
-"""C2-0b focused tests: deterministic RenderPlan compiler, HTML renderer, gates.
-
-Offline lane (default): a synthetic state + an authored candidate render
-context exercise compile/determinism/isolation/fail-closed behavior without
-Chrome, the corpus, or the network. The ``local_dataset`` lane runs the
-frozen C1 pairs end to end through the real pinned Chrome exporter (still no
-live provider call — the target evidence comes from the persistent cache).
-
-Run:
-
-    pytest tests/experiments/test_c2_renderer.py -m "not local_dataset"
-    pytest tests/experiments/test_c2_renderer.py -m local_dataset
-"""
-
+"""Render-plan, HTML, and independent output gate regressions."""
 from __future__ import annotations
-
 import json
 import re
 from html.parser import HTMLParser
 from pathlib import Path
-
 import pytest
-
-import tests.experiments.c2_renderer as renderer_module
 import app.pipeline.quality as quality_module
-from tests.experiments.c2_pipeline import (
-    C2LayoutState,
-    CandidateDocument,
-    CandidateLeaf,
-    CandidateSection,
-    SectionContent,
-    UnroutableContent,
-    state_bytes,
-)
-from tests.experiments.c2_renderer import (
-    OVERFLOW_POLICY,
-    C2RenderPlan,
-    blank_page_gate,
-    candidate_accounting_gate,
-    compile_render_plan,
-    content_gate,
-    content_shape_verification,
-    privacy_gate,
-    render_html,
-    structure_gate,
-)
-from tests.experiments.test_c2_pipeline import (
-    BODY,
-    BULLET_TIERS,
-    FULL_COVERAGE_LABELS,
-    SUMMARY,
-    compile_synthetic,
-)
+from app.pipeline.candidate_content import CandidateDocument, CandidateLeaf, CandidateSection, UnroutableContent
+from app.pipeline.layout_state import C2LayoutState, SectionContent, state_bytes
+from app.pipeline.render_plan import OVERFLOW_POLICY, C2RenderPlan, compile_render_plan
+from app.pipeline.html_renderer import render_html
+from app.pipeline.quality import blank_page_gate, candidate_accounting_gate, content_gate, content_shape_verification, privacy_gate, structure_gate
+from tests.helpers.pipeline_layout import BODY, BULLET_TIERS, FULL_COVERAGE_LABELS, SUMMARY, compile_synthetic
+from tests.helpers.pipeline_rendering import _leaf, rich_candidate
 
+pytestmark = pytest.mark.integration
 
 @pytest.fixture()
 def fake_pdf_text(monkeypatch: pytest.MonkeyPatch):
@@ -64,77 +27,10 @@ def fake_pdf_text(monkeypatch: pytest.MonkeyPatch):
     return _install
 
 
-# ---------------------------------------------------------------------------
-# Synthetic render context (authored, independent of the compiled state)
-# ---------------------------------------------------------------------------
-
-
-def _leaf(leaf_id: str, kind: str, source: str | None = None, **kwargs: object) -> CandidateLeaf:
-    if "parent" in kwargs:
-        kwargs["parent_leaf_id"] = kwargs.pop("parent")
-    return CandidateLeaf(leaf_id=leaf_id, kind=kind, source=source, **kwargs)  # type: ignore[arg-type]
-
-
-def rich_candidate(include_unmatched: bool = True) -> CandidateDocument:
-    """A full structured render context with text, mirroring the C2-0b shape."""
-    leaves = [
-        _leaf("header.name", "header_field", slot="name", text="CANDNAME Doe"),
-        _leaf("header.location", "header_field", slot="location", text="CANDCITY, ST"),
-        _leaf("header.phone", "header_field", slot="phone", text="(000) 000-0000"),
-        _leaf("header.envelope", "header_field", slot="envelope", text="cand@example.com"),
-        _leaf("header.github", "header_field", slot="github", text="github.com/cand"),
-        _leaf("header.linkedin", "header_field", slot="linkedin", text="linkedin.com/in/cand"),
-        _leaf("summary.p1", "summary_paragraph", "summary", text="SUMMARY — candidate paragraph."),
-        _leaf("skills.g1", "skill_group", "skills", text="Group One"),
-        _leaf("skills.g1.i1", "skill", "skills", parent="skills.g1", text="Skill A"),
-        _leaf("skills.g1.i2", "skill", "skills", parent="skills.g1", text="Skill B"),
-        _leaf("work.e1", "work_entry", "work_experience", text="CANDCORP One"),
-        _leaf("work.e1.role", "entry_detail", "work_experience", parent="work.e1", text="Engineer"),
-        _leaf("work.e1.m1", "entry_meta", "work_experience", parent="work.e1", text="Candtown, CA"),
-        _leaf("work.e1.m2", "entry_meta", "work_experience", parent="work.e1", text="2020 – Present"),
-        _leaf("work.e1.b1", "work_bullet", "work_experience", parent="work.e1", text="• Did candidate work"),
-        _leaf("work.e2", "work_entry", "work_experience", text="CANDCORP Two"),
-        _leaf("work.e2.m1", "entry_meta", "work_experience", parent="work.e2", text="2015 – 2020"),
-        _leaf("education.e1", "education_entry", "education", text="CAND University"),
-        _leaf("education.e1.d1", "entry_detail", "education", parent="education.e1", text="B.S. Candidate Studies"),
-        _leaf("education.e1.m1", "entry_meta", "education", parent="education.e1", text="2011 – 2015"),
-    ]
-    if include_unmatched:
-        leaves += [
-            _leaf("hobby.i1", "additional_item", "additional_details", text="CANDHOBIES item"),
-            _leaf("hobby.i2", "additional_item", "additional_details", text="Second candidate hobby"),
-        ]
-    sections = [
-        CandidateSection(section_id="summary", heading=None, source="summary",
-                         content_kind="paragraph", leaf_ids=["summary.p1"]),
-        CandidateSection(section_id="skills", heading="CAND SKILLS", source="skills",
-                         content_kind="item_list", leaf_ids=["skills.g1", "skills.g1.i1", "skills.g1.i2"]),
-        CandidateSection(section_id="work", heading="CAND WORK", source="work_experience",
-                         content_kind="entries",
-                         leaf_ids=["work.e1", "work.e1.role", "work.e1.m1", "work.e1.m2",
-                                   "work.e1.b1", "work.e2", "work.e2.m1"]),
-        CandidateSection(section_id="education", heading="CAND EDUCATION", source="education",
-                         content_kind="entries",
-                         leaf_ids=["education.e1", "education.e1.d1", "education.e1.m1"]),
-    ]
-    if include_unmatched:
-        sections.append(
-            CandidateSection(section_id="hobbies", heading="CAND HOBBIES",
-                             source="additional_details", content_kind="item_list",
-                             leaf_ids=["hobby.i1", "hobby.i2"])
-        )
-    return CandidateDocument(candidate_id="synthetic-rich", leaves=leaves, sections=sections)
-
-
 def plan_for(labels: list[str] | None = None, include_unmatched: bool = True) -> tuple[C2LayoutState, C2RenderPlan]:
     state = compile_synthetic(labels) if labels else compile_synthetic()
     candidate = rich_candidate(include_unmatched=include_unmatched)
     return state, compile_render_plan(state, candidate)
-
-
-# ---------------------------------------------------------------------------
-# Determinism and structure
-# ---------------------------------------------------------------------------
 
 
 def test_deterministic_state_and_candidate_produce_identical_plan_and_html() -> None:
@@ -154,21 +50,6 @@ def test_plan_status_and_full_leaf_ownership_on_full_coverage() -> None:
     body_leaf_ids = {leaf.leaf_id for leaf in candidate.leaves if leaf.kind != "header_field"}
     assert body_leaf_ids <= set(plan.leaf_ledger)
     assert len(plan.leaf_ledger) == len(candidate.leaves)
-
-
-def test_no_seed_html_is_read_or_emitted(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The renderer neither imports nor executes any C1 seed machinery, and the
-    # compiled HTML carries no C1 lineage.
-    import tests.experiments.a_pipeline as a_pipeline
-    for symbol in ("_seed_template", "compile_header_template", "_body_css"):
-        monkeypatch.setattr(a_pipeline, symbol, pytest.fail, raising=False)
-    state, plan = plan_for()
-    html = render_html(state, plan)
-    source = Path(renderer_module.__file__).read_text(encoding="utf-8")
-    assert "candidate_html" not in source
-    assert "_seed_template" not in source and "compile_header_template" not in source
-    assert "data-c1-" not in html and "c1-dna" not in html
-    assert "<img" not in html and "background-image" not in html
 
 
 def test_target_candidate_facts_cannot_enter_html_or_pdf(fake_pdf_text, monkeypatch) -> None:
@@ -255,7 +136,7 @@ def test_missing_and_duplicated_leaves_fail() -> None:
             ],
         )
     # A leaf that renders twice trips the ownership ledger guard.
-    from tests.experiments.c2_pipeline import own_leaf
+    from app.pipeline.layout_compiler import own_leaf
 
     ledger: dict[str, str] = {}
     failures: list[str] = []
@@ -367,7 +248,7 @@ def test_unsupported_and_nonmaterializable_composite_fail_closed() -> None:
         [label for label in FULL_COVERAGE_LABELS if label != "EDUCATION"],
         include_unmatched=False,
     )[0].model_copy(deep=True)
-    from tests.experiments.c2_pipeline import SectionBinding
+    from app.pipeline.layout_state import SectionBinding
 
     index = work_section(composite)
     node = composite.nodes[index]
@@ -426,8 +307,8 @@ def test_empty_target_sections_render_nothing_but_are_recorded() -> None:
 
 
 def _shape_scaffold(labels: list[str] | None = None) -> Any:
-    from tests.experiments.c_pipeline import BodyEntryScaffold, BodyScaffold
-    from tests.experiments.test_c2_pipeline import _heading
+    from app.pipeline.measurement import BodyEntryScaffold, BodyScaffold
+    from tests.helpers.pipeline_layout import _heading
 
     return BodyScaffold(
         headings=[
@@ -512,8 +393,8 @@ def _heading_rule_pdf(path: Path, items: list[dict]) -> Path:
 
 
 def test_content_shapes_are_verified_against_measured_evidence() -> None:
-    from tests.experiments.c_pipeline import BodyEntryScaffold, BodyScaffold
-    from tests.experiments.test_c2_pipeline import _heading
+    from app.pipeline.measurement import BodyEntryScaffold, BodyScaffold
+    from tests.helpers.pipeline_layout import _heading
 
     state, plan = plan_for()
     html = render_html(state, plan)
@@ -551,8 +432,8 @@ def test_content_shapes_are_verified_against_measured_evidence() -> None:
 def test_rule_verification_resolves_the_measured_rule_bbox() -> None:
     """Evidence-boundary regression: the state rule stores the matched rule's
     OWN measured bbox (never the heading text bounds)."""
-    from tests.experiments.c2_pipeline import _resolve_above_heading_rule
-    from tests.experiments.test_c2_pipeline import _heading
+    from app.pipeline.layout_compiler import _resolve_above_heading_rule
+    from tests.helpers.pipeline_layout import _heading
 
     heading = _heading("WORK EXPERIENCE", 140.0, "e.heading")  # text x1 = 171
     summary = _shape_summary()
@@ -663,11 +544,6 @@ def test_typography_consumption_is_element_scoped(tmp_path: Path) -> None:
     assert stripped_result["passed"] is False
 
 
-# ---------------------------------------------------------------------------
-# Candidate-content accounting (owner corrective pass)
-# ---------------------------------------------------------------------------
-
-
 def candidate_with_unroutable(disposition: str, slot: str | None = None) -> CandidateDocument:
     candidate = rich_candidate(include_unmatched=False)
     leaves = [leaf for leaf in candidate.leaves if leaf.leaf_id != "header.location"]
@@ -753,11 +629,6 @@ def test_a_render_disposition_without_a_slot_fails_at_authoring() -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Blank-page gate (owner corrective pass: every page inspected independently)
-# ---------------------------------------------------------------------------
-
-
 def _reportlab_pdf(path: Path, pages: list[str | None]) -> Path:
     """A real multi-page PDF; a None page is left completely blank."""
     from reportlab.pdfgen import canvas
@@ -821,8 +692,8 @@ def _two_rule_summary() -> dict:
 def _two_rule_scaffold() -> Any:
     """Scaffold matching compile_synthetic's 60pt heading spacing (the rule
     y positions in _two_rule_summary must resolve against these headings)."""
-    from tests.experiments.c_pipeline import BodyEntryScaffold, BodyScaffold
-    from tests.experiments.test_c2_pipeline import _heading
+    from app.pipeline.measurement import BodyEntryScaffold, BodyScaffold
+    from tests.helpers.pipeline_layout import _heading
 
     return BodyScaffold(
         headings=[
@@ -997,74 +868,6 @@ def test_a_contentless_section_records_its_rule_as_not_required() -> None:
     assert row["capability_gap"] is None
 
 
-# ---------------------------------------------------------------------------
-# Real frozen-C1 pairs (local corpus + cached evidence + pinned Chrome)
-# ---------------------------------------------------------------------------
-
-REQUIRED_ARTIFACTS = (
-    "c2_layout_state.json", "candidate_render_context.json", "c2_render_plan.json",
-    "c2_output.html", "c2_output.pdf", "content_validation.json",
-    "structure_validation.json", "privacy_validation.json", "render_determinism.json",
-    "capability_gaps.json", "leaf_ownership.json", "comparison_manifest.json",
-    "review.html", "target_page_1.png", "c1_page_1.png", "c2_page_1.png",
-    "diff_target_vs_c2_page_1.png", "diff_c1_vs_c2_page_1.png",
-    "context_coverage.json", "content_accounting.json", "blank_page_validation.json",
-    "hard_gates.json",
-)
-
-
-@pytest.mark.local_dataset
-@pytest.mark.parametrize("pair", ["D_E", "E_F", "E_D"])
-def test_frozen_c1_pair_runs_end_to_end(pair: str) -> None:
-    from tests.experiments.c2_pipeline import C2_0B_PAIRS
-
-    spec = C2_0B_PAIRS[pair]
-    target = Path(renderer_module.__file__).resolve().parents[2] / (
-        f"tests/local_datasets/resume_matrix/resume_{spec['target']}.pdf"
-    )
-    if not target.exists():
-        pytest.skip("local resume_matrix corpus not present")
-    result = renderer_module.run_pair(pair)
-    run_dir = Path(result["run_dir"])
-    for artifact in REQUIRED_ARTIFACTS:
-        assert (run_dir / artifact).exists(), artifact
-    coverage = json.loads((run_dir / "context_coverage.json").read_text())
-    assert coverage["total_coverage"] is True
-    ownership = json.loads((run_dir / "leaf_ownership.json").read_text())
-    assert ownership["status"] == "fully_materialized"
-    assert ownership["ownership_exactly_one"] is True
-    accounting = json.loads((run_dir / "content_accounting.json").read_text())
-    assert accounting["passed"] is True
-    assert accounting["unhomed"] == [] and accounting["unresolved_unroutable"] == []
-    blank = json.loads((run_dir / "blank_page_validation.json").read_text())
-    assert blank["passed"] is True and blank["blank_pages"] == []
-    manifest = json.loads((run_dir / "comparison_manifest.json").read_text())
-    assert manifest["frozen_c1_baseline"]["run_id"]
-    gates = json.loads((run_dir / "hard_gates.json").read_text())["gates"]
-    if spec["target"] == "D":
-        # Gap-only pair: D's target evidence carries no measured entry
-        # typography tiers, so the shape gate stays FALSE with named
-        # capability gaps — never a placeholder-true hard gate.
-        assert gates["content_shapes_match_evidence"] is False
-        shape = json.loads((run_dir / "content_shape_verification.json").read_text())
-        gaps = {
-            row["capability_gap"]
-            for entry in shape["rows"]
-            for row in entry["properties"]
-            if row["capability_gap"]
-        }
-        assert gaps
-        assert manifest["parity_scope"].startswith("D-target pairs are gap-only")
-    else:
-        assert manifest["hard_gates_passed"] is True
-        assert all(gates.values())
-
-
-# ---------------------------------------------------------------------------
-# C2-0cV: visible-section rhythm (compile_render_plan)
-# ---------------------------------------------------------------------------
-
-
 def _set_heading_gap(state, section_index: int, gap: float) -> None:
     heading = next(
         node for node in state.nodes
@@ -1170,11 +973,6 @@ def test_visible_rhythm_never_touches_candidate_only_sections() -> None:
         assert decision.node_id.startswith("section.")
 
 
-# ---------------------------------------------------------------------------
-# C2 nested-entry spike: titled entry sub-groups in the RenderPlan + HTML
-# ---------------------------------------------------------------------------
-
-
 def _subgrouped_plan_candidate(bullet_counts: tuple[int, ...], titles: tuple[str, ...]) -> CandidateDocument:
     """One parent entry over len(titles) titled sub-groups. Anonymous text."""
     leaves = [
@@ -1195,7 +993,7 @@ def _subgrouped_plan_candidate(bullet_counts: tuple[int, ...], titles: tuple[str
 
 
 def _plan_state_with_subgroup_tier() -> C2LayoutState:
-    from tests.experiments.test_c2_pipeline import _state_with_declared_subgroup_tier
+    from tests.helpers.pipeline_layout import _state_with_declared_subgroup_tier
 
     return _state_with_declared_subgroup_tier(["WORK EXPERIENCE"])
 
@@ -1217,7 +1015,7 @@ def test_plan_compiles_titled_subgroups_in_document_order() -> None:
 
 
 def test_plan_fails_closed_without_a_declared_subgroup_tier() -> None:
-    from tests.experiments.test_c2_pipeline import compile_synthetic
+    from tests.helpers.pipeline_layout import compile_synthetic
 
     state = compile_synthetic(["WORK EXPERIENCE"])  # no declared sub-group tier
     plan = compile_render_plan(state, _subgrouped_plan_candidate((1,), ("Group A Title",)))
@@ -1256,9 +1054,6 @@ def test_subgroup_html_is_element_scoped_and_ordered(fake_pdf_text) -> None:
     assert html.index("Sub-group 1 verified item 2") < html.index("Longer Group B Title")
     # Sub-group bullets keep the section's measured bullet design.
     assert 'class="c2-bullet-dot"' in html
-
-
-# --- header-overflow ownership closure: per-leaf, one-to-one (2026-09-22) ----
 
 
 def _routed_candidate(leaves_spec, records) -> CandidateDocument:

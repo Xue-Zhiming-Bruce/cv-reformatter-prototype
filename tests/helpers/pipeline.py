@@ -1,20 +1,22 @@
-"""Shared local-corpus fixtures for retained pipeline regression tests."""
-
+"""Synthetic target inputs and source guards shared by pipeline regressions."""
 from __future__ import annotations
-
+import json
 from pathlib import Path
+from typing import Any
+import pdfplumber
 import pytest
+from reportlab.pdfbase.pdfmetrics import stringWidth
+from app.pipeline.candidate_content import CandidateDocument, CandidateLeaf, CandidateSection
+from app.pipeline.evidence import EvidencePod, TargetStructureDraft, SelfReportedStatus
+from app.template_analysis.commercial.models import NormalizedLayoutEvidence, NormalizedPage, NormalizedBox, NormalizedTextBlock, NormalizedRule, MeasurementProvenance
+from tests.helpers.synthetic_pdf import _write_single_page_pdf
 
 ROOT = Path(__file__).resolve().parents[2]
-
-RESUME_I = ROOT / "tests/local_datasets/resume_matrix/resume_I.pdf"
-
-RESUME_I_RAW = (
-    ROOT / "tests/experiments/runs/c2_resume_i_blind_20260917T115551Z/adobe_raw.json"
-)
-
-RESUME_I_NORMALIZED = (
-    ROOT / "tests/experiments/runs/c2_resume_i_blind_20260917T115551Z/enriched_evidence.json"
+LOCAL_INPUTS = ROOT / "tests/local_datasets/resume_matrix"
+LOCAL_TARGET = LOCAL_INPUTS / "resume_I.pdf"
+local_pipeline = pytest.mark.skipif(
+    not all((LOCAL_INPUTS / name).is_file() for name in ("resume_I.pdf", "resume_I.adobe.json", "resume_I.normalized.json", "resume_I.draft.json")),
+    reason="explicit local pipeline input bundle is not present (see tests/README.md)",
 )
 
 PIPELINE_E_SOURCE_FILES = ("service.py", "evidence.py", "review.py")
@@ -174,33 +176,93 @@ def _pipeline_e_semantic_findings() -> dict[str, list[str]]:
             findings[key].extend(hits)
     return findings
 
-TARGET_F = ROOT / "tests/local_datasets/resume_matrix/resume_F.pdf"
-
-TARGET_F_CACHE = (
-    ROOT / "tests/experiments/runs/target_cache/6916698b4280b9c244e7d2c5a453e8a48d2bf7edea3419becb9b924eda26603d"
-)
-
-def _e2_available() -> bool:
-    return TARGET_F.exists() and (TARGET_F_CACHE / "adobe_raw.json").exists()
-
-e2_skip = pytest.mark.skipif(
-    not _e2_available(),
-    reason="authorized resume_F corpus and its cached Adobe response are not present",
-)
 
 
-def run_pipeline_fixture(target, out_dir, **kwargs):
-    """Adapt historical corpus tests to the explicit runtime input boundary."""
-    from app.pipeline.service import run_e5, _sha256_file
-    from tests.experiments.c2_candidates import candidate_resume_E, independent_candidate_fixtures
+def synthetic_pipeline_inputs(tmp_path: Path) -> dict:
+    operations = ["BT /F2 20 Tf 180 740 Td (Target Person) Tj ET"]
+    rules = []
+    for heading, y in (("SUMMARY", 650), ("EXPERIENCE", 550)):
+        x = 140 - stringWidth(heading, "Helvetica-Bold", 12)
+        operations.extend([
+            f"BT /F2 12 Tf {x} {y} Td ({heading}) Tj ET",
+            f"BT /F1 10 Tf 180 {y - 25} Td (Target facts only) Tj ET",
+            f"0.5 w 180 {y - 5} m 560 {y - 5} l S",
+        ])
+        rules.append(NormalizedRule(
+            element_id=f"rule.{heading.lower()}", page_number=1,
+            bbox=NormalizedBox(x0=180 / 612, x1=560 / 612,
+                               top=(792 - y + 5) / 792, bottom=(792 - y + 5) / 792),
+            stroke_width_pt=0.5, color_hex="#000000",
+            provenance=MeasurementProvenance(source="local_pdf", provider="synthetic", method="fixture"),
+        ))
+    target = _write_single_page_pdf(tmp_path / "target.pdf", operations,
+                                    regular_font="Helvetica", bold_font="Helvetica-Bold")
+    blocks = []
+    elements = []
+    with pdfplumber.open(target) as pdf:
+        words = pdf.pages[0].extract_words(extra_attrs=["fontname", "size"])
+    for index, word in enumerate(words):
+        bold = "Bold" in word["fontname"]
+        blocks.append(NormalizedTextBlock(
+            element_id=f"adobe.page.1.element.{index}", text=word["text"], page_number=1,
+            reading_order=index,
+            bbox=NormalizedBox(x0=word["x0"] / 612, x1=word["x1"] / 612,
+                               top=word["top"] / 792, bottom=word["bottom"] / 792),
+            font_family="Helvetica", font_size_pt=word["size"], bold=bold,
+            line_height_pt=word["size"] * 1.2,
+            color_hex="#000000",
+        ))
+        elements.append({"Path": f"//Document/Sect/P[{index}]", "Text": word["text"],
+                         "Page": 0, "ObjectID": index,
+                         "Bounds": [word["x0"], 792 - word["bottom"], word["x1"], 792 - word["top"]]})
+    raw = tmp_path / "adobe.json"
+    raw.write_text(json.dumps({"structured_data": {
+        "pages": [{"page_number": 0, "width": 612, "height": 792}], "elements": elements,
+    }}))
+    normalized = tmp_path / "normalized.json"
+    normalized.write_text(NormalizedLayoutEvidence(
+        provider="synthetic", page_count=1,
+        pages=[NormalizedPage(page_number=1, width_pt=612, height_pt=792)],
+        full_text="\n".join(word["text"] for word in words), text_blocks=blocks, rules=rules,
+    ).model_dump_json())
+    draft = tmp_path / "draft.json"
+    draft.write_text(TargetStructureDraft(
+        target_id="target-target-v1", investigator="scripted",
+        self_reported=SelfReportedStatus(status="ok"),
+    ).model_dump_json())
+    return {"target_pdf": target, "adobe_json": raw,
+            "normalized_evidence": normalized, "structure_draft": draft}
 
-    cache = ROOT / "tests/experiments/runs/target_cache" / _sha256_file(target)
+
+def synthetic_pipeline_candidate(name: str) -> CandidateDocument:
+    return CandidateDocument(
+        candidate_id="reviewed-candidate",
+        leaves=[CandidateLeaf(leaf_id="header.name", kind="header_field", slot="name", text=name),
+                CandidateLeaf(leaf_id="summary.item", kind="summary_paragraph", source="summary",
+                              text="Builds reliable systems")],
+        sections=[CandidateSection(section_id="summary", source="summary", content_kind="paragraph",
+                                   leaf_ids=["summary.item"])],
+    )
+
+
+def _pod(tmp_path: Path, *, with_normalized: bool = True, raw: dict | None = None):
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    raw_path = inputs["adobe_json"]
+    if raw is not None:
+        raw_path.write_text(json.dumps(raw), encoding="utf-8")
+    normalized = NormalizedLayoutEvidence.model_validate_json(inputs["normalized_evidence"].read_text()) if with_normalized else None
+    return EvidencePod(inputs["target_pdf"], raw_path, tmp_path, normalized=normalized)
+
+
+def run_pipeline_fixture(target: Path, out_dir: Path, **kwargs):
+    """Optional corpus loop checks use explicit inputs, never stored-run caches."""
+    from app.pipeline.service import run_e5
+    from tests.helpers.pipeline_candidates import candidate_resume_E, independent_candidate_fixtures
+
     return run_e5(
-        target, out_dir,
-        candidate=candidate_resume_E(),
-        adobe_json=cache / "adobe_raw.json",
-        normalized_evidence=cache / "enriched_evidence.json",
-        structure_draft=ROOT / "tests/experiments/runs/e_pipeline_e4_20260920T134946Z/structure_draft.json",
-        probe_candidates=independent_candidate_fixtures(),
-        **kwargs,
+        target, out_dir, candidate=candidate_resume_E(),
+        adobe_json=LOCAL_INPUTS / "resume_I.adobe.json",
+        normalized_evidence=LOCAL_INPUTS / "resume_I.normalized.json",
+        structure_draft=LOCAL_INPUTS / "resume_I.draft.json",
+        probe_candidates=independent_candidate_fixtures(), **kwargs,
     )

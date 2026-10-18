@@ -161,9 +161,8 @@ to the target and label-catalog checksums.
 
 Fonts and their existing license files are packaged beside the implementation.
 Shape probes are supplied by tests explicitly; a normal run reports them as
-`not_requested` instead of claiming they passed. The former
-`python -m tests.experiments.e_pipeline --e5` entry delegates to this same CLI
-and requires the same explicit inputs.
+`not_requested` instead of claiming they passed. Historical experiment commands
+have been retired; use `python -m app.pipeline` with explicit inputs.
 
 This separation does not adopt a new product schema, provider, or renderer.
 The existing FastAPI workflow remains separate pending API integration and
