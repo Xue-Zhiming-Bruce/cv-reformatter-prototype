@@ -1,0 +1,1075 @@
+"""Shared pipeline layout compiler implementation."""
+
+from __future__ import annotations
+
+import re
+from collections import Counter
+from typing import Any, Literal
+from app.template_analysis.commercial.bridge import _dominant_body
+from app.template_analysis.commercial.models import NormalizedLayoutEvidence
+from app.pipeline.measurement import BodyScaffold
+from app.pipeline.layout_state import (
+    SourceRole,
+    _DEFAULT_CONTENT_KINDS,
+    bind_source,
+    bind_composite,
+    EvidenceProvenance,
+    PageState,
+    StyleToken,
+    RuleDecoration,
+    BadgeDecoration,
+    Column,
+    HeaderField,
+    NodeSpacing,
+    FlowConstraint,
+    SectionBinding,
+    SectionContent,
+    CategoryGridColumn,
+    CategoryGrid,
+    LayoutNode,
+    CapabilityGap,
+    C2LayoutState,
+)
+
+def _label_case(label: str) -> Literal["upper", "title", "mixed"]:
+    letters = [char for char in label if char.isalpha()]
+    if not letters:
+        return "mixed"
+    if all(char.isupper() for char in letters):
+        return "upper"
+    if letters[0].isupper() and all(char.isupper() or char.islower() for char in letters):
+        return "title"
+    return "mixed"
+
+def _measured_color_for_evidence(summary: dict[str, Any], evidence_ids: list[str]) -> str | None:
+    """Measured color of the first evidence element that carries one.
+
+    Evidence IDs reference measured summary elements; each element's style
+    group signature includes its locally measured color (C2-0cC). Returns
+    None when no referenced element has a measured color — an explicit
+    unmeasured, never an inferred color."""
+    groups = summary.get("style_groups", {})
+    elements = {str(el.get("id")): el for el in summary.get("elements", [])}
+    for evidence_id in evidence_ids:
+        element = elements.get(str(evidence_id))
+        if element is None:
+            continue
+        group = groups.get(str(element.get("style_id") or "")) or {}
+        color = group.get("color_hex")
+        if color:
+            return str(color)
+    return None
+
+def _header_style_token(
+    role: str, scaffold_row: Any, summary: dict[str, Any]
+) -> StyleToken:
+    matching_group = next(
+        (
+            f"style_group:{key}"
+            for key, group in sorted(summary.get("style_groups", {}).items())
+            if group.get("font_size_pt") is not None
+            and scaffold_row.font_size_pt is not None
+            and abs(float(group["font_size_pt"]) - float(scaffold_row.font_size_pt)) <= 0.2
+        ),
+        "style_group:unmatched_row_style",
+    )
+    return StyleToken(
+        style_id=f"style.{role}",
+        font_family=str(scaffold_row.font_family or "Arial"),
+        font_size_pt=float(scaffold_row.font_size_pt or 10.0),
+        line_height_pt=scaffold_row.line_height_pt,
+        bold=bool(scaffold_row.bold),
+        # The row's OWN matched style group color (C2-0cC); the evidence-id
+        # lookup is only a fallback for scaffolds built without a matched
+        # group (the shared header evidence-id list cannot disambiguate rows).
+        color_hex=(
+            getattr(scaffold_row, "color_hex", None)
+            or _measured_color_for_evidence(summary, list(scaffold_row.evidence_ids))
+        ),
+        evidence_ids=[*scaffold_row.evidence_ids, matching_group],
+    )
+
+def _body_style_token(
+    summary: dict[str, Any],
+    heading: Any,
+    evidence: NormalizedLayoutEvidence | None,
+) -> StyleToken:
+    """Body style via the ACCEPTED text-volume rule (no second policy).
+
+    With typed evidence, reuse the production helper
+    ``bridge._dominant_body``: ``weight(signature) += max(1, len(text.strip()))``
+    over measured blocks. Without typed evidence (offline synthetic tests),
+    the same formula weights each style's available measured text
+    (``text_sample`` lengths); absent text collapses to the ``max(1, …)``
+    floor, never to element counts.
+    """
+    if evidence is not None and evidence.text_blocks:
+        dominant = _dominant_body(evidence.text_blocks)
+        dominant_size = round(float(dominant.font_size_pt or 0), 2)
+        for key, group in sorted(summary.get("style_groups", {}).items()):
+            size = group.get("font_size_pt")
+            family = str(group.get("font_family") or "").casefold().replace(" ", "")
+            if (
+                size is not None
+                and abs(float(size) - dominant_size) <= 0.05
+                and family == str(dominant.font_family or "").casefold().replace(" ", "")
+                and (group.get("color_hex") or None) == (dominant.color_hex or None)
+            ):
+                return StyleToken(
+                    style_id="style.body",
+                    font_family=str(group.get("font_family") or dominant.font_family),
+                    font_size_pt=float(group.get("font_size_pt") or dominant_size),
+                    line_height_pt=group.get("line_height_pt"),
+                    bold=bool(group.get("bold")),
+                    color_hex=group.get("color_hex"),
+                    character_spacing_pt=group.get("char_spacing_pt"),
+                    evidence_ids=["app.bridge._dominant_body", f"style_group:{key}"],
+                )
+        return StyleToken(
+            style_id="style.body",
+            font_family=str(dominant.font_family or "Arial"),
+            font_size_pt=float(dominant.font_size_pt or 10.0),
+            line_height_pt=dominant.line_height_pt,
+            bold=bool(dominant.bold),
+            color_hex=dominant.color_hex,
+            evidence_ids=["app.bridge._dominant_body", "style_group:unmatched"],
+        )
+    weights: dict[str, int] = {}
+    for element in summary.get("elements", []):
+        style_id = str(element.get("style_id") or "")
+        weight = max(1, len(str(element.get("text_sample") or "").strip()))
+        weights[style_id] = weights.get(style_id, 0) + weight
+    candidates = [
+        (key, group)
+        for key, group in sorted(summary.get("style_groups", {}).items())
+        if group.get("font_size_pt") is None
+        or abs(float(group["font_size_pt"]) - heading.font_size_pt) > 0.5
+        or not group.get("bold")
+    ]
+    _, body = (
+        max(candidates, key=lambda item: (weights.get(item[0], 0), item[0]))
+        if candidates
+        else ("", {})
+    )
+    return StyleToken(
+        style_id="style.body",
+        font_family=str(body.get("font_family") or heading.font_family),
+        font_size_pt=float(body.get("font_size_pt") or 10.0),
+        line_height_pt=body.get("line_height_pt"),
+        bold=bool(body.get("bold")),
+        color_hex=body.get("color_hex"),
+        character_spacing_pt=body.get("char_spacing_pt"),
+        evidence_ids=["style_group:text_volume:max(1,len(text))", *list(body.get("provenance") or [])[:3]],
+    )
+
+def _heading_style_token(
+    summary: dict[str, Any], heading: Any, styles: list[StyleToken], counter: list[int]
+) -> StyleToken:
+    """One StyleToken per DISTINCT measured heading presentation (C2-0cC).
+
+    The heading's own measured presentation (font family/size/line height/
+    bold from its scaffold row) plus its style group's measured color; a
+    heading whose presentation equals an existing token REUSES that token,
+    so identically styled headings never multiply tokens and differently
+    colored headings are never collapsed into one global black token.
+    No measured color => color_hex None (explicit unmeasured; the renderers'
+    documented black fallback applies and is classified adjusted, never
+    exact)."""
+    token = StyleToken(
+        style_id="style.heading",
+        font_family=heading.font_family,
+        font_size_pt=heading.font_size_pt,
+        line_height_pt=heading.line_height_pt,
+        bold=heading.bold,
+        color_hex=getattr(heading, "color_hex", None),
+        evidence_ids=list(heading.evidence_ids),
+    )
+    for existing in styles:
+        if not existing.style_id.startswith("style.heading"):
+            continue
+        if (
+            existing.font_family == token.font_family
+            and existing.font_size_pt == token.font_size_pt
+            and existing.line_height_pt == token.line_height_pt
+            and existing.bold == token.bold
+            and existing.italic == token.italic
+            and existing.color_hex == token.color_hex
+            and existing.character_spacing_pt == token.character_spacing_pt
+        ):
+            return existing
+    counter[0] += 1
+    token = token.model_copy(
+        update={"style_id": "style.heading" if counter[0] == 1 else f"style.heading.{counter[0]}"}
+    )
+    styles.append(token)
+    return token
+
+RULE_TOP_MATCH_TOLERANCE_PT = 2.0
+
+def _rule_evidence(
+    rule: dict[str, Any], page_height: float, page_width: float
+) -> dict[str, Any]:
+    """The matched rule's OWN measured geometry (never heading text bounds)."""
+    return {
+        "x0_pt": round(float(rule["bbox"]["x0"]) * page_width, 3),
+        "x1_pt": round(float(rule["bbox"]["x1"]) * page_width, 3),
+        "stroke_pt": float(rule["stroke_width_pt"]),
+        "color_hex": str(rule.get("color_hex") or "#000000"),
+        "top_pt": round(float(rule["bbox"]["top"]) * page_height, 3),
+        "page": int(rule.get("page_number") or 1),
+    }
+
+def _resolve_above_heading_rule(
+    index: int, heading: Any, summary: dict[str, Any], page_height: float, page_width: float
+) -> tuple[RuleDecoration | None, dict[str, Any] | None]:
+    """Resolve the heading's attached rule from ``summary["rules"]`` by its
+    measured page/y relationship and store the RULE's real bbox x0/x1.
+
+    ``heading.x0_pt/x1_pt`` are the heading TEXT bounds — copying them was the
+    evidence-boundary bug that rendered short rules. Placement is derived from
+    the measured rule/heading relationship, never assumed. Returns
+    (None, None) when the evidence cannot resolve the scaffold's rule (the
+    rule then stays a detached-rules capability gap — never invented).
+    """
+    if heading.rule_stroke_pt is None or heading.rule_top_pt is None:
+        return None, None
+    rule = next(
+        (
+            candidate
+            for candidate in summary.get("rules", [])
+            if int(candidate.get("page_number") or 1) == int(heading.page)
+            and abs(
+                float((candidate.get("bbox") or {}).get("top", 0)) * page_height
+                - float(heading.rule_top_pt)
+            )
+            <= RULE_TOP_MATCH_TOLERANCE_PT
+        ),
+        None,
+    )
+    if rule is None:
+        return None, None
+    evidence = _rule_evidence(rule, page_height, page_width)
+    placement = (
+        "above_heading"
+        if evidence["top_pt"] < float(heading.top_pt)
+        else "below_heading"
+    )
+    evidence["placement"] = placement
+    decoration = RuleDecoration(
+        rule_id=f"rule.section.{index:02d}",
+        x0_pt=evidence["x0_pt"],
+        x1_pt=evidence["x1_pt"],
+        stroke_pt=evidence["stroke_pt"],
+        gap_above_pt=heading.rule_gap_above_pt,
+        gap_below_pt=heading.rule_gap_below_pt,
+        color_hex=evidence["color_hex"],
+        placement=placement,
+        evidence_ids=[*list(heading.evidence_ids), str(rule.get("element_id") or "rule")],
+    )
+    return decoration, evidence
+
+def _below_heading_rule(
+    index: int,
+    heading: Any,
+    summary: dict[str, Any],
+    page_height: float,
+    page_width: float,
+) -> tuple[RuleDecoration | None, dict[str, Any] | None]:
+    """Measured rule BETWEEN the heading text and the section content (F).
+
+    Placement is derived, never assumed: the rule must sit below the heading
+    line and above the first content line. No target fact is read.
+    """
+    heading_bottom = float(heading.top_pt) + float(heading.font_height_pt)
+    content_top = (
+        heading_bottom + float(heading.content_gap_below_pt)
+        if heading.content_gap_below_pt is not None
+        else heading_bottom + 24.0
+    )
+    candidates = [
+        rule
+        for rule in summary.get("rules", [])
+        if int(rule.get("page_number") or 1) == int(heading.page)
+        and heading_bottom - 2.0
+        < float((rule.get("bbox") or {}).get("top", 0)) * page_height
+        < content_top
+    ]
+    if not candidates:
+        return None, None
+    rule = max(
+        candidates,
+        key=lambda item: float((item.get("bbox") or {}).get("top", 0)) * page_height,
+    )
+    evidence = _rule_evidence(rule, page_height, page_width)
+    evidence["placement"] = "below_heading"
+    decoration = RuleDecoration(
+        rule_id=f"rule.section.{index:02d}",
+        x0_pt=evidence["x0_pt"],
+        x1_pt=evidence["x1_pt"],
+        stroke_pt=evidence["stroke_pt"],
+        gap_above_pt=rule.get("gap_above_pt"),
+        gap_below_pt=rule.get("gap_below_pt"),
+        color_hex=evidence["color_hex"],
+        placement="below_heading",
+        evidence_ids=[str(rule.get("element_id") or f"rule.below.{index}")],
+    )
+    return decoration, evidence
+
+def _elements_in_top_range(
+    summary: dict[str, Any], page: int, top_start: float, top_end: float
+) -> list[dict[str, Any]]:
+    """Measured evidence elements strictly between two y positions."""
+    return [
+        element
+        for element in summary.get("elements", [])
+        if element.get("bbox_pt")
+        and int(element.get("page") or 1) == page
+        and top_start < float(element["bbox_pt"]["top"]) < top_end
+    ]
+
+def _content_to_heading_gap(
+    heading: Any, summary: dict[str, Any], page_height: float
+) -> float | None:
+    """Measured gap from the previous content line to this heading text."""
+    previous = [
+        element
+        for element in summary.get("elements", [])
+        if element.get("bbox_pt")
+        and int(element.get("page") or 1) == int(heading.page)
+        and float(element["bbox_pt"].get("top", 0)) < float(heading.top_pt)
+        and element.get("structural_role") != "heading_candidate"
+    ]
+    if not previous:
+        return None
+    above_bottom = max(
+        float(element["bbox_pt"].get("bottom", 0)) for element in previous
+    )
+    gap = round(float(heading.top_pt) - above_bottom, 3)
+    # E3 (2026-09-21): a NEGATIVE derived gap means the walk measured the
+    # heading's own container (e.g. a two-column family whose heading shares
+    # one table row with its content) — that is unmeasurable evidence, not a
+    # negative rhythm; the honest value is None (unmeasured), never a
+    # negative spacing (NodeSpacing forbids it) and never a silent clamp.
+    return gap if gap >= 0 else None
+
+def _mode_style_group(counts: Counter) -> str | None:
+    """Dominant measured style group by total text weight; ties break low."""
+    if not counts:
+        return None
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+def _token_for_style_group(
+    summary: dict[str, Any], group_key: str, styles: list[StyleToken]
+) -> StyleToken | None:
+    """Token for one measured style group; identical measured presentation
+    reuses the existing token (deterministic identity, never invented)."""
+    group = summary.get("style_groups", {}).get(group_key) or {}
+    if group.get("font_size_pt") is None:
+        return None
+    token = StyleToken(
+        style_id=f"style.{group_key}",
+        font_family=str(group.get("font_family") or "Arial"),
+        font_size_pt=float(group["font_size_pt"]),
+        line_height_pt=group.get("line_height_pt"),
+        bold=bool(group.get("bold")),
+        color_hex=group.get("color_hex"),
+        character_spacing_pt=group.get("char_spacing_pt"),
+        evidence_ids=[f"style_group:{group_key}"],
+    )
+    for existing in styles:
+        if (
+            existing.font_family == token.font_family
+            and existing.font_size_pt == token.font_size_pt
+            and existing.line_height_pt == token.line_height_pt
+            and existing.bold == token.bold
+            and existing.italic == token.italic
+            and existing.color_hex == token.color_hex
+            and existing.character_spacing_pt == token.character_spacing_pt
+        ):
+            return existing
+    styles.append(token)
+    return token
+
+def _section_content_style(
+    summary: dict[str, Any],
+    heading: Any,
+    range_end: float,
+    styles: list[StyleToken],
+) -> StyleToken | None:
+    """Measured dominant text style of one section's own content.
+
+    Weighted by measured text length (the same evidence-driven text-volume
+    policy as the accepted body rule). Returns None when the evidence carries
+    no section content elements — a reported evidence limitation, never an
+    invented style.
+    """
+    elements = _elements_in_top_range(
+        summary, int(heading.page), float(heading.top_pt), range_end
+    )
+    weights: Counter[str] = Counter()
+    for element in elements:
+        text = (element.get("text_sample") or "").strip()
+        if element.get("structural_role") == "heading_candidate" or not text:
+            continue
+        weights[str(element.get("style_id") or "")] += len(text)
+    group_key = _mode_style_group(weights)
+    if group_key is None:
+        return None
+    return _token_for_style_group(summary, group_key, styles)
+
+def _entry_tier_values(
+    summary: dict[str, Any],
+    entry: Any,
+    heading: Any,
+    range_end: float,
+    styles: list[StyleToken],
+) -> dict[str, Any]:
+    """Measured entry typography tiers + inter-entry rhythm for one section.
+
+    Blocks are the section's left-column entry lines (a new block when the
+    top delta exceeds the measured line height). The title tier is the first
+    line's dominant style, the detail tier the following left-column lines'
+    dominant style, and the meta tier the right-column style sharing the
+    title row. The inter-entry rhythm is the minimum measured gap between
+    consecutive entry blocks. Nothing is inferred beyond the measured
+    evidence; an empty dict means the evidence carries no entry elements.
+    """
+    elements = _elements_in_top_range(
+        summary, int(heading.page), float(heading.top_pt), range_end
+    )
+    body = [
+        element
+        for element in elements
+        if element.get("entry_path")
+        and element.get("bbox_pt")
+        and (element.get("text_sample") or "").strip()
+    ]
+    if not body:
+        return {}
+
+    def line_height(element: dict[str, Any]) -> float:
+        group = summary.get("style_groups", {}).get(str(element.get("style_id") or ""), {})
+        return float(group.get("line_height_pt") or 12.0)
+
+    left = sorted(
+        (
+            element
+            for element in body
+            if abs(float(element["bbox_pt"]["x0"]) - float(entry.left_x0_pt)) <= 2
+        ),
+        key=lambda element: float(element["bbox_pt"]["top"]),
+    )
+    right = [
+        element
+        for element in body
+        if float(element["bbox_pt"]["x0"]) > float(entry.left_x0_pt) + 10
+    ]
+    blocks: list[list[dict[str, Any]]] = []
+    for element in left:
+        if blocks:
+            previous = blocks[-1][-1]
+            delta = float(element["bbox_pt"]["top"]) - float(previous["bbox_pt"]["top"])
+            if delta > max(line_height(previous), line_height(element)) + 2.0:
+                blocks.append([element])
+            else:
+                blocks[-1].append(element)
+            continue
+        blocks.append([element])
+    if not blocks:
+        return {}
+    values: dict[str, Any] = {}
+    title_group = _mode_style_group(
+        Counter(str(block[0].get("style_id") or "") for block in blocks)
+    )
+    detail_group = _mode_style_group(
+        Counter(
+            str(element.get("style_id") or "")
+            for block in blocks
+            for element in block[1:]
+        )
+    )
+    first_tops = [float(block[0]["bbox_pt"]["top"]) for block in blocks]
+    meta_group = _mode_style_group(
+        Counter(
+            str(element.get("style_id") or "")
+            for element in right
+            if any(abs(float(element["bbox_pt"]["top"]) - top) <= 2.0 for top in first_tops)
+        )
+    )
+    for field, group_key in (
+        ("title_style_id", title_group),
+        ("detail_style_id", detail_group),
+        ("meta_style_id", meta_group),
+    ):
+        if group_key:
+            token = _token_for_style_group(summary, group_key, styles)
+            if token is not None:
+                values[field] = token.style_id
+    gaps: list[float] = []
+    for previous_block, block in zip(blocks, blocks[1:]):
+        next_top = float(block[0]["bbox_pt"]["top"])
+        bottoms = [
+            float(element["bbox_pt"].get("bottom", 0))
+            for element in body
+            if next_top - 0.5 >= float(element["bbox_pt"].get("bottom", 0))
+        ]
+        if bottoms:
+            gaps.append(round(next_top - max(bottoms), 3))
+    if gaps:
+        values["inter_entry_gap_above_pt"] = min(gaps)
+    return values
+
+def _entry_child_node(
+    section_id: str, entry: Any, tier_values: dict[str, Any]
+) -> LayoutNode:
+    """Section-owned measured entry structure (shared by single-source and
+    composite sections; C2-0cM extracted from the section loop verbatim)."""
+    return LayoutNode(
+        node_id=f"{section_id}.entry",
+        parent_id=section_id,
+        kind="entry_row",
+        reading_order=0,  # finalized by the caller
+        columns=[
+            Column(
+                slot="entry_title",
+                x0_pt=round(float(entry.left_x0_pt), 3),
+                alignment="left",
+            ),
+            Column(
+                slot="entry_metadata",
+                x1_pt=round(float(entry.right_x1_pt), 3),
+                alignment="right" if entry.right_row_top_delta_pt == 0.0 else "left",
+            ),
+        ],
+        title_style_id=tier_values.get("title_style_id"),
+        detail_style_id=tier_values.get("detail_style_id"),
+        meta_style_id=tier_values.get("meta_style_id"),
+        inter_entry_gap_above_pt=tier_values.get("inter_entry_gap_above_pt"),
+        evidence_ids=list(entry.evidence_ids) or ["derived.entry_columns"],
+    )
+
+def _list_child(
+    section_id: str, reading_order: int, bullet_marker: Literal["bullet", "none"],
+    bullet_tiers: dict[str, float],
+) -> LayoutNode | None:
+    """Section-owned measured list structure (zero-bullet ruling, §10.5)."""
+    if bullet_marker != "bullet":
+        return None
+    return LayoutNode(
+        node_id=f"{section_id}.list",
+        parent_id=section_id,
+        kind="list_row",
+        reading_order=reading_order,
+        list_marker=bullet_marker,
+        bullet_dot_x0_pt=bullet_tiers.get("bullet_dot"),
+        bullet_text_x0_pt=bullet_tiers.get("bullet_text"),
+        slots=["bullet_text"],
+        evidence_ids=[
+            f"local_pdf.bullet_tiers:{key}:{value:.3f}"
+            for key, value in sorted(bullet_tiers.items())
+        ],
+    )
+
+def state_from_scaffolds(
+    target_sha256: str,
+    header_scaffold: list[Any],
+    body_scaffold: BodyScaffold,
+    bullet_tiers: dict[str, float],
+    summary: dict[str, Any],
+    *,
+    provider_name: str = "adobe",
+    evidence: NormalizedLayoutEvidence | None = None,
+    template_version: str = "c2-0a-3",
+) -> C2LayoutState:
+    """Pure evidence->state mapping (PDF-free; unit-testable offline)."""
+    page = summary["pages"][0]
+    margins = summary.get("margins_pt", {}).get("default", {})
+    missing = [key for key in ("left", "right", "top") if margins.get(key) is None]
+    if missing:
+        raise ValueError(f"target evidence lacks measured margins: {missing}")
+
+    nodes: list[LayoutNode] = []
+    styles: list[StyleToken] = []
+    rules: list[RuleDecoration] = []
+    badges: list[BadgeDecoration] = []
+    gaps: list[CapabilityGap] = []
+    warnings = [str(warning) for warning in summary.get("warnings", [])]
+
+    # -- header region (fixed; measured y is allowed here) -------------------
+    order = 0
+    previous_top: float | None = None
+    for index, row in enumerate(header_scaffold, 1):
+        token = _header_style_token(row.role, row, summary)
+        if not any(style.style_id == token.style_id for style in styles):
+            styles.append(token)
+        gap_above = (
+            round(float(row.top_pt) - previous_top, 3) if previous_top is not None else None
+        )
+        fields = [
+            HeaderField(slot=slot, order=position)  # per-field geometry not
+            for position, slot in enumerate(row.slots)  # measured by the scaffold
+        ]
+        if len(row.slots) > 1:
+            if body_scaffold.contact_separator is None:
+                warnings.append(
+                    f"header.{index:02d}: contact separator is not measurable in "
+                    "the target evidence; no delimiter invented"
+                )
+            warnings.append(
+                f"header.{index:02d}: per-field contact geometry is not measured; "
+                "only the row extent is recorded (field order preserved)"
+            )
+        nodes.append(
+            LayoutNode(
+                node_id=f"header.{index:02d}",
+                kind="header_row",
+                reading_order=order,
+                style_id=token.style_id,
+                slots=list(row.slots),
+                top_pt=round(float(row.top_pt), 3),
+                fields=fields,
+                separator=body_scaffold.contact_separator,
+                icon_decorated=body_scaffold.contact_icons_present,
+                spacing=NodeSpacing(gap_above_pt=gap_above),
+                columns=[
+                    Column(
+                        slot=row.slots[0],
+                        x0_pt=round(float(row.x0_pt), 3),
+                        x1_pt=round(float(row.x1_pt), 3),
+                        alignment=row.alignment,
+                    )
+                ]
+                if row.slots
+                else [],
+                evidence_ids=list(row.evidence_ids),
+            )
+        )
+        order += 1
+        previous_top = float(row.top_pt)
+
+    # -- body sections: bindings, content shapes, section-owned structure -----
+    headings = sorted(body_scaffold.headings, key=lambda item: (item.page, item.top_pt))
+    heading_token_count = [0]  # distinct measured heading presentations (C2-0cC)
+    bullet_marker: Literal["bullet", "none"] = (
+        "bullet" if "bullet_dot" in bullet_tiers else "none"
+    )
+    bound_sources: dict[SourceRole, int] = {}
+    page_height = float(page["height_pt"])
+    # The body token exists before the section loop so a section whose content
+    # style IS the body style reuses it (one token per measured style).
+    styles.append(_body_style_token(summary, headings[0], evidence))
+    # Each section's content owns the measured y range up to the next heading
+    # on the same page (used only for derivation; never stored as geometry).
+    heading_range_end = [
+        next(
+            (
+                following.top_pt
+                for following in headings[position + 1:]
+                if following.page == headings[position].page
+            ),
+            page_height + 1.0,
+        )
+        for position in range(len(headings))
+    ]
+    for index, heading in enumerate(headings, 1):
+        # C2-0cC: one StyleToken per DISTINCT measured heading presentation
+        # (family/size/line/bold + the heading's own measured group color);
+        # identically styled headings reuse one token, differently colored
+        # headings are never collapsed into one global black token.
+        heading_token = _heading_style_token(summary, heading, styles, heading_token_count)
+        section_id = f"section.{index:02d}"
+        rule, _rule_evidence = _resolve_above_heading_rule(
+            index, heading, summary, page_height, float(page["width_pt"])
+        )
+        if rule is None:
+            rule, _rule_evidence = _below_heading_rule(
+                index, heading, summary, page_height, float(page["width_pt"])
+            )
+        if rule is not None:
+            rules.append(rule)
+        source, reason = bind_source(heading.verbatim)
+
+        # C2-0cM composite decomposition: when the single-label binding is
+        # unresolved AND the measured label carries an explicit separator,
+        # decompose into ordered per-component source roles. The original
+        # heading text/casing/style/rule are untouched (decomposition is a
+        # binding-layer rule only; the heading node keeps its verbatim label).
+        composite_sources: list[SourceRole] = []
+        if source is None:
+            composite_sources, composite_reason = bind_composite(heading.verbatim)
+            if composite_reason:
+                reason = composite_reason
+
+        # Binding-cardinality rule: a candidate source maps to at most one
+        # target section by default (a composite claims ALL of its component
+        # sources or none). Extra same-source sections stay unresolved unless
+        # an explicit partition policy exists (none is inferred here) —
+        # source items are never silently duplicated.
+        cardinality_reason: str | None = None
+        if source is not None:
+            if bound_sources.get(source, 0) >= 1:
+                cardinality_reason = (
+                    f"the source {source!r} already maps to another target "
+                    "section and no partition policy is declared"
+                )
+                source = None
+            else:
+                bound_sources[source] = 1
+        elif composite_sources:
+            already_bound = [
+                role for role in composite_sources if bound_sources.get(role, 0) >= 1
+            ]
+            if already_bound:
+                cardinality_reason = (
+                    f"composite component source(s) {already_bound} already map "
+                    "to another target section and no partition policy is "
+                    "declared; the composite claims no partial subset"
+                )
+                composite_sources = []
+            else:
+                for role in composite_sources:
+                    bound_sources[role] = 1
+        mapped_sources = [source] if source is not None else composite_sources
+        if source is None and not composite_sources:
+            gap_reason = (
+                f"measured label {heading.verbatim!r} cannot be bound to a "
+                f"candidate source role ({reason or cardinality_reason}); "
+                "presentation is kept, content mapping requires a recruiter/"
+                "owner decision or a future bounded semantic resolver"
+            )
+            if cardinality_reason:
+                gap_reason = (
+                    f"duplicate source mapping: measured label {heading.verbatim!r} "
+                    f"re-consumes a source that already maps elsewhere; no partition "
+                    "policy is declared, so the candidate source is never "
+                    "duplicated into both sections"
+                )
+            gaps.append(
+                CapabilityGap(
+                    feature=f"unresolved_section_binding:{section_id}",
+                    reason=gap_reason,
+                    evidence_ids=list(heading.evidence_ids),
+                )
+            )
+        content: SectionContent | None = None
+        entry_node_id: str | None = None
+        list_node_id: str | None = None
+        entry_child: LayoutNode | None = None
+        list_child_node: LayoutNode | None = None
+        content_style: StyleToken | None = None
+        tier_values: dict[str, Any] = {}
+        if mapped_sources:
+            content_style = _section_content_style(summary, heading, heading_range_end[index - 1], styles)
+            if len(mapped_sources) == 1:
+                source = mapped_sources[0]
+                kind = _DEFAULT_CONTENT_KINDS[source]
+                if kind == "entries" and body_scaffold.entry is None:
+                    gaps.append(
+                        CapabilityGap(
+                            feature=f"unmeasured_entry_geometry:{section_id}",
+                            reason=(
+                                f"{heading.verbatim!r} binds to {source!r} whose "
+                                "default content is repeatable entries, but no entry "
+                                "column geometry is measured; the section is declared "
+                                "unsupported rather than invented"
+                            ),
+                            evidence_ids=list(heading.evidence_ids),
+                        )
+                    )
+                    content = SectionContent(content_kind="unsupported", sources=[source])
+                else:
+                    content = SectionContent(
+                        content_kind=kind,
+                        sources=[source],
+                        bullet_marker=bullet_marker if kind in {"entries", "item_list"} else None,
+                    )
+                    if kind == "entries":
+                        entry = body_scaffold.entry
+                        entry_node_id = f"{section_id}.entry"
+                        tier_values = _entry_tier_values(
+                            summary, entry, heading, heading_range_end[index - 1], styles
+                        )
+                        entry_child = _entry_child_node(
+                            section_id, entry, tier_values
+                        )
+                    if content.bullet_marker == "bullet":
+                        list_node_id = f"{section_id}.list"
+                        list_child_node = _list_child(section_id, 0, bullet_marker, bullet_tiers)
+            else:
+                # C2-0cM composite content: ordered sub-contents, one per
+                # decomposed source, each through the SAME single-source rules
+                # (unsupported sub-content stays fail-closed downstream). The
+                # section owns ONE entry/list structure for its measured
+                # geometry; sub-contents differ only in source + shape.
+                subs: list[SectionContent] = []
+                needs_entry = False
+                needs_list = False
+                for sub_source in mapped_sources:
+                    sub_kind = _DEFAULT_CONTENT_KINDS[sub_source]
+                    if sub_kind == "entries" and body_scaffold.entry is None:
+                        gaps.append(
+                            CapabilityGap(
+                                feature=f"unmeasured_entry_geometry:{section_id}",
+                                reason=(
+                                    f"{heading.verbatim!r} composite component "
+                                    f"{sub_source!r} defaults to repeatable entries, "
+                                    "but no entry column geometry is measured; that "
+                                    "sub-content is declared unsupported rather "
+                                    "than invented"
+                                ),
+                                evidence_ids=list(heading.evidence_ids),
+                            )
+                        )
+                        subs.append(SectionContent(content_kind="unsupported", sources=[sub_source]))
+                        continue
+                    sub_marker = (
+                        bullet_marker if sub_kind in {"entries", "item_list"} else None
+                    )
+                    needs_entry = needs_entry or sub_kind == "entries"
+                    needs_list = needs_list or sub_marker == "bullet"
+                    subs.append(
+                        SectionContent(
+                            content_kind=sub_kind,
+                            sources=[sub_source],
+                            bullet_marker=sub_marker,
+                        )
+                    )
+                content = SectionContent(
+                    content_kind="composite",
+                    sources=list(mapped_sources),
+                    sub_contents=subs,
+                )
+                if needs_entry:
+                    entry = body_scaffold.entry
+                    entry_node_id = f"{section_id}.entry"
+                    tier_values = _entry_tier_values(
+                        summary, entry, heading, heading_range_end[index - 1], styles
+                    )
+                    entry_child = _entry_child_node(section_id, entry, tier_values)
+                if needs_list:
+                    list_node_id = f"{section_id}.list"
+                    list_child_node = _list_child(section_id, 0, bullet_marker, bullet_tiers)
+        nodes.append(
+            LayoutNode(
+                node_id=section_id,
+                kind="section",
+                reading_order=order,
+                binding=SectionBinding(
+                    sources=list(mapped_sources),
+                    mapping_action="map" if mapped_sources else "unresolved",
+                    composite=len(mapped_sources) > 1,
+                    evidence_ids=list(heading.evidence_ids),
+                ),
+                content=content,
+                content_style_id=content_style.style_id if content_style else None,
+                entry_ref=entry_node_id,
+                list_ref=list_node_id,
+                category_grid=next(
+                    (
+                        CategoryGrid(
+                            columns=[
+                                CategoryGridColumn(
+                                    label_right_x_pt=column.label_right_x_pt,
+                                    value_x0_pt=column.value_x0_pt,
+                                    label_value_gap_pt=column.label_value_gap_pt,
+                                    evidence_ids=list(column.evidence_ids),
+                                )
+                                for column in grid.columns
+                            ],
+                            row_pitch_pt=grid.row_pitch_pt,
+                            column_splits_x_pt=list(grid.column_splits_x_pt),
+                            row_count=grid.row_count,
+                            evidence_ids=list(grid.evidence_ids),
+                        )
+                        for grid in body_scaffold.category_grids
+                        if grid.heading_index == index - 1
+                    ),
+                    None,
+                ),
+                evidence_ids=list(heading.evidence_ids),
+                flow=FlowConstraint(keep_with_next=True),
+            )
+        )
+        order += 1
+        label = re.sub(r"\s+", " ", heading.verbatim).strip()
+        if rule is not None and rule.placement == "below_heading":
+            # Measured content -> heading gap; the rule below the heading owns
+            # the heading -> content gap (consumed from the rule decoration).
+            heading_gap_above = _content_to_heading_gap(heading, summary, page_height)
+            heading_gap_below = None
+        elif rule is not None:
+            heading_gap_above = heading.rule_gap_above_pt
+            heading_gap_below = heading.content_gap_below_pt
+        else:
+            heading_gap_above = _content_to_heading_gap(heading, summary, page_height)
+            heading_gap_below = heading.content_gap_below_pt
+        nodes.append(
+            LayoutNode(
+                node_id=f"{section_id}.heading",
+                parent_id=section_id,
+                kind="heading",
+                reading_order=order,
+                style_id=heading_token.style_id,
+                rule_id=rule.rule_id if rule is not None else None,
+                label=label,
+                label_case=_label_case(label),
+                spacing=NodeSpacing(
+                    gap_above_pt=heading_gap_above,
+                    gap_below_pt=heading_gap_below,
+                ),
+                evidence_ids=list(heading.evidence_ids),
+            )
+        )
+        order += 1
+        # Section-owned structural children (never shared across sections).
+        for child in (entry_child, list_child_node):
+            if child is not None:
+                nodes.append(child.model_copy(update={"reading_order": order}))
+                order += 1
+
+    # -- measured badge clusters (attach per ADR 0006: nearest heading above) --
+    for index, badge in enumerate(
+        sorted(
+            summary.get("badges", []),
+            key=lambda item: (item.get("page_number", 1), item.get("bbox", {}).get("top", 0)),
+        ),
+        1,
+    ):
+        badge_top = float(badge.get("bbox", {}).get("top", 0)) * page_height
+        host_index = next(
+            (
+                headings.index(heading) + 1
+                for heading in reversed(headings)
+                if heading.page == int(badge.get("page_number", 1))
+                and heading.top_pt <= badge_top
+            ),
+            None,
+        )
+        badge_state = BadgeDecoration(
+            badge_id=f"badge.cluster.{index:02d}",
+            fill_color_hex=str(badge.get("fill_color_hex", "#000000")),
+            text_color_hex=str(badge.get("text_color_hex", "#000000")),
+            height_pt=float(badge.get("height_pt", 18)),
+            horizontal_padding_pt=float(badge.get("horizontal_padding_pt", 0)),
+            items_per_line=[int(count) for count in badge.get("items_per_line", [1])],
+            evidence_ids=[
+                str(badge.get("element_id", f"badge.{index}")),
+                f"provenance:{badge.get('provenance', 'local_pdf')}",
+            ],
+        )
+        badges.append(badge_state)
+        if host_index is None:
+            gaps.append(
+                CapabilityGap(
+                    feature=f"badge_cluster:{badge_state.badge_id}",
+                    reason=(
+                        "no measured section heading above the cluster to attach to "
+                        "(ADR 0006 requires attachment)"
+                    ),
+                    evidence_ids=badge_state.evidence_ids,
+                )
+            )
+        else:
+            heading_node = next(
+                node for node in nodes if node.node_id == f"section.{host_index:02d}.heading"
+            )
+            nodes[nodes.index(heading_node)] = heading_node.model_copy(
+                update={"badge_ids": [*heading_node.badge_ids, badge_state.badge_id]}
+            )
+
+    # -- explicit capability gaps from typed evidence counts ------------------
+    table_count = int(
+        evidence.table_count if evidence is not None else summary.get("table_count") or 0
+    )
+    figure_count = int(
+        evidence.figure_count if evidence is not None else summary.get("figure_count") or 0
+    )
+    graphic_count = int(
+        evidence.graphic_count if evidence is not None else summary.get("graphic_count") or 0
+    )
+    if table_count > 0:
+        gaps.append(
+            CapabilityGap(
+                feature="tables",
+                reason=(
+                    f"evidence measures {table_count} table(s); "
+                    "the state has no table node kind"
+                ),
+            )
+        )
+    # Rules and badges are SUPPORTED decorations with their own measured
+    # state; subtract them so genuinely unsupported graphics are not
+    # double-counted.
+    residual_graphics = max(
+        0,
+        graphic_count - len(summary.get("rules", [])) - len(summary.get("badges", [])),
+    )
+    if figure_count > 0 or residual_graphics > 0:
+        gaps.append(
+            CapabilityGap(
+                feature="images_or_vector_graphics",
+                reason=(
+                    f"evidence measures {figure_count} figure(s) and "
+                    f"{residual_graphics} unsupported vector graphic(s) beyond the "
+                    f"{len(summary.get('rules', []))} supported rules and "
+                    f"{len(summary.get('badges', []))} supported badge clusters"
+                ),
+            )
+        )
+    unattached_rules = max(0, int(len(summary.get("rules", [])) - len(rules)))
+    if unattached_rules > 0:
+        gaps.append(
+            CapabilityGap(
+                feature="detached_rules",
+                reason=(
+                    f"{unattached_rules} measured rule(s) attach to no section "
+                    "heading (header or standalone rules)"
+                ),
+            )
+        )
+
+    margins_state = PageState(
+        width_pt=float(page["width_pt"]),
+        height_pt=float(page["height_pt"]),
+        margin_top_pt=round(float(margins["top"]), 3),
+        margin_right_pt=round(float(margins["right"]), 3),
+        margin_bottom_pt=round(float(margins.get("bottom") or margins["top"]), 3),
+        margin_left_pt=round(float(margins["left"]), 3),
+        page_count=int(len(summary.get("pages") or [page])),
+        evidence_ids=["margins_pt.default", "margins_pt.provenance"],
+    )
+    provenance = EvidenceProvenance(
+        provider=provider_name,
+        provider_version=summary.get("provider_version"),
+        measurement_policy=str(summary.get("measurement_policy", "unknown")),
+        target_sha256=target_sha256,
+        analyzer_version=summary.get("analyzer_version"),
+    )
+    return C2LayoutState(
+        template_version=template_version,
+        provenance=provenance,
+        page=margins_state,
+        styles=styles,
+        rules=rules,
+        badges=badges,
+        nodes=nodes,
+        capability_gaps=gaps,
+        warnings=warnings,
+    )
+
+def own_leaf(
+    ledger: dict[str, str], failures: list[str], leaf_id: str, destination: str
+) -> bool:
+    """Record one candidate leaf's single materialized destination.
+
+    The leaf-ownership guard: a leaf consumed a second time is a probe
+    failure, never a silent overwrite.
+    """
+    if leaf_id in ledger:
+        failures.append(
+            f"candidate leaf {leaf_id!r} consumed more than once "
+            f"({ledger[leaf_id]!r} and {destination!r})"
+        )
+        return False
+    ledger[leaf_id] = destination
+    return True

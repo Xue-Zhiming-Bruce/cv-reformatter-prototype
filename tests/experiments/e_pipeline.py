@@ -229,6 +229,13 @@ from tests.experiments.e_pipeline_e5 import (
 )
 
 def main(argv: list[str] | None = None) -> int:
+    import sys
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--e5" in argv:
+        from app.pipeline.__main__ import main as pipeline_main
+
+        return pipeline_main([arg for arg in argv if arg != "--e5"])
     parser = argparse.ArgumentParser(description="Pipeline E0/E1 evidence experiment")
     parser.add_argument("--target", type=Path, required=True, help="target PDF")
     parser.add_argument(
@@ -245,8 +252,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--e2", action="store_true", help="run the E2 See/Measure/Attribute/Repair loop (plan §8)")
     parser.add_argument("--e3", action="store_true", help="run the E3 Resume I walkthrough (plan §11; offline)")
     parser.add_argument("--e4", action="store_true", help="run the E4 live-agent Resume I convergence trial (plan §11/§14)")
-    parser.add_argument("--e5", action="store_true", help="run the E5 Builder-representation comparison (lanes A and B)")
-    parser.add_argument("--lane", choices=["a", "b", "both"], default="both", help="E5 lane restriction")
     parser.add_argument("--decide", type=Path, default=None)
     parser.add_argument("--decision", choices=["accept", "reject"], default=None)
     args = parser.parse_args(argv)
@@ -300,22 +305,6 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "Waiting for the owner is a resumable pause, not success or failure; "
             "'delivered' is reserved for the explicit owner decision."
-        )
-        return 0
-
-    if args.e5:
-        run_dir, terminal, record = run_e5(
-            args.target, args.out, live=args.live,
-            lanes=(args.lane,) if args.lane in ("a", "b") else ("a", "b"),
-        )
-        print(f"E5 run {run_dir.name}: terminal state {terminal}")
-        print(
-            f"  lanes={list(record.get('lanes', {}).keys())} "
-            f"budget={record.get('budget_state')}"
-        )
-        print(
-            "This is a Builder-representation comparison; automated metrics "
-            "declare no winner. The owner reviews owner_review/ and decides."
         )
         return 0
 

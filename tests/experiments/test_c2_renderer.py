@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 import tests.experiments.c2_renderer as renderer_module
+import app.pipeline.quality as quality_module
 from tests.experiments.c2_pipeline import (
     C2LayoutState,
     CandidateDocument,
@@ -57,7 +58,7 @@ def fake_pdf_text(monkeypatch: pytest.MonkeyPatch):
     """Replace PDF text extraction with a canned string (offline gate tests)."""
 
     def _install(text: str) -> str:
-        monkeypatch.setattr(renderer_module, "read_pdf_text", lambda _path: text)
+        monkeypatch.setattr(quality_module, "read_pdf_text", lambda _path: text)
         return text
 
     return _install
@@ -178,7 +179,7 @@ def test_target_candidate_facts_cannot_enter_html_or_pdf(fake_pdf_text, monkeypa
         "SUMMARY",  # a rendered label: excluded from the privacy check
     ]
     fake_pdf_text("\n".join(target_lines))
-    monkeypatch.setattr(renderer_module, "_html_text", _identity_html_text)
+    monkeypatch.setattr(quality_module, "_html_text", _identity_html_text)
     result = privacy_gate(plan, Path("unused.pdf"), html, Path("unused.pdf"))
     assert result["passed"] is False  # the fake PDF text carries the facts
     leaked = {

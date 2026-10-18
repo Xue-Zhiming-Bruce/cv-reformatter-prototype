@@ -1012,7 +1012,7 @@ def test_font_substitution_cannot_pass_as_typography_exact(monkeypatch: pytest.M
     # The requested family is NOT installed: the documented portable fallback
     # is written and rendered, so typography is classified adjusted.
     monkeypatch.setattr(
-        "tests.experiments.c2_docx_build.installed_font_families",
+        "app.pipeline.fonts.installed_font_families",
         lambda: frozenset({"arial"}),
     )
     state = state.model_copy(deep=True)
@@ -1029,7 +1029,7 @@ def test_font_substitution_cannot_pass_as_typography_exact(monkeypatch: pytest.M
     assert all(record["classification"] == "adjusted" for record in tables["rendered_typography"])
     # With the family actually installed and rendered, the record is exact.
     monkeypatch.setattr(
-        "tests.experiments.c2_docx_build.installed_font_families",
+        "app.pipeline.fonts.installed_font_families",
         lambda: frozenset({"arial", "roboto"}),
     )
     state = state.model_copy(deep=True)

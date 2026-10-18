@@ -10,7 +10,7 @@ presentation:
 ```text
 Candidate resume -> CandidateProfile -> recruiter review -> client content
 Target document -> reusable layout specification
-Client content + layout specification -> editable HTML surface -> Adobe PDF
+Client content + layout specification -> editable HTML surface -> Chrome PDF
 ```
 
 The MVP and target-PDF demo were accepted on July 26, 2026. Current work focuses
@@ -36,7 +36,7 @@ DigitalOcean deployment begins only after the end-to-end synthetic demo and loca
 - Flags recruiter-critical missing information.
 - Applies recruiter-controlled disclosure and blind-profile rules.
 - Analyzes supported target DOCX/PDF files for reusable presentation evidence.
-- Generates the editable interface HTML and exports PDF through Adobe HTML-to-PDF.
+- Generates the editable interface HTML and exports PDF through headless Chrome.
 - Saves diagnostic layout, preview, comparison, and workflow artifacts.
 - Exposes FastAPI endpoints for processing, target upload, generation,
   previews, downloads, and artifact metadata.
@@ -61,7 +61,8 @@ Start with the [Documentation Guide](docs/README.md).
 ## Requirements
 
 - Python 3.12 or later.
-- Adobe PDF Services credentials for live HTML-to-PDF export.
+- Chrome or Chromium for local HTML-to-PDF export.
+- Adobe PDF Services credentials for live target-PDF analysis.
 - An OpenAI or Anthropic API key for real semantic extraction; mock mode works
   without an external provider.
 
@@ -129,6 +130,44 @@ python scripts/run_demo.py --input path/to/synthetic_resume.docx --mock
 ```
 
 Artifacts are written to `data/generated_outputs/`.
+
+## Run The Retained Pipeline
+
+The reusable E5 implementation lives in `app/pipeline/`. Its one runner accepts
+explicit inputs; it does not import test code, load Resume E, or read historical
+C1/E4 run directories:
+
+```bash
+python -m app.pipeline \
+  --target path/to/target.pdf \
+  --candidate path/to/reviewed_render_context.json \
+  --adobe-json path/to/adobe_raw.json \
+  --normalized path/to/enriched_evidence.json \
+  --structure-draft path/to/structure_draft.json \
+  --out data/generated_outputs/pipeline/my_run
+```
+
+`--candidate` is the existing strict `CandidateDocument` render projection,
+derived from reviewed candidate data. It is not an extraction input or a
+replacement for the authoritative `CandidateProfile`. The Adobe response,
+normalized evidence, and structure draft must describe the supplied target.
+Invalid structured input returns an operational abort before build.
+
+The default is an offline scripted run. `--live` uses the existing bounded
+agent adapters. `--lane a`, `--lane b`, or `--lane both` selects the retained
+representations; this cleanup selects no winner. Owner-approved labels use
+`--presentation-label-approval path/to/approval.json`; approval remains bound
+to the target and label-catalog checksums.
+
+Fonts and their existing license files are packaged beside the implementation.
+Shape probes are supplied by tests explicitly; a normal run reports them as
+`not_requested` instead of claiming they passed. The former
+`python -m tests.experiments.e_pipeline --e5` entry delegates to this same CLI
+and requires the same explicit inputs.
+
+This separation does not adopt a new product schema, provider, or renderer.
+The existing FastAPI workflow remains separate pending API integration and
+the applicable product decisions.
 
 ## Run Tests
 

@@ -1,4 +1,12 @@
-# A-pipeline experiment
+# Historical pipeline entry points
+
+The retained E5 implementation moved to `app/pipeline/` on October 19, 2026.
+Use `python -m app.pipeline` with explicit candidate, target evidence, and
+structure-draft inputs; see the root README. No historical run directory is
+required by that implementation. Modules here import the shared owners to
+keep historical workflows reviewable until retirement.
+
+The commands below describe those retained historical workflows.
 
 The current owner-authorized experiment keeps candidate content and target
 presentation separate:
@@ -55,15 +63,15 @@ roles, repairing one known rule-placement defect via a single typed
 .venv/bin/python -m tests.experiments.d_pipeline --decide RUN_DIR --decision accept|reject
 ```
 
-Dependency (experiment-only, never a product runtime dependency):
+Dependency (provided by the shared runtime; the old extra is an install alias):
 
 ```bash
 .venv/bin/pip install -e ".[experiments]"
 ```
 
-This installs `pydantic-ai-slim[openai]>=2.43,<3` and therefore upgrades the
-OpenAI SDK from the base `openai>=2.44` pin to `openai>=3.13` (recorded
-side effect; the full offline suite passes with it).
+The retained pipeline declares PydanticAI and the compatible OpenAI SDK as
+runtime dependencies. The `experiments` extra remains empty for compatibility
+with this historical command until D is retired.
 
 Run (clean checkout, no credentials, real Chrome renders):
 

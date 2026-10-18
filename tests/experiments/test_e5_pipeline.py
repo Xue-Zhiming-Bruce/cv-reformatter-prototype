@@ -28,7 +28,8 @@ import tests.experiments.e_authored_template as at
 import tests.experiments.e_pipeline as e
 import tests.experiments.e_pipeline_e5 as e5
 from tests.experiments.d_pipeline import RunBudget
-from tests.experiments.test_e_pipeline import (
+from tests.helpers.pipeline import (
+    run_pipeline_fixture as _run_e5,
     RESUME_I,
     ROOT,
     TARGET_F,
@@ -124,7 +125,7 @@ def test_role_gap_binding_does_not_measure_an_unrelated_visual_dimension() -> No
 def test_measurement_binding_resolves_against_actual_final_pdf_objects(tmp_path: Path) -> None:
     """Phase 0: binding resolves the semantic intent into REAL final-PDF
     objects (render anchors come from the render's own entry-head rows)."""
-    run_dir, _terminal, record = e.run_e5(
+    run_dir, _terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
     )
     lane = record["lanes"]["a"]
@@ -414,7 +415,7 @@ def test_reviewer_failure_does_not_starve_shell_confirmed_gate_repair(
     monkeypatch.setattr(e5, "_live_reviewer_findings", reviewer_failure)
     monkeypatch.setattr(e5, "_with_connection_retry", lambda call, **_kwargs: call())
 
-    run_dir, _terminal, record = e.run_e5(
+    run_dir, _terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=True, lanes=("b",), max_repair_rounds=1,
     )
     lane = record["lanes"]["b"]
@@ -810,7 +811,7 @@ def test_builder_entries_receive_identical_initial_payload_and_image_hashes(
         return []
 
     monkeypatch.setattr(e5, "_live_reviewer_findings", reviewer)
-    e.run_e5(
+    _run_e5(
         RESUME_I, tmp_path / "run", live=True, lanes=("a", "b"), max_repair_rounds=0,
     )
     assert received["a"] == received["b"]
@@ -1582,7 +1583,7 @@ def test_lane_a_proposal_cites_only_known_state_nodes() -> None:
 
 @e5_skip
 def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
-    run_dir, terminal, record = e.run_e5(
+    run_dir, terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
         presentation_label_approval=_simulated_approval_for_test_target_catalog(),
     )
@@ -1602,7 +1603,7 @@ def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
 
 @e5_skip
 def test_run_e5_offline_lane_b_authored_template_loop(tmp_path: Path) -> None:
-    run_dir, terminal, record = e.run_e5(
+    run_dir, terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     assert terminal in {"ready_for_owner_review", "budget_exhausted"}
@@ -1646,7 +1647,7 @@ def test_validator_rejected_builder_candidate_is_auditable_but_never_active(
         )
 
     monkeypatch.setattr(e5, "_scripted_lane_b_template", rejected_template)
-    run_dir, _terminal, record = e.run_e5(
+    run_dir, _terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     lane = record["lanes"]["b"]
@@ -1731,7 +1732,7 @@ def test_run_e5_repeats_the_identical_measurement_after_repair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _force_scripted_builder_attribution(monkeypatch)
-    _run_dir, _terminal, record = e.run_e5(
+    _run_dir, _terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
     lane = record["lanes"]["b"]
@@ -1742,7 +1743,7 @@ def test_run_e5_repeats_the_identical_measurement_after_repair(
 
 @e5_skip
 def test_run_e5_rolls_back_regressions_and_records_the_ledger(tmp_path: Path) -> None:
-    run_dir, terminal, record = e.run_e5(
+    run_dir, terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=2,
     )
     for lane_id, lane in record["lanes"].items():
@@ -1756,7 +1757,7 @@ def test_run_e5_rolls_back_regressions_and_records_the_ledger(tmp_path: Path) ->
 @e5_skip
 def test_run_e5_tiny_repair_budget_still_returns_the_safety_valid_output(tmp_path: Path) -> None:
     tiny = RunBudget(max_model_requests=1, max_tool_calls=8)
-    run_dir, terminal, record = e.run_e5(
+    run_dir, terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
         budget=tiny,
     )
@@ -1777,7 +1778,7 @@ def test_neither_lane_can_emit_an_unsupported_terminal_state() -> None:
 
 @e5_skip
 def test_run_e5_prompts_never_carry_rubric_answers(tmp_path: Path) -> None:
-    run_dir, _terminal, _record = e.run_e5(
+    run_dir, _terminal, _record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     prompts = (run_dir / "prompts.json").read_text(encoding="utf-8")
@@ -1915,7 +1916,7 @@ def test_run_e5_measurement_tool_count_matches_actual_measurements(tmp_path: Pat
     """No caller-side double consumption: the lane's compare_pdf_geometry
     tool count equals the number of actual measurement records traced by the
     MeasureController (one trace record per deterministic measurement)."""
-    _run_dir, _terminal, record = e.run_e5(
+    _run_dir, _terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     trace = json.loads((tmp_path / "run" / "lane_b" / "trace.json").read_text())
@@ -1979,7 +1980,7 @@ def test_run_e5_rejected_render_stays_in_history_and_next_round_uses_old_active(
         return base.model_copy(update={"template_id": base.template_id + "-r"})
 
     monkeypatch.setattr(e5, "_scripted_lane_b_template", non_improving_template)
-    run_dir, terminal, record = e.run_e5(
+    run_dir, terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
     lane = record["lanes"]["b"]
@@ -2019,7 +2020,7 @@ def test_run_e5_promoted_render_becomes_active_and_best_matches_artifact(
     selection resolves to it, and the best ID matches the actual artifact
     bytes on disk."""
     _force_scripted_builder_attribution(monkeypatch)
-    run_dir, _terminal, record = e.run_e5(
+    run_dir, _terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     lane = record["lanes"]["b"]
@@ -2049,7 +2050,7 @@ def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
     PDF -> accounting/presence/blank/determinism/privacy gates) against the
     EXACT selected representation — recorded by id, with real PDF
     artifacts — never a default-state or string-fill-only claim."""
-    run_dir, _terminal, record = e.run_e5(
+    run_dir, _terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=1,
         presentation_label_approval=_simulated_approval_for_test_target_catalog(),
     )
@@ -2093,7 +2094,7 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
     VERSION — never a rolled-back attempt; BEST never appears for that lane;
     with a best render, the package copies exactly the best version's
     artifact."""
-    run_dir, _terminal, record = e.run_e5(
+    run_dir, _terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a", "b"), max_repair_rounds=1,
     )
     package = run_dir / "owner_review"
@@ -2266,7 +2267,7 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     sources BEFORE the first live call; any drift is detected and the run is
     NOT source-identity stable. Source stability never promotes a run to
     'canonical' — the field is `source_identity_stable`, nothing more."""
-    run_dir, _terminal, record = e.run_e5(
+    run_dir, _terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=1,
     )
     config = json.loads((run_dir / "run_config.json").read_text())
@@ -2406,7 +2407,7 @@ def test_run_e5_rollback_binds_next_round_to_the_active_version(
 
     monkeypatch.setattr(e5, "_scripted_lane_a_proposal", non_improving_proposal)
     monkeypatch.setattr(e5, "ScriptedReviewer", RoundDistinctReviewer)
-    run_dir, terminal, record = e.run_e5(
+    run_dir, terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=2,
     )
     lane = record["lanes"]["a"]
@@ -3392,7 +3393,7 @@ def test_run_e5_deduped_repair_does_not_reopen_in_open_findings(
     permanently un-finishable). The scripted reviewer already emits a fresh
     finding id per round with the same ledger key + observation class."""
     _force_scripted_builder_attribution(monkeypatch)
-    _run_dir, _terminal, record = e.run_e5(
+    _run_dir, _terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
     lane = record["lanes"]["b"]
@@ -3468,7 +3469,7 @@ def test_run_e5_accepted_region_recheck_fails_closed_on_missing_evidence(
 
     monkeypatch.setattr(e5, "MeasureController", ScriptedMeasurements)
     monkeypatch.setattr(e5, "ScriptedReviewer", DimensionShiftReviewer)
-    _run_dir, _terminal, record = e.run_e5(
+    _run_dir, _terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=2,
     )
     lane = record["lanes"]["b"]
@@ -3957,7 +3958,7 @@ def test_run_e5_pdf_presence_failure_is_diagnostic_and_owner_reviewable(
     """Flattened-PDF presence mismatches stay visible but do not suppress a
     safety-valid authored output or fabricate a Builder repair."""
     _inject_scripted_pdf_presence_failures(monkeypatch, [5])
-    run_dir, terminal, record = e.run_e5(
+    run_dir, terminal, record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=0,
     )
     lane = record["lanes"]["b"]
@@ -4090,7 +4091,7 @@ def test_lane_b_content_free_shape_and_footprint_contracts() -> None:
 
 @e5_skip
 def test_initial_lane_b_context_is_candidate_compatible_and_compact(tmp_path: Path) -> None:
-    run_dir, _terminal, _record = e5.run_e5(
+    run_dir, _terminal, _record = _run_e5(
         RESUME_I, tmp_path / "run", live=False, lanes=("b",), max_repair_rounds=0,
     )
     payload = json.loads((run_dir / "builder_evidence_initial.json").read_text())

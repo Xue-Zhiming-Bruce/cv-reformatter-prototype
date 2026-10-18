@@ -15,6 +15,25 @@ re-exports every name, so all existing imports keep working unchanged.
 
 from __future__ import annotations
 
+TOLERANCE_PT = {
+    "page_geometry": 0.5,
+    "rule_x_extent": 1.0,
+    "rule_stroke": 0.5,
+    "local_position": 1.5,
+    "local_gap": 1.5,
+    "font_size": 0.5,
+    "column_right_edge": 1.5,
+}
+
+
+from app.pipeline.fonts import (
+    FAMILY_ALIASES,
+    _FONT_SEARCH_DIRS,
+    _font_is_installed,
+    installed_font_families,
+)
+
+
 import re
 import zipfile
 from functools import lru_cache
@@ -69,15 +88,6 @@ ENTRY_LEFT_COLUMN_FRACTION = 0.70
 # eighth-point border widths). Tolerances documented BEFORE evaluating
 # results — the smallest defensible values (mirroring the C2-0b Chrome
 # vector-quantization tolerance where the same quantization applies):
-TOLERANCE_PT = {
-    "page_geometry": 0.5,
-    "rule_x_extent": 1.0,
-    "rule_stroke": 0.5,
-    "local_position": 1.5,
-    "local_gap": 1.5,
-    "font_size": 0.5,
-    "column_right_edge": 1.5,
-}
 MAX_FITTING_ITERATIONS = 3
 # A trailing page is classified sparse when its content extends less than this
 # fraction of the writable height below the top margin (documented before
@@ -103,42 +113,12 @@ DASH_MARKERS = ("-", "–", "—")
 # Truthful typography: requested vs written vs rendered fonts (work order Part 3)
 # ---------------------------------------------------------------------------
 
-_FONT_SEARCH_DIRS = (
-    Path("/System/Library/Fonts"),
-    Path("/System/Library/Fonts/Supplemental"),
-    Path("/Library/Fonts"),
-    Path.home() / "Library/Fonts",
-    Path("/usr/share/fonts"),
-    Path("/usr/local/share/fonts"),
-)
 # Documented family alias tried before the portable fallback ("Charter BT"
 # measures the installed "Charter" family).
-FAMILY_ALIASES = {"charter bt": "charter"}
 
 
-@lru_cache(maxsize=1)
-def installed_font_families() -> frozenset[str]:
-    """Lowercase stems of locally installed font files (no network access)."""
-    families: set[str] = set()
-    for directory in _FONT_SEARCH_DIRS:
-        if not directory.is_dir():
-            continue
-        for path in directory.rglob("*"):
-            if path.suffix.casefold() in {".ttf", ".otf", ".ttc"}:
-                families.add(path.stem.casefold())
-    return frozenset(families)
 
 
-def _font_is_installed(family: str) -> bool:
-    key = family.casefold().replace(" ", "")
-    installed = installed_font_families()
-    if key in installed:
-        return True
-    alias = FAMILY_ALIASES.get(key)
-    if alias and alias in installed:
-        return True
-    first = key.split("_")[0] if "_" in key else None
-    return bool(first) and first in installed
 
 
 def resolve_written_fonts(state: C2LayoutState) -> dict[str, dict[str, Any]]:
