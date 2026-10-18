@@ -1,6 +1,13 @@
 # Frontend Mock API
 
-This local API lets frontend development continue while the C1/C2 backend experiments remain unsettled. It is stateful only in memory and never calls Adobe, an LLM, a database, or the production rendering pipeline.
+This local API provides an in-memory frontend collaboration stub. It never
+calls Adobe, an LLM, a database, or the production rendering pipeline.
+
+Current limitation (October 19, 2026): its `_profile()` fixture supplies the
+obsolete `current_title` field to strict `CandidateProfile` validation. Five
+existing mock workflow tests fail on that mismatch. The routes below describe
+the intended stub interface; the happy path needs that separate repair before
+it is usable.
 
 ## Start it
 
@@ -10,7 +17,8 @@ From the repository root:
 python -m uvicorn scripts.mock_api:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Then open the API documentation at <http://127.0.0.1:8000/docs>. The existing Vite configuration already proxies `/api` requests to this address.
+API documentation is available at <http://127.0.0.1:8000/docs>. Configure the
+frontend API base or proxy for that address separately.
 
 Restarting the process clears all mock artifacts. During development, the same reset can be triggered without restarting:
 
@@ -18,7 +26,7 @@ Restarting the process clears all mock artifacts. During development, the same r
 curl -X POST http://127.0.0.1:8000/__mock__/reset
 ```
 
-## Supported product flow
+## Stub Interface
 
 The mock implements the current same-format workflow:
 
@@ -30,7 +38,9 @@ The mock implements the current same-format workflow:
 
 Both PDF-to-PDF and DOCX-to-DOCX lanes are supported. A PDF candidate paired with a DOCX target, or the reverse, returns `409` rather than silently switching lanes.
 
-The current frontend still posts a profile directly to `/api/generate`. It should be updated to perform step 3 first; the mock intentionally follows the backend contract so the frontend does not become coupled to an obsolete shortcut.
+Frontend consumers should approve the reviewed profile before generation and
+use the returned version identifier. This describes the backend collaboration
+boundary; frontend implementation remains separately owned.
 
 ## Minimal example
 
@@ -56,7 +66,7 @@ curl -X POST http://127.0.0.1:8000/api/generate \
 
 ## Provisional chat layout editing
 
-These routes are intentionally marked provisional. They provide a stable frontend seam for the proposed interaction—select a layout node, describe a correction, inspect the new preview, then accept or reject it—without deciding whether C1 or C2 will implement the production behavior.
+These routes are intentionally marked provisional. They provide a stable frontend seam for the proposed interaction—select a layout node, describe a correction, inspect the new preview, then accept or reject it—without approving a production layout-edit API or persistence schema.
 
 List selectable nodes:
 
@@ -107,5 +117,5 @@ Omit the header, or use `happy`, for the normal path.
 - All candidate information is synthetic.
 - Uploaded bytes are validated by extension but are not parsed or stored.
 - Preview PDFs and DOCX downloads are simple fixtures, not fidelity evidence.
-- No claim made by this mock should be used to judge C1, C2, Adobe, or VLM quality.
+- No claim made by this mock establishes production rendering or provider quality.
 - The layout-edit JSON is a frontend collaboration contract only; it is not yet an approved production API or persistence schema.

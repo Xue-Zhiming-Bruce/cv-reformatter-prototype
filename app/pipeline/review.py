@@ -376,11 +376,10 @@ def compile_two_column_state(
     summary: dict[str, Any],
     evidence: Any,
 ) -> tuple[Any, dict[str, Any]]:
-    """E3 Builder compile (strategy-escalation layer, PIPELINE_E_PLAN §10/§14):
-    when the single-column scaffold derivation cannot compile the target
-    family (derive_header_scaffold raises), this GENERIC two-column compile
-    builds the state through the EXISTING ``state_from_scaffolds`` mapping —
-    no second renderer, no new schema, no target-specific rule.
+    """Compile measured two-column evidence through ``state_from_scaffolds``.
+
+    The retained compiler supports the measured sidebar family below; it does
+    not invoke a retired single-column runner or a target-specific branch.
 
     Measured-only derivation, in evidence order:
     1. sidebar label cluster (shared right-aligned edge left of the rule

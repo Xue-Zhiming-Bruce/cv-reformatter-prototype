@@ -1,141 +1,77 @@
 # CV Reformatter
 
-CV Reformatter is a document-processing backend that helps boutique recruiters
-turn inconsistent candidate resumes into reviewed candidate data and
-recruiter-branded HTML surfaces and PDF submissions.
+CV Reformatter helps boutique recruiters preserve candidate information,
+review it, and produce recruiter-branded HTML and PDF submissions.
 
-The accepted workflow preserves candidate content separately from target
-presentation:
+**Original preserved. Recruiter approved.**
 
 ```text
-Candidate resume -> CandidateProfile -> recruiter review -> client content
-Target document -> reusable layout specification
-Client content + layout specification -> editable HTML surface -> Chrome PDF
+Candidate resume -> validated CandidateProfile -> recruiter review -> client-facing content
+Target document -> measured presentation evidence -> reusable layout specification
+Client-facing content + layout -> controlled HTML -> headless-Chrome PDF
 ```
 
-The MVP and target-PDF demo were accepted on July 26, 2026. Current work focuses
-on measurable information accuracy, target-layout fidelity, safe content
-reflow, reproducibility, and backend production readiness.
+Candidate facts and target presentation remain separate. Scanned PDFs,
+arbitrary PDF editing, and hosted real-candidate workflows are outside the
+current supported scope.
 
-## Database And Hosting Direction
+## Mainline And Current Boundaries
 
-- PostgreSQL is the target MVP database and should run locally during MVP development and testing.
-- The existing SQLite artifact index is transitional and should not be expanded as the primary persistence model.
-- Local document and debug artifacts remain on the local filesystem during the MVP.
-- After the local MVP is complete, the selected initial hosting provider is DigitalOcean:
-  - App Platform for the containerized FastAPI backend and frontend hosting;
-  - Managed PostgreSQL for separate staging and production databases;
-  - Spaces for private resume, extracted-text, DOCX, PDF, and debug artifacts.
+Continue development in the existing modules and track changes in Git.
+Historical experiment runners and commercial comparison tools are retired.
 
-DigitalOcean deployment begins only after the end-to-end synthetic demo and local PostgreSQL persistence path work successfully. Real candidate data must not be hosted before authentication, authorization, private object access, retention/deletion behavior, and backup/restore procedures are in place.
+| Responsibility | Current owner |
+| --- | --- |
+| Ingestion, extraction, source coverage, recruiter review | `app/ingestion/`, `app/extraction/`, `app/main.py` |
+| Target analysis and product layout contracts | `app/template_analysis/` |
+| Retained rendering/review/repair pipeline | `app/pipeline/`; `python -m app.pipeline` |
+| Backend API and frontend integration contract | `app/main.py`; [API contract](docs/architecture/API_CONTRACT.md) |
+| Regression checks and fixtures | `tests/unit/`, `tests/integration/`, `tests/helpers/` |
 
-## What The Backend Does
+The retained CLI currently accepts an explicit reviewed `CandidateDocument`
+render projection and prepared target evidence. It is not wired into the
+FastAPI generation route. `CandidateProfile` remains the authoritative source
+of candidate facts, and `LayoutTemplateSpec` remains the product template
+contract. Moving the retained implementation into `app/pipeline/` does not
+approve a new product schema, provider, or renderer.
 
-- Reads candidate DOCX and text-based PDF resumes.
-- Extracts and strictly validates `CandidateProfile` data.
-- Flags recruiter-critical missing information.
-- Applies recruiter-controlled disclosure and blind-profile rules.
-- Analyzes supported target DOCX/PDF files for reusable presentation evidence.
-- Generates the editable interface HTML and exports PDF through headless Chrome.
-- Saves diagnostic layout, preview, comparison, and workflow artifacts.
-- Exposes FastAPI endpoints for processing, target upload, generation,
-  previews, downloads, and artifact metadata.
-
-Scanned PDFs, arbitrary PDF editing, hosted real-candidate workflows, billing,
-ATS integrations, and searchable talent-pool features are not currently
-supported.
-
-## Documentation
-
-Start with the [Documentation Guide](docs/README.md).
-
-- [Product Specification](docs/product/PRODUCT_SPEC.md) — authoritative product
-  behavior and guardrails.
-- [Document Pipeline](docs/architecture/DOCUMENT_PIPELINE.md) — accepted backend
-  boundaries.
-- [Backend API Contract](docs/architecture/API_CONTRACT.md) — current frontend
-  integration interface.
-- [Backend Roadmap](docs/roadmaps/BACKEND_ROADMAP.md) — sole active engineering
-  checklist.
-
-## Requirements
-
-- Python 3.12 or later.
-- Chrome or Chromium for local HTML-to-PDF export.
-- Adobe PDF Services credentials for live target-PDF analysis.
-- An OpenAI or Anthropic API key for real semantic extraction; mock mode works
-  without an external provider.
-
-PostgreSQL is planned as the first production-oriented persistence foundation.
-The accepted baseline still uses local files and a transitional SQLite metadata
-index.
+The accepted MVP/PDF demo is historical baseline evidence. Current automated
+checks do not certify every API route: the generation route currently calls
+an undefined `_requested_profile_revision_id` helper in `app/main.py`, and
+`scripts/mock_api.py` supplies an obsolete `current_title` field to
+`CandidateProfile`. These existing failures remain visible in the regression
+suite; this cleanup does not repair them.
 
 ## Setup
 
+Requirements: Python 3.12+, and Chrome/Chromium for PDF export. If Chrome is
+not discovered automatically, set `CHROME_BIN` to its executable path.
+
 ```bash
-python -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
 ```
 
-Create a local `.env` only when real-provider extraction is needed:
+The `dev` extra includes pytest and ReportLab for synthetic fixtures.
+Production rendering does not require ReportLab or the retired vendor SDKs.
 
-```env
-LLM_PROVIDER=openai
-OPENAI_API_KEY=
-OPENAI_EXTRACT_MODEL=gpt-5.4-mini
+Use [.env.example](.env.example) for configuration names and create a local
+`.env` when needed. Offline pipeline runs need no model credentials. Live
+PDF-target analysis requires the Adobe credentials listed there; candidate
+extraction uses the stage-specific OpenAI or Anthropic configuration.
+The retained pipeline's `--live` mode uses its existing PydanticAI adapter
+configuration in [runtime.py](app/pipeline/runtime.py), including
+`DEEPSEEK_API_KEY` and optional `DEEPSEEK_BASE_URL`; extraction configuration
+is separate. Provider access still follows the product and ADR boundaries.
 
-# Optional stage-specific key; otherwise OPENAI_API_KEY is used.
-OPENAI_EXTRACT_API_KEY=
-```
+Never commit `.env`, credentials, private candidate documents, or generated
+candidate data. Existing authorized local fixtures stay Git-ignored.
 
-For Anthropic, use `LLM_PROVIDER=anthropic` with
-`ANTHROPIC_EXTRACT_API_KEY`/`ANTHROPIC_API_KEY` and an optional
-`ANTHROPIC_EXTRACT_MODEL`/`ANTHROPIC_MODEL`.
+## Run The Mainline Pipeline
 
-Never commit `.env`, API keys, provider licenses, real resumes, or generated
-candidate data.
-
-## Run The Backend
-
-For an offline local API using deterministic mock extraction:
-
-```bash
-API_LLM_PROVIDER=mock uvicorn app.main:app --reload
-```
-
-For configured real-provider extraction:
-
-```bash
-uvicorn app.main:app --reload
-```
-
-The development frontend is expected to call the backend on its configured
-local port. Frontend implementation is maintained separately by the frontend
-owner.
-
-## Run The CLI Demo
-
-The offline demo creates a synthetic DOCX input when the default sample is
-missing:
-
-```bash
-python scripts/run_demo.py --mock
-```
-
-To process another synthetic DOCX or text-based PDF:
-
-```bash
-python scripts/run_demo.py --input path/to/synthetic_resume.docx --mock
-```
-
-Artifacts are written to `data/generated_outputs/`.
-
-## Run The Retained Pipeline
-
-The reusable E5 implementation lives in `app/pipeline/`. Its one runner accepts
-explicit inputs; it does not import test code, load Resume E, or read historical
-C1/E4 run directories:
+Prepare a target PDF, its raw Adobe response, normalized evidence, a typed
+structure draft, and the reviewed candidate render projection:
 
 ```bash
 python -m app.pipeline \
@@ -147,68 +83,62 @@ python -m app.pipeline \
   --out data/generated_outputs/pipeline/my_run
 ```
 
-`--candidate` is the existing strict `CandidateDocument` render projection,
-derived from reviewed candidate data. It is not an extraction input or a
-replacement for the authoritative `CandidateProfile`. The Adobe response,
-normalized evidence, and structure draft must describe the supplied target.
-Invalid structured input returns an operational abort before build.
+The JSON inputs are validated before build and must describe the supplied
+target and reviewed candidate. The CLI does not extract candidate facts,
+produce the initial structure draft, or retrieve historical run caches.
+See [the implementation boundary](docs/architecture/DOCUMENT_PIPELINE.md#retained-pipeline-implementation)
+for module ownership, validation, repair, and version-selection behavior.
 
-The default is an offline scripted run. `--live` uses the existing bounded
-agent adapters. `--lane a`, `--lane b`, or `--lane both` selects the retained
-representations; this cleanup selects no winner. Owner-approved labels use
-`--presentation-label-approval path/to/approval.json`; approval remains bound
-to the target and label-catalog checksums.
+The default is an offline scripted run. `--lane a`, `--lane b`, or
+`--lane both` chooses the retained representations; no fidelity winner is
+implied. `--presentation-label-approval path/to/approval.json` supplies an
+approval bound to target and label-catalog checksums. `--live` enables the
+existing bounded model adapters.
 
-Fonts and their existing license files are packaged beside the implementation.
-Shape probes are supplied by tests explicitly; a normal run reports them as
-`not_requested` instead of claiming they passed. Historical experiment commands
-have been retired; use `python -m app.pipeline` with explicit inputs.
+Outputs include HTML/PDF, frozen input/source identities, state and trace
+records, measurement/gate reports, and an owner review package. Unrequested
+shape probes are reported as `not_requested`. `ready_for_owner_review` is
+an output for inspection; it does not record owner acceptance.
 
-This separation does not adopt a new product schema, provider, or renderer.
-The existing FastAPI workflow remains separate pending API integration and
-the applicable product decisions.
+## Run The Backend API
 
-## Run Tests
+For local mock extraction:
 
 ```bash
-.venv/bin/python -m pytest -m "not integration and not local_dataset and not live_provider"
+API_LLM_PROVIDER=mock python -m uvicorn app.main:app --reload
 ```
 
-This is the fast offline lane. Before handing off a broad backend change, run
-the full offline lane with `.venv/bin/python -m pytest -m "not live_provider"`.
-Local-corpus and
-live-provider checks are separate, explicit lanes; see the
-[Repository Test Structure Contract](docs/testing/TEST_STRUCTURE.md)
-for commands, artifact locations, retention, and safe cleanup.
+For configured provider extraction, omit `API_LLM_PROVIDER=mock`.
+Health is available at `GET /health`, and OpenAPI documentation at `/docs`.
+The [API contract](docs/architecture/API_CONTRACT.md) owns frontend-facing
+behavior. Frontend code is maintained by the co-founder. The separate
+[frontend mock](docs/development/MOCK_API.md) is a development stub with the
+known schema failure described above.
 
-Optional local dataset tests run only when the expected local-only datasets are
-present under `tests/local_datasets/`. The historical commercial-provider
-comparison harness has been retired; provider contracts use the canonical
-pytest directories.
-The current local-corpus provenance and live-provider authorization are recorded
-in [tests/local_datasets/README.md](tests/local_datasets/README.md); do not infer
-the same classification for newly added files.
+## Validate Changes
 
-When agents run tests for repository changes, they save timestamped terminal
-output under `tests/test_results/pytest/`; those generated reports are not
-product documentation. The canonical workflow registry and test taxonomy are
-defined in
-[docs/testing/TEST_STRUCTURE.md](docs/testing/TEST_STRUCTURE.md).
+Run the canonical offline checks:
 
-## Current Engineering Direction
+```bash
+python -m pytest -m "not local_dataset and not live_provider" tests/unit tests/integration
+```
 
-The active backend sequence is:
+This command currently includes the known API/mock failures. Keep their tests;
+check failures against the baseline instead of deleting regressions to obtain
+a green run. See [the test contract](docs/testing/TEST_STRUCTURE.md) for focused,
+local-corpus and live lanes, and [tests/README.md](tests/README.md) for the
+explicit local inputs used by retained pipeline regressions. Pytest terminal
+output belongs under `tests/test_results/pytest/` and remains uncommitted.
 
-1. Freeze and measure the accepted synthetic baseline.
-2. Define evidence, versioned layout, compilation, job, policy, and artifact
-   contracts.
-3. Evaluate analyzers and renderers against the same corpus.
-4. Complete content, privacy, structural, visual, reliability, performance, and
-   cost gates.
-5. Add PostgreSQL, durable production jobs, private artifact storage, and API
-   hardening.
-6. Add authentication, organizations, retention, deletion, auditing, and tested
-   recovery before hosting real candidate data.
+## Documentation And Remaining Work
 
-See the [Backend Roadmap](docs/roadmaps/BACKEND_ROADMAP.md) for checklist and
-exit-gate details.
+[docs/README.md](docs/README.md) indexes the product contract, architecture,
+accepted ADRs, and the sole active [backend roadmap](docs/roadmaps/BACKEND_ROADMAP.md).
+Historical runners, plans, and obsolete inventories are recoverable from Git;
+they are not current entry points or a second development checklist.
+
+Local files and a transitional SQLite index remain the implemented storage.
+PostgreSQL, durable jobs, private storage, organization-level authorization,
+retention/deletion, and recovery are roadmap work. DigitalOcean is the selected
+initial hosting direction after the required quality and security gates;
+these are not deployed capabilities of this repository.

@@ -224,9 +224,9 @@ def _iter_raw_nodes(node: Any, path: str = ""):
 def _raw_text_leaves(structured_data: dict[str, Any]) -> list[dict[str, Any]]:
     """Every leaf that carries non-empty `Text` in the ORIGINAL provider response.
 
-    This is deliberately the pre-normalization count. Resume I had 122 such
-    leaves against 58 normalized text blocks (C2_RESUME_I_BLIND_STRUCTURE_AUDIT.md);
-    the two numbers must stay separately reported.
+    This is deliberately the pre-normalization count. Raw text leaves and
+    normalized blocks must stay separately reported so normalization loss is
+    distinguishable from missing provider extraction.
     """
     leaves: list[dict[str, Any]] = []
     for _path, node in _iter_raw_nodes(structured_data.get("elements") or []):

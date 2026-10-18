@@ -205,25 +205,22 @@ After implementation:
 4. Update the product contract or an ADR only when the corresponding decision
    was explicitly approved.
 
-## Experiment Asset Versioning（2026-09-10 owner direction）
+## Git Mainline Development
 
-All experiment source, tests, and governance documents under
-`tests/experiments/` are version-controlled. Concretely:
-
-- `tests/experiments/*.py`, `*.md` (proposal, handoff, ledger, reports)
-  are tracked in git; `tests/experiments/runs/` stays ignored
-  (generated artifacts), except key auditable reports which are
-  force-added individually;
-- the orchestrator/agent commits after every accepted milestone:
-  a green run, a closed gap, a doc revision, a source rebuild —
-  message format `c1: <what closed/changed> (run <id>)`;
-- runs evidence is summarized into tracked reports (acceptance
-  tables, failure reports); bulky binaries stay untracked but their
-  paths are recorded in the tracked reports;
-- font assets under `tests/experiments/assets/fonts/` are OFL and
-  tracked with their license text files;
-- agents must never write outside files explicitly named in their
-  work order, and must verify module/file identity before writing
-  (2026-09-11 file-overwrite incident: a_pipeline.py source was
-  lost and recovered only via bytecode + session logs — this
-  section exists so that never recurs).
+- Continue development in the existing mainline implementation. Do not create
+  `tests/experiments/`, a replacement experiment directory, parallel runners,
+  or a second planning system such as `.repo-compass/`.
+- Keep necessary automated regressions in the canonical pytest directories.
+  Historical source, proposals, and run reports are recovered from Git only
+  for investigation; they do not become current operating instructions.
+- Commit each verified milestone: a green focused check, a closed gap, or a
+  documentation revision. Preserve the existing message format:
+  `c1: <what closed/changed> (run <id>)`.
+- Font assets and license texts belong in `app/pipeline/assets/fonts/`.
+  Generated outputs stay local and ignored under the test/artifact contract.
+- Verify module/file identity before editing and keep changes within the
+  authorized scope. Do not overwrite unrelated source or user work.
+- Keep `CandidateProfile` and `LayoutTemplateSpec` as the product contracts.
+  Retained pipeline schema names and prompt bytes are versioned compatibility
+  surfaces; relocation or documentation cleanup is not product adoption or
+  permission to rename them silently.

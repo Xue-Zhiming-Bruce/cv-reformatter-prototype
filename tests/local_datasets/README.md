@@ -9,8 +9,8 @@ On August 12, 2026, the product owner confirmed that **all resume and target
 documents currently stored under `tests/local_datasets/` are fake example
 resumes downloaded from public internet sources**. They are not real candidate
 submissions. The current corpus is authorized for local evaluation and for the
-explicitly requested live Adobe, Azure, OpenAI, and similar target-layout API
-experiments. Agents should not ask for this authorization again for the current
+explicitly authorized provider calls. The former commercial comparison runner
+is retired. Agents should not ask for this authorization again for the current
 corpus.
 
 This attestation applies only to files present in the current local corpus.
@@ -35,8 +35,8 @@ tests/local_datasets/
 ```
 
 Current automated smoke coverage uses the DOCX files under
-`cvparserpro_it_resumes/files/`. PDF archive coverage should stay focused and
-local-only until API-level text-based PDF support is wired into `/api/process`.
+`cvparserpro_it_resumes/files/`. Text-based PDF input is supported by `/api/process`; archive checks remain
+focused, local-only regressions rather than another runner.
 
 Cross-format fixture rule: DOCX resume examples may be used while testing
 PDF-related backend behavior, and PDF resume examples may be used while testing

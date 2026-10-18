@@ -2,7 +2,7 @@
 
 Status: `Active contract`
 
-Last reviewed: August 28, 2026
+Last reviewed: October 19, 2026 (retained implementation inventory)
 
 This document defines the provider-neutral boundaries of the CV Reformatter
 backend. The [Product Specification](../product/PRODUCT_SPEC.md) remains the
@@ -192,6 +192,69 @@ renderer-authored identities, never by text equality. After Chrome export, the
 no-loss content gate extracts PDF text and verifies every approved source-owned
 value. Generation fails closed and persists the independent structure and
 content reports.
+
+## Retained Pipeline Implementation
+
+Implementation inventory, October 19, 2026. This section records the relocated
+mainline code; it does not promote its internal schemas, VLM access, or authored
+HTML/CSS into approved product contracts. The product/API boundaries above and
+accepted ADRs still govern integration.
+
+`python -m app.pipeline` is the retained CLI. It takes an explicit target PDF,
+raw Adobe response, normalized evidence, typed structure draft, and reviewed
+`CandidateDocument` render projection. It validates these inputs before build.
+It does not perform candidate extraction, establish recruiter approval, create
+the initial draft, or discover inputs in historical run directories. The
+FastAPI generation route is not yet connected to this CLI implementation.
+
+| Responsibility | Implementation in `app/pipeline/` |
+| --- | --- |
+| Input dispatch and run coordination | `__main__.py`, `service.py` |
+| Evidence access, measurements, review | `evidence.py`, `measurement.py`, `review.py` |
+| Internal candidate projection and layout state | `candidate_content.py`, `layout_state.py` |
+| Layout compilation and render-plan binding | `layout_compiler.py`, `render_plan.py` |
+| Controlled HTML and authored-template boundaries | `html_renderer.py`, `authored_template.py` |
+| PDF export, fonts, and independent gates | `rendering.py`, `fonts.py`, `quality.py` |
+| Budgets, traces, version identities | `runtime.py` |
+
+Lane A compiles structured layout state; Lane B uses a validated authored
+HTML/CSS template with shell-issued candidate slots. Both consume the same
+reviewed candidate data. Neither is declared the fidelity winner by this
+cleanup. `layout-state/1` and `CandidateDocument` are retained internal
+representations, not replacements for `LayoutTemplateSpec` or `CandidateProfile`.
+Historical schema names and class descriptions are retained for compatibility
+with stored artifacts and generated model schemas; they do not authorize a
+return to experiment workflows.
+
+Measured presentation labels remain proposed until an explicit approval is
+bound to both the target checksum and the exact catalog checksum. Measurement
+alone never approves a label or permits target-person facts to enter output.
+Source evidence and candidate values retain separate ownership.
+
+Review findings, typed measurements, attribution, and repairs are version-bound.
+The shell decides promotion and rollback, preserves valid prior versions, and
+records rejected attempts. A quarantined repair base is not automatically an
+active or best output. Lineage checks bind candidate leaves to their actual
+rendered destinations; different target and candidate text is not itself a
+binding defect. Rechecks inspect the generated PDF, not a layout probe alone.
+
+The runner emits HTML/PDF, frozen configuration and source identities, trace
+and version manifests, lane state, gate/measurement reports, and an owner review
+package under the explicit output directory (default
+`data/generated_outputs/pipeline/`). Synthetic shape probes require explicit
+caller inputs; absent probes are `not_requested`, never a passing result.
+
+Loop exits are `ready_for_owner_review`, `budget_exhausted`,
+`stalled_no_new_action`, or `operational_abort`. They describe readiness,
+limits, lack of a new action, or an operational failure; none is owner acceptance
+or a general target-support judgment. Gate diagnostics and unresolved findings
+remain review evidence. The owner judges actual generated files.
+
+Regression checks live in `tests/unit/test_pipeline_*.py` and
+`tests/integration/test_pipeline*.py`; fixture ownership and optional local
+inputs are documented in [the test index](../../tests/README.md). Changes belong
+in these production modules and canonical tests, with Git retaining previous
+versions instead of parallel experiment sources or ledgers.
 
 ## Reproducibility And Jobs
 

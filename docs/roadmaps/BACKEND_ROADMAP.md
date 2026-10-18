@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: August 28, 2026
+Last reviewed: October 19, 2026 (documentation maintenance; stage statuses unchanged)
 
 This is the active engineering roadmap after completion of the MVP and PDF
 demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
@@ -12,10 +12,16 @@ demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
 evaluations live as dated evidence in
 [docs/evaluations](../evaluations/); no provider is approved outside an ADR.
 
-Progress notes, experiment histories, and day-to-day execution planning live
-in the repo working memory (`.repo-compass/active.md`) and in dated
-evaluations — not here. This file lists what is NOT yet done, by stage, plus
-the definitions and boundaries that govern it.
+This file is the sole implementation checklist. Reviewable Git commits retain
+execution history; current behavior belongs in the owning architecture or API
+document. Superseded experiment histories and repository memory are recovered
+from Git, not maintained as a second plan. This file lists the remaining work,
+by stage, and the definitions and boundaries that govern it.
+
+Maintenance note (October 19, 2026): the retained pipeline is under
+`app/pipeline/`, with canonical pytest coverage. Historical runners and the
+commercial comparison harness have been retired. This cleanup does not
+complete B0/B1 or approve API integration, a provider, or a renderer.
 
 ## Current Phase
 
@@ -254,8 +260,8 @@ content-integrity generation gate. Compiler v5 retains supported nested Adobe
 spans; compiles compact contact membership/order/delimiters, exact target
 section labels/order/casing, hidden headings, target-matched custom sections,
 overflow links, and entry-title/metadata styles; and gates those properties in
-the canonical matrix. Full experiment histories are dated evidence under
-`docs/evaluations/`; live execution status lives in `.repo-compass/active.md`.
+the canonical matrix. Superseded experiment histories remain in
+Git; the remaining stage status and exit gates stay in this roadmap.
 
 Exit gate:
 

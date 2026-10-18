@@ -60,8 +60,10 @@ were retired on October 19, 2026; its source remains in Git.
 Historical A-D, C2/DOCX, and E1-E4 experiment runners and their compatibility
 entry points were removed on October 19, 2026. Shared runtime behavior and its
 regressions remain under `app/pipeline/` and the canonical pytest directories.
-`tests/experiments/` retains historical documentation only; source history is
-recoverable from Git.
+Their historical plans, run reports, and repository-memory ledgers were removed
+from the working tree after consolidation into the current docs. Source and
+history remain recoverable from Git. Existing ignored experiment outputs stay
+local; there is no active producer for that directory.
 
 There may be only one current workflow for each responsibility. Retained
 historical result directories may be consumed by an explicit compatibility

@@ -12,7 +12,7 @@ __pycache__/
 tmp/
 
 # Deprecated ad-hoc renderer output. New generated artifacts belong under
-# data/generated_outputs/ or a versioned tests/** run directory.
+# data/generated_outputs/ or tests/test_results/.
 output/
 
 # Local candidate data and generated artifacts may contain personal data.
@@ -40,3 +40,6 @@ tests/test_results/*
 # Retained legacy commercial-provider secrets, licenses, and comparison evidence.
 tests/commercial_bakeoff/outputs/*
 tests/commercial_bakeoff/licenses/*
+
+# Historical experiment runs remain local after retirement of their source/docs.
+tests/experiments/runs/
