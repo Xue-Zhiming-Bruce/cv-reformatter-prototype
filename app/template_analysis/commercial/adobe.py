@@ -217,7 +217,10 @@ def run_adobe_layout(pdf_path: Path) -> tuple[NormalizedLayoutEvidence, dict[str
         raise AdobeConfigurationError("Adobe PDF Services credentials are not configured.")
     region = os.getenv("ADOBE_PDF_SERVICES_REGION", "US").upper()
     base_url = "https://pdf-services-ew1.adobe.io" if region in {"EU", "EUROPE"} else "https://pdf-services.adobe.io"
-    timeout = float(os.getenv("COMMERCIAL_BAKEOFF_TIMEOUT_SECONDS", "180"))
+    timeout = float(os.getenv(
+        "ADOBE_PDF_SERVICES_TIMEOUT_SECONDS",
+        os.getenv("COMMERCIAL_BAKEOFF_TIMEOUT_SECONDS", "180"),  # existing local configuration
+    ))
     asset_ids: list[str] = []
     with httpx.Client(timeout=timeout, follow_redirects=True) as client:
         token = client.post(

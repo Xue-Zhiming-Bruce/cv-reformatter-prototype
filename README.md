@@ -182,9 +182,9 @@ live-provider checks are separate, explicit lanes; see the
 for commands, artifact locations, retention, and safe cleanup.
 
 Optional local dataset tests run only when the expected local-only datasets are
-present under `tests/local_datasets/`. Commercial-provider evaluation
-instructions are in
-[tests/commercial_api/README.md](tests/commercial_api/README.md).
+present under `tests/local_datasets/`. The historical commercial-provider
+comparison harness has been retired; provider contracts use the canonical
+pytest directories.
 The current local-corpus provenance and live-provider authorization are recorded
 in [tests/local_datasets/README.md](tests/local_datasets/README.md); do not infer
 the same classification for newly added files.

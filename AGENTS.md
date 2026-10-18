@@ -178,7 +178,6 @@ Prefer:
 - `data/input_samples/` for synthetic inputs;
 - `data/generated_outputs/` for local generated/debug artifacts;
 - `tests/local_datasets/` only for safe local datasets that remain uncommitted;
-- `tests/commercial_api/` as the sole current commercial-provider harness;
 - `docs/evaluations/` only for intentionally curated synthetic summaries.
 
 Cross-format resume fixtures are allowed for backend testing when the report
@@ -187,9 +186,11 @@ the structured pipeline or turn a target PDF into candidate data or an editable
 template.
 
 When running pytest, save terminal output to `tests/test_results/pytest/` with
-a timestamped filename. Commercial harness output belongs only under
-`tests/test_results/commercial_api/`. Do not commit generated test reports
-unless the user explicitly requests a curated artifact.
+a timestamped filename. The commercial comparison harness is retired; provider
+contract checks belong in `tests/unit/` or `tests/integration/`, and opted-in
+external smoke checks in `tests/live/`. Existing output under
+`tests/test_results/commercial_api/` is historical evidence only. Do not commit
+generated test reports unless the user explicitly requests a curated artifact.
 
 For resume-matrix evaluations, follow
 `docs/testing/TEST_RESULT_FORMAT.md`. Every run must use its required directory

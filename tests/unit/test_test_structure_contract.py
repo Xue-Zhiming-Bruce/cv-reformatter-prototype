@@ -12,7 +12,7 @@ def test_no_automated_tests_live_at_tests_root() -> None:
     root_tests = sorted(path.name for path in TESTS_ROOT.glob("test_*.py"))
     assert root_tests == [], (
         "Root-level tests create an unowned parallel structure. Classify them "
-        f"under unit/, integration/, live/, or commercial_api/tests/: {root_tests}"
+        f"under unit/, integration/, or live/: {root_tests}"
     )
 
 
@@ -24,7 +24,6 @@ def test_current_test_source_packages_do_not_contain_generated_outputs() -> None
             TESTS_ROOT / "integration",
             TESTS_ROOT / "live",
             TESTS_ROOT / "helpers",
-            TESTS_ROOT / "commercial_api",
         )
         for path in source_root.rglob("outputs")
         if path.is_dir()
@@ -35,9 +34,12 @@ def test_current_test_source_packages_do_not_contain_generated_outputs() -> None
     )
 
 
-def test_legacy_commercial_bakeoff_has_no_current_python_source() -> None:
-    legacy_root = TESTS_ROOT / "commercial_bakeoff"
-    source_files = sorted(path.name for path in legacy_root.glob("*.py"))
+def test_retired_commercial_harnesses_have_no_current_python_source() -> None:
+    source_files = [
+        path.relative_to(TESTS_ROOT).as_posix()
+        for name in ("commercial_bakeoff", "commercial_api")
+        for path in (TESTS_ROOT / name).rglob("*.py")
+    ]
     assert source_files == []
 
 

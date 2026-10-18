@@ -292,10 +292,7 @@ class AnthropicClaudeDesigner(TemplateDesigner):
         self.api_key = api_key or os.getenv("ANTHROPIC_DESIGN_API_KEY") or os.getenv(
             "ANTHROPIC_API_KEY"
         )
-        # Explicit production timeout configuration. The commercial harness
-        # passes its configured --timeout through this constructor argument;
-        # otherwise TEMPLATE_DESIGN_TIMEOUT_SECONDS applies, never a hidden
-        # adapter-internal default that the CLI cannot reach.
+        # Caller configuration takes precedence over the environment timeout.
         self.timeout_seconds = (
             timeout_seconds
             if timeout_seconds is not None

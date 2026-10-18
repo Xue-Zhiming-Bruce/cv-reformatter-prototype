@@ -311,19 +311,14 @@ required; design artifacts are additive and can be deleted per artifact.
 
 ## Evaluation
 
-A separate `design` evaluation lane exists in `tests/commercial_api/`:
+The historical commercial comparison lane was retired on October 19, 2026.
+Production designer contracts run through canonical pytest checks in
+`tests/unit/test_design_provider.py`, `tests/unit/test_compile_bridge.py`, and
+`tests/integration/test_design_service.py`. They use fake external clients;
+no live provider call is made by the default suite. Opted-in provider smoke
+checks belong in the existing `tests/live/` workflow.
 
-```bash
-# deterministic offline baseline
-python -m tests.commercial_api.cli baseline --lanes design
-
-# explicit live synthetic Claude evaluation (never automatic)
-python -m tests.commercial_api.cli run --lane design \
-  --providers claude_designer --cases design_plain_one_column \
-  --live --max-cases 1 --max-requests 1 --timeout 120
-```
-
-Gates are independent (no aggregate score): mapping accuracy,
-unsupported-content preservation, target-fact contamination, invalid-reference
-rate, human-review escalation accuracy, and deterministic compiler acceptance.
-Latency and usage are recorded; cost is optional and configured.
+Future approved comparisons must keep mapping accuracy, unsupported-content
+preservation, target-fact contamination, invalid-reference rate, human-review
+escalation, and compiler acceptance as independent gates. Record latency and
+usage; include cost only when rates are explicitly configured.

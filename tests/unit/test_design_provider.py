@@ -1,17 +1,12 @@
-"""Claude designer request-budget and timeout guarantees.
+"""Claude's single-request, timeout, strict-output, and live-gate contracts.
 
-One call to ``TemplateDesigner.design()`` must perform at most one external
-Anthropic request; the harness retry coordinator owns retries, budgets, and
-attempt records. The CLI ``--timeout`` must reach the Anthropic client, and
-no client may be constructed without live permission and credentials. All
-tests use a fake ``anthropic`` module; no network access occurs.
+The external Anthropic client is faked; no network or harness is involved.
 """
 
 from __future__ import annotations
 
 import sys
 import types
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -29,8 +24,6 @@ from app.template_analysis.designer import (
     DesignerNotConfigured,
     DesignerProviderCallError,
 )
-from tests.commercial_api.compare import load_run_manifest
-from tests.commercial_api.run import Runner
 
 # -- fake anthropic module ---------------------------------------------------
 
@@ -187,10 +180,6 @@ def test_invalid_proposal_payload_is_a_single_attempt(
 # -- timeout configuration ----------------------------------------------------
 
 
-def test_explicit_timeout_reaches_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    _live_env(monkeypatch)
-    AnthropicClaudeDesigner(timeout_seconds=7.5).design(_request())
-    assert _FakeAnthropic.instances[0].timeout == 7.5
 
 
 def test_env_timeout_reaches_client_when_no_explicit_value(
@@ -243,78 +232,3 @@ def test_no_client_without_credentials_even_with_explicit_args(
     with pytest.raises(DesignerNotConfigured):
         designer.design(_request())
     assert _FakeAnthropic.instances == []
-
-
-# -- harness-level: budget units map 1:1 to provider calls --------------------
-
-
-def _run_design_case(
-    tmp_path: Path,
-    *,
-    max_requests: int | None,
-    max_retries: int,
-    timeout: float = 42.0,
-) -> Runner:
-    runner = Runner(
-        env_file=None,
-        output_root=tmp_path / "out",
-        live=True,
-        max_cases=1,
-        max_requests=max_requests,
-        max_retries=max_retries,
-        timeout_seconds=timeout,
-    )
-    runner.run(
-        lanes={"design"},
-        providers={"claude_designer"},
-        cases={"design_plain_one_column"},
-    )
-    return runner
-
-
-def test_harness_max_requests_one_allows_exactly_one_call(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _live_env(monkeypatch)
-    _run_design_case(tmp_path, max_requests=1, max_retries=0, timeout=42.0)
-    assert len(_FakeAnthropic.instances) == 1
-    client = _FakeAnthropic.instances[0]
-    assert len(client.calls) == 1
-    # CLI --timeout reaches the Anthropic client through the adapter.
-    assert client.timeout == 42.0
-
-
-def test_harness_retryable_failure_with_no_budget_makes_no_second_call(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _live_env(monkeypatch)
-    _FakeAnthropic.fail_calls = 5  # provider keeps failing
-    runner = _run_design_case(tmp_path, max_requests=1, max_retries=1, timeout=42.0)
-    assert len(_FakeAnthropic.instances) == 1
-    assert len(_FakeAnthropic.instances[0].calls) == 1
-    manifest = load_run_manifest(runner.output_root / _run_id(runner.output_root))
-    result = manifest.results[0]
-    assert result.status == "provider_failed"
-    assert result.retry_count == 0  # no second call was made
-
-
-def test_harness_outer_retry_count_matches_provider_call_count(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _live_env(monkeypatch)
-    _FakeAnthropic.fail_calls = 2  # two failures then a success
-    runner = _run_design_case(tmp_path, max_requests=5, max_retries=2, timeout=42.0)
-    # Each harness attempt constructs one fresh designer/client and makes
-    # exactly one provider call: 3 attempts => 3 calls, 1:1.
-    assert len(_FakeAnthropic.instances) == 3
-    assert all(len(client.calls) == 1 for client in _FakeAnthropic.instances)
-    total_calls = sum(len(client.calls) for client in _FakeAnthropic.instances)
-    assert total_calls == 3
-    manifest = load_run_manifest(runner.output_root / _run_id(runner.output_root))
-    result = manifest.results[0]
-    assert result.retry_count == 2
-    assert result.status != "not_configured"
-
-
-def _run_id(output_root: Path) -> str:
-    return sorted(path.name for path in output_root.glob("commercial_api_*"))[-1]

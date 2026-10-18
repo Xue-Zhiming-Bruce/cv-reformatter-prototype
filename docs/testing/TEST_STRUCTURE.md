@@ -2,7 +2,7 @@
 
 Status: `Active contract`
 
-Last reviewed: October 19, 2026 (historical pipeline runners retired)
+Last reviewed: October 19, 2026 (historical pipeline and commercial runners retired)
 
 This document is the authoritative structural contract for tests, evaluation
 workflows, fixtures, and generated evidence. It exists to prevent separate
@@ -19,9 +19,10 @@ a test runner, evaluation folder, corpus, result schema, or artifact location:
 4. If no workflow fits, propose the new top-level path and ownership boundary
    to the user before creating it.
 
-New sibling workflows are not justified by experimentation alone. An
-experiment belongs behind a named adapter or strategy in the closest canonical
-harness and must use that harness's corpus, manifest, redaction, and reporting.
+Development continues through versioned changes to the main pipeline.
+Regression cases extend the canonical pytest lanes and shared fixtures; do not
+create experiment runners, parallel provider registries, corpora, result
+schemas, or output directories.
 
 ## Canonical Layout
 
@@ -31,14 +32,10 @@ tests/
   integration/             multi-component and API workflows
   live/                    explicitly gated live smoke tests
   helpers/                 shared synthetic builders and assertions
-  commercial_api/          canonical commercial-provider evaluation harness
-    corpus/                versioned synthetic cases and expectations
-    providers.py           low-level provider operations
-    tests/                 offline harness and normalization tests
   local_datasets/          ignored, authorized local inputs and matrix runs
   test_results/            ignored generated evidence only
     pytest/                timestamped terminal output
-    commercial_api/        versioned provider-evaluation runs
+    commercial_api/        retained historical provider-evaluation evidence
 ```
 
 Source code, fixtures, credentials, and generated results must not share a
@@ -47,8 +44,9 @@ packages.
 
 Provider-neutral normalized layout evidence and offline Adobe response
 normalization are production-owned under `app/template_analysis/commercial/`.
-The commercial harness imports those contracts; evaluation-only results,
-usage, scoring, manifests, and reporting stay under `tests/commercial_api/`.
+Their contracts are exercised through `tests/unit/` and `tests/integration/`.
+The commercial comparison harness, exclusive adapters, scoring, and corpus
+were retired on October 19, 2026; its source remains in Git.
 
 ## Canonical Workflows
 
@@ -56,7 +54,6 @@ usage, scoring, manifests, and reporting stay under `tests/commercial_api/`.
 | --- | --- | --- | --- |
 | Automated backend tests | `pytest tests/unit tests/integration` | synthetic fixtures | `tests/test_results/pytest/` terminal log |
 | Explicit live smoke tests | pytest tests under `tests/live/` with `live_provider` marker and opt-in | synthetic or authorized input | `tests/test_results/pytest/` terminal log |
-| Commercial provider comparison | `python -m tests.commercial_api.cli` | committed synthetic corpus or authorized local Resume A-F targets | `tests/test_results/commercial_api/<run_id>/` |
 | Resume transformation matrix | `scripts/run_abc_live_matrix.py` (API-driven; supersedes the retired `run_block_aware_matrix.py` offline runner) | authorized `tests/local_datasets/resume_matrix/` inputs | versioned matrix run defined by `TEST_RESULT_FORMAT.md`; run reports under `data/generated_outputs/abc_live_matrix/` |
 | Retained E5 pipeline (existing runner relocated, 2026-10-19) | `python -m app.pipeline` | explicit reviewed `CandidateDocument` render projection, target PDF, Adobe JSON, normalized evidence, structure draft, and optional identity-bound label approval | `data/generated_outputs/pipeline/` by default or explicit `--out`; regressions in `tests/unit/test_pipeline_*.py` and `tests/integration/test_pipeline*.py`; synthetic fixtures in `tests/helpers/pipeline*.py`; optional explicit local bundle documented in `tests/README.md`; no automatic historical-run lookup or synthetic probes |
 
@@ -79,8 +76,6 @@ evidence.
   rendering/export, or multiple production components working together.
 - `live/`: a real external provider call. Every test uses the
   `live_provider` marker and a separate explicit environment opt-in.
-- `commercial_api/tests/`: offline contract, normalization, scoring,
-  redaction, retry, reporting, and CLI tests for the commercial harness.
 - `local_datasets/`: data and dataset-specific drivers, not general pytest
   source. Dataset provenance and authorization must be documented locally.
 
@@ -89,12 +84,14 @@ Every new test file goes in one of these locations. Do not add new
 
 ## Commercial Provider Evaluations
 
-All layout providers use the `commercial_api` layout lane and the same inputs
-within a comparison. Provider smoke tests use the committed versioned synthetic
-case. Owner fidelity reviews use the authorized local Resume A-F target set via
-`matrix-run`; synthetic target PDFs must not substitute for A-F in that review.
-Add providers through the existing adapter registry; do not create
-provider-specific runners.
+There is no active standalone provider-comparison runner. Provider contracts
+extend the canonical pytest directories; real provider smoke checks use
+`tests/live/` with its marker and opt-in. No replacement harness or corpus is
+introduced by this retirement. Existing authorized local A-F replays in
+`tests/integration/test_compile_bridge_local.py` read retained evidence and
+exercise the production Adobe bridge; they do not execute the retired harness.
+Future provider comparisons remain subject to product/ADR approval and this
+contract's change-control rule.
 
 A small comparison run must record:
 
@@ -132,8 +129,8 @@ declare a fidelity winner or approve a provider on metrics alone.
 ## Results And Retention
 
 - Pytest terminal output: `tests/test_results/pytest/<UTC>_<purpose>.txt`.
-- Commercial runs, including the provider-by-target A-F comparison:
-  `tests/test_results/commercial_api/<run_id>/`.
+- Retained historical commercial runs, including the A-F comparison:
+  `tests/test_results/commercial_api/<run_id>/` (no active producer).
 - Resume-matrix runs: follow `TEST_RESULT_FORMAT.md` exactly.
 - Curated conclusions: `docs/evaluations/`; raw provider output stays ignored.
 - Keep only evidence needed for the current handoff or referenced by a curated
@@ -177,9 +174,9 @@ live test also requires its own explicit environment opt-in):
 RUN_REAL_LLM_SMOKE=1 .venv/bin/python -m pytest -m live_provider
 ```
 
-Commercial analyzer and renderer evaluations use the bounded CLI documented
-in [`tests/commercial_api/README.md`](../../tests/commercial_api/README.md),
-not the historical bake-off command.
+The historical commercial CLI is retired. Offline provider contracts run with
+the normal unit/integration suite; live smoke tests use the existing gated
+pytest lane above.
 
 ### Artifact locations
 
@@ -188,7 +185,7 @@ not the historical bake-off command.
 | Demo and local generation | `data/generated_outputs/` | Reproducible; local only |
 | Timestamped terminal output | `tests/test_results/pytest/` | Keep only results needed for the current handoff |
 | Resume-matrix run | `tests/local_datasets/resume_matrix/runs/` | Keep one current review run unless comparison history is explicitly required |
-| Commercial API run | `tests/test_results/commercial_api/` | Keep evidence referenced by a curated evaluation; prune superseded raw runs |
+| Historical commercial evidence | `tests/test_results/commercial_api/` | Keep evidence referenced by a curated evaluation; prune superseded raw runs |
 | Scratch conversion/rendering | `tmp/` | Disposable |
 | Legacy ad-hoc output | `output/` | Deprecated and disposable |
 
@@ -205,7 +202,7 @@ local source datasets, credentials, or the named current matrix run.
 python scripts/clean_workspace.py                       # preview
 python scripts/clean_workspace.py --apply               # default scope
 python scripts/clean_workspace.py --scope test-results  # generated test reports
-python scripts/clean_workspace.py --scope legacy-commercial-output
+python scripts/clean_workspace.py --scope legacy-output
 python scripts/clean_workspace.py --scope commercial-api-history \
   --keep-commercial-run commercial_api_<timestamp>
 python scripts/clean_workspace.py --scope matrix-history \

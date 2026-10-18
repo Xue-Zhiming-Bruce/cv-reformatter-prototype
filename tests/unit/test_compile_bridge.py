@@ -585,3 +585,32 @@ def test_archived_evidence_missing_nested_rows_records_gap_warning() -> None:
         in warning and "pending review" in warning
         for warning in evidence.warnings
     ), evidence.warnings
+
+
+@pytest.mark.parametrize(
+    ("provider_timeout", "legacy_timeout", "expected"),
+    [(None, None, 180.0), (None, "42", 42.0), ("7.5", "42", 7.5)],
+)
+def test_adobe_timeout_configuration(tmp_path: Path, monkeypatch, provider_timeout, legacy_timeout, expected) -> None:
+    from app.template_analysis.commercial import adobe
+
+    monkeypatch.setenv("ADOBE_PDF_SERVICES_CLIENT_ID", "synthetic-client")
+    monkeypatch.setenv("ADOBE_PDF_SERVICES_CLIENT_SECRET", "synthetic-secret")
+    for name, value in (
+        ("ADOBE_PDF_SERVICES_TIMEOUT_SECONDS", provider_timeout),
+        ("COMMERCIAL_BAKEOFF_TIMEOUT_SECONDS", legacy_timeout),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    captured = {}
+
+    def stop_before_http(**kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop before HTTP")
+
+    monkeypatch.setattr(adobe.httpx, "Client", stop_before_http)
+    with pytest.raises(RuntimeError, match="stop before HTTP"):
+        adobe.run_adobe_layout(tmp_path / "unused.pdf")
+    assert captured["timeout"] == expected

@@ -16,7 +16,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.parametrize("name", ["Candidate Alpha", "Candidate Beta"])
-def test_cli_uses_explicit_content_without_experiment_imports(tmp_path: Path, name: str) -> None:
+def test_cli_uses_explicit_content_without_test_dependencies(tmp_path: Path, name: str) -> None:
     inputs = _inputs(tmp_path)
     candidate_path = tmp_path / "candidate.json"
     candidate_path.write_text(_candidate(name).model_dump_json())
@@ -24,11 +24,11 @@ def test_cli_uses_explicit_content_without_experiment_imports(tmp_path: Path, na
     # Production must stay independent of repository test fixtures.
     script = """
 import sys, runpy
-class NoExperiments:
+class RuntimeDependencies:
     def find_spec(self, fullname, path=None, target=None):
-        if fullname == 'tests' or fullname.startswith('tests.'):
-            raise AssertionError('runtime imported test code: ' + fullname)
-sys.meta_path.insert(0, NoExperiments())
+        if fullname.partition('.')[0] in {'tests', 'reportlab', 'aspose', 'apryse_sdk'}:
+            raise AssertionError('runtime imported a test-only dependency: ' + fullname)
+sys.meta_path.insert(0, RuntimeDependencies())
 sys.argv = ['pipeline', *sys.argv[1:]]
 runpy.run_module('app.pipeline', run_name='__main__')
 """
