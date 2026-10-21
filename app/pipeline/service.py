@@ -2611,7 +2611,7 @@ def _live_attribution_batch(
     """Phase 0 batched live attribution: findings that share the same region
     (and likely owning layer) are traced in ONE bounded call, ordered like
     the input findings list."""
-    from pydantic_ai import Agent
+    from pydantic_ai import Agent, Tool
 
     from app.pipeline.runtime import _live_model
 
@@ -2624,7 +2624,10 @@ def _live_attribution_batch(
         output_type=list[LiveAttributionHypothesis],
         name="attribution_investigator",
         instructions=E5_ATTRIBUTION_INSTRUCTIONS,
-        tools=tools,
+        # These tools share a mutable evidence pod and call PDFium. PDFium
+        # forbids concurrent calls even for separate documents; sync tools
+        # otherwise run in parallel worker threads under PydanticAI.
+        tools=[Tool(tool, sequential=True) for tool in tools],
     )
     payload = {
         "findings": [finding.model_dump(mode="json") for finding in findings],

@@ -202,6 +202,44 @@ def test_live_builder_budget_is_reserved() -> None:
     assert e._builder_reserve_intact(small, e.E5_BUILDER_MAX_REQUESTS) is False
 
 
+def test_live_attribution_serializes_native_pdf_tools(tmp_path, monkeypatch) -> None:
+    """PDFium is process-global and not thread safe, even across documents.
+    Exercise actual PydanticAI scheduling without risking a native crash.
+    """
+    import threading
+    import time
+    from pydantic_ai.models.test import TestModel
+    from tests.helpers.pipeline import _pod
+    import app.pipeline.runtime as runtime
+
+    pod = _pod(tmp_path)
+    active = peak = calls = 0
+    lock = threading.Lock()
+
+    def observed_pdf_tool(*_args, **_kwargs):
+        nonlocal active, peak, calls
+        with lock:
+            active += 1
+            calls += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return []
+
+    monkeypatch.setattr(pod, "inspect_page_overview", observed_pdf_tool)
+    monkeypatch.setattr(pod, "inspect_page_region", observed_pdf_tool)
+    monkeypatch.setattr(runtime, "_live_model", lambda *_args: TestModel(
+        call_tools=["inspect_page_overview", "inspect_page_region"], custom_output_args=[],
+    ))
+    e._live_attribution_batch(
+        pod, RunBudget(max_model_requests=8, max_tool_calls=8), e.RunTrace(tmp_path),
+        findings=[], results=[],
+    )
+    assert calls == 2
+    assert peak == 1
+
+
 # --- repair-starvation scheduling (2026-09-21 owner work order) -------------
 
 
