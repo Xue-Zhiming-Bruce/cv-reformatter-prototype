@@ -1750,6 +1750,19 @@ def test_authored_accounting_is_complete_and_fails_on_missing_leaves() -> None:
     broken = base.model_copy(update={"html": stripped})
     fill2 = at.fill_authored_template(broken, candidate_resume_E())
     assert any(leaf_id.startswith("education") for leaf_id in fill2.missing_leaves)
+    # The same job title legitimately occurs in the header and experience.
+    # Omitting the header slot must not borrow the experience occurrence.
+    from app.pipeline.candidate_content import CandidateLeaf
+
+    candidate = candidate_resume_E()
+    title = next(leaf.text for leaf in candidate.leaves if leaf.kind == "entry_detail")
+    candidate = candidate.model_copy(update={"leaves": [*candidate.leaves, CandidateLeaf(
+        leaf_id="header.subheading", kind="header_field", slot="subheading", text=title,
+    )]})
+    no_contact = base.model_copy(update={"html": base.html.replace("{{candidate:contact}}", "")})
+    fill3 = at.fill_authored_template(no_contact, candidate)
+    assert "header.subheading" in fill3.missing_leaves
+    assert fill3.leaf_counts["header.subheading"] == 0
 
 
 def test_authored_rendering_uses_a_network_disabled_chrome_environment() -> None:

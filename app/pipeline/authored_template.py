@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html as _html_lib
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any, Literal
 from pydantic import Field, model_validator
@@ -527,6 +528,10 @@ def fill_authored_template(
         return token
 
     html = _LABEL_MARKER_RE.sub(_sub_label, html)
+    simple_slot_counts = Counter(
+        token.replace(":", "_")
+        for token in _TOKEN_RE.findall(_EACH_RE.sub("", html))
+    )
 
     def _substitute_simple(match: re.Match[str]) -> str:
         token = match.group(1).replace(":", "_")
@@ -575,14 +580,19 @@ def fill_authored_template(
     for token, value in placeholders.items():
         html = html.replace(token, value)
 
-    # Accounting: every candidate leaf is consumed by exactly one region
-    # instance BY CONSTRUCTION (recorded per leaf); its verbatim value must
-    # be present in the filled HTML.
+    # Header consumption follows the actual atomic slot occurrences. A
+    # matching value in an entry cannot stand in for an omitted header slot.
+    # Collection consumption remains a construction ledger plus text presence;
+    # it is not a DOM/leaf-ID proof.
     from app.pipeline.rendering import _html_text
 
     html_text, _ = _html_text(html)
     html_norm = _norm_text(html_text)
     counts: dict[str, int] = dict(values.get("_consumed", {}))
+    for leaf in candidate.leaves:
+        if leaf.kind == "header_field":
+            slot = "candidate_name" if leaf.slot == "name" else "candidate_contact"
+            counts[leaf.leaf_id] = simple_slot_counts[slot]
     missing: list[str] = []
     for leaf in candidate.leaves:
         text = _norm_text(leaf.text or "")
