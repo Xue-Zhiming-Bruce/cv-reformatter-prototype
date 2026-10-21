@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 21, 2026 (mainline consolidation authorized; B0/B1 gates unchanged)
+Last reviewed: October 22, 2026 (A/B evidence prepared; owner selection pending; B0/B1 gates unchanged)
 
 This is the active engineering roadmap after completion of the MVP and PDF
 demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
@@ -49,6 +49,19 @@ does not support a quality selection: Lane A retains structure/label gaps and
 the scripted Lane B template does not reproduce the measured target. No lane
 is retired. Independent source/PDF date normalization was corrected and tested;
 the failed run remains local diagnostic evidence.
+
+October 22 update: [A/B review evidence](../evaluations/2026-10-22_AB_MAINLINE_REVIEW.md)
+records 24 owner-authorized DeepSeek-only requests, matched ordinary/blind
+outcomes, independent product-content checks, privacy/repeat diagnostics,
+visual comparisons, and canonical shape probes. Necessary renderer, probe,
+and actual-request budget defects were fixed with regressions. The owner
+explicitly replaced individual label approval with conservative measured
+exact-alias recognition (product/ADR 0001 amendment). The agent recommends A
+as the next convergence direction within the measured sidebar/core-field
+scope; this is not a fidelity winner, product acceptance, or owner selection.
+Both lanes and the original API remain. The A/B checklist item stays in
+progress until the owner inspects the files and decides; no API cutover or
+B0/B1 exit condition is claimed.
 
 ## Current Phase
 
