@@ -28,8 +28,10 @@ Historical experiment runners and commercial comparison tools are retired.
 | Backend API and frontend integration contract | `app/main.py`; [API contract](docs/architecture/API_CONTRACT.md) |
 | Regression checks and fixtures | `tests/unit/`, `tests/integration/`, `tests/helpers/` |
 
-The retained CLI currently accepts an explicit reviewed `CandidateDocument`
-render projection and prepared target evidence. It is not wired into the
+The retained CLI accepts saved `CandidateProfile` JSON and prepared target
+evidence. It derives the same `ClientFacingRenderContext` as the API, then
+creates an internal `CandidateDocument` projection. `--blind-profile` applies
+client-facing identifier filtering before that projection. It is not wired into the
 FastAPI generation route. `CandidateProfile` remains the authoritative source
 of candidate facts, and `LayoutTemplateSpec` remains the product template
 contract. Moving the retained implementation into `app/pipeline/` does not
@@ -70,12 +72,12 @@ candidate data. Existing authorized local fixtures stay Git-ignored.
 ## Run The Mainline Pipeline
 
 Prepare a target PDF, its raw Adobe response, normalized evidence, a typed
-structure draft, and the reviewed candidate render projection:
+structure draft, and a saved `CandidateProfile` JSON file:
 
 ```bash
 python -m app.pipeline \
   --target path/to/target.pdf \
-  --candidate path/to/reviewed_render_context.json \
+  --candidate path/to/saved_candidate_profile.json \
   --adobe-json path/to/adobe_raw.json \
   --normalized path/to/enriched_evidence.json \
   --structure-draft path/to/structure_draft.json \
@@ -83,7 +85,12 @@ python -m app.pipeline \
 ```
 
 The JSON inputs are validated before build and must describe the supplied
-target and reviewed candidate. The CLI does not extract candidate facts,
+target and saved candidate. `--candidate` no longer accepts manually authored
+`CandidateDocument` JSON. Its disclosure rules are applied through the existing
+API mapper; add `--blind-profile` for a blind preview. Structured
+`additional_sections` are explicitly rejected by this CLI until their entry
+hierarchy can be preserved by the selected renderer; the API path retains that
+capability. The CLI does not extract candidate facts,
 produce the initial structure draft, or retrieve historical run caches.
 See [the implementation boundary](docs/architecture/DOCUMENT_PIPELINE.md#retained-pipeline-implementation)
 for module ownership, validation, repair, and version-selection behavior.

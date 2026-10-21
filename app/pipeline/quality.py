@@ -189,7 +189,7 @@ def content_gate(
         if leaf_id in grid_presence:
             present_pdf = grid_presence[leaf_id]
         else:
-            present_pdf = _hyphen_free(token) in normalized_pdf if token else False
+            present_pdf = _hyphen_free(token.replace("- ", "")) in normalized_pdf if token else False
         records[leaf_id] = {
             "destination": destination,
             "element_identity_count": occurrences,

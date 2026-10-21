@@ -9,17 +9,31 @@ import pdfplumber
 import pytest
 
 from app.pipeline.service import run_e5
+from app.extraction.candidate_schema import CandidateProfile
 from tests.helpers.pipeline import synthetic_pipeline_inputs as _inputs, synthetic_pipeline_candidate as _candidate
 
 
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.parametrize("name", ["Candidate Alpha", "Candidate Beta"])
-def test_cli_uses_explicit_content_without_test_dependencies(tmp_path: Path, name: str) -> None:
+@pytest.mark.parametrize("name,blind", [("Candidate Alpha", False), ("Candidate Beta", True)])
+def test_cli_uses_explicit_content_without_test_dependencies(tmp_path: Path, name: str, blind: bool) -> None:
     inputs = _inputs(tmp_path)
     candidate_path = tmp_path / "candidate.json"
-    candidate_path.write_text(_candidate(name).model_dump_json())
+    profile = CandidateProfile(
+        full_name=name, email="private@example.test", phone="+1 555 010 0001",
+        professional_summary="Builds reliable systems", skills=["Python"],
+        skill_groups=[{"label": "Systems", "skills": ["SQL", "Linux"]}],
+        languages=[{"name": "English", "proficiency": "Fluent"}],
+        work_experience=[{"company": "Example Corp", "title": "Engineer",
+                          "location": "Boston", "start_date": "2020", "end_date": "2024",
+                          "description": ["Built useful tools"]}],
+        education=[{"institution": "Example University", "degree": "BS", "field_of_study": "Computing"}],
+        certifications=[{"name": "Example Certificate"}],
+        notice_period="30 days", salary_expectation="CONFIDENTIAL_SALARY",
+        client_display_rules={"salary_expectation": "hide"},
+    )
+    candidate_path.write_text(profile.model_dump_json())
     out_dir = tmp_path / "result"
     # Production must stay independent of repository test fixtures.
     script = """
@@ -36,6 +50,8 @@ runpy.run_module('app.pipeline', run_name='__main__')
                "--target", str(inputs["target_pdf"]), "--candidate", str(candidate_path),
                "--adobe-json", str(inputs["adobe_json"]), "--normalized", str(inputs["normalized_evidence"]),
                "--structure-draft", str(inputs["structure_draft"]), "--out", str(out_dir), "--lane", "b"]
+    if blind:
+        command.append("--blind-profile")
     result = subprocess.run(command, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, (result.stdout + result.stderr +
                                    (out_dir / "e5_state.json").read_text())
@@ -47,10 +63,43 @@ runpy.run_module('app.pipeline', run_name='__main__')
     assert manifest["state_history"][-1]["state"] == "ready_for_owner_review"
     with pdfplumber.open(out_dir / "lane_b/render_1.pdf") as pdf:
         text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    assert name in text and "Builds reliable systems" in text
+    assert ("Candidate A" if blind else name) in text
+    if blind:
+        assert name not in text and "private@example.test" not in text and "+1 555 010 0001" not in text
+    else:
+        assert "private@example.test" in text
+    for value in ("Builds reliable systems", "Python", "Systems", "SQL", "Linux",
+                  "English", "Fluent", "Example Corp", "Engineer", "Boston",
+                  "2020", "2024", "Built useful tools", "Example University", "BS",
+                  "Computing", "Example Certificate", "30 days"):
+        assert value in text, value
+    assert "CONFIDENTIAL_SALARY" not in text
     assert "Target Person" not in text and "Target facts only" not in text
     assert state["lanes"]["b"]["summary"]["probe_mode"] == "not_requested"
     assert state["lanes"]["b"]["content_shape_probes_passed"] is False
+    gates = json.loads((out_dir / "lane_b/hard_gates_render-target-laneB-v1.json").read_text())
+    assert gates["details"]["diagnostics"]["pdf_presence"]["passed"] is True
+
+
+def test_cli_rejects_structured_sections_before_build_instead_of_flattening(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from app.pipeline.__main__ import main
+    candidate = tmp_path / "candidate.json"
+    candidate.write_text(CandidateProfile(
+        full_name="Candidate Alpha", additional_sections=[{
+            "source_heading": "Projects", "source_block_id": "candidate-block-001",
+            "section_type": "projects", "entries": [{"title": "A project", "description": ["A bullet"]}],
+        }],
+    ).model_dump_json())
+    output = tmp_path / "result"
+    with pytest.raises(SystemExit) as exc:
+        main(["--candidate", str(candidate), "--target", str(tmp_path / "target.pdf"),
+              "--adobe-json", "unused.json", "--normalized", "unused.json",
+              "--structure-draft", "unused.json", "--out", str(output)])
+    assert exc.value.code == 2
+    assert "cannot yet preserve structured additional sections" in capsys.readouterr().err
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("field", ["adobe_json", "normalized_evidence", "structure_draft"])

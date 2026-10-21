@@ -434,7 +434,9 @@ def render_context_values(candidate: CandidateDocument) -> dict[str, Any]:
                 consumed[leaf.leaf_id] += 1
                 for kid in children.get(leaf.leaf_id, []):
                     consumed[kid.leaf_id] += 1
-            elif leaf.kind in {"language", "certification_item"}:
+            elif leaf.kind in {"language", "certification_item"} or (
+                leaf.kind == "additional_item" and leaf.parent_leaf_id is None
+            ):
                 consumed[leaf.leaf_id] += 1
         return consumed
 
@@ -464,7 +466,12 @@ def render_context_values(candidate: CandidateDocument) -> dict[str, Any]:
                 {"item": _esc(leaf.text)}
                 for leaf in candidate.leaves if leaf.kind == "certification_item"
             ],
-            "additional": _entry_items("additional_section"),
+            "additional": _entry_items("additional_section") + [
+                {"item": _esc(leaf.text), "item_head": _esc(leaf.text),
+                 "item_text": "", "_leaf_ids": [leaf.leaf_id]}
+                for leaf in candidate.leaves
+                if leaf.kind == "additional_item" and leaf.parent_leaf_id is None
+            ],
         }
     )
     values["_consumed"] = _leaf_consumption(candidate)
@@ -671,7 +678,7 @@ def authored_pdf_presence_gate(
     normalized_pdf = _norm_text(read_pdf_text(pdf)).replace("- ", "").replace("-", "")
     missing = []
     for leaf in candidate.leaves:
-        text = _norm_text(leaf.text or "").replace("-", "")
+        text = _norm_text(leaf.text or "").replace("- ", "").replace("-", "")
         if text and _occurrences(normalized_pdf, text) < 1:
             missing.append(leaf.leaf_id)
     return {"passed": not missing, "missing_pdf_leaves": missing}

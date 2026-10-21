@@ -31,10 +31,12 @@ Legacy profile-approval names remain compatibility fields only.
 
 - [x] Restore a runnable API/mock baseline, including revision preview, final
       acceptance invalidation, disclosure, and generation regressions.
-- [ ] Unify candidate input through `CandidateProfile` ->
+- [x] Unify candidate input through `CandidateProfile` ->
       `ClientFacingRenderContext`; keep `CandidateDocument` an internal projection.
-      Record layout-contract gaps before replacing either compiler.
-- [ ] Produce comparable A/B outcome PDFs and independent gates using existing
+      Record layout-contract gaps before replacing either compiler. CLI core
+      projection is integrated; structured custom sections still require parity
+      in the selected renderer before API cutover (see Document Pipeline).
+- [~] Produce comparable A/B outcome PDFs and independent gates using existing
       workflows; obtain owner selection before retiring either representation.
 - [ ] Route API and CLI through the selected shared generation implementation;
       remove replaced paths only after behavior/output parity and rollback checks.
@@ -42,6 +44,11 @@ Legacy profile-approval names remain compatibility fields only.
       has a single verified owner.
 
 This work does not itself satisfy the B0/B1 or provider/renderer acceptance gates.
+The initial synthetic offline A/B integration run produced reviewable files but
+does not support a quality selection: Lane A retains structure/label gaps and
+the scripted Lane B template does not reproduce the measured target. No lane
+is retired. Independent source/PDF date normalization was corrected and tested;
+the failed run remains local diagnostic evidence.
 
 ## Current Phase
 

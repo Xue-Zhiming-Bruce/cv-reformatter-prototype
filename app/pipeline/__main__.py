@@ -3,7 +3,10 @@
 import argparse
 from pathlib import Path
 
-from app.pipeline.candidate_content import CandidateDocument
+from app.extraction.candidate_schema import CandidateProfile
+from app.generation.template_mapper import build_client_render_context
+from app.profile_approval import profile_sha256
+from app.pipeline.candidate_content import candidate_document_from_context
 from app.pipeline.service import PresentationLabelApproval, run_e5
 
 
@@ -11,7 +14,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", type=Path, required=True)
     parser.add_argument("--candidate", type=Path, required=True,
-                        help="reviewed CandidateDocument render-context JSON")
+                        help="saved CandidateProfile JSON (projected through disclosure rules)")
+    parser.add_argument("--blind-profile", action="store_true")
     parser.add_argument("--adobe-json", type=Path, required=True)
     parser.add_argument("--normalized", type=Path, required=True)
     parser.add_argument("--structure-draft", type=Path, required=True)
@@ -21,7 +25,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--live", action="store_true")
     args = parser.parse_args(argv)
     try:
-        candidate = CandidateDocument.model_validate_json(args.candidate.read_text())
+        profile = CandidateProfile.model_validate_json(args.candidate.read_text())
+        context = build_client_render_context(profile, blind_profile=args.blind_profile)
+        candidate = candidate_document_from_context(
+            context, candidate_id=f"candidate-{profile_sha256(profile)[:16]}"
+        )
         approval = (PresentationLabelApproval.model_validate_json(args.presentation_label_approval.read_text())
                     if args.presentation_label_approval else None)
     except (OSError, ValueError) as error:

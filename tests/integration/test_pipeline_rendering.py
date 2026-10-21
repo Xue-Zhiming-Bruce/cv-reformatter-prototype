@@ -118,6 +118,24 @@ def _all_leaf_texts(plan: C2RenderPlan) -> list[str]:
     return texts
 
 
+def test_spaced_date_ranges_match_pdf_but_changed_dates_fail(fake_pdf_text) -> None:
+    state = compile_synthetic()
+    candidate = rich_candidate()
+    candidate.leaves = [
+        leaf.model_copy(update={"text": "2020 - 2024"}) if leaf.leaf_id == "work.e1.m1" else leaf
+        for leaf in candidate.leaves
+    ]
+    plan = compile_render_plan(state, candidate)
+    html = render_html(state, plan)
+    text = "\n".join(_all_leaf_texts(plan))
+    fake_pdf_text(text)
+    result = content_gate(plan, html, Path("unused.pdf"))
+    assert result["leaf_records"]["work.e1.m1"]["pdf_present"] is True
+    fake_pdf_text(text.replace("2020 - 2024", "2020 - 2030"))
+    result = content_gate(plan, html, Path("unused.pdf"))
+    assert "work.e1.m1" in result["missing_pdf"]
+
+
 def test_missing_and_duplicated_leaves_fail() -> None:
     # Missing: a candidate body leaf outside any declared section cannot even
     # form a render context (fail closed before rendering).

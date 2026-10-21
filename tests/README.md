@@ -31,8 +31,12 @@ Default pipeline checks generate synthetic target PDFs and evidence per test.
 Optional `local_dataset` loop cases extend the existing authorized
 `tests/local_datasets/resume_matrix/` corpus with explicit inputs:
 `resume_I.pdf`, `resume_I.adobe.json`, `resume_I.normalized.json`, and
-`resume_I.draft.json`. These match the main CLI contract, without a second
-corpus or paths into historical runs. The regression target must have a
+`resume_I.draft.json`. The target evidence matches the CLI contract, without a second corpus or paths
+into historical runs. These internal regression fixtures still pass a
+`CandidateDocument` directly to the service. The public CLI instead reads
+`CandidateProfile`, applies the shared disclosure/blind mapper, and builds its
+internal projection; CLI PDF checks cover every supported core field and reject
+structured custom sections explicitly until renderer integration. The regression target must have a
 measured two-column sidebar layout and multiple work entries for the role-gap/repair assertions;
 these cases do not claim support for an arbitrary target. The candidate is
 the retained public/fictional Resume E fixture. Missing bundles are skipped;

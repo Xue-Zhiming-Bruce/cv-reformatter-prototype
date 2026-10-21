@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 from pydantic import Field, model_validator
+from app.generation.template_mapper import ClientFacingRenderContext
 from app.pipeline.layout_state import SourceRole, StateModel
 
 CandidateLeafKind = Literal[
@@ -136,3 +137,83 @@ class CandidateDocument(StateModel):
         if self.sections and orphan_body:
             raise ValueError(f"body leaves outside any section: {sorted(orphan_body)}")
         return self
+
+
+def candidate_document_from_context(
+    context: ClientFacingRenderContext, *, candidate_id: str
+) -> CandidateDocument:
+    """Project already-disclosed values without reading a target or raw profile.
+
+    Structured custom sections need renderer integration first; reject them
+    explicitly rather than flattening entry titles, links, and bullets.
+    """
+    if context.additional_sections:
+        raise ValueError(
+            "The retained pipeline cannot yet preserve structured additional "
+            "sections from ClientFacingRenderContext; use the API renderer "
+            "until that integration is complete."
+        )
+    leaves: list[CandidateLeaf] = []
+    sections: list[CandidateSection] = []
+
+    def add(
+        leaf_id: str, kind: CandidateLeafKind, text: str | None,
+        source: SourceRole | None = None, *, parent: str | None = None,
+        slot: str | None = None,
+    ) -> None:
+        if text:
+            leaves.append(CandidateLeaf(
+                leaf_id=leaf_id, kind=kind, text=text, source=source,
+                parent_leaf_id=parent, slot=slot,
+            ))
+
+    add("header.name", "header_field", context.candidate_heading, slot="name")
+    add("header.subheading", "header_field", context.candidate_subheading, slot="subheading")
+    # Typed contacts own their order; legacy contexts may carry only lines.
+    contacts = [(item.field, f"{item.label}: {item.value}") for item in context.contact_items]
+    if not contacts:
+        contacts = [(f"contact_{index}", text) for index, text in enumerate(context.contact_lines)]
+    for index, (field, text) in enumerate(contacts):
+        slot = {"email": "envelope", "linkedin_url": "linkedin", "portfolio_url": "portfolio"}.get(field, field)
+        add(f"header.contact.{index}", "header_field", text, slot=slot)
+
+    add("summary.p1", "summary_paragraph", context.professional_summary, "summary")
+    for index, group in enumerate(context.skill_groups):
+        add(f"skills.group.{index}", "skill_group", f"{group.label}: {', '.join(group.skills)}", "skills")
+    for index, text in enumerate(context.skills):
+        add(f"skills.item.{index}", "skill_group", text, "skills")
+    for index, text in enumerate(context.languages):
+        add(f"languages.{index}", "language", text, "languages")
+    for index, entry in enumerate(context.work_experience):
+        leaf_id = f"work.{index}"
+        # An empty title is presentation, not an invented employer or role.
+        leaves.append(CandidateLeaf(leaf_id=leaf_id, kind="work_entry", source="work_experience", text=entry.company or entry.title or ""))
+        if entry.company:
+            add(f"{leaf_id}.title", "entry_detail", entry.title, "work_experience", parent=leaf_id)
+        for key, text in (("location", entry.location), ("dates", entry.date_range)):
+            add(f"{leaf_id}.{key}", "entry_meta", text, "work_experience", parent=leaf_id)
+        for bullet, text in enumerate(entry.description):
+            add(f"{leaf_id}.bullet.{bullet}", "work_bullet", text, "work_experience", parent=leaf_id)
+    for index, entry in enumerate(context.education):
+        leaf_id = f"education.{index}"
+        leaves.append(CandidateLeaf(leaf_id=leaf_id, kind="education_entry", source="education", text=entry.institution or ""))
+        for key, text in (("degree", entry.degree), ("field", entry.field_of_study)):
+            add(f"{leaf_id}.{key}", "entry_detail", text, "education", parent=leaf_id)
+        add(f"{leaf_id}.dates", "entry_meta", entry.date_range, "education", parent=leaf_id)
+    for index, text in enumerate(context.certifications):
+        add(f"certifications.{index}", "certification_item", text, "certifications")
+    for index, detail in enumerate(context.additional_details):
+        add(f"details.{index}", "additional_item", f"{detail.label}: {detail.value}", "additional_details")
+    for source, heading, kind in (
+        ("summary", "Summary", "paragraph"), ("skills", "Skills", "item_list"),
+        ("languages", "Languages", "item_list"), ("work_experience", "Experience", "entries"),
+        ("education", "Education", "entries"), ("certifications", "Certifications", "item_list"),
+        ("additional_details", "Additional details", "item_list"),
+    ):
+        ids = [leaf.leaf_id for leaf in leaves if leaf.source == source]
+        if ids:
+            sections.append(CandidateSection(
+                section_id=source, heading=heading, source=source,
+                content_kind=kind, leaf_ids=ids,
+            ))
+    return CandidateDocument(candidate_id=candidate_id, leaves=leaves, sections=sections)

@@ -203,9 +203,12 @@ mainline code; it does not promote its internal schemas, VLM access, or authored
 HTML/CSS into approved product contracts. The product/API boundaries above and
 accepted ADRs still govern integration.
 
-`python -m app.pipeline` is the retained CLI. It takes an explicit target PDF,
-raw Adobe response, normalized evidence, typed structure draft, and reviewed
-`CandidateDocument` render projection. It validates these inputs before build.
+`python -m app.pipeline` takes an explicit target PDF, raw Adobe response,
+normalized evidence, typed structure draft, and saved `CandidateProfile` JSON.
+The CLI calls the existing `build_client_render_context` mapper for disclosure
+and optional blind-profile filtering, then `candidate_document_from_context`
+for its internal `CandidateDocument`. It validates inputs before build; callers
+no longer hand-author a second candidate-data model.
 It does not perform candidate extraction, establish recruiter approval, create
 the initial draft, or discover inputs in historical run directories. The
 FastAPI generation route is not yet connected to this CLI implementation.
@@ -228,6 +231,29 @@ representations, not replacements for `LayoutTemplateSpec` or `CandidateProfile`
 Historical schema names and class descriptions are retained for compatibility
 with stored artifacts and generated model schemas; they do not authorize a
 return to experiment workflows.
+
+Integration gaps recorded October 21, 2026:
+
+- The product API supports structured custom sections, while the retained
+  renderer paths do not yet provide equivalent section/entry/link/bullet
+  semantics. The new CLI projection rejects nonempty `additional_sections`
+  before build rather than flattening or losing them. The API renderer remains
+  available; it must not be removed until those regression cases pass.
+- The retained runner compiles its initial state through
+  `compile_two_column_state`. It does not accept a product `LayoutTemplateSpec`
+  directly, nor establish parity for one-column targets, layout-proof approval,
+  or arbitrary continuation/region policies. Product layouts must not be
+  relabeled as internal state without an explicit compiler and parity checks.
+- The retained `--live` model adapters and Lane B authored HTML are not newly
+  approved by this input consolidation. A/B selection still requires reviewable
+  outputs and the applicable provider/renderer decision.
+
+Core projection preserves visible header/subheading/contact values, summaries,
+skill groups, languages, work entries and their metadata/bullets, education,
+certifications, and visible recruiter-detail rows. It never reads target text
+or re-implements disclosure rules. Internal structural fixtures remain test
+inputs, not an alternative public candidate schema.
+
 
 Measured presentation labels remain proposed until an explicit approval is
 bound to both the target checksum and the exact catalog checksum. Measurement
