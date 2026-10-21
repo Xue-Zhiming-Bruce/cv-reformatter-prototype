@@ -277,16 +277,18 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                     if section_plan.rail_label_align
                     else ""
                 )
+                gap = f"margin-top:{_pt(section_plan.heading_gap_above_pt)};" if section_plan.heading_gap_above_pt is not None else ""
                 parts.append(
                     f'    <div class="c2-rail" style="display:grid;'
                     f"grid-template-columns:{_pt(section_plan.rail_label_width_pt)} 1fr;"
-                    f'column-gap:12pt;">'
+                    f'{gap}column-gap:12pt;">'
                 )
                 parts.append(f'      <div class="c2-rail-label" style="{align}">')
             if not (section_plan.candidate_only and section_plan.source_heading is None):
                 # Headingless appended sections embed their heading in the content
                 # line itself (e.g. D's "SUMMARY — ..."); never invent an h2 label.
-                parts.append(_heading_html(section_plan, rail_rule, page))
+                heading_plan = section_plan.model_copy(update={"heading_gap_above_pt": None}) if rail else section_plan
+                parts.append(_heading_html(heading_plan, rail_rule, page))
             if rail:
                 parts.append("      </div>")
                 parts.append('      <div class="c2-rail-content">')

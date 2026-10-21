@@ -52,6 +52,7 @@ def test_rail_heading_and_content_occupy_separate_pdf_columns(tmp_path: Path) ->
     plan = compile_render_plan(state, synthetic_pipeline_candidate("Candidate Alpha"))
     plan.sections[0] = plan.sections[0].model_copy(update={
         "rail_heading": True, "rail_label_width_pt": 90.0, "rail_label_align": "right",
+        "heading_gap_above_pt": 80.0,
     })
     html_path, pdf_path = tmp_path / "rail.html", tmp_path / "rail.pdf"
     html_path.write_text(render_html(state, plan))
