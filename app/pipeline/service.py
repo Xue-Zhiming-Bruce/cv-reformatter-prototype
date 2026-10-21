@@ -789,10 +789,24 @@ def _apply_presentation_label_approval(
 def _approved_presentation_labels(
     catalog: list[PresentationLabel],
 ) -> list[PresentationLabel]:
-    """The ONLY renderable labels: the approved view of a validated approval.
+    """The ONLY renderable labels: the shell-recognized view.
     A proposed entry is deliberately excluded (non-renderable, and not
     privacy-excluded)."""
     return [label for label in catalog if label.status == "approved"]
+
+def _heuristic_presentation_labels(catalog: list[PresentationLabel]) -> list[PresentationLabel]:
+    """Recognize measured conventional headings using the product vocabulary.
+
+    Exact aliases only: substring matches such as 'Skills Inc' must not turn
+    target-person facts into reusable labels. Unknowns remain unrenderable.
+    """
+    from app.template_analysis.commercial.bridge import _section_source_hint
+
+    return [
+        label.model_copy(update={"status": "approved"})
+        for label in catalog
+        if _section_source_hint(label.text)[0] != "additional_section"
+    ]
 
 def _e5_label_semantics(
     gate: dict[str, Any], approved: list[PresentationLabel]
@@ -822,10 +836,11 @@ def _presentation_label_listing(
     catalog_sha256: str | None = None,
     approval_provided: bool | None = None,
     approval_validated: bool | None = None,
+    recognition_method: str = "explicit_owner_input",
 ) -> dict[str, Any]:
     """The owner-visible label listing (label_id / text / kind / status /
-    evidence / which lanes referenced it). Status comes from the owner-supplied
-    ``approved_label_ids`` (the validated approved view); shell catalog entries
+    evidence / which lanes referenced it). Status comes from the shell-recognized
+    ``approved_label_ids``; shell catalog entries
     are always proposed. `proposed` entries are listed for review but are NOT
     renderable. Audit material only — it does NOT mean the owner accepted
     T-v1."""
@@ -833,13 +848,14 @@ def _presentation_label_listing(
     return {
         "schema_version": "e5-presentation-labels/1",
         "note": (
-            "shell-proposed presentation labels taken from target evidence. Only "
-            "owner-approved entries (a typed approval bound to target_sha256 + "
-            "catalog_sha256 + label ids) are renderable and privacy-excluded; "
-            "proposed entries await explicit owner approval and are NOT "
-            "renderable. Audit material only: this is NOT an acceptance of T-v1 "
-            "and no lane is declared a winner."
+            "Measured labels are renderable and privacy-excluded only after "
+            "recognition by the recorded method. Conventional exact aliases "
+            "are recognized automatically; unknown labels remain proposed and "
+            "unrenderable. Legacy explicit approval remains bound to "
+            "target_sha256 and catalog_sha256. "
+            "Recognition is not human output acceptance or a lane decision."
         ),
+        "recognition_method": recognition_method,
         "target_sha256": target_sha256,
         "catalog_sha256": catalog_sha256,
         "approval_provided": approval_provided,
@@ -3003,20 +3019,20 @@ def run_e5(
     except Exception as error:
         return abort("presentation_label_catalog", error)
     catalog_sha256 = presentation_label_catalog_sha256(label_catalog)
-    # Approval is an owner INPUT, never an inference: the proposed catalog
-    # stays all-proposed unless the owner supplied a typed approval bound to
-    # THIS target's sha256 and THIS catalog's canonical identity. Without it
-    # (the default), NOTHING is renderable and nothing is privacy-excluded.
+    # Owner direction 2026-10-22: recognize conventional headings without
+    # per-label human approval; legacy explicit input still validates identity.
     try:
-        approved_label_catalog = _apply_presentation_label_approval(
-            label_catalog,
-            presentation_label_approval,
-            target_sha256=target_sha256,
+        approved_label_catalog = (
+            _apply_presentation_label_approval(
+                label_catalog, presentation_label_approval, target_sha256=target_sha256,
+            ) if presentation_label_approval is not None
+            else _heuristic_presentation_labels(label_catalog)
         )
     except Exception as error:
         return abort("presentation_label_approval", error)
     approval_provided = presentation_label_approval is not None
-    # Only owner-approved entries are renderable and privacy-excluded. The
+    recognition_method = "explicit_owner_input" if approval_provided else "measured_exact_alias/1"
+    # Only shell-recognized entries are renderable and privacy-excluded. The
     # proposed remainder stays visible in the owner listing but can never be
     # rendered: its ids are never issued to the template boundary, and its
     # text is never excluded from the privacy gate (so rendering it fails
@@ -3117,6 +3133,7 @@ def run_e5(
         # the lanes will run under (an invalid approval aborts before this
         # freeze, so `validated` mirrors `provided` here).
         presentation_label_approval_record={
+            "recognition_method": recognition_method,
             "provided": approval_provided,
             "validated": approval_provided,
             "target_sha256": target_sha256,
@@ -3429,7 +3446,7 @@ def run_e5(
                                 plan, content
                             )["passed"],
                             # The same COMMON privacy gate with the same
-                            # owner-approved label set as the main renders.
+                            # shell-recognized label set as the main renders.
                             "privacy_gate": authored_privacy_gate(
                                 html, probe_pdf_path, target_pdf,
                                 labels=approved_label_texts,
@@ -3610,7 +3627,7 @@ def run_e5(
                 # common gate below.
                 privacy = c2r.privacy_gate(plan, target_pdf, html, pdf_path)
                 # The ONE common privacy gate: identical function and identical
-                # owner-approved label set for BOTH lanes, so the two lanes'
+                # shell-recognized label set for BOTH lanes, so the two lanes'
                 # privacy decisions are directly comparable.
                 common_privacy = authored_privacy_gate(
                     html, pdf_path, target_pdf, labels=approved_label_texts
@@ -3627,7 +3644,7 @@ def run_e5(
                         for left, right in zip(pages, second_pages)
                     ) and stability["passed"],
                     # The COMMON privacy decision: the same gate function and
-                    # the same owner-approved label set Lane B uses.
+                    # the same shell-recognized label set Lane B uses.
                     "no_target_candidate_facts": common_privacy["passed"],
                     "section_order_matches_state": structure_gate["section_order_matches_state"],
                     "no_blank_page": blank["passed"],
@@ -3736,7 +3753,7 @@ def run_e5(
                 pages = _render_pages(pdf_path, lane_dir, f"render_{index}")
                 presence = authored_pdf_presence_gate(fill, candidate, pdf_path)
                 # The SAME common gate Lane A runs: identical gate function and
-                # identical owner-approved label set, so both lanes' privacy
+                # identical shell-recognized label set, so both lanes' privacy
                 # decisions are directly comparable.
                 common_privacy = authored_privacy_gate(
                     doc, pdf_path, target_pdf, labels=approved_label_texts
@@ -5080,6 +5097,7 @@ def run_e5(
             "source_changed": source_changed,
             "source_identity_stable": not source_changed,
             "presentation_label_approval": {
+                "recognition_method": recognition_method,
                 "target_sha256": target_sha256,
                 "catalog_sha256": catalog_sha256,
                 "approval_provided": approval_provided,
@@ -5545,6 +5563,9 @@ def _write_e5_owner_package(
         catalog_sha256=catalog_sha256,
         approval_provided=approval_provided,
         approval_validated=approval_validated,
+        recognition_method=(record.summary.get("presentation_label_approval") or {}).get(
+            "recognition_method", "explicit_owner_input"
+        ),
     )
     (out_dir / "presentation_labels.json").write_text(
         json.dumps(label_listing, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -5604,26 +5625,22 @@ def _write_e5_owner_package(
   T-v1;
 - remaining material differences below; iteration histories in lane dirs.
 
-## Presentation labels (owner-approved vs proposed; audit material)
+## Presentation labels (recognized vs proposed; audit material)
 
-Fixed visible template text may only enter through an OWNER-APPROVED label id.
-Approval is a typed owner INPUT bound to the exact target (`target_sha256`),
-the exact proposed catalog identity (`catalog_sha256`), and explicit label
-ids — it is never inferred from label text, so the same wording in another
-target is NOT approved. The Builder references an id; the shell owns the text.
-Measurement only PROPOSES an entry — it never approves one, because provenance
-does not prove that a short target line is a presentation label rather than a
-name, school, employer, or job title. `proposed` entries are listed for review
-but are NOT renderable and are NOT excluded from the privacy gate.
-Target-person facts, contact data, dates, employers, schools, roles, and any
-text that is not classified presentation structure are NOT approved.
+Fixed visible text enters only through a shell-recognized label id. The shell
+owns the escaped text. Owner direction 2026-10-22 permits automatic recognition
+of measured headings matching the existing exact product aliases; unknown
+labels remain proposed, unrenderable, and outside privacy exclusions. Legacy
+explicit approval is still bound to target and catalog checksums. The retained
+`approved` status means renderable, not human acceptance of the output.
+
+- recognition method: {label_listing['recognition_method']}
 
 - target_sha256: `{target_sha256}`
 - catalog_sha256 (proposed-catalog identity): `{catalog_sha256}`
 - owner approval provided: {approval_provided} · validated: {approval_validated}
 
-Approved: {approved_count} · proposed (awaiting
-owner approval): {proposed_count}
+Recognized: {approved_count} · proposed (unrecognized): {proposed_count}
 
 | label_id | text | kind | status | evidence | referenced by lanes |
 | --- | --- | --- | --- | --- | --- |

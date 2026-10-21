@@ -149,7 +149,7 @@ def _occurrences(haystack: str, needle: str) -> int:
 
 def _label_index(labels: list[PresentationLabel] | None) -> dict[str, PresentationLabel]:
     """Shell-approved label id -> entry. A `proposed` entry is NOT renderable
-    (only an explicit owner approval makes a label usable), and a duplicated
+    (recognition or explicit approval makes a label usable), and a duplicated
     id is ambiguous (two texts for one marker). Both fail closed."""
     index: dict[str, PresentationLabel] = {}
     for label in labels or []:

@@ -240,6 +240,14 @@ measured target structure, including provider-neutral character spacing.
 Candidate-only sections remain preserved for review;
 the renderer must not invent a generic target section to place them silently.
 
+Owner decision, October 22, 2026: measured conventional presentation labels
+may be recognized heuristically without individual human label approval. The
+retained pipeline uses the existing product's exact heading aliases after
+measured sidebar detection; unknown labels stay unrenderable and visible as
+unresolved evidence. Substring matches cannot authorize target-person facts.
+Record the recognition method and target/catalog identities; automatic label
+recognition never approves a template, candidate facts, or the final output.
+
 ## Required Outputs
 
 The product must produce:

@@ -255,9 +255,14 @@ or re-implements disclosure rules. Internal structural fixtures remain test
 inputs, not an alternative public candidate schema.
 
 
-Measured presentation labels remain proposed until an explicit approval is
-bound to both the target checksum and the exact catalog checksum. Measurement
-alone never approves a label or permits target-person facts to enter output.
+Owner direction, October 22, 2026: measured presentation labels matching the
+existing product's exact heading aliases are recognized automatically
+(`measured_exact_alias/1`), without per-label human approval. Unknown labels
+remain proposed and unrenderable. Target/catalog checksums and the recognition
+method are persisted; the compatibility status `approved` means renderable,
+not human output acceptance. Legacy explicit label input still validates both
+checksums. Geometry or substring matches alone cannot authorize arbitrary
+target text; template and exact-output acceptance remain separate gates.
 Source evidence and candidate values retain separate ownership.
 
 Review findings, typed measurements, attribution, and repairs are version-bound.

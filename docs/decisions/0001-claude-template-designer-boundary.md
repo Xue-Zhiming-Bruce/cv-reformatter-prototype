@@ -52,3 +52,17 @@ names, caching, and rollback:
 [LLM Template Designer Workflow](../architecture/LLM_DESIGNER_WORKFLOW.md).
 That document is the single operational home for these rules; this ADR records
 the decision itself.
+
+## Target-Label Recognition Amendment — October 22, 2026
+
+The owner explicitly replaced individual presentation-label approval with
+heuristic recognition. This is a bounded exception for conventional measured
+headings: the retained pipeline's measured sidebar candidates must match the
+existing product compiler's exact aliases. Unknown headings remain unresolved
+and unrenderable; substring hits do not permit names, companies, contact
+values, dates, or other target-person facts. Record the method and exact
+target/catalog identities without fabricating a human approval. The legacy
+explicit-input path remains checksum-bound. Template approval, layout proofs,
+candidate disclosure, privacy checks, and final HTML/PDF acceptance are
+unchanged. This amendment neither selects A/B nor adopts authored HTML/CSS as
+the product template contract.

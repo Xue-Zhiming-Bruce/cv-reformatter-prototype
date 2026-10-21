@@ -2102,7 +2102,7 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
     assert not any("agent_messages" in p.name for p in package.iterdir())
     assert run_config["presentation_label_approval"]["provided"] is False
     assert run_config["presentation_label_approval"]["validated"] is False
-    assert run_config["presentation_label_approval"]["approved_label_ids"] == []
+    assert run_config["presentation_label_approval"]["recognition_method"] == "measured_exact_alias/1"
     assert run_config["presentation_label_approval"]["target_sha256"] == record["target_sha256"]
     assert (
         run_config["presentation_label_approval"]["catalog_sha256"]
@@ -2121,11 +2121,9 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
         assert entry["evidence_ids"]
         assert set(entry["referenced_by_lanes"]) <= {"a", "b"}
         assert f"`{entry['label_id']}`" in package_report
-    # default: NO approval was supplied to run_e5, so the owner package shows
-    # the full proposed catalog and ZERO approved ids — never an inferred
-    # "owner-approved" claim
-    assert listing["approved_label_ids"] == []
-    assert listing["proposed_label_ids"] == [entry["label_id"] for entry in listing["labels"]]
+    # Automatic recognition must never manufacture a human approval record.
+    assert listing["recognition_method"] == "measured_exact_alias/1"
+    assert listing["approved_label_ids"] == run_config["presentation_label_approval"]["approved_label_ids"]
     assert listing["approval_provided"] is False and listing["approval_validated"] is False
     assert listing["target_sha256"] and listing["catalog_sha256"]
     assert "owner approval provided: False" in package_report
@@ -2848,6 +2846,47 @@ def _catalog_one() -> list[e.PresentationLabel]:
     )
 
 
+def test_measured_labels_are_recognized_without_fabricating_human_approval(tmp_path: Path) -> None:
+    from tests.helpers.pipeline_candidates import candidate_resume_E
+
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    run_dir, _terminal, record = e.run_e5(
+        **inputs, out_dir=tmp_path / "run", candidate=candidate_resume_E(),
+        live=False, lanes=("a", "b"), max_repair_rounds=0,
+    )
+    listing = json.loads((run_dir / "presentation_labels.json").read_text())
+    assert listing["recognition_method"] == "measured_exact_alias/1"
+    assert listing["approval_provided"] is False
+    assert listing["approval_validated"] is False
+    assert {row["text"] for row in listing["labels"] if row["status"] == "approved"} == {
+        "SUMMARY", "EXPERIENCE",
+    }
+    for lane_id, lane in record["lanes"].items():
+        version_id = lane["render_versions"][0]["version_id"]
+        gate = json.loads((run_dir / f"lane_{lane_id}/hard_gates_{version_id}.json").read_text())
+        privacy = gate["details"]["no_target_candidate_facts"]
+        assert privacy["passed"] is True
+        assert privacy["label_semantics"]["excluded_labels"] == ["experience", "summary"]
+
+
+@pytest.mark.parametrize("text,recognized", [
+    ("SUMMARY", True), ("Professional Summary", True), (" skills ", True),
+    ("Skills Inc", False), ("John Smith", False), ("MIT", False),
+    ("Experience Engineer", False), ("target@example.test", False),
+    ("2020 - 2024", False), ("Custom narrative", False),
+])
+def test_heuristic_labels_require_exact_presentation_alias(text: str, recognized: bool) -> None:
+    catalog = e._presentation_label_catalog({
+        "sidebar_labels": [{"page": 1, "top": 200.0, "text": text}],
+    })
+    accepted = e._heuristic_presentation_labels(catalog)
+    assert bool(accepted) is recognized
+    assert catalog[0].status == "proposed"
+    if accepted:
+        assert accepted[0].text == text.strip()
+        assert accepted[0].evidence_ids == catalog[0].evidence_ids
+
+
 def _approval_for(
     catalog: list[e.PresentationLabel],
     ids: list[str],
@@ -3258,8 +3297,8 @@ def test_owner_package_label_listing_matches_the_catalog() -> None:
     assert listing["labels"][0]["text"] == "EXPERIENCE"
     assert listing["labels"][0]["evidence_ids"] == ["local_pdf.sidebar_label.p1.top221.5"]
     assert listing["labels"][0]["referenced_by_lanes"] == ["a"]
-    assert "NOT an acceptance" in listing["note"]
-    assert "NOT renderable" in listing["note"]
+    assert "not human output acceptance" in listing["note"]
+    assert "unrenderable" in listing["note"]
     assert "target_sha256" in listing["note"]
     # with a VALIDATED owner approval the listing distinguishes approved from
     # proposed; content still comes from the catalog

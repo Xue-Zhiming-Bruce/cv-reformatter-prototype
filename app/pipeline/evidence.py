@@ -1468,8 +1468,10 @@ PRESENTATION_LABEL_KINDS = ("section_heading",)
 class PresentationLabel(EvidenceModel):
     """One shell-PROPOSED presentation label (owner decision 2026-09-21):
     fixed visible template text taken from target structure evidence. The
-    Builder can only REFERENCE an ``approved`` ``label_id`` — it can never
-    submit label text, and a `proposed` entry is not renderable at all."""
+    Builder can only REFERENCE a shell-recognized ``approved`` ``label_id`` — it can never
+    submit label text, and a `proposed` entry is not renderable at all.
+    `approved` includes heuristic recognition (owner direction 2026-10-22),
+    and never means human acceptance of a generated document."""
 
     label_id: str
     text: str

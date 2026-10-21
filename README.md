@@ -97,8 +97,11 @@ for module ownership, validation, repair, and version-selection behavior.
 
 The default is an offline scripted run. `--lane a`, `--lane b`, or
 `--lane both` chooses the retained representations; no fidelity winner is
-implied. `--presentation-label-approval path/to/approval.json` supplies an
-approval bound to target and label-catalog checksums. `--live` enables the
+implied. Measured conventional heading labels are recognized automatically
+through exact product aliases; unknowns remain unrenderable. The legacy
+`--presentation-label-approval path/to/approval.json` supplies an explicit
+override bound to target and label-catalog checksums. Recognition is not human
+output acceptance. `--live` enables the
 existing bounded model adapters.
 
 Outputs include HTML/PDF, frozen input/source identities, state and trace
