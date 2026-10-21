@@ -1649,11 +1649,13 @@ def _e5_findings_needing_fallback_attribution(
         not in attributed_keys
     ]
 
-def _builder_reserve_intact(budget: RunBudget) -> bool:
+def _builder_reserve_intact(
+    budget: RunBudget, reserve_requests: int = E5_BUILDER_RESERVE_REQUESTS,
+) -> bool:
     """Phase 0 Builder budget reservation: live attribution may only run when
     the lane budget still covers the Builder reserve (diagnosis must not eat
     the budget before the Builder can act)."""
-    return budget.remaining_model_requests() > E5_BUILDER_RESERVE_REQUESTS
+    return budget.remaining_model_requests() > reserve_requests
 
 def _best_valid_version_id(
     versions: list[RenderVersion], excluded: set[str] | None = None
@@ -2783,6 +2785,7 @@ def _freeze_e5_config(
     pricing: dict[str, Any] | None,
     presentation_label_approval_record: dict[str, Any] | None = None,
     budget: RunBudget | None = None,
+    builder_reserve_requests: int = E5_BUILDER_RESERVE_REQUESTS,
 ) -> dict[str, Any]:
     """Frozen BEFORE the first live call (E5 work order): shared target/
     candidate/evidence/model/prompts/budgets plus per-lane budgets. Model
@@ -2827,7 +2830,7 @@ def _freeze_e5_config(
                 "max_tool_calls": min(E5_LANE_MAX_TOOL_CALLS, budget.max_tool_calls // len(lanes)) if budget else E5_LANE_MAX_TOOL_CALLS,
                 "max_request_bytes": budget.max_request_bytes if budget else None,
                 "max_repair_rounds": max_repair_rounds,
-                "builder_reserve_model_requests": E5_BUILDER_RESERVE_REQUESTS,
+                "builder_reserve_model_requests": builder_reserve_requests,
                 "per_agent_run_max_requests": {
                     "visual_reviewer": E5_REVIEWER_MAX_REQUESTS,
                     "builder": E5_BUILDER_MAX_REQUESTS,
@@ -2912,6 +2915,7 @@ def run_e5(
     budget: RunBudget | None = None,
     pricing: dict[str, Any] | None = None,
     presentation_label_approval: PresentationLabelApproval | None = None,
+    builder_reserve_requests: int = E5_BUILDER_RESERVE_REQUESTS,
 ) -> tuple[Path, str, dict[str, Any]]:
     """E5: controlled execution of TWO Builder representations on explicit inputs
     (Phase 0 loop fixes + Lane A structured layout + Lane B authored
@@ -2925,6 +2929,10 @@ def run_e5(
     against the SELECTED representation (the best-valid render's proposal/
     template, or diagnostic probes on the latest attempt when no best-valid
     render exists)."""
+    if builder_reserve_requests < E5_BUILDER_MAX_REQUESTS:
+        raise ValueError(
+            f"builder reserve must cover one full Builder turn ({E5_BUILDER_MAX_REQUESTS} requests)"
+        )
     from app.pipeline.rendering import build_format_summary
 
     from app.pipeline.render_plan import compile_render_plan
@@ -3118,6 +3126,7 @@ def run_e5(
         target_frozen=target_frozen,
         lanes=lanes,
         max_repair_rounds=max_repair_rounds,
+        builder_reserve_requests=builder_reserve_requests,
         live=live,
         prompts={
             "visual_reviewer": E5_REVIEWER_INSTRUCTIONS,
@@ -4500,7 +4509,7 @@ def run_e5(
                     measured_by_finding[finding.finding_id] = (finding, result, bound)
                     ledger.entries[_ledger_key(finding)].last_measured_version = current_version.version_id
                 batches = _e5_attribution_batches(selected, measured)
-                if live and lane != "b" and batches and _builder_reserve_intact(lane_budget):
+                if live and lane != "b" and batches and _builder_reserve_intact(lane_budget, builder_reserve_requests):
                     pod.render_pdf = current_pdf
                     for group in batches:
                         try:

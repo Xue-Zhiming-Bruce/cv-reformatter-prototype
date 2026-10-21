@@ -194,6 +194,12 @@ def test_live_builder_budget_is_reserved() -> None:
     assert e._builder_reserve_intact(exhausted_to_reserve) is False
     healthy = RunBudget(max_model_requests=e.E5_BUILDER_RESERVE_REQUESTS + 1, max_tool_calls=10)
     assert e._builder_reserve_intact(healthy) is True
+    # A bounded evaluation can reserve one complete Builder turn rather than
+    # the default ten; diagnosis still stops at the configured reserve.
+    small = RunBudget(max_model_requests=12, max_tool_calls=10)
+    assert e._builder_reserve_intact(small, e.E5_BUILDER_MAX_REQUESTS) is True
+    small.spend_model("prior", requests=12 - e.E5_BUILDER_MAX_REQUESTS)
+    assert e._builder_reserve_intact(small, e.E5_BUILDER_MAX_REQUESTS) is False
 
 
 # --- repair-starvation scheduling (2026-09-21 owner work order) -------------
@@ -3124,8 +3130,10 @@ def test_frozen_e5_config_records_the_presentation_label_approval(tmp_path: Path
     assert config["presentation_label_approval"]["provided"] is False
     assert config["presentation_label_approval"]["validated"] is False
     assert config["presentation_label_approval"]["approved_label_ids"] == []
+    assert config["budgets"]["per_lane"]["builder_reserve_model_requests"] == 40
     config = _freeze_e5_config(
         **kwargs,
+        builder_reserve_requests=4,
         presentation_label_approval_record={
             "provided": True,
             "validated": True,
@@ -3147,6 +3155,7 @@ def test_frozen_e5_config_records_the_presentation_label_approval(tmp_path: Path
         "label.section.p1.top221.5"
     ]
     assert frozen["frozen_before_first_live_call"] is True
+    assert frozen["budgets"]["per_lane"]["builder_reserve_model_requests"] == 4
 
 
 def test_catalog_hash_is_deterministic_and_excludes_status() -> None:

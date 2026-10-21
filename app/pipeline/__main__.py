@@ -8,6 +8,7 @@ from app.generation.template_mapper import build_client_render_context
 from app.profile_approval import profile_sha256
 from app.pipeline.candidate_content import candidate_document_from_context
 from app.pipeline.service import (
+    E5_BUILDER_MAX_REQUESTS, E5_BUILDER_RESERVE_REQUESTS,
     E5_LANE_MAX_MODEL_REQUESTS, E5_LANE_MAX_TOOL_CALLS, PresentationLabelApproval, run_e5,
 )
 from app.pipeline.runtime import RunBudget
@@ -31,9 +32,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-request-bytes", type=int,
                         help="bound each live request; also caps images at 8 and output at 16384 tokens")
     parser.add_argument("--max-repair-rounds", type=int, default=1)
+    parser.add_argument("--builder-reserve-requests", type=int, default=E5_BUILDER_RESERVE_REQUESTS,
+                        help="requests kept for Builder repair; must cover one full Builder turn")
     args = parser.parse_args(argv)
     if any(value is not None and value <= 0 for value in (args.max_model_requests, args.max_request_bytes)) or args.max_repair_rounds < 0:
         parser.error("request limits must be positive and repair rounds nonnegative")
+    if args.builder_reserve_requests < E5_BUILDER_MAX_REQUESTS:
+        parser.error(f"builder reserve must be at least {E5_BUILDER_MAX_REQUESTS}")
     lanes = (args.lane,) if args.lane != "both" else ("a", "b")
     try:
         profile = CandidateProfile.model_validate_json(args.candidate.read_text())
@@ -55,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         presentation_label_approval=approval,
         lanes=lanes,
         max_repair_rounds=args.max_repair_rounds,
+        builder_reserve_requests=args.builder_reserve_requests,
         budget=RunBudget(
             max_model_requests=args.max_model_requests or E5_LANE_MAX_MODEL_REQUESTS * len(lanes),
             max_tool_calls=E5_LANE_MAX_TOOL_CALLS * len(lanes),
