@@ -5387,6 +5387,7 @@ def _write_e5_owner_package(
     remaining differences, and the non-claims."""
     from app.ingestion.pdf_reader import read_pdf_text
     from app.pipeline import quality as c2r
+    from app.template_analysis.visual_comparator import compare_pdf_layouts
 
     package = out_dir / "owner_review"
     package.mkdir(exist_ok=True)
@@ -5403,14 +5404,30 @@ def _write_e5_owner_package(
     lane_pdfs: dict[str, Path] = {
         lane_id: paths[1] for lane_id, paths in lane_selected.items() if paths[1]
     }
+    lane_pages: dict[str, list[Path]] = {}
+    for lane_id, lane_pdf in lane_pdfs.items():
+        visual_dir = package / f"lane_{lane_id}_visual"
+        visual = compare_pdf_layouts(target_pdf, lane_pdf, visual_dir)
+        lane_pages[lane_id] = [visual_dir / name for name in visual.generated_page_filenames]
+        page_count = max(page_count, len(lane_pages[lane_id]))
+    # Keep missing pages visible; never hide a continuation beyond the target.
+    from PIL import Image
+
+    missing_page = package / "missing_page.png"
+    with Image.open(target_pages[0]) as first_page:
+        Image.new("RGB", first_page.size, "white").save(missing_page)
     for page in range(1, page_count + 1):
-        columns: list[tuple[str, Path | None]] = [("TARGET", target_pages[page - 1])]
-        for lane_id, lane_pdf in lane_pdfs.items():
-            lane_page = out_dir / f"lane_{lane_id}" / f"{lane_pdf.stem}_page_{page}.png"
-            if lane_page.exists():
-                columns.append((f"LANE {lane_id.upper()} {lane_selected[lane_id][2]}", lane_page))
+        target_page = target_pages[page - 1] if page <= len(target_pages) else None
+        columns: list[tuple[str, Path | None]] = [
+            ("TARGET" if target_page else "TARGET (NO PAGE)", target_page or missing_page)
+        ]
+        for lane_id, images in lane_pages.items():
+            lane_page = images[page - 1] if page <= len(images) else None
+            label = f"LANE {lane_id.upper()} {lane_selected[lane_id][2]}"
+            columns.append((label if lane_page else f"{label} (NO PAGE)", lane_page or missing_page))
         if len(columns) >= 2:
             _side_by_side(columns, package / f"comparison_page_{page}.png")
+    shutil.copy2(target_pdf, package / "target.pdf")
     # Selected lane artifacts (copies; originals immutable). The filename and
     # every label distinguish a real BEST render from a defect-level active
     # version and from a latest attempt.
@@ -5560,6 +5577,10 @@ def _write_e5_owner_package(
 
 - `comparison_page_N.png` — TARGET | Lane A | Lane B, per page;
   a column labeled LANE X LATEST ATTEMPT is NOT a best-valid render;
+- `lane_*_visual/` — selected-output previews, difference images, and the
+  existing visual-comparison report. Extra pages are previewed and shown in
+  the comparison strips; differences cover matching page positions only.
+  Text differs by design, so image scores cannot decide fidelity or content;
 - `lane_*_best.html/.pdf` — each lane's best-valid render (only present when
   a best-valid render exists);
 - `lane_*_active_defect_level.html/.pdf` — a lane's defect-level promoted
@@ -5619,6 +5640,22 @@ owner approval): {proposed_count}
 - No signed provider URLs, credentials, environment data, or rubric answers
   entered this package.
 """,
+        encoding="utf-8",
+    )
+    review_files = sorted(
+        path for path in package.rglob("*")
+        if path.is_file() and path.name != "missing_page.png"
+    )
+    (package / "REVIEW_INDEX.md").write_text(
+        "# Owner review\n\n"
+        "Inspect the selected PDFs, every comparison page, and independent gate reports. "
+        "BEST and ready_for_owner_review are internal exploratory states, not product acceptance. "
+        "No winner is declared. Red in difference images is target-only; blue is output-only. "
+        "Candidate text differs by design.\n\n"
+        + "\n".join(
+            f"- [{path.relative_to(package).as_posix()}]({path.relative_to(package).as_posix()})"
+            for path in review_files
+        ) + "\n",
         encoding="utf-8",
     )
     for path in sorted(package.rglob("*")):

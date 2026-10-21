@@ -2183,8 +2183,6 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
         assert row["target_specific_code_status"] == "not_evaluated"
 
 
-@pytest.mark.local_dataset
-@local_pipeline
 def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -> None:
     """The owner package resolves artifacts through best_render_version —
     a best render that is NOT the last version must be copied, never
@@ -2200,8 +2198,14 @@ def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -
 
     v1_pdf = lane_dir / "render_1.pdf"
     v2_pdf = lane_dir / "render_2.pdf"
-    v1_pdf.write_bytes(b"%PDF-1.4 best")
-    v2_pdf.write_bytes(b"%PDF-1.4 latest")
+    from reportlab.pdfgen import canvas
+
+    for path, pages, text in ((v1_pdf, 2, "SELECTED"), (v2_pdf, 3, "REJECTED")):
+        document = canvas.Canvas(str(path), pagesize=(612, 792))
+        for page in range(pages):
+            document.drawString(72, 720, f"{text} page {page + 1}")
+            document.showPage()
+        document.save()
     versions = [
         RenderVersion(
             version_id="render-fixture-laneA-v1", html_sha256="h1",
@@ -2210,7 +2214,7 @@ def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -
         ),
         RenderVersion(
             version_id="render-fixture-laneA-v2", html_sha256="h2",
-            pdf_sha256=e._sha256_file(v2_pdf), page_count=2,
+            pdf_sha256=e._sha256_file(v2_pdf), page_count=3,
             hard_gates_passed=True, promoted=False, note="latest",
         ),
     ]
@@ -2230,6 +2234,15 @@ def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -
         "the package must copy the BEST version, not the last render"
     )
     assert not (package / "lane_a_latest_attempt.pdf").exists()
+    # A longer selected output must remain visible past the target's last
+    # page; a rejected extra page must never enter the selected comparison.
+    assert (package / "comparison_page_2.png").is_file()
+    assert not (package / "comparison_page_3.png").exists()
+    visual = json.loads((package / "lane_a_visual/visual_comparison.json").read_text())
+    assert visual["target_page_count"] == 1
+    assert visual["generated_page_count"] == 2
+    assert (package / "lane_a_visual/comparison_page_001_diff.png").is_file()
+    assert (package / "lane_a_visual/generated_page_002.png").is_file()
 
 
 def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) -> None:
@@ -2441,8 +2454,8 @@ def test_owner_package_labels_defect_level_active_version_never_best(tmp_path: P
     lane_dir.mkdir(parents=True)
     v1_pdf = lane_dir / "render_1.pdf"
     v2_pdf = lane_dir / "render_2.pdf"
-    v1_pdf.write_bytes(b"%PDF-1.4 v1")
-    v2_pdf.write_bytes(b"%PDF-1.4 v2 defect-level")
+    v1_pdf.write_bytes(TARGET_PDF.read_bytes() + b"\n% v1\n")
+    v2_pdf.write_bytes(TARGET_PDF.read_bytes() + b"\n% v2 defect-level\n")
     versions = [
         e.RenderVersion(
             version_id="v1", html_sha256="h1", pdf_sha256=e._sha256_file(v1_pdf),
@@ -3465,8 +3478,8 @@ def test_owner_package_shows_active_unpromoted_never_rolled_back(tmp_path: Path)
     lane_dir.mkdir(parents=True)
     v1_pdf = lane_dir / "render_1.pdf"
     v2_pdf = lane_dir / "render_2.pdf"
-    v1_pdf.write_bytes(b"%PDF-1.4 active v1")
-    v2_pdf.write_bytes(b"%PDF-1.4 rolled-back v2")
+    v1_pdf.write_bytes(TARGET_PDF.read_bytes() + b"\n% active v1\n")
+    v2_pdf.write_bytes(TARGET_PDF.read_bytes() + b"\n% rolled-back v2\n")
     versions = [
         e.RenderVersion(
             version_id="v1", html_sha256="h1", pdf_sha256=e._sha256_file(v1_pdf),
