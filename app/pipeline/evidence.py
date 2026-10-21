@@ -1290,7 +1290,7 @@ def _live_model_settings(*, thinking: bool = False) -> dict[str, Any]:
         settings["openai_reasoning_effort"] = "low"
     return settings
 
-def _live_visual_model() -> Any:
+def _live_visual_model(budget: RunBudget, trace: RunTrace, agent: str) -> Any:
     """PydanticAI OpenAI-compatible model for image-bearing roles. Uses the
     configured visual provider when present (owner decision 2026-09-08, the
     existing provider-gated experiment path) and falls back to D's live model."""
@@ -1305,14 +1305,19 @@ def _live_visual_model() -> Any:
     base = os.environ.get("VISUAL_API_BASE")
     key = os.environ.get("VISUAL_API_KEY")
     model_name = os.environ.get("A_PIPELINE_VISUAL_MODEL")
+    from app.pipeline.runtime import _budgeted_http_client
+
     if base and key and model_name:
         provider = OpenAIProvider(
-            openai_client=AsyncOpenAI(api_key=key, base_url=base, timeout=300)
+            openai_client=AsyncOpenAI(
+                api_key=key, base_url=base, timeout=300,
+                http_client=_budgeted_http_client(budget, trace, agent),
+            )
         )
         return OpenAIChatModel(model_name, provider=provider)
     from app.pipeline.runtime import _live_model
 
-    return _live_model()
+    return _live_model(budget, trace, agent)
 
 def _model_identity() -> dict[str, Any]:
     """Frozen configuration record: model NAMES only — never keys, URLs,

@@ -2253,8 +2253,13 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     run_dir, _terminal, record = e.run_e5(
         **inputs, out_dir=tmp_path / "run", candidate=synthetic_pipeline_candidate("Candidate Alpha"),
         live=False, lanes=("b",), max_repair_rounds=0,
+        budget=RunBudget(max_model_requests=8, max_tool_calls=200, max_request_bytes=240000),
     )
     config = json.loads((run_dir / "run_config.json").read_text())
+    assert config["budgets"]["global"]["max_model_requests"] == 8
+    assert config["budgets"]["per_lane"]["max_model_requests"] == 8
+    assert config["budgets"]["per_lane"]["max_request_bytes"] == 240000
+    assert record["budget_state"]["model_request_count"] == record["lanes"]["b"]["budget_state"]["model_request_count"]
     hashes = config["source_hashes"]
     assert hashes["recorded_before_first_live_call"] is True
     assert hashes["basis"] == "selected_critical_source_drift_detection"

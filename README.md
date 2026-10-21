@@ -104,6 +104,13 @@ override bound to target and label-catalog checksums. Recognition is not human
 output acceptance. `--live` enables the
 existing bounded model adapters.
 
+Use `--max-model-requests N` for a global HTTP-attempt cap, including failures
+and SDK retries; each selected lane receives an equal share. Optional
+`--max-request-bytes N` also bounds each request to eight images and 16,384
+output tokens. `--max-repair-rounds 0` permits a matched initial-build review.
+Actual limits are frozen before calls; successful token accounting does not
+charge the request counter again. Both builders use non-thinking mode.
+
 Outputs include HTML/PDF, frozen input/source identities, state and trace
 records, measurement/gate reports, and an owner review package. Unrequested
 shape probes are reported as `not_requested`. `ready_for_owner_review` is

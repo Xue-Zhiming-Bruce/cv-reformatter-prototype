@@ -228,6 +228,70 @@ def test_budget_counts_live_and_scripted_calls_separately() -> None:
     assert state["usage"]["input_tokens"] == 11  # tokens belong to live only
     with pytest.raises(BudgetExhausted):
         budget.spend_model("visual_reviewer")
+    from types import SimpleNamespace
+    from app.pipeline.runtime import RunTrace, _record_usage
+
+    _record_usage(budget, RunTrace(Path("unused")), "visual_reviewer", "review", SimpleNamespace(usage=_Usage()))
+    assert budget.model_requests == 3  # successful usage must not double-count HTTP reservations
+    assert budget.usage["input_tokens"] == 22
+
+
+def test_live_http_budget_counts_failed_sdk_retries_before_io(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+    import httpx
+    from openai import APIConnectionError
+    from app.pipeline.runtime import RunTrace, _live_model
+
+    sent = []
+    async def respond(request):
+        sent.append(request)
+        return httpx.Response(500, json={"error": {"message": "transient failure"}})
+
+    class OfflineClient(httpx.AsyncClient):
+        def __init__(self, **kwargs):
+            super().__init__(transport=httpx.MockTransport(respond), **kwargs)
+    monkeypatch.setattr(httpx, "AsyncClient", OfflineClient)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "synthetic-secret")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://deepseek.invalid")
+    parent = RunBudget(max_model_requests=2)
+    lane = RunBudget(max_model_requests=8, max_request_bytes=240000, parent=parent)
+    trace = RunTrace(tmp_path)
+    model = _live_model(lane, trace, "builder")
+
+    async def call():
+        async with model.client:
+            with pytest.raises(APIConnectionError):
+                await model.client.chat.completions.create(
+                    model="deepseek-flash", messages=[{"role": "user", "content": "synthetic"}], max_tokens=16,
+                )
+    asyncio.run(call())
+    assert len(sent) == 2  # the third SDK attempt is blocked before transport
+    assert lane.model_requests == parent.model_requests == 2
+    assert parent.calls_by_mode["live"] == 2
+    assert "synthetic-secret" not in (tmp_path / "trace.json").read_text()
+
+
+@pytest.mark.parametrize("body", [
+    {"messages": [], "max_tokens": 16385},
+    {"messages": [{"content": [{"type": "image_url"}] * 9}], "max_tokens": 16},
+    {"messages": [{"content": "x" * 1000}], "max_tokens": 16},
+])
+def test_live_request_envelope_rejects_before_transport(tmp_path: Path, monkeypatch, body) -> None:
+    import asyncio
+    from functools import partial
+    import httpx
+    from app.pipeline.runtime import RunTrace, _budgeted_http_client
+
+    def unexpected_request(request):
+        pytest.fail("over-budget payload reached the network transport")
+    monkeypatch.setattr(httpx, "AsyncClient", partial(httpx.AsyncClient, transport=httpx.MockTransport(unexpected_request)))
+    budget = RunBudget(max_model_requests=2, max_request_bytes=600)
+    async def call():
+        async with _budgeted_http_client(budget, RunTrace(tmp_path), "builder") as client:
+            with pytest.raises(BudgetExhausted):
+                await client.post("https://deepseek.invalid/chat/completions", json=body)
+    asyncio.run(call())
+    assert budget.model_requests == 0
 
 
 def test_duplicate_unresolved_items_are_deduplicated_by_item_id() -> None:

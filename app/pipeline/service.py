@@ -2501,7 +2501,7 @@ def _live_lane_a_builder(
     if budget.remaining_model_requests() < 1:
         raise CheckpointBudgetExceeded("budget exhausted before lane A builder")
     agent = Agent(
-        _live_model(),
+        _live_model(budget, trace, "lane_a_builder"),
         output_type=LaneAStructureProposal,
         name="lane_a_builder",
         instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
@@ -2559,7 +2559,7 @@ def _live_lane_b_builder(
     if budget.remaining_model_requests() < 1:
         raise CheckpointBudgetExceeded("budget exhausted before lane B builder")
     agent = Agent(
-        _live_model(),
+        _live_model(budget, trace, "lane_b_builder"),
         # Prompted JSON avoids the forced final-result tool choice that
         # DeepSeek Chat Completions rejects while thinking is enabled.
         output_type=PromptedOutput(AuthoredTemplateCandidate),
@@ -2578,7 +2578,7 @@ def _live_lane_b_builder(
                 lambda: agent.run_sync(
                     user_messages,
                     usage_limits=_call_limits(budget, E5_BUILDER_MAX_REQUESTS),
-                    model_settings=_live_model_settings(thinking=True),
+                    model_settings=_live_model_settings(),
                 ),
                 trace=trace, what="lane B builder",
             )
@@ -2621,7 +2621,7 @@ def _live_attribution_batch(
     tools = _pod_tools(pod, budget, trace, agent_name="attribution_investigator")
     tools.append(_traced_render_words(pod, budget, trace))
     agent = Agent(
-        _live_model(),
+        _live_model(budget, trace, "attribution_investigator"),
         output_type=list[LiveAttributionHypothesis],
         name="attribution_investigator",
         instructions=E5_ATTRIBUTION_INSTRUCTIONS,
@@ -2785,6 +2785,7 @@ def _freeze_e5_config(
     shared_draft_ref: dict[str, Any],
     pricing: dict[str, Any] | None,
     presentation_label_approval_record: dict[str, Any] | None = None,
+    budget: RunBudget | None = None,
 ) -> dict[str, Any]:
     """Frozen BEFORE the first live call (E5 work order): shared target/
     candidate/evidence/model/prompts/budgets plus per-lane budgets. Model
@@ -2821,11 +2822,13 @@ def _freeze_e5_config(
             "approved_label_ids": [],
         },
         "model_configuration": _model_identity(),
-        "sampling": {"temperature": E4_TEMPERATURE},
+        "sampling": {"temperature": E4_TEMPERATURE, "thinking": "disabled", "max_output_tokens": 16384},
         "budgets": {
+            "global": budget.to_json() if budget is not None else None,
             "per_lane": {
-                "max_model_requests": E5_LANE_MAX_MODEL_REQUESTS,
-                "max_tool_calls": E5_LANE_MAX_TOOL_CALLS,
+                "max_model_requests": min(E5_LANE_MAX_MODEL_REQUESTS, budget.max_model_requests // len(lanes)) if budget else E5_LANE_MAX_MODEL_REQUESTS,
+                "max_tool_calls": min(E5_LANE_MAX_TOOL_CALLS, budget.max_tool_calls // len(lanes)) if budget else E5_LANE_MAX_TOOL_CALLS,
+                "max_request_bytes": budget.max_request_bytes if budget else None,
                 "max_repair_rounds": max_repair_rounds,
                 "builder_reserve_model_requests": E5_BUILDER_RESERVE_REQUESTS,
                 "per_agent_run_max_requests": {
@@ -3129,6 +3132,7 @@ def run_e5(
         candidate_sha256=candidate_sha256,
         shared_draft_ref=shared_draft_ref,
         pricing=pricing,
+        budget=budget,
         # Frozen BEFORE the first live call: the validated approval identity
         # the lanes will run under (an invalid approval aborts before this
         # freeze, so `validated` mirrors `provided` here).
@@ -3238,8 +3242,10 @@ def run_e5(
         # frozen config; a smaller caller-provided budget is respected so a
         # constrained run still exits budget_exhausted with resumable state).
         lane_budget = RunBudget(
-            max_model_requests=min(E5_LANE_MAX_MODEL_REQUESTS, budget.remaining_model_requests()),
-            max_tool_calls=min(E5_LANE_MAX_TOOL_CALLS, budget.max_tool_calls),
+            max_model_requests=min(E5_LANE_MAX_MODEL_REQUESTS, budget.max_model_requests // len(lanes)),
+            max_tool_calls=min(E5_LANE_MAX_TOOL_CALLS, budget.max_tool_calls // len(lanes)),
+            max_request_bytes=budget.max_request_bytes,
+            parent=budget,
         )
         trace = RunTrace(lane_dir)
         trace.add(agent="shell", phase="e0", action="lane_started", output={"lane": lane, "live": live})

@@ -7,7 +7,10 @@ from app.extraction.candidate_schema import CandidateProfile
 from app.generation.template_mapper import build_client_render_context
 from app.profile_approval import profile_sha256
 from app.pipeline.candidate_content import candidate_document_from_context
-from app.pipeline.service import PresentationLabelApproval, run_e5
+from app.pipeline.service import (
+    E5_LANE_MAX_MODEL_REQUESTS, E5_LANE_MAX_TOOL_CALLS, PresentationLabelApproval, run_e5,
+)
+from app.pipeline.runtime import RunBudget
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,7 +26,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path)
     parser.add_argument("--lane", choices=["a", "b", "both"], default="both")
     parser.add_argument("--live", action="store_true")
+    parser.add_argument("--max-model-requests", type=int,
+                        help="global HTTP request cap including failures/retries, split equally across lanes")
+    parser.add_argument("--max-request-bytes", type=int,
+                        help="bound each live request; also caps images at 8 and output at 16384 tokens")
+    parser.add_argument("--max-repair-rounds", type=int, default=1)
     args = parser.parse_args(argv)
+    if any(value is not None and value <= 0 for value in (args.max_model_requests, args.max_request_bytes)) or args.max_repair_rounds < 0:
+        parser.error("request limits must be positive and repair rounds nonnegative")
+    lanes = (args.lane,) if args.lane != "both" else ("a", "b")
     try:
         profile = CandidateProfile.model_validate_json(args.candidate.read_text())
         context = build_client_render_context(profile, blind_profile=args.blind_profile)
@@ -42,7 +53,13 @@ def main(argv: list[str] | None = None) -> int:
         structure_draft=args.structure_draft,
         live=args.live,
         presentation_label_approval=approval,
-        lanes=(args.lane,) if args.lane != "both" else ("a", "b"),
+        lanes=lanes,
+        max_repair_rounds=args.max_repair_rounds,
+        budget=RunBudget(
+            max_model_requests=args.max_model_requests or E5_LANE_MAX_MODEL_REQUESTS * len(lanes),
+            max_tool_calls=E5_LANE_MAX_TOOL_CALLS * len(lanes),
+            max_request_bytes=args.max_request_bytes,
+        ),
     )
     print(f"Pipeline {run_dir.name}: {terminal}")
     return 1 if terminal == "operational_abort" else 0

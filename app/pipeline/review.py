@@ -122,7 +122,10 @@ def _live_reviewer_findings(
 
     from app.pipeline.runtime import _live_model
 
-    model = _live_visual_model() if visual_model else _live_model()
+    model = (
+        _live_visual_model(budget, trace, "visual_reviewer") if visual_model
+        else _live_model(budget, trace, "visual_reviewer")
+    )
     agent = Agent(
         model,
         output_type=list[DefectFinding],

@@ -31,6 +31,8 @@ class RunBudget:
 
     max_model_requests: int = MAX_MODEL_REQUESTS
     max_tool_calls: int = MAX_TOOL_CALLS
+    max_request_bytes: int | None = None
+    parent: RunBudget | None = field(default=None, repr=False)
     model_requests: int = 0
     tool_calls: int = 0
     repair_attempt_count: int = 0
@@ -63,6 +65,8 @@ class RunBudget:
                 f"global model budget exhausted: {self.model_requests}+{requests} "
                 f"would exceed {self.max_model_requests}"
             )
+        if self.parent is not None:
+            self.parent.spend_model(agent, requests=requests, usage=usage, mode=mode)
         self.model_requests += requests
         self.calls_by_agent[agent] += requests
         self.calls_by_mode[mode] = self.calls_by_mode.get(mode, 0) + requests
@@ -78,6 +82,8 @@ class RunBudget:
             raise BudgetExhausted(
                 f"global tool budget exhausted: {self.tool_calls}+1 would exceed {self.max_tool_calls}"
             )
+        if self.parent is not None:
+            self.parent.spend_tool(tool)
         self.tool_calls += 1
         self.calls_by_tool[tool] += 1
 
@@ -86,6 +92,7 @@ class RunBudget:
         return {
             "max_model_requests": self.max_model_requests,
             "max_tool_calls": self.max_tool_calls,
+            "max_request_bytes": self.max_request_bytes,
             "model_request_count": self.model_requests,
             "tool_call_count": self.tool_calls,
             "repair_attempt_count": self.repair_attempt_count,
@@ -149,7 +156,8 @@ def _record_usage(
     usage = result.usage
     if callable(usage):  # pydantic-ai version differences: property vs method
         usage = usage()
-    budget.spend_model(agent, requests=int(usage.requests or 1), usage=usage, mode="live")
+    # HTTP hooks reserve requests, including failures and SDK retries.
+    budget.spend_model(agent, requests=0, usage=usage, mode="live")
     trace.add(
         agent=agent,
         phase=phase,
@@ -161,7 +169,34 @@ def _record_usage(
         },
     )
 
-def _live_model() -> Any:
+def _budgeted_http_client(budget: RunBudget, trace: RunTrace, agent: str) -> Any:
+    """Reserve each HTTP attempt before I/O; never persist payload or headers."""
+    import httpx
+
+    async def reserve(request: httpx.Request) -> None:
+        if budget.max_request_bytes is not None:
+            body = json.loads(request.content)
+            images = sum(
+                part.get("type") == "image_url"
+                for message in body.get("messages", [])
+                for part in (message.get("content") or [])
+                if isinstance(part, dict)
+            )
+            if (
+                len(request.content) > budget.max_request_bytes
+                or images > 8
+                or body.get("max_tokens", body.get("max_completion_tokens", 0)) not in range(1, 16385)
+            ):
+                raise BudgetExhausted("live request exceeds the frozen byte/image/output envelope")
+        budget.spend_model(agent, mode="live")
+        trace.add(agent=agent, phase="request", action="http_request_reserved",
+                  output={"request_number": budget.model_requests, "bytes": len(request.content)})
+        trace.save()
+
+    return httpx.AsyncClient(event_hooks={"request": [reserve]})
+
+
+def _live_model(budget: RunBudget, trace: RunTrace, agent: str) -> Any:
     """DeepSeek-compatible model via PydanticAI's OpenAI provider."""
     from dotenv import load_dotenv
     from openai import AsyncOpenAI
@@ -181,7 +216,10 @@ def _live_model() -> Any:
         or "deepseek-flash"
     )
     provider = OpenAIProvider(
-        openai_client=AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=300)
+        openai_client=AsyncOpenAI(
+            api_key=api_key, base_url=base_url, timeout=300,
+            http_client=_budgeted_http_client(budget, trace, agent),
+        )
     )
     return OpenAIChatModel(model_name, provider=provider)
 
