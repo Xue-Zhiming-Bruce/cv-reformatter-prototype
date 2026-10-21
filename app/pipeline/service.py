@@ -2391,14 +2391,11 @@ def _sectioned_probe_candidate(fixture: Any) -> Any:
     top-level-item shape every candidate render context uses."""
     from app.pipeline.candidate_content import CandidateSection
 
-    flattened: list[Any] = []
-    for leaf in fixture.leaves:
-        if leaf.kind == "additional_section":
-            for child in fixture.leaves:
-                if child.parent_leaf_id == leaf.leaf_id:
-                    flattened.append(child.model_copy(update={"parent_leaf_id": None}))
-        else:
-            flattened.append(leaf)
+    containers = {leaf.leaf_id for leaf in fixture.leaves if leaf.kind == "additional_section"}
+    flattened = [
+        leaf.model_copy(update={"parent_leaf_id": None}) if leaf.parent_leaf_id in containers else leaf
+        for leaf in fixture.leaves if leaf.kind != "additional_section"
+    ]
     fixture = fixture.model_copy(update={"leaves": flattened})
     sections = []
     for role in _PROBE_ROLE_ORDER:

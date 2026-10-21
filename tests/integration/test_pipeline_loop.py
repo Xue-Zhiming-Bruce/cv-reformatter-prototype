@@ -2010,6 +2010,18 @@ def test_run_e5_promoted_render_becomes_active_and_best_matches_artifact(
     assert post_findings
 
 
+@pytest.mark.parametrize("size", ["short", "medium", "long"])
+def test_probe_projection_preserves_each_noncontainer_leaf_once(size: str) -> None:
+    from collections import Counter
+    from tests.helpers.pipeline_candidates import independent_candidate_fixtures
+
+    candidate = independent_candidate_fixtures()[size]
+    projected = e._sectioned_probe_candidate(candidate)
+    expected = Counter(leaf.leaf_id for leaf in candidate.leaves if leaf.kind != "additional_section")
+    assert Counter(leaf.leaf_id for leaf in projected.leaves) == expected
+    assert all(leaf.parent_leaf_id is None for leaf in projected.leaves if leaf.kind == "additional_item")
+
+
 @pytest.mark.local_dataset
 @local_pipeline
 def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
