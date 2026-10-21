@@ -42,6 +42,28 @@ def test_deterministic_state_and_candidate_produce_identical_plan_and_html() -> 
     assert state_bytes(state) == state_bytes(compile_synthetic())  # state untouched
 
 
+def test_rail_heading_and_content_occupy_separate_pdf_columns(tmp_path: Path) -> None:
+    import pdfplumber
+    from app.pipeline.rendering import _export_pinned_html_to_pdf
+    from app.pipeline.measurement import pinned_export_environment
+    from tests.helpers.pipeline import synthetic_pipeline_candidate
+
+    state = compile_synthetic(["SUMMARY"])
+    plan = compile_render_plan(state, synthetic_pipeline_candidate("Candidate Alpha"))
+    plan.sections[0] = plan.sections[0].model_copy(update={
+        "rail_heading": True, "rail_label_width_pt": 90.0, "rail_label_align": "right",
+    })
+    html_path, pdf_path = tmp_path / "rail.html", tmp_path / "rail.pdf"
+    html_path.write_text(render_html(state, plan))
+    _export_pinned_html_to_pdf(html_path, pdf_path, pinned_export_environment({}))
+    with pdfplumber.open(pdf_path) as document:
+        words = document.pages[0].extract_words()
+    heading = next(word for word in words if word["text"] == "SUMMARY")
+    content = next(word for word in words if word["text"] == "Builds")
+    assert heading["x1"] < content["x0"]
+    assert abs(heading["top"] - content["top"]) < 30
+
+
 def test_plan_status_and_full_leaf_ownership_on_full_coverage() -> None:
     state, plan = plan_for()
     assert plan.status == "fully_materialized"

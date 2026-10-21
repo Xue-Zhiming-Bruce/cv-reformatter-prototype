@@ -279,7 +279,7 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                 )
                 parts.append(
                     f'    <div class="c2-rail" style="display:grid;'
-                    f"grid-template-columns:{_pt(section_plan.rail_label_width_pt)}pt 1fr;"
+                    f"grid-template-columns:{_pt(section_plan.rail_label_width_pt)} 1fr;"
                     f'column-gap:12pt;">'
                 )
                 parts.append(f'      <div class="c2-rail-label" style="{align}">')
