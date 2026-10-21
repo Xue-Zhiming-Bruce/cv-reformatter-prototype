@@ -597,6 +597,22 @@ def test_unroutable_render_content_routes_through_the_header_overflow_node(fake_
     assert accounting["routed_header_overflow"] == ["unroutable.location"]
 
 
+def test_header_extension_uses_body_type_when_target_measures_only_name() -> None:
+    from app.pipeline.service import _apply_header_overflow_disposition
+    from tests.helpers.pipeline import synthetic_pipeline_candidate
+
+    state = compile_synthetic(["SUMMARY"])
+    state.nodes = [node for node in state.nodes if node.kind != "header_row" or node.style_id == "style.name"]
+    candidate = synthetic_pipeline_candidate("Candidate Alpha")
+    candidate.leaves.append(CandidateLeaf(
+        leaf_id="header.email", kind="header_field", slot="envelope", text="visible@example.test",
+    ))
+    plan = compile_render_plan(state, _apply_header_overflow_disposition(candidate, state))
+    assert plan.status == "fully_materialized", plan.failures
+    assert plan.header_overflow.style_id == "style.body"
+    assert "visible@example.test" in render_html(state, plan)
+
+
 def test_explicit_omission_is_a_separate_disposition_never_rendered(fake_pdf_text) -> None:
     state = compile_synthetic()
     candidate = candidate_with_unroutable("omit")

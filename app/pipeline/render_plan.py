@@ -871,10 +871,13 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
     header_overflow = (
         HeaderOverflowPlan(
             style_id=next(
-                (row.style_id for row in header_plans[::-1] if row.style_id), None
+                (row.style_id for row in header_plans[::-1]
+                 if row.style_id and not any(field.slot == "name" for field in row.fields)),
+                "style.body" if any(style.style_id == "style.body" for style in state.styles) else None,
             ),
             gap_above_pt=next(
-                (row.gap_above_pt for row in header_plans[::-1] if row.gap_above_pt is not None),
+                (row.gap_above_pt for row in header_plans[::-1]
+                 if row.gap_above_pt is not None and not any(field.slot == "name" for field in row.fields)),
                 None,
             ),
             fields=overflow_fields,
