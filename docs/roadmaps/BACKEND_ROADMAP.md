@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 19, 2026 (documentation maintenance; stage statuses unchanged)
+Last reviewed: October 21, 2026 (mainline consolidation authorized; B0/B1 gates unchanged)
 
 This is the active engineering roadmap after completion of the MVP and PDF
 demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
@@ -22,6 +22,26 @@ Maintenance note (October 19, 2026): the retained pipeline is under
 `app/pipeline/`, with canonical pytest coverage. Historical runners and the
 commercial comparison harness have been retired. This cleanup does not
 complete B0/B1 or approve API integration, a provider, or a renderer.
+
+## Mainline Consolidation (Owner Direction, October 21, 2026)
+
+Execute in order within existing modules and canonical tests. The owner selected
+saved profile revisions for previews, with human approval on the final output.
+Legacy profile-approval names remain compatibility fields only.
+
+- [x] Restore a runnable API/mock baseline, including revision preview, final
+      acceptance invalidation, disclosure, and generation regressions.
+- [ ] Unify candidate input through `CandidateProfile` ->
+      `ClientFacingRenderContext`; keep `CandidateDocument` an internal projection.
+      Record layout-contract gaps before replacing either compiler.
+- [ ] Produce comparable A/B outcome PDFs and independent gates using existing
+      workflows; obtain owner selection before retiring either representation.
+- [ ] Route API and CLI through the selected shared generation implementation;
+      remove replaced paths only after behavior/output parity and rollback checks.
+- [ ] Prune redundant orchestration, reports, and tests once their responsibility
+      has a single verified owner.
+
+This work does not itself satisfy the B0/B1 or provider/renderer acceptance gates.
 
 ## Current Phase
 

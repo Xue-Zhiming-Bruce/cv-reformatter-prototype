@@ -132,15 +132,25 @@ def _make_artifact(tmp_path: Path) -> tuple[str, Path, str]:
     return artifact_id, artifact_dir, version_id
 
 
-def test_design_lifecycle_request_inspect_approve_generate(tmp_path: Path) -> None:
+@pytest.mark.parametrize("reference_field", ["approved_profile_version_id", "profile_revision_id"])
+def test_design_lifecycle_request_inspect_approve_generate(
+    tmp_path: Path, reference_field: str
+) -> None:
     artifact_id, artifact_dir, version_id = _make_artifact(tmp_path)
+    if reference_field == "profile_revision_id":
+        revision = client.post(
+            f"/api/artifacts/{artifact_id}/profiles/revisions",
+            json={"profile": _profile().model_dump(mode="json")},
+        )
+        assert revision.status_code == 200, revision.text
+        version_id = revision.json()["profile_revision_id"]
 
     create = client.post(
         "/api/designs/request",
         json={
             "artifact_id": artifact_id,
             "designer": "deterministic",
-            "approved_profile_version_id": version_id,
+            reference_field: version_id,
         },
     )
     assert create.status_code == 200, create.text
@@ -503,7 +513,7 @@ def test_design_request_rejects_draft_only_artifact(tmp_path: Path) -> None:
         },
     )
     assert response.status_code == 400
-    assert "does not resolve to an approved profile" in response.json()["detail"]
+    assert response.json()["detail"]["error_code"] == "approved_profile_invalid"
     response = client.post(
         "/api/designs/request", json={"artifact_id": artifact_id}
     )

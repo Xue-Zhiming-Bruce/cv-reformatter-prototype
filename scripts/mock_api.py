@@ -121,7 +121,6 @@ def _lane(filename: str | None) -> Literal["pdf", "docx"]:
 def _profile() -> CandidateProfile:
     return CandidateProfile(
         full_name="Alex Morgan",
-        current_title="Senior Product Designer",
         email="alex.morgan@example.com",
         phone="+1 555 010 2048",
         location="Singapore",
@@ -236,13 +235,14 @@ def _docx_bytes() -> bytes:
 
 def _surface(artifact: Artifact, version: str) -> str:
     profile = artifact.profile
+    title = profile.work_experience[0].title if profile.work_experience else None
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Mock CV</title>
 <style>body{{font:14px Arial;max-width:760px;margin:40px auto;color:#20242b}}
 h1{{margin-bottom:4px}} h2{{border-bottom:1px solid #555;padding-bottom:5px}}
 .meta{{color:#606873}} li{{margin:7px 0}}</style></head><body data-layout-version="{html.escape(version)}">
 <header data-node-id="header"><h1 data-node-id="header.name">{html.escape(profile.full_name or "Candidate")}</h1>
-<p>{html.escape(profile.current_title or "")}</p><p class="meta" data-node-id="header.contact_row">{html.escape(profile.email or "")}</p></header>
+<p>{html.escape(title or "")}</p><p class="meta" data-node-id="header.contact_row">{html.escape(profile.email or "")}</p></header>
 <section data-node-id="section.experience"><h2 data-node-id="section.experience.heading">Experience</h2>
 <div data-node-id="section.experience.entries"><strong>Northstar Labs</strong><ul><li>Led the redesign of a recruiter workflow.</li><li>Built a shared design system.</li></ul></div></section>
 </body></html>"""

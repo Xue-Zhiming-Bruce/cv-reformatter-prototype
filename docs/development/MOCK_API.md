@@ -3,11 +3,10 @@
 This local API provides an in-memory frontend collaboration stub. It never
 calls Adobe, an LLM, a database, or the production rendering pipeline.
 
-Current limitation (October 19, 2026): its `_profile()` fixture supplies the
-obsolete `current_title` field to strict `CandidateProfile` validation. Five
-existing mock workflow tests fail on that mismatch. The routes below describe
-the intended stub interface; the happy path needs that separate repair before
-it is usable.
+The fixture uses the current `CandidateProfile` schema; its displayed job title
+comes from work experience. This stub retains the legacy profile-approval
+interface. It does not implement the production saved-revision/final-acceptance
+workflow and must not be used as its contract.
 
 ## Start it
 
@@ -28,7 +27,7 @@ curl -X POST http://127.0.0.1:8000/__mock__/reset
 
 ## Stub Interface
 
-The mock implements the current same-format workflow:
+The mock implements this legacy same-format collaboration workflow:
 
 1. Upload a candidate with `POST /api/process`.
 2. Optionally upload a same-format target with `POST /api/target-format`.
@@ -38,9 +37,10 @@ The mock implements the current same-format workflow:
 
 Both PDF-to-PDF and DOCX-to-DOCX lanes are supported. A PDF candidate paired with a DOCX target, or the reverse, returns `409` rather than silently switching lanes.
 
-Frontend consumers should approve the reviewed profile before generation and
-use the returned version identifier. This describes the backend collaboration
-boundary; frontend implementation remains separately owned.
+Consumers of this legacy stub use its returned approval identifier. The
+production API instead permits previews from saved revisions and requires
+final output acceptance; see the API contract. Frontend implementation remains
+separately owned.
 
 ## Minimal example
 

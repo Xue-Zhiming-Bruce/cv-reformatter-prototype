@@ -1,12 +1,8 @@
-"""Approved profile version boundary.
+"""Immutable candidate revisions in the existing filesystem version store.
 
-The extraction pipeline writes a *draft* ``CandidateProfile``
-(``candidate_profile.json``). Design requests and generation must reference an
-immutable, recruiter-approved profile version stored under the existing
-filesystem artifact boundary — never the draft. Approving a (possibly
-corrected) profile creates a new immutable version; the original draft is
-preserved untouched, and version files are never mutated after creation
-(superseding is tracked in a separate index).
+Legacy approved-profile names and endpoints remain compatible. Saving a revision
+permits a preview, but only exact final-output acceptance makes it client-ready.
+Source drafts and version files stay immutable; superseding uses a separate index.
 """
 
 from __future__ import annotations

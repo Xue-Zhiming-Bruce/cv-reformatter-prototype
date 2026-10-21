@@ -1,12 +1,7 @@
-"""Focused API tests: mandatory recruiter profile approval on every generation path.
+"""Saved-revision previews, legacy profile references, and final output acceptance.
 
-Every final generation path (built-in template, existing uploaded-target
-template, approved designer template) must require an artifact-scoped, current,
-non-superseded approved profile version. Generation must render from the
-persisted approved profile, never from a profile supplied directly in the
-request. Negative cases: missing approval (409), superseded approval (409),
-wrong artifact (400), changed source draft / target checksum (400), invalid
-approval token (400).
+Generation uses persisted current candidate data, never a request override.
+Source review, artifact scope, stale revisions, and output identity fail closed.
 """
 
 from __future__ import annotations
@@ -323,6 +318,16 @@ def test_final_acceptance_is_identity_bound_and_invalidates_on_revision_change(
     second = _save_profile_revision(
         artifact_id, _profile(full_name="Changed Revision Jane")
     )
+    assert client.get(f"/api/artifacts/{artifact_id}/metadata").json()["client_ready"] is False
+    stale_acceptance = client.post(
+        f"/api/artifacts/{artifact_id}/final-acceptance",
+        json={key: identities[key] for key in (
+            "profile_revision_id", "profile_sha256", "layout_template_version",
+            "layout_spec_sha256", "html_sha256", "pdf_sha256",
+        )},
+    )
+    assert stale_acceptance.status_code == 409
+    assert stale_acceptance.json()["detail"]["error_code"] == "approved_profile_superseded"
     refreshed = client.post("/api/generate", json={
         "artifact_id": artifact_id,
         "profile_revision_id": second["profile_revision_id"],
@@ -455,6 +460,20 @@ def test_generate_rejects_invalid_approval_token(tmp_path: Path) -> None:
     response = _generate(artifact_id, "profile_v_does_not_exist")
     assert response.status_code == 400
     assert response.json()["detail"]["error_code"] == "approved_profile_invalid"
+
+
+@pytest.mark.parametrize("endpoint", ["/api/generate", "/api/designs/request"])
+def test_conflicting_profile_revision_identifiers_are_rejected(
+    tmp_path: Path, endpoint: str
+) -> None:
+    artifact_id, _, version_id = _make_artifact_with_approval(tmp_path)
+    response = client.post(endpoint, json={
+        "artifact_id": artifact_id,
+        "profile_revision_id": version_id,
+        "approved_profile_version_id": "profile_v_other",
+    })
+    assert response.status_code == 400
+    assert "identifiers disagree" in response.json()["detail"]
 
 
 def test_generate_rejects_superseded_approval(tmp_path: Path) -> None:
@@ -623,6 +642,23 @@ def test_pending_review_blocks_approval_and_generation_until_recruiter_reviews(
     detail = response.json()["detail"]
     assert detail["error_code"] == "source_content_unaccounted"
     assert detail["pending_review_sections"][0]["source_heading"] == "HACKATHONS"
+
+    # Processing saves a revision before recruiter review; that revision must
+    # not bypass the same source-review gate when previewing or designing.
+    from app.profile_approval import draft_sha256, save_profile_revision
+
+    saved = save_profile_revision(
+        artifact_dir, artifact_id=artifact_id,
+        profile=CandidateProfile.model_validate(pending_profile.model_dump(mode="json")),
+        source_draft_sha256=draft_sha256(artifact_dir),
+    )
+    for endpoint in ("/api/generate", "/api/designs/request"):
+        blocked = client.post(endpoint, json={
+            "artifact_id": artifact_id,
+            "profile_revision_id": saved.profile_revision_id,
+        })
+        assert blocked.status_code == 409, blocked.text
+        assert blocked.json()["detail"]["error_code"] == "source_content_unaccounted"
 
     # No approved profile yet: generation must be blocked.
     generation = _generate(artifact_id, "")

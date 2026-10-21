@@ -4,7 +4,7 @@ Status: `Active product contract`
 
 Owner: Product and backend
 
-Last reviewed: August 28, 2026
+Last reviewed: October 21, 2026 (owner-approved preview and final-acceptance workflow)
 
 This document defines what CV Reformatter must do and the product boundaries
 that implementations must preserve. It does not serve as an engineering
@@ -46,16 +46,27 @@ Candidate resume
 -> extracted source content
 -> validated CandidateProfile
 -> missing and sensitive field review
--> recruiter corrections and disclosure choices
+-> recruiter corrections and disclosure choices saved as an immutable revision
 -> client-facing render context
 -> approved layout template
 -> editable HTML surface in the interface
 -> headless-Chrome PDF deliverable
 -> independent quality gates
+-> recruiter acceptance of the exact generated HTML/PDF
 ```
 
-The recruiter must review candidate information before an output is treated as
-client-ready.
+Owner decision, October 21, 2026: saving a candidate revision permits preview
+generation; there is no separate human profile-approval step before preview.
+The recruiter reviews candidate information and the resulting document before
+accepting the exact output as client-ready. Saving a revision, passing gates,
+and approving a template do not imply final output acceptance.
+
+Edits create immutable profile revisions. Previews use an explicitly referenced,
+current revision; request-supplied profile values cannot replace it. Final
+acceptance binds the revision/checksum, layout version/checksum, and HTML/PDF
+checksums. A new revision or changed output invalidates acceptance. Source
+coverage, disclosure, privacy, and layout validation remain mandatory; this
+workflow does not remove their checks.
 
 ## Candidate Content Contract
 

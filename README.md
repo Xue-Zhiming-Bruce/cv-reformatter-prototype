@@ -35,12 +35,11 @@ of candidate facts, and `LayoutTemplateSpec` remains the product template
 contract. Moving the retained implementation into `app/pipeline/` does not
 approve a new product schema, provider, or renderer.
 
-The accepted MVP/PDF demo is historical baseline evidence. Current automated
-checks do not certify every API route: the generation route currently calls
-an undefined `_requested_profile_revision_id` helper in `app/main.py`, and
-`scripts/mock_api.py` supplies an obsolete `current_title` field to
-`CandidateProfile`. These existing failures remain visible in the regression
-suite; this cleanup does not repair them.
+The API previews an explicitly saved candidate revision. Human approval is
+recorded only when the recruiter accepts the exact generated HTML/PDF; a new
+revision or changed output invalidates that acceptance. Legacy profile-approval
+identifiers remain accepted for compatibility. The accepted MVP/PDF demo is
+historical baseline evidence, not certification of every route or target.
 
 ## Setup
 
@@ -112,8 +111,8 @@ For configured provider extraction, omit `API_LLM_PROVIDER=mock`.
 Health is available at `GET /health`, and OpenAPI documentation at `/docs`.
 The [API contract](docs/architecture/API_CONTRACT.md) owns frontend-facing
 behavior. Frontend code is maintained by the co-founder. The separate
-[frontend mock](docs/development/MOCK_API.md) is a development stub with the
-known schema failure described above.
+[frontend mock](docs/development/MOCK_API.md) retains a legacy collaboration
+interface and does not establish the production acceptance workflow.
 
 ## Validate Changes
 
@@ -123,9 +122,7 @@ Run the canonical offline checks:
 python -m pytest -m "not local_dataset and not live_provider" tests/unit tests/integration
 ```
 
-This command currently includes the known API/mock failures. Keep their tests;
-check failures against the baseline instead of deleting regressions to obtain
-a green run. See [the test contract](docs/testing/TEST_STRUCTURE.md) for focused,
+Keep behavior regressions when consolidating implementations. See [the test contract](docs/testing/TEST_STRUCTURE.md) for focused,
 local-corpus and live lanes, and [tests/README.md](tests/README.md) for the
 explicit local inputs used by retained pipeline regressions. Pytest terminal
 output belongs under `tests/test_results/pytest/` and remains uncommitted.

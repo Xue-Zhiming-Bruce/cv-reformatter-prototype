@@ -153,3 +153,12 @@ prevents the semantic-classification machinery from reappearing in
 - ~~Change the default to `llm_first` only after that final acceptance gate is
   green.~~ Done 2026-08-29: `CANDIDATE_SEGMENTATION` defaulted to `llm_first`;
   the flag was removed entirely in Phase 2/3 — see the amendment above.
+
+## Workflow Amendment — October 21, 2026
+
+The product owner selected saved revisions for preview generation and human
+acceptance of the exact final HTML/PDF. References above to profile approval
+retain their historical meaning. Source-audit and pending-section review gates
+now apply at preview/design as well as the legacy profile endpoint; saving an
+initial revision does not bypass them. This amendment changes the human
+acceptance point, not the source-coverage or classification decision.

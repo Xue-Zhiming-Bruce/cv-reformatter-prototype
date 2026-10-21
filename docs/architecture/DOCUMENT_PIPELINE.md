@@ -16,7 +16,7 @@ Candidate resume
 -> deterministic source-line coverage audit
 -> NormalizedDocument + CandidateFieldEvidence + CandidateProfile draft
 -> versioned CandidateProfile
--> recruiter review/edit
+-> recruiter review/edit and saved immutable revision
 -> ClientFacingRenderContext
 
 Target format
@@ -163,7 +163,7 @@ to use an uploaded target.
 
 ## Client-Facing Content Boundary
 
-`ClientFacingRenderContext` is derived from an approved `CandidateProfile` plus:
+`ClientFacingRenderContext` is derived from an explicitly saved `CandidateProfile` revision plus:
 
 - disclosure choices;
 - blind-profile state;
@@ -171,7 +171,10 @@ to use an uploaded target.
 
 It is the only candidate-content input accepted by the rendering compiler.
 Template definitions can choose placement and presentation but cannot create
-candidate facts.
+candidate facts. Under the October 21 owner decision, revision saving permits
+preview generation. Human acceptance happens on the exact HTML/PDF identity,
+not at an intermediate profile-approval step. Legacy approval names in stored
+schemas and error codes remain compatible and do not mark a preview client-ready.
 
 ## Renderer Boundary
 

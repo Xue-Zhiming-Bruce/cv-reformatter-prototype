@@ -137,3 +137,11 @@ new section kinds add a vocabulary value, never a schema field.
   sections; remove the flat additional-section render path.
 - Step 5 (structure-gate-validation): entry-geometry and coverage-safety
   structure gate; A→B and A→C geometric comparisons.
+## Workflow Amendment — October 21, 2026
+
+The product owner selected saved revisions for preview generation and human
+acceptance of the exact final HTML/PDF. References above to profile approval
+retain their historical meaning. Source-audit and pending-section review gates
+now apply at preview/design as well as the legacy profile endpoint; saving an
+initial revision does not bypass them. This amendment changes the human
+acceptance point, not the source-coverage or classification decision.

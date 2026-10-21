@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import httpx
 
 from app.extraction.candidate_document_analyzer import (
@@ -66,7 +66,6 @@ from app.profile_approval import (
     ProfileApprovalError,
     draft_sha256,
     is_current_approved_profile,
-    load_approved_profile_version,
     load_current_approved_profile,
     load_profile_revision,
     profile_sha256,
@@ -259,12 +258,18 @@ class TargetFormatUploadResponse(BaseModel):
     artifact_metadata_url: str
 
 
+def _requested_profile_revision_id(
+    revision_id: str | None, legacy_version_id: str | None
+) -> str | None:
+    revision_id = (revision_id or "").strip() or None
+    legacy_version_id = (legacy_version_id or "").strip() or None
+    if revision_id and legacy_version_id and revision_id != legacy_version_id:
+        raise HTTPException(status_code=400, detail="Profile revision identifiers disagree.")
+    return revision_id or legacy_version_id
+
+
 class GenerateRequest(BaseModel):
-    #: Required immutable recruiter-approved profile version bound to this
-    #: artifact (see POST /api/artifacts/{artifact_id}/profiles/approve).
-    #: Generation always renders from the persisted approved profile; a
-    #: CandidateProfile supplied directly in the request is never accepted
-    #: (the legacy ``profile`` field is ignored for backward compatibility).
+    #: Immutable saved profile revision; request-supplied profile data is ignored.
     profile_revision_id: str | None = None
     # Transitional read only; remove after clients migrate to profile_revision_id.
     approved_profile_version_id: str | None = None
@@ -344,10 +349,17 @@ class ArtifactListResponse(BaseModel):
 class DesignRequestCreate(BaseModel):
     artifact_id: str
     designer: str | None = None
-    #: Immutable approved profile version the design must be built from. The
-    #: extraction draft (candidate_profile.json) is never used implicitly.
+    #: Immutable saved revision; never read the extraction draft implicitly.
     profile_revision_id: str | None = None
     approved_profile_version_id: str | None = None
+
+    @model_validator(mode="after")
+    def require_revision(self) -> "DesignRequestCreate":
+        if not _requested_profile_revision_id(
+            self.profile_revision_id, self.approved_profile_version_id
+        ):
+            raise ValueError("profile_revision_id is required (legacy approved_profile_version_id accepted).")
+        return self
 
 
 class ProfileApproveRequest(BaseModel):
@@ -820,68 +832,7 @@ def approve_profile(artifact_id: str, body: ProfileApproveRequest) -> ProfileApp
         source_draft_sha256 = draft_sha256(artifact_dir)
     except ProfileApprovalError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    segmentation_audit_path = artifact_dir / "segmentation_audit.json"
-    if segmentation_audit_path.exists():
-        try:
-            segmentation_audit = SegmentationCoverageAudit.model_validate_json(
-                segmentation_audit_path.read_text(encoding="utf-8")
-            )
-        except (OSError, ValueError) as exc:
-            raise HTTPException(
-                status_code=400,
-                detail="Saved segmentation coverage audit is invalid.",
-            ) from exc
-        if segmentation_audit.approval_blocked:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error_code": "segmentation_coverage_failed",
-                    "message": (
-                        "LLM segmentation changed, omitted, duplicated, or invented "
-                        "source lines; profile approval is blocked."
-                    ),
-                    "missing_lines": [
-                        item.model_dump(mode="json")
-                        for item in segmentation_audit.missing_lines
-                    ],
-                    "invented_or_altered_lines": [
-                        item.model_dump(mode="json")
-                        for item in segmentation_audit.invented_or_altered_lines
-                    ],
-                },
-            )
-    normalized_document = _load_normalized_candidate_document(artifact_dir)
-    missing_blocks = unaccounted_source_blocks(body.profile, normalized_document)
-    unreviewed_blocks = unreviewed_source_blocks(body.profile, normalized_document)
-    if missing_blocks or unreviewed_blocks:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "source_content_unaccounted",
-                "message": (
-                    "Every optional or custom source section must have an explicit "
-                    "show or hide decision before approval, and sections entered "
-                    "pending recruiter review (unknown/other classifications) must "
-                    "be reviewed."
-                ),
-                "source_blocks": [
-                    {
-                        "source_block_id": block.block_id,
-                        "source_heading": block.source_heading,
-                        "classification": block.classification,
-                    }
-                    for block in missing_blocks
-                ],
-                "pending_review_sections": [
-                    {
-                        "source_block_id": block.block_id,
-                        "source_heading": block.source_heading,
-                        "classification": block.classification,
-                    }
-                    for block in unreviewed_blocks
-                ],
-            },
-        )
+    _validate_profile_source_review(artifact_dir, body.profile)
     try:
         version = save_approved_profile(
             artifact_dir,
@@ -951,21 +902,15 @@ def request_template_design(body: DesignRequestCreate) -> DesignResponse:
                 f"{DESIGNER_DETERMINISTIC}, {DESIGNER_CLAUDE}, {DESIGNER_OPENAI}."
             ),
         )
-    if not (body.approved_profile_version_id or "").strip():
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "approved_profile_version_id is required. The extraction draft "
-                "(candidate_profile.json) is never used implicitly."
-            ),
-        )
+    revision = _require_profile_revision(
+        artifact_dir=artifact_dir,
+        artifact_id=body.artifact_id,
+        profile_revision_id=_requested_profile_revision_id(
+            body.profile_revision_id, body.approved_profile_version_id
+        ),
+    )
     try:
         evidence, style_spec = _load_design_evidence(artifact_dir)
-        approved = load_approved_profile_version(
-            artifact_dir, body.approved_profile_version_id
-        )
-    except ProfileApprovalError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except DesignServiceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if evidence is None or style_spec is None:
@@ -975,27 +920,7 @@ def request_template_design(body: DesignRequestCreate) -> DesignResponse:
                 "A design requires an analyzed target format for the artifact."
             ),
         )
-    if approved is None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"approved_profile_version_id '{body.approved_profile_version_id}' "
-                "does not resolve to an approved profile for this artifact. Approve "
-                "a profile first; the extraction draft is never used implicitly."
-            ),
-        )
-    if not is_current_approved_profile(artifact_dir, approved.profile_version_id):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "approved_profile_superseded",
-                "message": (
-                    "The referenced approved profile version has been superseded by "
-                    "a newer approval; request the current version or approve again."
-                ),
-            },
-        )
-    sections = candidate_sections_from_profile(approved.profile)
+    sections = candidate_sections_from_profile(revision.profile)
     try:
         state = DesignService().create_design(
             artifact_id=body.artifact_id,
@@ -1004,8 +929,8 @@ def request_template_design(body: DesignRequestCreate) -> DesignResponse:
             candidate_sections=sections,
             style_spec=style_spec,
             designer=body.designer,
-            profile_sha256=approved.profile_sha256,
-            approved_profile_version_id=approved.profile_version_id,
+            profile_sha256=revision.profile_sha256,
+            approved_profile_version_id=revision.profile_revision_id,
         )
     except DesignServiceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1292,7 +1217,6 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     if design_id is not None:
         design_state = _load_approved_design(
             artifact_id, artifact_dir, design_id, reviewed_profile,
-            profile_revision,
         )
         style_spec = load_layout_template_spec(
             design_dir_for(artifact_dir, design_id) / "layout_template_spec.json"
@@ -1626,6 +1550,11 @@ def accept_final_output(
         ) from exc
     requested = FinalOutputIdentity.model_validate(
         body.model_dump(exclude={"reviewer_note"})
+    )
+    _require_profile_revision(
+        artifact_dir=artifact_dir,
+        artifact_id=artifact_id,
+        profile_revision_id=current.profile_revision_id,
     )
     if requested != current:
         raise HTTPException(
@@ -2151,49 +2080,96 @@ def _require_artifact(artifact_id: str) -> None:
         raise HTTPException(status_code=404, detail="Artifact not found.")
 
 
-def _require_approved_profile(
+def _validate_profile_source_review(artifact_dir: Path, profile: CandidateProfile) -> None:
+    segmentation_audit_path = artifact_dir / "segmentation_audit.json"
+    if segmentation_audit_path.exists():
+        try:
+            segmentation_audit = SegmentationCoverageAudit.model_validate_json(
+                segmentation_audit_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Saved segmentation coverage audit is invalid.",
+            ) from exc
+        if segmentation_audit.approval_blocked:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "segmentation_coverage_failed",
+                    "message": (
+                        "LLM segmentation changed, omitted, duplicated, or invented "
+                        "source lines; profile approval is blocked."
+                    ),
+                    "missing_lines": [
+                        item.model_dump(mode="json")
+                        for item in segmentation_audit.missing_lines
+                    ],
+                    "invented_or_altered_lines": [
+                        item.model_dump(mode="json")
+                        for item in segmentation_audit.invented_or_altered_lines
+                    ],
+                },
+            )
+    normalized_document = _load_normalized_candidate_document(artifact_dir)
+    missing_blocks = unaccounted_source_blocks(profile, normalized_document)
+    unreviewed_blocks = unreviewed_source_blocks(profile, normalized_document)
+    if missing_blocks or unreviewed_blocks:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "source_content_unaccounted",
+                "message": (
+                    "Every optional or custom source section must have an explicit "
+                    "show or hide decision before approval, and sections entered "
+                    "pending recruiter review (unknown/other classifications) must "
+                    "be reviewed."
+                ),
+                "source_blocks": [
+                    {
+                        "source_block_id": block.block_id,
+                        "source_heading": block.source_heading,
+                        "classification": block.classification,
+                    }
+                    for block in missing_blocks
+                ],
+                "pending_review_sections": [
+                    {
+                        "source_block_id": block.block_id,
+                        "source_heading": block.source_heading,
+                        "classification": block.classification,
+                    }
+                    for block in unreviewed_blocks
+                ],
+            },
+        )
+
+
+def _require_profile_revision(
     *,
     artifact_dir: Path,
     artifact_id: str,
-    approved_profile_version_id: str | None,
+    profile_revision_id: str | None,
 ) -> ApprovedProfileVersion:
-    """Require an artifact-scoped, current, non-superseded approved profile
-    version for final generation.
-
-    Returns the persisted ``ApprovedProfileVersion`` (the only candidate-data
-    source for generation) or raises a structured HTTP error:
-
-    - 409 ``approved_profile_missing`` when no approval is referenced;
-    - 400 ``approved_profile_invalid`` when the version does not resolve;
-    - 400 ``approved_profile_artifact_mismatch`` when the approval belongs to
-      another artifact;
-    - 400 ``approved_profile_draft_mismatch`` when the artifact's source draft
-      changed after the approval was recorded (the approval no longer covers
-      the current source);
-    - 409 ``approved_profile_superseded`` when a newer approval replaced the
-      referenced version.
-
-    A directly supplied ``CandidateProfile`` is never accepted; generation
-    uses the persisted approved profile data only.
+    """Require a current saved revision. Legacy error codes remain compatible;
+    a saved revision is not human acceptance of the generated output.
     """
-    if not (approved_profile_version_id or "").strip():
+    if not (profile_revision_id or "").strip():
         raise HTTPException(
             status_code=409,
             detail={
                 "error_code": "approved_profile_missing",
                 "message": (
-                    "approved_profile_version_id is required. Generation renders "
-                    "only from a persisted recruiter-approved profile version; "
-                    "approve the profile first via "
-                    "POST /api/artifacts/{artifact_id}/profiles/approve and pass "
-                    "the returned profile_version_id."
+                    "profile_revision_id is required. Save a profile revision "
+                    "before generating a preview; the legacy "
+                    "approved_profile_version_id is also accepted."
                 ),
-                "options": ["approve_profile"],
+                "options": ["save_profile_revision"],
             },
         )
     try:
-        approved = load_approved_profile_version(
-            artifact_dir, approved_profile_version_id
+        approved = load_profile_revision(
+            artifact_dir, profile_revision_id
         )
     except ProfileApprovalError as exc:
         raise HTTPException(
@@ -2209,9 +2185,8 @@ def _require_approved_profile(
             detail={
                 "error_code": "approved_profile_invalid",
                 "message": (
-                    f"approved_profile_version_id "
-                    f"'{approved_profile_version_id}' does not resolve to an "
-                    "approved profile for this artifact."
+                    f"Profile revision '{profile_revision_id}' does not resolve "
+                    "to a saved profile for this artifact."
                 ),
             },
         )
@@ -2262,6 +2237,7 @@ def _require_approved_profile(
                 "options": ["approve_profile"],
             },
         )
+    _validate_profile_source_review(artifact_dir, approved.profile)
     return approved
 
 

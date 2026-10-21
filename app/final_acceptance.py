@@ -10,6 +10,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.profile_approval import (
+    ProfileApprovalError,
+    draft_sha256,
+    load_current_approved_profile,
+)
+
 
 FINAL_ACCEPTANCE_FILENAME = "final_acceptance.json"
 
@@ -81,6 +87,13 @@ def is_final_acceptance_current(artifact_dir: str | Path) -> bool:
         return False
     try:
         current = current_output_identity(artifact_dir)
-    except (OSError, KeyError, json.JSONDecodeError, ValueError):
+        revision = load_current_approved_profile(artifact_dir)
+        if revision is None or (
+            revision.profile_revision_id != current.profile_revision_id
+            or revision.profile_sha256 != current.profile_sha256
+            or revision.source_draft_sha256 != draft_sha256(artifact_dir)
+        ):
+            return False
+    except (OSError, KeyError, json.JSONDecodeError, ValueError, ProfileApprovalError):
         return False
     return acceptance.model_dump(exclude={"schema_version", "accepted_at", "reviewer_note"}) == current.model_dump()
