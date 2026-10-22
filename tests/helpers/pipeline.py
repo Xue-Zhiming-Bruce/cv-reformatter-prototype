@@ -178,7 +178,8 @@ def _pipeline_e_semantic_findings() -> dict[str, list[str]]:
 
 
 
-def synthetic_pipeline_inputs(tmp_path: Path, *, one_column: bool = False) -> dict:
+def synthetic_pipeline_inputs(tmp_path: Path, *, one_column: bool = False, page_size: tuple[float, float] = (612, 792)) -> dict:
+    width, height = page_size
     body_x = 54 if one_column else 180
     operations = [f"BT /F2 20 Tf {body_x} 740 Td (Target Person) Tj ET"]
     rules = []
@@ -192,13 +193,13 @@ def synthetic_pipeline_inputs(tmp_path: Path, *, one_column: bool = False) -> di
         if not one_column:
             rules.append(NormalizedRule(
                 element_id=f"rule.{heading.lower()}", page_number=1,
-                bbox=NormalizedBox(x0=180 / 612, x1=560 / 612,
-                                   top=(792 - y + 5) / 792, bottom=(792 - y + 5) / 792),
+                bbox=NormalizedBox(x0=180 / width, x1=560 / width,
+                                   top=(height - y + 5) / height, bottom=(height - y + 5) / height),
                 stroke_width_pt=0.5, color_hex="#000000",
                 provenance=MeasurementProvenance(source="local_pdf", provider="synthetic", method="fixture"),
             ))
     target = _write_single_page_pdf(tmp_path / "target.pdf", operations,
-                                    regular_font="Helvetica", bold_font="Helvetica-Bold")
+                                    regular_font="Helvetica", bold_font="Helvetica-Bold", width_pt=width, height_pt=height)
     blocks = []
     elements = []
     with pdfplumber.open(target) as pdf:
@@ -208,23 +209,23 @@ def synthetic_pipeline_inputs(tmp_path: Path, *, one_column: bool = False) -> di
         blocks.append(NormalizedTextBlock(
             element_id=f"adobe.page.1.element.{index}", text=word["text"], page_number=1,
             reading_order=index,
-            bbox=NormalizedBox(x0=word["x0"] / 612, x1=word["x1"] / 612,
-                               top=word["top"] / 792, bottom=word["bottom"] / 792),
+            bbox=NormalizedBox(x0=word["x0"] / width, x1=word["x1"] / width,
+                               top=word["top"] / height, bottom=word["bottom"] / height),
             font_family="Helvetica", font_size_pt=word["size"], bold=bold,
             line_height_pt=word["size"] * 1.2,
             color_hex="#000000",
         ))
         elements.append({"Path": f"//Document/Sect/P[{index}]", "Text": word["text"],
                          "Page": 0, "ObjectID": index,
-                         "Bounds": [word["x0"], 792 - word["bottom"], word["x1"], 792 - word["top"]]})
+                         "Bounds": [word["x0"], height - word["bottom"], word["x1"], height - word["top"]]})
     raw = tmp_path / "adobe.json"
     raw.write_text(json.dumps({"structured_data": {
-        "pages": [{"page_number": 0, "width": 612, "height": 792}], "elements": elements,
+        "pages": [{"page_number": 0, "width": width, "height": height}], "elements": elements,
     }}))
     normalized = tmp_path / "normalized.json"
     normalized.write_text(NormalizedLayoutEvidence(
         provider="synthetic", page_count=1,
-        pages=[NormalizedPage(page_number=1, width_pt=612, height_pt=792)],
+        pages=[NormalizedPage(page_number=1, width_pt=width, height_pt=height)],
         full_text="\n".join(word["text"] for word in words), text_blocks=blocks, rules=rules,
     ).model_dump_json())
     draft = tmp_path / "draft.json"

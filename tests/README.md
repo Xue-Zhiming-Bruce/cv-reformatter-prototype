@@ -72,6 +72,13 @@ Removing a title role while preserving all facts must fail the shared structure
 validator and still pass A's content check. These are compatibility regressions;
 the CLI service and API generation routes retain their existing orchestration.
 
+Native built-in cases use `built-in-3` at its actual A4 dimensions through the
+same CLI. Normal/blind PDFs from A and the product renderer preserve facts and
+show email/phone once (or omit them when blind). The API default-template case
+checks the new version and absence of a repeated contact body block. Existing
+synthetic PDF/evidence builders accept explicit page dimensions; their Letter
+defaults remain unchanged. Chrome's sub-point page-size quantization is allowed.
+
 Decoration cases in the same CLI workflow exercise header/heading rules and
 grouped badges on skills, languages and certifications, including ordinary/blind
 contacts, repeating row counts, label typography, borders and actual PDF shapes.

@@ -95,6 +95,8 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["artifact_id"] == artifact_id
+    assert body["layout_template_version"] == "built-in-3"
+    assert "Boston" not in (artifact_dir / "candidate_profile.html").read_text().partition("</header>")[2]
     assert (artifact_dir / "raw_extracted_text.txt").read_bytes() == raw_text_before
     assert (artifact_dir / "raw_extracted_text.txt").read_text(encoding="utf-8") == draft_raw_text
     assert (artifact_dir / "candidate_profile.json").read_bytes() == draft_bytes_before

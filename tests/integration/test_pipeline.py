@@ -511,6 +511,51 @@ def test_cli_product_decorations_survive_pdf_export(tmp_path: Path, blind: bool,
         assert not content_shape_verification(state, plan, None, {}, html, {}, damaged_pdf)["passed"]
 
 
+@pytest.mark.parametrize("blind", [False, True])
+def test_cli_native_builtin_preserves_facts_without_repeating_contacts(tmp_path: Path, blind: bool) -> None:
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+    from app.generation.content_validation import validate_generated_content, validate_output_structure
+    from app.generation.html_renderer import render_html as render_product_html
+    from app.generation.template_mapper import build_client_render_context
+    from app.template_analysis.schemas import built_in_layout_template_spec
+    from tests.helpers.pipeline_layout import product_entry_profile
+
+    spec = built_in_layout_template_spec()
+    inputs = _inputs(tmp_path, one_column=True, page_size=(spec.page.width_pt, spec.page.height_pt))
+    profile = product_entry_profile()
+    profile = CandidateProfile.model_validate({**profile.model_dump(), "skills": ["Python", "SQL"],
+        "languages": [{"name": "English", "proficiency": "Fluent"}]})
+    candidate, layout = tmp_path / "candidate.json", tmp_path / "layout.json"
+    candidate.write_text(profile.model_dump_json())
+    layout.write_text(spec.model_dump_json())
+    output = tmp_path / "result"
+    command = [sys.executable, "-B", "-m", "app.pipeline", "--target", str(inputs["target_pdf"]),
+        "--adobe-json", str(inputs["adobe_json"]), "--normalized", str(inputs["normalized_evidence"]),
+        "--structure-draft", str(inputs["structure_draft"]), "--layout-spec", str(layout),
+        "--candidate", str(candidate), "--out", str(output)]
+    if blind:
+        command.append("--blind-profile")
+    result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    context = build_client_render_context(profile, blind_profile=blind)
+    reference = render_product_html(context, spec, tmp_path / "reference.html")
+    reference_pdf = export_html_to_pdf(reference, tmp_path / "reference.pdf")
+    for html, pdf in ((output / "lane_a/render_1.html", output / "lane_a/render_1.pdf"), (reference, reference_pdf)):
+        assert validate_generated_content(context, layout_spec=spec, pdf_path=pdf).passed
+        structure = validate_output_structure(context, layout_spec=spec, html_path=html, pdf_path=pdf)
+        assert structure.passed, structure
+        with pdfplumber.open(pdf) as document:
+            # Chrome quantizes the declared A4 size to its CSS pixel grid.
+            assert all(abs(page.width-595.28) < .75 and abs(page.height-841.89) < .75 for page in document.pages)
+            text = "\n".join(page.extract_text() or "" for page in document.pages)
+        assert text.count("alpha@example.test") == (0 if blind else 1)
+        assert text.count("5550101") == (0 if blind else 1)
+        assert "HIDDEN_SALARY" not in text and "HIDDEN_PROJECT" not in text and "Target facts only" not in text
+    gates = json.loads(next((output / "lane_a").glob("hard_gates_*.json")).read_text())
+    assert gates["details"]["content_shapes_match_evidence"]["passed"], gates
+    assert json.loads(candidate.read_text()) == profile.model_dump(mode="json")
+
+
 @pytest.mark.parametrize("side,blind,empty_sidebar", [(None, False, False), ("left", False, False), ("right", True, False), ("left", True, True)])
 def test_cli_product_columns_preserve_regions_and_wrapped_content(tmp_path: Path, side: str | None, blind: bool, empty_sidebar: bool) -> None:
     from app.generation.content_validation import validate_generated_content

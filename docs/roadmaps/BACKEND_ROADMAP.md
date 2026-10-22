@@ -67,6 +67,11 @@ Legacy profile-approval names remain compatibility fields only.
       passes the API's shared structure validator in ordinary/blind CLI entry
       regressions, including missing fields and non-bold institutions. This is
       compatibility preparation; API/proof rendering has not switched.
+      Native `built-in-3` removes the unused document-title declaration and
+      repeated contact body section. The unchanged A compiler now renders its
+      A4 template in ordinary/blind CLI cases, alongside independent product
+      content/structure checks; API default-template version and header-only
+      contact behavior are covered without replacing its renderer.
       Full product-template coverage,
       complete pagination parity and API cutover remain open; no replaced
       implementation has been removed.

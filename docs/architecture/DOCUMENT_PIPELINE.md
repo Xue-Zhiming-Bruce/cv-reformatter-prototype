@@ -359,10 +359,13 @@ Integration status, October 22, 2026:
   role while retaining its facts fails that shared structure check. The A
   diagnostics tokenize ancestor classes so added semantic classes cannot turn
   entry headers into body text for typography checks.
-  API generation still uses the retained product renderer. Native built-in
-  templates include a document-title flag and contact-source declaration outside
-  A's current subset; uploaded templates can also request unsupported features
-  such as inline skills. Replacing proof/candidate rendering requires validating
+  API generation still uses the retained product renderer. The native built-in
+  template is now `built-in-3`: contacts belong to the header, without a second
+  contact body section or the unused legacy document-title flag. This removes
+  duplicate contact output and lets the native A4 template compile through A.
+  Existing stored specs are not rewritten; older specs and uploaded templates
+  can still request unsupported features such as contact body slots or inline
+  skills. Replacing proof/candidate rendering requires validating
   proof approval against the selected implementation and proving rollback;
   neither a compatible DOM nor a matching template checksum completes cutover.
 - Core presentation labels use the existing product exact-alias helper rather

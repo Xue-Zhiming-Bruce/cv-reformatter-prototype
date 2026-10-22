@@ -351,7 +351,6 @@ def built_in_layout_template_spec() -> LayoutTemplateSpec:
     labels = spec.section_labels
     assert labels is not None
     sources = (
-        ("contact", labels.contact),
         ("summary", labels.summary),
         ("skills", labels.skills),
         ("languages", labels.languages),
@@ -361,9 +360,9 @@ def built_in_layout_template_spec() -> LayoutTemplateSpec:
         ("additional_details", labels.additional_details),
     )
     return LayoutTemplateSpec(
-        **spec.model_dump(exclude={"schema_version", "template_name"}),
+        **spec.model_dump(exclude={"schema_version", "template_name", "show_document_title"}),
         template_name="default_v2",
-        template_version="built-in-2",
+        template_version="built-in-3",
         structure_contract="measured",
         sections=[
             SectionLayoutSpec(
