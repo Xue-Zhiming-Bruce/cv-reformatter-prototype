@@ -8,6 +8,8 @@ from typing import Any, Literal
 from app.template_analysis.commercial.bridge import _dominant_body
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from app.pipeline.measurement import BodyScaffold
+from app.generation.render_plan import layout_spec_sha256
+from app.template_analysis.schemas import LayoutTemplateSpec, TextStyle
 from app.pipeline.layout_state import (
     SourceRole,
     _DEFAULT_CONTENT_KINDS,
@@ -1073,3 +1075,145 @@ def own_leaf(
         return False
     ledger[leaf_id] = destination
     return True
+
+
+def state_from_layout_template(
+    spec: LayoutTemplateSpec, *, target_sha256: str, page_count: int,
+) -> C2LayoutState:
+    """Compile the supported product-template subset; never guess missing features.
+
+    This is a renderer projection, not a replacement stored template. Unsupported
+    non-default properties fail before a run starts, including future fields.
+    """
+    from pydantic_core import PydanticUndefined
+
+    def consumed(model: Any, fields: set[str], path: str) -> None:
+        for name, field in type(model).model_fields.items():
+            if name in fields:
+                continue
+            default = field.get_default(call_default_factory=True)
+            if isinstance(default, str):
+                default = default.strip()
+            if default is PydanticUndefined or getattr(model, name) != default:
+                raise ValueError(f"Lane A does not yet support {path}.{name}")
+
+    spec = LayoutTemplateSpec.model_validate(spec.model_dump())
+    if spec.structure_contract != "measured" or spec.unsupported_features:
+        raise ValueError("Lane A requires a measured LayoutTemplateSpec without unsupported_features")
+    consumed(spec, {
+        "schema_version", "source_type", "template_name", "template_version",
+        "structure_contract", "sections", "unsupported_features", "warnings",
+        "confidence", "page", "columns", "body", "title", "heading", "spacing",
+        "header", "decoration", "section_labels",
+    }, "template")
+    if spec.columns.count != 1 or spec.columns.sidebar_side is not None:
+        raise ValueError("Lane A LayoutTemplateSpec projection currently requires one column")
+    consumed(spec.decoration, set(), "decoration")
+    consumed(spec.spacing, {"line_spacing", "line_height_pt", "section_before_pt", "section_after_pt"}, "spacing")
+    consumed(spec.header, {
+        "show_candidate_subheading", "contact_fields", "contact_separator",
+        "contact_style", "contact_line_height_pt", "name_gap_pt",
+    }, "header")
+    page = spec.page
+    if page.margin_left_pt + page.margin_right_pt >= page.width_pt or page.margin_top_pt + page.margin_bottom_pt >= page.height_pt:
+        raise ValueError("LayoutTemplateSpec margins leave no content area")
+    if (page.width_pt > page.height_pt) != (page.orientation == "landscape"):
+        raise ValueError("LayoutTemplateSpec orientation contradicts page dimensions")
+    identity = layout_spec_sha256(spec)
+    evidence = [f"layout-template:{identity}"]
+    styles: list[StyleToken] = []
+    nodes: list[LayoutNode] = []
+    line_height = spec.spacing.line_height_pt or spec.body.font_size_pt * spec.spacing.line_spacing
+
+    def style(name: str, value: TextStyle, height: float | None = None) -> str:
+        consumed(value, {
+            "font_family", "font_size_pt", "bold", "italic", "color_hex",
+            "character_spacing_pt", "line_height_pt",
+        }, name)
+        # CSS families are inserted into a quoted declaration, never raw CSS.
+        if not re.fullmatch(r"[\w .-]+", value.font_family):
+            raise ValueError(f"unsupported font family in {name}")
+        style_id = f"style.{name}"
+        styles.append(StyleToken(
+            style_id=style_id, font_family=value.font_family,
+            font_size_pt=value.font_size_pt, bold=value.bold, italic=value.italic,
+            color_hex=value.color_hex, character_spacing_pt=value.character_spacing_pt,
+            line_height_pt=value.line_height_pt or height or line_height,
+            evidence_ids=evidence,
+        ))
+        return style_id
+
+    style("body", spec.body)
+    title = style("title", spec.title, spec.title.font_size_pt * spec.spacing.line_spacing)
+    contact_style = spec.header.contact_style or spec.body
+    contact = style("contact", contact_style.model_copy(update={
+        "line_height_pt": spec.header.contact_line_height_pt or contact_style.line_height_pt,
+    }))
+
+    def node(**values: Any) -> None:
+        nodes.append(LayoutNode(reading_order=len(nodes), evidence_ids=evidence, **values))
+
+    def header(name: str, slots: list[str], token: str, gap: float, separator: str | None = None) -> None:
+        node(node_id=f"header.product_{name}", kind="header_row", slots=slots,
+             fields=[HeaderField(slot=slot, order=i) for i, slot in enumerate(slots)],
+             flow_gap_above_pt=gap, separator=separator, style_id=token)
+
+    header("name", ["name"], title, 0)
+    name_gap = spec.header.name_gap_pt if spec.header.name_gap_pt is not None else spec.spacing.section_after_pt
+    if spec.header.show_candidate_subheading:
+        header("subheading", ["subheading"], "style.body", name_gap)
+    contact_fields = spec.header.contact_fields or ["email", "phone", "location", "linkedin_url", "portfolio_url"]
+    if len(set(contact_fields)) != len(contact_fields):
+        raise ValueError("duplicate header contact_fields")
+    slots = [{"email": "envelope", "linkedin_url": "linkedin", "portfolio_url": "portfolio"}.get(field, field) for field in contact_fields]
+    header("contact", slots, contact, 0 if spec.header.show_candidate_subheading else name_gap,
+           spec.header.contact_separator)
+    seen: set[str] = set()
+    section_ids = [section.section_id for section in spec.sections]
+    if len(section_ids) != len(set(section_ids)):
+        raise ValueError("duplicate product-template section_id")
+    for index, section in enumerate(spec.sections):
+        path = f"sections[{index}]"
+        consumed(section, {
+            "section_id", "source", "label", "layout", "placement", "optional",
+            "heading_style", "body_style", "spacing", "bullet_indent_pt",
+        }, path)
+        if section.source not in {"summary", "skills", "languages", "certifications"}:
+            raise ValueError(f"Lane A product-template source not yet supported: {path}.source={section.source}")
+        if section.source in seen:
+            raise ValueError(f"duplicate product-template source: {section.source}")
+        seen.add(section.source)
+        if section.placement != "full_width" or section.layout not in {"full_width", "stacked", "bullets"}:
+            raise ValueError(f"Lane A unsupported placement/layout in {path}")
+        if not section.label:
+            raise ValueError(f"empty product-template label in {path}")
+        if bind_source(section.label)[0] != section.source:
+            raise ValueError(f"unrecognized product-template presentation label in {path}")
+        if section.source == "summary" and section.layout == "bullets":
+            raise ValueError(f"summary paragraphs cannot use bullets in {path}")
+        spacing = section.spacing or spec.spacing
+        consumed(spacing, {"line_spacing", "line_height_pt", "section_before_pt", "section_after_pt"}, f"{path}.spacing")
+        section_height = spacing.line_height_pt or (section.body_style or spec.body).font_size_pt * spacing.line_spacing
+        content_style = style(f"section_{index}_body", section.body_style or spec.body, section_height)
+        heading_style = style(f"section_{index}_heading", section.heading_style or spec.heading, section_height)
+        section_id = f"section.{index + 1:02d}"
+        paragraph = section.source == "summary"
+        marker = "bullet" if section.layout in {"bullets", "full_width"} else "none"
+        node(node_id=section_id, kind="section", content_style_id=content_style,
+             binding=SectionBinding(sources=[section.source], mapping_action="map", evidence_ids=evidence),
+             content=SectionContent(sources=[section.source], content_kind="paragraph" if paragraph else "item_list", bullet_marker=None if paragraph else marker),
+             list_ref=None if paragraph else f"{section_id}.list")
+        node(node_id=f"{section_id}.heading", kind="heading", parent_id=section_id,
+             label=section.label, label_case=_label_case(section.label), style_id=heading_style,
+             spacing=NodeSpacing(gap_above_pt=spacing.section_before_pt, gap_below_pt=spacing.section_after_pt, gap_basis="flow"))
+        if not paragraph:
+            node(node_id=f"{section_id}.list", kind="list_row", parent_id=section_id,
+                 list_marker=marker, bullet_dot_x0_pt=page.margin_left_pt,
+                 bullet_text_x0_pt=page.margin_left_pt + section.bullet_indent_pt)
+    return C2LayoutState(
+        template_version=spec.template_version,
+        provenance=EvidenceProvenance(provider="layout_template_spec", target_sha256=target_sha256,
+            measurement_policy="renderer projection of measured product template; header gaps are flow values"),
+        page=PageState(**page.model_dump(exclude={"orientation"}), page_count=page_count, evidence_ids=evidence),
+        styles=styles, nodes=nodes, warnings=list(spec.warnings),
+    )

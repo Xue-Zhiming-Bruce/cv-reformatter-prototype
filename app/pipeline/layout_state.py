@@ -191,6 +191,7 @@ class NodeSpacing(StateModel):
 
     gap_above_pt: float | None = Field(default=None, ge=0)
     gap_below_pt: float | None = Field(default=None, ge=0)
+    gap_basis: Literal["neighbor_geometry", "flow"] = "neighbor_geometry"
 
 class FlowConstraint(StateModel):
     page_break_before: bool = False
@@ -358,14 +359,17 @@ class LayoutNode(StateModel):
     bullet_dot_x0_pt: float | None = Field(default=None, ge=0)
     bullet_text_x0_pt: float | None = Field(default=None, ge=0)
     top_pt: float | None = Field(default=None, ge=0)  # header region only
+    flow_gap_above_pt: float | None = Field(default=None, ge=0)  # product-template header flow
     spacing: NodeSpacing | None = None
     flow: FlowConstraint = Field(default_factory=FlowConstraint)
     evidence_ids: list[str] = Field(min_length=1)
 
     @model_validator(mode="after")
     def kind_shape(self) -> "LayoutNode":
-        if self.kind == "header_row" and self.top_pt is None:
+        if self.kind == "header_row" and self.top_pt is None and self.flow_gap_above_pt is None:
             raise ValueError(f"{self.node_id}: header rows carry measured top_pt")
+        if self.flow_gap_above_pt is not None and (self.kind != "header_row" or self.top_pt is not None):
+            raise ValueError(f"{self.node_id}: explicit header flow gaps cannot coexist with measured top_pt")
         if self.kind != "header_row" and self.top_pt is not None:
             raise ValueError(
                 f"{self.node_id}: body nodes must not carry absolute y geometry"

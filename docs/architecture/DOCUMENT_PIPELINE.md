@@ -255,11 +255,34 @@ Integration status, October 22, 2026:
   inventing an unmeasured bullet glyph or indentation. Existing prompt text
   and product schemas are unchanged; internal projections gain this additive
   representation.
-- The retained runner compiles its initial state through
-  `compile_two_column_state`. It does not accept a product `LayoutTemplateSpec`
-  directly, nor establish parity for one-column targets, layout-proof approval,
-  or arbitrary continuation/region policies. Product layouts must not be
-  relabeled as internal state without an explicit compiler and parity checks.
+- The default evidence path still uses `compile_two_column_state`. The same
+  CLI/service now also accepts an explicit `LayoutTemplateSpec` via
+  `--layout-spec` / `run_e5(layout_spec=..., max_repair_rounds=0)`, compiled by
+  `state_from_layout_template`. This bounded projection supports measured
+  one-column summary, skills, languages and certifications: page geometry,
+  header membership/order/separator, typography, section order/labels, flow
+  spacing, stacked lists and bullet indentation. Conventional labels must
+  resolve through exact product aliases. Non-default properties without a
+  renderer implementation fail before run creation. Work/education/contact
+  body mappings, target-matched custom sections, inline/multi-column lists,
+  badges, rules, hidden headings and forced page breaks remain unsupported
+  in this projection. It does not claim full one-column or layout-proof parity.
+- Product-template execution is offline A-only, with zero repair rounds; it
+  renders through the existing A plan/HTML/export/gates and cannot invoke a
+  builder to rewrite the supplied template. Validated template content,
+  template checksum/version, compiler version and target checksum are frozen
+  together; this records input identity, not template or output approval.
+  Unroutable header values fail rather than gaining automatic overflow.
+  Candidate-only body sections retain the existing append policy, without a
+  claim of product-template styling parity. API generation remains unchanged.
+- Internal header nodes may carry an explicit `flow_gap_above_pt` instead of
+  measured absolute `top_pt`; the two forms cannot coexist. Empty header rows
+  preserve accumulated flow gaps. `NodeSpacing.gap_basis="flow"` preserves
+  product section spacing when intervening empty sections disappear. Existing
+  evidence nodes retain their neighbor-geometry reflow policy. Typography
+  explicitly resets normal weight/style so default HTML heading weight cannot
+  override the template. Shape diagnostics distinguish template consumption
+  checks from measured-scaffold checks; neither certifies visual parity.
 - Empty candidate history now drops the mapped target entries block and its
   heading, with an explicit empty-section note. Wrong-kind or orphan candidate
   leaves still fail ownership closure. Completely empty work/education entries

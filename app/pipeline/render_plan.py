@@ -262,6 +262,7 @@ class C2RenderPlan(StateModel):
     page: PageState
     header_rows: list[HeaderRowPlan] = Field(default_factory=list)
     header_overflow: HeaderOverflowPlan | None = None
+    header_gap_below_pt: float | None = Field(default=None, ge=0)
     sections: list[SectionPlan] = Field(default_factory=list)  # mapped target sections, state order
     appended_sections: list[SectionPlan] = Field(default_factory=list)
     leaf_ledger: dict[str, str] = Field(default_factory=dict)
@@ -755,6 +756,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
     used_header_leaves: set[str] = set()
     header_plans: list[HeaderRowPlan] = []
     previous_top: float | None = None
+    pending_flow_gap = 0.0
     for row in header_rows:
         assignments: list[HeaderFieldPlan] = []
         for field in row.fields:
@@ -781,6 +783,14 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             assignments.append(HeaderFieldPlan(slot=field.slot, leaf_id=match.leaf_id, text=match.text))
             own(match.leaf_id, f"{row.node_id}.{field.slot}")
         column = row.columns[0] if row.columns else None
+        if row.flow_gap_above_pt is not None:
+            pending_flow_gap += row.flow_gap_above_pt
+            gap_above = pending_flow_gap
+            if assignments:
+                pending_flow_gap = 0.0
+        else:
+            gap_above = (round(float(row.top_pt) - previous_top, 3)
+                         if previous_top is not None and row.top_pt is not None else None)
         header_plans.append(
             HeaderRowPlan(
                 node_id=row.node_id,
@@ -789,7 +799,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                 x0_pt=column.x0_pt if column else None,
                 x1_pt=column.x1_pt if column else None,
                 top_pt=row.top_pt,
-                gap_above_pt=(round(float(row.top_pt) - previous_top, 3) if previous_top is not None else None),
+                gap_above_pt=gap_above,
                 separator=row.separator,
                 fields=assignments,
             )
@@ -1409,6 +1419,16 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         original_predecessor = (
             section_order[order_index[node_id] - 1] if order_index[node_id] > 0 else None
         )
+        heading = heading_of(node_id)
+        if heading and heading.spacing and heading.spacing.gap_basis == "flow":
+            rhythm_decisions.append(RhythmDecision(
+                node_id=node_id, original_predecessor=original_predecessor,
+                visible_predecessor=visible_predecessor_by_node[node_id],
+                omitted_between=omitted_by_node[node_id], original_gap_above_pt=original_gap,
+                effective_gap_above_pt=original_gap, basis="template_flow_gap_preserved",
+                rule="product-template flow spacing survives omitted empty sections",
+            ))
+            continue
         if preserved_by_node[node_id]:
             rhythm_decisions.append(
                 RhythmDecision(
@@ -1597,6 +1617,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         page=state.page,
         header_rows=header_plans,
         header_overflow=header_overflow,
+        header_gap_below_pt=pending_flow_gap or None,
         sections=section_plans,
         appended_sections=appended_plans,
         leaf_ledger=dict(sorted(ledger.items())),

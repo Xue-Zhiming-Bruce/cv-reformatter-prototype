@@ -47,3 +47,11 @@ measured two-column sidebar layout and multiple work entries for the role-gap/re
 these cases do not claim support for an arbitrary target. The candidate is
 the retained public/fictional Resume E fixture. Missing bundles are skipped;
 no source corpus, provider evidence, or previous runs are copied automatically.
+
+The same CLI regression file also exercises `--layout-spec` with a synthetic
+one-column target. Actual PDF assertions cover contact order, disclosure,
+normal heading weight, font size, margins and flow spacing after an empty
+section is omitted. Compiler rejection cases live in `unit/test_pipeline_layout.py`;
+dispatch checks verify unsupported or unroutable template requests create no
+output directory. This is bounded template-consumption coverage, not visual
+parity or API cutover acceptance.

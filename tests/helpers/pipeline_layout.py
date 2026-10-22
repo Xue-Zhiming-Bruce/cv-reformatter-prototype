@@ -170,3 +170,24 @@ def _state_with_declared_subgroup_tier(labels: list[str] | None = None) -> C2Lay
         for node in state.nodes
     ]
     return state.model_copy(update={"nodes": nodes})
+
+
+def product_template():
+    """One-column synthetic product contract used through the real CLI."""
+    from app.template_analysis.schemas import LayoutTemplateSpec
+
+    return LayoutTemplateSpec.model_validate({
+        "source_type": "pdf_analysis", "template_version": "synthetic-product-1",
+        "structure_contract": "measured",
+        "page": {"width_pt": 612, "height_pt": 792, "orientation": "portrait",
+                 "margin_top_pt": 54, "margin_right_pt": 54, "margin_bottom_pt": 54, "margin_left_pt": 54},
+        "body": {"font_family": "Helvetica", "font_size_pt": 10, "color_hex": "#000000"},
+        "title": {"font_family": "Helvetica", "font_size_pt": 20, "bold": True},
+        "heading": {"font_family": "Helvetica", "font_size_pt": 12, "bold": False},
+        "header": {"contact_fields": ["phone", "email"], "contact_separator": " / ", "name_gap_pt": 6},
+        "spacing": {"line_height_pt": 14, "section_before_pt": 9, "section_after_pt": 3},
+        "sections": [{"section_id": "summary", "source": "summary", "label": "SUMMARY"},
+                     {"section_id": "languages", "source": "languages", "label": "LANGUAGES"},
+                     {"section_id": "skills", "source": "skills", "label": "SKILLS", "layout": "bullets", "bullet_indent_pt": 15,
+                      "spacing": {"line_height_pt": 14, "section_before_pt": 31, "section_after_pt": 3}}],
+    })

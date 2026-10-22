@@ -178,23 +178,25 @@ def _pipeline_e_semantic_findings() -> dict[str, list[str]]:
 
 
 
-def synthetic_pipeline_inputs(tmp_path: Path) -> dict:
-    operations = ["BT /F2 20 Tf 180 740 Td (Target Person) Tj ET"]
+def synthetic_pipeline_inputs(tmp_path: Path, *, one_column: bool = False) -> dict:
+    body_x = 54 if one_column else 180
+    operations = [f"BT /F2 20 Tf {body_x} 740 Td (Target Person) Tj ET"]
     rules = []
-    for heading, y in (("SUMMARY", 650), ("EXPERIENCE", 550)):
-        x = 140 - stringWidth(heading, "Helvetica-Bold", 12)
+    for heading, y in (("SUMMARY", 650), ("SKILLS" if one_column else "EXPERIENCE", 550)):
+        x = body_x if one_column else 140 - stringWidth(heading, "Helvetica-Bold", 12)
         operations.extend([
             f"BT /F2 12 Tf {x} {y} Td ({heading}) Tj ET",
-            f"BT /F1 10 Tf 180 {y - 25} Td (Target facts only) Tj ET",
-            f"0.5 w 180 {y - 5} m 560 {y - 5} l S",
+            f"BT /F1 10 Tf {body_x} {y - 25} Td (Target facts only) Tj ET",
+            *([] if one_column else [f"0.5 w 180 {y - 5} m 560 {y - 5} l S"]),
         ])
-        rules.append(NormalizedRule(
-            element_id=f"rule.{heading.lower()}", page_number=1,
-            bbox=NormalizedBox(x0=180 / 612, x1=560 / 612,
-                               top=(792 - y + 5) / 792, bottom=(792 - y + 5) / 792),
-            stroke_width_pt=0.5, color_hex="#000000",
-            provenance=MeasurementProvenance(source="local_pdf", provider="synthetic", method="fixture"),
-        ))
+        if not one_column:
+            rules.append(NormalizedRule(
+                element_id=f"rule.{heading.lower()}", page_number=1,
+                bbox=NormalizedBox(x0=180 / 612, x1=560 / 612,
+                                   top=(792 - y + 5) / 792, bottom=(792 - y + 5) / 792),
+                stroke_width_pt=0.5, color_hex="#000000",
+                provenance=MeasurementProvenance(source="local_pdf", provider="synthetic", method="fixture"),
+            ))
     target = _write_single_page_pdf(tmp_path / "target.pdf", operations,
                                     regular_font="Helvetica", bold_font="Helvetica-Bold")
     blocks = []

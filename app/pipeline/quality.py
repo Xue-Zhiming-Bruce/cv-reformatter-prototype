@@ -666,7 +666,7 @@ def content_shape_verification(
     # never pass a required rule check, and a correct-width rule at the wrong
     # page/y-position fails.
     consumed_rule_extents: set[int] = set()
-    scaffold_headings = sorted(body_scaffold.headings, key=lambda item: (item.page, item.top_pt))
+    scaffold_headings = sorted(body_scaffold.headings, key=lambda item: (item.page, item.top_pt)) if body_scaffold else []
     rows: list[dict[str, Any]] = []
     section_position = 0
     for node in state.nodes:
@@ -727,7 +727,7 @@ def content_shape_verification(
             check(
                 "entry_geometry",
                 renders_entries,
-                body_scaffold.entry is not None,
+                body_scaffold.entry is not None if body_scaffold else bool(entry_node and entry_node.columns),
                 bool(plan_section_exists and plan_section.base_x0_pt is not None),
             )
             measured_tiers = {
@@ -822,6 +822,12 @@ def content_shape_verification(
                 or (plan_section.items and plan_section.bullet_marker == "bullet")
             )
         )
+        list_node = next((item for item in state.nodes if item.node_id == node.list_ref), None)
+        bullet_measured = (
+            "bullet_dot" in bullet_tiers and "bullet_text" in bullet_tiers
+            if body_scaffold else
+            bool(list_node and list_node.bullet_dot_x0_pt is not None and list_node.bullet_text_x0_pt is not None)
+        )
         if renders_bullets:
             content_class = (
                 _class_for(plan_section.content_style_id)
@@ -847,11 +853,11 @@ def content_shape_verification(
             check(
                 "bullet_design",
                 True,
-                "bullet_dot" in bullet_tiers and "bullet_text" in bullet_tiers,
+                bullet_measured,
                 bullet_consumed,
             )
         else:
-            record_unrequired("bullet_design", "bullet_dot" in bullet_tiers)
+            record_unrequired("bullet_design", bullet_measured)
         # Measured section content typography: the section renders body-tier
         # lines from a measured token (its own content style when measured,
         # else the accepted style.body rule) and every rendered body-tier line

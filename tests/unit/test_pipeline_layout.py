@@ -381,3 +381,27 @@ def test_probe_fails_on_duplicated_leaf_consumption() -> None:
     assert own_leaf(ledger, failures, "skills.g1.i1", "section.02.list") is False
     assert failures and "consumed more than once" in failures[0]
     assert ledger["skills.g1.i1"] == "section.01.list"  # first owner wins
+
+
+@pytest.mark.parametrize("patch,reason", [
+    ({"structure_contract": "legacy"}, "measured LayoutTemplateSpec"),
+    ({"unsupported_features": ["unmeasured"]}, "measured LayoutTemplateSpec"),
+    ({"columns": {"count": 2}}, "one column"),
+    ({"decoration": {"heading_rule": True}}, "decoration.heading_rule"),
+    ({"body": {"font_family": "Helvetica", "font_size_pt": 11, "word_spacing_pt": 1}}, "word_spacing_pt"),
+    ({"sections": [{"section_id": "work", "source": "work_experience", "label": "EXPERIENCE"}]}, "source not yet supported"),
+    ({"sections": [{"section_id": "summary", "source": "summary", "label": "Target Person"}]}, "presentation label"),
+    ({"sections": [{"section_id": "summary", "source": "summary", "label": "SUMMARY", "show_heading": False}]}, "show_heading"),
+    ({"sections": [{"section_id": "skills", "source": "skills", "label": "SKILLS", "layout": "inline"}]}, "placement/layout"),
+    ({"page": {"width_pt": 612, "height_pt": 792, "orientation": "portrait", "margin_top_pt": 54,
+               "margin_right_pt": 400, "margin_bottom_pt": 54, "margin_left_pt": 400}}, "no content area"),
+])
+def test_product_template_rejects_unrepresented_contract_features(patch, reason) -> None:
+    from app.pipeline.layout_compiler import state_from_layout_template
+    from app.template_analysis.schemas import LayoutTemplateSpec
+    from tests.helpers.pipeline_layout import product_template
+
+    data = product_template().model_dump()
+    data.update(patch)
+    with pytest.raises(ValueError, match=reason):
+        state_from_layout_template(LayoutTemplateSpec.model_validate(data), target_sha256=TARGET_SHA, page_count=1)

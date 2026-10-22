@@ -98,6 +98,15 @@ produce the initial structure draft, or retrieve historical run caches.
 See [the implementation boundary](docs/architecture/DOCUMENT_PIPELINE.md#retained-pipeline-implementation)
 for module ownership, validation, repair, and version-selection behavior.
 
+Add `--layout-spec path/to/layout_template_spec.json` to preview the supported
+product-template subset through A. This mode defaults to zero repair rounds,
+requires offline A-only execution, and freezes the validated template and its
+checksum. Target/evidence/draft inputs remain explicit. The initial subset is
+one-column summary, skills, languages and certifications with header ordering,
+typography, flow spacing and stacked/bulleted lists. Unsupported properties
+fail before output creation; see the implementation boundary for limitations.
+This mode does not approve a template or switch the API renderer.
+
 The default is an offline scripted Lane A run, following the owner's October
 22, 2026 selection of A as the initial mainline. `--lane b` or `--lane both`
 explicitly selects a comparison run. This direction does not certify arbitrary

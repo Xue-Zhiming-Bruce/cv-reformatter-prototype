@@ -21,10 +21,8 @@ def _style_css(token: StyleToken) -> str:
     ]
     if token.line_height_pt:
         declarations.append(f"line-height: {_pt(token.line_height_pt)};")
-    if token.bold:
-        declarations.append("font-weight: 700;")
-    if token.italic:
-        declarations.append("font-style: italic;")
+    declarations.append(f"font-weight: {700 if token.bold else 400};")
+    declarations.append(f"font-style: {'italic' if token.italic else 'normal'};")
     if token.color_hex:
         declarations.append(f"color: {token.color_hex};")
     if token.character_spacing_pt:
@@ -187,7 +185,8 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
     # Header region: flowing rows (no absolute-y anywhere; measured row gaps
     # via margin-top). Fixed positioning only where the state permits it, and
     # the C2-0b state permits none.
-    parts.append('<header data-c2-region="header">')
+    header_style = f' style="padding-bottom: {_pt(plan.header_gap_below_pt)};"' if plan.header_gap_below_pt is not None else ""
+    parts.append(f'<header data-c2-region="header"{header_style}>')
     for row in plan.header_rows:
         if not row.fields:
             continue  # unfilled target slot row: dropped, recorded in plan notes

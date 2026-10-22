@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Literal
 from pydantic import Field, model_validator
 from app.pipeline.candidate_content import CandidateDocument
+from app.template_analysis.schemas import LayoutTemplateSpec
 from app.pipeline.rendering import ROOT, RUNS, _export_pinned_html_to_pdf, _render_pages
 from app.pipeline.runtime import (
     BudgetExhausted,
@@ -2707,6 +2708,8 @@ E5_SOURCE_FILES = (
     'app/pipeline/runtime.py',
     'app/pipeline/service.py',
     'app/template_analysis/commercial/models.py',
+    'app/template_analysis/schemas.py',
+    'app/generation/render_plan.py',
     'app/ingestion/pdf_reader.py',
 )
 
@@ -2919,6 +2922,7 @@ def run_e5(
     pricing: dict[str, Any] | None = None,
     presentation_label_approval: PresentationLabelApproval | None = None,
     builder_reserve_requests: int = E5_BUILDER_RESERVE_REQUESTS,
+    layout_spec: LayoutTemplateSpec | None = None,
 ) -> tuple[Path, str, dict[str, Any]]:
     """Run the selected Lane A mainline on explicit inputs by default.
 
@@ -2956,6 +2960,8 @@ def run_e5(
 
     if not lanes or set(lanes) - {"a", "b"} or len(lanes) != len(set(lanes)):
         raise ValueError("lanes must contain a, b, or both exactly once")
+    if layout_spec is not None and (lanes != ("a",) or live or max_repair_rounds != 0):
+        raise ValueError("LayoutTemplateSpec previews require Lane A, offline execution and zero repair rounds")
     if "b" in lanes and any(leaf.kind == "additional_entry" for leaf in candidate.leaves):
         raise ValueError("structured additional sections require Lane A only")
     if any(not re.fullmatch(r"[a-z0-9_]+", name) for name in (probe_candidates or {})):
@@ -2966,6 +2972,19 @@ def run_e5(
     if not target_pdf.exists():
         raise RuntimeError(f"target PDF not found: {target_pdf}")
     target_sha256 = _sha256_file(target_pdf)
+    template_state = None
+    if layout_spec is not None:
+        import pdfplumber
+        from app.pipeline.layout_compiler import state_from_layout_template
+
+        layout_spec = LayoutTemplateSpec.model_validate(layout_spec.model_dump())
+        with pdfplumber.open(target_pdf) as document:
+            if any(abs(page.width - layout_spec.page.width_pt) > 0.1 or abs(page.height - layout_spec.page.height_pt) > 0.1 for page in document.pages):
+                raise ValueError("LayoutTemplateSpec page dimensions do not match the target PDF")
+            template_state = state_from_layout_template(layout_spec, target_sha256=target_sha256, page_count=len(document.pages))
+        plan = compile_render_plan(template_state, candidate)
+        if plan.failures:
+            raise ValueError(f"LayoutTemplateSpec cannot route this candidate: {plan.failures[:3]}")
     out_dir = out_dir or RUNS / datetime.now(UTC).strftime("e_pipeline_e5_%Y%m%dT%H%M%SZ")
     out_dir.mkdir(parents=True, exist_ok=False)
     budget = budget or RunBudget(
@@ -3020,7 +3039,10 @@ def run_e5(
     )
     try:
         summary = build_format_summary(normalized, raw, target_pdf)
-        state, derived = compile_two_column_state(target_pdf, summary, evidence=normalized)
+        if template_state is None:
+            state, derived = compile_two_column_state(target_pdf, summary, evidence=normalized)
+        else:
+            state, derived = template_state, {}
     except Exception as error:
         return abort("compile_two_column_state", error)
     # ONE shell-owned presentation-label catalog for BOTH lanes (owner decision
@@ -3029,7 +3051,11 @@ def run_e5(
     # Lane B can only reference `{{label:<label_id>}}`; both privacy gates and
     # the owner listing reference THIS catalog, never a lane-local set.
     try:
-        label_catalog = _presentation_label_catalog(derived)
+        label_catalog = (_presentation_label_catalog(derived) if layout_spec is None else [
+            PresentationLabel(label_id=f"label.template.{node.node_id}", text=node.label,
+                              kind="section_heading", evidence_ids=node.evidence_ids)
+            for node in state.nodes if node.kind == "heading"
+        ])
     except Exception as error:
         return abort("presentation_label_catalog", error)
     catalog_sha256 = presentation_label_catalog_sha256(label_catalog)
@@ -3045,7 +3071,9 @@ def run_e5(
     except Exception as error:
         return abort("presentation_label_approval", error)
     approval_provided = presentation_label_approval is not None
-    recognition_method = "explicit_owner_input" if approval_provided else "measured_exact_alias/1"
+    recognition_method = "explicit_owner_input" if approval_provided else (
+        "measured_exact_alias/1" if layout_spec is None else "layout_template_exact_alias/1"
+    )
     # Only shell-recognized entries are renderable and privacy-excluded. The
     # proposed remainder stays visible in the owner listing but can never be
     # rendered: its ids are never issued to the template boundary, and its
@@ -3053,8 +3081,10 @@ def run_e5(
     # closed as a leak instead of being silently tolerated).
     approved_label_texts = {label.text for label in approved_label_catalog}
     (out_dir / "c2_layout_state.json").write_bytes(state_bytes(state))
-    _headings_scaffold, body_scaffold = compile_two_column_state_for_scaffold(target_pdf, summary)
-    bullet_tiers = _two_column_bullet_tiers(_pdf_lines_and_marks(target_pdf)[0], summary)
+    body_scaffold, bullet_tiers = None, {}
+    if layout_spec is None:
+        _headings_scaffold, body_scaffold = compile_two_column_state_for_scaffold(target_pdf, summary)
+        bullet_tiers = _two_column_bullet_tiers(_pdf_lines_and_marks(target_pdf)[0], summary)
 
     # Structure is an explicit caller input; no previous run is consulted.
     (out_dir / "structure_draft.json").write_text(draft.model_dump_json(indent=2), encoding="utf-8")
@@ -3065,6 +3095,15 @@ def run_e5(
         "claims": len(draft.structure),
         "shared_by_lanes": True,
     }
+    if layout_spec is not None:
+        from app.generation.render_plan import layout_spec_sha256
+
+        (out_dir / "layout_template_spec.json").write_text(layout_spec.model_dump_json(indent=2), encoding="utf-8")
+        shared_draft_ref["layout_template"] = {
+            "sha256": layout_spec_sha256(layout_spec), "template_version": layout_spec.template_version,
+            "schema_version": layout_spec.schema_version, "compiler": "lane-a-product-subset/1",
+            "template_approved": False, "api_cutover": False,
+        }
     page_height = _page_pt_size(target_pdf, 1)[1]
     region_spans = _region_spans_from_draft(draft, page_height)
 
@@ -3112,7 +3151,8 @@ def run_e5(
     # Generic header-overflow disposition (E3 shell transition, reused for
     # the main candidate AND every content-shape probe): the compiled
     # two-column state hosts the contact rows inside section content.
-    candidate = _apply_header_overflow_disposition(candidate, state)
+    if layout_spec is None:
+        candidate = _apply_header_overflow_disposition(candidate, state)
     environment = pinned_export_environment({})
     candidate_sha256 = hashlib.sha256(
         json.dumps(candidate.model_dump(mode="json"), sort_keys=True).encode("utf-8")
@@ -3204,21 +3244,22 @@ def run_e5(
         and node.binding.mapping_action == "map"
         and "work_experience" in node.binding.sources
     ]
-    if not mapped:
+    if not mapped and layout_spec is None:
         return abort("scripted_reviewer_region", RuntimeError("compiled state has no mapped work_experience section"))
-    entry_region = mapped[0].node_id
-    SCRIPTED_REGION_BY_TARGET[target_id] = entry_region
-    SCRIPTED_OBSERVATION_BY_TARGET[target_id] = (
-        "The vertical distance from the first dated entry head to the second "
-        "dated entry head appears larger than in the target."
-    )
-    SCRIPTED_REQUEST_BY_TARGET[target_id] = MeasurementRequest(
-        request_id="measure-pending",
-        metric="role_gap",
-        page=1,
-        region_id=entry_region,
-        intent="vertical gap between the first two dated entry heads inside this region",
-    )
+    if layout_spec is None:
+        entry_region = mapped[0].node_id
+        SCRIPTED_REGION_BY_TARGET[target_id] = entry_region
+        SCRIPTED_OBSERVATION_BY_TARGET[target_id] = (
+            "The vertical distance from the first dated entry head to the second "
+            "dated entry head appears larger than in the target."
+        )
+        SCRIPTED_REQUEST_BY_TARGET[target_id] = MeasurementRequest(
+            request_id="measure-pending",
+            metric="role_gap",
+            page=1,
+            region_id=entry_region,
+            intent="vertical gap between the first two dated entry heads inside this region",
+        )
 
     lane_records: dict[str, E5LaneRecord] = {}
 
@@ -3656,6 +3697,8 @@ def run_e5(
                 shape = c2r.content_shape_verification(
                     state, plan, body_scaffold, bullet_tiers, html, summary, pdf_path
                 )
+                if layout_spec is not None:
+                    shape["basis"] = "layout_template_spec; consumption checks only, not visual parity"
                 gates = {
                     "deterministic_render": all(
                         c2r._sha256(left) == c2r._sha256(right)
@@ -4168,6 +4211,9 @@ def run_e5(
             escalate(f"lane_builder_initial_failed:{type(error).__name__}")
             return _lane_terminal(lane, "budget_exhausted", reason="builder_initial_failed")
         checkpoint("initial_render")
+        if layout_spec is not None:
+            # A supplied product template is immutable; no builder/reviewer may rewrite it.
+            return _lane_terminal(lane)
 
         # --- 4. See -> Measure -> Attribute -> Repair -> Re-render loop -----
         # Scheduling state (repair-starvation fix, 2026-09-21 owner work order):

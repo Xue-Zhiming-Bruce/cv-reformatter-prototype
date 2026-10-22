@@ -209,3 +209,88 @@ def test_invalid_dispatch_cannot_create_output_files(tmp_path: Path, options: di
                normalized_evidence=tmp_path / "normalized.json", structure_draft=tmp_path / "draft.json",
                **options)
     assert not out_dir.exists()
+
+
+@pytest.mark.parametrize("blind", [False, True])
+def test_cli_product_template_controls_real_pdf_and_freezes_identity(tmp_path: Path, blind: bool) -> None:
+    from app.generation.content_validation import validate_generated_content
+    from app.generation.template_mapper import build_client_render_context
+    from app.generation.render_plan import layout_spec_sha256
+    from tests.helpers.pipeline_layout import product_template
+
+    inputs = _inputs(tmp_path, one_column=True)
+    spec = product_template()
+    spec_path = tmp_path / "layout.json"
+    spec_path.write_text(spec.model_dump_json())
+    spec = type(spec).model_validate_json(spec_path.read_text())
+    profile = CandidateProfile(full_name="Candidate Alpha", email="alpha@example.test", phone="5550101",
+                               professional_summary="Builds reliable systems", skills=["Python", "SQL"])
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text(profile.model_dump_json())
+    output = tmp_path / "result"
+    command = [
+        sys.executable, "-B", "-m", "app.pipeline", "--target", str(inputs["target_pdf"]),
+        "--adobe-json", str(inputs["adobe_json"]), "--normalized", str(inputs["normalized_evidence"]),
+        "--structure-draft", str(inputs["structure_draft"]), "--candidate", str(candidate_path),
+        "--layout-spec", str(spec_path), "--out", str(output),
+    ]
+    if blind:
+        command.append("--blind-profile")
+    result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    record = json.loads((output / "e5_state.json").read_text())
+    assert record["summary"]["terminal_state"] == "ready_for_owner_review", record
+    assert record["budget_state"]["model_request_count"] == 0
+    pdf_path = output / "lane_a/render_1.pdf"
+    with pdfplumber.open(pdf_path) as pdf:
+        assert len(pdf.pages) == 1
+        page = pdf.pages[0]
+        text = page.extract_text()
+        if blind:
+            assert "alpha@example.test" not in text and "5550101" not in text and "Alpha" not in text
+        else:
+            assert text.index("5550101") < text.index("alpha@example.test")
+            assert " / " in text
+        assert "Target Person" not in text and "Target facts only" not in text
+        words = page.extract_words(extra_attrs=["fontname", "size"])
+        heading = next(word for word in words if word["text"] == "SUMMARY")
+        assert abs(heading["size"] - 12) < 0.1
+        assert "bold" not in heading["fontname"].casefold()
+        skills = next(word for word in words if word["text"] == "SKILLS")
+        summary_end = next(word for word in words if word["text"] == "systems")
+        assert 28 < skills["top"] - summary_end["bottom"] < 38
+        name = next(word for word in words if word["text"] == "Candidate")
+        assert abs(name["x0"] - 54) < 0.2 and abs(name["size"] - 20) < 0.1
+        if blind:
+            assert 14 < heading["top"] - name["bottom"] < 17
+    assert validate_generated_content(build_client_render_context(profile, blind_profile=blind), pdf_path=pdf_path).passed
+    state = json.loads((output / "c2_layout_state.json").read_text())
+    assert all(node["top_pt"] is None for node in state["nodes"] if node["kind"] == "header_row")
+    config = json.loads((output / "run_config.json").read_text())
+    assert config["shared_structure_draft"]["layout_template"]["sha256"] == layout_spec_sha256(spec)
+    gates = next((output / "lane_a").glob("hard_gates_*.json"))
+    assert json.loads(gates.read_text())["details"]["content_shapes_match_evidence"]["passed"]
+
+
+@pytest.mark.parametrize("problem,reason", [
+    ("dimensions", "page dimensions"), ("contacts", "cannot route this candidate"),
+    ("live", "offline execution"), ("repair", "zero repair rounds"),
+    ("b", "Lane A"),
+])
+def test_product_template_rejects_invalid_dispatch_before_output(tmp_path: Path, problem: str, reason: str) -> None:
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from tests.helpers.pipeline_layout import product_template
+
+    inputs = _inputs(tmp_path, one_column=True)
+    spec = product_template()
+    if problem == "dimensions":
+        spec.page.width_pt = 600
+    context = build_client_render_context(CandidateProfile(full_name="Candidate Alpha", location="Boston"))
+    candidate = candidate_document_from_context(context, candidate_id="synthetic-template-rejection")
+    output = tmp_path / "result"
+    with pytest.raises(ValueError, match=reason):
+        run_e5(**inputs, out_dir=output, candidate=candidate, layout_spec=spec,
+               live=problem == "live", lanes=("b",) if problem == "b" else ("a",),
+               max_repair_rounds=1 if problem == "repair" else 0)
+    assert not output.exists()
