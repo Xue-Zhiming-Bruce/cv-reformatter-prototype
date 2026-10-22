@@ -1109,7 +1109,11 @@ def state_from_layout_template(
     }, "template")
     if spec.columns.count != 1 or spec.columns.sidebar_side is not None:
         raise ValueError("Lane A LayoutTemplateSpec projection currently requires one column")
-    consumed(spec.decoration, set(), "decoration")
+    consumed(spec.decoration, {
+        "header_rule", "heading_rule", "rule_width_pt", "rule_color_hex",
+        "header_rule_gap_above_pt", "header_rule_gap_below_pt", "header_rule_length_pt",
+        "heading_rule_gap_above_pt", "heading_rule_gap_below_pt", "heading_rule_length_pt",
+    }, "decoration")
     consumed(spec.spacing, {"line_spacing", "line_height_pt", "section_before_pt", "section_after_pt", "paragraph_after_pt"}, "spacing")
     consumed(spec.header, {
         "show_candidate_subheading", "contact_fields", "contact_separator",
@@ -1124,6 +1128,8 @@ def state_from_layout_template(
     evidence = [f"layout-template:{identity}"]
     styles: list[StyleToken] = []
     nodes: list[LayoutNode] = []
+    badges: list[BadgeDecoration] = []
+    rules: list[RuleDecoration] = []
     line_height = spec.spacing.line_height_pt or spec.body.font_size_pt * spec.spacing.line_spacing
 
     def style(name: str, value: TextStyle, height: float | None = None) -> str:
@@ -1190,6 +1196,10 @@ def state_from_layout_template(
             fields.update({"education_institution_style", "education_primary_separator", "education_secondary_separator"})
         if section.source == "additional_details":
             fields.update({"additional_section_heading", "entry_title_to_metadata_gap_pt"})
+        if section.source in {"skills", "languages", "certifications"}:
+            fields.add("badge_style")
+        if section.source == "skills" and section.badge_style is not None:
+            fields.add("skill_label_style")
         consumed(section, fields, path)
         if section.source == "contact":
             raise ValueError(f"Lane A product-template source not yet supported: {path}.source={section.source}")
@@ -1214,6 +1224,20 @@ def state_from_layout_template(
         content_style = style(f"section_{index}_body", section.body_style or spec.body, section_height)
         heading_style = style(f"section_{index}_heading", section.heading_style or spec.heading, section_height)
         section_id = f"section.{index + 1:02d}"
+        badge_id = None
+        badge_label_style = None
+        if section.badge_style is not None:
+            badge = section.badge_style
+            badge_id = f"badge.{index + 1:02d}"
+            badges.append(BadgeDecoration(
+                badge_id=badge_id, fill_color_hex=badge.badge_fill_hex,
+                text_color_hex=badge.badge_text_hex, height_pt=badge.badge_height_pt,
+                horizontal_padding_pt=badge.badge_horizontal_padding_pt,
+                items_per_line=badge.badge_items_per_line, border_color_hex=badge.badge_border_hex,
+                row_gap_below_pt=spacing.paragraph_after_pt, evidence_ids=evidence))
+            if section.source == "skills":
+                badge_label_style = style(f"section_{index}_badge_label",
+                    section.skill_label_style or spec.body.model_copy(update={"bold": True}), section_height)
         paragraph = section.source == "summary"
         marker = ("none" if section.source == "education" else "bullet") if entry_source else (
             "bullet" if section.layout in {"bullets", "full_width"} else "none"
@@ -1222,9 +1246,10 @@ def state_from_layout_template(
              additional_section_heading=section.additional_section_heading,
              binding=SectionBinding(sources=[section.source], mapping_action="map", evidence_ids=evidence,
                  partition_policy="match_section_heading" if section.source == "additional_details" else "none"),
-             content=SectionContent(sources=[section.source], content_kind="entries" if entry_source else "paragraph" if paragraph else "item_list", bullet_marker=None if paragraph else marker),
+             badge_ids=[badge_id] if badge_id else [], badge_label_style_id=badge_label_style,
+             content=SectionContent(sources=[section.source], content_kind="badge_items" if badge_id else "entries" if entry_source else "paragraph" if paragraph else "item_list", bullet_marker=None if paragraph or badge_id else marker),
              entry_ref=f"{section_id}.entry" if entry_source else None,
-             list_ref=None if paragraph or section.source == "education" else f"{section_id}.list")
+             list_ref=None if paragraph or badge_id or section.source == "education" else f"{section_id}.list")
         node(node_id=f"{section_id}.heading", kind="heading", parent_id=section_id,
              label=section.label, label_case=_label_case(section.label), style_id=heading_style,
              spacing=NodeSpacing(gap_above_pt=spacing.section_before_pt, gap_below_pt=spacing.section_after_pt, gap_basis="flow"))
@@ -1248,14 +1273,49 @@ def state_from_layout_template(
                      secondary_separator=section.education_secondary_separator,
                      title_to_metadata_gap_pt=section.entry_title_to_metadata_gap_pt,
                      compensate_entry_gap=section.source == "additional_details" and section.entry_gap_pt is not None))
-        if not paragraph and section.source != "education":
+        if not paragraph and not badge_id and section.source != "education":
             node(node_id=f"{section_id}.list", kind="list_row", parent_id=section_id,
                  list_marker=marker, bullet_dot_x0_pt=page.margin_left_pt,
                  bullet_text_x0_pt=page.margin_left_pt + section.bullet_indent_pt)
+    from app.generation.html_renderer import _gap_compensated
+
+    tokens = {token.style_id: token for token in styles}
+    content_width = page.width_pt - page.margin_left_pt - page.margin_right_pt
+
+    def product_rule(rule_id: str, prefix: str, next_style: StyleToken) -> RuleDecoration:
+        decoration = spec.decoration
+        length = getattr(decoration, f"{prefix}_rule_length_pt") or content_width
+        if length > content_width:
+            raise ValueError(f"{prefix}_rule_length_pt exceeds the content width")
+        gap_below = _gap_compensated(getattr(decoration, f"{prefix}_rule_gap_below_pt"),
+            next_style.line_height_pt or line_height, next_style.font_size_pt,
+            decoration.rule_width_pt, below=True)
+        if prefix == "header":
+            gap_below = max(0, gap_below - decoration.rule_width_pt / 6)
+        rule = RuleDecoration(rule_id=rule_id, x0_pt=page.margin_left_pt,
+            x1_pt=page.margin_left_pt + length, stroke_pt=decoration.rule_width_pt,
+            color_hex=decoration.rule_color_hex, placement="below_heading",
+            gap_above_pt=_gap_compensated(getattr(decoration, f"{prefix}_rule_gap_above_pt"),
+                next_style.line_height_pt or line_height, next_style.font_size_pt, decoration.rule_width_pt),
+            gap_below_pt=gap_below, evidence_ids=evidence)
+        rules.append(rule)
+        return rule
+
+    for index, current in enumerate(nodes):
+        if current.node_id == "header.product_contact" and spec.decoration.header_rule:
+            rule = product_rule("rule.header", "header", tokens[contact])
+            nodes[index] = current.model_copy(update={"rule_id": rule.rule_id})
+        elif current.kind == "heading" and spec.decoration.heading_rule:
+            section = next(item for item in nodes if item.node_id == current.parent_id)
+            entry = next((item for item in nodes if item.node_id == section.entry_ref), None)
+            first_style = section.badge_label_style_id or (entry.title_style_id if entry else section.content_style_id)
+            rule = product_rule(f"rule.{section.node_id}", "heading", tokens[first_style])
+            nodes[index] = current.model_copy(update={"rule_id": rule.rule_id,
+                "spacing": current.spacing.model_copy(update={"gap_below_pt": rule.gap_below_pt})})
     return C2LayoutState(
         template_version=spec.template_version,
         provenance=EvidenceProvenance(provider="layout_template_spec", target_sha256=target_sha256,
             measurement_policy="renderer projection of measured product template; header gaps are flow values"),
         page=PageState(**page.model_dump(exclude={"orientation"}), page_count=page_count, evidence_ids=evidence),
-        styles=styles, nodes=nodes, warnings=list(spec.warnings),
+        styles=styles, nodes=nodes, rules=rules, badges=badges, warnings=list(spec.warnings),
     )

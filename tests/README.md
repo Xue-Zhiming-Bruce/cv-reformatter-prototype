@@ -59,3 +59,13 @@ cases live in `unit/test_pipeline_layout.py`;
 dispatch checks verify unsupported or unroutable template requests create no
 output directory. This is bounded template-consumption coverage, not visual
 parity or API cutover acceptance.
+
+Decoration cases in the same CLI workflow exercise header/heading rules and
+grouped badges on skills, languages and certifications, including ordinary/blind
+contacts, repeating row counts, label typography, borders and actual PDF shapes.
+Removing badge text, mutating HTML decoration, or exporting a recolored PDF while
+retaining the original HTML must fail the relevant gate. Internal badge row
+counts reject zero before materialization can loop.
+One mapped custom-entry case spans pages and repeats the generic target label;
+each rule must belong to its own heading occurrence, and the first heading must
+stay with the first project line.

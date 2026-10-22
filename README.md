@@ -105,7 +105,8 @@ checksum. Target/evidence/draft inputs remain explicit. The supported subset is
 one-column summary, skills, languages, certifications, work, education and
 additional sections, with header ordering, role typography, flow spacing,
 stacked/bulleted lists, single/split work rows, education separators and custom
-heading selectors. Unsupported properties
+heading selectors. Header/heading rules and grouped rounded badges on skills,
+languages and certifications are also mapped. Unsupported properties
 fail before output creation; see the implementation boundary for limitations.
 This mode does not approve a template or switch the API renderer.
 

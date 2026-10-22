@@ -387,7 +387,8 @@ def test_probe_fails_on_duplicated_leaf_consumption() -> None:
     ({"structure_contract": "legacy"}, "measured LayoutTemplateSpec"),
     ({"unsupported_features": ["unmeasured"]}, "measured LayoutTemplateSpec"),
     ({"columns": {"count": 2}}, "one column"),
-    ({"decoration": {"heading_rule": True}}, "decoration.heading_rule"),
+    ({"decoration": {"sidebar_background_hex": "#112233"}}, "decoration.sidebar_background_hex"),
+    ({"decoration": {"heading_rule": True, "heading_rule_length_pt": 600}}, "exceeds the content width"),
     ({"body": {"font_family": "Helvetica", "font_size_pt": 11, "word_spacing_pt": 1}}, "word_spacing_pt"),
     ({"sections": [{"section_id": "contact", "source": "contact", "label": "CONTACT"}]}, "source not yet supported"),
     ({"sections": [{"section_id": "summary", "source": "summary", "label": "Target Person"}]}, "presentation label"),
@@ -407,3 +408,13 @@ def test_product_template_rejects_unrepresented_contract_features(patch, reason)
     data.update(patch)
     with pytest.raises(ValueError, match=reason):
         state_from_layout_template(LayoutTemplateSpec.model_validate(data), target_sha256=TARGET_SHA, page_count=1)
+
+
+def test_badge_row_counts_cannot_stall_materialization() -> None:
+    from app.pipeline.layout_compiler import state_from_layout_template
+    from tests.helpers.pipeline_layout import product_decoration_template
+
+    payload = state_from_layout_template(product_decoration_template(), target_sha256=TARGET_SHA, page_count=1).model_dump()
+    payload["badges"][0]["items_per_line"] = [0]
+    with pytest.raises(ValidationError, match="greater than 0"):
+        C2LayoutState.model_validate(payload)

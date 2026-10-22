@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 from pydantic import Field, model_validator
-from app.generation.template_mapper import ClientFacingRenderContext
+from app.generation.template_mapper import ClientFacingRenderContext, RenderSkillGroup
 from app.pipeline.layout_state import SourceRole, StateModel
 
 CandidateLeafKind = Literal[
@@ -37,10 +37,15 @@ class CandidateLeaf(StateModel):
     slot: str | None = None  # header fields only
     parent_leaf_id: str | None = None
     text: str | None = None
+    skill_group: RenderSkillGroup | None = None
     content_field: Literal["company", "title", "institution", "degree", "field_of_study", "location", "date_range", "link"] | None = None
 
     @model_validator(mode="after")
     def shape(self) -> "CandidateLeaf":
+        if self.skill_group is not None:
+            expected = f"{self.skill_group.label}: {', '.join(self.skill_group.skills)}"
+            if self.kind != "skill_group" or self.source != "skills" or self.text != expected:
+                raise ValueError(f"{self.leaf_id}: skill group must match its source text")
         if self.kind == "header_field":
             if self.source is not None or not self.slot:
                 raise ValueError(f"{self.leaf_id}: header fields carry a slot, no source")
@@ -171,7 +176,8 @@ def candidate_document_from_context(
 
     add("summary.p1", "summary_paragraph", context.professional_summary, "summary")
     for index, group in enumerate(context.skill_groups):
-        add(f"skills.group.{index}", "skill_group", f"{group.label}: {', '.join(group.skills)}", "skills")
+        leaves.append(CandidateLeaf(leaf_id=f"skills.group.{index}", kind="skill_group",
+            text=f"{group.label}: {', '.join(group.skills)}", source="skills", skill_group=group))
     for index, text in enumerate(context.skills):
         add(f"skills.item.{index}", "skill_group", text, "skills")
     for index, text in enumerate(context.languages):

@@ -238,3 +238,24 @@ def product_entry_profile():
             {"source_heading": "Awards", "source_block_id": "candidate-block-awards", "section_type": "awards", "entries": [{"title": "CommunityAward"}]},
             {"source_heading": "PrivateProjects", "source_block_id": "candidate-block-hidden", "section_type": "projects", "disposition": "hide", "entries": [{"title": "HIDDEN_PROJECT"}]}],
     })
+
+
+def product_decoration_template():
+    from app.template_analysis.schemas import LayoutTemplateSpec
+
+    data = product_template().model_dump()
+    data["decoration"].update({"header_rule": True, "heading_rule": True,
+        "rule_color_hex": "#336699", "rule_width_pt": 1.5,
+        "header_rule_length_pt": 360, "heading_rule_length_pt": 420,
+        "header_rule_gap_above_pt": 7, "header_rule_gap_below_pt": 5,
+        "heading_rule_gap_above_pt": 4, "heading_rule_gap_below_pt": 6})
+    badge = {"badge_fill_hex": "#99F6E4", "badge_text_hex": "#334155",
+        "badge_height_pt": 18, "badge_horizontal_padding_pt": 9,
+        "badge_items_per_line": [2, 1], "badge_border_hex": "#113355"}
+    data["sections"][2]["badge_style"] = badge
+    data["sections"][2]["skill_label_style"] = {"font_family": "Helvetica",
+        "font_size_pt": 11, "bold": True, "color_hex": "#113355"}
+    data["sections"][1]["badge_style"] = {**badge, "badge_border_hex": None}
+    data["sections"].append({"section_id": "certifications", "source": "certifications",
+        "label": "CERTIFICATIONS", "badge_style": {**badge, "badge_height_pt": 22}})
+    return LayoutTemplateSpec.model_validate(data)

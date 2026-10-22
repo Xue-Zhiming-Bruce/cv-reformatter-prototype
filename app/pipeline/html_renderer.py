@@ -5,7 +5,7 @@ from __future__ import annotations
 import html as html_lib
 from typing import Any
 from app.pipeline.rendering import _inject_local_fonts
-from app.pipeline.layout_state import C2LayoutState, PageState, StyleToken
+from app.pipeline.layout_state import BadgeDecoration, C2LayoutState, PageState, StyleToken
 from app.pipeline.render_plan import C2RenderPlan, EntryPlan, LeafText, OVERFLOW_POLICY, SectionPlan
 
 def _esc(text: str) -> str:
@@ -159,12 +159,38 @@ def _entry_rows_html(entry: EntryPlan) -> str:
     return "\n".join(rows)
 
 
+def _badge_html(section: SectionPlan, badge: BadgeDecoration, content_class: str) -> str:
+    parts = []
+    for group_index, group in enumerate(section.badge_groups):
+        group_id = f"{section.node_id}.badge_group.{group_index}"
+        identity = f' data-leaf-id="{_esc(group.leaf_id)}"' if group.leaf_id else ""
+        parts.append(f'<div data-node-id="{group_id}"{identity}>')
+        if group.label is not None:
+            parts.append(f'<p class="{_class_for(section.badge_label_style_id)}">{_esc(group.label)}</p>')
+        index = row_index = 0
+        while index < len(group.items):
+            count = badge.items_per_line[min(row_index, len(badge.items_per_line) - 1)]
+            parts.append(f'<div data-node-id="{group_id}.row.{row_index}" style="display:flex;flex-wrap:wrap;align-items:center;gap:6pt;margin-bottom:{_pt(badge.row_gap_below_pt)};">')
+            for item in group.items[index:index + count]:
+                border = f"border:0.5pt solid {badge.border_color_hex};" if badge.border_color_hex else ""
+                parts.append(f'<span class="{content_class}" data-node-id="{section.node_id}.badge.{_esc(item.leaf_id)}" '
+                    f'style="display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;'
+                    f'height:{_pt(badge.height_pt)};padding:0 {_pt(badge.horizontal_padding_pt)};'
+                    f'border-radius:{_pt(badge.height_pt / 2)};background:{badge.fill_color_hex};color:{badge.text_color_hex};{border}">{_esc(item.text)}</span>')
+            parts.append('</div>')
+            index += count
+            row_index += 1
+        parts.append('</div>')
+    return "\n".join(parts)
+
+
 def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
     """Deterministic semantic HTML. Same state + candidate -> same bytes."""
     if plan.failures:
         raise RuntimeError(f"refusing to render a failed plan: {plan.failures[:3]}")
     styles = {style.style_id: style for style in state.styles}
     rules = {rule.rule_id: rule for rule in state.rules}
+    badges = {badge.badge_id: badge for badge in state.badges}
     body_style = styles.get("style.body")
     page = state.page
 
@@ -187,6 +213,8 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
     ]
     for token in state.styles:
         css.append(f".{_class_for(token.style_id)} {{ {_style_css(token)} }}")
+    if state.provenance.provider == "layout_template_spec":
+        css.append("h2 { break-after: avoid; page-break-after: avoid; }")
     css += [
         ".c2-header-row { white-space: normal; }",
         ".c2-section { }",
@@ -213,6 +241,14 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
         if row.gap_above_pt is not None:
             declarations.append(f"margin-top: {_pt(row.gap_above_pt)};")
         declarations.append(f"text-align: {row.alignment};")
+        if row.rule_id:
+            rule = rules[row.rule_id]
+            declarations.extend([
+                f"width: {_pt(rule.x1_pt - rule.x0_pt)};",
+                f"border-bottom: {_pt(rule.stroke_pt)} solid {rule.color_hex};",
+                f"padding-bottom: {_pt(rule.gap_above_pt)};",
+                f"margin-bottom: {_pt(rule.gap_below_pt)};",
+            ])
         separator = f" {row.separator} " if row.separator else "   "
         spans = []
         for field in row.fields:
@@ -314,6 +350,8 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
             if rail:
                 parts.append("      </div>")
                 parts.append('      <div class="c2-rail-content">')
+        if section_plan.badge_id:
+            parts.append(_badge_html(section_plan, badges[section_plan.badge_id], content_class))
         if section_plan.content_kind == "paragraph":
             for line in section_plan.paragraph_lines:
                 parts.append(

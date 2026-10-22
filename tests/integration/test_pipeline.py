@@ -320,6 +320,10 @@ def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, s
     inputs = _inputs(tmp_path, one_column=True)
     spec = product_entry_template(split_work=split_work, map_custom=map_custom)
     profile = product_entry_profile()
+    if map_custom and not blind:
+        spec.decoration.heading_rule = True
+        profile.additional_sections[0].entries[0].description.extend(
+            f"Preserved project milestone {index}" for index in range(28))
     spec_path, candidate = tmp_path / "layout.json", tmp_path / "candidate.json"
     spec_path.write_text(spec.model_dump_json())
     candidate.write_text(profile.model_dump_json())
@@ -339,6 +343,12 @@ def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, s
     report = validate_generated_content(context, layout_spec=spec, pdf_path=pdf_path)
     assert report.passed, report
     with pdfplumber.open(pdf_path) as pdf:
+        if map_custom and not blind:
+            headings = [(index, hit) for index, page in enumerate(pdf.pages)
+                        for hit in page.search("ADDITIONAL DETAILS") or []]
+            project_page = next(index for index, page in enumerate(pdf.pages) if page.search("UsefulComponent"))
+            assert len(headings) == 2 and headings[0][0] != headings[1][0]
+            assert headings[0][0] == project_page
         text = "\n".join(page.extract_text() or "" for page in pdf.pages)
         assert "HIDDEN_PROJECT" not in text and "HIDDEN_SALARY" not in text and "Target facts only" not in text
         assert "ExampleUniversity / BS; Computing / 2015 - 2019" in text
@@ -388,3 +398,82 @@ def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, s
         assert not content_gate(plan, html.replace("Designed a reusable component", "Changed component"), pdf_path)["passed"]
         aliases = gates["details"]["content_gate"]["leaf_records"]["additional_0.heading"]["presentation_mapping"]
         assert aliases == {"source_heading": "Projects", "target_label": "ADDITIONAL DETAILS"}
+
+
+@pytest.mark.parametrize("blind,stroke", [(False, 1.5), (True, 6), (True, .25)])
+def test_cli_product_decorations_survive_pdf_export(tmp_path: Path, blind: bool, stroke: float) -> None:
+    from app.generation.content_validation import validate_generated_content
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.layout_state import C2LayoutState
+    from app.pipeline.render_plan import compile_render_plan
+    from app.pipeline.quality import content_gate, content_shape_verification
+    from tests.helpers.pipeline_layout import product_decoration_template
+
+    inputs = _inputs(tmp_path, one_column=True)
+    spec = product_decoration_template()
+    spec.decoration.rule_width_pt = stroke
+    profile = CandidateProfile(full_name="Candidate Alpha", email="alpha@example.test", phone="5550101",
+        professional_summary="Builds reliable systems", skills=["Python", "Rust", "Go", "Java"],
+        skill_groups=[{"label": "Systems", "skills": ["SQL", "Linux", "Containers", "Networking"]},
+                      {"label": "Practices", "skills": ["Code review", "Mentoring"]}],
+        languages=[{"name": "English"}, {"name": "French"}], certifications=[{"name": "Example Certificate"}],
+        salary_expectation="HIDDEN_SALARY", client_display_rules={"salary_expectation": "hide"})
+    candidate_path, spec_path = tmp_path / "candidate.json", tmp_path / "layout.json"
+    candidate_path.write_text(profile.model_dump_json())
+    spec_path.write_text(spec.model_dump_json())
+    output = tmp_path / "result"
+    command = [sys.executable, "-B", "-m", "app.pipeline", "--target", str(inputs["target_pdf"]),
+        "--adobe-json", str(inputs["adobe_json"]), "--normalized", str(inputs["normalized_evidence"]),
+        "--structure-draft", str(inputs["structure_draft"]), "--layout-spec", str(spec_path),
+        "--candidate", str(candidate_path), "--out", str(output)]
+    if blind:
+        command.append("--blind-profile")
+    result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    record = json.loads((output / "e5_state.json").read_text())
+    assert record["summary"]["terminal_state"] == "ready_for_owner_review", record
+    pdf_path = output / "lane_a/render_1.pdf"
+    context = build_client_render_context(profile, blind_profile=blind)
+    assert validate_generated_content(context, layout_spec=spec, pdf_path=pdf_path).passed
+    with pdfplumber.open(pdf_path) as pdf:
+        page = pdf.pages[0]
+        text = page.extract_text()
+        assert "HIDDEN_SALARY" not in text and "Target facts only" not in text
+        assert ("alpha@example.test" not in text) == blind
+        rules = [obj for obj in [*page.rects, *page.lines] if abs(obj["width"] - 420) < 1 and obj["height"] <= max(stroke, .75) + .1]
+        assert len(rules) == 4
+        header_rules = [obj for obj in [*page.rects, *page.lines] if abs(obj["width"] - 360) < 1 and obj["height"] <= max(stroke, .75) + .1]
+        assert len(header_rules) == (0 if blind else 1)
+        chips = [obj for obj in page.curves if obj.get("fill") and abs(obj["height"] - 18) < 1]
+        assert len(chips) == 12
+        words = page.extract_words(extra_attrs=["fontname", "size"])
+        positions = {word["text"]: word for word in words}
+        assert abs(positions["SQL"]["top"] - positions["Linux"]["top"]) < 1
+        assert positions["Containers"]["top"] > positions["SQL"]["top"] + 18
+        assert positions["Networking"]["top"] > positions["Containers"]["top"] + 18
+        assert abs(positions["Systems"]["size"] - 11) < .1
+        assert "bold" in positions["Systems"]["fontname"].casefold()
+    state = C2LayoutState.model_validate_json((output / "c2_layout_state.json").read_text())
+    plan = compile_render_plan(state, candidate_document_from_context(context, candidate_id="decoration-check"))
+    html = (output / "lane_a/render_1.html").read_text()
+    gates = json.loads(next((output / "lane_a").glob("hard_gates_*.json")).read_text())
+    assert gates["details"]["content_shapes_match_evidence"]["passed"], gates
+    assert not content_gate(plan, html.replace(">Networking</span>", ">Changed</span>"), pdf_path)["passed"]
+    from app.pipeline.html_renderer import _pt
+    padding = next(rule.gap_above_pt for rule in state.rules if rule.rule_id.startswith("rule.section"))
+    for old, new in [("background:#99F6E4", "background:#FFFFFF"),
+                     ("border-radius:9pt", "border-radius:0pt"),
+                     (f"padding-bottom: {_pt(padding)}", "padding-bottom: 30pt"),
+                     (f"border-bottom: {_pt(stroke)} solid #336699", f"border-bottom: {_pt(stroke)} solid #FFFFFF")]:
+        damaged = html.replace(old, new)
+        assert damaged != html
+        assert not content_shape_verification(state, plan, None, {}, damaged, {}, pdf_path)["passed"]
+    if not blind:
+        from app.generation.chrome_html_to_pdf import export_html_to_pdf
+
+        damaged_path = tmp_path / "missing_decorations.html"
+        damaged_path.write_text(html.replace("#99F6E4", "#FFFFFF").replace("#336699", "#FFFFFF"))
+        damaged_pdf = export_html_to_pdf(damaged_path, tmp_path / "missing_decorations.pdf")
+        assert content_gate(plan, html, damaged_pdf)["passed"]
+        assert not content_shape_verification(state, plan, None, {}, html, {}, damaged_pdf)["passed"]

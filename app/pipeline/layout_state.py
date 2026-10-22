@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Literal
+from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 _RENDERER_SYNTAX = re.compile(r"<\s*/?\s*(html|body|div|span|style|w:)", re.IGNORECASE)
@@ -162,7 +162,9 @@ class BadgeDecoration(StateModel):
     text_color_hex: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
     height_pt: float = Field(ge=10, le=30)
     horizontal_padding_pt: float = Field(ge=0, le=72)
-    items_per_line: list[int] = Field(min_length=1)
+    items_per_line: list[Annotated[int, Field(gt=0)]] = Field(min_length=1)
+    border_color_hex: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    row_gap_below_pt: float = Field(default=4, ge=0)
     evidence_ids: list[str] = Field(min_length=1)
 
 class Column(StateModel):
@@ -332,6 +334,7 @@ class LayoutNode(StateModel):
     style_id: str | None = None
     rule_id: str | None = None
     badge_ids: list[str] = Field(default_factory=list)
+    badge_label_style_id: str | None = None
     slots: list[str] = Field(default_factory=list)
     columns: list[Column] = Field(default_factory=list)
     fields: list[HeaderField] = Field(default_factory=list)
@@ -557,6 +560,8 @@ class C2LayoutState(StateModel):
         badge_ids = {badge.badge_id for badge in self.badges}
         node_id_set = set(node_ids)
         for node in self.nodes:
+            if node.badge_label_style_id is not None and node.badge_label_style_id not in style_ids:
+                raise ValueError(f"{node.node_id}: unknown badge label style")
             if node.style_id is not None and node.style_id not in style_ids:
                 raise ValueError(f"{node.node_id}: unknown style ref {node.style_id}")
             if node.entry_layout is not None and any(
@@ -641,6 +646,7 @@ def validate_layout_state(state: C2LayoutState) -> list[str]:
             node.detail_style_id,
             node.meta_style_id,
             node.subgroup_title_style_id,
+            node.badge_label_style_id,
         ):
             if style_ref and style_ref not in style_ids:
                 violations.append(f"{node.node_id}: dangling style reference {style_ref}")

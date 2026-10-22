@@ -97,6 +97,7 @@ class HeaderRowPlan(StateModel):
     top_pt: float | None = None
     gap_above_pt: float | None = None
     separator: str | None = None
+    rule_id: str | None = None
     fields: list[HeaderFieldPlan] = Field(default_factory=list)
 
 class EntryFieldPlan(StateModel):
@@ -215,6 +216,13 @@ class SectionAdaptation(StateModel):
     content_disposition: str
     warning_text: str | None = None
 
+class BadgeGroupPlan(StateModel):
+    leaf_id: str | None = None
+    label: str | None = None
+    source_text: str | None = None
+    items: list[LeafText] = Field(default_factory=list)
+
+
 class SectionPlan(StateModel):
     node_id: str
     label: str
@@ -232,6 +240,9 @@ class SectionPlan(StateModel):
     styled_lines: list[StyledLine] = Field(default_factory=list)  # ordered inline runs (C2-0cC)
     entries: list[EntryPlan] = Field(default_factory=list)
     items: list[LeafText] = Field(default_factory=list)
+    badge_id: str | None = None
+    badge_label_style_id: str | None = None
+    badge_groups: list[BadgeGroupPlan] = Field(default_factory=list)
     items_before_entries: bool = False
     bullet_marker: str | None = None
     bullet_dot_x0_pt: float | None = None
@@ -883,6 +894,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                 top_pt=row.top_pt,
                 gap_above_pt=gap_above,
                 separator=row.separator,
+                rule_id=row.rule_id,
                 fields=assignments,
             )
         )
@@ -1010,8 +1022,10 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                 "a proven materialization and stays fail-closed"
             )
     for role, section in mapped_roles.items():
-        if section.content and section.content.content_kind == "badge_items":
-            failures.append(f"{section.node_id}: badge_items content is not renderable in C2-0b")
+        if section.content and section.content.content_kind == "badge_items" and state.provenance.provider != "layout_template_spec":
+            failures.append(f"{section.node_id}: badge_items requires a product template")
+        if section.content and section.content.content_kind == "badge_items" and len(section.badge_ids) != 1:
+            failures.append(f"{section.node_id}: badge_items requires exactly one badge style")
 
     # Custom sections retain their own headings and entries instead of merging
     # into a generic additional-details item list.
@@ -1071,7 +1085,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                 )
             continue
         content: SectionContent | None = section.content
-        if content is None or content.content_kind in {"unsupported", "badge_items"}:
+        if content is None or content.content_kind == "unsupported":
             continue  # already a hard failure above
         composite = content.content_kind == "composite"
         role = None if composite else section.binding.sources[0]
@@ -1091,6 +1105,8 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             content_kind=content.content_kind,
             source_role=role,
             content_style_id=section.content_style_id,
+            badge_id=section.badge_ids[0] if content.content_kind == "badge_items" and section.badge_ids else None,
+            badge_label_style_id=section.badge_label_style_id,
             # Composite sections: the plan-level bullet marker comes from the
             # (at most one) item-shaped sub-content; entry sub-contents reuse
             # the same measured marker ruling via _entry_plan.
@@ -1128,6 +1144,31 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                         continue
                     plan.paragraph_lines.append(LeafText(leaf_id=leaf.leaf_id, text=leaf.text))
                     own(leaf.leaf_id, f"{section.node_id}.content.{leaf.leaf_id}")
+        elif content.content_kind == "badge_items":
+            flat = BadgeGroupPlan()
+            for leaf in body_leaves:
+                if leaf.source != role or leaf.parent_leaf_id is not None:
+                    continue
+                if leaf.kind not in {"skill_group", "skill", "language", "certification_item"} or not leaf.text:
+                    failures.append(f"{section.node_id}: unsupported badge leaf {leaf.leaf_id}")
+                    continue
+                own(leaf.leaf_id, f"{section.node_id}.badge.{leaf.leaf_id}")
+                if leaf.skill_group is not None:
+                    group = leaf.skill_group
+                    plan.badge_groups.append(BadgeGroupPlan(leaf_id=leaf.leaf_id,
+                        label=group.label, source_text=leaf.text,
+                        items=[LeafText(leaf_id=f"{leaf.leaf_id}.chip.{i}", text=text)
+                               for i, text in enumerate(group.skills)]))
+                elif leaves_by_parent.get(leaf.leaf_id):
+                    children = leaves_by_parent[leaf.leaf_id]
+                    for child in children:
+                        own(child.leaf_id, f"{section.node_id}.badge.{child.leaf_id}")
+                    plan.badge_groups.append(BadgeGroupPlan(leaf_id=leaf.leaf_id, label=leaf.text,
+                        items=[LeafText(leaf_id=child.leaf_id, text=child.text or "") for child in children]))
+                else:
+                    flat.items.append(LeafText(leaf_id=leaf.leaf_id, text=leaf.text))
+            if flat.items:
+                plan.badge_groups.append(flat)
         elif composite:
             # C2-0cM: composite content materializes each ordered sub-content
             # through the SAME single-source rules, all rendered under the ONE
@@ -1473,7 +1514,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         section_plans.append(plan)
         plan.empty = not (
             plan.paragraph_lines or plan.styled_lines or plan.entries or plan.items
-            or plan.category_grid_cells
+            or plan.category_grid_cells or plan.badge_groups
         )
         if plan.empty:
             notes.append(

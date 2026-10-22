@@ -265,9 +265,24 @@ Integration status, October 22, 2026:
   spacing, stacked lists and bullet indentation. Conventional labels must
   resolve through exact product aliases. Non-default properties without a
   renderer implementation fail before run creation. Contact body mappings,
-  inline/multi-column lists,
-  badges, rules, hidden headings and forced page breaks remain unsupported
+  inline/multi-column lists, hidden headings and forced page breaks remain unsupported
   in this projection. It does not claim full one-column or layout-proof parity.
+- Product decorations map header/contact and section-heading rules into the
+  existing rule state, preserving color, stroke, length and compensated gaps.
+  Rules wider than the content area fail before output creation. A header rule
+  renders only when the contact row has visible candidate content. Skills,
+  languages and certifications support section-scoped rounded badges, including
+  fill/text/border color, height, padding and repeating per-row item counts.
+  Skill group labels keep their own typography and are not placed inside badges.
+  The internal candidate projection retains a validated structured skill group
+  beside its unchanged flattened source text; only badge presentation uses the
+  structure, and the content ledger records its punctuation mapping explicitly.
+  HTML consumption and exported vector/text objects are checked independently;
+  missing or recolored PDF decorations fail even when the HTML is intact.
+  Overwide badges fail exported-shape checks rather than claiming fidelity.
+  Product headings stay with their first content line; rule checks consume
+  repeated heading labels by section occurrence, including across pages.
+  Broader pagination parity remains a pre-cutover requirement.
 - Product work entries compile to single or split title/company/date/location
   rows; education compiles institution/study/date fields with its configured
   separators. `CandidateLeaf.content_field` records semantic field identity

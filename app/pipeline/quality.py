@@ -62,8 +62,8 @@ class _IdentityParser(HTMLParser):
             self._stack[-1][1].extend(buffer)
 
     def handle_data(self, data: str) -> None:
-        for _, buffer in self._stack:
-            buffer.append(data)
+        if self._stack:
+            self._stack[-1][1].append(data)
 
 def _grid_fragment_count(plan: C2RenderPlan, leaf_id: str) -> int | None:
     """The expected number of rendered HTML/DOCX fragments for a leaf: 2 for
@@ -180,6 +180,8 @@ def content_gate(
     }
     heading_sources = {section.heading_leaf_id: section.source_heading
                        for section in plan.sections if section.heading_leaf_id and section.source_heading}
+    badge_sources = {group.leaf_id: group.source_text
+        for section in plan.sections for group in section.badge_groups if group.source_text}
     for leaf_id, destination in plan.leaf_ledger.items():
         text = _leaf_text(plan, leaf_id)
         token = _norm(text)
@@ -211,6 +213,8 @@ def content_gate(
         }
         if leaf_id in heading_sources:
             records[leaf_id]["presentation_mapping"] = {"source_heading": heading_sources[leaf_id], "target_label": text}
+        if leaf_id in badge_sources:
+            records[leaf_id]["presentation_mapping"] = {"source_text": badge_sources[leaf_id], "badge_text": text}
         if not rendered:
             (duplicated if occurrences > 1 else missing_html).append(leaf_id)
         if present_pdf is False:
@@ -235,6 +239,12 @@ def _leaf_text(plan: C2RenderPlan, leaf_id: str) -> str:
             if field.leaf_id == leaf_id:
                 return field.text
     for section in [*plan.sections, *plan.appended_sections]:
+        for group in section.badge_groups:
+            if group.leaf_id == leaf_id:
+                return " ".join(filter(None, [group.label, *(item.text for item in group.items)]))
+            for item in group.items:
+                if item.leaf_id == leaf_id:
+                    return item.text
         if leaf_id == section.heading_leaf_id:
             return section.label
         for line in [*section.paragraph_lines, *section.items]:
@@ -471,6 +481,7 @@ def _parse_declared_pt(style: str, property_name: str) -> float | None:
     return float(match.group(1)) if match else None
 
 RULE_GEOMETRY_TOLERANCE_PT = 1.0
+RULE_STROKE_TOLERANCE_PT = .76  # Chrome quantizes CSS borders to 0.75pt pixels.
 
 CSS_EXTENT_TOLERANCE_PT = 0.05
 
@@ -518,7 +529,7 @@ def _rendered_rule_extents(pdf: Path | None) -> list[dict[str, Any]]:
             for obj in [*page.rects, *page.lines]:
                 height = float(obj["bottom"]) - float(obj["top"])
                 width = float(obj["x1"]) - float(obj["x0"])
-                if height <= 2.0 and width > 2.0:
+                if height <= 6.1 and width > 2.0:
                     rendered.append(
                         {
                             "page": page_index,
@@ -529,6 +540,7 @@ def _rendered_rule_extents(pdf: Path | None) -> list[dict[str, Any]]:
                                 float(obj.get("linewidth") or 0.0) or max(height, 0.0), 3
                             ),
                             "color_hex": _pdf_color_hex(obj.get("stroking_color")),
+                            "fill_color_hex": _pdf_color_hex(obj.get("non_stroking_color")),
                         }
                     )
     return rendered
@@ -537,14 +549,16 @@ RULE_REGION_ABOVE_PT = 40.0
 
 RULE_REGION_BELOW_PT = 60.0
 
-def _rendered_heading_positions(pdf: Path | None, labels: list[str]) -> dict[str, tuple[int, float]]:
-    """First rendered (page, top_pt) of each section heading label in the
-    exported PDF (line-granularity text match; case/whitespace insensitive)."""
+def _rendered_heading_positions(pdf: Path | None, labels: dict[str, str]) -> dict[str, tuple[int, float]]:
+    """Consume heading occurrences in order, preserving repeated section labels."""
     if pdf is None:
         return {}
     import pdfplumber
 
-    wanted = {_norm(label) for label in labels if label}
+    pending: dict[str, list[str]] = {}
+    for node_id, label in labels.items():
+        if label:
+            pending.setdefault(_norm(label), []).append(node_id)
     positions: dict[str, tuple[int, float]] = {}
     with pdfplumber.open(pdf) as document:
         for page_index, page in enumerate(document.pages, 1):
@@ -554,8 +568,8 @@ def _rendered_heading_positions(pdf: Path | None, labels: list[str]) -> dict[str
                 lines.setdefault(top, []).append(word["text"])
             for top in sorted(lines):
                 line_text = _norm(" ".join(lines[top]))
-                if line_text in wanted and line_text not in positions:
-                    positions[line_text] = (page_index, top)
+                if pending.get(line_text):
+                    positions[pending[line_text].pop(0)] = (page_index, top)
     return positions
 
 def _entry_elements(
@@ -663,7 +677,8 @@ def content_shape_verification(
         if node.kind == "section"
     }
     rendered_headings = _rendered_heading_positions(
-        pdf, list(label_of_section.values())
+        pdf, {node_id: label for node_id, label in label_of_section.items()
+              if node_id in plan_sections and not plan_sections[node_id].empty}
     )
     # Each required section rule must consume its OWN rendered vector object
     # on the correct page and in the correct vertical region: a matched
@@ -943,6 +958,8 @@ def content_shape_verification(
                     _, evidence_rule = _below_heading_rule(
                         section_position, scaffold_heading, summary, page_height, page_width
                     )
+            elif state.provenance.provider == "layout_template_spec" and state_rule is not None:
+                evidence_rule = state_rule.model_dump()
             extent_left = (
                 _parse_declared_pt(heading_element["style"], "margin-left")
                 if (heading_element := next(
@@ -972,6 +989,13 @@ def content_shape_verification(
                     else f"border-bottom: {_pt(state_rule.stroke_pt)} solid {state_rule.color_hex}"
                 ) in heading_element["style"]
             )
+            if state.provenance.provider == "layout_template_spec" and state_rule and heading_element:
+                border_present &= all(
+                    (actual := _parse_declared_pt(heading_element["style"], name)) is not None
+                    and abs(actual - expected) <= CSS_EXTENT_TOLERANCE_PT
+                    for name, expected in (("padding-bottom", state_rule.gap_above_pt),
+                                           ("margin-bottom", state_rule.gap_below_pt))
+                )
             extent_consumed = bool(
                 state_rule
                 and evidence_rule
@@ -1000,9 +1024,12 @@ def content_shape_verification(
                         if index not in consumed_rule_extents
                         and abs(extent["x0_pt"] - evidence_rule["x0_pt"]) <= RULE_GEOMETRY_TOLERANCE_PT
                         and abs(extent["x1_pt"] - evidence_rule["x1_pt"]) <= RULE_GEOMETRY_TOLERANCE_PT
+                        and (state.provenance.provider != "layout_template_spec" or (
+                            abs(extent["stroke_pt"] - state_rule.stroke_pt) <= RULE_STROKE_TOLERANCE_PT
+                            and state_rule.color_hex.upper() in {extent["color_hex"], extent["fill_color_hex"]}))
                         and _rule_in_section_region(
                             extent,
-                            rendered_headings.get(_norm(label_of_section[node.node_id])),
+                            rendered_headings.get(node.node_id),
                             state_rule.placement if state_rule else None,
                         )
                     ),
@@ -1035,7 +1062,7 @@ def content_shape_verification(
                     "x1_pt": evidence_rule["x1_pt"] if evidence_rule else None,
                     "rendered_rule_extents": rendered_extents,
                     "rendered_heading_position": rendered_headings.get(
-                        _norm(label_of_section[node.node_id])
+                        node.node_id
                     ),
                     "matched_rendered_extent_index": matched_extent_index,
                 },
@@ -1052,4 +1079,114 @@ def content_shape_verification(
                 "consistent": consistent,
             }
         )
+    if state.provenance.provider == "layout_template_spec":
+        rows.extend(_product_decoration_checks(state, plan, elements, pdf, rendered_extents))
     return {"passed": all(row["consistent"] for row in rows), "rows": rows}
+
+
+def _product_decoration_checks(
+    state: C2LayoutState, plan: C2RenderPlan, elements: list[dict[str, Any]],
+    pdf: Path | None, extents: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Check template decoration consumption in HTML and exported PDF objects."""
+    import pdfplumber
+
+    rows = []
+    by_id = {element["node_id"]: element for element in elements}
+    rules = {rule.rule_id: rule for rule in state.rules}
+    badges = {badge.badge_id: badge for badge in state.badges}
+
+    def record(node_id: str, property_name: str, passed: bool) -> None:
+        rows.append({"section": node_id, "consistent": passed,
+            "properties": [{"property": property_name, "required_by_declared_shape": True,
+                "measured": "LayoutTemplateSpec", "renderer_consumes": passed,
+                "capability_gap": None if passed else f"{property_name} not consumed in HTML/PDF"}]})
+
+    def css_matches(element: dict[str, Any] | None, required: dict[str, str]) -> bool:
+        declarations = dict(re.findall(r"([\w-]+)\s*:\s*([^;]+)", element["style"])) if element else {}
+        return all(declarations.get(key, "").strip().casefold() == value.casefold() for key, value in required.items())
+
+    if pdf is None:
+        record("decorations", "exported_pdf", False)
+        return rows
+    with pdfplumber.open(pdf) as document:
+        used_shapes: set[tuple[int, int]] = set()
+        shapes = [(page_index, index, obj) for page_index, page in enumerate(document.pages)
+                  for index, obj in enumerate([*page.curves, *page.rects])]
+        first_section = next((section for section in plan.sections if not section.empty), None)
+        first_headings = document.pages[0].search(re.escape(first_section.label)) if first_section else []
+        first_body_top = min((hit["top"] for hit in first_headings or []), default=float("inf"))
+        for row in plan.header_rows:
+            if not row.rule_id or not row.fields:
+                continue
+            rule = rules[row.rule_id]
+            text_hits = document.pages[0].search(re.escape(row.fields[-1].text)) or []
+            matches = [extent for extent in extents if extent["page"] == 1
+                and abs(extent["x0_pt"] - rule.x0_pt) <= 1
+                and abs(extent["x1_pt"] - rule.x1_pt) <= 1
+                and abs(extent["stroke_pt"] - rule.stroke_pt) <= RULE_STROKE_TOLERANCE_PT
+                and rule.color_hex.upper() in {extent["color_hex"], extent["fill_color_hex"]}
+                and extent["top_pt"] < first_body_top
+                and any(0 <= extent["top_pt"] - hit["bottom"] <= 160 for hit in text_hits)]
+            record(row.node_id, "header_rule", bool(matches) and css_matches(by_id.get(row.node_id), {
+                "width": _pt(rule.x1_pt - rule.x0_pt),
+                "border-bottom": f"{_pt(rule.stroke_pt)} solid {rule.color_hex}",
+                "padding-bottom": _pt(rule.gap_above_pt), "margin-bottom": _pt(rule.gap_below_pt)}))
+        for section in plan.sections:
+            if not section.badge_id or section.empty:
+                continue
+            badge = badges[section.badge_id]
+            passed = True
+            for group_index, group in enumerate(section.badge_groups):
+                group_id = f"{section.node_id}.badge_group.{group_index}"
+                if group.label is not None:
+                    label_elements = [element for element in elements if element["tag"] == "p"
+                                      and group_id in element["ancestor_node_ids"]]
+                    passed &= len(label_elements) == 1 and _class_matches(label_elements[0], _class_for(section.badge_label_style_id))
+                index = row_index = 0
+                while index < len(group.items):
+                    count = badge.items_per_line[min(row_index, len(badge.items_per_line) - 1)]
+                    row_id = f"{group_id}.row.{row_index}"
+                    passed &= css_matches(by_id.get(row_id), {"display": "flex", "flex-wrap": "wrap",
+                        "gap": "6pt", "margin-bottom": _pt(badge.row_gap_below_pt)})
+                    for item in group.items[index:index + count]:
+                        element = by_id.get(f"{section.node_id}.badge.{item.leaf_id}")
+                        passed &= bool(element and row_id in element["ancestor_node_ids"]
+                            and _class_matches(element, _class_for(section.content_style_id)))
+                        required = {"height": _pt(badge.height_pt), "padding": f"0 {_pt(badge.horizontal_padding_pt)}",
+                            "border-radius": _pt(badge.height_pt / 2), "background": badge.fill_color_hex,
+                            "color": badge.text_color_hex, "display": "inline-flex", "white-space": "nowrap"}
+                        if badge.border_color_hex:
+                            required["border"] = f"0.5pt solid {badge.border_color_hex}"
+                        passed &= css_matches(element, required)
+                        found = None
+                        hits_by_page = [page.search(re.escape(item.text)) or [] for page in document.pages]
+                        for page_index, shape_index, shape in shapes:
+                            if (page_index, shape_index) in used_shapes:
+                                continue
+                            if (_pdf_color_hex(shape.get("non_stroking_color")) != badge.fill_color_hex.upper()
+                                or not shape.get("fill") or not any(segment[0] == "c" for segment in shape.get("path", []))
+                                or abs(shape["height"] - badge.height_pt) > 1.1
+                                or shape["x0"] < state.page.margin_left_pt - 1
+                                or shape["x1"] > state.page.width_pt - state.page.margin_right_pt + 1):
+                                continue
+                            hits = hits_by_page[page_index]
+                            if any(hit["x0"] >= shape["x0"] + badge.horizontal_padding_pt - 1.1
+                                and hit["x1"] <= shape["x1"] - badge.horizontal_padding_pt + 1.1
+                                and hit["top"] >= shape["top"] - 1 and hit["bottom"] <= shape["bottom"] + 1
+                                and all(_pdf_color_hex(char.get("non_stroking_color")) == badge.text_color_hex.upper()
+                                        for char in hit["chars"]) for hit in hits):
+                                found = (page_index, shape_index)
+                                if badge.border_color_hex:
+                                    passed &= any(border_page == page_index and border.get("stroke")
+                                        and _pdf_color_hex(border.get("stroking_color")) == badge.border_color_hex.upper()
+                                        and all(abs(border[key] - shape[key]) <= 1 for key in ("x0", "x1", "top", "bottom"))
+                                        for border_page, _, border in shapes)
+                                break
+                        passed &= found is not None
+                        if found is not None:
+                            used_shapes.add(found)
+                    index += count
+                    row_index += 1
+            record(section.node_id, "badges", bool(passed))
+    return rows
