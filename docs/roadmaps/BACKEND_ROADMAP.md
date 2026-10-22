@@ -51,10 +51,14 @@ is retired. Independent source/PDF date normalization was corrected and tested;
 the failed run remains local diagnostic evidence.
 
 October 22 update: [A/B review evidence](../evaluations/2026-10-22_AB_MAINLINE_REVIEW.md)
-records 24 owner-authorized DeepSeek-only requests, matched ordinary/blind
-outcomes, independent product-content checks, privacy/repeat diagnostics,
-visual comparisons, and canonical shape probes. Necessary renderer, probe,
-and actual-request budget defects were fixed with regressions. The owner
+records 89 DeepSeek-only request reservations after the owner requested more
+trials: 13 paired ordinary/blind runs, one interrupted native-crash run,
+actual repair/rollback PDFs, independent content/privacy/repeat checks, visual
+comparisons, and canonical shape probes. Final same-source outputs from both
+lanes preserve the primary candidate content; B still fails template reuse
+probes, while A retains measured-layout capability gaps. Renderer, probe,
+budget configuration, native tool concurrency, and header accounting defects
+were fixed with regressions. The owner
 explicitly replaced individual label approval with conservative measured
 exact-alias recognition (product/ADR 0001 amendment). The agent recommends A
 as the next convergence direction within the measured sidebar/core-field

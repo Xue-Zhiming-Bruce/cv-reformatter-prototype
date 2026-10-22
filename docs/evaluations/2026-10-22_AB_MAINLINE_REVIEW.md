@@ -2,109 +2,120 @@
 
 Status: `Evaluation evidence — owner selection pending`
 
-建议以 **A 作为下一阶段收敛主线**，理由是候选内容由程序完整绑定、结构变化的控制面较窄，当前真实 builder 输出的内容稳定性也较好。这不是保真胜者或产品验收结论：A 的标签位置、分隔线、正文列与目标仍有明显差异。B 有更自由的布局表达能力，但当前模型会省略必要槽位；它的安全校验与可复用模板完整性仍需进一步约束。最终由所有者查看成品后选择，当前保留两路及原 API。
+建议 **A 作为内容保留与模板复用优先的研发主线**，保留 B 的保真探索价值，等待所有者最终选择。追加试验改变了先前判断的一部分：B 已经生成内容完整的普通和盲化 PDF，正文栏及分隔线比 A 更接近这个目标，不能再用“B 必然漏内容”作为选 A 的理由。倾向 A 的主要依据现在是现有候选形状适应性、程序绑定和较窄的变更面；代价是 A 的布局能力必须继续补齐。
+
+这不是通用保真胜者结论。证据仍只有一个合成侧栏目标；任一路都未满足产品 LayoutTemplateSpec 等价、其他布局和分页验收条件，不足以永久淘汰另一条路线或批准 API 切换。
 
 ## 直接查看
 
-本地入口：[`REVIEW_INDEX.md`](../../data/generated_outputs/pipeline/ab_selection_20261022/REVIEW_INDEX.md)，同目录 `index.html` 为可视评审页。所有二进制、原始调用记录与检查结果留在现有忽略目录中。
+本地入口：[`REVIEW_INDEX.md`](../../data/generated_outputs/pipeline/ab_selection_20261022/REVIEW_INDEX.md)，同目录 `index.html` 是可视评审页。所有 outcome PDF、目标预览、并排图、差异图、调用、失败和回滚记录在现有忽略目录中。
 
-- 最终普通模式：`live_final_standard/owner_review/`。
-- 最终盲化模式：`live_final_blind/owner_review/`。
-- 每组含目标 PDF、A/B outcome PDF、目标/成品预览、并排图、差异图、原生 gates、独立产品内容验证、重复渲染文件和长内容分页证据。
-- `live_standard/`、`live_blind/`、`live_corrected_standard/`、`live_corrected_blind/` 保留前轮输出和失败证据，不用后来的成功替换失败记录。
-- 独立复核：`INDEPENDENT_REVIEW.md`；来源、额度与定价：`LIVE_SCOPE.md`。
+优先看 `live_slotfix_standard_2/owner_review/` 和 `live_slotfix_blind_2/owner_review/`，再看相同源版本的 `live_slotfix_standard_1/`、`live_slotfix_blind_1/`。入口还链接全部早期结果、独立检查和每个修复版本；没有以成功结果覆盖失败结果。
 
-## 核实状态与公平性
+## 状态核实与公平性
 
-工作树为 `/Users/xuezhiming/.codex/worktrees/7d35/CV converter prototype`，开始时干净，HEAD 为 `f0408d8`。已核实 `be3c22e` 的保存修订→预览→具体成品接受流程，以及 `f0408d8` 的 CandidateProfile→共享 ClientFacingRenderContext→内部 CandidateDocument 入口。API 仍调用 `app/generation/` 的实现，未连接 retained pipeline。
+指定工作树 `/Users/xuezhiming/.codex/worktrees/7d35/CV converter prototype` 开始时干净，HEAD 为 `f0408d8`。已核实 `be3c22e` 的保存 CandidateProfile 修订→预览→接受具体成品流程，以及 `f0408d8` 的共享 ClientFacingRenderContext 入口。API 仍调用原 `app/generation/`，未接入 retained pipeline；两路和原 API 均保留。
 
-| 因素 | 分类与处理 |
+| 因素 | 分类、处理和剩余影响 |
 | --- | --- |
-| 原诊断只有 scripted A/B | 输入/配置局限；本次两个 builder 和视觉 reviewer 都真实调用既有 DeepSeek 适配器，未用 scripted 产物冒充模型输出 |
-| 合成目标、合成 Adobe-shaped evidence、空结构草稿 | 仍是范围限制；没有 live Adobe 或真实目标分析质量证据，不能外推到公开 PDF 全集 |
-| 标签原先缺少人工输入 | 原来的审批阻碍；所有者本次明确改为启发式自动认定，已记录到产品契约、架构和 ADR 0001；仅完整匹配现有产品标题别名，未知标题继续不可渲染，不制造人工批准记录 |
-| A 额外头部字段继承姓名样式 | 实现缺陷；按已有测量样式处理并补回归 |
-| A 侧栏 CSS `ptpt`、间距只推开标题 | 实现缺陷；实际 PDF 回归后修复，最终样例来自修复后的源版本 |
-| probes 附加条目被重复展平 | 实现缺陷；修复 exactly-once 投影；首轮调用方还提前做过投影，最终使用原始 canonical fixture 交给 runner 一次处理。首轮 probes 作废，保留为失败证据 |
-| 先前日期缺失报告 | 已修复的检查误报；本次没有复现日期误报。独立产品检查中的缺少岗位文字指预期头部副标题缺一次，不等于工作条目中的岗位文字不存在 |
-| B 普通/盲化输出省略槽位 | 真实 builder 输出缺陷；原始模板、PDF、leaf gates 与独立产品验证均保留，不据此声称 HTML/CSS 原理上无法表达这些内容 |
-| B 的 `best` / ready 状态 | 探索性状态；PDF presence 仍只是原 runner 的诊断，未降低或重新定义既有门槛。本次另用产品内容验证器独立检查两路 |
-| retained runner 共用侧栏初始编译 | 两路共同的支持限制；没有绕过编译器让 B 单独处理它拒绝的输入，因此尚不能证明任一路支持其他布局 |
-| A/B 的采样原来不同 | 已统一非 thinking、temperature 0、相同输出上限与已有模型；typed proposal 与 authored JSON 协议仍因表示法而不同 |
-| 原预算漏记失败/SDK 重试、冻结常量而非实际限额 | 执行缺陷；已改为 HTTP 发送前占额、共享全局额度、两路等额，并冻结真实限额；模拟 SDK 重试覆盖发送前阻止第三次请求 |
-| 原工作树缺少公开语料 | 环境配置问题；以本地软链接复用原项目的同一套已授权语料，不创建第二套语料。Resume I 的完整 Adobe/normalized/draft bundle 仍缺失 |
+| 原诊断为 scripted builder | 输入/配置限制；本次真实调用 A/B builder、视觉 reviewer 和可触发的归因角色，仅 DeepSeek；scripted 历史结果不作模型能力证据 |
+| 合成目标、Adobe-shaped fixture、空结构草稿 | 输入/覆盖限制；没有 live Adobe、真实目标分析或多布局质量证据。增加调用次数不会增加目标多样性 |
+| 标签缺少逐项批准 | 所有者明确改为启发式自动认定；已更新产品/架构/ADR 0001。仅完整匹配现有产品标题别名；未知标题不可渲染。兼容 `approved` 状态不制造人工批准或成品批准 |
+| A 扩展头部继承姓名样式、侧栏 `ptpt`、标题/正文间距分离 | 实现缺陷；分别修复并用实际 PDF 回归。非目标特例 |
+| probes 附加内容重复投影 | 实现缺陷，已修复；首轮调用方还提前投影过一次。首轮 probes 无效，后续直接传 canonical 原始 fixture，一次处理 |
+| 之前日期缺失 | 已修复的检查误报；本次未复现。缺少头部 Engineer 的报告不等于工作经历岗位文字不存在 |
+| B 头部副标题被相同工作岗位文字掩盖 | 检查漏报；实际省略同时存在。已按真正出现的 name/contact 槽位计数，缺少槽位即不能借用其他位置同文值；独立产品验证保留 |
+| 多轮预算固定预留40导致小预算跳过 A 模型归因 | 配置障碍；新增显式冻结的 reserve，默认40不变；本次设4，覆盖一整次 Builder turn。该预留是归因入口调度条件，不能保证多请求归因不会耗用预留，见稳定性限制 |
+| 归因工具并发 PDFium 导致进程崩溃 | 实现缺陷；系统崩溃记录显示两个线程同时加载 PDFium 字体。回归先复现并发，再将 PydanticAI 归因工具顺序执行；没有切换供应商或弱化门槛 |
+| 模型采样和实际请求计数 | 已统一非 thinking、temperature0、输出上限16384；HTTP 发送前占额，包括 SDK 重试。每组两路等额共享总上限。表示法的 typed / authored JSON 协议仍不同 |
+| 同样例 B 省略内容、模板未覆盖未来章节 | 真实输出/模板复用缺陷；不证明 HTML/CSS 原理上无法表达。已保留后来完整结果和之前失败，不推断通用失败率 |
+| A 规则、条目样式未被 renderer 消费 | 当前能力限制；原生 `content_shapes_match_evidence` 仍失败，未路由给无法修改这些属性的 Builder，也未伪装全门槛通过 |
+| B best / ready | 探索性选版；不是完整内容、视觉或产品验收。独立检查所有追加试验的渲染版，包括未选中和回滚版 |
+| retained runner 初始编译仅测量侧栏类 | 共同支持范围限制；没有绕过编译器单独帮助 B。两路均未证明其他布局或产品 LayoutTemplateSpec 等价 |
+| 工作树缺少语料 | 环境问题；本地软链接复用原项目已有授权语料，未复制/新建语料。Resume I 完整 evidence bundle 仍缺，相关 optional 测试跳过 |
 
-## 运行条件与范围
+## 实际运行
 
-仅使用现有 `run_e5`（`python -m app.pipeline` 的 service），无新 runner、实验目录、供应商、语料集合或结果 schema。两路共享同一目标、候选人、证据、字体、Chrome、候选内容投影和标签目录；普通/盲化是同一 CandidateProfile 的两个 disclosure 场景。每个场景内条件对称。
+始终使用 `app.pipeline.service.run_e5`，即 `python -m app.pipeline` 的同一 canonical runner，无新 experiments、runner、供应商、语料或结果 schema。
 
-真实模型只有 `deepseek-flash`，包括视觉角色。所有者明确排除 Qwen。官方 2026-10-22 文档确认该别名支持视觉；供应商别名可变，未来复现需重新确认服务版本。未调用 Adobe，不发送保密数据，不创建成品批准。
+每组两路共享同一已保存合成 CandidateProfile、共享 disclosure/blind mapper、目标 PDF、Adobe/normalized/draft、字体、Chrome、标签目录和采样设置。输入仍位于 `consolidation_review_20261021T153547Z/inputs/`；各组冻结校验和与源文件身份。
 
-共三轮、每轮普通/盲化各一组，共 6 个配对、12 份主 outcome PDF。源版本依次为 `5ca671a`、`a16e7c8`、`7ca5682`；所有 run 记录 `source_identity_stable=true`。首两轮用于诊断和前置修复，最终比较以 `live_final_*` 为准，不能将跨版本结果作为同一版本的统计成功率。
+仅既有 DeepSeek 适配器，模型别名 `deepseek-flash`，视觉角色同样 DeepSeek；未调用 Qwen 或 Adobe。官方本日文档确认该别名为支持视觉的 V4.1 Flash；别名未来可能变化。输入均为合成，不批准保密数据生产处理或供应商采用。
 
-每路 1 次初始 build + 1 次独立视觉 review，修复轮次均为 0。第一轮每组最多 12 次，第二轮每组最多 8 次，第三轮每组最多 4 次；两路等分且共享全局上限。实际每组均为 4 次，共 **24 次 HTTP 请求**，已到本次授权上限，不再调用。没有失败 HTTP 重试。没有评估多轮修复后的收敛性，不能据此判定 B 经修复必然失败或成功。
+| 批次 | 配对数 / 源提交 | 修复上限 | 实际请求 |
+| --- | --- | --- | --- |
+| 原始/修正/首次最终普通、盲化 | 6 / 5ca671a、a16e7c8、7ca5682 | 0 | 24 |
+| `live_repair_standard_1` | 未配对 / 69eac8d；A 归因时崩溃，B 未执行 | 3 | 3 |
+| `live_repair_standard_2`、`live_repair_blind_1`、`live_repair_standard_3` | 3 / 8aaa682 | 3 | 5、7、9 |
+| `live_slotfix_blind_1`、`live_slotfix_standard_1`、`live_slotfix_standard_2`、`live_slotfix_blind_2` | 4 / aad5f86 | 3 | 11、10、11、9 |
 
-## 独立检查与结果
+共 **13 个完整配对、26 份选定主 outcome PDF、1 次部分执行**；保留总计36份实际主/修复渲染 PDF，另有 probes 和重复导出。实际计额 **89 次 HTTP 请求**，比前次交付追加65次。所有13个完整配对记录源身份稳定；不将不同版本或配置混成同分布统计成功率。
 
-除原生 ledger/gates 外，以原始 CandidateProfile 经共享 mapper 得到的 ClientFacingRenderContext 调用产品 `validate_generated_content`，直接读取实际 PDF。两路同样检查隐私、PDF 字边界与重叠候选，并做一次独立本地重复导出，比较页图及文字坐标。
+最终四组每路上限12次，只有 `live_slotfix_standard_1` 受当批剩余额度影响为每路8次。其他三组的模型、源版本、修复上限、每路12次额度、reserve4、210000-byte 请求 envelope 完全相同。每组两路额度始终对称，cap17的多余1次不分配给任一路。全额重复组不是挑选最好样例。
 
-| 最终场景 | A | B |
+## 独立内容、结构、隐私和视觉检查
+
+以原始 CandidateProfile 重新建立 ClientFacingRenderContext，调用产品 `validate_generated_content` 读取实际 PDF；不依赖 retained 叶子账本。另查实际 PDF 字边界、重叠候选、图片对象、已知目标文字与盲化标识泄漏，再独立本地重导出、比较页图及文字坐标。
+
+| 最终同源四组 | A | B |
 | --- | --- | --- |
-| 普通：产品内容检查 | 通过，13 个预期项 | 失败：头部副标题、联系方式、技能、教育缺失 |
-| 盲化：产品内容检查 | 通过，12 个预期项 | 失败：头部副标题、技能、教育缺失 |
-| 本次目标人物文字泄漏 | 未发现 | 未发现 |
-| 盲化姓名/邮件泄漏 | 未发现 | 未发现 |
-| 主 PDF 分页/字边界 | 1 页，无出界字/重叠候选 | 1 页，无出界字/重叠候选；内容缺失不能被此项抵消 |
-| 独立同 HTML 重复导出 | 页图一致，文字坐标稳定 | 页图一致，文字坐标稳定 |
-| canonical 短/中/长内部 probes | 两个最终模板下均通过；长例 2 页 | 均未通过内容 accounting / PDF presence |
-| 人工读图 | 标签/正文整体偏右，规则落在标签下而非目标正文栏，条目层级/行距仍不够忠实；保留完整候选内容 | 部分侧栏更接近目标，但结果间布局变化，最终省略候选人独有内容 |
+| 普通两组产品内容 | 均通过，13个预期项 | 均通过，13个预期项 |
+| 盲化两组产品内容 | 均通过，12个预期项 | 均通过，12个预期项 |
+| 本次目标事实/盲化姓名邮件泄漏 | 未发现 | 未发现 |
+| 主输出结构诊断 | 均1页，字边界/重叠候选0，SUMMARY与EXPERIENCE均在 | 同样通过这些诊断；教育/技能缺独立标题层级，布局仍有偏差 |
+| 同 HTML 独立重复导出 | 四组均页图一致、字坐标稳定 | 四组同样稳定；不等于模型模板跨次一致 |
+| 既有短/中/长内部形状 probes | 四组均通过内容/accounting/privacy/repeat；长例2页 | 四组均有内容失败：语言、认证（中/长）、附加章节槽位未覆盖 |
+| 读图 | 姓名栏位置接近目标；侧栏标签/正文整体偏右，分隔线在标签下，扩展章节列位不一致，条目层级仍不够忠实 | 正文栏与分隔线拓扑较接近目标；姓名过于靠左、标签对齐和间距偏差，模型生成的模板之间仍变化 |
 
-原始目标和所有最终主输出的页图、差异图、A 长例两页及 B 长例均已读图核对。未发现本次主样例的裁切、文字重叠或空白页；这不是通用结构验收。A 长例第二页仅少量内容，无重复页头；它只证明简单流式分页和内容保留，未证明批准的 continuation / keep-together 策略。
+新增四组主并排图、代表普通/盲化差异图和长例每页已读图核对。主样例未见裁切、空白页或文字重叠。两路长例都出现稀疏续页；A 第二页只有附加章节几行，某 B 模板第二页只有末尾技能几行，无重复页头。没有通用 keep-together / continuation 策略验收。
 
-原 pipeline 的 A `content_shapes_match_evidence` 仍失败，未伪装为全门槛通过。独立验证中 12 份主输出的 A 均保留内容，B 有三份缺失；这是单个合成目标、跨前置修复版本的观测，不是总体准确率估计。局部 repeat 的确定性不等于模型每次会产出同一模板。
+B probes 的缺失是**当前生成模板的复用覆盖缺陷**：short 也缺语言和附加章节，long 还缺认证。不是长内容独有故障，不能据此宣称 HTML 不能分页；有 B 长例实际生成2页。A 的动态候选绑定与 B 的固定选定模板存在适应策略差异，复用检查不包含为每个新候选重新调用 B builder。
 
-Probes 使用已有内部 CandidateDocument 形状，**不证明**结构化 `additional_sections` 或产品 LayoutTemplateSpec 的替代等价性。CLI 仍拒绝非空结构化 additional_sections，原 API 支持能力保留。
+这些 probes 是既有内部 CandidateDocument fixture，不证明产品结构化 `additional_sections` 等价；CLI 仍明确拒绝它，原 API 能力保留。最终四组9份 B 主/修复渲染版均通过独立产品内容检查；其中2次局部修复被提升、3次因同一测量没有改善而回滚。局部提升不意味着全局视觉提升。
 
-## 成本、稳定性与维护
+修复前的 `live_repair_blind_1` 初版缺技能/教育等，后版补回但仍缺头部副标题；原生账本曾漏报，独立验证未放过。崩溃记录、UsageLimitExceeded、未知 usage、回滚和测量不能绑定均可从入口查看。
 
-实际成功调用共 77,622 input tokens、15,829 output tokens。采用官方峰值、无缓存单价 $0.30 / $1.20 每百万 tokens，保守估算 **US$0.042281**，不是账户账单。24 次请求的字节/图片/输出 envelope 保守预算上界约 US$2.50，低于授权 US$3；未消耗剩余额度外的调用。
+## 成本、运行稳定性与维护
 
-同一场景中 A/B 各两次请求；B 的提示/schema 输入略多、输出通常较长，但本样本费用差很小，不能决定主线。现有 wall-clock 包含 A 自带双次渲染、不同 probe 页数等不对称工作，不能用总耗时宣称某个模型或表示法更快。独立追加重复导出后，两路局部渲染稳定性均通过。
+89次计额中86次有可汇总的 usage：327690 input、48563 output tokens。官方峰值无缓存 $0.30 / $1.20 每百万 tokens，已记录部分估算 **US$0.1565826**；另外3次 usage 未完整记录（1次崩溃、2次受限归因），不能当作零费用。按每次210000-byte/8图片/16384输出 envelope 加协议余量，全额预留这3次后，累计保守估算上界 **US$0.441429**，不是账户账单。
 
-- A 的固定 renderer 和显式候选绑定缩小可变面，内容控制较直接；扩展布局需新增、测量并验证结构能力。本次也暴露了固定 renderer 自身的缺陷，不能只信结构 schema。
-- B 可表达更自由的 HTML/CSS，复现部分侧栏更灵活；每份模板都需验证完整槽位、条件区域、分页、资产与 CSS 安全，当前 builder 仍会省略槽位。尚无维护工时基准，不能用行数或模型输出长度推断维护成本。
-- 两路都尚未接入产品 LayoutTemplateSpec；B 的 authored HTML 不可存成该 provider-neutral 契约，A 的内部 layout-state 也不能直接改名视为等价。
+初始24次/US$3范围用完后，所有者明确要求“别管token，多尝试几次”。后续逐批增加有界请求额度，在下一组开始前，用已知 peak usage + 未知调用全额 envelope + 下一组全部调用上界核算累计US$3；每次预检均低于上限。详细追加额度、预检、实际计额在 `LIVE_SCOPE.md`，没有无界调用。
 
-定价/视觉能力参考：[DeepSeek 定价](https://api-docs.deepseek.com/quick_start/pricing/)、[视觉能力与图片 token 上限](https://api-docs.deepseek.com/guides/vision/)。这是公开/合成评估授权，不批准保密数据生产处理或供应商托管。
+- PDFium并发崩溃已修复；后续完整组未再崩溃。归因仍会遇到工具/输出校验及请求上限；`live_slotfix_standard_1` A 用满8次而未产生 Builder 修复，最后2次 usage 未归入成功结果。reserve4 只保证进入归因前有余额，现有多请求归因仍可能耗用预留；这是执行稳定性限制，不视为几何能力证明。
+- A 多轮仍未改变主布局：部分观察不能绑定到支持的测量，主要差异又超出四个 Builder 原语。B 可修复完整槽位和局部间距，但局部改善未保证全局一致。
+- A 把内容适应放在程序里，模板变动面窄，适合内容控制优先；增加版式要付出结构原语/测量/renderer 的维护成本。本次固定 renderer 自身也有真实缺陷。
+- B CSS 表达和目标贴近能力更自由；需要可靠的全部槽位、条件区域、CSS安全、分页及复用验证。header accounting 已补强，collection accounting 仍是构造账本+文本存在检查，不是完整 DOM 叶子身份或重复值证明。
+- 两路实际费用都低，未构成选择主因。wall-clock 含不对称双次渲染、探针页数和归因工作，不能用总耗时宣称表示法或模型速度优胜。没有维护工时基准，不按行数决定。
 
-## 决定与后续迁移条件
+参考：[DeepSeek定价](https://api-docs.deepseek.com/quick_start/pricing/)、[视觉能力](https://api-docs.deepseek.com/guides/vision/)、[PDFium线程限制](https://pypdfium2.readthedocs.io/en/stable/python_api.html#incompatibility-with-threading)。
 
-请所有者选择：**A 主线**或 **B 主线**；也可因保真证据不足暂缓永久选择。当前建议 A，适用范围限已有测量侧栏类与已验证核心候选字段；这是研发收敛方向，不是 API 切换批准。
+## 决定、适用范围与迁移条件
 
-选择确认后才记录 accepted 选择、范围与条件；当前不新增 accepted 的 A/B ADR，不删除任一路或 API。迁移至少还需：
+请所有者查看后选择 **A 主线**或 **B 主线**。我的倾向是 A，限内容保留/复用优先的研发收敛；若首要目标是扩展目标版式，B 的优势值得较高权重。两路现在都没有足够证据获永久产品胜者地位；也可以暂缓永久选择。当前未记录 accepted 的 A/B 决定。
 
-1. 真实获授权目标的测量证据与完整结构草稿；同一 canonical workflow 覆盖一栏、双栏、侧栏、稀疏与多页输入。
-2. LayoutTemplateSpec→所选表示法的显式编译及失败/rollback 等价检查；清除或拒绝缺失测量时的默认值（例如侧栏 compiler 的 entry-column fallback）。
-3. 结构化自定义章节及 entry/link/bullet 层级、完整 disclosure / blind-profile 与已保存修订身份的回归等价。
-4. 独立内容、隐私、结构与视觉检查；A 剩余布局偏差或 B 槽位完整性修复后的实际成品审阅；多轮修复效果仍需另一次有额度的验证。
-5. 明确分页与 continuation 策略，保留所有者对具体 HTML/PDF 的最终接受；之后再讨论 API/CLI 共用引擎。
+确认后才将选择、范围、限制和下列迁移条件写入现有权威文档：
+
+1. 同一 canonical workflow 扩展现有获授权目标测量，覆盖一栏、其他双栏/侧栏、稀疏、多页；本次大量重复不能替代它。
+2. 实现产品 LayoutTemplateSpec→所选表示法的显式编译及失败/rollback 等价；A 内部 state 和 B authored HTML 都不能直接改名当作产品契约，缺测量 fallback 需明确处理。
+3. 产品结构化自定义章节、条目/链接/项目符号层级、disclosure/blind、保存修订身份与现有 API 行为等价。
+4. A 补齐已识别结构/规则能力；或 B 强制完整可复用槽位及独立内容/结构验证。修复 reviewer/measurement/预算预留的运行限制，验证跨版本视觉回归。
+5. 完整长内容的分页、续页与 keep-together 策略及成品审阅通过后，才讨论 API/CLI 共用引擎和退役路径。
+
+不删除两路或原 API，不改前端，不进行 API 切换、全面重构或上线验收。B0/B1退出条件未完成。
 
 ## 提交与验证
 
-必要修复逐个提交：`cf0095b` 评审续页/差异图；`dd1aa97` 所有者确认的自动标签策略及权威文档；`4c1c29c` 实际请求预算/采样对齐；`5ca671a` 头部样式；`3f773de` probe exactly-once；`a16e7c8` 侧栏 CSS 单位；`7ca5682` 标题与正文同一流式行。
+原必要修复：`cf0095b` 评审续页/差异图；`dd1aa97` 自动标签策略及权威文档；`4c1c29c` 实际请求预算/采样；`5ca671a` 头部样式；`3f773de` probe exactly-once；`a16e7c8` CSS单位；`7ca5682` 标题/正文同一行。初版证据报告：`db2ecfa`。
 
-运行均使用原项目既有 `.venv/bin/python -B -m pytest`，日志在 `tests/test_results/pytest/`。回归先证明失败，再验证修复；未弱化质量门槛或删除有价值测试。
+本次继续试验的独立修复提交：`69eac8d` 冻结可配 Builder reserve；`8aaa682` 顺序归因工具防原生崩溃；`aad5f86` 按真实槽位记账头部。回归先证明缺陷，再验证修复；未降低质量门槛或删除有价值测试。
 
-- 全量离线 `-m 'not live_provider' -q`：645 passed、35 skipped、1 deselected、4 既有 Pydantic fixture warnings。该进程在最终 rail-flow 修复前启动，不将其冒充最终 HEAD 的新启动全量检查。
-- 最终 `7ca5682` 上全部 retained pipeline unit/integration（排除 live/local_dataset）：247 passed、19 deselected。
-- SDK 失败重试和 envelope 验证：包含在上述 pipeline 检查，未访问真实供应商。
-- 首次全量的三个 corpus FileNotFoundError 由复用原项目语料解决；旧失败日志保留。
+在最终代码提交 aad5f86 上：
 
-未进行 API 引擎切换、前端修改、全面重构、生产部署或产品上线验收。
+- 全量离线：**646 passed、35 skipped、1 deselected**，4个既有 fixture serializer warnings。日志 `tests/test_results/pytest/20261021T165605Z_ab_final_full.txt`。
+- 全部 retained pipeline unit/integration（排除 live/local_dataset）：**248 passed、19 deselected**，单独测试时有1个事件循环弃用提示。日志 `tests/test_results/pytest/20261021T165350Z_ab_header_accounting_after.txt`。
+- 之前的失败和中间验证日志保留在同一 canonical 目录；不提交原始测试报告/二进制。
 
-自动标签认定是保守启发式，不是通用语义证明；异常目标中的人物事实若恰好与常规标题同词，仍有误认风险。本次合成目标未发生该问题，不能据此免除未来隐私检查。
-
-实际验证命令（在本工作树执行；将终端输出 tee 到上述 canonical pytest 目录）：
+实际命令：
 
 ```bash
 AB_PYTHON='/Users/xuezhiming/Desktop/CV converter prototype/.venv/bin/python'
@@ -115,3 +126,5 @@ AB_PYTHON='/Users/xuezhiming/Desktop/CV converter prototype/.venv/bin/python'
   tests/integration/test_pipeline_loop.py tests/integration/test_pipeline_evidence.py \
   -m 'not live_provider and not local_dataset' -q
 ```
+
+自动标签是保守启发式，不是通用语义证明；异常事实恰好与标题同词仍有误认风险。本次无已知泄漏不替代未来隐私检查。
