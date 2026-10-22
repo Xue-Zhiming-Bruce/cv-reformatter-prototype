@@ -96,6 +96,7 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
     body = response.json()
     assert body["artifact_id"] == artifact_id
     assert body["layout_template_version"] == "built-in-3"
+    assert json.loads((artifact_dir / "generation_metadata.json").read_text())["renderer_version"] == "lane-a-product-subset/9"
     assert "Boston" not in (artifact_dir / "candidate_profile.html").read_text().partition("</header>")[2]
     assert (artifact_dir / "raw_extracted_text.txt").read_bytes() == raw_text_before
     assert (artifact_dir / "raw_extracted_text.txt").read_text(encoding="utf-8") == draft_raw_text
@@ -142,6 +143,102 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
     assert metadata["html_surface_url"] == body["html_surface_url"]
     assert metadata["pdf_preview_url"] == body["pdf_preview_url"]
     assert metadata["needs_review_count"] == len(body["missing_fields"])
+
+
+@pytest.mark.parametrize("blind", [False, True])
+def test_builtin_api_shared_a_preserves_real_pdf_and_acceptance_identity(
+    tmp_path: Path, monkeypatch: MonkeyPatch, blind: bool,
+) -> None:
+    import pdfplumber
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+    from app.generation.content_validation import validate_generated_content, validate_output_structure
+    from app.generation.html_renderer import render_html as render_reference
+    from app.generation.template_mapper import ClientFacingRenderContext
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.html_renderer import render_layout_template
+    from app.pipeline.quality import content_gate, candidate_accounting_gate, blank_page_gate
+    from app.template_analysis.schemas import built_in_layout_template_spec
+    from tests.helpers.pipeline_layout import product_entry_profile
+
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    profile = product_entry_profile()
+    profile = CandidateProfile.model_validate({**profile.model_dump(), "skills": ["Python", "SQL"],
+        "languages": [{"name": "English", "proficiency": "Fluent"}],
+        "certifications": [{"name": "Example Certificate"}]})
+    artifact_id = "artifact_native_a"
+    directory = tmp_path / artifact_id
+    directory.mkdir()
+    (directory / "candidate_profile.json").write_text(profile.model_dump_json())
+    (directory / "raw_extracted_text.txt").write_text("SYNTHETIC SOURCE PRESERVED")
+    preserved = {name: (directory / name).read_bytes() for name in ("candidate_profile.json", "raw_extracted_text.txt")}
+    revision = client.post(f"/api/artifacts/{artifact_id}/profiles/revisions",
+                           json={"profile": profile.model_dump(mode="json")})
+    assert revision.status_code == 200, revision.text
+    request = {"artifact_id": artifact_id, "profile_revision_id": revision.json()["profile_revision_id"],
+               "blind_profile": blind, "profile": {"full_name": "UNTRUSTED_REQUEST_OVERRIDE"}}
+    response = client.post("/api/generate", json=request)
+    assert response.status_code == 200, response.text
+    identity = response.json()
+    assert identity["client_ready"] is False
+    assert json.loads((directory / "generation_metadata.json").read_text())["renderer_version"] == "lane-a-product-subset/9"
+    context = ClientFacingRenderContext.model_validate_json((directory / "client_render_context.json").read_text())
+    spec = built_in_layout_template_spec()
+    _, plan, html = render_layout_template(spec, candidate_document_from_context(context, candidate_id="synthetic-api-reference"))
+    html_path, pdf_path = directory / "candidate_profile.html", directory / "candidate_profile.pdf"
+    assert html_path.read_text() == html
+    assert "<title>Candidate profile</title>" in html
+    content = content_gate(plan, html, pdf_path)
+    assert content["passed"] and candidate_accounting_gate(plan, content)["passed"]
+    assert blank_page_gate(pdf_path)["passed"]
+    reference = render_reference(context, spec, directory / "reference.html")
+    reference_pdf = export_html_to_pdf(reference, directory / "reference.pdf")
+    for output_html, output_pdf in ((html_path, pdf_path), (reference, reference_pdf)):
+        assert validate_generated_content(context, pdf_path=output_pdf, layout_spec=spec).passed
+        assert validate_output_structure(context, html_path=output_html, pdf_path=output_pdf, layout_spec=spec).passed
+        with pdfplumber.open(output_pdf) as document:
+            text = "\n".join(page.extract_text() or "" for page in document.pages)
+        assert text.count("alpha@example.test") == (0 if blind else 1)
+        assert text.count("5550101") == (0 if blind else 1)
+        assert all(value not in text for value in ("HIDDEN_SALARY", "HIDDEN_PROJECT", "UNTRUSTED_REQUEST_OVERRIDE"))
+    assert {name: (directory / name).read_bytes() for name in preserved} == preserved
+
+    fields = ("profile_revision_id", "profile_sha256", "layout_template_version", "layout_spec_sha256", "html_sha256", "pdf_sha256")
+    (directory / "first_preview_identity.json").write_text(json.dumps({key: identity[key] for key in fields}))
+    # Keep the first real output reviewable after regenerating with different disclosure.
+    (directory / "first_preview.html").write_bytes(html_path.read_bytes())
+    (directory / "first_preview.pdf").write_bytes(pdf_path.read_bytes())
+    accepted = client.post(f"/api/artifacts/{artifact_id}/final-acceptance",
+                           json={key: identity[key] for key in fields})
+    assert accepted.status_code == 200 and accepted.json()["client_ready"], accepted.text
+    regenerated = client.post("/api/generate", json={**request, "blind_profile": not blind})
+    assert regenerated.status_code == 200, regenerated.text
+    assert regenerated.json()["client_ready"] is False
+    assert regenerated.json()["html_sha256"] != identity["html_sha256"]
+    stale = client.post(f"/api/artifacts/{artifact_id}/final-acceptance", json={key: identity[key] for key in fields})
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["error_code"] == "final_acceptance_identity_mismatch"
+
+
+def test_builtin_api_rejects_unsupported_a_contract_without_replacing_outputs(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    from app.template_analysis.schemas import built_in_layout_template_spec
+
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    artifact_id = "artifact_native_unsupported"
+    directory = tmp_path / artifact_id
+    directory.mkdir()
+    version_id = _approve_profile_via_api(directory, CandidateProfile(full_name="Candidate Alpha", skills=["Python"]), artifact_id)
+    spec = built_in_layout_template_spec()
+    next(section for section in spec.sections if section.source == "skills").layout = "inline"
+    monkeypatch.setattr(main, "built_in_layout_template_spec", lambda: spec)
+    outputs = {directory / "candidate_profile.html": b"PREVIOUS HTML", directory / "candidate_profile.pdf": b"PREVIOUS PDF"}
+    for path, contents in outputs.items():
+        path.write_bytes(contents)
+    response = client.post("/api/generate", json={"artifact_id": artifact_id, "approved_profile_version_id": version_id})
+    assert response.status_code == 500, response.text
+    assert "unsupported placement/layout" in response.json()["detail"]
+    assert {path: path.read_bytes() for path in outputs} == outputs
 
 
 def test_download_generated_artifact_rejects_unknown_or_unsafe_paths(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

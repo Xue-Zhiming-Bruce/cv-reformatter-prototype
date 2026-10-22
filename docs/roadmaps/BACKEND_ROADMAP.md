@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 23, 2026 (proof approvals bind renderer identity; API cutover and B0/B1 gates remain open)
+Last reviewed: October 23, 2026 (native API uses shared A; uploaded-target cutover and B0/B1 gates remain open)
 
 This is the active engineering roadmap after completion of the MVP and PDF
 demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
@@ -66,7 +66,7 @@ Legacy profile-approval names remain compatibility fields only.
       A product HTML now carries the existing product semantic markers and
       passes the API's shared structure validator in ordinary/blind CLI entry
       regressions, including missing fields and non-bold institutions. This is
-      compatibility preparation; API/proof rendering has not switched.
+      compatibility preparation; uploaded-target/proof rendering has not switched.
       Native `built-in-3` removes the unused document-title declaration and
       repeated contact body section. The unchanged A compiler now renders its
       A4 template in ordinary/blind CLI cases, alongside independent product
@@ -84,9 +84,18 @@ Legacy profile-approval names remain compatibility fields only.
       approved; new proof IDs preserve old files. API regressions cover stale
       and preloaded approvals, read-only legacy compatibility, reapproval and
       matching-record rollback. The version simulation retains the existing
-      renderer; API/proof cutover to A remains open.
+      renderer; uploaded-target/proof cutover to A remains open.
+      No-target `built-in-3` API generation now uses the shared A compiler,
+      binder and HTML renderer with its actual implementation identity. Real
+      Chrome ordinary/blind regressions cover source preservation, independent
+      content/structure and A ownership gates, saved-revision previews, exact
+      output acceptance and invalidation after disclosure changes. Unsupported
+      native features preserve existing HTML/PDF and cannot fall back. Existing
+      product-renderer PDFs remain reviewable references. Uploaded templates
+      retain their existing proof-bound path: unrepresented template properties
+      and canonical proof-contact projection still block their cutover.
       Full product-template coverage,
-      complete pagination parity and API cutover remain open; no replaced
+      complete pagination parity and uploaded-target API cutover remain open; no replaced
       implementation has been removed.
 - [ ] Prune redundant orchestration, reports, and tests once their responsibility
       has a single verified owner.

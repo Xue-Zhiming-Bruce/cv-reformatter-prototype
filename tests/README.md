@@ -84,6 +84,15 @@ and target page count, leaves inputs untouched, and returns the same HTML bytes
 as the CLI. Actual PDF exports pass the same product content/structure gates.
 Uploaded templates still reject absent, partial or invalid target identity;
 measured evidence states cannot adopt the native null identity.
+Native API regressions in `integration/test_api_generate.py` use real Chrome
+exports of saved revisions, with normal/blind custom entries and all core
+sections, and compare the actual HTML with the shared A call. Both A and retained
+renderer reference PDFs pass product content/structure checks; A ownership and
+blank-page gates also pass. The same cases preserve source files and exercise
+final acceptance followed by disclosure-change invalidation. Unsupported native
+features must preserve existing HTML/PDF; the structure-mutation API regression
+continues to remove semantic roles while retaining content. Uploaded-target API
+tests keep their approval-bound retained renderer and existing proof identity.
 
 Decoration cases in the same CLI workflow exercise header/heading rules and
 grouped badges on skills, languages and certifications, including ordinary/blind

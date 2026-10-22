@@ -11,6 +11,9 @@ from app.pipeline.layout_state import BadgeDecoration, C2LayoutState, PageState,
 from app.pipeline.render_plan import C2RenderPlan, EntryPlan, LeafText, OVERFLOW_POLICY, SectionPlan, compile_render_plan, section_groups
 from app.template_analysis.schemas import LayoutTemplateSpec
 
+# Bump when product compilation, HTML or bundled font behavior changes.
+RENDERER_VERSION = "lane-a-product-subset/9"
+
 
 def render_layout_template(
     spec: LayoutTemplateSpec,
@@ -274,9 +277,10 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
         ".c2-entry-meta { text-align: right; min-width: 0; flex-shrink: 0; margin-left: 12pt; }",
     ]
 
+    title = "Candidate profile" if state.provenance.provider == "layout_template_spec" else "C2-0b compiled render"
     parts: list[str] = [
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">",
-        "<title>C2-0b compiled render</title>\n<style>\n" + "\n".join(css) + "\n</style>",
+        f"<title>{title}</title>\n<style>\n" + "\n".join(css) + "\n</style>",
         "</head>\n<body>",
     ]
 

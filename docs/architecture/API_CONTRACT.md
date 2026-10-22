@@ -186,6 +186,17 @@ Every successful generation persists `content_validation.json`. If approved
 source-owned content is absent from the PDF, generation returns HTTP 500 with
 `error_code=generated_content_incomplete` and the missing items.
 
+No-target generation uses native `built-in-3` through the shared deterministic
+A template compiler/binder/HTML renderer (`lane-a-product-subset/9`). It projects
+the saved revision's disclosed `ClientFacingRenderContext`, without a synthetic
+target PDF, provider call or diagnostic CLI run. The existing content/structure
+gates, preview/final-acceptance identities and immutable source files remain in
+force. Unsupported native-template features fail before HTML/PDF replacement;
+there is no automatic return to the older renderer. Generation metadata records
+the actual renderer identity. Uploaded-target and designer-template generation
+still use the approval-bound `product-html/1` path; this bounded native cutover
+does not change their proof requirements or accept unsupported uploaded targets.
+
 ### Revision and validation errors
 
 Generation from a built-in template, an existing uploaded-target template, or

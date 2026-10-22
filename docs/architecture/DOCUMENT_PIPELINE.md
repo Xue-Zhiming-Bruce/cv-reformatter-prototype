@@ -211,7 +211,9 @@ for its internal `CandidateDocument`. It validates inputs before build; callers
 no longer hand-author a second candidate-data model.
 It does not perform candidate extraction, establish recruiter approval, create
 the initial draft, or discover inputs in historical run directories. The
-FastAPI generation route is not yet connected to this CLI implementation.
+FastAPI no-target generation now calls the same deterministic A product-template
+renderer for native `built-in-3`, without invoking this diagnostic CLI. Uploaded
+target and designer-template generation retain the approval-aware product path.
 
 | Responsibility | Implementation in `app/pipeline/` |
 | --- | --- |
@@ -359,7 +361,7 @@ Integration status, October 22, 2026:
   role while retaining its facts fails that shared structure check. The A
   diagnostics tokenize ancestor classes so added semantic classes cannot turn
   entry headers into body text for typography checks.
-  API generation still uses the retained product renderer. The native built-in
+  Uploaded-target API/proof generation still uses the retained product renderer. The native built-in
   template is now `built-in-3`: contacts belong to the header, without a second
   contact body section or the unused legacy document-title flag. This removes
   duplicate contact output and lets the native A4 template compile through A.
@@ -386,7 +388,18 @@ Integration status, October 22, 2026:
   template or output approval. Callers retain disclosure, target identity,
   label authorization, PDF export and independent gates. Native ordinary/blind
   PDFs pass the shared product validators and their HTML matches the CLI bytes.
-  API/proof rendering has not switched to this call.
+  Native `built-in-3` API generation now calls this renderer with the saved
+  revision's disclosed context projection. Its metadata records the shared A
+  renderer version (`lane-a-product-subset/9`, also used by CLI provenance).
+  Product-template HTML uses the public page title `Candidate profile`;
+  evidence-only diagnostics retain their existing title.
+  It keeps the API's content/structure reports and exact final-output identities;
+  unsupported native properties fail before HTML/PDF replacement without a
+  fallback. Real Chrome API cases cover normal/blind output, custom entries,
+  immutable source files, shared A ownership checks, preview acceptance and
+  invalidation after disclosure changes. Same-input retained-renderer PDFs
+  remain reviewable as content/structure references. This is a bounded native
+  cutover; uploaded-target/proof rendering has not switched to this call.
 - API proof results and approval aggregates now bind `renderer_version` in
   addition to target, layout and file checksums. The current product renderer
   declares `product-html/1`; update its implementation version when layout,
@@ -413,10 +426,11 @@ Integration status, October 22, 2026:
   renders through the existing A plan/HTML/export/gates and cannot invoke a
   builder to rewrite the supplied template. Validated template content,
   template checksum/version, compiler version and target checksum are frozen
-  together; this records input identity, not template or output approval.
+  together for CLI runs; this records input identity, not template or output approval.
   Unroutable header values fail rather than gaining automatic overflow.
   Candidate-only body sections retain the existing append policy, without a
-  claim of product-template styling parity. API generation remains unchanged.
+  claim of product-template styling parity. Native API rendering uses the same
+  deterministic call; uploaded-target API generation remains on its prior path.
 - Internal header nodes may carry an explicit `flow_gap_above_pt` instead of
   measured absolute `top_pt`; the two forms cannot coexist. Empty header rows
   preserve accumulated flow gaps. `NodeSpacing.gap_basis="flow"` preserves

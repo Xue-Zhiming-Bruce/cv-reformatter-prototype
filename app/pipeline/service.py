@@ -2944,7 +2944,7 @@ def run_e5(
     from app.pipeline.rendering import build_format_summary
 
     from app.pipeline.render_plan import compile_render_plan
-    from app.pipeline.html_renderer import render_html, render_layout_template
+    from app.pipeline.html_renderer import RENDERER_VERSION, render_html, render_layout_template
     from app.pipeline import quality as c2r
     from app.pipeline.layout_state import state_bytes
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
@@ -3107,7 +3107,7 @@ def run_e5(
         (out_dir / "layout_template_spec.json").write_text(layout_spec.model_dump_json(indent=2), encoding="utf-8")
         shared_draft_ref["layout_template"] = {
             "sha256": layout_spec_sha256(layout_spec), "template_version": layout_spec.template_version,
-            "schema_version": layout_spec.schema_version, "compiler": "lane-a-product-subset/8",
+            "schema_version": layout_spec.schema_version, "compiler": RENDERER_VERSION,
             "template_approved": False, "api_cutover": False,
         }
     page_height = _page_pt_size(target_pdf, 1)[1]

@@ -7,6 +7,7 @@ Source review, artifact scope, stale revisions, and output identity fail closed.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -815,18 +816,15 @@ def test_generation_fails_closed_on_broken_render_output(
         tmp_path, profile=profile
     )
 
-    real_render_html = main.render_html
+    real_render = main.render_layout_template
 
-    def _render_with_broken_entry_semantics(render_context, style_spec, html_path):
-        real_render_html(render_context, style_spec, html_path)
-        path = Path(html_path)
-        html = path.read_text(encoding="utf-8")
-        html = html.replace(">Resume Builder</p>", ">• Resume Builder</p>", 1)
-        html = html.replace('class="entry-metadata"', 'class="broken-metadata"', 1)
-        path.write_text(html, encoding="utf-8")
-        return path
+    def _render_with_broken_entry_semantics(*args, **kwargs):
+        state, plan, html = real_render(*args, **kwargs)
+        html = html.replace("Resume Builder", "• Resume Builder", 1)
+        html = re.sub(r'(class="[^"]*)\bentry-metadata\b', r'\1broken-metadata', html, count=1)
+        return state, plan, html
 
-    monkeypatch.setattr(main, "render_html", _render_with_broken_entry_semantics)
+    monkeypatch.setattr(main, "render_layout_template", _render_with_broken_entry_semantics)
     response = _generate(artifact_id, version_id)
 
     assert response.status_code == 500

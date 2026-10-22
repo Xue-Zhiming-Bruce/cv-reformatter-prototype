@@ -49,7 +49,8 @@ from app.generation.content_validation import (
 )
 from app.generation.followup_message_generator import generate_followup_message
 from app.generation import html_renderer as product_html_renderer
-from app.generation.html_renderer import HtmlRenderingError, render_html
+from app.pipeline.candidate_content import candidate_document_from_context
+from app.pipeline.html_renderer import RENDERER_VERSION as PIPELINE_RENDERER_VERSION, render_layout_template
 from app.generation.render_plan import build_production_render_plan
 from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME, build_client_render_context
 from app.final_acceptance import (
@@ -1320,7 +1321,9 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         {
             "profile_revision_id": profile_revision.profile_revision_id,
             "profile_sha256": profile_revision.profile_sha256,
-            "renderer_version": product_html_renderer.RENDERER_VERSION,
+            "renderer_version": (
+                product_html_renderer.RENDERER_VERSION if uses_uploaded_target else PIPELINE_RENDERER_VERSION
+            ),
             "layout_template_version": effective_layout_spec.template_version,
             "layout_spec_sha256": production_render_plan.layout_spec_sha256,
             "layout_spec_filename": (
@@ -1343,10 +1346,16 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
                 output_dir=artifact_dir,
             )
         else:
-            render_html(render_context, effective_layout_spec, html_path)
+            _, _, html = render_layout_template(
+                effective_layout_spec,
+                candidate_document_from_context(
+                    render_context, candidate_id=f"candidate-{profile_revision.profile_sha256[:16]}"
+                ),
+            )
+            html_path.write_text(html, encoding="utf-8")
             exported_pdf_path = export_html_to_pdf(html_path, pdf_path)
     except (
-        HtmlRenderingError,
+        ValueError,
         HtmlToPdfExportError,
         FileNotFoundError,
         LayoutProofRenderError,

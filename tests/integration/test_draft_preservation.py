@@ -235,7 +235,7 @@ def test_generation_never_overwrites_both_evidence_files_through_process(
     pdf_download = client.get(body["pdf_download_url"])
     assert html_surface.status_code == 200
     assert html_surface.headers["content-disposition"].startswith("inline;")
-    assert html_surface.text.startswith("<!doctype html>")
+    assert html_surface.text.lower().startswith("<!doctype html>")
     assert pdf_download.status_code == 200
     assert pdf_download.headers["content-type"] == "application/pdf"
     assert pdf_download.content[:4] == b"%PDF"
