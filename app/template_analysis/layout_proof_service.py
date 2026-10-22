@@ -40,6 +40,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.generation import html_renderer
 from app.generation.chrome_html_to_pdf import HtmlToPdfExportError, export_html_to_pdf
 from app.generation.html_renderer import HtmlRenderingError, render_html
 from app.generation.template_mapper import ClientFacingRenderContext
@@ -89,6 +90,14 @@ class LayoutProofIncompleteError(LayoutProofValidationError):
 
 _SAFE_PROOF_ID = re.compile(r"^layout_proof_(short|medium|long)_[0-9a-f]{16}$")
 _SAFE_PROOF_FILENAME = re.compile(r"^proof-(short|medium|long)\.(html|pdf)$")
+
+
+def _require_current_renderer(renderer_version: str) -> None:
+    if renderer_version != html_renderer.RENDERER_VERSION:
+        raise LayoutProofMismatchError(
+            f"renderer version mismatch ({renderer_version} != {html_renderer.RENDERER_VERSION}); "
+            "create and approve new short/medium/long layout proofs"
+        )
 
 
 def load_layout_proof_render_result(
@@ -170,6 +179,8 @@ def proof_id_for(request: LayoutProofRenderRequest) -> str:
                 "variant": request.variant.value,
                 "layout_spec_checksum": layout_spec_checksum(request.layout_spec),
                 "target_checksum": request.target_checksum,
+                "renderer_version": html_renderer.RENDERER_VERSION,
+                "context_checksum": canonical_context_checksum(request.variant),
             },
             sort_keys=True,
         ).encode("utf-8")
@@ -245,6 +256,7 @@ def _render_layout_proof_with_context(
         layout_spec_checksum=layout_spec_checksum(request.layout_spec),
         target_checksum=request.target_checksum,
         context_checksum=canonical,
+        renderer_version=html_renderer.RENDERER_VERSION,
         html_filename=html_path.name,
         pdf_filename=pdf_path.name,
         html_checksum=file_sha256(html_path),
@@ -412,8 +424,10 @@ def verify_approval_files(
     A missing or altered proof file invalidates the approval
     (``LayoutProofMismatchError``).
     """
+    _require_current_renderer(approval.renderer_version)
     for variant, evidence in approval.variants.items():
         result = evidence.render_result
+        _require_current_renderer(result.renderer_version)
         proof_dir = layout_proofs_dir_for(artifact_dir) / result.proof_id
         html_path = proof_dir / result.html_filename
         pdf_path = proof_dir / result.pdf_filename
@@ -455,6 +469,7 @@ def _recompute_variant_evidence(
     result = load_layout_proof_render_result(
         artifact_dir, variant, artifact_id=artifact_id
     )
+    _require_current_renderer(result.renderer_version)
     if result.target_checksum != target_checksum:
         raise LayoutProofMismatchError(
             f"{variant.value}: evidence target checksum does not match"
@@ -556,6 +571,7 @@ def approve_layout_proof(
         target_checksum=target_checksum,
         layout_spec_checksum=layout_spec_checksum(layout_spec),
         state="approved",
+        renderer_version=html_renderer.RENDERER_VERSION,
         variants=recomputed,
         approved_at=_now_iso(),
         reviewer_id=reviewer_id,
@@ -705,6 +721,7 @@ def reject_layout_proof(
         target_checksum=target_checksum,
         layout_spec_checksum=layout_spec_checksum(layout_spec),
         state="rejected",
+        renderer_version=html_renderer.RENDERER_VERSION,
         variants=recomputed,
         reviewer_id=reviewer_id,
         reviewer_note=reviewer_note,
@@ -741,6 +758,7 @@ def render_candidate_document(
         raise LayoutProofMismatchError(
             "approval does not cover this LayoutTemplateSpec (checksum mismatch)"
         )
+    _require_current_renderer(approval.renderer_version)
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

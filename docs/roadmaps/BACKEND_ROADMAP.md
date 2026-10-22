@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 22, 2026 (owner initially selected A; API cutover and B0/B1 gates remain open)
+Last reviewed: October 23, 2026 (proof approvals bind renderer identity; API cutover and B0/B1 gates remain open)
 
 This is the active engineering roadmap after completion of the MVP and PDF
 demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
@@ -77,7 +77,14 @@ Legacy profile-approval names remain compatibility fields only.
       templates can render without fabricated target evidence; ordinary/blind
       PDFs pass product validators and HTML matches the CLI bytes. Uploaded
       target identity, label authorization and independent gates remain at the
-      caller boundary. API/proof rendering and approval binding remain unchanged.
+      caller boundary. API/proof rendering remains on the retained implementation.
+      Proof results and approval aggregates now bind the renderer version, with
+      a fixed historical identity for legacy records. Version changes block
+      approval and generation until a fresh complete proof set is explicitly
+      approved; new proof IDs preserve old files. API regressions cover stale
+      and preloaded approvals, read-only legacy compatibility, reapproval and
+      matching-record rollback. The version simulation retains the existing
+      renderer; API/proof cutover to A remains open.
       Full product-template coverage,
       complete pagination parity and API cutover remain open; no replaced
       implementation has been removed.

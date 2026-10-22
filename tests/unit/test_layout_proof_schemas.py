@@ -514,6 +514,8 @@ def test_approval_rejects_scope_mismatch() -> None:
         _approval(target_checksum="other-target")
     with pytest.raises(ValidationError):
         _approval(layout_spec_checksum="other-spec")
+    with pytest.raises(ValidationError, match="renderer version mismatch"):
+        _approval(renderer_version="product-html/2")
 
 
 def test_approval_rejects_extra_fields() -> None:

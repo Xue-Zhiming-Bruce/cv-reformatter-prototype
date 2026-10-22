@@ -11,6 +11,8 @@ from app.template_analysis.schemas import BadgeStyle, LayoutTemplateSpec, Sectio
 
 
 DEFAULT_OUTPUT_DIR = Path("data/generated_outputs")
+# Bump when changing this implementation's layout, export binding or font policy.
+RENDERER_VERSION = "product-html/1"
 
 
 class HtmlRenderingError(RuntimeError):

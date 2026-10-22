@@ -210,6 +210,26 @@ failed, or mismatched proofs return HTTP 409 with `layout_proof_*` error
 codes. Design-driven generation additionally requires an approved design
 (`design_not_approved`, `design_profile_mismatch`, `design_inventory_mismatch`).
 
+Layout-proof status responses expose the server's active `renderer_version`;
+each variant also reports the implementation version that rendered its proof.
+Proof results and approvals persist this identity, and all three variants must
+match the aggregate and active implementation. A version mismatch blocks both
+approval and target-based generation with HTTP 409 `layout_proof_mismatch`.
+Create new short/medium/long proofs and explicitly approve them to resume;
+rendering the proofs alone never grants approval. Status treats a stale approval
+as unavailable (`state=none`) while retaining the old variant versions for
+inspection. Clients cannot select a renderer through proof requests.
+
+Stored records without `renderer_version` retain the fixed historical identity
+`product-html/1`; they are never interpreted as whichever renderer is active or
+rewritten on read. New proof IDs include renderer and canonical-context identity
+so a version change preserves earlier proof files. Rolling back requires the
+matching implementation, approval record and original checksum-verified proof
+files; no automatic fallback grants an older approval. Generation metadata also
+records `renderer_version`. The current implementation remains `product-html/1`;
+this identity binding does not switch API generation to A or alter the six
+identity fields used for final-output acceptance.
+
 ### Generated-profile artifact and draft preservation
 
 Generation never overwrites the extraction draft: `candidate_profile.json`

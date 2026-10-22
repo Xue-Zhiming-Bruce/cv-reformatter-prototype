@@ -315,6 +315,25 @@ def test_missing_candidate_fields_do_not_invent_data(
 # -- approve_layout_proof refusal paths (recomputation-based) ------------------
 
 
+def test_preloaded_approval_cannot_render_with_another_renderer(
+    tmp_path: Path, fake_pdf: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.generation import html_renderer
+
+    target_pdf = build_styled_target_pdf(tmp_path / "target.pdf")
+    _render_all_variants(tmp_path, target_pdf=target_pdf)
+    approval = approve_layout_proof(
+        artifact_dir=tmp_path, artifact_id="artifact-1", target_checksum="target-abc",
+        layout_spec=_spec(), target_pdf=target_pdf, reviewer_id="reviewer-1",
+    )
+    monkeypatch.setattr(html_renderer, "RENDERER_VERSION", "product-html/2")
+    output = tmp_path / "candidate"
+    with pytest.raises(LayoutProofMismatchError, match="renderer version mismatch"):
+        render_candidate_document(approval=approval, artifact_id="artifact-1", layout_spec=_spec(),
+                                  render_context=_candidate_context(), output_dir=output)
+    assert not output.exists()
+
+
 def test_approve_refuses_missing_render_result(tmp_path: Path, fake_pdf: None) -> None:
     target_pdf = build_styled_target_pdf(tmp_path / "target.pdf")
     _render_all_variants(tmp_path, target_pdf=target_pdf)

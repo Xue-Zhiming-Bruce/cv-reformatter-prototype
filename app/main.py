@@ -48,6 +48,7 @@ from app.generation.content_validation import (
     validate_output_structure,
 )
 from app.generation.followup_message_generator import generate_followup_message
+from app.generation import html_renderer as product_html_renderer
 from app.generation.html_renderer import HtmlRenderingError, render_html
 from app.generation.render_plan import build_production_render_plan
 from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME, build_client_render_context
@@ -451,6 +452,7 @@ class LayoutProofEvidenceSummary(BaseModel):
 
     variant: str
     proof_id: str
+    renderer_version: str
     page_count: int | None
     structural_passed: bool
     structural_error_count: int
@@ -461,6 +463,7 @@ class LayoutProofEvidenceSummary(BaseModel):
 
 class LayoutProofStatusResponse(BaseModel):
     artifact_id: str
+    renderer_version: str
     state: str
     target_checksum: str
     layout_spec_checksum: str
@@ -1317,6 +1320,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         {
             "profile_revision_id": profile_revision.profile_revision_id,
             "profile_sha256": profile_revision.profile_sha256,
+            "renderer_version": product_html_renderer.RENDERER_VERSION,
             "layout_template_version": effective_layout_spec.template_version,
             "layout_spec_sha256": production_render_plan.layout_spec_sha256,
             "layout_spec_filename": (
@@ -2346,6 +2350,7 @@ def _layout_proof_status(
                 LayoutProofEvidenceSummary(
                     variant=variant.value,
                     proof_id=result.proof_id,
+                    renderer_version=result.renderer_version,
                     page_count=result.page_count,
                     structural_passed=evidence.structural.passed,
                     structural_error_count=len(evidence.structural.errors),
@@ -2356,6 +2361,7 @@ def _layout_proof_status(
             )
     return LayoutProofStatusResponse(
         artifact_id=artifact_id,
+        renderer_version=product_html_renderer.RENDERER_VERSION,
         state=approval.state if approval is not None else "none",
         target_checksum=target_checksum,
         layout_spec_checksum=layout_checksum,

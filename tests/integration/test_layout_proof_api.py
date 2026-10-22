@@ -199,12 +199,14 @@ def test_create_layout_proofs_returns_all_variants(tmp_path: Path) -> None:
     response = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})
     assert response.status_code == 200, response.text
     body = response.json()
+    assert body["renderer_version"] == "product-html/1"
     assert {variant["variant"] for variant in body["variants"]} == {
         "short",
         "medium",
         "long",
     }
     for variant in body["variants"]:
+        assert variant["renderer_version"] == body["renderer_version"]
         assert variant["proof_id"].startswith("layout_proof_")
         assert variant["html_filename"].endswith(".html")
         assert variant["pdf_filename"].endswith(".pdf")
@@ -212,6 +214,85 @@ def test_create_layout_proofs_returns_all_variants(tmp_path: Path) -> None:
     assert "generated_outputs" not in response.text
     assert body["state"] == "none"
     assert target_format["artifact_id"] == artifact_id
+
+
+def test_renderer_change_requires_new_proofs_and_explicit_reapproval(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    from app.generation import html_renderer
+
+    artifact_id = "artifact_renderer_version"
+    artifact_dir = tmp_path / artifact_id
+    target_format = _upload_target(tmp_path, artifact_id)
+    revision_id = _approve_profile(artifact_id, artifact_dir)
+    _create_and_approve(client, artifact_id, artifact_dir)
+    approval_path = artifact_dir / "layout_proofs/approval.json"
+    legacy = json.loads(approval_path.read_text())
+    legacy.pop("renderer_version")
+    old_files = {}
+    old_results = {}
+    for variant, evidence in legacy["variants"].items():
+        result = evidence["render_result"]
+        assert result.pop("renderer_version") == "product-html/1"
+        path = artifact_dir / "layout_proofs/variants" / variant / "render_result.json"
+        stored = json.loads(path.read_text())
+        stored.pop("renderer_version")
+        path.write_text(json.dumps(stored))
+        old_results[path] = path.read_bytes()
+        for filename in (result["html_filename"], result["pdf_filename"]):
+            proof_path = artifact_dir / "layout_proofs" / result["proof_id"] / filename
+            old_files[proof_path] = proof_path.read_bytes()
+    approval_path.write_text(json.dumps(legacy))
+    legacy_bytes = approval_path.read_bytes()
+    assert _generate_with_target(artifact_id, target_format, revision_id).status_code == 200
+    assert approval_path.read_bytes() == legacy_bytes
+    metadata_path = artifact_dir / "generation_metadata.json"
+    assert json.loads(metadata_path.read_text())["renderer_version"] == "product-html/1"
+    output_paths = [artifact_dir / "candidate_profile.html", artifact_dir / "candidate_profile.pdf", metadata_path]
+    old_outputs = {path: path.read_bytes() for path in output_paths}
+
+    # Simulate an implementation version change; this is an identity test, not A adoption.
+    monkeypatch.setattr(html_renderer, "RENDERER_VERSION", "product-html/2")
+    response = client.get(f"/api/artifacts/{artifact_id}/layout-proofs")
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "none"
+    assert response.json()["renderer_version"] == "product-html/2"
+    assert {item["renderer_version"] for item in response.json()["variants"]} == {"product-html/1"}
+    for response in (
+        _generate_with_target(artifact_id, target_format, revision_id),
+        client.post(f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+                    json={"state": "approved", "reviewer_id": "reviewer-1"}),
+    ):
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["error_code"] == "layout_proof_mismatch"
+        assert "renderer version mismatch" in response.json()["detail"]["message"]
+    assert {path: path.read_bytes() for path in output_paths} == old_outputs
+    assert approval_path.read_bytes() == legacy_bytes
+
+    response = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "none"  # Rendering cannot grant human approval.
+    assert {item["renderer_version"] for item in response.json()["variants"]} == {"product-html/2"}
+    old_ids = {e["render_result"]["proof_id"] for e in legacy["variants"].values()}
+    assert old_ids.isdisjoint({item["proof_id"] for item in response.json()["variants"]})
+    assert {path: path.read_bytes() for path in old_files} == old_files
+    response = client.post(f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+                           json={"state": "approved", "reviewer_id": "reviewer-2"})
+    assert response.status_code == 200, response.text
+    current = json.loads(approval_path.read_text())
+    assert current["renderer_version"] == "product-html/2"
+    assert {e["render_result"]["renderer_version"] for e in current["variants"].values()} == {"product-html/2"}
+    assert _generate_with_target(artifact_id, target_format, revision_id).status_code == 200
+    assert json.loads(metadata_path.read_text())["renderer_version"] == "product-html/2"
+
+    # Rolling back the implementation also requires its matching approval and proof files.
+    monkeypatch.setattr(html_renderer, "RENDERER_VERSION", "product-html/1")
+    assert _generate_with_target(artifact_id, target_format, revision_id).status_code == 409
+    approval_path.write_bytes(legacy_bytes)
+    for path, payload in old_results.items():
+        path.write_bytes(payload)
+    assert _generate_with_target(artifact_id, target_format, revision_id).status_code == 200
+    assert approval_path.read_bytes() == legacy_bytes
 
 
 def test_approve_rejects_structurally_failed_proofs(tmp_path: Path) -> None:

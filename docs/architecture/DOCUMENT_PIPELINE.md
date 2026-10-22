@@ -387,6 +387,23 @@ Integration status, October 22, 2026:
   label authorization, PDF export and independent gates. Native ordinary/blind
   PDFs pass the shared product validators and their HTML matches the CLI bytes.
   API/proof rendering has not switched to this call.
+- API proof results and approval aggregates now bind `renderer_version` in
+  addition to target, layout and file checksums. The current product renderer
+  declares `product-html/1`; update its implementation version when layout,
+  export binding or font policy changes. Missing fields in historical records
+  always mean `product-html/1`, independently of the active implementation.
+  Approval recomputation, persisted approval loading and candidate rendering
+  reject another implementation version before writing candidate artifacts.
+  A preloaded approval cannot bypass this check. All variants must share the
+  aggregate's version. Proof IDs include renderer and canonical-context identity,
+  preserving prior proof files when either changes. Re-rendering does not grant
+  approval; rollback requires the matching prior implementation, approval and
+  checksum-verified proof files. API status exposes active/per-variant versions,
+  and generation metadata records the implementation. Canonical API regressions
+  cover legacy reads without rewrites, stale-version rejection, reproof and
+  explicit reapproval, retained old files and identity-bound rollback. The
+  version-change test retains the existing renderer and simulates its version;
+  it does not certify A cutover or A/product output parity.
 - Core presentation labels use the existing product exact-alias helper rather
   than substring source binding. Every supplied template heading must be
   recognized or covered by the existing identity-bound explicit label input

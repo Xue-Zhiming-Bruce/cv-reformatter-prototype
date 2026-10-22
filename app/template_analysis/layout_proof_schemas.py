@@ -230,6 +230,8 @@ class LayoutProofRenderResult(LayoutProofModel):
     layout_spec_checksum: str
     target_checksum: str
     context_checksum: str
+    # Fixed historical identity: never default missing stored fields to the active renderer.
+    renderer_version: str = Field(default="product-html/1", min_length=1)
     html_filename: str
     pdf_filename: str
     html_checksum: str
@@ -323,6 +325,7 @@ class LayoutProofApproval(LayoutProofModel):
     artifact_id: str
     target_checksum: str
     layout_spec_checksum: str
+    renderer_version: str = Field(default="product-html/1", min_length=1)
     state: Literal["pending", "approved", "rejected"] = "pending"
     variants: dict[LengthVariant, VariantProofEvidence]
     approved_at: str | None = None
@@ -359,6 +362,8 @@ class LayoutProofApproval(LayoutProofModel):
                 raise ValueError(f"{variant.value}: layout spec checksum mismatch")
             if evidence.render_result.target_checksum != self.target_checksum:
                 raise ValueError(f"{variant.value}: target checksum mismatch")
+            if evidence.render_result.renderer_version != self.renderer_version:
+                raise ValueError(f"{variant.value}: renderer version mismatch")
         return self
 
     @model_validator(mode="after")
