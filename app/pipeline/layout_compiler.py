@@ -1201,7 +1201,7 @@ def state_from_layout_template(
         entry_source = section.source in {"work_experience", "education", "additional_details"}
         fields = {
             "section_id", "source", "label", "layout", "placement", "optional",
-            "heading_style", "body_style", "spacing", "bullet_indent_pt",
+            "heading_style", "body_style", "spacing", "bullet_indent_pt", "page_break_before",
         }
         if section.source in {"skills", "languages", "certifications"}:
             fields.update({"column_count", "column_gap_pt"})
@@ -1272,6 +1272,7 @@ def state_from_layout_template(
         )
         node(node_id=section_id, kind="section", content_style_id=content_style,
              column_slot=region.slot if region else None,
+             flow=FlowConstraint(page_break_before=section.page_break_before),
              additional_section_heading=section.additional_section_heading,
              binding=SectionBinding(sources=[section.source], mapping_action="map", evidence_ids=evidence,
                  partition_policy="match_section_heading" if section.source == "additional_details" else "none"),

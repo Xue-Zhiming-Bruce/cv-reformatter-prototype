@@ -1144,7 +1144,52 @@ def content_shape_verification(
     if state.provenance.provider == "layout_template_spec":
         rows.extend(_product_decoration_checks(state, plan, elements, pdf, rendered_extents))
         rows.extend(_product_column_checks(plan, elements, pdf, rendered_headings))
+        rows.extend(_product_pagination_checks(state, plan, elements, pdf, rendered_headings))
     return {"passed": all(row["consistent"] for row in rows), "rows": rows}
+
+
+def _product_pagination_checks(
+    state: C2LayoutState, plan: C2RenderPlan, elements: list[dict[str, Any]], pdf: Path | None,
+    headings: dict[str, tuple[int, float]],
+) -> list[dict[str, Any]]:
+    """Check explicit page starts and blank pages, independently of source CSS."""
+    import pdfplumber
+
+    rows = []
+    by_id = {element["node_id"]: element for element in elements}
+    styles = {style.style_id: style for style in state.styles}
+
+    def record(node_id: str, property_name: str, passed: bool, observed: Any) -> None:
+        rows.append({"section": node_id, "consistent": passed, "properties": [{
+            "property": property_name, "required_by_declared_shape": True,
+            "measured": "LayoutTemplateSpec", "renderer_consumes": passed,
+            "rendered": observed,
+            "capability_gap": None if passed else f"{property_name} not consumed in HTML/PDF"}]})
+
+    if pdf:
+        with pdfplumber.open(pdf) as document:
+            nonblank = [bool(page.chars) for page in document.pages]
+    else:
+        nonblank = []
+    record("pages", "no_blank_pages", bool(nonblank) and all(nonblank), nonblank)
+    previous_page = 1  # The candidate header precedes the first body section.
+    for index, group in enumerate(section_groups(plan)):
+        first = group[0]
+        if first.page_break_before:
+            node_id = f"body.group.{index}" if first.column_slot else first.node_id
+            element = by_id.get(node_id)
+            declarations = dict(re.findall(r"([\w-]+)\s*:\s*([^;]+)", element["style"])) if element else {}
+            position = headings.get(first.node_id)
+            # Text ink starts below its line box; allow one line for that offset.
+            style = styles.get(first.style_id)
+            line_height = (style.line_height_pt or style.font_size_pt) if style else 0
+            top_limit = plan.page.margin_top_pt + (first.heading_gap_above_pt or 0) + line_height
+            passed = bool(declarations.get("break-before", "").strip() == "page" and position
+                          and position[0] > previous_page and position[1] <= top_limit)
+            record(first.node_id, "page_break_before", passed, position)
+        previous_page = max([previous_page, *(headings[section.node_id][0]
+                             for section in group if section.node_id in headings)])
+    return rows
 
 
 def _product_column_checks(

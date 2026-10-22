@@ -241,6 +241,7 @@ class SectionPlan(StateModel):
     entries: list[EntryPlan] = Field(default_factory=list)
     items: list[LeafText] = Field(default_factory=list)
     column_slot: Literal["main_column", "sidebar"] | None = None
+    page_break_before: bool = False
     item_columns: list[Column] = Field(default_factory=list)
     badge_id: str | None = None
     badge_label_style_id: str | None = None
@@ -323,7 +324,7 @@ def section_groups(plan: C2RenderPlan) -> list[list[SectionPlan]]:
             continue
         if section.column_slot is None:
             groups.append([section])
-        elif groups and groups[-1][0].column_slot is not None:
+        elif groups and groups[-1][0].column_slot is not None and not section.page_break_before:
             groups[-1].append(section)
         else:
             groups.append([section])
@@ -771,7 +772,6 @@ def _product_entry_rows(
     leaves: dict[str, CandidateLeaf], state: C2LayoutState, failures: list[str],
 ) -> None:
     fields: dict[str, list[LeafText]] = {}
-    entry.keep_together = layout.kind != "additional_stacked"
     allowed = {
         "work_inline": {"title", "company", "location", "date_range"},
         "work_split": {"title", "company", "location", "date_range"},
@@ -1128,6 +1128,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             source_role=role,
             content_style_id=section.content_style_id,
             column_slot=section.column_slot,
+            page_break_before=section.flow.page_break_before,
             item_columns=list_node.columns if list_node and state.provenance.provider == "layout_template_spec" else [],
             badge_id=section.badge_ids[0] if content.content_kind == "badge_items" and section.badge_ids else None,
             badge_label_style_id=section.badge_label_style_id,
@@ -1337,8 +1338,6 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             if entry_node and entry_node.entry_layout:
                 for entry in plan.entries:
                     _product_entry_rows(entry, entry_node.entry_layout, plan, leaf_by_id, state, failures)
-                    if region is not None:
-                        entry.keep_together = False
         else:  # item_list / inline_items
             list_node = by_id.get(section.list_ref) if section.list_ref else None
             plan.bullet_dot_x0_pt = list_node.bullet_dot_x0_pt if list_node else None

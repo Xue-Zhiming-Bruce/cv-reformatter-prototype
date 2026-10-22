@@ -153,6 +153,9 @@ def _entry_rows_html(entry: EntryPlan) -> str:
     for index, row in enumerate(entry.rows or []):
         node_id = _esc(f"{entry.node_id}.row.{index}")
         gap = f"margin-top: {_pt(row.gap_above_pt)};" if row.gap_above_pt is not None else ""
+        flow = "break-inside:avoid;"
+        if index < len(entry.rows or []) - 1 or entry.bullet_items or entry.text_lines:
+            flow += "break-after:avoid;"
         sides = []
         for side, fields in (("left", row.left), ("right", row.right)):
             spans = []
@@ -163,7 +166,7 @@ def _entry_rows_html(entry: EntryPlan) -> str:
             style = "flex:1;min-width:0;overflow-wrap:anywhere;" if side == "left" else "flex-shrink:0;text-align:right;"
             sides.append(f'<span data-node-id="{node_id}.{side}" style="{style}">{"".join(spans)}</span>')
         row_style = (row.left or row.right)[0].style_id
-        rows.append(f'<p class="c2-entry-row {_class_for(row_style)}" data-node-id="{node_id}" style="display:flex;align-items:baseline;gap:12pt;{gap}">{"".join(sides)}</p>')
+        rows.append(f'<p class="c2-entry-row {_class_for(row_style)}" data-node-id="{node_id}" style="display:flex;align-items:baseline;gap:12pt;{gap}{flow}">{"".join(sides)}</p>')
     return "\n".join(rows)
 
 
@@ -222,7 +225,8 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
     for token in state.styles:
         css.append(f".{_class_for(token.style_id)} {{ {_style_css(token)} }}")
     if state.provenance.provider == "layout_template_spec":
-        css.append("h2 { break-after: avoid; page-break-after: avoid; }")
+        css.append("h2, h3 { break-after: avoid; page-break-after: avoid; }")
+        css.append(".c2-entry-body li, .c2-entry-body p { break-inside: avoid; }")
     css += [
         ".c2-header-row { white-space: normal; }",
         ".c2-section { }",
@@ -339,7 +343,8 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
             else rule_payload
         )
         if not section_plan.empty:
-            parts.append(f'  <section class="c2-section" data-node-id="{_esc(heading_id)}"{candidate_only_attr}>')
+            flow_attr = ' style="break-before:page;"' if section_plan.page_break_before and region is None else ""
+            parts.append(f'  <section class="c2-section" data-node-id="{_esc(heading_id)}"{candidate_only_attr}{flow_attr}>')
             if rail:
                 align = (
                     f" text-align: {section_plan.rail_label_align};"
@@ -601,7 +606,8 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
             emit_section(group[0])
             continue
         gap = plan.body_columns[1].x0_pt - plan.body_columns[0].x1_pt
-        parts.append(f'<div data-node-id="body.group.{group_index}" style="display:flex;align-items:stretch;gap:{_pt(gap)};">')
+        flow = "break-before:page;" if group[0].page_break_before else ""
+        parts.append(f'<div data-node-id="body.group.{group_index}" style="display:flex;align-items:stretch;gap:{_pt(gap)};{flow}">')
         for column in plan.body_columns:
             background = f"background:{plan.sidebar_background_hex};" if column.slot == "sidebar" and plan.sidebar_background_hex else ""
             parts.append(f'<div data-node-id="body.group.{group_index}.{column.slot}" '

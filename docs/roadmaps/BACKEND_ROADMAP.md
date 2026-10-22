@@ -54,6 +54,11 @@ Legacy profile-approval names remain compatibility fields only.
       full-width group boundaries and two-column plain lists now compile and
       render through A. PDF checks cover wrapped content, region membership,
       ordinary/blind output, empty sidebars and displaced-column controls.
+      Explicit section page breaks now survive spacing overrides; column breaks
+      start a fresh pair of rails, while empty sections do not force blank pages.
+      Single-column and sidebar entries flow across pages with header/first-body
+      attachment; real PDF cases and removed-break HTML/PDF controls cover this
+      bounded pagination subset.
       Full product-template coverage, remaining custom group styling,
       complete pagination parity and API cutover remain open; no replaced
       implementation has been removed.

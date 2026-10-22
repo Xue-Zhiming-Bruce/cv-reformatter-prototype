@@ -265,8 +265,8 @@ Integration status, October 22, 2026:
   spacing, stacked lists and bullet indentation. Conventional labels must
   resolve through exact product aliases. Non-default properties without a
   renderer implementation fail before run creation. Contact body mappings,
-  inline lists, header/footer body placements, hidden headings and forced page
-  breaks remain unsupported in this projection. It does not claim full layout
+  inline lists, header/footer body placements and hidden headings remain
+  unsupported in this projection. It does not claim full layout
   or pagination parity.
 - Body columns use `columns.count=2` with an explicit `sidebar_side`; templates
   without a direction or without any column placements fail before run creation.
@@ -286,9 +286,20 @@ Integration status, October 22, 2026:
   Entry rows, bullet anchors and heading rules use their owning body region;
   explicit rule lengths must fit that region, while an unspecified length
   fills it. Normal paragraph/entry rendering is reused inside each column.
-  Work/education entries inside body columns can continue across pages, so a
-  long first entry does not move the entire two-column group off the first
-  page. Single-column entry keep-together behavior is unchanged.
+  Product entries can continue across pages in both single-column and sidebar
+  layouts. Entry header rows stay together and with the first description;
+  individual description items avoid page splits when they fit on a page.
+  A long first entry therefore does not move the entire entry or column group
+  off the first page. Oversized individual items can still fragment naturally.
+- Product `page_break_before` maps through the existing section flow state,
+  independently of section spacing overrides. A visible full-width section
+  starts on a fresh page. A marked column section starts a new column group on
+  a fresh page; preceding sections finish in the preceding group, and following
+  column sections join the new group until another boundary. Both rails restart
+  together rather than issuing a page break inside one flex item. Empty sections
+  render nothing and do not cause page breaks. Consumption checks verify the
+  HTML break owner, PDF heading page/top and absence of blank pages. These
+  bounded checks do not certify all possible continuation or orphan cases.
 - Column content checks use PDF reading flow, with candidate facts additionally
   checked inside their assigned horizontal bounds. Structure checks preserve
   order per column and around full-width blocks; heading/rule occurrences are
@@ -319,8 +330,9 @@ Integration status, October 22, 2026:
   separators. `CandidateLeaf.content_field` records semantic field identity
   from the shared context without parsing text or leaf IDs. Missing/duplicate
   semantic fields fail product-entry routing. Internal `EntryLayout` and typed
-  plan rows carry role styles and flow gaps; work/education entries request
-  `break-inside: avoid`, while custom entries can continue across pages.
+  plan rows carry role styles and flow gaps; entry header rows request
+  `break-after: avoid` when followed by another header row or description,
+  while the containing entry can continue across pages.
 - Additional sections use the explicit `match_section_heading` partition:
   selectors match source headings case-insensitively; the generic details
   section takes recruiter-detail rows and unmatched groups. Details precede

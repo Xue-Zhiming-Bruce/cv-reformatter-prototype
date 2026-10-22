@@ -556,3 +556,80 @@ def test_cli_product_columns_preserve_regions_and_wrapped_content(tmp_path: Path
         assert validate_generated_content(context, layout_spec=spec, pdf_path=damaged_pdf).passed
         assert not content_gate(plan, html, damaged_pdf)["passed"]
         assert not content_shape_verification(state, plan, None, {}, html, {}, damaged_pdf)["passed"]
+
+
+@pytest.mark.parametrize("mode", ["flow", "single", "left", "right"])
+def test_cli_product_pagination_keeps_heads_and_honors_breaks(tmp_path: Path, mode: str) -> None:
+    from app.generation.content_validation import validate_generated_content
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.layout_state import C2LayoutState
+    from app.pipeline.render_plan import compile_render_plan
+    from app.pipeline.quality import content_gate, content_shape_verification
+    from tests.helpers.pipeline_layout import product_column_template, product_entry_profile
+
+    inputs = _inputs(tmp_path, one_column=True)
+    spec = product_column_template(mode if mode in {"left", "right"} else None)
+    for section in spec.sections:
+        # Empty sections must not cause blank pages; an override must not cancel a break.
+        section.page_break_before = section.source == "languages" or (
+            mode != "flow" and section.source in {"work_experience", "education", "additional_details"})
+        if section.source == "work_experience":
+            section.spacing = spec.spacing.model_copy(update={"section_before_pt": 17})
+    profile = product_entry_profile()
+    profile.skills = ["Python", "SQL"]
+    profile.work_experience[0].description.extend(
+        f"Milestone {index}: delivered documented services with operational handover and reliable monitoring"
+        for index in range(40 if mode == "flow" else 24))
+    original = profile.model_dump(mode="json")
+    candidate_path, spec_path = tmp_path / "candidate.json", tmp_path / "layout.json"
+    candidate_path.write_text(profile.model_dump_json())
+    spec_path.write_text(spec.model_dump_json())
+    output = tmp_path / "result"
+    command = [sys.executable, "-B", "-m", "app.pipeline", "--target", str(inputs["target_pdf"]),
+        "--adobe-json", str(inputs["adobe_json"]), "--normalized", str(inputs["normalized_evidence"]),
+        "--structure-draft", str(inputs["structure_draft"]), "--layout-spec", str(spec_path),
+        "--candidate", str(candidate_path), "--out", str(output)]
+    blind = mode == "right"
+    if blind:
+        command.append("--blind-profile")
+    result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    pdf_path = output / "lane_a/render_1.pdf"
+    context = build_client_render_context(profile, blind_profile=blind)
+    assert validate_generated_content(context, layout_spec=spec, pdf_path=pdf_path).passed
+    with pdfplumber.open(pdf_path) as pdf:
+        texts = [page.extract_text(use_text_flow=True) or "" for page in pdf.pages]
+        assert all(text.strip() for text in texts), "accidental blank page"
+        def page_of(text):
+            return max(index for index, page in enumerate(texts, 1) if text in " ".join(page.split()))
+        assert page_of("EXPERIENCE") == (1 if mode == "flow" else 2)
+        assert page_of("PlatformEngineer") == page_of("Built useful tools")
+        assert page_of("IndependentEngineer") == page_of("Preserved an entry without an employer")
+        assert page_of("UsefulComponent") == page_of("Designed a reusable component")
+        if mode == "flow":
+            assert page_of("Milestone 39") > page_of("EXPERIENCE")
+        if mode != "flow":
+            assert page_of("EDUCATION") > page_of("Milestone 23")
+            assert page_of("UsefulComponent") > page_of("EDUCATION")
+            assert page_of("ADDITIONAL DETAILS") > page_of("UsefulComponent")
+        assert "LANGUAGES" not in "\n".join(texts)
+        assert ("alpha@example.test" not in "\n".join(texts)) == blind
+    gates = json.loads(next((output / "lane_a").glob("hard_gates_*.json")).read_text())
+    assert gates["details"]["content_shapes_match_evidence"]["passed"], gates
+    assert gates["details"]["section_order_matches_state"]["passed"]
+    assert json.loads(candidate_path.read_text()) == original
+    if mode == "single":
+        from app.generation.chrome_html_to_pdf import export_html_to_pdf
+
+        state = C2LayoutState.model_validate_json((output / "c2_layout_state.json").read_text())
+        plan = compile_render_plan(state, candidate_document_from_context(context, candidate_id="pagination-check"))
+        html = (output / "lane_a/render_1.html").read_text()
+        damaged = html.replace("break-before:page;", "")
+        assert damaged != html
+        damaged_path = tmp_path / "missing_breaks.html"
+        damaged_path.write_text(damaged)
+        damaged_pdf = export_html_to_pdf(damaged_path, tmp_path / "missing_breaks.pdf")
+        assert content_gate(plan, html, damaged_pdf)["passed"]
+        assert not content_shape_verification(state, plan, None, {}, damaged, {}, pdf_path)["passed"]
+        assert not content_shape_verification(state, plan, None, {}, html, {}, damaged_pdf)["passed"]

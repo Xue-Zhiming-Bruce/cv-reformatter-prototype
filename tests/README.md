@@ -78,3 +78,11 @@ to one column. Exporting a displaced column while retaining correct HTML must
 fail the region/shape gates even when the independent content check still passes.
 The existing API renderer currently ignores body placement, so its output is a
 content comparison rather than a column-fidelity reference.
+
+Pagination cases in the same file cover natural single-column continuation,
+explicit section breaks with local spacing overrides, left/right column-group
+restarts, repeated target headings, omitted empty sections and blind output.
+PDF assertions keep entry headers with their first description and reject blank
+pages. Removing breaks from either HTML or the exported PDF must fail the shape
+gate while preserving candidate content. This is bounded pagination coverage,
+not an assertion that arbitrary long-content layouts have been accepted.
