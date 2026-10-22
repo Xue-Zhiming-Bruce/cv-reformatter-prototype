@@ -65,6 +65,12 @@ renderer using the identical context and template. Generic custom-group
 headings must preserve its distinct default size/weight, heading-to-entry gaps
 and within-group entry gaps. This compatibility check does not certify target
 reconstruction or other differences between the two renderers.
+Both outputs also pass the existing API structure validator using semantic
+sections, entries, title/link roles, split work rows and institution markers.
+Cases include absent employers/institutions and non-bold institution styles.
+Removing a title role while preserving all facts must fail the shared structure
+validator and still pass A's content check. These are compatibility regressions;
+the CLI service and API generation routes retain their existing orchestration.
 
 Decoration cases in the same CLI workflow exercise header/heading rules and
 grouped badges on skills, languages and certifications, including ordinary/blind

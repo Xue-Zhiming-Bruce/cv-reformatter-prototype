@@ -63,6 +63,10 @@ Legacy profile-approval names remain compatibility fields only.
       distinct default typography and margins. Same-input ordinary/blind PDF
       comparisons cover group headings, title/link gaps and within-group gaps;
       this fallback is not measured target-specific group styling.
+      A product HTML now carries the existing product semantic markers and
+      passes the API's shared structure validator in ordinary/blind CLI entry
+      regressions, including missing fields and non-bold institutions. This is
+      compatibility preparation; API/proof rendering has not switched.
       Full product-template coverage,
       complete pagination parity and API cutover remain open; no replaced
       implementation has been removed.

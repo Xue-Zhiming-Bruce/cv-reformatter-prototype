@@ -311,7 +311,7 @@ def _section_body(
             )
             rows.append(
                 f'<p class="education-entry" data-primary-separator="{escape(primary_separator, quote=True)}">'
-                f'<span class="education-institution" data-bold="true" style="{_text_css(institution_style, include_family=False)}">'
+                f'<span class="education-institution" data-bold="{str(institution_style.bold).lower()}" style="{_text_css(institution_style, include_family=False)}">'
                 f'{escape(item.institution or "")}</span>'
                 f'{escape(primary_separator + remainder) if remainder else ""}</p>'
             )

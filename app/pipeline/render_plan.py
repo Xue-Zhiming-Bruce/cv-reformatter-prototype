@@ -106,11 +106,13 @@ class EntryFieldPlan(StateModel):
     text: str
     style_id: str = Field(pattern=r"^style\.[a-z0-9_]+$")
     separator_before: str = ""
+    role: Literal["education_institution"] | None = None
 
 class EntryRowPlan(StateModel):
     left: list[EntryFieldPlan] = Field(default_factory=list)
     right: list[EntryFieldPlan] = Field(default_factory=list)
     gap_above_pt: float | None = Field(default=None, ge=0)
+    role: Literal["single", "primary", "secondary", "entry-title", "entry-metadata"] | None = None
 
 class EntryPlan(StateModel):
     node_id: str
@@ -121,6 +123,7 @@ class EntryPlan(StateModel):
     text_lines: list[LeafText] = Field(default_factory=list)  # zero-bullet design: verbatim text
     rows: list[EntryRowPlan] | None = None
     group_heading: LeafText | None = None
+    additional_heading: str | None = None
     gap_above_pt: float | None = Field(default=None, ge=0)
     body_gap_above_pt: float | None = None
     keep_together: bool = False
@@ -792,15 +795,16 @@ def _product_entry_rows(
         for name in names:
             for line in fields.get(name, []):
                 result.append(EntryFieldPlan(leaf_id=line.leaf_id, text=line.text,
-                    style_id=token or "style.body", separator_before=separator if result else ""))
+                    style_id=token or "style.body", separator_before=separator if result else "",
+                    role="education_institution" if name == "institution" else None))
         return result
 
     title, detail, meta = plan.title_style_id, plan.detail_style_id, plan.meta_style_id
     if layout.kind == "work_inline":
-        rows = [EntryRowPlan(left=values(["title", "company", "location"], title, " | "), right=values(["date_range"], meta))]
+        rows = [EntryRowPlan(left=values(["title", "company", "location"], title, " | "), right=values(["date_range"], meta), role="single")]
     elif layout.kind == "work_split":
-        rows = [EntryRowPlan(left=values(["title"], title), right=values(["date_range"], meta)),
-                EntryRowPlan(left=values(["company"], detail), right=values(["location"], meta))]
+        rows = [EntryRowPlan(left=values(["title"], title), right=values(["date_range"], meta), role="primary"),
+                EntryRowPlan(left=values(["company"], detail), right=values(["location"], meta), role="secondary")]
     elif layout.kind == "education_inline":
         left = values(["institution"], title)
         for name in ["degree", "field_of_study", "date_range"]:
@@ -810,7 +814,7 @@ def _product_entry_rows(
                 left.append(field)
         rows = [EntryRowPlan(left=left)]
     else:
-        rows = [EntryRowPlan(left=values(["title"], title))]
+        rows = [EntryRowPlan(left=values(["title"], title), role="entry-title")]
         tokens = {token.style_id: token for token in state.styles}
         title_token, meta_token = tokens[title], tokens[meta]
         title_height = title_token.line_height_pt or title_token.font_size_pt
@@ -820,7 +824,7 @@ def _product_entry_rows(
             if index == 0 and "title" in fields and layout.title_to_metadata_gap_pt is not None:
                 natural = (title_height + title_token.font_size_pt) / 2 + max(0, (meta_height-meta_token.font_size_pt) / 2)
                 gap = max(0, layout.title_to_metadata_gap_pt-natural)
-            rows.append(EntryRowPlan(left=[field], gap_above_pt=gap))
+            rows.append(EntryRowPlan(left=[field], gap_above_pt=gap, role="entry-metadata"))
         body_token = tokens[plan.content_style_id or "style.body"]
         body_height = body_token.line_height_pt or body_token.font_size_pt
         if fields.get("link") and entry.bullet_items:
@@ -1303,6 +1307,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                     plan.source_heading = item.heading
                 for index, leaf in enumerate(leaf for leaf in group_leaves if leaf.kind == "additional_entry"):
                     entry = _entry_plan(section.node_id, leaf, leaves_by_parent, plan.bullet_marker, ledger, failures, own)
+                    entry.additional_heading = item.heading
                     _product_entry_rows(entry, entry_node.entry_layout, plan, leaf_by_id, state, failures)
                     if index == 0 and selector is None:
                         entry.group_heading = LeafText(leaf_id=heading.leaf_id, text=heading.text)

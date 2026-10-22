@@ -148,7 +148,7 @@ def _list_html(
         return f'<div data-node-id="{_esc(node_id)}" style="{column_css}">{text}</div>'
     return f'<ul class="c2-list" style="list-style:none">{text}</ul>' if plan.heading_leaf_id else text
 
-def _entry_rows_html(entry: EntryPlan) -> str:
+def _entry_rows_html(entry: EntryPlan, section: SectionPlan, styles: dict[str, StyleToken]) -> str:
     rows = []
     for index, row in enumerate(entry.rows or []):
         node_id = _esc(f"{entry.node_id}.row.{index}")
@@ -161,12 +161,25 @@ def _entry_rows_html(entry: EntryPlan) -> str:
             spans = []
             for field_index, field in enumerate(fields):
                 identity = f' data-leaf-id="{_esc(field.leaf_id)}"' if field.leaf_id != entry.entry_leaf_id else ""
+                semantic_class = "education-institution " if field.role == "education_institution" else ""
+                semantic_attrs = f' data-bold="{str(styles[field.style_id].bold).lower()}"' if semantic_class else ""
                 spans.append(_esc(field.separator_before) +
-                    f'<span class="{_class_for(field.style_id)}" data-node-id="{node_id}.{side}.{field_index}"{identity}>{_esc(field.text)}</span>')
+                    f'<span class="{semantic_class}{_class_for(field.style_id)}"{semantic_attrs} data-node-id="{node_id}.{side}.{field_index}"{identity}>{_esc(field.text)}</span>')
             style = "flex:1;min-width:0;overflow-wrap:anywhere;" if side == "left" else "flex-shrink:0;text-align:right;"
             sides.append(f'<span data-node-id="{node_id}.{side}" style="{style}">{"".join(spans)}</span>')
         row_style = (row.left or row.right)[0].style_id
-        rows.append(f'<p class="c2-entry-row {_class_for(row_style)}" data-node-id="{node_id}" style="display:flex;align-items:baseline;gap:12pt;{gap}{flow}">{"".join(sides)}</p>')
+        classes, attributes = "", ""
+        if row.role in {"single", "primary", "secondary"}:
+            classes = " entry-row entry-secondary" if row.role == "secondary" else " entry-row entry-primary"
+            token = styles[section.detail_style_id or row_style] if row.role == "secondary" else styles[row_style]
+            attributes = f' data-entry-row="{row.role}" data-color="{token.color_hex}"'
+        elif row.role in {"entry-title", "entry-metadata"}:
+            token = styles[row_style]
+            classes = f" {row.role}"
+            attributes = f' data-font-size-pt="{token.font_size_pt}" data-bold="{str(token.bold).lower()}"'
+            if row.role == "entry-metadata":
+                attributes += f' data-role="project-link" data-color="{token.color_hex}"'
+        rows.append(f'<p class="c2-entry-row{classes} {_class_for(row_style)}"{attributes} data-node-id="{node_id}" style="display:flex;align-items:baseline;gap:12pt;{gap}{flow}">{"".join(sides)}</p>')
     return "\n".join(rows)
 
 
@@ -175,7 +188,8 @@ def _badge_html(section: SectionPlan, badge: BadgeDecoration, content_class: str
     for group_index, group in enumerate(section.badge_groups):
         group_id = f"{section.node_id}.badge_group.{group_index}"
         identity = f' data-leaf-id="{_esc(group.leaf_id)}"' if group.leaf_id else ""
-        parts.append(f'<div data-node-id="{group_id}"{identity}>')
+        skill_layout = ' data-skill-layout="chips"' if section.source_role == "skills" else ""
+        parts.append(f'<div data-node-id="{group_id}"{identity}{skill_layout}>')
         if group.label is not None:
             parts.append(f'<p class="{_class_for(section.badge_label_style_id)}">{_esc(group.label)}</p>')
         index = row_index = 0
@@ -346,7 +360,11 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
         )
         if not section_plan.empty:
             flow_attr = ' style="break-before:page;"' if section_plan.page_break_before and region is None else ""
-            parts.append(f'  <section class="c2-section" data-node-id="{_esc(heading_id)}"{candidate_only_attr}{flow_attr}>')
+            section_class, semantic_attrs = "c2-section", ""
+            if state.provenance.provider == "layout_template_spec":
+                section_class += " section"
+                semantic_attrs = f' data-section-source="{_esc(section_plan.source_role or "")}" data-section-label="{_esc(section_plan.label)}"'
+            parts.append(f'  <section class="{section_class}" data-node-id="{_esc(heading_id)}"{candidate_only_attr}{semantic_attrs}{flow_attr}>')
             if rail:
                 align = (
                     f" text-align: {section_plan.rail_label_align};"
@@ -406,8 +424,13 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                     # Measured inter-entry rhythm from the layout state.
                     declarations.append(f"margin-top: {_pt(entry_gap)};")
                 entry_style = f' style="{" ".join(declarations)}"' if declarations else ""
+                entry_class = "c2-entry"
+                semantic_attrs = ""
+                if entry.additional_heading is not None:
+                    entry_class += " entry additional-entry"
+                    semantic_attrs = f' data-additional-heading="{_esc(entry.additional_heading)}"'
                 parts.append(
-                    f'    <article class="c2-entry" data-node-id="{_esc(entry.node_id)}"{entry_style}>'
+                    f'    <article class="{entry_class}" data-node-id="{_esc(entry.node_id)}"{semantic_attrs}{entry_style}>'
                 )
 
                 def _title_line_html(line: LeafText, line_index: int) -> None:
@@ -438,7 +461,7 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                     parts.append("      </div>")
 
                 if entry.rows is not None:
-                    parts.append(_entry_rows_html(entry))
+                    parts.append(_entry_rows_html(entry, section_plan, styles))
                 else:
                     # entry_meta_placement="title_row" (Pipeline E4 bounded repair
                     # layer): the meta column shares the FIRST title line's row

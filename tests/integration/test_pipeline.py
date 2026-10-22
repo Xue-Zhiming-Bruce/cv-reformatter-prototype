@@ -315,13 +315,15 @@ def test_product_template_rejects_invalid_dispatch_before_output(tmp_path: Path,
 def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, split_work: bool, map_custom: bool) -> None:
     from app.extraction.candidate_schema import AdditionalSectionEntry
     from app.generation.chrome_html_to_pdf import export_html_to_pdf
-    from app.generation.content_validation import validate_generated_content
+    from app.generation.content_validation import validate_generated_content, validate_output_structure
     from app.generation.html_renderer import render_html as render_product_html
     from app.generation.template_mapper import build_client_render_context
     from tests.helpers.pipeline_layout import product_entry_template, product_entry_profile
 
     inputs = _inputs(tmp_path, one_column=True)
     spec = product_entry_template(split_work=split_work, map_custom=map_custom)
+    if blind:
+        spec.sections[2].education_institution_style.bold = False
     profile = product_entry_profile()
     profile.additional_sections[1].entries.append(AdditionalSectionEntry(title="TeamAward"))
     if map_custom and not blind:
@@ -348,6 +350,9 @@ def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, s
     assert report.passed, report
     reference_pdf = export_html_to_pdf(render_product_html(context, spec, tmp_path / "reference.html"), tmp_path / "reference.pdf")
     assert validate_generated_content(context, layout_spec=spec, pdf_path=reference_pdf).passed
+    for output_html, output_pdf in ((output / "lane_a/render_1.html", pdf_path), (tmp_path / "reference.html", reference_pdf)):
+        structure = validate_output_structure(context, html_path=output_html, pdf_path=output_pdf, layout_spec=spec)
+        assert structure.passed, structure
     with pdfplumber.open(reference_pdf) as reference:
         reference_words = [word for page in reference.pages
                            for word in page.extract_words(extra_attrs=["fontname", "size"])]
@@ -419,6 +424,10 @@ def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, s
         assert broken_column != html
         assert not content_shape_verification(state, plan, None, {}, broken_column, {}, pdf_path)["passed"]
         assert not content_gate(plan, html.replace("Designed a reusable component", "Changed component"), pdf_path)["passed"]
+        missing_title_role = tmp_path / "missing_title_role.html"
+        missing_title_role.write_text(html.replace(" entry-title", ""))
+        assert content_gate(plan, missing_title_role.read_text(), pdf_path)["passed"]
+        assert not validate_output_structure(context, html_path=missing_title_role, layout_spec=spec).passed
         aliases = gates["details"]["content_gate"]["leaf_records"]["additional_0.heading"]["presentation_mapping"]
         assert aliases == {"source_heading": "Projects", "target_label": "ADDITIONAL DETAILS"}
 

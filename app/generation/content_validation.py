@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from html import escape, unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Literal
@@ -347,7 +348,7 @@ def _check_measured_renderer_semantics(
     for section in layout_spec.sections:
         match = re.search(
             rf'<section[^>]*data-section-source="{re.escape(section.source)}"[^>]*'
-            rf'data-section-label="{re.escape(section.label)}"[^>]*>(.*?)</section>',
+            rf'data-section-label="{re.escape(escape(section.label, quote=True))}"[^>]*>(.*?)</section>',
             html,
             flags=re.DOTALL,
         )
@@ -358,18 +359,21 @@ def _check_measured_renderer_semantics(
         notes: list[str] = []
         if section.source == "work_experience" and context.work_experience:
             if section.split_entry_rows:
-                if body.count('data-entry-row="primary"') != len(context.work_experience):
+                rendered_rows = re.findall(r'<p\b[^>]*data-entry-row="(primary|secondary)"[^>]*>(.*?)</p>', body, re.DOTALL)
+                populated_rows = Counter(role for role, text in rendered_rows
+                                         if unescape(re.sub(r"<[^>]+>", "", text)).strip())
+                if populated_rows["primary"] != sum(bool(item.title or item.date_range) for item in context.work_experience):
                     issues.append("work entries do not each expose a measured primary row")
-                if body.count('data-entry-row="secondary"') != len(context.work_experience):
+                if populated_rows["secondary"] != sum(bool(item.company or item.location) for item in context.work_experience):
                     issues.append("work entries do not each expose a measured secondary row")
                 if " | " in re.sub(r"<[^>]+>", "", body):
                     issues.append("work entry rows contain an unmeasured pipe delimiter")
-            if section.entry_secondary_style is not None:
+            if section.split_entry_rows and section.entry_secondary_style is not None and any(item.company for item in context.work_experience):
                 expected = section.entry_secondary_style.color_hex.upper()
-                colors = [value.upper() for value in re.findall(r'class="entry-row entry-secondary"[^>]*data-color="(#[0-9A-Fa-f]{6})"', body)]
+                colors = [value.upper() for value in re.findall(r'class="[^\"]*\bentry-secondary\b[^\"]*"[^>]*data-color="(#[0-9A-Fa-f]{6})"', body)]
                 if not colors or any(value != expected for value in colors):
                     issues.append(f"company color does not equal measured {expected}")
-            elif section.split_entry_rows:
+            elif section.split_entry_rows and section.entry_secondary_style is None:
                 notes.append("company style measurement unavailable; color assertion skipped")
         elif section.source == "skills" and (context.skill_groups or context.skills):
             expected_layout = "chips" if section.badge_style is not None else section.layout
@@ -379,8 +383,14 @@ def _check_measured_renderer_semantics(
             if expected_layout == "chips" and "chips" not in layouts:
                 issues.append("skill representation does not use measured chips")
         elif section.source == "education" and context.education:
-            if body.count('class="education-institution" data-bold="true"') != len(context.education):
-                issues.append("education institution is not bold for every entry")
+            institutions = re.findall(r'<span\b[^>]*class="[^\"]*\beducation-institution\b[^\"]*"([^>]*)>([^<]*)</span>', body)
+            expected_bold = (section.education_institution_style.bold
+                             if section.education_institution_style is not None else True)
+            observed = [(unescape(text).strip(), 'data-bold="true"' in attrs)
+                        for attrs, text in institutions if unescape(text).strip()]
+            expected_institutions = [(item.institution, expected_bold) for item in context.education if item.institution]
+            if observed != expected_institutions:
+                issues.append("education institution text or weight does not match the template and context")
             if " | " in re.sub(r"<[^>]+>", "", body):
                 issues.append("education rows contain an unmeasured pipe delimiter")
         elif section.source == "additional_details":
@@ -390,7 +400,7 @@ def _check_measured_renderer_semantics(
                 issues.append("portfolio URL is absent from the measured links section")
             if section.entry_metadata_style is not None and 'data-role="project-link"' in body:
                 expected = section.entry_metadata_style.color_hex.upper()
-                colors = [value.upper() for value in re.findall(r'class="entry-metadata"[^>]*data-role="project-link"[^>]*data-color="(#[0-9A-Fa-f]{6})"', body)]
+                colors = [value.upper() for value in re.findall(r'class="[^\"]*\bentry-metadata\b[^\"]*"[^>]*data-role="project-link"[^>]*data-color="(#[0-9A-Fa-f]{6})"', body)]
                 if not colors or any(value != expected for value in colors):
                     issues.append(f"project URL color does not equal measured {expected}")
         if issues or notes or section.source in {"work_experience", "skills", "education", "additional_details"}:

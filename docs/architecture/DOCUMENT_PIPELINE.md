@@ -349,6 +349,22 @@ Integration status, October 22, 2026:
   generic-group heading style field, so it is not a measured target-style claim.
   Same-input PDF regressions compare group-heading typography, heading-to-entry
   gaps and within-group entry gaps against the retained product renderer.
+- Product-template A HTML now exposes the product renderer's semantic section,
+  additional-entry, title/link, split-work-row, institution and skill-chip
+  markers alongside its internal node/leaf identities. Typed plan roles supply
+  these markers; candidate text and leaf-ID spelling do not determine them.
+  The existing API `validate_output_structure` accepts both renderers in the
+  canonical CLI regressions, including missing employers/institutions, ordinary
+  institution weight and title/link/description-only entries. Removing a title
+  role while retaining its facts fails that shared structure check. The A
+  diagnostics tokenize ancestor classes so added semantic classes cannot turn
+  entry headers into body text for typography checks.
+  API generation still uses the retained product renderer. Native built-in
+  templates include a document-title flag and contact-source declaration outside
+  A's current subset; uploaded templates can also request unsupported features
+  such as inline skills. Replacing proof/candidate rendering requires validating
+  proof approval against the selected implementation and proving rollback;
+  neither a compatible DOM nor a matching template checksum completes cutover.
 - Core presentation labels use the existing product exact-alias helper rather
   than substring source binding. Every supplied template heading must be
   recognized or covered by the existing identity-bound explicit label input

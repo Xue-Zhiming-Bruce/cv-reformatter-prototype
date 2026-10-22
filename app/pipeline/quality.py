@@ -487,7 +487,7 @@ class _ElementTreeParser(HTMLParser):
             "style": values.get("style") or "",
             "node_id": values.get("data-node-id") or "",
             "ancestor_node_ids": [item["node_id"] for item in self._stack],
-            "ancestor_classes": [item["class"] for item in self._stack],
+            "ancestor_classes": [name for item in self._stack for name in item["class"].split()],
         }
         self.elements.append(element)
         self._stack.append(
