@@ -313,13 +313,17 @@ def test_product_template_rejects_invalid_dispatch_before_output(tmp_path: Path,
 @pytest.mark.parametrize("blind", [False, True])
 @pytest.mark.parametrize("split_work,map_custom", [(False, False), (True, True)])
 def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, split_work: bool, map_custom: bool) -> None:
+    from app.extraction.candidate_schema import AdditionalSectionEntry
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
     from app.generation.content_validation import validate_generated_content
+    from app.generation.html_renderer import render_html as render_product_html
     from app.generation.template_mapper import build_client_render_context
     from tests.helpers.pipeline_layout import product_entry_template, product_entry_profile
 
     inputs = _inputs(tmp_path, one_column=True)
     spec = product_entry_template(split_work=split_work, map_custom=map_custom)
     profile = product_entry_profile()
+    profile.additional_sections[1].entries.append(AdditionalSectionEntry(title="TeamAward"))
     if map_custom and not blind:
         spec.decoration.heading_rule = True
         profile.additional_sections[0].entries[0].description.extend(
@@ -342,6 +346,11 @@ def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, s
     context = build_client_render_context(profile, blind_profile=blind)
     report = validate_generated_content(context, layout_spec=spec, pdf_path=pdf_path)
     assert report.passed, report
+    reference_pdf = export_html_to_pdf(render_product_html(context, spec, tmp_path / "reference.html"), tmp_path / "reference.pdf")
+    assert validate_generated_content(context, layout_spec=spec, pdf_path=reference_pdf).passed
+    with pdfplumber.open(reference_pdf) as reference:
+        reference_words = [word for page in reference.pages
+                           for word in page.extract_words(extra_attrs=["fontname", "size"])]
     with pdfplumber.open(pdf_path) as pdf:
         if map_custom and not blind:
             headings = [(index, hit) for index, page in enumerate(pdf.pages)
@@ -374,6 +383,20 @@ def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, s
             assert "Projects" not in text
         else:
             assert text.index("Projects") < text.index("UsefulComponent")
+        for label, first_title in [("Awards", "CommunityAward"), *([] if map_custom else [("Projects", "UsefulComponent")])]:
+            heading = next(word for word in words if word["text"] == label)
+            first = next(word for word in words if word["text"] == first_title)
+            ref_heading = next(word for word in reference_words if word["text"] == label)
+            ref_first = next(word for word in reference_words if word["text"] == first_title)
+            assert abs(heading["size"]-ref_heading["size"]) < .1
+            assert "bold" in heading["fontname"].casefold()
+            assert abs((first["top"]-heading["bottom"])-(ref_first["top"]-ref_heading["bottom"])) < 1
+        first_award, second_award = [next(word for word in words if word["text"] == title)
+                                     for title in ("CommunityAward", "TeamAward")]
+        ref_first_award, ref_second_award = [next(word for word in reference_words if word["text"] == title)
+                                             for title in ("CommunityAward", "TeamAward")]
+        assert abs((second_award["top"]-first_award["bottom"])
+                   -(ref_second_award["top"]-ref_first_award["bottom"])) < 1
     gates = json.loads(next((output / "lane_a").glob("hard_gates_*.json")).read_text())
     assert gates["details"]["content_shapes_match_evidence"]["passed"], gates
     assert json.loads(candidate.read_text()) == profile.model_dump(mode="json")

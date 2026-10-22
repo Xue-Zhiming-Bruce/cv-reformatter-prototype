@@ -60,6 +60,12 @@ dispatch checks verify unsupported or unroutable template requests create no
 output directory. This is bounded template-consumption coverage, not visual
 parity or API cutover acceptance.
 
+The same entry cases export a reference PDF through the retained product
+renderer using the identical context and template. Generic custom-group
+headings must preserve its distinct default size/weight, heading-to-entry gaps
+and within-group entry gaps. This compatibility check does not certify target
+reconstruction or other differences between the two renderers.
+
 Decoration cases in the same CLI workflow exercise header/heading rules and
 grouped badges on skills, languages and certifications, including ordinary/blind
 contacts, repeating row counts, label typography, borders and actual PDF shapes.

@@ -227,6 +227,8 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
     if state.provenance.provider == "layout_template_spec":
         css.append("h2, h3 { break-after: avoid; page-break-after: avoid; }")
         css.append(".c2-entry-body li, .c2-entry-body p { break-inside: avoid; }")
+        # Preserve the product renderer's browser h3 defaults for unmatched groups.
+        css.append(".c2-additional-heading { font-size: 1.17em; font-weight: 700; line-height: normal; margin: 1em 0; }")
     css += [
         ".c2-header-row { white-space: normal; }",
         ".c2-section { }",
@@ -392,7 +394,8 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
             meta_class = _class_for(section_plan.meta_style_id)
             for entry_index, entry in enumerate(section_plan.entries):
                 if entry.group_heading is not None:
-                    parts.append(f'<h3 class="{_class_for(section_plan.style_id)}" data-leaf-id="{_esc(entry.group_heading.leaf_id)}">{_esc(entry.group_heading.text)}</h3>')
+                    group_class = "c2-additional-heading" if state.provenance.provider == "layout_template_spec" else _class_for(section_plan.style_id)
+                    parts.append(f'<h3 class="{group_class}" data-leaf-id="{_esc(entry.group_heading.leaf_id)}">{_esc(entry.group_heading.text)}</h3>')
                 declarations = []
                 if entry.keep_together:
                     declarations.append("break-inside: avoid;")

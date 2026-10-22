@@ -342,6 +342,13 @@ Integration status, October 22, 2026:
   presentation mappings; the source profile remains unchanged. The shared
   content validator expects the configured target label for such mappings and
   continues to check each entry fact independently.
+  Unmatched group headings use the existing product renderer's browser `h3`
+  defaults (1.17 times the global body size, bold, normal line height and 1em
+  vertical margins), independently of the target section-heading style.
+  This is a compatibility fallback: `LayoutTemplateSpec` has no separate
+  generic-group heading style field, so it is not a measured target-style claim.
+  Same-input PDF regressions compare group-heading typography, heading-to-entry
+  gaps and within-group entry gaps against the retained product renderer.
 - Core presentation labels use the existing product exact-alias helper rather
   than substring source binding. Every supplied template heading must be
   recognized or covered by the existing identity-bound explicit label input
