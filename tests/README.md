@@ -21,6 +21,9 @@ live in `unit/` and `integration/`. Claude adapter request, timeout, strict-outp
 and live-gate checks live in `unit/test_design_provider.py`.
 Existing local results remain archival evidence, not a source of new runs.
 
+The CLI and service default to the selected A mainline. B and paired runs
+remain explicit comparisons; their regression checks remain until retirement.
+
 The retained pipeline's regression checks live in `unit/test_pipeline_*.py`
 and `integration/test_pipeline*.py`; reusable fixtures live in
 `helpers/pipeline*.py`. Historical A-D and E1-E4 runners and their exclusive

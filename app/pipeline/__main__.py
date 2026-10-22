@@ -25,7 +25,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--structure-draft", type=Path, required=True)
     parser.add_argument("--presentation-label-approval", type=Path)
     parser.add_argument("--out", type=Path)
-    parser.add_argument("--lane", choices=["a", "b", "both"], default="both")
+    parser.add_argument("--lane", choices=["a", "b", "both"], default="a",
+                        help="A is the selected mainline (default); B/both require explicit comparison selection")
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--max-model-requests", type=int,
                         help="global HTTP request cap including failures/retries, split equally across lanes")

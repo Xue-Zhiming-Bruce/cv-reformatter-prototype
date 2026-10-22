@@ -16,8 +16,13 @@ from tests.helpers.pipeline import synthetic_pipeline_inputs as _inputs, synthet
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.parametrize("name,blind", [("Candidate Alpha", False), ("Candidate Beta", True)])
-def test_cli_uses_explicit_content_without_test_dependencies(tmp_path: Path, name: str, blind: bool) -> None:
+@pytest.mark.parametrize("name,blind,lane", [
+    ("Candidate Alpha", False, None), ("Candidate Beta", True, None),
+    ("Candidate Alpha", False, "b"), ("Candidate Alpha", False, "both"),
+])
+def test_cli_uses_explicit_content_without_test_dependencies(
+    tmp_path: Path, name: str, blind: bool, lane: str | None,
+) -> None:
     inputs = _inputs(tmp_path)
     candidate_path = tmp_path / "candidate.json"
     profile = CandidateProfile(
@@ -49,7 +54,9 @@ runpy.run_module('app.pipeline', run_name='__main__')
     command = [sys.executable, "-B", "-c", script,
                "--target", str(inputs["target_pdf"]), "--candidate", str(candidate_path),
                "--adobe-json", str(inputs["adobe_json"]), "--normalized", str(inputs["normalized_evidence"]),
-               "--structure-draft", str(inputs["structure_draft"]), "--out", str(out_dir), "--lane", "b"]
+               "--structure-draft", str(inputs["structure_draft"]), "--out", str(out_dir)]
+    if lane is not None:
+        command.extend(["--lane", lane])
     if blind:
         command.append("--blind-profile")
     result = subprocess.run(command, capture_output=True, text=True, timeout=60)
@@ -57,11 +64,16 @@ runpy.run_module('app.pipeline', run_name='__main__')
                                    (out_dir / "e5_state.json").read_text())
     state = json.loads((out_dir / "e5_state.json").read_text())
     assert state["summary"]["terminal_state"] == "ready_for_owner_review"
+    selected = {"a", "b"} if lane == "both" else {lane or "a"}
+    assert set(state["lanes"]) == selected
+    for unselected in {"a", "b"} - selected:
+        assert not (out_dir / f"lane_{unselected}").exists()
     manifest = json.loads((out_dir / "manifest.json").read_text())
     assert manifest["pipeline_phase"] == "e5"
     assert manifest["versions"] and all(item["sha256"] for item in manifest["versions"])
     assert manifest["state_history"][-1]["state"] == "ready_for_owner_review"
-    with pdfplumber.open(out_dir / "lane_b/render_1.pdf") as pdf:
+    checked_lane = "b" if lane == "b" else "a"
+    with pdfplumber.open(out_dir / f"lane_{checked_lane}/render_1.pdf") as pdf:
         text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     assert ("Candidate A" if blind else name) in text
     if blind:
@@ -75,10 +87,26 @@ runpy.run_module('app.pipeline', run_name='__main__')
         assert value in text, value
     assert "CONFIDENTIAL_SALARY" not in text
     assert "Target Person" not in text and "Target facts only" not in text
-    assert state["lanes"]["b"]["summary"]["probe_mode"] == "not_requested"
-    assert state["lanes"]["b"]["content_shape_probes_passed"] is False
-    gates = json.loads((out_dir / "lane_b/hard_gates_render-target-laneB-v1.json").read_text())
-    assert gates["details"]["diagnostics"]["pdf_presence"]["passed"] is True
+    assert state["lanes"][checked_lane]["summary"]["probe_mode"] == "not_requested"
+    assert state["lanes"][checked_lane]["content_shape_probes_passed"] is False
+    gates = json.loads((out_dir / f"lane_{checked_lane}/hard_gates_render-target-lane{checked_lane.upper()}-v1.json").read_text())
+    if checked_lane == "a":
+        assert gates["details"]["content_gate"]["passed"] is True
+    else:
+        assert gates["details"]["diagnostics"]["pdf_presence"]["passed"] is True
+
+
+def test_service_defaults_to_a_without_starting_b(tmp_path: Path) -> None:
+    from tests.helpers.pipeline_rendering import rich_candidate
+
+    inputs = _inputs(tmp_path)
+    out, _, record = run_e5(
+        **inputs, candidate=rich_candidate(include_unmatched=False),
+        out_dir=tmp_path / "result", max_repair_rounds=0,
+    )
+    assert set(record["lanes"]) == {"a"}
+    assert (out / "lane_a/render_1.pdf").is_file()
+    assert not (out / "lane_b").exists()
 
 
 def test_cli_rejects_structured_sections_before_build_instead_of_flattening(

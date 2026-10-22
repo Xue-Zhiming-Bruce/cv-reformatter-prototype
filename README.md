@@ -95,9 +95,10 @@ produce the initial structure draft, or retrieve historical run caches.
 See [the implementation boundary](docs/architecture/DOCUMENT_PIPELINE.md#retained-pipeline-implementation)
 for module ownership, validation, repair, and version-selection behavior.
 
-The default is an offline scripted run. `--lane a`, `--lane b`, or
-`--lane both` chooses the retained representations; no fidelity winner is
-implied. Measured conventional heading labels are recognized automatically
+The default is an offline scripted Lane A run, following the owner's October
+22, 2026 selection of A as the initial mainline. `--lane b` or `--lane both`
+explicitly selects a comparison run. This direction does not certify arbitrary
+target fidelity or switch the existing API renderer. Measured conventional heading labels are recognized automatically
 through exact product aliases; unknowns remain unrenderable. The legacy
 `--presentation-label-approval path/to/approval.json` supplies an explicit
 override bound to target and label-catalog checksums. Recognition is not human

@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 22, 2026 (A/B evidence prepared; owner selection pending; B0/B1 gates unchanged)
+Last reviewed: October 22, 2026 (owner initially selected A; API cutover and B0/B1 gates remain open)
 
 This is the active engineering roadmap after completion of the MVP and PDF
 demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
@@ -36,8 +36,10 @@ Legacy profile-approval names remain compatibility fields only.
       Record layout-contract gaps before replacing either compiler. CLI core
       projection is integrated; structured custom sections still require parity
       in the selected renderer before API cutover (see Document Pipeline).
-- [~] Produce comparable A/B outcome PDFs and independent gates using existing
+- [x] Produce comparable A/B outcome PDFs and independent gates using existing
       workflows; obtain owner selection before retiring either representation.
+      Owner initially selected A on October 22. CLI/service now default to A;
+      B remains an explicit comparison choice until migration conditions pass.
 - [ ] Route API and CLI through the selected shared generation implementation;
       remove replaced paths only after behavior/output parity and rollback checks.
 - [ ] Prune redundant orchestration, reports, and tests once their responsibility
@@ -62,10 +64,13 @@ were fixed with regressions. The owner
 explicitly replaced individual label approval with conservative measured
 exact-alias recognition (product/ADR 0001 amendment). The agent recommends A
 as the next convergence direction within the measured sidebar/core-field
-scope; this is not a fidelity winner, product acceptance, or owner selection.
-Both lanes and the original API remain. The A/B checklist item stays in
-progress until the owner inspects the files and decides; no API cutover or
-B0/B1 exit condition is claimed.
+scope. The owner subsequently confirmed “先选A”: A is the initial mainline,
+not a permanent fidelity winner or product acceptance. Both lanes and the
+original API remain while the migration conditions below are open; no API
+cutover or B0/B1 exit condition is claimed. The next implementation work is
+product LayoutTemplateSpec integration, structured custom-section parity,
+measured layout/continuation coverage, and fail-closed rollback verification
+before routing both entrances through A and deleting replaced code.
 
 ## Current Phase
 

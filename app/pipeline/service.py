@@ -2913,16 +2913,17 @@ def run_e5(
     structure_draft: Path,
     probe_candidates: dict[str, CandidateDocument] | None = None,
     live: bool = False,
-    lanes: tuple[str, ...] = ("a", "b"),
+    lanes: tuple[str, ...] = ("a",),
     max_repair_rounds: int = E5_MAX_REPAIR_ROUNDS,
     budget: RunBudget | None = None,
     pricing: dict[str, Any] | None = None,
     presentation_label_approval: PresentationLabelApproval | None = None,
     builder_reserve_requests: int = E5_BUILDER_RESERVE_REQUESTS,
 ) -> tuple[Path, str, dict[str, Any]]:
-    """E5: controlled execution of TWO Builder representations on explicit inputs
-    (Phase 0 loop fixes + Lane A structured layout + Lane B authored
-    template). One runner, one shell, two fresh agent contexts.
+    """Run the selected Lane A mainline on explicit inputs by default.
+
+    Lane B authored-template and paired comparison execution remain explicit
+    choices; selecting A is not product output acceptance or API cutover.
 
     A safety-valid PDF exits ``ready_for_owner_review`` even when exploratory
     quality checks report warnings; ``budget_exhausted`` means no safety-valid

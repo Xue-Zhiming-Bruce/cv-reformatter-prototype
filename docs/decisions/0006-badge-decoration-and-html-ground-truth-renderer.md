@@ -147,3 +147,20 @@ heading+rule splits;
 margins; the contract rule LENGTH needs the width-constrained wrapper
 (`.heading-rule-length`). Chrome resolves Times via the system font; label
 widths remain within the HTML-path tolerance (see `BACKEND_ROADMAP` B3).
+
+## Initial Mainline Selection — October 22, 2026
+
+The product owner selected “先选A”: Lane A structured-layout compilation is
+the initial consolidation direction. The CLI and programmatic runner default
+to A only; B remains an explicitly selected comparison, with its evidence kept
+in Git/local review artifacts. See the dated
+[A/B evaluation](../evaluations/2026-10-22_AB_MAINLINE_REVIEW.md).
+
+This choice preserves HTML/headless Chrome and the provider-neutral
+`LayoutTemplateSpec` contract. It does not adopt internal layout state as the
+stored product schema, approve a new production provider, accept any generated
+PDF, or complete an API cutover. Existing API capabilities remain until
+LayoutTemplateSpec compilation, structured custom sections, layout/pagination
+coverage and rollback parity are verified. A's documented layout limitations
+remain open; permanent retirement of the alternatives follows the active
+roadmap's migration conditions.

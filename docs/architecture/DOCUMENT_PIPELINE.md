@@ -2,7 +2,7 @@
 
 Status: `Active contract`
 
-Last reviewed: October 19, 2026 (retained implementation inventory)
+Last reviewed: October 22, 2026 (owner selected A as the initial mainline)
 
 This document defines the provider-neutral boundaries of the CV Reformatter
 backend. The [Product Specification](../product/PRODUCT_SPEC.md) remains the
@@ -223,10 +223,13 @@ FastAPI generation route is not yet connected to this CLI implementation.
 | PDF export, fonts, and independent gates | `rendering.py`, `fonts.py`, `quality.py` |
 | Budgets, traces, version identities | `runtime.py` |
 
-Lane A compiles structured layout state; Lane B uses a validated authored
-HTML/CSS template with shell-issued candidate slots. Both consume the same
-reviewed candidate data. Neither is declared the fidelity winner by this
-cleanup. `layout-state/1` and `CandidateDocument` are retained internal
+Owner decision, October 22, 2026: use Lane A as the initial mainline for
+consolidation. Both `python -m app.pipeline` and `run_e5` default to A only.
+Lane A compiles structured layout state. Lane B's validated authored HTML/CSS
+remains available only through explicit `--lane b` / `--lane both` or service
+lane selection, preserving comparison and rollback evidence. Both consume the
+same reviewed candidate data. This is a development direction, not a universal
+fidelity verdict or acceptance of generated output. `layout-state/1` and `CandidateDocument` are retained internal
 representations, not replacements for `LayoutTemplateSpec` or `CandidateProfile`.
 Historical schema names and class descriptions are retained for compatibility
 with stored artifacts and generated model schemas; they do not authorize a
@@ -244,9 +247,14 @@ Integration gaps recorded October 21, 2026:
   directly, nor establish parity for one-column targets, layout-proof approval,
   or arbitrary continuation/region policies. Product layouts must not be
   relabeled as internal state without an explicit compiler and parity checks.
+- Empty candidate history against a mapped target entries section is not yet
+  equivalent to the API's empty-section behavior. Mainline selection must not
+  be mistaken for parity on incomplete profiles; this case belongs in the
+  pre-cutover content/reflow checks.
 - The retained `--live` model adapters and Lane B authored HTML are not newly
-  approved by this input consolidation. A/B selection still requires reviewable
-  outputs and the applicable provider/renderer decision.
+  approved for production by this input consolidation or the initial A choice.
+  The reviewed A/B outcomes support the chosen development direction; API
+  replacement still requires the applicable contract, parity and output checks.
 
 Core projection preserves visible header/subheading/contact values, summaries,
 skill groups, languages, work entries and their metadata/bullets, education,
