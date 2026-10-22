@@ -390,7 +390,7 @@ Integration status, October 22, 2026:
   PDFs pass the shared product validators and their HTML matches the CLI bytes.
   Native `built-in-3` API generation now calls this renderer with the saved
   revision's disclosed context projection. Its metadata records the shared A
-  renderer version (`lane-a-product-subset/9`, also used by CLI provenance).
+  renderer version (`lane-a-product-subset/10`, also used by CLI provenance).
   Product-template HTML uses the public page title `Candidate profile`;
   evidence-only diagnostics retain their existing title.
   It keeps the API's content/structure reports and exact final-output identities;
@@ -400,6 +400,18 @@ Integration status, October 22, 2026:
   invalidation after disclosure changes. Same-input retained-renderer PDFs
   remain reviewable as content/structure references. This is a bounded native
   cutover; uploaded-target/proof rendering has not switched to this call.
+- The A context projection now recognizes the retained product renderer's exact
+  contact labels (`Email`, `Phone`, `Location`, `LinkedIn`, `Portfolio`) in legacy
+  `contact_lines`, including the same case/label-whitespace normalization.
+  It preserves each line as its own leaf; unknown labels, missing delimiters,
+  empty values and duplicate field ownership cannot be silently dropped.
+  Typed `contact_items` still take precedence over fallback lines. Canonical
+  short/medium/long proof contexts now compile and export through A with all
+  contacts, without changing their stored schema, values or checksums.
+  Real Chrome cases pass independent product content/structure and A ownership
+  checks. This closes a projection prerequisite, not uploaded-target proof
+  migration or fidelity acceptance; the approval-aware proof service still
+  renders through `product-html/1`.
 - API proof results and approval aggregates now bind `renderer_version` in
   addition to target, layout and file checksums. The current product renderer
   declares `product-html/1`; update its implementation version when layout,

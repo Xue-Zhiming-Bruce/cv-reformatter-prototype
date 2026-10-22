@@ -6,7 +6,7 @@ from html import escape
 from pathlib import Path
 from typing import Mapping
 
-from app.generation.template_mapper import ClientFacingRenderContext, RenderContactItem
+from app.generation.template_mapper import CONTACT_LABEL_FIELDS, ClientFacingRenderContext, RenderContactItem
 from app.template_analysis.schemas import BadgeStyle, LayoutTemplateSpec, SectionLayoutSpec, TextStyle
 
 
@@ -479,15 +479,13 @@ def _contact_values(
         return [by_field[field] for field in requested if field in by_field]
     # Fallback: parse contact_lines when contact_items is empty (e.g. synthetic
     # layout-proof context supplies formatted lines but no structured items).
-    field_label_map = {"email": "Email", "phone": "Phone", "location": "Location",
-                      "linkedin_url": "LinkedIn", "portfolio_url": "Portfolio"}
     parsed: dict[str, str] = {}
     for line in context.contact_lines:
         if ": " in line:
             label, value = line.split(": ", 1)
-            for fld, lbl in field_label_map.items():
-                if label.strip().casefold() == lbl.casefold():
-                    parsed[fld] = value.strip()
+            field = CONTACT_LABEL_FIELDS.get(label.strip().casefold())
+            if field:
+                parsed[field] = value.strip()
     return [parsed[field] for field in requested if field in parsed]
 
 

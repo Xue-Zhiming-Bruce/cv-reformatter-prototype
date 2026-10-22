@@ -14,6 +14,10 @@ from app.extraction.candidate_schema import (
 DEFAULT_TEMPLATE_NAME = "apex_standard"
 PENDING_CONFIRMATION_LABEL = "To be confirmed"
 AVAILABLE_UPON_REQUEST_LABEL = "Available upon request"
+CONTACT_LABEL_FIELDS = {
+    "email": "email", "phone": "phone", "location": "location",
+    "linkedin": "linkedin_url", "portfolio": "portfolio_url",
+}
 
 
 class RenderModel(BaseModel):

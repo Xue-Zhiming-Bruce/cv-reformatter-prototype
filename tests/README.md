@@ -94,6 +94,13 @@ features must preserve existing HTML/PDF; the structure-mutation API regression
 continues to remove semantic roles while retaining content. Uploaded-target API
 tests keep their approval-bound retained renderer and existing proof identity.
 
+Canonical synthetic proof contexts also render directly through A in
+`integration/test_layout_proof_render.py`: short/medium/long real Chrome PDFs
+preserve labeled fallback contacts once and pass independent product content,
+structure and A ownership/blank-page checks. This does not switch the proof
+service. `integration/test_pipeline_rendering.py` covers exact-label fallback,
+unknown/malformed/duplicate contact rejection and typed-contact precedence.
+
 Decoration cases in the same CLI workflow exercise header/heading rules and
 grouped badges on skills, languages and certifications, including ordinary/blind
 contacts, repeating row counts, label typography, borders and actual PDF shapes.

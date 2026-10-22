@@ -92,8 +92,12 @@ Legacy profile-approval names remain compatibility fields only.
       output acceptance and invalidation after disclosure changes. Unsupported
       native features preserve existing HTML/PDF and cannot fall back. Existing
       product-renderer PDFs remain reviewable references. Uploaded templates
-      retain their existing proof-bound path: unrepresented template properties
-      and canonical proof-contact projection still block their cutover.
+      retain their existing proof-bound path. Canonical proof-contact projection
+      now uses the existing exact label vocabulary, preserving each source line
+      and rejecting unknown/malformed/duplicate fields. Short/medium/long actual
+      A PDFs pass independent product and ownership checks without changing
+      canonical context checksums or retained renderer bytes. Unrepresented
+      template properties and proof/candidate parity still block their cutover.
       Full product-template coverage,
       complete pagination parity and uploaded-target API cutover remain open; no replaced
       implementation has been removed.

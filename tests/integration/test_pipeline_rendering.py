@@ -42,6 +42,49 @@ def test_deterministic_state_and_candidate_produce_identical_plan_and_html() -> 
     assert state_bytes(state) == state_bytes(compile_synthetic())  # state untouched
 
 
+@pytest.mark.parametrize(("lines", "routable"), [
+    (["eMaIl : synthetic@example.invalid", "PHONE: SYNTHETIC_PHONE"], True),
+    (["Work email: synthetic@example.invalid"], False),
+    (["Email:synthetic@example.invalid"], False),
+    (["Email: "], False),
+    (["Email: first@example.invalid", "Email: second@example.invalid"], False),
+])
+def test_legacy_contacts_preserve_lines_and_reject_unroutable_fields(
+    lines: list[str], routable: bool,
+) -> None:
+    from app.generation.template_mapper import ClientFacingRenderContext
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.html_renderer import render_layout_template
+    from app.template_analysis.schemas import built_in_layout_template_spec
+
+    context = ClientFacingRenderContext(candidate_heading="Synthetic Candidate", contact_lines=lines)
+    candidate = candidate_document_from_context(context, candidate_id="synthetic-unknown-contacts")
+    contacts = [leaf.text for leaf in candidate.leaves if leaf.leaf_id.startswith("header.contact.")]
+    assert contacts == [line.strip() for line in lines]
+    if routable:
+        render_layout_template(built_in_layout_template_spec(), candidate)
+    else:
+        with pytest.raises(ValueError, match="cannot route this candidate"):
+            render_layout_template(built_in_layout_template_spec(), candidate)
+
+
+def test_typed_contacts_take_precedence_over_conflicting_legacy_lines() -> None:
+    from app.generation.template_mapper import ClientFacingRenderContext
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.html_renderer import render_layout_template
+    from app.template_analysis.schemas import built_in_layout_template_spec
+
+    context = ClientFacingRenderContext(
+        candidate_heading="Synthetic Candidate",
+        contact_items=[{"field": "email", "label": "Email", "value": "approved@example.invalid"}],
+        contact_lines=["Email: HIDDEN_CONTACT@example.invalid"],
+    )
+    candidate = candidate_document_from_context(context, candidate_id="synthetic-typed-contact")
+    _, _, html = render_layout_template(built_in_layout_template_spec(), candidate)
+    assert "approved@example.invalid" in html
+    assert "HIDDEN_CONTACT" not in html
+
+
 def test_rail_heading_and_content_occupy_separate_pdf_columns(tmp_path: Path) -> None:
     import pdfplumber
     from app.pipeline.rendering import _export_pinned_html_to_pdf

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 from pydantic import Field, model_validator
-from app.generation.template_mapper import ClientFacingRenderContext, RenderSkillGroup
+from app.generation.template_mapper import CONTACT_LABEL_FIELDS, ClientFacingRenderContext, RenderSkillGroup
 from app.pipeline.layout_state import SourceRole, StateModel
 
 CandidateLeafKind = Literal[
@@ -169,7 +169,11 @@ def candidate_document_from_context(
     # Typed contacts own their order; legacy contexts may carry only lines.
     contacts = [(item.field, f"{item.label}: {item.value}") for item in context.contact_items]
     if not contacts:
-        contacts = [(f"contact_{index}", text) for index, text in enumerate(context.contact_lines)]
+        for index, text in enumerate(context.contact_lines):
+            label, separator, value = text.partition(": ")
+            field = CONTACT_LABEL_FIELDS.get(label.strip().casefold()) if separator and value.strip() else None
+            # Preserve every line; unknown or duplicate fields must fail binding.
+            contacts.append((field or f"contact_{index}", text))
     for index, (field, text) in enumerate(contacts):
         slot = {"email": "envelope", "linkedin_url": "linkedin", "portfolio_url": "portfolio"}.get(field, field)
         add(f"header.contact.{index}", "header_field", text, slot=slot)

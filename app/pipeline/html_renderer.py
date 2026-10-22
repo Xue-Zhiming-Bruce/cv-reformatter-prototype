@@ -12,7 +12,7 @@ from app.pipeline.render_plan import C2RenderPlan, EntryPlan, LeafText, OVERFLOW
 from app.template_analysis.schemas import LayoutTemplateSpec
 
 # Bump when product compilation, HTML or bundled font behavior changes.
-RENDERER_VERSION = "lane-a-product-subset/9"
+RENDERER_VERSION = "lane-a-product-subset/10"
 
 
 def render_layout_template(

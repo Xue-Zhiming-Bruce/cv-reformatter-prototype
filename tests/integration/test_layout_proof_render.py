@@ -163,3 +163,37 @@ def test_artifacts_confined_to_output_dir(tmp_path: Path, fake_pdf: None) -> Non
         result.html_filename,
         result.pdf_filename,
     ]
+
+
+@pytest.mark.parametrize("variant", list(LengthVariant))
+def test_canonical_proof_context_renders_through_a_with_contacts(
+    tmp_path: Path, variant: LengthVariant,
+) -> None:
+    import pdfplumber
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+    from app.generation.content_validation import validate_generated_content, validate_output_structure
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.html_renderer import render_layout_template
+    from app.pipeline.quality import content_gate, candidate_accounting_gate, blank_page_gate
+    from app.template_analysis.schemas import built_in_layout_template_spec
+
+    context = build_synthetic_context(variant).to_render_context()
+    spec = built_in_layout_template_spec()
+    candidate = candidate_document_from_context(context, candidate_id=f"synthetic-proof-{variant.value}")
+    _, plan, html = render_layout_template(spec, candidate)
+    html_path = tmp_path / "proof.html"
+    html_path.write_text(html, encoding="utf-8")
+    pdf_path = export_html_to_pdf(html_path, tmp_path / "proof.pdf")
+    content = content_gate(plan, html, pdf_path)
+    assert content["passed"], content
+    assert candidate_accounting_gate(plan, content)["passed"]
+    assert blank_page_gate(pdf_path)["passed"]
+    assert validate_generated_content(context, pdf_path=pdf_path, layout_spec=spec).passed
+    assert validate_output_structure(context, html_path=html_path, pdf_path=pdf_path, layout_spec=spec).passed
+    with pdfplumber.open(pdf_path) as document:
+        text = " ".join(page.extract_text() or "" for page in document.pages)
+    text = " ".join(text.split())
+    contacts = [leaf.text for leaf in candidate.leaves if leaf.leaf_id.startswith("header.contact.")]
+    assert contacts == context.contact_lines
+    for line in context.contact_lines:
+        assert text.count(line) == 1
