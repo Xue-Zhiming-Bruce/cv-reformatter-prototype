@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import ConfigDict, Field, model_validator
 from pathlib import Path
 from app.pipeline.rendering import _median
-from app.pipeline.layout_state import C2LayoutState
+from app.pipeline.layout_state import C2LayoutState, EntryLayout
 from app.pipeline.candidate_content import CandidateDocument, CandidateLeaf
 from app.pipeline.layout_state import PageState, SectionContent, StateModel
 from app.pipeline.candidate_content import UnroutableContent
@@ -99,6 +99,18 @@ class HeaderRowPlan(StateModel):
     separator: str | None = None
     fields: list[HeaderFieldPlan] = Field(default_factory=list)
 
+class EntryFieldPlan(StateModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+    leaf_id: str
+    text: str
+    style_id: str = Field(pattern=r"^style\.[a-z0-9_]+$")
+    separator_before: str = ""
+
+class EntryRowPlan(StateModel):
+    left: list[EntryFieldPlan] = Field(default_factory=list)
+    right: list[EntryFieldPlan] = Field(default_factory=list)
+    gap_above_pt: float | None = Field(default=None, ge=0)
+
 class EntryPlan(StateModel):
     node_id: str
     entry_leaf_id: str
@@ -106,6 +118,11 @@ class EntryPlan(StateModel):
     meta_lines: list[LeafText] = Field(default_factory=list)
     bullet_items: list[LeafText] = Field(default_factory=list)  # measured bullet design
     text_lines: list[LeafText] = Field(default_factory=list)  # zero-bullet design: verbatim text
+    rows: list[EntryRowPlan] | None = None
+    group_heading: LeafText | None = None
+    gap_above_pt: float | None = Field(default=None, ge=0)
+    body_gap_above_pt: float | None = None
+    keep_together: bool = False
     # C2 nested-entry spike: titled sub-groups inside this entry (e.g. project
     # groups under one employer line), each with its own bullets. Candidate
     # document order; an entry never mixes entry-level bullets with subgroups
@@ -215,6 +232,7 @@ class SectionPlan(StateModel):
     styled_lines: list[StyledLine] = Field(default_factory=list)  # ordered inline runs (C2-0cC)
     entries: list[EntryPlan] = Field(default_factory=list)
     items: list[LeafText] = Field(default_factory=list)
+    items_before_entries: bool = False
     bullet_marker: str | None = None
     bullet_dot_x0_pt: float | None = None
     bullet_text_x0_pt: float | None = None
@@ -718,6 +736,70 @@ def _entry_plan(
         subgroups=subgroups,
     )
 
+def _product_entry_rows(
+    entry: EntryPlan, layout: EntryLayout, plan: SectionPlan,
+    leaves: dict[str, CandidateLeaf], state: C2LayoutState, failures: list[str],
+) -> None:
+    fields: dict[str, list[LeafText]] = {}
+    entry.keep_together = layout.kind != "additional_stacked"
+    allowed = {
+        "work_inline": {"title", "company", "location", "date_range"},
+        "work_split": {"title", "company", "location", "date_range"},
+        "education_inline": {"institution", "degree", "field_of_study", "date_range"},
+        "additional_stacked": {"title", "link"},
+    }[layout.kind]
+    for line in [*entry.title_lines, *entry.meta_lines]:
+        if not line.text:
+            continue
+        field = leaves[line.leaf_id].content_field
+        if field not in allowed or (field != "link" and field in fields):
+            failures.append(f"{line.leaf_id}: product entry requires unique semantic field metadata")
+            continue
+        fields.setdefault(field, []).append(line)
+
+    def values(names: list[str], token: str | None, separator: str = "") -> list[EntryFieldPlan]:
+        result = []
+        for name in names:
+            for line in fields.get(name, []):
+                result.append(EntryFieldPlan(leaf_id=line.leaf_id, text=line.text,
+                    style_id=token or "style.body", separator_before=separator if result else ""))
+        return result
+
+    title, detail, meta = plan.title_style_id, plan.detail_style_id, plan.meta_style_id
+    if layout.kind == "work_inline":
+        rows = [EntryRowPlan(left=values(["title", "company", "location"], title, " | "), right=values(["date_range"], meta))]
+    elif layout.kind == "work_split":
+        rows = [EntryRowPlan(left=values(["title"], title), right=values(["date_range"], meta)),
+                EntryRowPlan(left=values(["company"], detail), right=values(["location"], meta))]
+    elif layout.kind == "education_inline":
+        left = values(["institution"], title)
+        for name in ["degree", "field_of_study", "date_range"]:
+            for field in values([name], detail):
+                separator = (layout.secondary_separator.strip() + " ") if name == "field_of_study" and "degree" in fields else (" " + layout.primary_separator.strip() + " ")
+                field.separator_before = separator if left else ""
+                left.append(field)
+        rows = [EntryRowPlan(left=left)]
+    else:
+        rows = [EntryRowPlan(left=values(["title"], title))]
+        tokens = {token.style_id: token for token in state.styles}
+        title_token, meta_token = tokens[title], tokens[meta]
+        title_height = title_token.line_height_pt or title_token.font_size_pt
+        meta_height = meta_token.line_height_pt or meta_token.font_size_pt
+        for index, field in enumerate(values(["link"], meta)):
+            gap = 0.0
+            if index == 0 and "title" in fields and layout.title_to_metadata_gap_pt is not None:
+                natural = (title_height + title_token.font_size_pt) / 2 + max(0, (meta_height-meta_token.font_size_pt) / 2)
+                gap = max(0, layout.title_to_metadata_gap_pt-natural)
+            rows.append(EntryRowPlan(left=[field], gap_above_pt=gap))
+        body_token = tokens[plan.content_style_id or "style.body"]
+        body_height = body_token.line_height_pt or body_token.font_size_pt
+        if fields.get("link") and entry.bullet_items:
+            entry.body_gap_above_pt = -max(0, body_height-meta_height) / 2
+        if layout.compensate_entry_gap and fields.get("title"):
+            entry.gap_above_pt = max(0, (plan.inter_entry_gap_above_pt or 0)-body_height+max(0,(title_height-title_token.font_size_pt)/2))
+    entry.rows = [row for row in rows if row.left or row.right]
+
+
 def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C2RenderPlan:
     """Compile the plan WITHOUT mutating state or candidate; fail closed."""
     failures: list[str] = []
@@ -905,6 +987,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         role: section
         for section in sections
         if section.binding and section.binding.mapping_action == "map"
+        and section.additional_section_heading is None
         for role in section.binding.sources
     }
     # C2-0cM: composite content MATERIALIZES through its ordered sub-contents
@@ -939,6 +1022,11 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
     custom_leaf_ids = {
         leaf_id for section in candidate.sections if section.section_id in custom_sections
         for leaf_id in section.leaf_ids
+    }
+    consumed_custom_sections: set[str] = set()
+    custom_selectors = {
+        section.additional_section_heading.casefold() for section in sections
+        if section.additional_section_heading is not None
     }
     body_leaves = [
         leaf for leaf in candidate.leaves
@@ -1119,6 +1207,41 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                     "candidate content; the composite renders partially populated "
                     "(honest partial population, nothing invented)"
                 )
+        elif role == "additional_details" and entry_node and entry_node.entry_layout:
+            plan.content_kind = "composite"
+            plan.items_before_entries = True
+            plan.base_x0_pt = state.page.margin_left_pt
+            list_node = by_id.get(section.list_ref)
+            plan.bullet_dot_x0_pt = list_node.bullet_dot_x0_pt if list_node else None
+            plan.bullet_text_x0_pt = list_node.bullet_text_x0_pt if list_node else None
+            selector = section.additional_section_heading
+            if selector is None:
+                plan.items = items_for(role)
+                own_items(section.node_id, plan.items)
+            matching = [item for item in candidate.sections if item.section_id in custom_sections
+                and ((item.heading or "").casefold() == selector.casefold() if selector is not None else
+                     (item.heading or "").casefold() not in custom_selectors)]
+            if selector is not None and len(matching) > 1:
+                failures.append(f"{section.node_id}: custom heading selector matches multiple candidate sections")
+            for item in matching:
+                group_leaves = [leaf_by_id[leaf_id] for leaf_id in item.leaf_ids]
+                headings = [leaf for leaf in group_leaves if leaf.kind == "additional_section"]
+                if len(headings) != 1 or headings[0].text != item.heading:
+                    failures.append(f"{section.node_id}: custom section needs one matching heading leaf")
+                    continue
+                heading = headings[0]
+                own(heading.leaf_id, f"{section.node_id}.heading")
+                consumed_custom_sections.add(item.section_id)
+                if selector is not None:
+                    plan.heading_leaf_id = heading.leaf_id
+                    plan.source_heading = item.heading
+                for index, leaf in enumerate(leaf for leaf in group_leaves if leaf.kind == "additional_entry"):
+                    entry = _entry_plan(section.node_id, leaf, leaves_by_parent, plan.bullet_marker, ledger, failures, own)
+                    _product_entry_rows(entry, entry_node.entry_layout, plan, leaf_by_id, state, failures)
+                    if index == 0 and selector is None:
+                        entry.group_heading = LeafText(leaf_id=heading.leaf_id, text=heading.text)
+                        entry.gap_above_pt = 0
+                    plan.entries.append(entry)
         elif content.content_kind == "entries":
             list_node = by_id.get(section.list_ref) if section.list_ref else None
             plan.bullet_dot_x0_pt = list_node.bullet_dot_x0_pt if list_node else None
@@ -1146,6 +1269,9 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                         ),
                     )
                 )
+            if entry_node and entry_node.entry_layout:
+                for entry in plan.entries:
+                    _product_entry_rows(entry, entry_node.entry_layout, plan, leaf_by_id, state, failures)
         else:  # item_list / inline_items
             list_node = by_id.get(section.list_ref) if section.list_ref else None
             plan.bullet_dot_x0_pt = list_node.bullet_dot_x0_pt if list_node else None
@@ -1506,6 +1632,8 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
     appended_plans: list[SectionPlan] = []
     merged_headings: list[dict[str, str]] = []
     for candidate_section in candidate.sections:
+        if candidate_section.section_id in consumed_custom_sections:
+            continue
         if candidate_section.source in mapped_roles and candidate_section.section_id not in custom_sections:
             if candidate_section.heading:
                 merged_headings.append(

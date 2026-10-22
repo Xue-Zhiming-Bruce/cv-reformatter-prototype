@@ -178,6 +178,8 @@ def content_gate(
         if not (entry.title_lines[0].text if entry.title_lines else "")
         and any(line.text for line in [*entry.title_lines[1:], *entry.meta_lines, *entry.bullet_items, *entry.text_lines])
     }
+    heading_sources = {section.heading_leaf_id: section.source_heading
+                       for section in plan.sections if section.heading_leaf_id and section.source_heading}
     for leaf_id, destination in plan.leaf_ledger.items():
         text = _leaf_text(plan, leaf_id)
         token = _norm(text)
@@ -207,6 +209,8 @@ def content_gate(
             "text": text,
             "structural_container": structural_container,
         }
+        if leaf_id in heading_sources:
+            records[leaf_id]["presentation_mapping"] = {"source_heading": heading_sources[leaf_id], "target_label": text}
         if not rendered:
             (duplicated if occurrences > 1 else missing_html).append(leaf_id)
         if present_pdf is False:
@@ -242,6 +246,8 @@ def _leaf_text(plan: C2RenderPlan, leaf_id: str) -> str:
             if cell.leaf_id == leaf_id:
                 return cell.label_text + cell.value_text
         for entry in section.entries:
+            if entry.group_heading and entry.group_heading.leaf_id == leaf_id:
+                return entry.group_heading.text
             for line in [*entry.title_lines, *entry.meta_lines, *entry.bullet_items, *entry.text_lines]:
                 if line.leaf_id == leaf_id:
                     return line.text
@@ -724,11 +730,32 @@ def content_shape_verification(
         plan_section_exists = plan_section is not None
         renders_entries = bool(plan_section and plan_section.entries)
         if content.content_kind == "entries":
+            product_rows_ok = True
+            product_typography_ok = True
+            for entry in plan_section.entries if plan_section else []:
+                if entry.rows is None:
+                    continue
+                previous_position = -1
+                for index, row in enumerate(entry.rows):
+                    row_id = f"{entry.node_id}.row.{index}"
+                    row_elements = [element for element in elements if element["node_id"] == row_id]
+                    position = next((i for i, element in enumerate(elements) if element["node_id"] == row_id), -1)
+                    product_rows_ok &= len(row_elements) == 1 and position > previous_position and bool(
+                        re.search(r"display\s*:\s*flex", row_elements[0]["style"]) if row_elements else False)
+                    previous_position = position
+                    if row.gap_above_pt is not None:
+                        gap = _parse_declared_pt(row_elements[0]["style"], "margin-top") if row_elements else None
+                        product_rows_ok &= gap is not None and abs(gap-row.gap_above_pt) <= CSS_EXTENT_TOLERANCE_PT
+                    for side, fields in (("left", row.left), ("right", row.right)):
+                        for field_index, field in enumerate(fields):
+                            matches = [element for element in elements if element["node_id"] == f"{row_id}.{side}.{field_index}"]
+                            product_rows_ok &= len(matches) == 1 and f"{row_id}.{side}" in matches[0]["ancestor_node_ids"]
+                            product_typography_ok &= len(matches) == 1 and _class_matches(matches[0], _class_for(field.style_id))
             check(
                 "entry_geometry",
                 renders_entries,
                 body_scaffold.entry is not None if body_scaffold else bool(entry_node and entry_node.columns),
-                bool(plan_section_exists and plan_section.base_x0_pt is not None),
+                bool(plan_section_exists and plan_section.base_x0_pt is not None) and product_rows_ok,
             )
             measured_tiers = {
                 "title": bool(entry_node and entry_node.title_style_id),
@@ -779,6 +806,7 @@ def content_shape_verification(
                 and title_ok
                 and detail_ok
                 and meta_ok
+                and product_typography_ok
             )
             check(
                 "entry_typography",
@@ -807,7 +835,7 @@ def content_shape_verification(
                         if article
                         else None
                     )
-                    expected = plan_section.inter_entry_gap_above_pt
+                    expected = entry.gap_above_pt if entry.gap_above_pt is not None else plan_section.inter_entry_gap_above_pt
                     if (
                         value is None
                         or expected is None

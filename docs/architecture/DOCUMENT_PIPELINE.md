@@ -239,7 +239,7 @@ Integration status, October 22, 2026:
 
 - A now projects visible structured custom sections into owned headings and
   `additional_entry` containers, with URL metadata and description children.
-  They retain separate candidate-owned sections under the existing append
+  In evidence-driven runs they retain separate candidate-owned sections under the existing append
   policy, even when the target maps a generic additional-details role; visible
   recruiter-detail rows remain separate. Hidden sections are filtered by the
   shared context mapper. CLI source sections still pending review block preview
@@ -259,14 +259,36 @@ Integration status, October 22, 2026:
   CLI/service now also accepts an explicit `LayoutTemplateSpec` via
   `--layout-spec` / `run_e5(layout_spec=..., max_repair_rounds=0)`, compiled by
   `state_from_layout_template`. This bounded projection supports measured
-  one-column summary, skills, languages and certifications: page geometry,
+  one-column summary, skills, languages, certifications, work, education and
+  additional sections: page geometry,
   header membership/order/separator, typography, section order/labels, flow
   spacing, stacked lists and bullet indentation. Conventional labels must
   resolve through exact product aliases. Non-default properties without a
-  renderer implementation fail before run creation. Work/education/contact
-  body mappings, target-matched custom sections, inline/multi-column lists,
+  renderer implementation fail before run creation. Contact body mappings,
+  inline/multi-column lists,
   badges, rules, hidden headings and forced page breaks remain unsupported
   in this projection. It does not claim full one-column or layout-proof parity.
+- Product work entries compile to single or split title/company/date/location
+  rows; education compiles institution/study/date fields with its configured
+  separators. `CandidateLeaf.content_field` records semantic field identity
+  from the shared context without parsing text or leaf IDs. Missing/duplicate
+  semantic fields fail product-entry routing. Internal `EntryLayout` and typed
+  plan rows carry role styles and flow gaps; work/education entries request
+  `break-inside: avoid`, while custom entries can continue across pages.
+- Additional sections use the explicit `match_section_heading` partition:
+  selectors match source headings case-insensitively; the generic details
+  section takes recruiter-detail rows and unmatched groups. Details precede
+  groups; each entry retains titles, metadata links and description lists.
+  Duplicate selectors or multiple candidate groups matching one selector fail
+  explicitly. Candidate headings mapped to target labels are recorded as
+  presentation mappings; the source profile remains unchanged. The shared
+  content validator expects the configured target label for such mappings and
+  continues to check each entry fact independently.
+- Core presentation labels use the existing product exact-alias helper rather
+  than substring source binding. Every supplied template heading must be
+  recognized or covered by the existing identity-bound explicit label input
+  before run creation. Unknown headings never become privacy exclusions from
+  geometry or substring matches. No alias vocabulary was expanded.
 - Product-template execution is offline A-only, with zero repair rounds; it
   renders through the existing A plan/HTML/export/gates and cannot invoke a
   builder to rewrite the supplied template. Validated template content,

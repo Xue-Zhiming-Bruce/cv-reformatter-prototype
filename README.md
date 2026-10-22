@@ -101,9 +101,11 @@ for module ownership, validation, repair, and version-selection behavior.
 Add `--layout-spec path/to/layout_template_spec.json` to preview the supported
 product-template subset through A. This mode defaults to zero repair rounds,
 requires offline A-only execution, and freezes the validated template and its
-checksum. Target/evidence/draft inputs remain explicit. The initial subset is
-one-column summary, skills, languages and certifications with header ordering,
-typography, flow spacing and stacked/bulleted lists. Unsupported properties
+checksum. Target/evidence/draft inputs remain explicit. The supported subset is
+one-column summary, skills, languages, certifications, work, education and
+additional sections, with header ordering, role typography, flow spacing,
+stacked/bulleted lists, single/split work rows, education separators and custom
+heading selectors. Unsupported properties
 fail before output creation; see the implementation boundary for limitations.
 This mode does not approve a template or switch the API renderer.
 

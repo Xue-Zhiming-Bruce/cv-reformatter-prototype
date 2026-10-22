@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from typing import Any, Literal
-from app.template_analysis.commercial.bridge import _dominant_body
+from app.template_analysis.commercial.bridge import _dominant_body, _section_source_hint
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from app.pipeline.measurement import BodyScaffold
 from app.generation.render_plan import layout_spec_sha256
@@ -31,6 +31,7 @@ from app.pipeline.layout_state import (
     LayoutNode,
     CapabilityGap,
     C2LayoutState,
+    EntryLayout,
 )
 
 def _label_case(label: str) -> Literal["upper", "title", "mixed"]:
@@ -1109,7 +1110,7 @@ def state_from_layout_template(
     if spec.columns.count != 1 or spec.columns.sidebar_side is not None:
         raise ValueError("Lane A LayoutTemplateSpec projection currently requires one column")
     consumed(spec.decoration, set(), "decoration")
-    consumed(spec.spacing, {"line_spacing", "line_height_pt", "section_before_pt", "section_after_pt"}, "spacing")
+    consumed(spec.spacing, {"line_spacing", "line_height_pt", "section_before_pt", "section_after_pt", "paragraph_after_pt"}, "spacing")
     consumed(spec.header, {
         "show_candidate_subheading", "contact_fields", "contact_separator",
         "contact_style", "contact_line_height_pt", "name_gap_pt",
@@ -1168,45 +1169,86 @@ def state_from_layout_template(
     slots = [{"email": "envelope", "linkedin_url": "linkedin", "portfolio_url": "portfolio"}.get(field, field) for field in contact_fields]
     header("contact", slots, contact, 0 if spec.header.show_candidate_subheading else name_gap,
            spec.header.contact_separator)
-    seen: set[str] = set()
+    seen: set[tuple[str, str | None]] = set()
     section_ids = [section.section_id for section in spec.sections]
     if len(section_ids) != len(set(section_ids)):
         raise ValueError("duplicate product-template section_id")
     for index, section in enumerate(spec.sections):
         path = f"sections[{index}]"
-        consumed(section, {
+        entry_source = section.source in {"work_experience", "education", "additional_details"}
+        fields = {
             "section_id", "source", "label", "layout", "placement", "optional",
             "heading_style", "body_style", "spacing", "bullet_indent_pt",
-        }, path)
-        if section.source not in {"summary", "skills", "languages", "certifications"}:
+        }
+        if entry_source:
+            fields.add("entry_gap_pt")
+        if section.source in {"work_experience", "additional_details"}:
+            fields.update({"entry_title_style", "entry_metadata_style", "entry_title_bold"})
+        if section.source == "work_experience":
+            fields.update({"entry_secondary_style", "split_entry_rows"})
+        if section.source == "education":
+            fields.update({"education_institution_style", "education_primary_separator", "education_secondary_separator"})
+        if section.source == "additional_details":
+            fields.update({"additional_section_heading", "entry_title_to_metadata_gap_pt"})
+        consumed(section, fields, path)
+        if section.source == "contact":
             raise ValueError(f"Lane A product-template source not yet supported: {path}.source={section.source}")
-        if section.source in seen:
+        selector = section.additional_section_heading.casefold() if section.additional_section_heading is not None else None
+        source_key = (section.source, selector)
+        if source_key in seen:
             raise ValueError(f"duplicate product-template source: {section.source}")
-        seen.add(section.source)
+        seen.add(source_key)
         if section.placement != "full_width" or section.layout not in {"full_width", "stacked", "bullets"}:
             raise ValueError(f"Lane A unsupported placement/layout in {path}")
         if not section.label:
             raise ValueError(f"empty product-template label in {path}")
-        if bind_source(section.label)[0] != section.source:
+        if selector is None and _section_source_hint(section.label)[0] != section.source:
             raise ValueError(f"unrecognized product-template presentation label in {path}")
+        if selector is not None and not selector:
+            raise ValueError(f"empty custom heading selector in {path}")
         if section.source == "summary" and section.layout == "bullets":
             raise ValueError(f"summary paragraphs cannot use bullets in {path}")
         spacing = section.spacing or spec.spacing
-        consumed(spacing, {"line_spacing", "line_height_pt", "section_before_pt", "section_after_pt"}, f"{path}.spacing")
+        consumed(spacing, {"line_spacing", "line_height_pt", "section_before_pt", "section_after_pt", "paragraph_after_pt"}, f"{path}.spacing")
         section_height = spacing.line_height_pt or (section.body_style or spec.body).font_size_pt * spacing.line_spacing
         content_style = style(f"section_{index}_body", section.body_style or spec.body, section_height)
         heading_style = style(f"section_{index}_heading", section.heading_style or spec.heading, section_height)
         section_id = f"section.{index + 1:02d}"
         paragraph = section.source == "summary"
-        marker = "bullet" if section.layout in {"bullets", "full_width"} else "none"
+        marker = ("none" if section.source == "education" else "bullet") if entry_source else (
+            "bullet" if section.layout in {"bullets", "full_width"} else "none"
+        )
         node(node_id=section_id, kind="section", content_style_id=content_style,
-             binding=SectionBinding(sources=[section.source], mapping_action="map", evidence_ids=evidence),
-             content=SectionContent(sources=[section.source], content_kind="paragraph" if paragraph else "item_list", bullet_marker=None if paragraph else marker),
-             list_ref=None if paragraph else f"{section_id}.list")
+             additional_section_heading=section.additional_section_heading,
+             binding=SectionBinding(sources=[section.source], mapping_action="map", evidence_ids=evidence,
+                 partition_policy="match_section_heading" if section.source == "additional_details" else "none"),
+             content=SectionContent(sources=[section.source], content_kind="entries" if entry_source else "paragraph" if paragraph else "item_list", bullet_marker=None if paragraph else marker),
+             entry_ref=f"{section_id}.entry" if entry_source else None,
+             list_ref=None if paragraph or section.source == "education" else f"{section_id}.list")
         node(node_id=f"{section_id}.heading", kind="heading", parent_id=section_id,
              label=section.label, label_case=_label_case(section.label), style_id=heading_style,
              spacing=NodeSpacing(gap_above_pt=spacing.section_before_pt, gap_below_pt=spacing.section_after_pt, gap_basis="flow"))
-        if not paragraph:
+        if entry_source:
+            body = section.body_style or spec.body
+            title_value = section.education_institution_style or spec.body.model_copy(update={"bold": True}) if section.source == "education" else section.entry_title_style or spec.body
+            if section.entry_title_bold is not None:
+                title_value = title_value.model_copy(update={"bold": section.entry_title_bold})
+            metadata = section.entry_metadata_style or spec.body
+            detail = (section.entry_secondary_style or metadata) if section.source == "work_experience" else body
+            kind = ("work_split" if section.split_entry_rows else "work_inline") if section.source == "work_experience" else (
+                "education_inline" if section.source == "education" else "additional_stacked"
+            )
+            node(node_id=f"{section_id}.entry", kind="entry_row", parent_id=section_id,
+                 columns=[Column(slot="entry", x0_pt=page.margin_left_pt, x1_pt=page.width_pt-page.margin_right_pt)],
+                 title_style_id=style(f"section_{index}_title", title_value, section_height),
+                 detail_style_id=style(f"section_{index}_detail", detail, section_height),
+                 meta_style_id=style(f"section_{index}_meta", metadata, section_height),
+                 inter_entry_gap_above_pt=section.entry_gap_pt if section.entry_gap_pt is not None else spacing.paragraph_after_pt,
+                 entry_layout=EntryLayout(kind=kind, primary_separator=section.education_primary_separator,
+                     secondary_separator=section.education_secondary_separator,
+                     title_to_metadata_gap_pt=section.entry_title_to_metadata_gap_pt,
+                     compensate_entry_gap=section.source == "additional_details" and section.entry_gap_pt is not None))
+        if not paragraph and section.source != "education":
             node(node_id=f"{section_id}.list", kind="list_row", parent_id=section_id,
                  list_marker=marker, bullet_dot_x0_pt=page.margin_left_pt,
                  bullet_text_x0_pt=page.margin_left_pt + section.bullet_indent_pt)

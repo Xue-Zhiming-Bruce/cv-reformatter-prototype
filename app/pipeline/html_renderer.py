@@ -6,7 +6,7 @@ import html as html_lib
 from typing import Any
 from app.pipeline.rendering import _inject_local_fonts
 from app.pipeline.layout_state import C2LayoutState, PageState, StyleToken
-from app.pipeline.render_plan import C2RenderPlan, LeafText, OVERFLOW_POLICY, SectionPlan
+from app.pipeline.render_plan import C2RenderPlan, EntryPlan, LeafText, OVERFLOW_POLICY, SectionPlan
 
 def _esc(text: str) -> str:
     return html_lib.escape(text, quote=True)
@@ -139,6 +139,25 @@ def _list_html(
         for item in items
     )
     return f'<ul class="c2-list" style="list-style:none">{text}</ul>' if plan.heading_leaf_id else text
+
+def _entry_rows_html(entry: EntryPlan) -> str:
+    rows = []
+    for index, row in enumerate(entry.rows or []):
+        node_id = _esc(f"{entry.node_id}.row.{index}")
+        gap = f"margin-top: {_pt(row.gap_above_pt)};" if row.gap_above_pt is not None else ""
+        sides = []
+        for side, fields in (("left", row.left), ("right", row.right)):
+            spans = []
+            for field_index, field in enumerate(fields):
+                identity = f' data-leaf-id="{_esc(field.leaf_id)}"' if field.leaf_id != entry.entry_leaf_id else ""
+                spans.append(_esc(field.separator_before) +
+                    f'<span class="{_class_for(field.style_id)}" data-node-id="{node_id}.{side}.{field_index}"{identity}>{_esc(field.text)}</span>')
+            style = "flex:1;min-width:0;overflow-wrap:anywhere;" if side == "left" else "flex-shrink:0;text-align:right;"
+            sides.append(f'<span data-node-id="{node_id}.{side}" style="{style}">{"".join(spans)}</span>')
+        row_style = (row.left or row.right)[0].style_id
+        rows.append(f'<p class="c2-entry-row {_class_for(row_style)}" data-node-id="{node_id}" style="display:flex;align-items:baseline;gap:12pt;{gap}">{"".join(sides)}</p>')
+    return "\n".join(rows)
+
 
 def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
     """Deterministic semantic HTML. Same state + candidate -> same bytes."""
@@ -305,6 +324,9 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                 parts.append(_styled_line_html(state, section_plan, line, content_class))
         # C2-0cM: a composite section renders its entries sub-content AND its
         # item sub-content under the ONE measured target heading.
+        if section_plan.items_before_entries and section_plan.items:
+            parts.append(_list_html(section_plan, section_plan.items, f"{section_plan.node_id}.list", None,
+                                    f"{section_plan.node_id}.item", content_class))
         if section_plan.content_kind in {"entries", "composite"}:
             indent = (
                 round(section_plan.base_x0_pt - state.page.margin_left_pt, 3)
@@ -315,12 +337,17 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
             detail_class = _class_for(section_plan.detail_style_id)
             meta_class = _class_for(section_plan.meta_style_id)
             for entry_index, entry in enumerate(section_plan.entries):
+                if entry.group_heading is not None:
+                    parts.append(f'<h3 class="{_class_for(section_plan.style_id)}" data-leaf-id="{_esc(entry.group_heading.leaf_id)}">{_esc(entry.group_heading.text)}</h3>')
                 declarations = []
+                if entry.keep_together:
+                    declarations.append("break-inside: avoid;")
                 if indent:
                     declarations.append(f"margin-left: {_pt(indent)};")
-                if entry_index and section_plan.inter_entry_gap_above_pt is not None:
+                entry_gap = entry.gap_above_pt if entry.gap_above_pt is not None else section_plan.inter_entry_gap_above_pt
+                if entry_index and entry_gap is not None:
                     # Measured inter-entry rhythm from the layout state.
-                    declarations.append(f"margin-top: {_pt(section_plan.inter_entry_gap_above_pt)};")
+                    declarations.append(f"margin-top: {_pt(entry_gap)};")
                 entry_style = f' style="{" ".join(declarations)}"' if declarations else ""
                 parts.append(
                     f'    <article class="c2-entry" data-node-id="{_esc(entry.node_id)}"{entry_style}>'
@@ -353,33 +380,37 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                         )
                     parts.append("      </div>")
 
-                # entry_meta_placement="title_row" (Pipeline E4 bounded repair
-                # layer): the meta column shares the FIRST title line's row
-                # only; the remaining entry-head lines render full width below
-                # the head so long head/detail lines wrap within the whole
-                # entry width instead of squeezing beside the meta column.
-                # Default None keeps the historical head-wide meta column.
-                title_row_meta = (
-                    section_plan.entry_meta_placement == "title_row" and bool(entry.meta_lines)
-                )
-                parts.append('      <div class="c2-entry-head">')
-                parts.append('      <div class="c2-entry-main">')
-                for line_index, line in enumerate(
-                    entry.title_lines[:1] if title_row_meta else entry.title_lines
-                ):
-                    _title_line_html(line, line_index)
-                parts.append("      </div>")
-                if entry.meta_lines and not title_row_meta:
-                    _meta_lines_html()
-                parts.append("      </div>")
-                if title_row_meta:
+                if entry.rows is not None:
+                    parts.append(_entry_rows_html(entry))
+                else:
+                    # entry_meta_placement="title_row" (Pipeline E4 bounded repair
+                    # layer): the meta column shares the FIRST title line's row
+                    # only; the remaining entry-head lines render full width below
+                    # the head so long head/detail lines wrap within the whole
+                    # entry width instead of squeezing beside the meta column.
+                    # Default None keeps the historical head-wide meta column.
+                    title_row_meta = (
+                        section_plan.entry_meta_placement == "title_row" and bool(entry.meta_lines)
+                    )
+                    parts.append('      <div class="c2-entry-head">')
                     parts.append('      <div class="c2-entry-main">')
-                    for line_index, line in enumerate(entry.title_lines[1:], 1):
+                    for line_index, line in enumerate(
+                        entry.title_lines[:1] if title_row_meta else entry.title_lines
+                    ):
                         _title_line_html(line, line_index)
                     parts.append("      </div>")
-                    _meta_lines_html()
+                    if entry.meta_lines and not title_row_meta:
+                        _meta_lines_html()
+                    parts.append("      </div>")
+                    if title_row_meta:
+                        parts.append('      <div class="c2-entry-main">')
+                        for line_index, line in enumerate(entry.title_lines[1:], 1):
+                            _title_line_html(line, line_index)
+                        parts.append("      </div>")
+                        _meta_lines_html()
                 if entry.bullet_items or entry.text_lines:
-                    parts.append('      <div class="c2-entry-body">')
+                    body_style = f' style="margin-top: {_pt(entry.body_gap_above_pt)};"' if entry.body_gap_above_pt is not None else ""
+                    parts.append(f'      <div class="c2-entry-body"{body_style}>')
                     if entry.bullet_items:
                         parts.append(
                             _list_html(
@@ -429,7 +460,7 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                     parts.append("      </div>")
                 parts.append("    </article>")
         if section_plan.content_kind in {"item_list", "inline_items", "composite"}:
-            if section_plan.items:
+            if section_plan.items and not section_plan.items_before_entries:
                 parts.append(
                     _list_html(
                         section_plan, section_plan.items,

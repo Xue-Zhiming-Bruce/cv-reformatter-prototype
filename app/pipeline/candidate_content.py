@@ -37,6 +37,7 @@ class CandidateLeaf(StateModel):
     slot: str | None = None  # header fields only
     parent_leaf_id: str | None = None
     text: str | None = None
+    content_field: Literal["company", "title", "institution", "degree", "field_of_study", "location", "date_range", "link"] | None = None
 
     @model_validator(mode="after")
     def shape(self) -> "CandidateLeaf":
@@ -150,11 +151,12 @@ def candidate_document_from_context(
         leaf_id: str, kind: CandidateLeafKind, text: str | None,
         source: SourceRole | None = None, *, parent: str | None = None,
         slot: str | None = None,
+        content_field: str | None = None,
     ) -> None:
         if text:
             leaves.append(CandidateLeaf(
                 leaf_id=leaf_id, kind=kind, text=text, source=source,
-                parent_leaf_id=parent, slot=slot,
+                parent_leaf_id=parent, slot=slot, content_field=content_field,
             ))
 
     add("header.name", "header_field", context.candidate_heading, slot="name")
@@ -179,21 +181,21 @@ def candidate_document_from_context(
             continue
         leaf_id = f"work.{index}"
         # An empty title is presentation, not an invented employer or role.
-        leaves.append(CandidateLeaf(leaf_id=leaf_id, kind="work_entry", source="work_experience", text=entry.company or entry.title or ""))
+        leaves.append(CandidateLeaf(leaf_id=leaf_id, kind="work_entry", source="work_experience", text=entry.company or entry.title or "", content_field="company" if entry.company else "title" if entry.title else None))
         if entry.company:
-            add(f"{leaf_id}.title", "entry_detail", entry.title, "work_experience", parent=leaf_id)
+            add(f"{leaf_id}.title", "entry_detail", entry.title, "work_experience", parent=leaf_id, content_field="title")
         for key, text in (("location", entry.location), ("dates", entry.date_range)):
-            add(f"{leaf_id}.{key}", "entry_meta", text, "work_experience", parent=leaf_id)
+            add(f"{leaf_id}.{key}", "entry_meta", text, "work_experience", parent=leaf_id, content_field="location" if key == "location" else "date_range")
         for bullet, text in enumerate(entry.description):
             add(f"{leaf_id}.bullet.{bullet}", "work_bullet", text, "work_experience", parent=leaf_id)
     for index, entry in enumerate(context.education):
         if not any((entry.institution, entry.degree, entry.field_of_study, entry.date_range)):
             continue
         leaf_id = f"education.{index}"
-        leaves.append(CandidateLeaf(leaf_id=leaf_id, kind="education_entry", source="education", text=entry.institution or ""))
+        leaves.append(CandidateLeaf(leaf_id=leaf_id, kind="education_entry", source="education", text=entry.institution or "", content_field="institution"))
         for key, text in (("degree", entry.degree), ("field", entry.field_of_study)):
-            add(f"{leaf_id}.{key}", "entry_detail", text, "education", parent=leaf_id)
-        add(f"{leaf_id}.dates", "entry_meta", entry.date_range, "education", parent=leaf_id)
+            add(f"{leaf_id}.{key}", "entry_detail", text, "education", parent=leaf_id, content_field="degree" if key == "degree" else "field_of_study")
+        add(f"{leaf_id}.dates", "entry_meta", entry.date_range, "education", parent=leaf_id, content_field="date_range")
     for index, text in enumerate(context.certifications):
         add(f"certifications.{index}", "certification_item", text, "certifications")
     for index, detail in enumerate(context.additional_details):
@@ -218,10 +220,10 @@ def candidate_document_from_context(
             leaf_id = f"{section_id}.entry.{entry_index}"
             leaves.append(CandidateLeaf(
                 leaf_id=leaf_id, kind="additional_entry", source="additional_details",
-                text=entry.title or "",
+                text=entry.title or "", content_field="title",
             ))
             for link_index, link in enumerate(entry.links):
-                add(f"{leaf_id}.link.{link_index}", "entry_meta", link, "additional_details", parent=leaf_id)
+                add(f"{leaf_id}.link.{link_index}", "entry_meta", link, "additional_details", parent=leaf_id, content_field="link")
             for bullet_index, text in enumerate(entry.description):
                 add(f"{leaf_id}.bullet.{bullet_index}", "work_bullet", text, "additional_details", parent=leaf_id)
         sections.append(CandidateSection(

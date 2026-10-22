@@ -191,3 +191,50 @@ def product_template():
                      {"section_id": "skills", "source": "skills", "label": "SKILLS", "layout": "bullets", "bullet_indent_pt": 15,
                       "spacing": {"line_height_pt": 14, "section_before_pt": 31, "section_after_pt": 3}}],
     })
+
+
+def product_entry_template(*, split_work: bool, map_custom: bool):
+    from app.template_analysis.schemas import LayoutTemplateSpec
+
+    data = product_template().model_dump()
+    data["template_version"] = "synthetic-product-entries-2"
+    data["sections"] = [data["sections"][0],
+        {"section_id": "work", "source": "work_experience", "label": "EXPERIENCE",
+         "split_entry_rows": split_work, "entry_gap_pt": 18,
+         "entry_title_style": {"font_family": "Helvetica", "font_size_pt": 12, "bold": True, "color_hex": "#113355"},
+         "entry_secondary_style": {"font_family": "Helvetica", "font_size_pt": 10, "color_hex": "#224466"},
+         "entry_metadata_style": {"font_family": "Helvetica", "font_size_pt": 9, "color_hex": "#556677"}},
+        {"section_id": "education", "source": "education", "label": "EDUCATION",
+         "education_primary_separator": " / ", "education_secondary_separator": "; ",
+         "education_institution_style": {"font_family": "Helvetica", "font_size_pt": 11, "bold": True}},
+    ]
+    details = {"section_id": "details", "source": "additional_details", "label": "ADDITIONAL DETAILS",
+         "entry_gap_pt": 22, "entry_title_to_metadata_gap_pt": 30,
+         "entry_title_style": {"font_family": "Helvetica", "font_size_pt": 12, "bold": True},
+         "entry_metadata_style": {"font_family": "Helvetica", "font_size_pt": 9, "line_height_pt": 12, "color_hex": "#556677"}}
+    if map_custom:
+        data["sections"].append({**details, "section_id": "custom", "additional_section_heading": "Projects"})
+    data["sections"].append(details)
+    return LayoutTemplateSpec.model_validate(data)
+
+
+def product_entry_profile():
+    from app.extraction.candidate_schema import CandidateProfile
+
+    return CandidateProfile.model_validate({
+        "full_name": "Candidate Alpha", "email": "alpha@example.test", "phone": "5550101",
+        "professional_summary": "Builds reliable systems",
+        "work_experience": [
+            {"company": "ExampleCompany", "title": "PlatformEngineer", "location": "Boston",
+             "start_date": "2020", "end_date": "2024", "description": ["Built useful tools", "Maintained reliable services"]},
+            {"title": "IndependentEngineer", "description": ["Preserved an entry without an employer"]}],
+        "education": [{"institution": "ExampleUniversity", "degree": "BS", "field_of_study": "Computing",
+                       "start_date": "2015", "end_date": "2019"}, {"degree": "Certificate"}],
+        "notice_period": "30 days", "salary_expectation": "HIDDEN_SALARY", "client_display_rules": {"salary_expectation": "hide"},
+        "additional_sections": [
+            {"source_heading": "Projects", "source_block_id": "candidate-block-projects", "section_type": "projects",
+             "entries": [{"title": "UsefulComponent", "links": ["https://example.test/project"], "description": ["Designed a reusable component"]},
+                         {"links": ["https://example.test/notes"]}, {"description": ["Preserved a description without a title"]}]},
+            {"source_heading": "Awards", "source_block_id": "candidate-block-awards", "section_type": "awards", "entries": [{"title": "CommunityAward"}]},
+            {"source_heading": "PrivateProjects", "source_block_id": "candidate-block-hidden", "section_type": "projects", "disposition": "hide", "entries": [{"title": "HIDDEN_PROJECT"}]}],
+    })

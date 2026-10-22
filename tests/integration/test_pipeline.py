@@ -276,6 +276,9 @@ def test_cli_product_template_controls_real_pdf_and_freezes_identity(tmp_path: P
     ("dimensions", "page dimensions"), ("contacts", "cannot route this candidate"),
     ("live", "offline execution"), ("repair", "zero repair rounds"),
     ("b", "Lane A"),
+    ("label", "unrecognized product-template presentation labels"),
+    ("semantic_fields", "unique semantic field metadata"),
+    ("duplicate_custom", "matches multiple candidate sections"),
 ])
 def test_product_template_rejects_invalid_dispatch_before_output(tmp_path: Path, problem: str, reason: str) -> None:
     from app.generation.template_mapper import build_client_render_context
@@ -286,11 +289,102 @@ def test_product_template_rejects_invalid_dispatch_before_output(tmp_path: Path,
     spec = product_template()
     if problem == "dimensions":
         spec.page.width_pt = 600
-    context = build_client_render_context(CandidateProfile(full_name="Candidate Alpha", location="Boston"))
+    if problem == "label":
+        from app.template_analysis.schemas import SectionLayoutSpec
+        spec.sections.append(SectionLayoutSpec(section_id="custom", source="additional_details", label="Projects", additional_section_heading="Projects"))
+    profile = CandidateProfile(full_name="Candidate Alpha", location=None if problem == "label" else "Boston")
+    if problem in {"semantic_fields", "duplicate_custom"}:
+        from tests.helpers.pipeline_layout import product_entry_template, product_entry_profile
+        spec, profile = product_entry_template(split_work=True, map_custom=True), product_entry_profile()
+        if problem == "duplicate_custom":
+            profile.additional_sections.append(profile.additional_sections[0].model_copy(update={"source_block_id": "candidate-block-duplicate"}))
+    context = build_client_render_context(profile)
     candidate = candidate_document_from_context(context, candidate_id="synthetic-template-rejection")
+    if problem == "semantic_fields":
+        candidate = candidate.model_copy(update={"leaves": [leaf.model_copy(update={"content_field": None}) for leaf in candidate.leaves]})
     output = tmp_path / "result"
     with pytest.raises(ValueError, match=reason):
         run_e5(**inputs, out_dir=output, candidate=candidate, layout_spec=spec,
                live=problem == "live", lanes=("b",) if problem == "b" else ("a",),
                max_repair_rounds=1 if problem == "repair" else 0)
     assert not output.exists()
+
+
+@pytest.mark.parametrize("blind", [False, True])
+@pytest.mark.parametrize("split_work,map_custom", [(False, False), (True, True)])
+def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, split_work: bool, map_custom: bool) -> None:
+    from app.generation.content_validation import validate_generated_content
+    from app.generation.template_mapper import build_client_render_context
+    from tests.helpers.pipeline_layout import product_entry_template, product_entry_profile
+
+    inputs = _inputs(tmp_path, one_column=True)
+    spec = product_entry_template(split_work=split_work, map_custom=map_custom)
+    profile = product_entry_profile()
+    spec_path, candidate = tmp_path / "layout.json", tmp_path / "candidate.json"
+    spec_path.write_text(spec.model_dump_json())
+    candidate.write_text(profile.model_dump_json())
+    output = tmp_path / "result"
+    command = [sys.executable, "-B", "-m", "app.pipeline", "--target", str(inputs["target_pdf"]),
+        "--adobe-json", str(inputs["adobe_json"]), "--normalized", str(inputs["normalized_evidence"]),
+        "--structure-draft", str(inputs["structure_draft"]), "--layout-spec", str(spec_path),
+        "--candidate", str(candidate), "--out", str(output)]
+    if blind:
+        command.append("--blind-profile")
+    result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    record = json.loads((output / "e5_state.json").read_text())
+    assert record["summary"]["terminal_state"] == "ready_for_owner_review", record
+    pdf_path = output / "lane_a/render_1.pdf"
+    context = build_client_render_context(profile, blind_profile=blind)
+    report = validate_generated_content(context, layout_spec=spec, pdf_path=pdf_path)
+    assert report.passed, report
+    with pdfplumber.open(pdf_path) as pdf:
+        text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        assert "HIDDEN_PROJECT" not in text and "HIDDEN_SALARY" not in text and "Target facts only" not in text
+        assert "ExampleUniversity / BS; Computing / 2015 - 2019" in text
+        assert "Certificate" in text
+        if blind:
+            assert "alpha@example.test" not in text and "5550101" not in text and "Alpha" not in text
+        words = [word for page in pdf.pages for word in page.extract_words(extra_attrs=["fontname", "size"])]
+        work_heading = next(word for word in words if word["text"] == "EXPERIENCE")
+        title = next(word for word in words if word["text"] == "PlatformEngineer" and word["top"] > work_heading["top"])
+        company = next(word for word in words if word["text"] == "ExampleCompany")
+        assert abs(title["size"]-12) < 0.1 and "bold" in title["fontname"].casefold()
+        if split_work:
+            assert company["top"]-title["top"] > 10 and abs(company["size"]-10) < 0.1
+        else:
+            assert abs(company["top"]-title["top"]) < 0.2
+            assert "PlatformEngineer | ExampleCompany | Boston" in text
+        project = next(word for word in words if word["text"] == "UsefulComponent")
+        link = next(word for word in words if word["text"] == "https://example.test/project")
+        # The accepted renderer measures this contract from text top to text top.
+        assert 29 < link["top"]-project["top"] < 31
+        assert abs(link["size"]-9) < 0.1
+        if map_custom:
+            assert "Projects" not in text
+        else:
+            assert text.index("Projects") < text.index("UsefulComponent")
+    gates = json.loads(next((output / "lane_a").glob("hard_gates_*.json")).read_text())
+    assert gates["details"]["content_shapes_match_evidence"]["passed"], gates
+    assert json.loads(candidate.read_text()) == profile.model_dump(mode="json")
+    if map_custom and not blind:
+        import re
+        from app.pipeline.candidate_content import candidate_document_from_context
+        from app.pipeline.layout_state import C2LayoutState
+        from app.pipeline.render_plan import compile_render_plan
+        from app.pipeline.quality import content_gate, content_shape_verification
+
+        state = C2LayoutState.model_validate_json((output / "c2_layout_state.json").read_text())
+        plan = compile_render_plan(state, candidate_document_from_context(context, candidate_id="synthetic-gate-check"))
+        html = (output / "lane_a/render_1.html").read_text()
+        broken_font = re.sub(r'<span[^>]*data-leaf-id="work.0.dates"[^>]*>',
+                            lambda match: re.sub(r'class="[^"]*"', 'class="broken-font"', match.group()), html)
+        assert broken_font != html
+        assert not content_shape_verification(state, plan, None, {}, broken_font, {}, pdf_path)["passed"]
+        broken_column = html.replace('data-node-id="section.02.content.work.0.row.0.right"',
+                                     'data-node-id="section.02.content.work.0.row.0.wrong_side"')
+        assert broken_column != html
+        assert not content_shape_verification(state, plan, None, {}, broken_column, {}, pdf_path)["passed"]
+        assert not content_gate(plan, html.replace("Designed a reusable component", "Changed component"), pdf_path)["passed"]
+        aliases = gates["details"]["content_gate"]["leaf_records"]["additional_0.heading"]["presentation_mapping"]
+        assert aliases == {"source_heading": "Projects", "target_label": "ADDITIONAL DETAILS"}

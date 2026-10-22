@@ -120,7 +120,10 @@ def _expected_items(
     for section in context.additional_sections:
         if section.heading.casefold() in contact_slot_labels:
             continue
-        items.append(section.heading)
+        mapped_label = next((item.label for item in (layout_spec.sections if layout_spec else [])
+                            if item.source == "additional_details" and item.additional_section_heading is not None
+                            and item.additional_section_heading.casefold() == section.heading.casefold()), None)
+        items.append(mapped_label or section.heading)
         for entry in section.entries:
             items.extend(
                 value

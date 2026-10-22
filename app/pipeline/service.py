@@ -2973,6 +2973,8 @@ def run_e5(
         raise RuntimeError(f"target PDF not found: {target_pdf}")
     target_sha256 = _sha256_file(target_pdf)
     template_state = None
+    template_label_catalog = None
+    template_approved_labels = None
     if layout_spec is not None:
         import pdfplumber
         from app.pipeline.layout_compiler import state_from_layout_template
@@ -2985,6 +2987,17 @@ def run_e5(
         plan = compile_render_plan(template_state, candidate)
         if plan.failures:
             raise ValueError(f"LayoutTemplateSpec cannot route this candidate: {plan.failures[:3]}")
+        template_label_catalog = [
+            PresentationLabel(label_id=f"label.template.{node.node_id}", text=node.label,
+                              kind="section_heading", evidence_ids=node.evidence_ids)
+            for node in template_state.nodes if node.kind == "heading"
+        ]
+        template_approved_labels = (
+            _apply_presentation_label_approval(template_label_catalog, presentation_label_approval, target_sha256=target_sha256)
+            if presentation_label_approval is not None else _heuristic_presentation_labels(template_label_catalog)
+        )
+        if {label.label_id for label in template_label_catalog} != {label.label_id for label in template_approved_labels}:
+            raise ValueError("unrecognized product-template presentation labels require explicit identity-bound label approval")
     out_dir = out_dir or RUNS / datetime.now(UTC).strftime("e_pipeline_e5_%Y%m%dT%H%M%SZ")
     out_dir.mkdir(parents=True, exist_ok=False)
     budget = budget or RunBudget(
@@ -3051,18 +3064,14 @@ def run_e5(
     # Lane B can only reference `{{label:<label_id>}}`; both privacy gates and
     # the owner listing reference THIS catalog, never a lane-local set.
     try:
-        label_catalog = (_presentation_label_catalog(derived) if layout_spec is None else [
-            PresentationLabel(label_id=f"label.template.{node.node_id}", text=node.label,
-                              kind="section_heading", evidence_ids=node.evidence_ids)
-            for node in state.nodes if node.kind == "heading"
-        ])
+        label_catalog = _presentation_label_catalog(derived) if template_label_catalog is None else template_label_catalog
     except Exception as error:
         return abort("presentation_label_catalog", error)
     catalog_sha256 = presentation_label_catalog_sha256(label_catalog)
     # Owner direction 2026-10-22: recognize conventional headings without
     # per-label human approval; legacy explicit input still validates identity.
     try:
-        approved_label_catalog = (
+        approved_label_catalog = template_approved_labels if template_approved_labels is not None else (
             _apply_presentation_label_approval(
                 label_catalog, presentation_label_approval, target_sha256=target_sha256,
             ) if presentation_label_approval is not None
@@ -3101,7 +3110,7 @@ def run_e5(
         (out_dir / "layout_template_spec.json").write_text(layout_spec.model_dump_json(indent=2), encoding="utf-8")
         shared_draft_ref["layout_template"] = {
             "sha256": layout_spec_sha256(layout_spec), "template_version": layout_spec.template_version,
-            "schema_version": layout_spec.schema_version, "compiler": "lane-a-product-subset/1",
+            "schema_version": layout_spec.schema_version, "compiler": "lane-a-product-subset/2",
             "template_approved": False, "api_cutover": False,
         }
     page_height = _page_pt_size(target_pdf, 1)[1]

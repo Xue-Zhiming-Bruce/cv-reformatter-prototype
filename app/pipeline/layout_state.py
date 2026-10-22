@@ -221,7 +221,7 @@ class SectionBinding(StateModel):
     sources: list[SourceRole] = Field(default_factory=list)
     mapping_action: Literal["map", "preserve_as_additional", "unresolved"]
     composite: bool = False
-    partition_policy: Literal["none", "split_items_by_order"] = "none"
+    partition_policy: Literal["none", "split_items_by_order", "match_section_heading"] = "none"
     evidence_ids: list[str] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -303,6 +303,13 @@ class CategoryGrid(StateModel):
     row_count: int = Field(ge=1)
     evidence_ids: list[str] = Field(min_length=1)
 
+class EntryLayout(StateModel):
+    kind: Literal["work_inline", "work_split", "education_inline", "additional_stacked"]
+    primary_separator: str = "-"
+    secondary_separator: str = ","
+    title_to_metadata_gap_pt: float | None = Field(default=None, ge=0)
+    compensate_entry_gap: bool = False
+
 class LayoutNode(StateModel):
     """One node of the layout tree.
 
@@ -349,6 +356,8 @@ class LayoutNode(StateModel):
     # derived by detection; None = the entry declares no sub-group tier and
     # the plan compiler rejects subgroup children fail-closed.
     subgroup_title_style_id: str | None = None
+    entry_layout: EntryLayout | None = None
+    additional_section_heading: str | None = None
     # Measured category-grid structure (C2-0cS; section-only; None = the
     # section's content range measured no aligned-pair column cluster — the
     # ordinary item-list rendering applies).
@@ -428,6 +437,7 @@ class LayoutNode(StateModel):
                     f"{self.node_id}: header field order must be contiguous from 0"
                 )
         entry_only = {
+            "entry_layout": self.entry_layout,
             "title_style_id": self.title_style_id,
             "detail_style_id": self.detail_style_id,
             "meta_style_id": self.meta_style_id,
@@ -437,8 +447,14 @@ class LayoutNode(StateModel):
             raise ValueError(
                 f"{self.node_id}: entry typography/rhythm fields belong on entry_row nodes"
             )
+        if self.entry_layout is not None and not all((self.title_style_id, self.detail_style_id, self.meta_style_id)):
+            raise ValueError(f"{self.node_id}: product entry layouts require all typography tiers")
         if self.kind != "section" and self.content_style_id is not None:
             raise ValueError(f"{self.node_id}: content_style_id belongs on section nodes")
+        if self.additional_section_heading is not None and (
+            self.kind != "section" or not self.binding or self.binding.sources != ["additional_details"]
+        ):
+            raise ValueError(f"{self.node_id}: custom heading selectors require an additional-details section")
         if self.kind != "section" and self.category_grid is not None:
             raise ValueError(f"{self.node_id}: category_grid belongs on section nodes")
         if self.kind in {"entry_row", "list_row"} and self.parent_id is None:
@@ -543,6 +559,10 @@ class C2LayoutState(StateModel):
         for node in self.nodes:
             if node.style_id is not None and node.style_id not in style_ids:
                 raise ValueError(f"{node.node_id}: unknown style ref {node.style_id}")
+            if node.entry_layout is not None and any(
+                ref not in style_ids for ref in (node.title_style_id, node.detail_style_id, node.meta_style_id)
+            ):
+                raise ValueError(f"{node.node_id}: product entry layout has unknown typography tiers")
             if node.rule_id is not None and node.rule_id not in rule_ids:
                 raise ValueError(f"{node.node_id}: unknown rule ref {node.rule_id}")
             missing_badges = set(node.badge_ids) - badge_ids

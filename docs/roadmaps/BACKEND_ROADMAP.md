@@ -45,9 +45,11 @@ Legacy profile-approval names remain compatibility fields only.
       A content prerequisites now preserve structured custom sections and empty
       history, with real PDF/product-validator and negative gate checks. Product
       LayoutTemplateSpec compilation now has an explicit offline single-column
-      subset in the existing CLI/A path, with real PDF checks and unsupported
-      configuration rejection. Full product-template coverage, custom
-      placement/styling, pagination and API cutover remain open; no replaced
+      subset in the existing CLI/A path, now including work rows, education
+      separators and custom-section selectors with role styles. Real PDF,
+      independent content and renderer-mutation checks cover these mappings.
+      Full product-template coverage, remaining custom group styling,
+      decoration, pagination and API cutover remain open; no replaced
       implementation has been removed.
 - [ ] Prune redundant orchestration, reports, and tests once their responsibility
       has a single verified owner.
