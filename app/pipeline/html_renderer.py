@@ -4,9 +4,32 @@ from __future__ import annotations
 
 import html as html_lib
 from typing import Any
+from app.pipeline.candidate_content import CandidateDocument
+from app.pipeline.layout_compiler import state_from_layout_template
 from app.pipeline.rendering import _inject_local_fonts
 from app.pipeline.layout_state import BadgeDecoration, C2LayoutState, PageState, StyleToken
-from app.pipeline.render_plan import C2RenderPlan, EntryPlan, LeafText, OVERFLOW_POLICY, SectionPlan, section_groups
+from app.pipeline.render_plan import C2RenderPlan, EntryPlan, LeafText, OVERFLOW_POLICY, SectionPlan, compile_render_plan, section_groups
+from app.template_analysis.schemas import LayoutTemplateSpec
+
+
+def render_layout_template(
+    spec: LayoutTemplateSpec,
+    candidate: CandidateDocument,
+    *,
+    target_sha256: str | None = None,
+    page_count: int | None = None,
+) -> tuple[C2LayoutState, C2RenderPlan, str]:
+    """Compile and bind a product template without files, providers or approval.
+
+    Callers own disclosure, target/label authorization, export and output gates.
+    Native templates have no target checksum or measured target page count.
+    """
+    state = state_from_layout_template(spec, target_sha256=target_sha256, page_count=page_count)
+    candidate = CandidateDocument.model_validate(candidate.model_dump())
+    plan = compile_render_plan(state, candidate)
+    if plan.failures:
+        raise ValueError(f"LayoutTemplateSpec cannot route this candidate: {plan.failures[:3]}")
+    return state, plan, render_html(state, plan)
 
 def _esc(text: str) -> str:
     return html_lib.escape(text, quote=True)

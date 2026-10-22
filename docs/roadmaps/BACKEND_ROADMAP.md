@@ -72,6 +72,12 @@ Legacy profile-approval names remain compatibility fields only.
       A4 template in ordinary/blind CLI cases, alongside independent product
       content/structure checks; API default-template version and header-only
       contact behavior are covered without replacing its renderer.
+      Deterministic product-template compilation, binding and HTML rendering
+      now share one callable used by CLI preflight/rendering and probes. Native
+      templates can render without fabricated target evidence; ordinary/blind
+      PDFs pass product validators and HTML matches the CLI bytes. Uploaded
+      target identity, label authorization and independent gates remain at the
+      caller boundary. API/proof rendering and approval binding remain unchanged.
       Full product-template coverage,
       complete pagination parity and API cutover remain open; no replaced
       implementation has been removed.

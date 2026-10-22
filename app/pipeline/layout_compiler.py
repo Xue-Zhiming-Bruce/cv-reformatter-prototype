@@ -1079,7 +1079,7 @@ def own_leaf(
 
 
 def state_from_layout_template(
-    spec: LayoutTemplateSpec, *, target_sha256: str, page_count: int,
+    spec: LayoutTemplateSpec, *, target_sha256: str | None = None, page_count: int | None = None,
 ) -> C2LayoutState:
     """Compile the supported product-template subset; never guess missing features.
 
@@ -1099,6 +1099,10 @@ def state_from_layout_template(
                 raise ValueError(f"Lane A does not yet support {path}.{name}")
 
     spec = LayoutTemplateSpec.model_validate(spec.model_dump())
+    if (target_sha256 is None) != (page_count is None):
+        raise ValueError("target checksum and page count must be supplied together")
+    if target_sha256 is None and spec.source_type != "built_in":
+        raise ValueError("uploaded product templates require target checksum and page count")
     if spec.structure_contract != "measured" or spec.unsupported_features:
         raise ValueError("Lane A requires a measured LayoutTemplateSpec without unsupported_features")
     consumed(spec, {

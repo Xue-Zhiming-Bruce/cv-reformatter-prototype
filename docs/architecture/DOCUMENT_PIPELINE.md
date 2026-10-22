@@ -368,6 +368,25 @@ Integration status, October 22, 2026:
   skills. Replacing proof/candidate rendering requires validating
   proof approval against the selected implementation and proving rollback;
   neither a compatible DOM nor a matching template checksum completes cutover.
+- `app.pipeline.html_renderer.render_layout_template` owns deterministic product
+  template compilation, candidate binding and HTML rendering. It accepts the
+  internal projection from `candidate_document_from_context` and returns state,
+  plan and HTML without writing artifacts, running providers or exporting PDF.
+  The CLI's product-template preflight and content probes use this call; the
+  initial render reuses the validated result. The evidence/proposal path keeps
+  its existing compiler and repair behavior. Unsupported templates and failed
+  ownership plans raise before HTML is returned.
+  Native `source_type=built_in` templates can omit target evidence: internal
+  `provenance.target_sha256` and `page.page_count` are then explicitly null,
+  rather than invented. The existing `layout-state/1` field names and all
+  target-backed serialized values remain compatible. Uploaded templates still
+  require a checksum and measured target page count together; evidence states
+  cannot drop either value. Template identity remains the canonical product
+  checksum recorded by the state evidence IDs. This call grants no label,
+  template or output approval. Callers retain disclosure, target identity,
+  label authorization, PDF export and independent gates. Native ordinary/blind
+  PDFs pass the shared product validators and their HTML matches the CLI bytes.
+  API/proof rendering has not switched to this call.
 - Core presentation labels use the existing product exact-alias helper rather
   than substring source binding. Every supplied template heading must be
   recognized or covered by the existing identity-bound explicit label input

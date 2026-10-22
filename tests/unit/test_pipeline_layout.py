@@ -423,3 +423,31 @@ def test_badge_row_counts_cannot_stall_materialization() -> None:
     payload["badges"][0]["items_per_line"] = [0]
     with pytest.raises(ValidationError, match="greater than 0"):
         C2LayoutState.model_validate(payload)
+
+
+@pytest.mark.parametrize("target,page_count,reason", [
+    (None, None, "uploaded product templates require target"),
+    (TARGET_SHA, None, "must be supplied together"),
+    (None, 1, "must be supplied together"),
+    ("not-a-checksum", 1, "pattern"),
+    (TARGET_SHA, 0, "greater than or equal to 1"),
+])
+def test_product_template_requires_complete_target_identity(target, page_count, reason) -> None:
+    from app.pipeline.layout_compiler import state_from_layout_template
+    from tests.helpers.pipeline_layout import product_template
+
+    with pytest.raises(ValueError, match=reason):
+        state_from_layout_template(product_template(), target_sha256=target, page_count=page_count)
+
+
+@pytest.mark.parametrize("patch", [
+    {"provenance": {"target_sha256": None}},
+    {"page": {"page_count": None}},
+    {"provenance": {"target_sha256": None}, "page": {"page_count": None}},
+])
+def test_measured_state_cannot_drop_target_identity(patch) -> None:
+    payload = compile_synthetic(["WORK EXPERIENCE"]).model_dump()
+    for field, values in patch.items():
+        payload[field].update(values)
+    with pytest.raises(ValidationError, match="target evidence requires both"):
+        C2LayoutState.model_validate(payload)

@@ -2944,7 +2944,7 @@ def run_e5(
     from app.pipeline.rendering import build_format_summary
 
     from app.pipeline.render_plan import compile_render_plan
-    from app.pipeline.html_renderer import render_html
+    from app.pipeline.html_renderer import render_html, render_layout_template
     from app.pipeline import quality as c2r
     from app.pipeline.layout_state import state_bytes
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
@@ -2973,20 +2973,17 @@ def run_e5(
         raise RuntimeError(f"target PDF not found: {target_pdf}")
     target_sha256 = _sha256_file(target_pdf)
     template_state = None
+    template_render = None
     template_label_catalog = None
     template_approved_labels = None
     if layout_spec is not None:
         import pdfplumber
-        from app.pipeline.layout_compiler import state_from_layout_template
-
         layout_spec = LayoutTemplateSpec.model_validate(layout_spec.model_dump())
         with pdfplumber.open(target_pdf) as document:
             if any(abs(page.width - layout_spec.page.width_pt) > 0.1 or abs(page.height - layout_spec.page.height_pt) > 0.1 for page in document.pages):
                 raise ValueError("LayoutTemplateSpec page dimensions do not match the target PDF")
-            template_state = state_from_layout_template(layout_spec, target_sha256=target_sha256, page_count=len(document.pages))
-        plan = compile_render_plan(template_state, candidate)
-        if plan.failures:
-            raise ValueError(f"LayoutTemplateSpec cannot route this candidate: {plan.failures[:3]}")
+            template_render = render_layout_template(layout_spec, candidate, target_sha256=target_sha256, page_count=len(document.pages))
+        template_state = template_render[0]
         template_label_catalog = [
             PresentationLabel(label_id=f"label.template.{node.node_id}", text=node.label,
                               kind="section_heading", evidence_ids=node.evidence_ids)
@@ -3110,7 +3107,7 @@ def run_e5(
         (out_dir / "layout_template_spec.json").write_text(layout_spec.model_dump_json(indent=2), encoding="utf-8")
         shared_draft_ref["layout_template"] = {
             "sha256": layout_spec_sha256(layout_spec), "template_version": layout_spec.template_version,
-            "schema_version": layout_spec.schema_version, "compiler": "lane-a-product-subset/7",
+            "schema_version": layout_spec.schema_version, "compiler": "lane-a-product-subset/8",
             "template_approved": False, "api_cutover": False,
         }
     page_height = _page_pt_size(target_pdf, 1)[1]
@@ -3496,12 +3493,16 @@ def run_e5(
                         probe_plan_candidate = _apply_header_overflow_disposition(
                             probe_candidate, state
                         )
-                        plan = _apply_lane_a_structure(
-                            compile_render_plan(state, probe_plan_candidate), selected_representation
-                        )
-                        if plan.status == "failed":
-                            raise RuntimeError(f"probe plan failed: {plan.failures[:3]}")
-                        html = render_html(state, plan)
+                        if layout_spec is not None:
+                            _, plan, html = render_layout_template(layout_spec, probe_plan_candidate,
+                                target_sha256=target_sha256, page_count=state.page.page_count)
+                        else:
+                            plan = _apply_lane_a_structure(
+                                compile_render_plan(state, probe_plan_candidate), selected_representation
+                            )
+                            if plan.status == "failed":
+                                raise RuntimeError(f"probe plan failed: {plan.failures[:3]}")
+                            html = render_html(state, plan)
                         probe_html_path.write_text(html, encoding="utf-8")
                         _export_pinned_html_to_pdf(probe_html_path, probe_pdf_path, environment)
                         _export_pinned_html_to_pdf(probe_html_path, probe_pdf_second, environment)
@@ -3675,10 +3676,15 @@ def run_e5(
                 note: str, proposal: LaneAStructureProposal | None = None
             ) -> tuple[RenderVersion, Path, dict[str, Any]]:
                 lane_budget.spend_tool("render_and_checkpoint")
-                plan = _apply_lane_a_structure(compile_render_plan(state, candidate), proposal)
-                if plan.status == "failed":
-                    raise RuntimeError(f"refusing to render a failed plan: {plan.failures[:3]}")
-                html = render_html(state, plan)
+                if template_render is not None:
+                    if proposal is not None:
+                        raise ValueError("product templates cannot accept structure proposals")
+                    _, plan, html = template_render
+                else:
+                    plan = _apply_lane_a_structure(compile_render_plan(state, candidate), proposal)
+                    if plan.status == "failed":
+                        raise RuntimeError(f"refusing to render a failed plan: {plan.failures[:3]}")
+                    html = render_html(state, plan)
                 index = len(versions) + 1
                 html_path = lane_dir / f"render_{index}.html"
                 html_path.write_text(html, encoding="utf-8")

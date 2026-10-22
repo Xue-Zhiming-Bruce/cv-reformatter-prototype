@@ -517,14 +517,30 @@ def test_cli_native_builtin_preserves_facts_without_repeating_contacts(tmp_path:
     from app.generation.content_validation import validate_generated_content, validate_output_structure
     from app.generation.html_renderer import render_html as render_product_html
     from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.html_renderer import render_layout_template
+    from app.profile_approval import profile_sha256
     from app.template_analysis.schemas import built_in_layout_template_spec
     from tests.helpers.pipeline_layout import product_entry_profile
 
     spec = built_in_layout_template_spec()
-    inputs = _inputs(tmp_path, one_column=True, page_size=(spec.page.width_pt, spec.page.height_pt))
     profile = product_entry_profile()
     profile = CandidateProfile.model_validate({**profile.model_dump(), "skills": ["Python", "SQL"],
         "languages": [{"name": "English", "proficiency": "Fluent"}]})
+    context = build_client_render_context(profile, blind_profile=blind)
+    projected = candidate_document_from_context(context, candidate_id=f"candidate-{profile_sha256(profile)[:16]}")
+    snapshot = (spec.model_dump_json(), projected.model_dump_json())
+    native_state, native_plan, native_html = render_layout_template(spec, projected)
+    assert not list(tmp_path.iterdir())  # Compilation has no artifact/evidence dependency or file side effects.
+    assert native_state.provenance.target_sha256 is None and native_state.page.page_count is None
+    assert not native_plan.failures
+    assert (spec.model_dump_json(), projected.model_dump_json()) == snapshot
+    (tmp_path / "native_state.json").write_text(native_state.model_dump_json(indent=2))
+    (tmp_path / "native_plan.json").write_text(native_plan.model_dump_json(indent=2))
+    native_path = tmp_path / "native.html"
+    native_path.write_text(native_html)
+    native_pdf = export_html_to_pdf(native_path, tmp_path / "native.pdf")
+    inputs = _inputs(tmp_path, one_column=True, page_size=(spec.page.width_pt, spec.page.height_pt))
     candidate, layout = tmp_path / "candidate.json", tmp_path / "layout.json"
     candidate.write_text(profile.model_dump_json())
     layout.write_text(spec.model_dump_json())
@@ -537,10 +553,10 @@ def test_cli_native_builtin_preserves_facts_without_repeating_contacts(tmp_path:
         command.append("--blind-profile")
     result = subprocess.run(command, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
-    context = build_client_render_context(profile, blind_profile=blind)
+    assert (output / "lane_a/render_1.html").read_text() == native_html
     reference = render_product_html(context, spec, tmp_path / "reference.html")
     reference_pdf = export_html_to_pdf(reference, tmp_path / "reference.pdf")
-    for html, pdf in ((output / "lane_a/render_1.html", output / "lane_a/render_1.pdf"), (reference, reference_pdf)):
+    for html, pdf in ((native_path, native_pdf), (output / "lane_a/render_1.html", output / "lane_a/render_1.pdf"), (reference, reference_pdf)):
         assert validate_generated_content(context, layout_spec=spec, pdf_path=pdf).passed
         structure = validate_output_structure(context, layout_spec=spec, html_path=html, pdf_path=pdf)
         assert structure.passed, structure

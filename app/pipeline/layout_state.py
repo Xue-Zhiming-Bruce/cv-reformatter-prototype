@@ -105,7 +105,7 @@ class EvidenceProvenance(StateModel):
     provider: str
     provider_version: str | None = None
     measurement_policy: str
-    target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    target_sha256: str | None = Field(pattern=r"^[0-9a-f]{64}$")
     analyzer_version: str | None = None
 
 class PageState(StateModel):
@@ -115,7 +115,7 @@ class PageState(StateModel):
     margin_right_pt: float = Field(ge=0)
     margin_bottom_pt: float = Field(ge=0)
     margin_left_pt: float = Field(ge=0)
-    page_count: int = Field(ge=1)
+    page_count: int | None = Field(ge=1)
     evidence_ids: list[str] = Field(min_length=1)
 
 class StyleToken(StateModel):
@@ -508,6 +508,13 @@ class C2LayoutState(StateModel):
 
     @model_validator(mode="after")
     def structure(self) -> "C2LayoutState":
+        if self.provenance.target_sha256 is None or self.page.page_count is None:
+            if not (
+                self.provenance.provider == "layout_template_spec"
+                and self.provenance.target_sha256 is None
+                and self.page.page_count is None
+            ):
+                raise ValueError("target evidence requires both a target checksum and page count")
         node_ids = [node.node_id for node in self.nodes]
         if len(set(node_ids)) != len(node_ids):
             raise ValueError("node_id values must be unique")

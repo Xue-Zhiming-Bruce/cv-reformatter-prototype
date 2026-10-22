@@ -78,6 +78,12 @@ show email/phone once (or omit them when blind). The API default-template case
 checks the new version and absence of a repeated contact body block. Existing
 synthetic PDF/evidence builders accept explicit page dimensions; their Letter
 defaults remain unchanged. Chrome's sub-point page-size quantization is allowed.
+The native cases also call the same deterministic A template renderer directly,
+before creating any target/evidence files. Its state records null target identity
+and target page count, leaves inputs untouched, and returns the same HTML bytes
+as the CLI. Actual PDF exports pass the same product content/structure gates.
+Uploaded templates still reject absent, partial or invalid target identity;
+measured evidence states cannot adopt the native null identity.
 
 Decoration cases in the same CLI workflow exercise header/heading rules and
 grouped badges on skills, languages and certifications, including ordinary/blind
