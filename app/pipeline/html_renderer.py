@@ -101,8 +101,9 @@ def _heading_html(plan: SectionPlan, rule: dict[str, Any] | None, page: PageStat
     if plan.heading_gap_below_pt is not None:
         declarations.append(f"margin-bottom: {_pt(plan.heading_gap_below_pt)};")
     style_attr = f" style=\"{' '.join(declarations)}\"" if declarations else ""
+    leaf_attr = f' data-leaf-id="{_esc(plan.heading_leaf_id)}"' if plan.heading_leaf_id else ""
     return (
-        f'    <h2 class="{style_class}" data-node-id="{_esc(plan.node_id)}.heading"{style_attr}>'
+        f'    <h2 class="{style_class}" data-node-id="{_esc(plan.node_id)}.heading"{leaf_attr}{style_attr}>'
         f"{_esc(plan.label)}</h2>\n"
     )
 
@@ -131,12 +132,15 @@ def _list_html(
             f'    <ul class="c2-list" data-node-id="{_esc(node_id)}"{instance_attr} '
             'style="list-style:none;">\n' + "\n".join(lines) + "\n    </ul>\n"
         )
-    # Zero-bullet design: verbatim text lines (source bullet glyphs stay text).
-    return "".join(
-        f'    <p class="{line_class}" data-node-id="{_esc(item_prefix)}.{_esc(item.leaf_id)}">'
-        f"{_esc(item.text)}</p>\n"
+    # Custom-entry descriptions keep list semantics without inventing a
+    # target bullet glyph or indentation when neither was measured.
+    tag = "li" if plan.heading_leaf_id else "p"
+    text = "".join(
+        f'    <{tag} class="{line_class}" data-node-id="{_esc(item_prefix)}.{_esc(item.leaf_id)}">'
+        f"{_esc(item.text)}</{tag}>\n"
         for item in items
     )
+    return f'<ul class="c2-list" style="list-style:none">{text}</ul>' if plan.heading_leaf_id else text
 
 def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
     """Deterministic semantic HTML. Same state + candidate -> same bytes."""

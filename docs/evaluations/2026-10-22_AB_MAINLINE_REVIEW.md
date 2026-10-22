@@ -71,7 +71,7 @@ Status: `Evaluation evidence — owner initially selected A, October 22, 2026`
 
 B probes 的缺失是**当前生成模板的复用覆盖缺陷**：short 也缺语言和附加章节，long 还缺认证。不是长内容独有故障，不能据此宣称 HTML 不能分页；有 B 长例实际生成2页。A 的动态候选绑定与 B 的固定选定模板存在适应策略差异，复用检查不包含为每个新候选重新调用 B builder。
 
-这些 probes 是既有内部 CandidateDocument fixture，不证明产品结构化 `additional_sections` 等价；CLI 仍明确拒绝它，原 API 能力保留。最终四组9份 B 主/修复渲染版均通过独立产品内容检查；其中2次局部修复被提升、3次因同一测量没有改善而回滚。局部提升不意味着全局视觉提升。
+这些 probes 是既有内部 CandidateDocument fixture，不证明产品结构化 `additional_sections` 等价；本次评审时 CLI 尚明确拒绝它，原 API 能力保留。最终四组9份 B 主/修复渲染版均通过独立产品内容检查；其中2次局部修复被提升、3次因同一测量没有改善而回滚。局部提升不意味着全局视觉提升。
 
 修复前的 `live_repair_blind_1` 初版缺技能/教育等，后版补回但仍缺头部副标题；原生账本曾漏报，独立验证未放过。崩溃记录、UsageLimitExceeded、未知 usage、回滚和测量不能绑定均可从入口查看。
 

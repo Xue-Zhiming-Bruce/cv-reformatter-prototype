@@ -159,6 +159,51 @@ def test_spaced_date_ranges_match_pdf_but_changed_dates_fail(fake_pdf_text) -> N
     assert "work.e1.m1" in result["missing_pdf"]
 
 
+def test_custom_sections_own_headings_and_check_untitled_entry_children(fake_pdf_text) -> None:
+    from app.extraction.candidate_schema import CandidateProfile
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+
+    context = build_client_render_context(CandidateProfile(
+        full_name="Candidate Alpha", notice_period="30 days",
+        additional_sections=[{
+            "source_heading": "Projects", "source_block_id": "candidate-block-001",
+            "section_type": "projects", "entries": [
+                {"title": "Useful Component", "description": ["Built a component"]},
+                {"links": ["https://example.test/notes"]},
+            ],
+        }],
+    ))
+    candidate = candidate_document_from_context(context, candidate_id="synthetic-custom")
+    state = compile_synthetic(["ADDITIONAL DETAILS"])
+    plan = compile_render_plan(state, candidate)
+    assert plan.status == "fully_materialized", plan.failures
+    custom = next(section for section in plan.appended_sections if section.label == "Projects")
+    assert len(custom.entries) == 2
+    html = render_html(state, plan)
+    assert html.count("Projects</h2>") == 1
+    assert html.count("30 days") == 1
+    assert "<li" in html
+    text = "Candidate Alpha\nNotice period: 30 days\nProjects\nUseful Component\nBuilt a component\nhttps://example.test/notes"
+    fake_pdf_text(text)
+    report = content_gate(plan, html, Path("unused.pdf"))
+    assert report["passed"], report
+    container = custom.entries[1].entry_leaf_id
+    assert report["leaf_records"][container]["structural_container"] is True
+    assert report["leaf_records"][container]["pdf_present"] is None
+    for missing in ("Projects", "https://example.test/notes"):
+        fake_pdf_text(text.replace(missing, ""))
+        report = content_gate(plan, html, Path("unused.pdf"))
+        assert report["passed"] is False, missing
+        assert report["missing_pdf"]
+    fake_pdf_text(text)
+    broken = html.replace("Built a component", "Changed component", 1)
+    assert content_gate(plan, broken, Path("unused.pdf"))["passed"] is False
+    broken = html.replace(f'data-node-id="{custom.entries[1].node_id}"', 'data-missing-container="true"', 1)
+    report = content_gate(plan, broken, Path("unused.pdf"))
+    assert container in report["missing_html"]
+
+
 def test_missing_and_duplicated_leaves_fail() -> None:
     # Missing: a candidate body leaf outside any declared section cannot even
     # form a render context (fail closed before rendering).

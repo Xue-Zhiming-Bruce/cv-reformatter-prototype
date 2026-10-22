@@ -2956,6 +2956,8 @@ def run_e5(
 
     if not lanes or set(lanes) - {"a", "b"} or len(lanes) != len(set(lanes)):
         raise ValueError("lanes must contain a, b, or both exactly once")
+    if "b" in lanes and any(leaf.kind == "additional_entry" for leaf in candidate.leaves):
+        raise ValueError("structured additional sections require Lane A only")
     if any(not re.fullmatch(r"[a-z0-9_]+", name) for name in (probe_candidates or {})):
         raise ValueError("probe names must contain lowercase letters, digits, or underscores")
     started = time.time()

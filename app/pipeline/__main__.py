@@ -3,7 +3,7 @@
 import argparse
 from pathlib import Path
 
-from app.extraction.candidate_schema import CandidateProfile
+from app.extraction.candidate_schema import CandidateProfile, SectionReviewState
 from app.generation.template_mapper import build_client_render_context
 from app.profile_approval import profile_sha256
 from app.pipeline.candidate_content import candidate_document_from_context
@@ -43,7 +43,11 @@ def main(argv: list[str] | None = None) -> int:
     lanes = (args.lane,) if args.lane != "both" else ("a", "b")
     try:
         profile = CandidateProfile.model_validate_json(args.candidate.read_text())
+        if any(section.review_state == SectionReviewState.PENDING_REVIEW for section in profile.additional_sections):
+            parser.error("custom sections pending recruiter review must be reviewed before preview")
         context = build_client_render_context(profile, blind_profile=args.blind_profile)
+        if context.additional_sections and "b" in lanes:
+            parser.error("structured additional sections require Lane A only")
         candidate = candidate_document_from_context(
             context, candidate_id=f"candidate-{profile_sha256(profile)[:16]}"
         )

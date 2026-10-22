@@ -172,6 +172,12 @@ def content_gate(
     missing_html: list[str] = []
     duplicated: list[str] = []
     missing_pdf: list[str] = []
+    empty_entry_containers = {
+        entry.entry_leaf_id
+        for section in [*plan.sections, *plan.appended_sections] for entry in section.entries
+        if not (entry.title_lines[0].text if entry.title_lines else "")
+        and any(line.text for line in [*entry.title_lines[1:], *entry.meta_lines, *entry.bullet_items, *entry.text_lines])
+    }
     for leaf_id, destination in plan.leaf_ledger.items():
         text = _leaf_text(plan, leaf_id)
         token = _norm(text)
@@ -186,7 +192,10 @@ def content_gate(
             occurrences == (1 if expected_fragments is None else expected_fragments)
             and token in _norm(element_text)
         )
-        if leaf_id in grid_presence:
+        structural_container = leaf_id in empty_entry_containers
+        if structural_container:
+            present_pdf = None  # HTML owns the container; each child fact is checked independently
+        elif leaf_id in grid_presence:
             present_pdf = grid_presence[leaf_id]
         else:
             present_pdf = _hyphen_free(token.replace("- ", "")) in normalized_pdf if token else False
@@ -196,10 +205,11 @@ def content_gate(
             "rendered_with_value": rendered,
             "pdf_present": present_pdf,
             "text": text,
+            "structural_container": structural_container,
         }
         if not rendered:
             (duplicated if occurrences > 1 else missing_html).append(leaf_id)
-        if not present_pdf:
+        if present_pdf is False:
             missing_pdf.append(leaf_id)
     passed = not missing_html and not duplicated and not missing_pdf and not empty_sections
     return {
@@ -221,6 +231,8 @@ def _leaf_text(plan: C2RenderPlan, leaf_id: str) -> str:
             if field.leaf_id == leaf_id:
                 return field.text
     for section in [*plan.sections, *plan.appended_sections]:
+        if leaf_id == section.heading_leaf_id:
+            return section.label
         for line in [*section.paragraph_lines, *section.items]:
             if line.leaf_id == leaf_id:
                 return line.text

@@ -235,22 +235,36 @@ Historical schema names and class descriptions are retained for compatibility
 with stored artifacts and generated model schemas; they do not authorize a
 return to experiment workflows.
 
-Integration gaps recorded October 21, 2026:
+Integration status, October 22, 2026:
 
-- The product API supports structured custom sections, while the retained
-  renderer paths do not yet provide equivalent section/entry/link/bullet
-  semantics. The new CLI projection rejects nonempty `additional_sections`
-  before build rather than flattening or losing them. The API renderer remains
-  available; it must not be removed until those regression cases pass.
+- A now projects visible structured custom sections into owned headings and
+  `additional_entry` containers, with URL metadata and description children.
+  They retain separate candidate-owned sections under the existing append
+  policy, even when the target maps a generic additional-details role; visible
+  recruiter-detail rows remain separate. Hidden sections are filtered by the
+  shared context mapper. CLI source sections still pending review block preview
+  before projection, including hidden pending sections, matching the product
+  source-review requirement. B/paired inputs containing this shape fail before
+  creating a run. Template-specific custom-section placement, typography and
+  continuation still require parity before replacing the API renderer.
+- The internal render plan adds `heading_leaf_id` so candidate-owned headings
+  are checked in actual HTML/PDF. An untitled entry is an HTML structure
+  container (`pdf_present: null`, explicitly not a PDF-text claim); every
+  nonempty child retains an independent HTML identity and PDF presence check.
+  No title is invented. Description lists keep semantic list markup without
+  inventing an unmeasured bullet glyph or indentation. Existing prompt text
+  and product schemas are unchanged; internal projections gain this additive
+  representation.
 - The retained runner compiles its initial state through
   `compile_two_column_state`. It does not accept a product `LayoutTemplateSpec`
   directly, nor establish parity for one-column targets, layout-proof approval,
   or arbitrary continuation/region policies. Product layouts must not be
   relabeled as internal state without an explicit compiler and parity checks.
-- Empty candidate history against a mapped target entries section is not yet
-  equivalent to the API's empty-section behavior. Mainline selection must not
-  be mistaken for parity on incomplete profiles; this case belongs in the
-  pre-cutover content/reflow checks.
+- Empty candidate history now drops the mapped target entries block and its
+  heading, with an explicit empty-section note. Wrong-kind or orphan candidate
+  leaves still fail ownership closure. Completely empty work/education entries
+  create no artificial facts; broader incomplete-profile/reflow parity remains
+  part of the pre-cutover checks.
 - The retained `--live` model adapters and Lane B authored HTML are not newly
   approved for production by this input consolidation or the initial A choice.
   The reviewed A/B outcomes support the chosen development direction; API

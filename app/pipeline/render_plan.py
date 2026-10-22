@@ -201,6 +201,7 @@ class SectionAdaptation(StateModel):
 class SectionPlan(StateModel):
     node_id: str
     label: str
+    heading_leaf_id: str | None = None
     label_case: str | None = None
     style_id: str | None = None
     rule_id: str | None = None
@@ -919,8 +920,19 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         if section.content and section.content.content_kind == "badge_items":
             failures.append(f"{section.node_id}: badge_items content is not renderable in C2-0b")
 
+    # Custom sections retain their own headings and entries instead of merging
+    # into a generic additional-details item list.
+    custom_sections = {
+        section.section_id for section in candidate.sections
+        if any(leaf_by_id[leaf_id].kind == "additional_entry" for leaf_id in section.leaf_ids)
+    }
+    custom_leaf_ids = {
+        leaf_id for section in candidate.sections if section.section_id in custom_sections
+        for leaf_id in section.leaf_ids
+    }
     body_leaves = [
-        leaf for leaf in candidate.leaves if leaf.kind != "header_field"
+        leaf for leaf in candidate.leaves
+        if leaf.kind != "header_field" and leaf.leaf_id not in custom_leaf_ids
     ]
 
     def items_for(source: str) -> list[LeafText]:
@@ -1107,11 +1119,6 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                 for leaf in body_leaves
                 if leaf.source == role and leaf.kind == entry_kind and leaf.parent_leaf_id is None
             ]
-            if not entry_leaves:
-                failures.append(
-                    f"{section.node_id}: mapped {role!r} entries section received no "
-                    f"{entry_kind!r} leaves"
-                )
             plan.base_x0_pt = (
                 by_id[section.entry_ref].columns[0].x0_pt
                 if section.entry_ref and by_id[section.entry_ref].columns
@@ -1479,7 +1486,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
     appended_plans: list[SectionPlan] = []
     merged_headings: list[dict[str, str]] = []
     for candidate_section in candidate.sections:
-        if candidate_section.source in mapped_roles:
+        if candidate_section.source in mapped_roles and candidate_section.section_id not in custom_sections:
             if candidate_section.heading:
                 merged_headings.append(
                     {
@@ -1512,6 +1519,15 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             candidate_only=True,
         )
         section_leaves = [leaf_by_id[leaf_id] for leaf_id in candidate_section.leaf_ids]
+        if candidate_section.section_id in custom_sections:
+            if candidate_section.source != "additional_details" or candidate_section.content_kind != "entries":
+                failures.append(f"{section_plan.node_id}: custom entries require an additional-details entries section")
+            headings = [leaf for leaf in section_leaves if leaf.kind == "additional_section"]
+            if len(headings) != 1 or headings[0].text != candidate_section.heading:
+                failures.append(f"{section_plan.node_id}: custom section needs one matching heading leaf")
+            else:
+                section_plan.heading_leaf_id = headings[0].leaf_id
+                own(headings[0].leaf_id, f"{section_plan.node_id}.heading")
         if candidate_section.content_kind == "paragraph":
             for leaf in section_leaves:
                 if leaf.text is None:
@@ -1525,7 +1541,8 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                 section_plan.entries.append(
                     _entry_plan(
                         section_plan.node_id, entry_leaf, leaves_by_parent,
-                        None, ledger, failures, own,
+                        "bullet" if candidate_section.section_id in custom_sections else None,
+                        ledger, failures, own,
                         subgroup_tier_declared=True,
                     )
                 )

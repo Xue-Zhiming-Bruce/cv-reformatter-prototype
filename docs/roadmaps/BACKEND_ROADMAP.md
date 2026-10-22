@@ -34,14 +34,18 @@ Legacy profile-approval names remain compatibility fields only.
 - [x] Unify candidate input through `CandidateProfile` ->
       `ClientFacingRenderContext`; keep `CandidateDocument` an internal projection.
       Record layout-contract gaps before replacing either compiler. CLI core
-      projection is integrated; structured custom sections still require parity
-      in the selected renderer before API cutover (see Document Pipeline).
+      and A custom-section projections are integrated; template-specific
+      custom-section styling/placement still need parity before API cutover.
 - [x] Produce comparable A/B outcome PDFs and independent gates using existing
       workflows; obtain owner selection before retiring either representation.
       Owner initially selected A on October 22. CLI/service now default to A;
       B remains an explicit comparison choice until migration conditions pass.
-- [ ] Route API and CLI through the selected shared generation implementation;
+- [~] Route API and CLI through the selected shared generation implementation;
       remove replaced paths only after behavior/output parity and rollback checks.
+      A content prerequisites now preserve structured custom sections and empty
+      history, with real PDF/product-validator and negative gate checks. Product
+      LayoutTemplateSpec compilation, custom placement/styling, pagination and
+      API cutover remain open; no replaced implementation has been removed.
 - [ ] Prune redundant orchestration, reports, and tests once their responsibility
       has a single verified owner.
 

@@ -38,8 +38,11 @@ Optional `local_dataset` loop cases extend the existing authorized
 into historical runs. These internal regression fixtures still pass a
 `CandidateDocument` directly to the service. The public CLI instead reads
 `CandidateProfile`, applies the shared disclosure/blind mapper, and builds its
-internal projection; CLI PDF checks cover every supported core field and reject
-structured custom sections explicitly until renderer integration. The regression target must have a
+internal projection. CLI PDF checks cover the core fields, ordinary/blind custom
+sections, hidden-section filtering, title-only/link-only/description-only entries,
+and empty candidate history. The A content gate and independent product PDF
+validator both check the output. B/paired runs reject structured custom sections
+until that representation supports them. The regression target must have a
 measured two-column sidebar layout and multiple work entries for the role-gap/repair assertions;
 these cases do not claim support for an arbitrary target. The candidate is
 the retained public/fictional Resume E fixture. Missing bundles are skipped;

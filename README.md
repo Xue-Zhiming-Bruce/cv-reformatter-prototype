@@ -87,10 +87,13 @@ python -m app.pipeline \
 The JSON inputs are validated before build and must describe the supplied
 target and saved candidate. `--candidate` no longer accepts manually authored
 `CandidateDocument` JSON. Its disclosure rules are applied through the existing
-API mapper; add `--blind-profile` for a blind preview. Structured
-`additional_sections` are explicitly rejected by this CLI until their entry
-hierarchy can be preserved by the selected renderer; the API path retains that
-capability. The CLI does not extract candidate facts,
+API mapper; add `--blind-profile` for a blind preview. Lane A preserves
+structured `additional_sections` as candidate-owned sections with distinct
+headings, entries, URL metadata and description lists. Hidden sections stay out
+of the projection. These sections are appended using the existing overflow
+policy; template-specific custom-section mapping and styling still need parity
+before API cutover. B/paired runs explicitly reject this new input shape.
+The CLI does not extract candidate facts,
 produce the initial structure draft, or retrieve historical run caches.
 See [the implementation boundary](docs/architecture/DOCUMENT_PIPELINE.md#retained-pipeline-implementation)
 for module ownership, validation, repair, and version-selection behavior.

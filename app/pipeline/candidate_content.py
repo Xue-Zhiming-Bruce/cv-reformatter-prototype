@@ -10,7 +10,7 @@ from app.pipeline.layout_state import SourceRole, StateModel
 CandidateLeafKind = Literal[
     "header_field", "summary_paragraph", "skill_group", "skill", "language",
     "work_entry", "work_bullet", "education_entry", "certification_item",
-    "additional_section", "additional_item",
+    "additional_section", "additional_entry", "additional_item",
     # C2-0b render-context kinds: verbatim lines inside an entry's title block
     # ("entry_detail", e.g. the role line) or metadata column ("entry_meta",
     # e.g. location/date lines). Children of a work/education entry leaf.
@@ -142,17 +142,7 @@ class CandidateDocument(StateModel):
 def candidate_document_from_context(
     context: ClientFacingRenderContext, *, candidate_id: str
 ) -> CandidateDocument:
-    """Project already-disclosed values without reading a target or raw profile.
-
-    Structured custom sections need renderer integration first; reject them
-    explicitly rather than flattening entry titles, links, and bullets.
-    """
-    if context.additional_sections:
-        raise ValueError(
-            "The retained pipeline cannot yet preserve structured additional "
-            "sections from ClientFacingRenderContext; use the API renderer "
-            "until that integration is complete."
-        )
+    """Project already-disclosed values without reading a target or raw profile."""
     leaves: list[CandidateLeaf] = []
     sections: list[CandidateSection] = []
 
@@ -185,6 +175,8 @@ def candidate_document_from_context(
     for index, text in enumerate(context.languages):
         add(f"languages.{index}", "language", text, "languages")
     for index, entry in enumerate(context.work_experience):
+        if not any((entry.company, entry.title, entry.location, entry.date_range, entry.description)):
+            continue
         leaf_id = f"work.{index}"
         # An empty title is presentation, not an invented employer or role.
         leaves.append(CandidateLeaf(leaf_id=leaf_id, kind="work_entry", source="work_experience", text=entry.company or entry.title or ""))
@@ -195,6 +187,8 @@ def candidate_document_from_context(
         for bullet, text in enumerate(entry.description):
             add(f"{leaf_id}.bullet.{bullet}", "work_bullet", text, "work_experience", parent=leaf_id)
     for index, entry in enumerate(context.education):
+        if not any((entry.institution, entry.degree, entry.field_of_study, entry.date_range)):
+            continue
         leaf_id = f"education.{index}"
         leaves.append(CandidateLeaf(leaf_id=leaf_id, kind="education_entry", source="education", text=entry.institution or ""))
         for key, text in (("degree", entry.degree), ("field", entry.field_of_study)):
@@ -216,4 +210,22 @@ def candidate_document_from_context(
                 section_id=source, heading=heading, source=source,
                 content_kind=kind, leaf_ids=ids,
             ))
+    for index, section in enumerate(context.additional_sections):
+        start = len(leaves)
+        section_id = f"additional_{index}"
+        add(f"{section_id}.heading", "additional_section", section.heading, "additional_details")
+        for entry_index, entry in enumerate(section.entries):
+            leaf_id = f"{section_id}.entry.{entry_index}"
+            leaves.append(CandidateLeaf(
+                leaf_id=leaf_id, kind="additional_entry", source="additional_details",
+                text=entry.title or "",
+            ))
+            for link_index, link in enumerate(entry.links):
+                add(f"{leaf_id}.link.{link_index}", "entry_meta", link, "additional_details", parent=leaf_id)
+            for bullet_index, text in enumerate(entry.description):
+                add(f"{leaf_id}.bullet.{bullet_index}", "work_bullet", text, "additional_details", parent=leaf_id)
+        sections.append(CandidateSection(
+            section_id=section_id, heading=section.heading, source="additional_details",
+            content_kind="entries", leaf_ids=[leaf.leaf_id for leaf in leaves[start:]],
+        ))
     return CandidateDocument(candidate_id=candidate_id, leaves=leaves, sections=sections)
