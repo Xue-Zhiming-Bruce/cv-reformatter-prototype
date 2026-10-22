@@ -187,7 +187,7 @@ source-owned content is absent from the PDF, generation returns HTTP 500 with
 `error_code=generated_content_incomplete` and the missing items.
 
 No-target generation uses native `built-in-3` through the shared deterministic
-A template compiler/binder/HTML renderer (`lane-a-product-subset/10`). It projects
+A template compiler/binder/HTML renderer (`lane-a-product-subset/11`). It projects
 the saved revision's disclosed `ClientFacingRenderContext`, without a synthetic
 target PDF, provider call or diagnostic CLI run. The existing content/structure
 gates, preview/final-acceptance identities and immutable source files remain in

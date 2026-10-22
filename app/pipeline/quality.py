@@ -1142,10 +1142,37 @@ def content_shape_verification(
             }
         )
     if state.provenance.provider == "layout_template_spec":
+        rows.extend(_product_word_spacing_checks(state, plan, elements, html))
         rows.extend(_product_decoration_checks(state, plan, elements, pdf, rendered_extents))
         rows.extend(_product_column_checks(plan, elements, pdf, rendered_headings))
         rows.extend(_product_pagination_checks(state, plan, elements, pdf, rendered_headings))
     return {"passed": all(row["consistent"] for row in rows), "rows": rows}
+
+
+def _product_word_spacing_checks(
+    state: C2LayoutState, plan: C2RenderPlan, elements: list[dict[str, Any]], html: str,
+) -> list[dict[str, Any]]:
+    """Check nonzero template spacing is declared on the used typography class."""
+    rows = []
+    required_styles = {row.style_id for row in plan.header_rows if row.fields}
+    required_styles.update(section.style_id for section in plan.sections if not section.empty)
+    for token in state.styles:
+        if not token.word_spacing_pt:
+            continue
+        class_name = _class_for(token.style_id)
+        owners = [element for element in elements if _class_matches(element, class_name)]
+        if not owners and token.style_id not in required_styles:
+            continue  # An empty section does not consume its style.
+        rules = re.findall(rf"\.{re.escape(class_name)}\s*\{{([^{{}}]*)\}}", html)
+        declarations = re.findall(r"\bword-spacing\s*:[^;]+", rules[-1]) if rules else []
+        spacing = _parse_declared_pt(declarations[-1], "word-spacing") if declarations else None
+        passed = bool(owners) and spacing is not None and abs(spacing - token.word_spacing_pt) <= CSS_EXTENT_TOLERANCE_PT
+        passed &= all(not re.search(r"\bword-spacing\s*:", owner["style"]) for owner in owners)
+        rows.append({"section": token.style_id, "consistent": passed,
+            "properties": [{"property": "word_spacing_css", "required_by_declared_shape": True,
+                "measured": token.word_spacing_pt, "renderer_consumes": passed,
+                "capability_gap": None if passed else "word spacing not consumed by the used typography class"}]})
+    return rows
 
 
 def _product_pagination_checks(

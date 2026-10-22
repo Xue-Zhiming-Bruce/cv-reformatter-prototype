@@ -1156,7 +1156,7 @@ def state_from_layout_template(
     def style(name: str, value: TextStyle, height: float | None = None) -> str:
         consumed(value, {
             "font_family", "font_size_pt", "bold", "italic", "color_hex",
-            "character_spacing_pt", "line_height_pt",
+            "character_spacing_pt", "word_spacing_pt", "line_height_pt",
         }, name)
         # CSS families are inserted into a quoted declaration, never raw CSS.
         if not re.fullmatch(r"[\w .-]+", value.font_family):
@@ -1166,6 +1166,7 @@ def state_from_layout_template(
             style_id=style_id, font_family=value.font_family,
             font_size_pt=value.font_size_pt, bold=value.bold, italic=value.italic,
             color_hex=value.color_hex, character_spacing_pt=value.character_spacing_pt,
+            word_spacing_pt=value.word_spacing_pt or None,
             line_height_pt=value.line_height_pt or height or line_height,
             evidence_ids=evidence,
         ))

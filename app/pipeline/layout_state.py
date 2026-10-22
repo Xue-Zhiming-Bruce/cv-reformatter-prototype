@@ -129,6 +129,7 @@ class StyleToken(StateModel):
     italic: bool = False
     color_hex: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     character_spacing_pt: float | None = None
+    word_spacing_pt: float | None = Field(default=None, ge=-5, le=30)
     evidence_ids: list[str] = Field(min_length=1)
 
 class RuleDecoration(StateModel):

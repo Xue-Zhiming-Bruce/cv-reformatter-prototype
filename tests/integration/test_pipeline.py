@@ -272,6 +272,85 @@ def test_cli_product_template_controls_real_pdf_and_freezes_identity(tmp_path: P
     assert json.loads(gates.read_text())["details"]["content_shapes_match_evidence"]["passed"]
 
 
+@pytest.mark.parametrize("blind,spacing", [(False, 2.5), (True, -1.0)])
+def test_cli_product_word_spacing_reaches_pdf_without_changing_content(
+    tmp_path: Path, blind: bool, spacing: float,
+) -> None:
+    import hashlib
+    import re
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+    from app.generation.content_validation import validate_generated_content, validate_output_structure
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.html_renderer import render_layout_template
+    from app.pipeline.quality import content_gate, content_shape_verification
+    from app.template_analysis.schemas import SectionLayoutSpec
+    from tests.helpers.pipeline_layout import product_template
+
+    inputs = _inputs(tmp_path, one_column=True)
+    spec = product_template()
+    spec.header.show_candidate_subheading = False
+    spec.sections.append(SectionLayoutSpec(section_id="details", source="additional_details", label="ADDITIONAL DETAILS"))
+    spec.sections[0].body_style = spec.body.model_copy(update={"word_spacing_pt": spacing / 2})
+    spec.sections[0].spacing = spec.spacing
+    for style in (spec.body, spec.title, spec.heading):
+        style.word_spacing_pt = spacing
+        style.character_spacing_pt = .3
+    profile = CandidateProfile(full_name="Candidate Alpha", email="alpha@example.test", phone="5550101",
+                               professional_summary="Builds reliable systems", skills=["Reliable delivery"], notice_period="30 days")
+    profile_path = tmp_path / "candidate.json"
+    profile_path.write_text(profile.model_dump_json())
+    context = build_client_render_context(profile, blind_profile=blind)
+    candidate = candidate_document_from_context(context, candidate_id="synthetic-word-spacing")
+    output = tmp_path / "result"
+    run_e5(**inputs, out_dir=output, candidate=candidate, layout_spec=spec, max_repair_rounds=0)
+    record = json.loads((output / "e5_state.json").read_text())
+    assert record["summary"]["terminal_state"] == "ready_for_owner_review", record
+    pdf_path, html_path = output / "lane_a/render_1.pdf", output / "lane_a/render_1.html"
+    state, plan, html = render_layout_template(spec, candidate,
+        target_sha256=hashlib.sha256(inputs["target_pdf"].read_bytes()).hexdigest(), page_count=1)
+    assert html_path.read_text() == html
+    baseline = spec.model_copy(deep=True)
+    for style in (baseline.body, baseline.title, baseline.heading, baseline.sections[0].body_style):
+        style.word_spacing_pt = 0
+    _, _, baseline_html = render_layout_template(baseline, candidate, target_sha256=state.provenance.target_sha256, page_count=1)
+    baseline_path = tmp_path / "zero_spacing.html"
+    baseline_path.write_text(baseline_html)
+    baseline_pdf = export_html_to_pdf(baseline_path, tmp_path / "zero_spacing.pdf")
+
+    def word_gaps(path: Path, phrase: str) -> list[float]:
+        with pdfplumber.open(path) as pdf:
+            hits = [hit for page in pdf.pages for hit in (page.search(re.escape(phrase)) or [])]
+        assert len(hits) == 1, (path, phrase, hits)
+        chars = hits[0]["chars"]
+        boundaries = [len("".join(phrase.split()[:i])) for i in range(1, len(phrase.split()))]
+        return [chars[i]["x0"] - chars[i - 1]["x1"] for i in boundaries]
+
+    for phrase, expected in [(context.candidate_heading, spacing), ("ADDITIONAL DETAILS", spacing),
+                             ("Builds reliable systems", spacing / 2), ("Reliable delivery", spacing)]:
+        actual, zero = word_gaps(pdf_path, phrase), word_gaps(baseline_pdf, phrase)
+        assert actual and len(actual) == len(zero)
+        assert all(abs((gap - reference) - expected) < .05 for gap, reference in zip(actual, zero))
+    for rendered_html, rendered_pdf in ((html_path, pdf_path), (baseline_path, baseline_pdf)):
+        assert validate_generated_content(context, pdf_path=rendered_pdf, layout_spec=spec).passed
+        assert validate_output_structure(context, html_path=rendered_html, pdf_path=rendered_pdf, layout_spec=spec).passed
+    assert content_gate(plan, html, pdf_path)["passed"]
+    assert json.loads(profile_path.read_text()) == profile.model_dump(mode="json")
+    gates = json.loads(next((output / "lane_a").glob("hard_gates_*.json")).read_text())
+    assert gates["details"]["content_shapes_match_evidence"]["passed"], gates
+    for broken_html in (
+        re.sub(r"word-spacing:\s*-?[\d.]+pt;", "", html),
+        re.sub(r"(word-spacing:\s*-?[\d.]+pt;)", r"\1 word-spacing:0pt;", html),
+        html.replace('class="c2-style-title"', 'class="broken-title"'),
+    ):
+        assert broken_html != html
+        assert content_gate(plan, broken_html, pdf_path)["passed"]
+        broken = content_shape_verification(state, plan, None, {}, broken_html, {}, pdf_path)
+        assert not broken["passed"]
+        assert any(prop["property"] == "word_spacing_css" and prop["capability_gap"]
+                   for row in broken["rows"] for prop in row["properties"])
+
+
 @pytest.mark.parametrize("problem,reason", [
     ("dimensions", "page dimensions"), ("contacts", "cannot route this candidate"),
     ("live", "offline execution"), ("repair", "zero repair rounds"),

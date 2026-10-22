@@ -60,6 +60,13 @@ dispatch checks verify unsupported or unroutable template requests create no
 output directory. This is bounded template-consumption coverage, not visual
 parity or API cutover acceptance.
 
+Word-spacing cases in the same CLI regression file measure actual PDF word-gap
+changes for name, heading, body and a section override, against zero-spacing
+output with character spacing retained. Normal/blind variants preserve content
+and source files. Removed spacing declarations, later zero overrides and a
+missing title style fail the HTML consumption gate while content still passes.
+The retained product renderer ignores word spacing and is not this reference.
+
 The same entry cases export a reference PDF through the retained product
 renderer using the identical context and template. Generic custom-group
 headings must preserve its distinct default size/weight, heading-to-entry gaps

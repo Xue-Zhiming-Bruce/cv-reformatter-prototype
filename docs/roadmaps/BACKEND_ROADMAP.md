@@ -98,6 +98,10 @@ Legacy profile-approval names remain compatibility fields only.
       A PDFs pass independent product and ownership checks without changing
       canonical context checksums or retained renderer bytes. Unrepresented
       template properties and proof/candidate parity still block their cutover.
+      A now consumes nonzero word spacing in supported typography roles, with
+      an HTML consumption guard and positive/negative actual PDF measurements
+      against zero-spacing output. Default HTML remains unchanged; the retained
+      renderer still ignores this property and is not a parity reference.
       Full product-template coverage,
       complete pagination parity and uploaded-target API cutover remain open; no replaced
       implementation has been removed.

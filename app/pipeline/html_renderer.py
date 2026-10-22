@@ -12,7 +12,7 @@ from app.pipeline.render_plan import C2RenderPlan, EntryPlan, LeafText, OVERFLOW
 from app.template_analysis.schemas import LayoutTemplateSpec
 
 # Bump when product compilation, HTML or bundled font behavior changes.
-RENDERER_VERSION = "lane-a-product-subset/10"
+RENDERER_VERSION = "lane-a-product-subset/11"
 
 
 def render_layout_template(
@@ -53,6 +53,8 @@ def _style_css(token: StyleToken) -> str:
         declarations.append(f"color: {token.color_hex};")
     if token.character_spacing_pt:
         declarations.append(f"letter-spacing: {_pt(token.character_spacing_pt)};")
+    if token.word_spacing_pt:
+        declarations.append(f"word-spacing: {_pt(token.word_spacing_pt)};")
     return " ".join(declarations)
 
 def _class_for(style_id: str | None) -> str:

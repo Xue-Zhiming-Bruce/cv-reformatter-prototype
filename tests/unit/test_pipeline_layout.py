@@ -394,7 +394,7 @@ def test_probe_fails_on_duplicated_leaf_consumption() -> None:
     ({"page": {"width_pt": 120, "height_pt": 792, "orientation": "portrait", "margin_top_pt": 54, "margin_bottom_pt": 54, "margin_left_pt": 10, "margin_right_pt": 10},
       "sections": [{"section_id": "skills", "source": "skills", "label": "SKILLS", "layout": "two_column_bullets", "column_gap_pt": 110}]}, "no list column width"),
     ({"decoration": {"heading_rule": True, "heading_rule_length_pt": 600}}, "exceeds the content width"),
-    ({"body": {"font_family": "Helvetica", "font_size_pt": 11, "word_spacing_pt": 1}}, "word_spacing_pt"),
+    ({"body": {"font_family": "Helvetica", "font_size_pt": 11, "horizontal_scale_percent": 110}}, "horizontal_scale_percent"),
     ({"sections": [{"section_id": "contact", "source": "contact", "label": "CONTACT"}]}, "source not yet supported"),
     ({"sections": [{"section_id": "summary", "source": "summary", "label": "Target Person"}]}, "presentation label"),
     ({"sections": [{"section_id": "skills", "source": "skills", "label": "Skills Inc"}]}, "presentation label"),

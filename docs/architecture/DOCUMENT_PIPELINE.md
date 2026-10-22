@@ -311,6 +311,16 @@ Integration status, October 22, 2026:
   declared column layouts, avoiding false omissions from interleaved lines.
   The existing API renderer does not implement these body placements; it is
   retained as a content/typography comparison, not a column-fidelity reference.
+- Product typography now maps nonzero `TextStyle.word_spacing_pt` through an
+  optional, bounded internal style value into CSS. Zero/default styles keep
+  their previous HTML bytes. The product consumption gate checks nonzero
+  declarations on used typography classes, including header and heading
+  ownership; missing declarations and later zero overrides fail. Canonical CLI
+  cases measure positive/negative PDF word-gap changes against zero-spacing
+  output, with character spacing retained and a section override checked.
+  This gate checks HTML consumption; the PDF measurements are regression
+  evidence, not a new general PDF typography validator. The retained product
+  renderer still ignores word spacing and is not its fidelity reference.
 - Product decorations map header/contact and section-heading rules into the
   existing rule state, preserving color, stroke, length and compensated gaps.
   Rules wider than the content area fail before output creation. A header rule
@@ -390,7 +400,7 @@ Integration status, October 22, 2026:
   PDFs pass the shared product validators and their HTML matches the CLI bytes.
   Native `built-in-3` API generation now calls this renderer with the saved
   revision's disclosed context projection. Its metadata records the shared A
-  renderer version (`lane-a-product-subset/10`, also used by CLI provenance).
+  renderer version (`lane-a-product-subset/11`, also used by CLI provenance).
   Product-template HTML uses the public page title `Candidate profile`;
   evidence-only diagnostics retain their existing title.
   It keeps the API's content/structure reports and exact final-output identities;
