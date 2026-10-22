@@ -8,13 +8,21 @@ from pathlib import Path
 from typing import Any
 from app.ingestion.pdf_reader import read_pdf_text
 from app.pipeline.rendering import _sha256, _line_stability, _html_text, _hyphen_free
-from app.pipeline.layout_state import C2LayoutState
+from app.pipeline.layout_state import C2LayoutState, Column
 from app.pipeline.layout_compiler import _below_heading_rule, _resolve_above_heading_rule
-from app.pipeline.render_plan import C2RenderPlan
+from app.pipeline.render_plan import C2RenderPlan, section_groups
 from app.pipeline.html_renderer import _pt, _class_for
 
 def _norm(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace(":", " ")).strip().casefold()
+
+
+def _pdf_flow_text(pdf: Path, column: Column | None = None) -> str:
+    import pdfplumber
+
+    with pdfplumber.open(pdf) as document:
+        return "\n".join((page.within_bbox((max(0, column.x0_pt-.5), 0, min(page.width, column.x1_pt+.5), page.height))
+            if column else page).extract_text(use_text_flow=True) or "" for page in document.pages)
 
 class _IdentityParser(HTMLParser):
     """Collect rendered-element identities and their text.
@@ -161,7 +169,12 @@ def content_gate(
     # F→E postmortem): Chrome breaks words at hyphens across rendered lines
     # and read_pdf_text merges the fragments, so both "x-y" and the broken
     # "x- y" must match. Drop hyphens plus the line-break remnant "- ".
-    normalized_pdf = _norm(read_pdf_text(pdf)).replace("- ", "").replace("-", "")
+    columnar = bool(plan.body_columns or any(section.item_columns for section in plan.sections))
+    normalized_pdf = _norm(_pdf_flow_text(pdf) if columnar else read_pdf_text(pdf)).replace("- ", "").replace("-", "")
+    column_texts = {column.slot: _norm(_pdf_flow_text(pdf, column)).replace("- ", "").replace("-", "")
+                    for column in plan.body_columns}
+    leaf_columns = {leaf_id: section.column_slot for leaf_id, destination in plan.leaf_ledger.items()
+                    for section in plan.sections if section.column_slot and destination.startswith(section.node_id + ".")}
     grid_presence = (
         _grid_pdf_leaf_presence(pdf, plan, grid_windows, grid_line_ranges)
         if grid_windows and grid_line_ranges else {}
@@ -202,7 +215,7 @@ def content_gate(
         elif leaf_id in grid_presence:
             present_pdf = grid_presence[leaf_id]
         else:
-            present_pdf = _hyphen_free(token.replace("- ", "")) in normalized_pdf if token else False
+            present_pdf = _hyphen_free(token.replace("- ", "")) in column_texts.get(leaf_columns.get(leaf_id), normalized_pdf) if token else False
         records[leaf_id] = {
             "destination": destination,
             "element_identity_count": occurrences,
@@ -322,6 +335,25 @@ def structure_gate(
             order_ok = False
             break
         cursor = index
+    if plan.body_columns:
+        ordered = [section for group in section_groups(plan)
+                   for column in (plan.body_columns if group[0].column_slot else [None])
+                   for section in group if section.column_slot == (column.slot if column else None)]
+        actual = [element["node_id"] for element in _parse_elements(html) if element["tag"] == "section"]
+        order_ok = actual == [section.node_id for section in ordered]
+        positions = {}
+        for column in [None, *plan.body_columns]:
+            text = _norm(_pdf_flow_text(pdf, column))
+            cursor = -1
+            for section in [*plan.sections, *plan.appended_sections]:
+                if section.empty or section.column_slot != (column.slot if column else None):
+                    continue
+                if section.candidate_only and section.source_heading is None:
+                    continue
+                index = text.find(_norm(section.label), cursor + 1)
+                positions[section.node_id] = index
+                order_ok &= index > cursor
+                cursor = index
     forbidden_positioning = bool(
         re.search(r"position\s*:\s*(absolute|fixed|relative)", html)
     )
@@ -549,18 +581,47 @@ RULE_REGION_ABOVE_PT = 40.0
 
 RULE_REGION_BELOW_PT = 60.0
 
-def _rendered_heading_positions(pdf: Path | None, labels: dict[str, str]) -> dict[str, tuple[int, float]]:
+def _rendered_heading_positions(
+    pdf: Path | None, labels: dict[str, str], regions: dict[str, Column | None], plan: C2RenderPlan,
+) -> dict[str, tuple[int, float]]:
     """Consume heading occurrences in order, preserving repeated section labels."""
     if pdf is None:
         return {}
     import pdfplumber
 
-    pending: dict[str, list[str]] = {}
-    for node_id, label in labels.items():
-        if label:
-            pending.setdefault(_norm(label), []).append(node_id)
     positions: dict[str, tuple[int, float]] = {}
     with pdfplumber.open(pdf) as document:
+        if plan.body_columns:
+            used = set()
+            floor = (0, 0.0)
+            for group in section_groups(plan):
+                cursors = {}
+                latest = floor
+                for section in group:
+                    if section.node_id not in labels:
+                        continue
+                    region = regions[section.node_id]
+                    left = region.x0_pt if region else plan.page.margin_left_pt
+                    right = region.x1_pt if region else plan.page.width_pt-plan.page.margin_right_pt
+                    pattern = r"(?<!\w)" + r"\s+".join(re.escape(word) for word in section.label.split()) + r"(?!\w)"
+                    matches = [(page_index, hit) for page_index, page in enumerate(document.pages, 1)
+                        for hit in (page.search(pattern, case=False) or [])
+                        if abs(hit["x0"]-left) <= 1 and hit["x1"] <= right+1
+                        and (page_index, hit["top"]) >= cursors.get(section.column_slot, floor)
+                        and (page_index, round(hit["top"], 1), round(hit["x0"], 1)) not in used]
+                    if matches:
+                        page_index, hit = min(matches, key=lambda pair: (pair[0], pair[1]["top"]))
+                        position = (page_index, hit["top"])
+                        positions[section.node_id] = position
+                        used.add((page_index, round(hit["top"], 1), round(hit["x0"], 1)))
+                        cursors[section.column_slot] = position
+                        latest = max(latest, position)
+                floor = latest
+            return positions
+        pending: dict[str, list[str]] = {}
+        for node_id, label in labels.items():
+            if label:
+                pending.setdefault(_norm(label), []).append(node_id)
         for page_index, page in enumerate(document.pages, 1):
             lines: dict[float, list[str]] = {}
             for word in page.extract_words():
@@ -676,10 +737,11 @@ def content_shape_verification(
         for node in state.nodes
         if node.kind == "section"
     }
-    rendered_headings = _rendered_heading_positions(
-        pdf, {node_id: label for node_id, label in label_of_section.items()
-              if node_id in plan_sections and not plan_sections[node_id].empty}
-    )
+    visible_labels = {node_id: label for node_id, label in label_of_section.items()
+                      if node_id in plan_sections and not plan_sections[node_id].empty}
+    regions = {node_id: next((column for column in plan.body_columns
+               if column.slot == plan_sections[node_id].column_slot), None) for node_id in visible_labels}
+    rendered_headings = _rendered_heading_positions(pdf, visible_labels, regions, plan)
     # Each required section rule must consume its OWN rendered vector object
     # on the correct page and in the correct vertical region: a matched
     # extent is marked consumed so one rendered rule can never silently
@@ -973,10 +1035,10 @@ def content_shape_verification(
                 else None
             )
             expected_left = (
-                state_rule.x0_pt - page.margin_left_pt if state_rule else None
+                state_rule.x0_pt - (regions[node.node_id].x0_pt if regions.get(node.node_id) else page.margin_left_pt) if state_rule else None
             )
             expected_right = (
-                page.width_pt - page.margin_right_pt - state_rule.x1_pt
+                (regions[node.node_id].x1_pt if regions.get(node.node_id) else page.width_pt - page.margin_right_pt) - state_rule.x1_pt
                 if state_rule
                 else None
             )
@@ -1081,7 +1143,72 @@ def content_shape_verification(
         )
     if state.provenance.provider == "layout_template_spec":
         rows.extend(_product_decoration_checks(state, plan, elements, pdf, rendered_extents))
+        rows.extend(_product_column_checks(plan, elements, pdf, rendered_headings))
     return {"passed": all(row["consistent"] for row in rows), "rows": rows}
+
+
+def _product_column_checks(
+    plan: C2RenderPlan, elements: list[dict[str, Any]], pdf: Path | None,
+    headings: dict[str, tuple[int, float]],
+) -> list[dict[str, Any]]:
+    rows = []
+    by_id = {element["node_id"]: element for element in elements}
+
+    def record(node_id: str, passed: bool) -> None:
+        rows.append({"section": node_id, "consistent": passed, "properties": [{
+            "property": "columns", "required_by_declared_shape": True,
+            "measured": "LayoutTemplateSpec", "renderer_consumes": passed,
+            "capability_gap": None if passed else "column geometry not consumed in HTML/PDF"}]})
+
+    for group_index, group in enumerate(section_groups(plan)):
+        if group[0].column_slot is None:
+            continue
+        group_id = f"body.group.{group_index}"
+        wrapper = by_id.get(group_id)
+        gap = plan.body_columns[1].x0_pt - plan.body_columns[0].x1_pt
+        actual_gap = _parse_declared_pt(wrapper["style"], "gap") if wrapper else None
+        passed = bool(wrapper and "display:flex" in wrapper["style"]
+                      and actual_gap is not None and abs(actual_gap-gap) < .05)
+        for column in plan.body_columns:
+            column_id = f"{group_id}.{column.slot}"
+            element = by_id.get(column_id)
+            width = _parse_declared_pt(element["style"], "width") if element else None
+            passed &= bool(element and group_id in element["ancestor_node_ids"] and width is not None
+                           and abs(width-(column.x1_pt-column.x0_pt)) < .05)
+            for section in group:
+                if section.column_slot == column.slot:
+                    section_element = by_id.get(section.node_id)
+                    passed &= bool(section_element and column_id in section_element["ancestor_node_ids"]
+                                   and section.node_id in headings)
+            if column.slot == "sidebar" and plan.sidebar_background_hex:
+                import pdfplumber
+                fill_present = False
+                if pdf:
+                    with pdfplumber.open(pdf) as document:
+                        fill_present = any(_pdf_color_hex(obj.get("non_stroking_color")) == plan.sidebar_background_hex.upper()
+                            and obj.get("fill") and abs(obj["x0"]-column.x0_pt) < 1
+                            and abs(obj["x1"]-column.x1_pt) < 1
+                            for page in document.pages for obj in page.rects)
+                passed &= bool(element and f"background:{plan.sidebar_background_hex};" in element["style"] and fill_present)
+        record(group_id, bool(passed))
+    for section in plan.sections:
+        if section.empty or not section.item_columns:
+            continue
+        element = by_id.get(f"{section.node_id}.list")
+        gap = section.item_columns[1].x0_pt - section.item_columns[0].x1_pt
+        actual_gap = _parse_declared_pt(element["style"], "column-gap") if element else None
+        passed = bool(element and "column-count:2" in element["style"]
+                      and actual_gap is not None and abs(actual_gap-gap) < .05 and pdf)
+        if pdf:
+            texts = [_hyphen_free(_norm(_pdf_flow_text(pdf, column)).replace("- ", "")) for column in section.item_columns]
+            used = set()
+            for item in section.items:
+                matches = {index for index, text in enumerate(texts) if _hyphen_free(_norm(item.text).replace("- ", "")) in text}
+                passed &= bool(matches)
+                used.update(matches)
+            passed &= len(section.items) < 2 or used == {0, 1}
+        record(section.node_id, bool(passed))
+    return rows
 
 
 def _product_decoration_checks(
@@ -1136,6 +1263,7 @@ def _product_decoration_checks(
             if not section.badge_id or section.empty:
                 continue
             badge = badges[section.badge_id]
+            region = next((column for column in plan.body_columns if column.slot == section.column_slot), None)
             passed = True
             for group_index, group in enumerate(section.badge_groups):
                 group_id = f"{section.node_id}.badge_group.{group_index}"
@@ -1167,8 +1295,8 @@ def _product_decoration_checks(
                             if (_pdf_color_hex(shape.get("non_stroking_color")) != badge.fill_color_hex.upper()
                                 or not shape.get("fill") or not any(segment[0] == "c" for segment in shape.get("path", []))
                                 or abs(shape["height"] - badge.height_pt) > 1.1
-                                or shape["x0"] < state.page.margin_left_pt - 1
-                                or shape["x1"] > state.page.width_pt - state.page.margin_right_pt + 1):
+                                or shape["x0"] < (region.x0_pt if region else state.page.margin_left_pt) - 1
+                                or shape["x1"] > (region.x1_pt if region else state.page.width_pt - state.page.margin_right_pt) + 1):
                                 continue
                             hits = hits_by_page[page_index]
                             if any(hit["x0"] >= shape["x0"] + badge.horizontal_padding_pt - 1.1

@@ -50,8 +50,12 @@ Legacy profile-approval names remain compatibility fields only.
       independent content and renderer-mutation checks cover these mappings.
       Header/heading rules and grouped rounded badges now map through the same
       path, with real PDF vector/text checks and negative HTML/PDF controls.
+      Explicit left/right sidebars, column ratios/gutters/backgrounds,
+      full-width group boundaries and two-column plain lists now compile and
+      render through A. PDF checks cover wrapped content, region membership,
+      ordinary/blind output, empty sidebars and displaced-column controls.
       Full product-template coverage, remaining custom group styling,
-      columns, pagination and API cutover remain open; no replaced
+      complete pagination parity and API cutover remain open; no replaced
       implementation has been removed.
 - [ ] Prune redundant orchestration, reports, and tests once their responsibility
       has a single verified owner.

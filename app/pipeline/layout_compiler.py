@@ -1107,12 +1107,15 @@ def state_from_layout_template(
         "confidence", "page", "columns", "body", "title", "heading", "spacing",
         "header", "decoration", "section_labels",
     }, "template")
-    if spec.columns.count != 1 or spec.columns.sidebar_side is not None:
-        raise ValueError("Lane A LayoutTemplateSpec projection currently requires one column")
+    if spec.columns.count == 1 and spec.columns.sidebar_side is not None:
+        raise ValueError("one-column templates cannot declare a sidebar side")
+    if spec.columns.count == 2 and spec.columns.sidebar_side is None:
+        raise ValueError("two-column templates require sidebar_side to resolve section placement")
     consumed(spec.decoration, {
         "header_rule", "heading_rule", "rule_width_pt", "rule_color_hex",
         "header_rule_gap_above_pt", "header_rule_gap_below_pt", "header_rule_length_pt",
         "heading_rule_gap_above_pt", "heading_rule_gap_below_pt", "heading_rule_length_pt",
+        "sidebar_background_hex",
     }, "decoration")
     consumed(spec.spacing, {"line_spacing", "line_height_pt", "section_before_pt", "section_after_pt", "paragraph_after_pt"}, "spacing")
     consumed(spec.header, {
@@ -1124,6 +1127,20 @@ def state_from_layout_template(
         raise ValueError("LayoutTemplateSpec margins leave no content area")
     if (page.width_pt > page.height_pt) != (page.orientation == "landscape"):
         raise ValueError("LayoutTemplateSpec orientation contradicts page dimensions")
+    content_width = page.width_pt - page.margin_left_pt - page.margin_right_pt
+    body_columns: list[Column] = []
+    if spec.columns.count == 2:
+        # The evidence compiler records the ratio at the gutter midpoint.
+        middle = page.margin_left_pt + content_width * spec.columns.left_column_ratio
+        left_end, right_start = middle - spec.columns.gutter_pt / 2, middle + spec.columns.gutter_pt / 2
+        if left_end <= page.margin_left_pt or right_start >= page.width_pt - page.margin_right_pt:
+            raise ValueError("column gutter leaves no usable column width")
+        body_columns = [Column(slot="sidebar" if spec.columns.sidebar_side == "left" else "main_column",
+            x0_pt=page.margin_left_pt, x1_pt=left_end),
+            Column(slot="sidebar" if spec.columns.sidebar_side == "right" else "main_column",
+            x0_pt=right_start, x1_pt=page.width_pt-page.margin_right_pt)]
+    elif spec.decoration.sidebar_background_hex is not None:
+        raise ValueError("sidebar background requires two columns")
     identity = layout_spec_sha256(spec)
     evidence = [f"layout-template:{identity}"]
     styles: list[StyleToken] = []
@@ -1186,6 +1203,8 @@ def state_from_layout_template(
             "section_id", "source", "label", "layout", "placement", "optional",
             "heading_style", "body_style", "spacing", "bullet_indent_pt",
         }
+        if section.source in {"skills", "languages", "certifications"}:
+            fields.update({"column_count", "column_gap_pt"})
         if entry_source:
             fields.add("entry_gap_pt")
         if section.source in {"work_experience", "additional_details"}:
@@ -1208,8 +1227,17 @@ def state_from_layout_template(
         if source_key in seen:
             raise ValueError(f"duplicate product-template source: {section.source}")
         seen.add(source_key)
-        if section.placement != "full_width" or section.layout not in {"full_width", "stacked", "bullets"}:
+        if section.placement not in {"full_width", "main_column", "sidebar"} or section.layout not in {"full_width", "stacked", "bullets", "two_column_bullets"}:
             raise ValueError(f"Lane A unsupported placement/layout in {path}")
+        region = next((column for column in body_columns if column.slot == section.placement), None)
+        if section.placement != "full_width" and region is None:
+            raise ValueError(f"{path}.placement requires two body columns")
+        x0, x1 = (region.x0_pt, region.x1_pt) if region else (page.margin_left_pt, page.width_pt-page.margin_right_pt)
+        two_item_columns = section.layout == "two_column_bullets" or section.column_count == 2
+        if two_item_columns and (entry_source or section.source == "summary" or section.badge_style is not None):
+            raise ValueError(f"{path}: two-column lists require plain skills, languages or certifications")
+        if two_item_columns and section.column_gap_pt >= x1 - x0:
+            raise ValueError(f"{path}.column_gap_pt leaves no list column width")
         if not section.label:
             raise ValueError(f"empty product-template label in {path}")
         if selector is None and _section_source_hint(section.label)[0] != section.source:
@@ -1240,9 +1268,10 @@ def state_from_layout_template(
                     section.skill_label_style or spec.body.model_copy(update={"bold": True}), section_height)
         paragraph = section.source == "summary"
         marker = ("none" if section.source == "education" else "bullet") if entry_source else (
-            "bullet" if section.layout in {"bullets", "full_width"} else "none"
+            "bullet" if section.layout in {"bullets", "full_width", "two_column_bullets"} else "none"
         )
         node(node_id=section_id, kind="section", content_style_id=content_style,
+             column_slot=region.slot if region else None,
              additional_section_heading=section.additional_section_heading,
              binding=SectionBinding(sources=[section.source], mapping_action="map", evidence_ids=evidence,
                  partition_policy="match_section_heading" if section.source == "additional_details" else "none"),
@@ -1264,7 +1293,7 @@ def state_from_layout_template(
                 "education_inline" if section.source == "education" else "additional_stacked"
             )
             node(node_id=f"{section_id}.entry", kind="entry_row", parent_id=section_id,
-                 columns=[Column(slot="entry", x0_pt=page.margin_left_pt, x1_pt=page.width_pt-page.margin_right_pt)],
+                 columns=[Column(slot="entry", x0_pt=x0, x1_pt=x1)],
                  title_style_id=style(f"section_{index}_title", title_value, section_height),
                  detail_style_id=style(f"section_{index}_detail", detail, section_height),
                  meta_style_id=style(f"section_{index}_meta", metadata, section_height),
@@ -1275,25 +1304,28 @@ def state_from_layout_template(
                      compensate_entry_gap=section.source == "additional_details" and section.entry_gap_pt is not None))
         if not paragraph and not badge_id and section.source != "education":
             node(node_id=f"{section_id}.list", kind="list_row", parent_id=section_id,
-                 list_marker=marker, bullet_dot_x0_pt=page.margin_left_pt,
-                 bullet_text_x0_pt=page.margin_left_pt + section.bullet_indent_pt)
+                 list_marker=marker, bullet_dot_x0_pt=x0,
+                 bullet_text_x0_pt=x0 + section.bullet_indent_pt,
+                 columns=[Column(slot="left", x0_pt=x0, x1_pt=(x0+x1-section.column_gap_pt)/2),
+                          Column(slot="right", x0_pt=(x0+x1+section.column_gap_pt)/2, x1_pt=x1)] if two_item_columns else [])
+    if body_columns and not any(node.column_slot for node in nodes):
+        raise ValueError("two-column template has no column placements")
     from app.generation.html_renderer import _gap_compensated
 
     tokens = {token.style_id: token for token in styles}
-    content_width = page.width_pt - page.margin_left_pt - page.margin_right_pt
 
-    def product_rule(rule_id: str, prefix: str, next_style: StyleToken) -> RuleDecoration:
+    def product_rule(rule_id: str, prefix: str, next_style: StyleToken, x0: float, x1: float) -> RuleDecoration:
         decoration = spec.decoration
-        length = getattr(decoration, f"{prefix}_rule_length_pt") or content_width
-        if length > content_width:
+        length = getattr(decoration, f"{prefix}_rule_length_pt") or (x1-x0)
+        if length > x1-x0:
             raise ValueError(f"{prefix}_rule_length_pt exceeds the content width")
         gap_below = _gap_compensated(getattr(decoration, f"{prefix}_rule_gap_below_pt"),
             next_style.line_height_pt or line_height, next_style.font_size_pt,
             decoration.rule_width_pt, below=True)
         if prefix == "header":
             gap_below = max(0, gap_below - decoration.rule_width_pt / 6)
-        rule = RuleDecoration(rule_id=rule_id, x0_pt=page.margin_left_pt,
-            x1_pt=page.margin_left_pt + length, stroke_pt=decoration.rule_width_pt,
+        rule = RuleDecoration(rule_id=rule_id, x0_pt=x0,
+            x1_pt=x0 + length, stroke_pt=decoration.rule_width_pt,
             color_hex=decoration.rule_color_hex, placement="below_heading",
             gap_above_pt=_gap_compensated(getattr(decoration, f"{prefix}_rule_gap_above_pt"),
                 next_style.line_height_pt or line_height, next_style.font_size_pt, decoration.rule_width_pt),
@@ -1303,13 +1335,15 @@ def state_from_layout_template(
 
     for index, current in enumerate(nodes):
         if current.node_id == "header.product_contact" and spec.decoration.header_rule:
-            rule = product_rule("rule.header", "header", tokens[contact])
+            rule = product_rule("rule.header", "header", tokens[contact], page.margin_left_pt, page.width_pt-page.margin_right_pt)
             nodes[index] = current.model_copy(update={"rule_id": rule.rule_id})
         elif current.kind == "heading" and spec.decoration.heading_rule:
             section = next(item for item in nodes if item.node_id == current.parent_id)
             entry = next((item for item in nodes if item.node_id == section.entry_ref), None)
             first_style = section.badge_label_style_id or (entry.title_style_id if entry else section.content_style_id)
-            rule = product_rule(f"rule.{section.node_id}", "heading", tokens[first_style])
+            region = next((column for column in body_columns if column.slot == section.column_slot), None)
+            rule = product_rule(f"rule.{section.node_id}", "heading", tokens[first_style],
+                region.x0_pt if region else page.margin_left_pt, region.x1_pt if region else page.width_pt-page.margin_right_pt)
             nodes[index] = current.model_copy(update={"rule_id": rule.rule_id,
                 "spacing": current.spacing.model_copy(update={"gap_below_pt": rule.gap_below_pt})})
     return C2LayoutState(
@@ -1318,4 +1352,5 @@ def state_from_layout_template(
             measurement_policy="renderer projection of measured product template; header gaps are flow values"),
         page=PageState(**page.model_dump(exclude={"orientation"}), page_count=page_count, evidence_ids=evidence),
         styles=styles, nodes=nodes, rules=rules, badges=badges, warnings=list(spec.warnings),
+        body_columns=body_columns, sidebar_background_hex=spec.decoration.sidebar_background_hex,
     )

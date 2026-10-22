@@ -46,7 +46,9 @@ def validate_generated_content(
 
     expected = _expected_items(context, layout_spec)
     checks = [
-        _check("pdf", _read_pdf_text(Path(pdf_path)), expected),
+        _check("pdf", _read_pdf_text(Path(pdf_path), columnar=bool(layout_spec and (
+            layout_spec.columns.count == 2 or any(section.column_count == 2 or section.layout == "two_column_bullets"
+                                                  for section in layout_spec.sections)))), expected),
     ]
     return ContentValidationReport(
         passed=all(check.passed for check in checks),
@@ -154,9 +156,9 @@ def _check(
     )
 
 
-def _read_pdf_text(path: Path) -> str:
+def _read_pdf_text(path: Path, *, columnar: bool = False) -> str:
     with pdfplumber.open(path) as pdf:
-        return "\n".join(page.extract_text() or "" for page in pdf.pages)
+        return "\n".join((page.extract_text(use_text_flow=True) if columnar else page.extract_text()) or "" for page in pdf.pages)
 
 
 def _normalize(value: str) -> str:

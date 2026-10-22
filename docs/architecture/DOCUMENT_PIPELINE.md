@@ -259,14 +259,45 @@ Integration status, October 22, 2026:
   CLI/service now also accepts an explicit `LayoutTemplateSpec` via
   `--layout-spec` / `run_e5(layout_spec=..., max_repair_rounds=0)`, compiled by
   `state_from_layout_template`. This bounded projection supports measured
-  one-column summary, skills, languages, certifications, work, education and
+  one-column and explicit left/right-sidebar layouts for summary, skills, languages, certifications, work, education and
   additional sections: page geometry,
   header membership/order/separator, typography, section order/labels, flow
   spacing, stacked lists and bullet indentation. Conventional labels must
   resolve through exact product aliases. Non-default properties without a
   renderer implementation fail before run creation. Contact body mappings,
-  inline/multi-column lists, hidden headings and forced page breaks remain unsupported
-  in this projection. It does not claim full one-column or layout-proof parity.
+  inline lists, header/footer body placements, hidden headings and forced page
+  breaks remain unsupported in this projection. It does not claim full layout
+  or pagination parity.
+- Body columns use `columns.count=2` with an explicit `sidebar_side`; templates
+  without a direction or without any column placements fail before run creation.
+  Internal `body_columns` carry the physical main/sidebar bounds, and each
+  section owns its `column_slot`. The evidence compiler's ratio refers to the
+  gutter midpoint: left usable width is content width times left ratio minus
+  half the gutter; the right usable width follows symmetrically. Invalid gaps
+  or overlapping regions fail validation. Header rows stay full width.
+  Adjacent main/sidebar sections flow independently inside a column group;
+  visible full-width sections delimit groups. Template order is preserved
+  within each column, with physical left-to-right reading order. An empty
+  sidebar keeps its declared width rather than expanding the main column.
+  Sidebar background is a flat template color, never a target page image.
+- Plain skills/languages/certifications can use `two_column_bullets` or
+  `column_count=2`, with the requested gap and column-major list flow. Badges
+  keep their own explicit row grouping and cannot also request list columns.
+  Entry rows, bullet anchors and heading rules use their owning body region;
+  explicit rule lengths must fit that region, while an unspecified length
+  fills it. Normal paragraph/entry rendering is reused inside each column.
+  Work/education entries inside body columns can continue across pages, so a
+  long first entry does not move the entire two-column group off the first
+  page. Single-column entry keep-together behavior is unchanged.
+- Column content checks use PDF reading flow, with candidate facts additionally
+  checked inside their assigned horizontal bounds. Structure checks preserve
+  order per column and around full-width blocks; heading/rule occurrences are
+  associated with their own group/region. HTML wrapper geometry and exported
+  heading/list positions and sidebar fills are verified independently. The
+  independent product content validator also uses reading-flow extraction for
+  declared column layouts, avoiding false omissions from interleaved lines.
+  The existing API renderer does not implement these body placements; it is
+  retained as a content/typography comparison, not a column-fidelity reference.
 - Product decorations map header/contact and section-heading rules into the
   existing rule state, preserving color, stroke, length and compensated gaps.
   Rules wider than the content area fail before output creation. A header rule

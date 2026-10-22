@@ -6,7 +6,7 @@ import html as html_lib
 from typing import Any
 from app.pipeline.rendering import _inject_local_fonts
 from app.pipeline.layout_state import BadgeDecoration, C2LayoutState, PageState, StyleToken
-from app.pipeline.render_plan import C2RenderPlan, EntryPlan, LeafText, OVERFLOW_POLICY, SectionPlan
+from app.pipeline.render_plan import C2RenderPlan, EntryPlan, LeafText, OVERFLOW_POLICY, SectionPlan, section_groups
 
 def _esc(text: str) -> str:
     return html_lib.escape(text, quote=True)
@@ -114,13 +114,17 @@ def _list_html(
     line_class: str,
 ) -> str:
     """Bullet list with the measured hanging-indent geometry, or plain lines."""
+    column_css = ""
+    if plan.item_columns:
+        gap = plan.item_columns[1].x0_pt - plan.item_columns[0].x1_pt
+        column_css = f"column-count:2;column-gap:{_pt(gap)};"
     if plan.bullet_marker == "bullet" and plan.bullet_dot_x0_pt is not None and plan.bullet_text_x0_pt is not None:
         base = plan.base_x0_pt if plan.base_x0_pt is not None else 0.0
         padding = round(plan.bullet_text_x0_pt - base, 3)
         hang = round(plan.bullet_text_x0_pt - plan.bullet_dot_x0_pt, 3)
         lines = [
             f'      <li class="{line_class}" data-node-id="{_esc(item_prefix)}.{_esc(item.leaf_id)}" '
-            f'style="padding-left: {_pt(padding)};">'
+            f'style="padding-left: {_pt(padding)};{ "break-inside:avoid;" if column_css else "" }">'
             f'<span class="c2-bullet-dot" style="display:inline-block;width: {_pt(hang)};'
             f'margin-left: -{_pt(hang)};">•</span>{_esc(item.text)}</li>'
             for item in items
@@ -128,16 +132,20 @@ def _list_html(
         instance_attr = f' data-owner-instance="{_esc(instance_id)}"' if instance_id else ""
         return (
             f'    <ul class="c2-list" data-node-id="{_esc(node_id)}"{instance_attr} '
-            'style="list-style:none;">\n' + "\n".join(lines) + "\n    </ul>\n"
+            f'style="list-style:none;{column_css}">\n' + "\n".join(lines) + "\n    </ul>\n"
         )
     # Custom-entry descriptions keep list semantics without inventing a
     # target bullet glyph or indentation when neither was measured.
     tag = "li" if plan.heading_leaf_id else "p"
+    item_style = ' style="break-inside:avoid;"' if column_css else ""
     text = "".join(
-        f'    <{tag} class="{line_class}" data-node-id="{_esc(item_prefix)}.{_esc(item.leaf_id)}">'
+        f'    <{tag} class="{line_class}" data-node-id="{_esc(item_prefix)}.{_esc(item.leaf_id)}"'
+        f'{item_style}>'
         f"{_esc(item.text)}</{tag}>\n"
         for item in items
     )
+    if column_css:
+        return f'<div data-node-id="{_esc(node_id)}" style="{column_css}">{text}</div>'
     return f'<ul class="c2-list" style="list-style:none">{text}</ul>' if plan.heading_leaf_id else text
 
 def _entry_rows_html(entry: EntryPlan) -> str:
@@ -284,6 +292,9 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
     parts.append('<main data-c2-region="body">')
 
     def emit_section(section_plan: SectionPlan) -> None:
+        region = next((column for column in plan.body_columns if column.slot == section_plan.column_slot), None)
+        section_page = page.model_copy(update={"margin_left_pt": region.x0_pt,
+            "margin_right_pt": page.width_pt-region.x1_pt}) if region else page
         rule = rules.get(section_plan.rule_id) if section_plan.rule_id else None
         rule_payload = (
             {
@@ -346,7 +357,7 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                 # Headingless appended sections embed their heading in the content
                 # line itself (e.g. D's "SUMMARY — ..."); never invent an h2 label.
                 heading_plan = section_plan.model_copy(update={"heading_gap_above_pt": None}) if rail else section_plan
-                parts.append(_heading_html(heading_plan, rail_rule, page))
+                parts.append(_heading_html(heading_plan, rail_rule, section_page))
             if rail:
                 parts.append("      </div>")
                 parts.append('      <div class="c2-rail-content">')
@@ -367,7 +378,7 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                                     f"{section_plan.node_id}.item", content_class))
         if section_plan.content_kind in {"entries", "composite"}:
             indent = (
-                round(section_plan.base_x0_pt - state.page.margin_left_pt, 3)
+                round(section_plan.base_x0_pt - section_page.margin_left_pt, 3)
                 if section_plan.base_x0_pt is not None and not rail
                 else None
             )
@@ -585,10 +596,21 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                 parts.append("    </div>")  # c2-rail grid
             parts.append("  </section>")
 
-    for section_plan in plan.sections:
-        emit_section(section_plan)
-    for section_plan in plan.appended_sections:
-        emit_section(section_plan)
+    for group_index, group in enumerate(section_groups(plan)):
+        if group[0].column_slot is None:
+            emit_section(group[0])
+            continue
+        gap = plan.body_columns[1].x0_pt - plan.body_columns[0].x1_pt
+        parts.append(f'<div data-node-id="body.group.{group_index}" style="display:flex;align-items:stretch;gap:{_pt(gap)};">')
+        for column in plan.body_columns:
+            background = f"background:{plan.sidebar_background_hex};" if column.slot == "sidebar" and plan.sidebar_background_hex else ""
+            parts.append(f'<div data-node-id="body.group.{group_index}.{column.slot}" '
+                f'style="width:{_pt(column.x1_pt-column.x0_pt)};flex-shrink:0;min-width:0;{background}">')
+            for section in group:
+                if section.column_slot == column.slot:
+                    emit_section(section)
+            parts.append('</div>')
+        parts.append('</div>')
     parts.append("</main>")
     parts.append("</body>\n</html>")
     html = "\n".join(parts) + "\n"

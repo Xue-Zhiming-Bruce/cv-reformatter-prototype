@@ -69,3 +69,12 @@ counts reject zero before materialization can loop.
 One mapped custom-entry case spans pages and repeats the generic target label;
 each rule must belong to its own heading occurrence, and the first heading must
 stay with the first project line.
+
+Column cases extend the same CLI file with standalone two-column lists,
+left/right sidebars, full-width group boundaries, wrapped work descriptions,
+ordinary/blind profiles and an empty sidebar. Actual PDF coordinates and
+region-scoped content checks enforce widths/gutters and prevent silent collapse
+to one column. Exporting a displaced column while retaining correct HTML must
+fail the region/shape gates even when the independent content check still passes.
+The existing API renderer currently ignores body placement, so its output is a
+content comparison rather than a column-fidelity reference.

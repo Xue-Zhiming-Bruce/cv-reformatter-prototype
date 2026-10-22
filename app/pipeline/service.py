@@ -3110,7 +3110,7 @@ def run_e5(
         (out_dir / "layout_template_spec.json").write_text(layout_spec.model_dump_json(indent=2), encoding="utf-8")
         shared_draft_ref["layout_template"] = {
             "sha256": layout_spec_sha256(layout_spec), "template_version": layout_spec.template_version,
-            "schema_version": layout_spec.schema_version, "compiler": "lane-a-product-subset/3",
+            "schema_version": layout_spec.schema_version, "compiler": "lane-a-product-subset/4",
             "template_approved": False, "api_cutover": False,
         }
     page_height = _page_pt_size(target_pdf, 1)[1]

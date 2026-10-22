@@ -477,3 +477,82 @@ def test_cli_product_decorations_survive_pdf_export(tmp_path: Path, blind: bool,
         damaged_pdf = export_html_to_pdf(damaged_path, tmp_path / "missing_decorations.pdf")
         assert content_gate(plan, html, damaged_pdf)["passed"]
         assert not content_shape_verification(state, plan, None, {}, html, {}, damaged_pdf)["passed"]
+
+
+@pytest.mark.parametrize("side,blind,empty_sidebar", [(None, False, False), ("left", False, False), ("right", True, False), ("left", True, True)])
+def test_cli_product_columns_preserve_regions_and_wrapped_content(tmp_path: Path, side: str | None, blind: bool, empty_sidebar: bool) -> None:
+    from app.generation.content_validation import validate_generated_content
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.layout_state import C2LayoutState
+    from app.pipeline.render_plan import compile_render_plan
+    from app.pipeline.quality import content_gate, content_shape_verification
+    from tests.helpers.pipeline_layout import product_column_template, product_entry_profile
+
+    inputs = _inputs(tmp_path, one_column=True)
+    spec = product_column_template(side)
+    data = product_entry_profile().model_dump()
+    data.update(skills=["Python", "SQL", "Linux", "Containers"],
+        languages=[{"name": "English"}, {"name": "French"}],
+        certifications=[{"name": f"Cert-{name}" if name == "Gamma" else f"Cert {name}"}
+                        for name in ("Alpha", "Beta", "Gamma", "Delta")])
+    data["work_experience"][0]["description"].append(
+        "Delivered a carefully documented migration across multiple services with complete operational handover and reliable monitoring")
+    if empty_sidebar:
+        data.update(skills=[], languages=[], certifications=[])
+    elif side == "left":
+        data["work_experience"][0]["description"].extend(
+            f"Milestone {index}: delivered documented services with operational handover and reliable monitoring"
+            for index in range(20))
+    profile = CandidateProfile.model_validate(data)
+    candidate_path, spec_path = tmp_path / "candidate.json", tmp_path / "layout.json"
+    candidate_path.write_text(profile.model_dump_json())
+    spec_path.write_text(spec.model_dump_json())
+    output = tmp_path / "result"
+    command = [sys.executable, "-B", "-m", "app.pipeline", "--target", str(inputs["target_pdf"]),
+        "--adobe-json", str(inputs["adobe_json"]), "--normalized", str(inputs["normalized_evidence"]),
+        "--structure-draft", str(inputs["structure_draft"]), "--layout-spec", str(spec_path),
+        "--candidate", str(candidate_path), "--out", str(output)]
+    if blind:
+        command.append("--blind-profile")
+    result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    record = json.loads((output / "e5_state.json").read_text())
+    assert record["summary"]["terminal_state"] == "ready_for_owner_review", record
+    pdf_path = output / "lane_a/render_1.pdf"
+    context = build_client_render_context(profile, blind_profile=blind)
+    assert validate_generated_content(context, layout_spec=spec, pdf_path=pdf_path).passed
+    with pdfplumber.open(pdf_path) as pdf:
+        page = pdf.pages[0]
+        words = page.extract_words()
+        positions = {word["text"]: word for word in words}
+        assert abs(positions["SUMMARY"]["x0"] - 54) < 1
+        if side:
+            right_start = 54 + 504 * (.34 if side == "left" else .66) + 12
+            if empty_sidebar:
+                assert "SKILLS" not in positions and "CERTIFICATIONS" not in positions
+            else:
+                assert abs(positions["SKILLS"]["x0"] - (54 if side == "left" else right_start)) < 1
+                assert abs(positions["SKILLS"]["top"] - positions["EXPERIENCE"]["top"]) < 2
+            assert abs(positions["EXPERIENCE"]["x0"] - (right_start if side == "left" else 54)) < 1
+        text = "\n".join(page.extract_text(use_text_flow=True) or "" for page in pdf.pages)
+        assert "HIDDEN_SALARY" not in text and "HIDDEN_PROJECT" not in text and "Target facts only" not in text
+        assert ("alpha@example.test" not in text) == blind
+    gates = json.loads(next((output / "lane_a").glob("hard_gates_*.json")).read_text())
+    assert gates["details"]["content_shapes_match_evidence"]["passed"], gates["details"]["content_shapes_match_evidence"]
+    assert gates["details"]["section_order_matches_state"]["passed"]
+    assert json.loads(candidate_path.read_text()) == profile.model_dump(mode="json")
+    if side == "left" and not empty_sidebar:
+        from app.generation.chrome_html_to_pdf import export_html_to_pdf
+
+        state = C2LayoutState.model_validate_json((output / "c2_layout_state.json").read_text())
+        plan = compile_render_plan(state, candidate_document_from_context(context, candidate_id="column-check"))
+        html = (output / "lane_a/render_1.html").read_text()
+        damaged = html.replace("gap:24pt;", "gap:0pt;")
+        assert damaged != html
+        damaged_path = tmp_path / "wrong_columns.html"
+        damaged_path.write_text(damaged)
+        damaged_pdf = export_html_to_pdf(damaged_path, tmp_path / "wrong_columns.pdf")
+        assert validate_generated_content(context, layout_spec=spec, pdf_path=damaged_pdf).passed
+        assert not content_gate(plan, html, damaged_pdf)["passed"]
+        assert not content_shape_verification(state, plan, None, {}, html, {}, damaged_pdf)["passed"]

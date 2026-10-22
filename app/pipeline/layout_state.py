@@ -335,6 +335,7 @@ class LayoutNode(StateModel):
     rule_id: str | None = None
     badge_ids: list[str] = Field(default_factory=list)
     badge_label_style_id: str | None = None
+    column_slot: Literal["main_column", "sidebar"] | None = None
     slots: list[str] = Field(default_factory=list)
     columns: list[Column] = Field(default_factory=list)
     fields: list[HeaderField] = Field(default_factory=list)
@@ -496,6 +497,8 @@ class C2LayoutState(StateModel):
     template_version: str
     provenance: EvidenceProvenance
     page: PageState
+    body_columns: list[Column] = Field(default_factory=list)
+    sidebar_background_hex: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     styles: list[StyleToken] = Field(min_length=1)
     rules: list[RuleDecoration] = Field(default_factory=list)
     badges: list[BadgeDecoration] = Field(default_factory=list)
@@ -559,7 +562,30 @@ class C2LayoutState(StateModel):
         rule_ids = {rule.rule_id for rule in self.rules}
         badge_ids = {badge.badge_id for badge in self.badges}
         node_id_set = set(node_ids)
+        if self.body_columns:
+            if len(self.body_columns) != 2 or {column.slot for column in self.body_columns} != {"main_column", "sidebar"}:
+                raise ValueError("body columns require main_column and sidebar")
+            previous_edge = self.page.margin_left_pt
+            for column in self.body_columns:
+                if column.x0_pt is None or column.x1_pt is None or not previous_edge <= column.x0_pt < column.x1_pt <= self.page.width_pt - self.page.margin_right_pt:
+                    raise ValueError("body columns overlap or exceed the content area")
+                previous_edge = column.x1_pt
+        elif self.sidebar_background_hex is not None:
+            raise ValueError("sidebar background requires body columns")
         for node in self.nodes:
+            if node.column_slot is not None and (node.kind != "section" or not self.body_columns):
+                raise ValueError(f"{node.node_id}: column placement requires body columns on a section")
+            if self.provenance.provider == "layout_template_spec" and node.kind == "list_row" and node.columns:
+                parent = section_of[node.parent_id]
+                region = next((column for column in self.body_columns if column.slot == parent.column_slot), None)
+                edge = region.x0_pt if region else self.page.margin_left_pt
+                right = region.x1_pt if region else self.page.width_pt-self.page.margin_right_pt
+                if len(node.columns) != 2:
+                    raise ValueError(f"{node.node_id}: list columns require two regions")
+                for column in node.columns:
+                    if column.x0_pt is None or column.x1_pt is None or not edge <= column.x0_pt < column.x1_pt <= right:
+                        raise ValueError(f"{node.node_id}: list columns overlap or exceed their section")
+                    edge = column.x1_pt
             if node.badge_label_style_id is not None and node.badge_label_style_id not in style_ids:
                 raise ValueError(f"{node.node_id}: unknown badge label style")
             if node.style_id is not None and node.style_id not in style_ids:

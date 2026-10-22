@@ -102,12 +102,15 @@ Add `--layout-spec path/to/layout_template_spec.json` to preview the supported
 product-template subset through A. This mode defaults to zero repair rounds,
 requires offline A-only execution, and freezes the validated template and its
 checksum. Target/evidence/draft inputs remain explicit. The supported subset is
-one-column summary, skills, languages, certifications, work, education and
+one-column and explicit left/right-sidebar layouts for summary, skills, languages, certifications, work, education and
 additional sections, with header ordering, role typography, flow spacing,
 stacked/bulleted lists, single/split work rows, education separators and custom
 heading selectors. Header/heading rules and grouped rounded badges on skills,
 languages and certifications are also mapped. Unsupported properties
-fail before output creation; see the implementation boundary for limitations.
+fail before output creation. Two-column lists, measured body-column ratios/gaps,
+sidebar fills and full-width blocks between column groups are supported;
+two-column body layouts require an explicit sidebar direction. See
+the implementation boundary for limitations.
 This mode does not approve a template or switch the API renderer.
 
 The default is an offline scripted Lane A run, following the owner's October

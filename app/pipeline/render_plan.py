@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import ConfigDict, Field, model_validator
 from pathlib import Path
 from app.pipeline.rendering import _median
-from app.pipeline.layout_state import C2LayoutState, EntryLayout
+from app.pipeline.layout_state import C2LayoutState, Column, EntryLayout
 from app.pipeline.candidate_content import CandidateDocument, CandidateLeaf
 from app.pipeline.layout_state import PageState, SectionContent, StateModel
 from app.pipeline.candidate_content import UnroutableContent
@@ -240,6 +240,8 @@ class SectionPlan(StateModel):
     styled_lines: list[StyledLine] = Field(default_factory=list)  # ordered inline runs (C2-0cC)
     entries: list[EntryPlan] = Field(default_factory=list)
     items: list[LeafText] = Field(default_factory=list)
+    column_slot: Literal["main_column", "sidebar"] | None = None
+    item_columns: list[Column] = Field(default_factory=list)
     badge_id: str | None = None
     badge_label_style_id: str | None = None
     badge_groups: list[BadgeGroupPlan] = Field(default_factory=list)
@@ -289,6 +291,8 @@ class C2RenderPlan(StateModel):
     schema_version: str = "c2-render-plan/1"
     overflow_policy: str = OVERFLOW_POLICY
     page: PageState
+    body_columns: list[Column] = Field(default_factory=list)
+    sidebar_background_hex: str | None = None
     header_rows: list[HeaderRowPlan] = Field(default_factory=list)
     header_overflow: HeaderOverflowPlan | None = None
     header_gap_below_pt: float | None = Field(default=None, ge=0)
@@ -309,6 +313,21 @@ class C2RenderPlan(StateModel):
     unhomed: list[dict[str, str]] = Field(default_factory=list)
     failures: list[str] = Field(default_factory=list)
     status: PlanStatus = "failed"
+
+
+def section_groups(plan: C2RenderPlan) -> list[list[SectionPlan]]:
+    """Full-width blocks delimit independent pairs of flowing body columns."""
+    groups: list[list[SectionPlan]] = []
+    for section in [*plan.sections, *plan.appended_sections]:
+        if section.empty:
+            continue
+        if section.column_slot is None:
+            groups.append([section])
+        elif groups and groups[-1][0].column_slot is not None:
+            groups[-1].append(section)
+        else:
+            groups.append([section])
+    return groups
 
 GRID_PREFLIGHT_METHOD = (
     "PIL (Pillow) ImageFont metrics of the resolved WRITTEN font file — the "
@@ -1090,7 +1109,10 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         composite = content.content_kind == "composite"
         role = None if composite else section.binding.sources[0]
         heading_node = heading_of(section.node_id)
+        region = next((column for column in state.body_columns if column.slot == section.column_slot), None)
+        section_left = region.x0_pt if region else state.page.margin_left_pt
         entry_node = by_id.get(section.entry_ref) if section.entry_ref else None
+        list_node = by_id.get(section.list_ref) if section.list_ref else None
         plan = SectionPlan(
             node_id=section.node_id,
             label=heading_node.label if heading_node else section.node_id,
@@ -1105,6 +1127,8 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             content_kind=content.content_kind,
             source_role=role,
             content_style_id=section.content_style_id,
+            column_slot=section.column_slot,
+            item_columns=list_node.columns if list_node and state.provenance.provider == "layout_template_spec" else [],
             badge_id=section.badge_ids[0] if content.content_kind == "badge_items" and section.badge_ids else None,
             badge_label_style_id=section.badge_label_style_id,
             # Composite sections: the plan-level bullet marker comes from the
@@ -1251,7 +1275,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         elif role == "additional_details" and entry_node and entry_node.entry_layout:
             plan.content_kind = "composite"
             plan.items_before_entries = True
-            plan.base_x0_pt = state.page.margin_left_pt
+            plan.base_x0_pt = section_left
             list_node = by_id.get(section.list_ref)
             plan.bullet_dot_x0_pt = list_node.bullet_dot_x0_pt if list_node else None
             plan.bullet_text_x0_pt = list_node.bullet_text_x0_pt if list_node else None
@@ -1313,11 +1337,13 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             if entry_node and entry_node.entry_layout:
                 for entry in plan.entries:
                     _product_entry_rows(entry, entry_node.entry_layout, plan, leaf_by_id, state, failures)
+                    if region is not None:
+                        entry.keep_together = False
         else:  # item_list / inline_items
             list_node = by_id.get(section.list_ref) if section.list_ref else None
             plan.bullet_dot_x0_pt = list_node.bullet_dot_x0_pt if list_node else None
             plan.bullet_text_x0_pt = list_node.bullet_text_x0_pt if list_node else None
-            plan.base_x0_pt = state.page.margin_left_pt
+            plan.base_x0_pt = section_left
             grid = section.category_grid
             plan_items = items_for(role)
             grid_decision: SectionAdaptation | None = None
@@ -1784,6 +1810,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         status = "fully_materialized"
     return C2RenderPlan(
         page=state.page,
+        body_columns=state.body_columns, sidebar_background_hex=state.sidebar_background_hex,
         header_rows=header_plans,
         header_overflow=header_overflow,
         header_gap_below_pt=pending_flow_gap or None,

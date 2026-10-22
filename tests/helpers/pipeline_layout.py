@@ -259,3 +259,27 @@ def product_decoration_template():
     data["sections"].append({"section_id": "certifications", "source": "certifications",
         "label": "CERTIFICATIONS", "badge_style": {**badge, "badge_height_pt": 22}})
     return LayoutTemplateSpec.model_validate(data)
+
+
+def product_column_template(side: str | None):
+    from app.template_analysis.schemas import LayoutTemplateSpec
+
+    data = product_entry_template(split_work=True, map_custom=True).model_dump()
+    data["decoration"].update({"heading_rule": True, "header_rule": True})
+    sidebar = "sidebar" if side else "full_width"
+    main = "main_column" if side else "full_width"
+    data["sections"][1]["placement"] = main
+    data["sections"][2]["placement"] = main
+    data["sections"][3]["placement"] = main
+    data["sections"][1:1] = [
+        {"section_id": "skills", "source": "skills", "label": "SKILLS", "placement": sidebar},
+        {"section_id": "languages", "source": "languages", "label": "LANGUAGES", "placement": sidebar},
+        {"section_id": "certifications", "source": "certifications", "label": "CERTIFICATIONS",
+         "placement": sidebar, "layout": "two_column_bullets", "column_count": 2, "column_gap_pt": 12,
+         "heading_style": {"font_family": "Helvetica", "font_size_pt": 9}},
+    ]
+    if side:
+        data["columns"].update({"count": 2, "sidebar_side": side, "gutter_pt": 24,
+                               "left_column_ratio": .34 if side == "left" else .66})
+        data["decoration"]["sidebar_background_hex"] = "#F1F5F9"
+    return LayoutTemplateSpec.model_validate(data)
