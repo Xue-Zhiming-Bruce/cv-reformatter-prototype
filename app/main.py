@@ -48,7 +48,6 @@ from app.generation.content_validation import (
     validate_output_structure,
 )
 from app.generation.followup_message_generator import generate_followup_message
-from app.generation import html_renderer as product_html_renderer
 from app.pipeline.candidate_content import candidate_document_from_context
 from app.pipeline.html_renderer import RENDERER_VERSION as PIPELINE_RENDERER_VERSION, render_layout_template
 from app.generation.render_plan import build_production_render_plan
@@ -92,6 +91,7 @@ from app.template_analysis.layout_proof_service import (
     load_variant_evidence,
     reject_layout_proof,
     render_candidate_document,
+    active_renderer_version,
 )
 from app.template_analysis.artifacts import (
     ADOBE_RAW_FILENAME,
@@ -199,6 +199,7 @@ DOWNLOADABLE_ARTIFACT_FILENAMES = {
     ADOBE_RAW_FILENAME,
     COMPARISON_FILENAME,
     "generation_metadata.json",
+    "agentic_generation.json",
 }
 DOWNLOADABLE_DIAGNOSTIC_PNG_PATTERN = re.compile(
     r"^(?:target_page_\d{3}(?:_overlay)?|comparison_target_page_\d{3}|"
@@ -1322,7 +1323,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
             "profile_revision_id": profile_revision.profile_revision_id,
             "profile_sha256": profile_revision.profile_sha256,
             "renderer_version": (
-                product_html_renderer.RENDERER_VERSION if uses_uploaded_target else PIPELINE_RENDERER_VERSION
+                active_renderer_version() if uses_uploaded_target else PIPELINE_RENDERER_VERSION
             ),
             "layout_template_version": effective_layout_spec.template_version,
             "layout_spec_sha256": production_render_plan.layout_spec_sha256,
@@ -1344,6 +1345,8 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
                 layout_spec=style_spec,
                 render_context=render_context,
                 output_dir=artifact_dir,
+                **({"target_pdf": artifact_dir / target_format.stored_filename}
+                   if active_renderer_version().startswith("agentic-a/") else {}),
             )
         else:
             _, _, html = render_layout_template(
@@ -1364,6 +1367,8 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
 
     if exported_pdf_path != pdf_path and exported_pdf_path.exists():
         exported_pdf_path.replace(pdf_path)
+    if uses_uploaded_target and active_renderer_version().startswith("agentic-a/"):
+        debug_artifacts["agentic_generation"] = str(artifact_dir / "agentic_generation.json")
 
     try:
         content_validation = validate_generated_content(
@@ -2370,7 +2375,7 @@ def _layout_proof_status(
             )
     return LayoutProofStatusResponse(
         artifact_id=artifact_id,
-        renderer_version=product_html_renderer.RENDERER_VERSION,
+        renderer_version=active_renderer_version(),
         state=approval.state if approval is not None else "none",
         target_checksum=target_checksum,
         layout_spec_checksum=layout_checksum,

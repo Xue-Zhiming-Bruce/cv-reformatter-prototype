@@ -657,9 +657,85 @@ def test_cli_product_word_spacing_reaches_pdf_without_changing_content(
                    for row in broken["rows"] for prop in row["properties"])
 
 
+@pytest.mark.parametrize("repair", ["improve", "noop"])
+def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repair: str,
+) -> None:
+    import shutil
+    from app.pipeline import service
+    from app.generation.agentic import render_agentic
+    from app.generation.template_mapper import build_client_render_context
+    from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
+    from tests.helpers.pipeline import synthetic_pipeline_inputs
+    from tests.helpers.pipeline_layout import product_entry_template
+
+    inputs = synthetic_pipeline_inputs(tmp_path, entry_headings=("First Target Role", "Second Target Role"))
+    for key, filename in (("adobe_json", ADOBE_RAW_FILENAME), ("normalized_evidence", NORMALIZED_LAYOUT_FILENAME)):
+        shutil.copy2(inputs[key], tmp_path / filename)
+    spec = product_entry_template(split_work=True, map_custom=False)
+    spec.header.contact_fields = []
+    profile = CandidateProfile(full_name="Candidate Alpha", work_experience=[
+        {"company": "FirstCandidateCompany", "title": "Platform Engineer for Candidate Systems", "start_date": "2020", "end_date": "2022",
+         "description": ["Built reliable services"]},
+        {"company": "SecondCandidateCompany", "title": "Senior Engineer for Candidate Platforms", "start_date": "2022", "end_date": "2024",
+         "description": ["Maintained useful systems"]},
+    ])
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-model-boundary")
+    monkeypatch.setenv("AGENTIC_MAX_REPAIR_ROUNDS", "1")
+    monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "12")
+    monkeypatch.setenv("AGENTIC_MAX_TOOL_CALLS", "24")
+    phases: list[str] = []
+
+    def builder(_budget, _trace, *, payload, images, proposal_id, audit):
+        phases.append(audit.phase)
+        return service.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[
+            service.E5LaneASection(section_node_id="section.02", heading_in_rail=True,
+                rail_label_width_pt=300 if audit.phase == "initial" and repair == "improve" else 80),
+        ])
+
+    def reviewer(_images, **kwargs):
+        return [service.DefectFinding(
+            finding_id=kwargs["finding_id"], target_version=kwargs["target_version"],
+            render_version=kwargs["render_version"], page=kwargs["page"], region="section.02",
+            observation="Entry head spacing differs from the target.", suspected_dimension="role_gap",
+            requested_measurement=service.MeasurementRequest(request_id="entry-gap", metric="role_gap", page=1,
+                region_id="section.02", intent="vertical gap between the first two job entry heads"),
+            severity="high", confidence=.9, reviewer="llm",
+        )]
+
+    def attribution(_pod, _budget, _trace, *, findings, results, lane, audit):
+        assert results and all(result.status == "confirmed" for result in results)
+        return [service.LiveAttributionHypothesis(finding_id=finding.finding_id,
+            attribution="template_compilation", hypothesis_status="confirmed", repair_owner="builder",
+            reason="The measured entry spacing reflects wrapping inside an excessively wide heading rail.",
+            evidence_ids=[results[index].request_id]) for index, finding in enumerate(findings)]
+
+    monkeypatch.setattr(service, "_live_lane_a_builder", builder)
+    monkeypatch.setattr(service, "_live_reviewer_findings", reviewer)
+    monkeypatch.setattr(service, "_live_attribution_batch", attribution)
+    html, pdf, report = render_agentic(context=build_client_render_context(profile), layout_spec=spec,
+        target_pdf=inputs["target_pdf"], evidence_dir=tmp_path, output_dir=tmp_path / "run")
+    lane = json.loads((tmp_path / report["run_directory"] / "e5_state.json").read_text())["lanes"]["a"]
+    assert phases == ["initial", "repair"], lane
+    assert len(lane["render_versions"]) == 2 and lane["repair_attempts"]
+    assert lane["measurement_results"] and all(result["status"] == "confirmed" for result in lane["measurement_results"])
+    initial, attempted = lane["render_versions"]
+    if repair == "improve":
+        before, after = lane["measurement_results"][:2]
+        assert abs(before["delta_pt"]) - abs(after["delta_pt"]) > 5
+        assert attempted["promoted"] and report["selected_version"] == attempted["version_id"], lane
+        assert html.name == "render_2.html" and pdf.name == "render_2.pdf"
+    else:
+        assert not attempted["promoted"] and report["selected_version"] == initial["version_id"], lane
+        assert lane["builder_candidates"][-1]["outcome"] == "rolled_back"
+        assert html.name == "render_1.html" and pdf.name == "render_1.pdf"
+    assert service._sha256_file(pdf) in report["summary"]["reviewed_pdf_sha256"]
+    assert "First Target Role" not in html.read_text() and "Second Target Role" not in html.read_text()
+
+
 @pytest.mark.parametrize("problem,reason", [
     ("dimensions", "page dimensions"), ("contacts", "cannot route this candidate"),
-    ("live", "offline execution"), ("repair", "zero repair rounds"),
+    ("live_b", "Lane A"), ("repair", "zero repair rounds"),
     ("b", "Lane A"),
     ("label", "unrecognized product-template presentation labels"),
     ("semantic_fields", "unique semantic field metadata"),
@@ -690,7 +766,7 @@ def test_product_template_rejects_invalid_dispatch_before_output(tmp_path: Path,
     output = tmp_path / "result"
     with pytest.raises(ValueError, match=reason):
         run_e5(**inputs, out_dir=output, candidate=candidate, layout_spec=spec,
-               live=problem == "live", lanes=("b",) if problem == "b" else ("a",),
+               live=problem == "live_b", lanes=("b",) if problem in {"b", "live_b"} else ("a",),
                max_repair_rounds=1 if problem == "repair" else 0)
     assert not output.exists()
 

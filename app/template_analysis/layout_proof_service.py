@@ -1,7 +1,7 @@
 """Layout-proof rendering and approval service.
 
 Renders temporary synthetic "layout proofs" of a validated
-``LayoutTemplateSpec`` through the product HTML/Adobe PDF pipeline and stores the
+``LayoutTemplateSpec`` through the configured product generation path and stores the
 artifacts and approval metadata scoped under the owning artifact directory.
 
 Artifact-scoped layout under ``{artifact_dir}/layout_proofs/``::
@@ -35,14 +35,15 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app.generation import html_renderer
-from app.generation.chrome_html_to_pdf import HtmlToPdfExportError, export_html_to_pdf
-from app.generation.html_renderer import HtmlRenderingError, render_html
+from app.generation.chrome_html_to_pdf import export_html_to_pdf
+from app.generation.html_renderer import render_html
 from app.generation.template_mapper import ClientFacingRenderContext
 from app.template_analysis.layout_proof_content import (
     build_synthetic_context,
@@ -92,10 +93,47 @@ _SAFE_PROOF_ID = re.compile(r"^layout_proof_(short|medium|long)_[0-9a-f]{16}$")
 _SAFE_PROOF_FILENAME = re.compile(r"^proof-(short|medium|long)\.(html|pdf)$")
 
 
+def active_renderer_version() -> str:
+    from app.generation.agentic import agentic_renderer_version, generation_strategy
+
+    return agentic_renderer_version() if generation_strategy() == "agentic" else html_renderer.RENDERER_VERSION
+
+
+def _render_generation(
+    context: ClientFacingRenderContext, spec: TemplateStyleSpec | LayoutTemplateSpec,
+    html_path: Path, pdf_path: Path, target_pdf: Path | None,
+    *, renderer_version: str,
+) -> tuple[Path, Path]:
+    from app.generation.agentic import AgenticGenerationError, generation_strategy, render_agentic
+
+    strategy = generation_strategy()
+    _require_current_renderer(renderer_version)
+    if strategy == "standard":
+        render_html(context, spec, html_path)
+        return html_path, export_html_to_pdf(html_path, pdf_path)
+    if target_pdf is None or not isinstance(spec, LayoutTemplateSpec):
+        raise AgenticGenerationError("Agentic generation requires a measured LayoutTemplateSpec and target PDF")
+    source_html, source_pdf, report = render_agentic(
+        context=context, layout_spec=spec, target_pdf=target_pdf,
+        evidence_dir=target_pdf.parent, output_dir=html_path.parent/"pipeline_runs"/uuid.uuid4().hex,
+    )
+    _require_current_renderer(renderer_version)
+    # Finish every validation and stage both files before replacing a previous preview.
+    with tempfile.TemporaryDirectory(dir=html_path.parent) as temporary:
+        staged = Path(temporary)
+        shutil.copy2(source_html, staged/"output.html")
+        shutil.copy2(source_pdf, staged/"output.pdf")
+        (staged/"agentic_generation.json").write_text(json.dumps(report, indent=2)+"\n")
+        os.replace(staged/"output.html", html_path)
+        os.replace(staged/"output.pdf", pdf_path)
+        os.replace(staged/"agentic_generation.json", html_path.parent/"agentic_generation.json")
+    return html_path, pdf_path
+
+
 def _require_current_renderer(renderer_version: str) -> None:
-    if renderer_version != html_renderer.RENDERER_VERSION:
+    if renderer_version != active_renderer_version():
         raise LayoutProofMismatchError(
-            f"renderer version mismatch ({renderer_version} != {html_renderer.RENDERER_VERSION}); "
+            f"renderer version mismatch ({renderer_version} != {active_renderer_version()}); "
             "create and approve new short/medium/long layout proofs"
         )
 
@@ -171,7 +209,8 @@ def file_sha256(path: str | Path) -> str:
 
 
 def proof_id_for(request: LayoutProofRenderRequest) -> str:
-    """Deterministic proof id derived from the artifact-scoped render request."""
+    """Identity-bound proof id; agentic attempts preserve immutable prior files."""
+    renderer_version = active_renderer_version()
     digest = hashlib.sha256(
         json.dumps(
             {
@@ -179,8 +218,9 @@ def proof_id_for(request: LayoutProofRenderRequest) -> str:
                 "variant": request.variant.value,
                 "layout_spec_checksum": layout_spec_checksum(request.layout_spec),
                 "target_checksum": request.target_checksum,
-                "renderer_version": html_renderer.RENDERER_VERSION,
+                "renderer_version": renderer_version,
                 "context_checksum": canonical_context_checksum(request.variant),
+                **({"attempt": uuid.uuid4().hex} if renderer_version.startswith("agentic-a/") else {}),
             },
             sort_keys=True,
         ).encode("utf-8")
@@ -192,8 +232,9 @@ def render_layout_proof(
     request: LayoutProofRenderRequest,
     *,
     output_dir: str | Path = DEFAULT_PROOF_OUTPUT_DIR,
+    target_pdf: Path | None = None,
 ) -> LayoutProofRenderResult:
-    """Render one synthetic layout proof through the HTML/Adobe PDF pipeline.
+    """Render one synthetic layout proof through the configured renderer.
 
     Proof content is always the canonical synthetic context generated from the
     request's ``LengthVariant`` (``build_synthetic_context`` is the sole
@@ -201,7 +242,7 @@ def render_layout_proof(
     public entry point.
     """
     context = build_synthetic_context(request.variant)
-    return _render_layout_proof_with_context(request, context, output_dir=output_dir)
+    return _render_layout_proof_with_context(request, context, output_dir=output_dir, target_pdf=target_pdf)
 
 
 def _render_layout_proof_with_context(
@@ -209,6 +250,7 @@ def _render_layout_proof_with_context(
     context: SyntheticPlaceholderRenderContext,
     *,
     output_dir: str | Path,
+    target_pdf: Path | None = None,
 ) -> LayoutProofRenderResult:
     """Private test-only seam: render a proof from an explicit context.
 
@@ -223,6 +265,9 @@ def _render_layout_proof_with_context(
             f"'{request.variant.value}'"
         )
 
+    renderer_version = active_renderer_version()
+    if renderer_version.startswith("agentic-a/") and (target_pdf is None or file_sha256(target_pdf) != request.target_checksum):
+        raise LayoutProofRenderError("Agentic proof target checksum does not match the uploaded target")
     proof_id = proof_id_for(request)
     proof_dir = Path(output_dir) / proof_id
     proof_dir.mkdir(parents=True, exist_ok=True)
@@ -242,9 +287,10 @@ def _render_layout_proof_with_context(
 
     html_path = proof_dir / f"proof-{request.variant.value}.html"
     try:
-        render_html(context.to_render_context(), request.layout_spec, html_path)
-        pdf_path = export_html_to_pdf(html_path, proof_dir / f"proof-{request.variant.value}.pdf")
-    except (HtmlRenderingError, HtmlToPdfExportError) as exc:
+        html_path, pdf_path = _render_generation(context.to_render_context(), request.layout_spec,
+            html_path, proof_dir / f"proof-{request.variant.value}.pdf", target_pdf,
+            renderer_version=renderer_version)
+    except (RuntimeError, ValueError, OSError) as exc:
         raise LayoutProofRenderError(
             f"layout proof '{proof_id}' could not be rendered: {exc}"
         ) from exc
@@ -256,7 +302,7 @@ def _render_layout_proof_with_context(
         layout_spec_checksum=layout_spec_checksum(request.layout_spec),
         target_checksum=request.target_checksum,
         context_checksum=canonical,
-        renderer_version=html_renderer.RENDERER_VERSION,
+        renderer_version=renderer_version,
         html_filename=html_path.name,
         pdf_filename=pdf_path.name,
         html_checksum=file_sha256(html_path),
@@ -571,7 +617,7 @@ def approve_layout_proof(
         target_checksum=target_checksum,
         layout_spec_checksum=layout_spec_checksum(layout_spec),
         state="approved",
-        renderer_version=html_renderer.RENDERER_VERSION,
+        renderer_version=active_renderer_version(),
         variants=recomputed,
         approved_at=_now_iso(),
         reviewer_id=reviewer_id,
@@ -661,7 +707,8 @@ def create_proof_variants(
             variant=variant,
             target_checksum=target_checksum,
         )
-        result = render_layout_proof(request, output_dir=proofs_dir)
+        result = render_layout_proof(request, output_dir=proofs_dir,
+            **({"target_pdf": Path(target_pdf)} if active_renderer_version().startswith("agentic-a/") else {}))
         proof_pdf = proofs_dir / result.proof_id / result.pdf_filename
         measurements = measure_pdf_geometry(proof_pdf)
         structural = validate_proof_structure(
@@ -721,7 +768,7 @@ def reject_layout_proof(
         target_checksum=target_checksum,
         layout_spec_checksum=layout_spec_checksum(layout_spec),
         state="rejected",
-        renderer_version=html_renderer.RENDERER_VERSION,
+        renderer_version=active_renderer_version(),
         variants=recomputed,
         reviewer_id=reviewer_id,
         reviewer_note=reviewer_note,
@@ -737,6 +784,7 @@ def render_candidate_document(
     layout_spec: TemplateStyleSpec | LayoutTemplateSpec,
     render_context: ClientFacingRenderContext,
     output_dir: str | Path = DEFAULT_CANDIDATE_OUTPUT_DIR,
+    target_pdf: Path | None = None,
 ) -> tuple[Path, Path]:
     """Render final candidate HTML/PDF only from an approved layout proof.
 
@@ -761,12 +809,14 @@ def render_candidate_document(
     _require_current_renderer(approval.renderer_version)
 
     out_dir = Path(output_dir)
+    if approval.renderer_version.startswith("agentic-a/") and (target_pdf is None or file_sha256(target_pdf) != approval.target_checksum):
+        raise LayoutProofMismatchError("Agentic generation target checksum does not match the approved target")
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / "candidate_profile.html"
     try:
-        render_html(render_context, layout_spec, html_path)
-        pdf_path = export_html_to_pdf(html_path, out_dir / "candidate_profile.pdf")
-    except (HtmlRenderingError, HtmlToPdfExportError) as exc:
+        html_path, pdf_path = _render_generation(render_context, layout_spec, html_path,
+            out_dir / "candidate_profile.pdf", target_pdf, renderer_version=approval.renderer_version)
+    except (RuntimeError, ValueError, OSError) as exc:
         raise LayoutProofRenderError(
             f"final candidate document could not be rendered: {exc}"
         ) from exc

@@ -2,7 +2,7 @@
 
 Status: `Active contract`
 
-Last reviewed: October 22, 2026 (owner selected A as the initial mainline)
+Last reviewed: October 24, 2026 (optional A agentic API integration)
 
 This document defines the provider-neutral boundaries of the CV Reformatter
 backend. The [Product Specification](../product/PRODUCT_SPEC.md) remains the
@@ -425,7 +425,8 @@ Integration status, October 22, 2026:
   immutable source files, shared A ownership checks, preview acceptance and
   invalidation after disclosure changes. Same-input retained-renderer PDFs
   remain reviewable as content/structure references. This is a bounded native
-  cutover; uploaded-target/proof rendering has not switched to this call.
+  cutover. Uploaded-target/proof rendering defaults to its retained path;
+  the optional agentic integration below also uses this compiler.
 - The A context projection now recognizes the retained product renderer's exact
   contact labels (`Email`, `Phone`, `Location`, `LinkedIn`, `Portfolio`) in legacy
   `contact_lines`, including the same case/label-whitespace normalization.
@@ -436,8 +437,8 @@ Integration status, October 22, 2026:
   contacts, without changing their stored schema, values or checksums.
   Real Chrome cases pass independent product content/structure and A ownership
   checks. This closes a projection prerequisite, not uploaded-target proof
-  migration or fidelity acceptance; the approval-aware proof service still
-  renders through `product-html/1`.
+  migration or fidelity acceptance; the approval-aware proof service defaults
+  to `product-html/1` and offers the bounded agentic path below.
 - Dedicated product `source=contact` sections now bind their explicit
   `contact_fields`, in order, to the original disclosed contact leaves. Their
   `full_width` layout joins labeled source text using the header contact
@@ -496,15 +497,18 @@ Integration status, October 22, 2026:
   recognized or covered by the existing identity-bound explicit label input
   before run creation. Unknown headings never become privacy exclusions from
   geometry or substring matches. No alias vocabulary was expanded.
-- Product-template execution is offline A-only, with zero repair rounds; it
-  renders through the existing A plan/HTML/export/gates and cannot invoke a
-  builder to rewrite the supplied template. Validated template content,
+- Product-template execution is A-only. Offline previews require zero repair
+  rounds. Live execution uses the existing Builder/Reviewer/measurement/repair
+  loop, applying typed A proposals to the compiled plan without rewriting the
+  stored `LayoutTemplateSpec` or candidate facts. Selected-version shape probes
+  apply that same proposal. Validated template content,
   template checksum/version, compiler version and target checksum are frozen
   together for CLI runs; this records input identity, not template or output approval.
   Unroutable header values fail rather than gaining automatic overflow.
   Candidate-only body sections retain the existing append policy, without a
   claim of product-template styling parity. Native API rendering uses the same
-  deterministic call; uploaded-target API generation remains on its prior path.
+  deterministic call. Uploaded-target API generation defaults to its prior
+  path and can select the bounded agentic strategy on the server.
 - Internal header nodes may carry an explicit `flow_gap_above_pt` instead of
   measured absolute `top_pt`; the two forms cannot coexist. Empty header rows
   preserve accumulated flow gaps. `NodeSpacing.gap_basis="flow"` preserves
@@ -522,6 +526,8 @@ Integration status, October 22, 2026:
   approved for production by this input consolidation or the initial A choice.
   The reviewed A/B outcomes support the chosen development direction; API
   replacement still requires the applicable contract, parity and output checks.
+  The October 24 owner request authorizes the optional A API integration below,
+  without retiring the baseline or accepting arbitrary targets/providers.
 
 Core projection preserves visible header/subheading/contact values, summaries,
 skill groups, languages, work entries and their metadata/bullets, education,
@@ -546,6 +552,28 @@ records rejected attempts. A quarantined repair base is not automatically an
 active or best output. Lineage checks bind candidate leaves to their actual
 rendered destinations; different target and candidate text is not itself a
 binding defect. Rechecks inspect the generated PDF, not a layout probe alone.
+
+`app/generation/agentic.py` adapts existing artifact-scoped API inputs to this
+same runner; it is not another orchestration loop. It projects only uniquely
+measured template headings into evidence-bound region claims, records missing
+or ambiguous measurements, and keeps the supplied template authoritative.
+`GENERATION_STRATEGY=agentic` applies to measured uploaded-target PDFs in both
+proof and candidate rendering. Native no-target output stays deterministic.
+Default `standard` retains the prior uploaded-target renderer. The adapter
+requires selected BEST output to pass every gate and product validation, a
+successful complete Reviewer pass on its PDF fingerprint, and stable source
+and execution identity before staging the public preview files. Continuation
+pages use the last target page as an explicitly identified style reference.
+Reviewer failure cannot publish a render-only result. Open visual findings are
+reported for human review; they are not automatic output approval.
+
+Proof identity includes A's renderer version, existing prompts, model routing
+and bounded budgets; changes require new complete proof approval. Unique
+agentic attempt directories preserve previous proof files. Candidate runs and
+their `agentic_generation.json` report stay under the owning artifact, with no
+silent renderer fallback. See the API contract for configuration and limits.
+Only existing A rail/metadata primitives are model-editable; full layout
+coverage, asynchronous API execution and fidelity acceptance remain open.
 
 The runner emits HTML/PDF, frozen configuration and source identities, trace
 and version manifests, lane state, gate/measurement reports, and an owner review

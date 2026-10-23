@@ -24,6 +24,16 @@ Existing local results remain archival evidence, not a source of new runs.
 The CLI and service default to the selected A mainline. B and paired runs
 remain explicit comparisons; their regression checks remain until retirement.
 
+`integration/test_layout_proof_api.py` exercises the optional agentic strategy
+through the real API, canonical runner, Chrome and approval gates, mocking only
+the model-call boundaries. Coverage includes all three canonical proofs,
+continuation-page review, saved-revision preview, exact final acceptance,
+configuration-bound proof invalidation and preserved preview files after
+Reviewer failure. `integration/test_pipeline.py` exercises measured product
+template repair and rollback through the same runner with real PDFs and
+measurements. These are offline integration checks, not external model quality
+or provider evidence; no second runner or output schema is introduced.
+
 The retained pipeline's regression checks live in `unit/test_pipeline_*.py`
 and `integration/test_pipeline*.py`; reusable fixtures live in
 `helpers/pipeline*.py`. Historical A-D and E1-E4 runners and their exclusive

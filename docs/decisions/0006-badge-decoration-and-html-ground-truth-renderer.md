@@ -164,3 +164,21 @@ LayoutTemplateSpec compilation, structured custom sections, layout/pagination
 coverage and rollback parity are verified. A's documented layout limitations
 remain open; permanent retirement of the alternatives follows the active
 roadmap's migration conditions.
+
+## Optional Agentic API Integration — October 24, 2026
+
+The owner requested connecting the existing agentic code to the backend using
+the selected A mainline. `GENERATION_STRATEGY=agentic` now opts measured target
+PDF proof and candidate generation into the existing bounded A loop. The
+default preserves the standard renderer, and native no-target generation stays
+deterministic. This is an optional integration, not retirement of the baseline.
+
+The stored `CandidateProfile` and `LayoutTemplateSpec` remain authoritative.
+Existing typed A proposals affect only the compiled render plan; shell
+measurement, validation and promotion/rollback own the selected output. API
+publication additionally requires every deterministic gate, product validation
+and a completed Reviewer pass on the exact selected PDF. Configuration-bound
+proof approval and exact final-output acceptance remain separate gates.
+No new provider, unrestricted model-authored layout contract, general target
+coverage or B0/B1 acceptance is approved by this integration. External calls
+remain opt-in and subject to the existing input/provider controls.

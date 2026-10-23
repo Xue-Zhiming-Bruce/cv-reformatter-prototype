@@ -178,7 +178,9 @@ def _pipeline_e_semantic_findings() -> dict[str, list[str]]:
 
 
 
-def synthetic_pipeline_inputs(tmp_path: Path, *, one_column: bool = False, page_size: tuple[float, float] = (612, 792)) -> dict:
+def synthetic_pipeline_inputs(tmp_path: Path, *, one_column: bool = False,
+                              page_size: tuple[float, float] = (612, 792),
+                              entry_headings: tuple[str, str] | None = None) -> dict:
     width, height = page_size
     body_x = 54 if one_column else 180
     operations = [f"BT /F2 20 Tf {body_x} 740 Td (Target Person) Tj ET"]
@@ -198,6 +200,9 @@ def synthetic_pipeline_inputs(tmp_path: Path, *, one_column: bool = False, page_
                 stroke_width_pt=0.5, color_hex="#000000",
                 provenance=MeasurementProvenance(source="local_pdf", provider="synthetic", method="fixture"),
             ))
+        if heading == "EXPERIENCE" and entry_headings is not None:
+            operations[-2] = f"BT /F1 10 Tf {body_x} {y - 25} Td ({entry_headings[0]}) Tj ET"
+            operations.append(f"BT /F1 10 Tf {body_x} {y - 65} Td ({entry_headings[1]}) Tj ET")
     target = _write_single_page_pdf(tmp_path / "target.pdf", operations,
                                     regular_font="Helvetica", bold_font="Helvetica-Bold", width_pt=width, height_pt=height)
     blocks = []

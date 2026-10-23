@@ -2279,6 +2279,7 @@ def _e5_reviewer_message(
     candidate_review_scope: dict[str, Any],
     lane: str,
     deterministic_presentation_facts: dict[str, Any],
+    image_pages: dict[str, int | None] | None = None,
 ) -> str:
     context = {
         "target_version": target_version,
@@ -2290,6 +2291,12 @@ def _e5_reviewer_message(
         "representation_capabilities": E5_LANE_REPAIR_SURFACE[lane],
         "deterministic_presentation_facts": deterministic_presentation_facts,
     }
+    if image_pages is not None:
+        context["image_pages"] = image_pages
+        context["pagination_note"] = (
+            "Candidate content may reflow beyond target pages. Extra render pages use the last "
+            "target page as a style reference; page-count differences alone are not defects."
+        )
     return (
         "Compare the TARGET and RENDER images for exactly this page. Use one "
         "region_id from region_catalog per finding and exactly one suspected "
@@ -2960,8 +2967,8 @@ def run_e5(
 
     if not lanes or set(lanes) - {"a", "b"} or len(lanes) != len(set(lanes)):
         raise ValueError("lanes must contain a, b, or both exactly once")
-    if layout_spec is not None and (lanes != ("a",) or live or max_repair_rounds != 0):
-        raise ValueError("LayoutTemplateSpec previews require Lane A, offline execution and zero repair rounds")
+    if layout_spec is not None and (lanes != ("a",) or (not live and max_repair_rounds != 0)):
+        raise ValueError("LayoutTemplateSpec requires Lane A; offline previews require zero repair rounds")
     if "b" in lanes and any(leaf.kind == "additional_entry" for leaf in candidate.leaves):
         raise ValueError("structured additional sections require Lane A only")
     if any(not re.fullmatch(r"[a-z0-9_]+", name) for name in (probe_candidates or {})):
@@ -3365,6 +3372,7 @@ def run_e5(
         rolled_back_versions: set[str] = set()
         ledger = DefectLedger()
         pages_reviewed: set[int] = set()
+        reviewed_render_fingerprints: set[str] = set()
         counter = {"finding": 0, "request": 0}
         lane_state: dict[str, Any] = {"proposal": None, "template": None}
 
@@ -3494,8 +3502,10 @@ def run_e5(
                             probe_candidate, state
                         )
                         if layout_spec is not None:
-                            _, plan, html = render_layout_template(layout_spec, probe_plan_candidate,
+                            _, plan, _ = render_layout_template(layout_spec, probe_plan_candidate,
                                 target_sha256=target_sha256, page_count=state.page.page_count)
+                            plan = _apply_lane_a_structure(plan, selected_representation)
+                            html = render_html(state, plan)
                         else:
                             plan = _apply_lane_a_structure(
                                 compile_render_plan(state, probe_plan_candidate), selected_representation
@@ -3639,6 +3649,7 @@ def run_e5(
                     "unbound_measurements": len([r for r in measurement_results if r.status == "evidence_missing"]),
                     "builder_calls": lane_budget.calls_by_agent.get(f"lane_{lane_id}_builder", 0),
                     "reviewer_calls": lane_budget.calls_by_agent.get("visual_reviewer", 0),
+                    "reviewed_pdf_sha256": sorted(reviewed_render_fingerprints),
                     "attribution_calls": lane_budget.calls_by_agent.get("attribution_investigator", 0),
                     "methodology_classification": _e5_gate_classification(
                         lane_id,
@@ -3677,9 +3688,10 @@ def run_e5(
             ) -> tuple[RenderVersion, Path, dict[str, Any]]:
                 lane_budget.spend_tool("render_and_checkpoint")
                 if template_render is not None:
-                    if proposal is not None:
-                        raise ValueError("product templates cannot accept structure proposals")
                     _, plan, html = template_render
+                    if proposal is not None:
+                        plan = _apply_lane_a_structure(plan, proposal)
+                        html = render_html(state, plan)
                 else:
                     plan = _apply_lane_a_structure(compile_render_plan(state, candidate), proposal)
                     if plan.status == "failed":
@@ -4226,8 +4238,8 @@ def run_e5(
             escalate(f"lane_builder_initial_failed:{type(error).__name__}")
             return _lane_terminal(lane, "budget_exhausted", reason="builder_initial_failed")
         checkpoint("initial_render")
-        if layout_spec is not None:
-            # A supplied product template is immutable; no builder/reviewer may rewrite it.
+        if layout_spec is not None and not live:
+            # Offline previews execute the supplied template without a model loop.
             return _lane_terminal(lane)
 
         # --- 4. See -> Measure -> Attribute -> Repair -> Re-render loop -----
@@ -4241,7 +4253,6 @@ def run_e5(
         # pdf hash is also recorded: two different version ids with the SAME
         # hash do not re-review, and the SAME version_id can never map to a
         # different PDF (conflict fails closed).
-        reviewed_render_fingerprints: set[str] = set()
         version_pdf_hashes: dict[str, str] = {}
         gate_repair_versions_seen: set[str] = set()
         findings_by_id: dict[str, DefectFinding] = {}
@@ -4342,13 +4353,19 @@ def run_e5(
                         )
                         # Bounded images per call: one PAGE per reviewer call
                         # (target overview + render overview), merged across pages.
-                        for page_index, target_page in enumerate(target_overviews, 1):
+                        review_page_count = (
+                            max(len(target_overviews), len(render_overviews))
+                            if layout_spec is not None else len(target_overviews)
+                        )
+                        for page_index in range(1, review_page_count + 1):
+                            target_page_number = min(page_index, len(target_overviews))
+                            target_page = target_overviews[target_page_number - 1]
                             lane_images = [target_page]
                             if page_index <= len(render_overviews):
                                 lane_images.append(render_overviews[page_index - 1])
                             counter["finding"] += 1
                             page_findings = _with_connection_retry(
-                                lambda lane_images=lane_images, page_index=page_index: _live_reviewer_findings(
+                                lambda lane_images=lane_images, page_index=page_index, target_page_number=target_page_number: _live_reviewer_findings(
                                     lane_images,
                                     finding_id=f"finding-l{lane}-r{round_no}-p{page_index}",
                                     target_version=target_id,
@@ -4368,12 +4385,12 @@ def run_e5(
                                         finding_ids=(f"finding-l{lane}-r{round_no}-p{page_index}",),
                                         instructions=E5_REVIEWER_INSTRUCTIONS,
                                         image_refs=(
-                                            _e5_image_refs([target_page], "target", first_page=page_index)
+                                            _e5_image_refs([target_page], "target", first_page=target_page_number)
                                             + _e5_image_refs(
                                                 [lane_images[1]], "render", first_page=page_index
                                             )
                                             if len(lane_images) > 1
-                                            else _e5_image_refs([target_page], "target", first_page=page_index)
+                                            else _e5_image_refs([target_page], "target", first_page=target_page_number)
                                         ),
                                     ),
                                     message=(
@@ -4386,6 +4403,11 @@ def run_e5(
                                             candidate_review_scope=candidate_review_scope,
                                             lane=lane,
                                             deterministic_presentation_facts=presentation_facts,
+                                            image_pages=(
+                                                {"target": target_page_number,
+                                                 "render": page_index if page_index <= len(render_overviews) else None}
+                                                if layout_spec is not None else None
+                                            ),
                                         )
                                     ),
                                 ),

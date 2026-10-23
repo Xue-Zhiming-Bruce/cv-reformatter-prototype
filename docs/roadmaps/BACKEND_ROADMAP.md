@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 23, 2026 (native API uses shared A; uploaded-target cutover and B0/B1 gates remain open)
+Last reviewed: October 24, 2026 (optional A agentic API integration; full uploaded-target cutover and B0/B1 gates remain open)
 
 This is the active engineering roadmap after completion of the MVP and PDF
 demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
@@ -126,6 +126,18 @@ Legacy profile-approval names remain compatibility fields only.
       Full product-template coverage,
       complete pagination parity and uploaded-target API cutover remain open; no replaced
       implementation has been removed.
+      Owner-requested optional agentic integration now connects measured target
+      PDF proofs and candidate previews to the same live A runner through
+      `GENERATION_STRATEGY=agentic`. Default standard rendering and native
+      deterministic A remain available. Model proposals affect only compiled
+      plans; all product gates and completed selected-PDF Reviewer review are
+      required before publication. Configured renderer/model/budget identity
+      requires fresh complete proof approval. Real Chrome offline boundary
+      regressions cover three proof lengths, continuation-page review,
+      saved-revision preview/final acceptance, measured repair promotion,
+      non-improving rollback and preserved previews after Reviewer/evidence
+      failure. External model quality, full template coverage and asynchronous
+      execution remain open; this does not retire either baseline or B.
 - [ ] Prune redundant orchestration, reports, and tests once their responsibility
       has a single verified owner.
 

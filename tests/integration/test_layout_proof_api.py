@@ -97,6 +97,123 @@ def _generate_with_target(artifact_id: str, target_format: dict[str, object], ve
     )
 
 
+def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    """Mock model calls only: API, runner, Chrome, gates and approvals are real."""
+    import shutil
+    from app.pipeline import service
+    from app.generation.agentic import agentic_renderer_version
+    from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME, LAYOUT_SPEC_FILENAME
+    from app.template_analysis.schemas import SectionLayoutSpec
+    from tests.helpers.pipeline import synthetic_pipeline_inputs
+    from tests.helpers.pipeline_layout import product_template
+
+    inputs = synthetic_pipeline_inputs(tmp_path, one_column=True)
+    artifact_id = "artifact_agentic_api"
+    directory = tmp_path / artifact_id
+    directory.mkdir()
+    metadata = main._store_target_format(artifact_id=artifact_id, artifact_dir=directory,
+        input_filename="synthetic-target.pdf", suffix=".pdf", contents=inputs["target_pdf"].read_bytes())
+    metadata = metadata.model_copy(update={"used_as_template_source": True})
+    (directory / "target_format.json").write_text(metadata.model_dump_json())
+    for key, filename in (("adobe_json", ADOBE_RAW_FILENAME), ("normalized_evidence", NORMALIZED_LAYOUT_FILENAME)):
+        shutil.copy2(inputs[key], directory / filename)
+    spec = product_template()
+    spec.header.contact_fields = []  # Canonical proofs exercise all contact slots.
+    for source, label in (("work_experience", "WORK EXPERIENCE"), ("education", "EDUCATION"),
+                          ("certifications", "CERTIFICATIONS"), ("additional_details", "ADDITIONAL DETAILS")):
+        spec.sections.append(SectionLayoutSpec(section_id=source, source=source, label=label))
+    spec_path = directory / LAYOUT_SPEC_FILENAME
+    spec_path.write_text(spec.model_dump_json())
+    original_spec = spec_path.read_bytes()
+    (directory / "candidate_profile.json").write_text(_profile().model_dump_json())
+    (directory / "raw_extracted_text.txt").write_text("SYNTHETIC SOURCE PRESERVED")
+    source_bytes = {name: (directory / name).read_bytes() for name in ("candidate_profile.json", "raw_extracted_text.txt")}
+    revision = client.post(f"/api/artifacts/{artifact_id}/profiles/revisions", json={"profile": _profile_payload()})
+    assert revision.status_code == 200, revision.text
+    request = {"artifact_id": artifact_id, "profile_revision_id": revision.json()["profile_revision_id"],
+               "target_format": metadata.model_dump(mode="json")}
+    monkeypatch.setenv("GENERATION_STRATEGY", "agentic")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-model-boundary")
+    monkeypatch.setenv("A_PIPELINE_MODEL", "offline-boundary")
+    monkeypatch.setenv("AGENTIC_MAX_REPAIR_ROUNDS", "1")
+    monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "12")
+    monkeypatch.setenv("AGENTIC_MAX_TOOL_CALLS", "24")
+    calls: list[str] = []
+    reviewed_pages: list[int] = []
+
+    def builder(_budget, _trace, *, payload, images, proposal_id, audit):
+        assert audit.agent == "lane_a_builder" and audit.lane == "a"
+        assert images and all(image.is_file() for image in images)
+        assert "Jane Candidate" not in json.dumps(payload)
+        calls.append("builder")
+        return service.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[
+            service.E5LaneASection(section_node_id="section.01", heading_in_rail=True, rail_label_width_pt=80),
+        ])
+
+    def reviewer(images, **kwargs):
+        assert kwargs["audit"].agent == "visual_reviewer"
+        assert len(images) == 2 and all(image.is_file() for image in images)
+        assert '"image_pages"' in kwargs["message"]
+        calls.append("reviewer")
+        reviewed_pages.append(kwargs["page"])
+        return []
+
+    monkeypatch.setattr(service, "_live_lane_a_builder", builder)
+    monkeypatch.setattr(service, "_live_reviewer_findings", reviewer)
+    _create_and_approve(client, artifact_id, directory)
+    assert calls.count("builder") == 3 and calls.count("reviewer") >= 3
+    assert max(reviewed_pages) > 1  # Long proof reflows; extra output pages are reviewed.
+    proof_paths = list((directory / "layout_proofs").glob("layout_proof_*/proof-*.pdf"))
+    proof_bytes = {path: path.read_bytes() for path in proof_paths}
+    assert len(proof_bytes) == 3
+    calls.clear()
+    response = client.post("/api/generate", json=request)
+    assert response.status_code == 200, response.text
+    identity = response.json()
+    assert identity["client_ready"] is False and calls == ["builder", "reviewer"]
+    html_path, pdf_path = directory / "candidate_profile.html", directory / "candidate_profile.pdf"
+    assert 'class="c2-rail"' in html_path.read_text()
+    report = json.loads((directory / "agentic_generation.json").read_text())
+    assert report["generation_strategy"] == "agentic" and report["client_ready"] is False
+    assert report["renderer_version"] == agentic_renderer_version()
+    assert report["content_validation"]["passed"] and report["structure_validation"]["passed"]
+    assert report["selected_version"] and report["summary"]["reviewed_pdf_sha256"]
+    assert identity["debug_artifacts"]["agentic_generation"] == str(directory / "agentic_generation.json")
+    assert client.get(main._artifact_url(artifact_id, "agentic_generation.json")).status_code == 200
+    fields = ("profile_revision_id", "profile_sha256", "layout_template_version", "layout_spec_sha256", "html_sha256", "pdf_sha256")
+    accepted = client.post(f"/api/artifacts/{artifact_id}/final-acceptance", json={key: identity[key] for key in fields})
+    assert accepted.status_code == 200 and accepted.json()["client_ready"], accepted.text
+    published = {path: path.read_bytes() for path in (html_path, pdf_path, directory / "agentic_generation.json")}
+
+    # Changing the execution contract invalidates proof approval before model calls.
+    calls.clear()
+    monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "13")
+    stale = client.post("/api/generate", json=request)
+    assert stale.status_code == 409 and calls == [], stale.text
+    monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "12")
+
+    # Reviewer failure cannot publish a render-only result or use standard fallback.
+    def failed_reviewer(*_args, **_kwargs):
+        calls.append("failed_reviewer")
+        raise ValueError("synthetic reviewer unavailable")
+
+    monkeypatch.setattr(service, "_live_reviewer_findings", failed_reviewer)
+    failed = client.post("/api/generate", json=request)
+    assert failed.status_code == 500 and "Reviewer" in failed.text, failed.text
+    assert "builder" in calls and "failed_reviewer" in calls
+    assert {path: path.read_bytes() for path in published} == published
+    assert {path: path.read_bytes() for path in proof_bytes} == proof_bytes
+    assert spec_path.read_bytes() == original_spec
+    assert {name: (directory / name).read_bytes() for name in source_bytes} == source_bytes
+    calls.clear()
+    (directory / NORMALIZED_LAYOUT_FILENAME).unlink()
+    missing = client.post("/api/generate", json=request)
+    assert missing.status_code == 500 and "evidence" in missing.text and calls == [], missing.text
+    assert {path: path.read_bytes() for path in published} == published
+
+
 # -- scenarios 1-2: gate and built-in path -------------------------------------
 
 

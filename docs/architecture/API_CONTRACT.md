@@ -201,8 +201,55 @@ gates, preview/final-acceptance identities and immutable source files remain in
 force. Unsupported native-template features fail before HTML/PDF replacement;
 there is no automatic return to the older renderer. Generation metadata records
 the actual renderer identity. Uploaded-target and designer-template generation
-still use the approval-bound `product-html/1` path; this bounded native cutover
-does not change their proof requirements or accept unsupported uploaded targets.
+use the approval-bound `product-html/1` path by default. The server can opt into
+the existing A agentic loop for measured target PDFs as described below;
+unsupported requests cannot fall back to another renderer.
+
+### Agentic generation configuration
+
+Owner direction, October 24, 2026: connect the existing A Builder -> render ->
+Reviewer -> measurement/attribution -> bounded repair loop to the current API.
+A means typed layout proposals interpreted by the controlled renderer; B means
+constrained authored HTML/CSS and remains an explicit CLI comparison option.
+Neither is an API request parameter or an end-user choice.
+
+Set `GENERATION_STRATEGY=agentic` on the server to use
+`app.generation.agentic` with the existing `app.pipeline.service.run_e5`.
+The default is `standard`, preserving the accepted baseline. Native no-target
+generation remains deterministic A under either setting. Agentic execution
+requires an uploaded measured target PDF, its saved Adobe/normalized evidence,
+and a supported `LayoutTemplateSpec`; it does not rerun target analysis or
+construct a fake target for native generation. Configure `DEEPSEEK_API_KEY`, or
+an explicit compatible `DEEPSEEK_BASE_URL` with `OPENAI_API_KEY`, using only
+inputs authorized under the provider policy. Existing model routing remains
+unchanged (`A_PIPELINE_MODEL`, and the retained higher-priority overrides and
+optional visual route).
+
+Execution limits are `AGENTIC_MAX_MODEL_REQUESTS=12` (2–60),
+`AGENTIC_MAX_TOOL_CALLS=24` (2–100), and
+`AGENTIC_MAX_REPAIR_ROUNDS=2` (0–3). These are ceilings, not promised usage or
+quality. Zero repair rounds still performs Builder and Reviewer calls.
+The model may propose only existing A primitives: heading rails/alignment and
+title-row entry metadata. Fixed product entry rows retain their declared
+metadata position; the latter primitive does not rearrange those rows.
+It cannot rewrite candidate facts or the stored template. Open findings remain visible; unsupported dimensions are not claimed
+as repaired. Every generated page, including continuation pages, receives
+Reviewer review before its PDF fingerprint is recorded as reviewed.
+
+The same layout-proof and `/api/generate` endpoints use the configured
+renderer. Strategy, prompt, model, provider-route or budget changes require
+fresh short/medium/long proofs and explicit proof approval; switching settings
+does not reuse `product-html/1` approval. Each agentic proof attempt has a unique
+directory. Publication requires the selected BEST version, all deterministic
+gates, product content/structure validation, stable source/configuration and
+successful Reviewer review of that exact PDF. A failed run returns HTTP 500
+without replacing prior preview HTML/PDF; there is no standard-renderer fallback.
+The existing artifact download route exposes `agentic_generation.json`, also
+listed in `debug_artifacts.agentic_generation`; it records the selected version,
+budget, open findings and artifact-relative run directory. Detailed run state
+stays local in the owning artifact's `pipeline_runs/` directory. A reviewable
+agentic output remains `client_ready=false` until exact final-output acceptance.
+This opt-in integration is not general target-fidelity or provider acceptance.
 
 ### Revision and validation errors
 
@@ -244,9 +291,10 @@ rewritten on read. New proof IDs include renderer and canonical-context identity
 so a version change preserves earlier proof files. Rolling back requires the
 matching implementation, approval record and original checksum-verified proof
 files; no automatic fallback grants an older approval. Generation metadata also
-records `renderer_version`. The current implementation remains `product-html/1`;
-this identity binding does not switch API generation to A or alter the six
-identity fields used for final-output acceptance.
+records `renderer_version`. Standard uploaded-target rendering uses
+`product-html/1`; agentic mode uses
+`agentic-a/1+lane-a-product-subset/14+<configuration digest>`. Neither mode
+changes the six identity fields used for final-output acceptance.
 
 ### Generated-profile artifact and draft preservation
 

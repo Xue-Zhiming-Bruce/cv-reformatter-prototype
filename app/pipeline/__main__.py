@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--normalized", type=Path, required=True)
     parser.add_argument("--structure-draft", type=Path, required=True)
     parser.add_argument("--layout-spec", type=Path,
-                        help="measured LayoutTemplateSpec JSON; bounded deterministic A preview, no repair")
+                        help="measured LayoutTemplateSpec JSON; deterministic A preview or bounded --live A loop")
     parser.add_argument("--presentation-label-approval", type=Path)
     parser.add_argument("--out", type=Path)
     parser.add_argument("--lane", choices=["a", "b", "both"], default="a",
@@ -59,8 +59,8 @@ def main(argv: list[str] | None = None) -> int:
         approval = (PresentationLabelApproval.model_validate_json(args.presentation_label_approval.read_text())
                     if args.presentation_label_approval else None)
         layout_spec = LayoutTemplateSpec.model_validate_json(args.layout_spec.read_text()) if args.layout_spec else None
-        if layout_spec is not None and (lanes != ("a",) or args.live or args.max_repair_rounds):
-            parser.error("--layout-spec requires Lane A, offline execution and zero repair rounds")
+        if layout_spec is not None and (lanes != ("a",) or (not args.live and args.max_repair_rounds)):
+            parser.error("--layout-spec requires Lane A; offline previews require zero repair rounds")
     except (OSError, ValueError) as error:
         parser.error(f"invalid reviewed content or label approval: {error}")
     try:
