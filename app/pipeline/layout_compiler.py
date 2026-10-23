@@ -32,6 +32,7 @@ from app.pipeline.layout_state import (
     CapabilityGap,
     C2LayoutState,
     EntryLayout,
+    InlineSkillLayout,
 )
 
 def _label_case(label: str) -> Literal["upper", "title", "mixed"]:
@@ -1203,6 +1204,7 @@ def state_from_layout_template(
         raise ValueError("duplicate product-template section_id")
     for index, section in enumerate(spec.sections):
         path = f"sections[{index}]"
+        inline_skills = section.source == "skills" and section.layout == "inline"
         entry_source = section.source in {"work_experience", "education", "additional_details"}
         fields = {
             "section_id", "source", "label", "layout", "placement", "optional",
@@ -1222,8 +1224,10 @@ def state_from_layout_template(
             fields.update({"additional_section_heading", "entry_title_to_metadata_gap_pt"})
         if section.source in {"skills", "languages", "certifications"}:
             fields.add("badge_style")
-        if section.source == "skills" and section.badge_style is not None:
+        if section.source == "skills" and (section.badge_style is not None or inline_skills):
             fields.add("skill_label_style")
+        if inline_skills:
+            fields.update({"inline_separator", "skill_group_gap_pt", "skill_first_row_adjustment_pt"})
         consumed(section, fields, path)
         if section.source == "contact":
             raise ValueError(f"Lane A product-template source not yet supported: {path}.source={section.source}")
@@ -1232,8 +1236,12 @@ def state_from_layout_template(
         if source_key in seen:
             raise ValueError(f"duplicate product-template source: {section.source}")
         seen.add(source_key)
-        if section.placement not in {"full_width", "main_column", "sidebar"} or section.layout not in {"full_width", "stacked", "bullets", "two_column_bullets"}:
+        if section.placement not in {"full_width", "main_column", "sidebar"} or (
+            section.layout not in {"full_width", "stacked", "bullets", "two_column_bullets"} and not inline_skills
+        ):
             raise ValueError(f"Lane A unsupported placement/layout in {path}")
+        if inline_skills and (section.badge_style is not None or section.column_count != 1):
+            raise ValueError(f"{path}: inline skills cannot combine badges or list columns")
         region = next((column for column in body_columns if column.slot == section.placement), None)
         if section.placement != "full_width" and region is None:
             raise ValueError(f"{path}.placement requires two body columns")
@@ -1257,6 +1265,16 @@ def state_from_layout_template(
         content_style = style(f"section_{index}_body", section.body_style or spec.body, section_height)
         heading_style = style(f"section_{index}_heading", section.heading_style or spec.heading, section_height)
         section_id = f"section.{index + 1:02d}"
+        inline_layout = None
+        if inline_skills:
+            inline_layout = InlineSkillLayout(
+                separator=section.inline_separator,
+                label_style_id=style(f"section_{index}_inline_label",
+                    section.skill_label_style or spec.body.model_copy(update={"bold": True}), section_height),
+                group_gap_pt=section.skill_group_gap_pt if section.skill_group_gap_pt is not None else max(
+                    0, (spec.spacing.line_height_pt or spec.body.font_size_pt * spec.spacing.line_spacing) - spec.body.font_size_pt),
+                first_row_adjustment_pt=section.skill_first_row_adjustment_pt or 0,
+            )
         badge_id = None
         badge_label_style = None
         if section.badge_style is not None:
@@ -1282,7 +1300,8 @@ def state_from_layout_template(
              binding=SectionBinding(sources=[section.source], mapping_action="map", evidence_ids=evidence,
                  partition_policy="match_section_heading" if section.source == "additional_details" else "none"),
              badge_ids=[badge_id] if badge_id else [], badge_label_style_id=badge_label_style,
-             content=SectionContent(sources=[section.source], content_kind="badge_items" if badge_id else "entries" if entry_source else "paragraph" if paragraph else "item_list", bullet_marker=None if paragraph or badge_id else marker),
+             inline_skill_layout=inline_layout,
+             content=SectionContent(sources=[section.source], content_kind="inline_items" if inline_skills else "badge_items" if badge_id else "entries" if entry_source else "paragraph" if paragraph else "item_list", bullet_marker=None if paragraph or badge_id else marker),
              entry_ref=f"{section_id}.entry" if entry_source else None,
              list_ref=None if paragraph or badge_id or section.source == "education" else f"{section_id}.list")
         node(node_id=f"{section_id}.heading", kind="heading", parent_id=section_id,

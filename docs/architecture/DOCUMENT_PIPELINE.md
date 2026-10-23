@@ -267,7 +267,7 @@ Integration status, October 22, 2026:
   spacing, stacked lists and bullet indentation. Conventional labels must
   resolve through exact product aliases. Non-default properties without a
   renderer implementation fail before run creation. Contact body mappings,
-  inline lists, header/footer body placements and hidden headings remain
+  non-skill inline lists, header/footer body placements and hidden headings remain
   unsupported in this projection. It does not claim full layout
   or pagination parity.
 - Body columns use `columns.count=2` with an explicit `sidebar_side`; templates
@@ -311,6 +311,21 @@ Integration status, October 22, 2026:
   declared column layouts, avoiding false omissions from interleaved lines.
   The existing API renderer does not implement these body placements; it is
   retained as a content/typography comparison, not a column-fidelity reference.
+- Inline skills now carry a bounded internal `InlineSkillLayout` with the
+  product delimiter, label style, group gap and first-row adjustment. Typed
+  groups remain attached to their existing content leaves; flat skills keep
+  their own span identities in one paragraph. The candidate's comma-joined
+  group text is retained beside an explicit inline presentation mapping, so
+  alternate delimiters do not excuse missing or changed skill facts. Ordinary
+  non-inline HTML is unchanged. Real CLI PDFs cover default/custom styles,
+  blind output, flat/empty content and wrapping inside a sidebar. Single-column
+  output is compared with the retained renderer for heading/group spacing;
+  label size/weight are checked against the template in the PDF.
+  HTML consumption checks reject changed flat delimiters,
+  missing label style ownership and missing group gaps; independent content
+  checks reject a missing PDF skill. Inline skills cannot request badges or
+  two list columns, and legacy child-leaf groups require an explicit supported
+  projection rather than guessed labels. Other inline sources remain unsupported.
 - Product typography now maps nonzero `TextStyle.word_spacing_pt` through an
   optional, bounded internal style value into CSS. Zero/default styles keep
   their previous HTML bytes. The product consumption gate checks nonzero
@@ -400,7 +415,7 @@ Integration status, October 22, 2026:
   PDFs pass the shared product validators and their HTML matches the CLI bytes.
   Native `built-in-3` API generation now calls this renderer with the saved
   revision's disclosed context projection. Its metadata records the shared A
-  renderer version (`lane-a-product-subset/11`, also used by CLI provenance).
+  renderer version (`lane-a-product-subset/12`, also used by CLI provenance).
   Product-template HTML uses the public page title `Candidate profile`;
   evidence-only diagnostics retain their existing title.
   It keeps the API's content/structure reports and exact final-output identities;

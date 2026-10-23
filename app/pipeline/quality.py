@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from app.pipeline.layout_state import C2LayoutState, Column
 from app.pipeline.layout_compiler import _below_heading_rule, _resolve_above_heading_rule
 from app.pipeline.render_plan import C2RenderPlan, section_groups
 from app.pipeline.html_renderer import _pt, _class_for
+from app.generation.html_renderer import _inline_separator
 
 def _norm(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace(":", " ")).strip().casefold()
@@ -195,9 +197,12 @@ def content_gate(
                        for section in plan.sections if section.heading_leaf_id and section.source_heading}
     badge_sources = {group.leaf_id: group.source_text
         for section in plan.sections for group in section.badge_groups if group.source_text}
+    inline_texts = {item.leaf_id: f"{item.skill_group.label}: {_inline_separator(section.inline_skill_layout.separator).join(item.skill_group.skills)}"
+        for section in plan.sections if section.inline_skill_layout
+        for item in section.items if item.skill_group}
     for leaf_id, destination in plan.leaf_ledger.items():
         text = _leaf_text(plan, leaf_id)
-        token = _norm(text)
+        token = _norm(inline_texts.get(leaf_id, text))
         occurrences = parser.counts[leaf_id]
         element_text = " ".join(parser.texts[leaf_id])
         # C2-0cS: a category-grid leaf renders once AS its ordered cell
@@ -228,6 +233,8 @@ def content_gate(
             records[leaf_id]["presentation_mapping"] = {"source_heading": heading_sources[leaf_id], "target_label": text}
         if leaf_id in badge_sources:
             records[leaf_id]["presentation_mapping"] = {"source_text": badge_sources[leaf_id], "badge_text": text}
+        if leaf_id in inline_texts:
+            records[leaf_id]["presentation_mapping"] = {"source_text": text, "inline_text": inline_texts[leaf_id]}
         if not rendered:
             (duplicated if occurrences > 1 else missing_html).append(leaf_id)
         if present_pdf is False:
@@ -485,6 +492,7 @@ class _ElementTreeParser(HTMLParser):
             "tag": tag,
             "class": values.get("class") or "",
             "style": values.get("style") or "",
+            "skill_layout": values.get("data-skill-layout"),
             "node_id": values.get("data-node-id") or "",
             "ancestor_node_ids": [item["node_id"] for item in self._stack],
             "ancestor_classes": [name for item in self._stack for name in item["class"].split()],
@@ -1142,11 +1150,47 @@ def content_shape_verification(
             }
         )
     if state.provenance.provider == "layout_template_spec":
+        rows.extend(_product_inline_skill_checks(plan, elements, html))
         rows.extend(_product_word_spacing_checks(state, plan, elements, html))
         rows.extend(_product_decoration_checks(state, plan, elements, pdf, rendered_extents))
         rows.extend(_product_column_checks(plan, elements, pdf, rendered_headings))
         rows.extend(_product_pagination_checks(state, plan, elements, pdf, rendered_headings))
     return {"passed": all(row["consistent"] for row in rows), "rows": rows}
+
+
+def _product_inline_skill_checks(
+    plan: C2RenderPlan, elements: list[dict[str, Any]], html: str,
+) -> list[dict[str, Any]]:
+    rows = []
+    by_id = {element["node_id"]: element for element in elements}
+    for section in plan.sections:
+        layout = section.inline_skill_layout
+        if layout is None or section.empty:
+            continue
+        wrapper = by_id.get(f"{section.node_id}.inline")
+        passed = bool(wrapper and "skills-inline" in wrapper["class"].split())
+        for key, expected in (("--skill-group-gap", layout.group_gap_pt), ("margin-top", layout.first_row_adjustment_pt)):
+            actual = _parse_declared_pt(wrapper["style"], key) if wrapper else None
+            passed &= actual is not None and abs(actual - expected) <= CSS_EXTENT_TOLERANCE_PT
+        passed &= bool(re.search(r"\.skills-inline\s+\.skill-group\s*\+\s*\.skill-group\s*\{\s*margin-top:\s*var\(--skill-group-gap", html))
+        paragraphs = [element for element in elements if element["tag"] == "p"
+            and f"{section.node_id}.inline" in element["ancestor_node_ids"]]
+        groups = [item for item in section.items if item.skill_group]
+        flat = [item.text for item in section.items if item.skill_group is None]
+        passed &= len(paragraphs) == len(groups) + bool(flat)
+        passed &= all(element["skill_layout"] == "inline" and "skill-group" in element["class"].split()
+            and _class_matches(element, _class_for(section.content_style_id)) for element in paragraphs)
+        for item in groups:
+            passed &= _class_matches(by_id.get(f"{section.node_id}.item.{item.leaf_id}.label", {"class": ""}), _class_for(layout.label_style_id))
+        body = re.search(rf'data-node-id="{re.escape(section.node_id)}\.inline"[^>]*>(.*?)</div>', html, re.DOTALL)
+        if flat:
+            passed &= bool(body and _norm(_inline_separator(layout.separator).join(flat)) in
+                _norm(unescape(re.sub(r"<[^>]+>", "", body.group(1)))))
+        rows.append({"section": section.node_id, "consistent": bool(passed),
+            "properties": [{"property": "inline_skills", "required_by_declared_shape": True,
+                "measured": layout.model_dump(), "renderer_consumes": bool(passed),
+                "capability_gap": None if passed else "inline skill groups, delimiter, typography or spacing not consumed"}]})
+    return rows
 
 
 def _product_word_spacing_checks(

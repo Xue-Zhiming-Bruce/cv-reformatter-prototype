@@ -6,7 +6,8 @@ from typing import Any, Literal
 from pydantic import ConfigDict, Field, model_validator
 from pathlib import Path
 from app.pipeline.rendering import _median
-from app.pipeline.layout_state import C2LayoutState, Column, EntryLayout
+from app.pipeline.layout_state import C2LayoutState, Column, EntryLayout, InlineSkillLayout
+from app.generation.template_mapper import RenderSkillGroup
 from app.pipeline.candidate_content import CandidateDocument, CandidateLeaf
 from app.pipeline.layout_state import PageState, SectionContent, StateModel
 from app.pipeline.candidate_content import UnroutableContent
@@ -19,6 +20,7 @@ PlanStatus = str  # fully_materialized | materialized_with_gaps | failed
 class LeafText(StateModel):
     leaf_id: str
     text: str
+    skill_group: RenderSkillGroup | None = None
 
 class StyledRun(StateModel):
     """One ordered inline run of a styled line (C2-0cC capability proof).
@@ -246,6 +248,7 @@ class SectionPlan(StateModel):
     column_slot: Literal["main_column", "sidebar"] | None = None
     page_break_before: bool = False
     item_columns: list[Column] = Field(default_factory=list)
+    inline_skill_layout: InlineSkillLayout | None = None
     badge_id: str | None = None
     badge_label_style_id: str | None = None
     badge_groups: list[BadgeGroupPlan] = Field(default_factory=list)
@@ -1082,7 +1085,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                 if leaf.text is None:
                     failures.append(f"candidate leaf {leaf.leaf_id!r} has no text")
                     continue
-                collected.append(LeafText(leaf_id=leaf.leaf_id, text=leaf.text))
+                collected.append(LeafText(leaf_id=leaf.leaf_id, text=leaf.text, skill_group=leaf.skill_group))
         # group children (skill items under a group with text of their own)
         for group in list(collected):
             group_leaf = leaf_by_id[group.leaf_id]
@@ -1129,6 +1132,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                 else None
             ),
             content_kind=content.content_kind,
+            inline_skill_layout=section.inline_skill_layout,
             source_role=role,
             content_style_id=section.content_style_id,
             column_slot=section.column_slot,
@@ -1350,6 +1354,10 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             plan.base_x0_pt = section_left
             grid = section.category_grid
             plan_items = items_for(role)
+            if section.inline_skill_layout is not None and any(
+                leaves_by_parent.get(item.leaf_id) for item in plan_items
+            ):
+                failures.append(f"{section.node_id}: inline skills require structured groups, not legacy child leaves")
             grid_decision: SectionAdaptation | None = None
             if grid is not None and plan_items and content.content_kind == "item_list":
                 # C2-0eB: PRE-RENDER fit preflight BEFORE committing to the

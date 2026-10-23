@@ -102,6 +102,11 @@ Legacy profile-approval names remain compatibility fields only.
       an HTML consumption guard and positive/negative actual PDF measurements
       against zero-spacing output. Default HTML remains unchanged; the retained
       renderer still ignores this property and is not a parity reference.
+      Inline skills now preserve typed groups and flat-item ownership, consume
+      delimiters/label styles/group spacing and pass actual PDF regressions for
+      normal/blind, flat/empty and sidebar cases. Single-column references cover
+      gaps; PDF checks cover label typography. Changed HTML or missing PDF skills fail
+      their independent checks. Uploaded-target cutover remains open.
       Full product-template coverage,
       complete pagination parity and uploaded-target API cutover remain open; no replaced
       implementation has been removed.

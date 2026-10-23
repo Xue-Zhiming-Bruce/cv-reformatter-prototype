@@ -243,6 +243,13 @@ class SectionBinding(StateModel):
             raise ValueError("composite bindings declare at least two sources")
         return self
 
+class InlineSkillLayout(StateModel):
+    separator: str
+    label_style_id: str
+    group_gap_pt: float = Field(ge=0, le=72)
+    first_row_adjustment_pt: float = Field(ge=-72, le=72)
+
+
 class SectionContent(StateModel):
     """What content structure one section owns, and from which sources.
 
@@ -336,6 +343,7 @@ class LayoutNode(StateModel):
     rule_id: str | None = None
     badge_ids: list[str] = Field(default_factory=list)
     badge_label_style_id: str | None = None
+    inline_skill_layout: InlineSkillLayout | None = None
     column_slot: Literal["main_column", "sidebar"] | None = None
     slots: list[str] = Field(default_factory=list)
     columns: list[Column] = Field(default_factory=list)
@@ -456,6 +464,11 @@ class LayoutNode(StateModel):
             raise ValueError(f"{self.node_id}: product entry layouts require all typography tiers")
         if self.kind != "section" and self.content_style_id is not None:
             raise ValueError(f"{self.node_id}: content_style_id belongs on section nodes")
+        if self.inline_skill_layout is not None and (
+            self.kind != "section" or not self.content or self.content.content_kind != "inline_items"
+            or self.content.sources != ["skills"] or self.badge_ids
+        ):
+            raise ValueError(f"{self.node_id}: inline skill layout requires an inline skills section")
         if self.additional_section_heading is not None and (
             self.kind != "section" or not self.binding or self.binding.sources != ["additional_details"]
         ):
@@ -596,6 +609,8 @@ class C2LayoutState(StateModel):
                     edge = column.x1_pt
             if node.badge_label_style_id is not None and node.badge_label_style_id not in style_ids:
                 raise ValueError(f"{node.node_id}: unknown badge label style")
+            if node.inline_skill_layout is not None and node.inline_skill_layout.label_style_id not in style_ids:
+                raise ValueError(f"{node.node_id}: unknown inline skill label style")
             if node.style_id is not None and node.style_id not in style_ids:
                 raise ValueError(f"{node.node_id}: unknown style ref {node.style_id}")
             if node.entry_layout is not None and any(

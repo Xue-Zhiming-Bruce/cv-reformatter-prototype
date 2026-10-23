@@ -400,7 +400,9 @@ def test_probe_fails_on_duplicated_leaf_consumption() -> None:
     ({"sections": [{"section_id": "skills", "source": "skills", "label": "Skills Inc"}]}, "presentation label"),
     ({"sections": [{"section_id": "details", "source": "additional_details", "label": "ADDITIONAL DETAILS", "additional_section_heading": ""}]}, "empty custom heading selector"),
     ({"sections": [{"section_id": "summary", "source": "summary", "label": "SUMMARY", "show_heading": False}]}, "show_heading"),
-    ({"sections": [{"section_id": "skills", "source": "skills", "label": "SKILLS", "layout": "inline"}]}, "placement/layout"),
+    ({"sections": [{"section_id": "languages", "source": "languages", "label": "LANGUAGES", "layout": "inline"}]}, "placement/layout"),
+    ({"sections": [{"section_id": "skills", "source": "skills", "label": "SKILLS", "layout": "inline", "column_count": 2}]}, "inline skills cannot combine"),
+    ({"sections": [{"section_id": "skills", "source": "skills", "label": "SKILLS", "layout": "inline", "badge_style": {"badge_fill_hex": "#112233", "badge_text_hex": "#FFFFFF", "badge_height_pt": 14, "badge_items_per_line": [2]}}]}, "inline skills cannot combine"),
     ({"page": {"width_pt": 612, "height_pt": 792, "orientation": "portrait", "margin_top_pt": 54,
                "margin_right_pt": 400, "margin_bottom_pt": 54, "margin_left_pt": 400}}, "no content area"),
 ])

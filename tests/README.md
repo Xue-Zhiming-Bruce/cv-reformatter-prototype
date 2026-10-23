@@ -67,6 +67,14 @@ and source files. Removed spacing declarations, later zero overrides and a
 missing title style fail the HTML consumption gate while content still passes.
 The retained product renderer ignores word spacing and is not this reference.
 
+Inline-skill cases in the same file preserve typed groups and separate flat
+skill identities. They cover default/custom delimiters and label styles,
+normal/blind output, sidebar wrapping and flat/empty content. Single-column
+reference PDFs use identical context/spec and compare heading-to-first-group
+and group gaps. HTML delimiter/style/gap mutations fail the consumption check
+while content remains present; removing a skill from the actual PDF fails both
+content validators. This does not certify arbitrary uploaded-template parity.
+
 The same entry cases export a reference PDF through the retained product
 renderer using the identical context and template. Generic custom-group
 headings must preserve its distinct default size/weight, heading-to-entry gaps

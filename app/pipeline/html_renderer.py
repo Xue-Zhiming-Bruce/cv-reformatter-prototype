@@ -10,9 +10,10 @@ from app.pipeline.rendering import _inject_local_fonts
 from app.pipeline.layout_state import BadgeDecoration, C2LayoutState, PageState, StyleToken
 from app.pipeline.render_plan import C2RenderPlan, EntryPlan, LeafText, OVERFLOW_POLICY, SectionPlan, compile_render_plan, section_groups
 from app.template_analysis.schemas import LayoutTemplateSpec
+from app.generation.html_renderer import _inline_separator
 
 # Bump when product compilation, HTML or bundled font behavior changes.
-RENDERER_VERSION = "lane-a-product-subset/11"
+RENDERER_VERSION = "lane-a-product-subset/12"
 
 
 def render_layout_template(
@@ -176,6 +177,29 @@ def _list_html(
         return f'<div data-node-id="{_esc(node_id)}" style="{column_css}">{text}</div>'
     return f'<ul class="c2-list" style="list-style:none">{text}</ul>' if plan.heading_leaf_id else text
 
+def _inline_skills_html(section: SectionPlan, content_class: str) -> str:
+    layout = section.inline_skill_layout
+    separator = _esc(_inline_separator(layout.separator))
+    rows = []
+    flat = []
+    for item in section.items:
+        if item.skill_group is None:
+            flat.append(f'<span data-node-id="{_esc(section.node_id)}.item.{_esc(item.leaf_id)}">{_esc(item.text)}</span>')
+            continue
+        group = item.skill_group
+        rows.append(f'<p class="{content_class} skill-group" data-skill-layout="inline" '
+            f'data-node-id="{_esc(section.node_id)}.item.{_esc(item.leaf_id)}">'
+            f'<span class="{_class_for(layout.label_style_id)} skill-label" '
+            f'data-node-id="{_esc(section.node_id)}.item.{_esc(item.leaf_id)}.label">{_esc(group.label)}:</span> '
+            f'{separator.join(_esc(value) for value in group.skills)}</p>')
+    if flat:
+        rows.append(f'<p class="{content_class} skill-group" data-skill-layout="inline" '
+            f'data-node-id="{_esc(section.node_id)}.content.inline_flat">{separator.join(flat)}</p>')
+    return (f'<div class="skills-inline" data-node-id="{_esc(section.node_id)}.inline" '
+        f'style="--skill-group-gap:{_pt(layout.group_gap_pt)};margin-top:{_pt(layout.first_row_adjustment_pt)};">'
+        + "".join(rows) + '</div>')
+
+
 def _entry_rows_html(entry: EntryPlan, section: SectionPlan, styles: dict[str, StyleToken]) -> str:
     rows = []
     for index, row in enumerate(entry.rows or []):
@@ -271,6 +295,9 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
         css.append(".c2-entry-body li, .c2-entry-body p { break-inside: avoid; }")
         # Preserve the product renderer's browser h3 defaults for unmatched groups.
         css.append(".c2-additional-heading { font-size: 1.17em; font-weight: 700; line-height: normal; margin: 1em 0; }")
+    if any(section.inline_skill_layout for section in plan.sections):
+        css.append(".skills-inline .skill-group + .skill-group { margin-top: var(--skill-group-gap, 0pt); }")
+        css.append(".skills-inline .skill-group { overflow-wrap: break-word; word-break: normal; }")
     css += [
         ".c2-header-row { white-space: normal; }",
         ".c2-section { }",
@@ -570,7 +597,7 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                 parts.append("    </article>")
         if section_plan.content_kind in {"item_list", "inline_items", "composite"}:
             if section_plan.items and not section_plan.items_before_entries:
-                parts.append(
+                parts.append(_inline_skills_html(section_plan, content_class) if section_plan.inline_skill_layout else
                     _list_html(
                         section_plan, section_plan.items,
                         f"{section_plan.node_id}.list", None, f"{section_plan.node_id}.item",

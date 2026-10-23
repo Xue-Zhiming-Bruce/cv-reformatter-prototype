@@ -272,6 +272,113 @@ def test_cli_product_template_controls_real_pdf_and_freezes_identity(tmp_path: P
     assert json.loads(gates.read_text())["details"]["content_shapes_match_evidence"]["passed"]
 
 
+@pytest.mark.parametrize("mode", ["default", "custom_blind", "sidebar", "flat", "empty"])
+def test_product_inline_skills_preserve_groups_and_pdf_layout(tmp_path: Path, mode: str) -> None:
+    import re
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+    from app.generation.content_validation import validate_generated_content, validate_output_structure
+    from app.generation.html_renderer import render_html as render_reference
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.layout_state import C2LayoutState
+    from app.pipeline.render_plan import compile_render_plan
+    from app.pipeline.quality import content_gate, content_shape_verification
+    from app.template_analysis.schemas import LayoutTemplateSpec
+    from tests.helpers.pipeline_layout import product_template
+
+    inputs = _inputs(tmp_path, one_column=True)
+    spec = product_template()
+    skills = spec.sections[2]
+    skills.layout = "inline"
+    if mode in {"custom_blind", "sidebar"}:
+        skills.inline_separator = "|" if mode == "custom_blind" else ";"
+        skills.skill_group_gap_pt = 9
+        skills.skill_first_row_adjustment_pt = -2
+        skills.skill_label_style = spec.body.model_copy(update={"font_size_pt": 12, "bold": False,
+                                                               "color_hex": "#235789", "character_spacing_pt": .25})
+    if mode == "sidebar":
+        spec.columns.count, spec.columns.sidebar_side = 2, "left"
+        spec.columns.left_column_ratio, spec.columns.gutter_pt = .42, 24
+        skills.placement = "sidebar"
+    spec = LayoutTemplateSpec.model_validate(spec.model_dump())
+    profile = CandidateProfile(full_name="Candidate Alpha", email="alpha@example.test", phone="5550101",
+        professional_summary="Builds reliable systems", skills=[] if mode == "empty" else ["Kubernetes", "Terraform"],
+        skill_groups=[] if mode in {"flat", "empty"} else [
+            {"label": "Data & Tools", "skills": ["Python", "SQL"]},
+            {"label": "Engineering", "skills": ["Distributed systems", "Reliable services, observability",
+                "Observability for complex distributed applications with clear operating procedures"]},
+        ])
+    profile_path = tmp_path / "candidate.json"
+    profile_path.write_text(profile.model_dump_json())
+    original = profile.model_dump(mode="json")
+    context = build_client_render_context(profile, blind_profile=mode == "custom_blind")
+    candidate = candidate_document_from_context(context, candidate_id="synthetic-inline-skills")
+    output = tmp_path / "result"
+    run_e5(**inputs, out_dir=output, candidate=candidate, layout_spec=spec, max_repair_rounds=0)
+    record = json.loads((output / "e5_state.json").read_text())
+    assert record["summary"]["terminal_state"] == "ready_for_owner_review", record
+    html_path, pdf_path = output / "lane_a/render_1.html", output / "lane_a/render_1.pdf"
+    html = html_path.read_text()
+    state = C2LayoutState.model_validate_json((output / "c2_layout_state.json").read_text())
+    plan = compile_render_plan(state, candidate)
+    content = content_gate(plan, html, pdf_path)
+    assert content["passed"], content
+    assert validate_generated_content(context, pdf_path=pdf_path, layout_spec=spec).passed
+    assert validate_output_structure(context, html_path=html_path, pdf_path=pdf_path, layout_spec=spec).passed
+    gates = json.loads(next((output / "lane_a").glob("hard_gates_*.json")).read_text())
+    assert gates["details"]["content_shapes_match_evidence"]["passed"], gates
+    assert profile.model_dump(mode="json") == json.loads(profile_path.read_text()) == original
+    with pdfplumber.open(pdf_path) as pdf:
+        words = [word for page in pdf.pages for word in page.extract_words(extra_attrs=["size", "fontname"]) ]
+        text = " ".join(page.extract_text() or "" for page in pdf.pages)
+        if mode == "custom_blind":
+            assert all(value not in text for value in ("Alpha", "alpha@example.test", "5550101"))
+        if mode == "empty":
+            assert "SKILLS" not in text and 'class="skills-inline"' not in html
+        if context.skill_groups:
+            data = next(word for word in words if word["text"] == "Data")
+            assert abs(data["size"] - (12 if mode in {"custom_blind", "sidebar"} else 10)) < .1
+            assert ("bold" in data["fontname"].casefold()) == (mode == "default")
+            mapping = content["leaf_records"]["skills.group.0"]["presentation_mapping"]
+            assert mapping["source_text"] == "Data & Tools: Python, SQL"
+            assert mapping["inline_text"] == ("Data & Tools: Python | SQL" if mode == "custom_blind"
+                                               else "Data & Tools: Python; SQL" if mode == "sidebar"
+                                               else "Data & Tools: Python, SQL")
+        if mode == "sidebar":
+            skill_words = [word for word in words if word["text"] in {"Data", "Python;", "Kubernetes;", "Terraform"}]
+            assert skill_words and all(word["x1"] < 260 for word in skill_words)
+    if mode != "sidebar":
+        reference = render_reference(context, spec, tmp_path / "reference.html")
+        reference_pdf = export_html_to_pdf(reference, tmp_path / "reference.pdf")
+        assert validate_generated_content(context, pdf_path=reference_pdf, layout_spec=spec).passed
+        with pdfplumber.open(reference_pdf) as pdf:
+            reference_words = [word for page in pdf.pages for word in page.extract_words()]
+        if context.skill_groups:
+            def distances(items):
+                by_text = {word["text"].rstrip(",;|"): word for word in items}
+                return (by_text["Data"]["top"] - by_text["SKILLS"]["bottom"],
+                        by_text["Engineering:"]["top"] - by_text["Python"]["bottom"])
+            assert all(abs(a - b) < 1 for a, b in zip(distances(words), distances(reference_words)))
+    if mode == "custom_blind":
+        mutations = [
+            html.replace("</span> | <span", "</span> ; <span"),
+            re.sub(r'class="[^"]*\bskill-label\b[^"]*"', 'class="skill-label"', html),
+            re.sub(r"--skill-group-gap:\s*[\d.]+pt", "--skill-group-gap:0pt", html),
+        ]
+        for changed in mutations:
+            assert changed != html
+            assert content_gate(plan, changed, pdf_path)["passed"]
+            gate = content_shape_verification(state, plan, None, {}, changed, {}, pdf_path)
+            assert not gate["passed"]
+            assert any(prop["property"] == "inline_skills" and prop["capability_gap"]
+                       for row in gate["rows"] for prop in row["properties"])
+        missing = tmp_path / "missing_skill.html"
+        missing.write_text(html.replace("SQL", "GONE"))
+        damaged_pdf = export_html_to_pdf(missing, tmp_path / "missing_skill.pdf")
+        assert not content_gate(plan, html, damaged_pdf)["passed"]
+        assert not validate_generated_content(context, pdf_path=damaged_pdf, layout_spec=spec).passed
+
+
 @pytest.mark.parametrize("blind,spacing", [(False, 2.5), (True, -1.0)])
 def test_cli_product_word_spacing_reaches_pdf_without_changing_content(
     tmp_path: Path, blind: bool, spacing: float,

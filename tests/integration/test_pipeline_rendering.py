@@ -85,6 +85,22 @@ def test_typed_contacts_take_precedence_over_conflicting_legacy_lines() -> None:
     assert "HIDDEN_CONTACT" not in html
 
 
+def test_inline_skills_reject_unstructured_legacy_group_children() -> None:
+    from app.pipeline.html_renderer import render_layout_template
+    from app.template_analysis.schemas import built_in_layout_template_spec
+
+    candidate = CandidateDocument(candidate_id="synthetic-legacy-group", leaves=[
+        CandidateLeaf(leaf_id="header.name", kind="header_field", slot="name", text="Synthetic Candidate"),
+        CandidateLeaf(leaf_id="skills.group", kind="skill_group", source="skills", text="Data"),
+        CandidateLeaf(leaf_id="skills.child", kind="skill", source="skills", text="Python", parent_leaf_id="skills.group"),
+    ], sections=[CandidateSection(section_id="skills", source="skills", content_kind="item_list",
+        heading="Skills", leaf_ids=["skills.group", "skills.child"])])
+    spec = built_in_layout_template_spec()
+    next(section for section in spec.sections if section.source == "skills").layout = "inline"
+    with pytest.raises(ValueError, match="inline skills require structured groups"):
+        render_layout_template(spec, candidate)
+
+
 def test_rail_heading_and_content_occupy_separate_pdf_columns(tmp_path: Path) -> None:
     import pdfplumber
     from app.pipeline.rendering import _export_pinned_html_to_pdf
