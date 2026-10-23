@@ -6,8 +6,8 @@ from typing import Any, Literal
 from pydantic import ConfigDict, Field, model_validator
 from pathlib import Path
 from app.pipeline.rendering import _median
-from app.pipeline.layout_state import C2LayoutState, Column, EntryLayout, InlineSkillLayout
-from app.generation.template_mapper import RenderSkillGroup
+from app.pipeline.layout_state import C2LayoutState, Column, ContactDetailLayout, EntryLayout, InlineSkillLayout
+from app.generation.template_mapper import RenderContactItem, RenderSkillGroup
 from app.pipeline.candidate_content import CandidateDocument, CandidateLeaf
 from app.pipeline.layout_state import PageState, SectionContent, StateModel
 from app.pipeline.candidate_content import UnroutableContent
@@ -59,6 +59,7 @@ class HeaderFieldPlan(StateModel):
     slot: str
     leaf_id: str
     text: str
+    contact_item: RenderContactItem | None = None
 
 class OverflowField(StateModel):
     slot: str
@@ -251,6 +252,7 @@ class SectionPlan(StateModel):
     inline_skill_layout: InlineSkillLayout | None = None
     contact_fields: list[HeaderFieldPlan] = Field(default_factory=list)
     contact_separator: str | None = None
+    contact_detail_layout: ContactDetailLayout | None = None
     badge_id: str | None = None
     badge_label_style_id: str | None = None
     badge_groups: list[BadgeGroupPlan] = Field(default_factory=list)
@@ -947,7 +949,9 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                 failures.append(f"candidate leaf {match.leaf_id!r} has no text")
                 continue
             used_header_leaves.add(match.leaf_id)
-            assignments.append(HeaderFieldPlan(slot=slot, leaf_id=match.leaf_id, text=match.text))
+            if section.contact_detail_layout is not None and match.contact_item is None:
+                failures.append(f"{section.node_id}: styled contact requires structured source {match.leaf_id}")
+            assignments.append(HeaderFieldPlan(slot=slot, leaf_id=match.leaf_id, text=match.text, contact_item=match.contact_item))
             own(match.leaf_id, f"{section.node_id}.contact.{slot}")
         body_contacts[section.node_id] = assignments
     for leaf in candidate.leaves:
@@ -1153,7 +1157,8 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             ),
             content_kind=content.content_kind,
             inline_skill_layout=section.inline_skill_layout,
-            source_role=role,
+            contact_detail_layout=section.contact_detail_layout,
+            source_role="additional_details" if section.contact_detail_layout else role,
             content_style_id=section.content_style_id,
             column_slot=section.column_slot,
             page_break_before=section.flow.page_break_before,
@@ -1796,6 +1801,11 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                         subgroup_tier_declared=True,
                     )
                 )
+            if candidate_section.section_id in custom_sections and state.provenance.provider == "layout_template_spec":
+                section_plan.content_style_id = section_plan.title_style_id = section_plan.meta_style_id = "style.body"
+                for entry in section_plan.entries:
+                    entry.additional_heading = candidate_section.heading
+                    _product_entry_rows(entry, EntryLayout(kind="additional_stacked"), section_plan, leaf_by_id, state, failures)
             orphan = [leaf.leaf_id for leaf in section_leaves if leaf.leaf_id not in ledger]
             if orphan:
                 failures.append(f"candidate-only entries leaves without an entry: {orphan}")

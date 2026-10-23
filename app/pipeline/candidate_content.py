@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 from pydantic import Field, model_validator
-from app.generation.template_mapper import CONTACT_FIELD_SLOTS, CONTACT_LABEL_FIELDS, ClientFacingRenderContext, RenderSkillGroup
+from app.generation.template_mapper import CONTACT_FIELD_SLOTS, CONTACT_LABEL_FIELDS, ClientFacingRenderContext, RenderContactItem, RenderSkillGroup
 from app.pipeline.layout_state import SourceRole, StateModel
 
 CandidateLeafKind = Literal[
@@ -38,10 +38,17 @@ class CandidateLeaf(StateModel):
     parent_leaf_id: str | None = None
     text: str | None = None
     skill_group: RenderSkillGroup | None = None
+    contact_item: RenderContactItem | None = None
     content_field: Literal["company", "title", "institution", "degree", "field_of_study", "location", "date_range", "link"] | None = None
 
     @model_validator(mode="after")
     def shape(self) -> "CandidateLeaf":
+        if self.contact_item is not None:
+            label, separator, value = (self.text or "").partition(": ")
+            if (self.kind != "header_field" or self.slot != CONTACT_FIELD_SLOTS[self.contact_item.field]
+                or (self.text != f"{self.contact_item.label}: {self.contact_item.value}" and (
+                    not separator or label.strip() != self.contact_item.label or value.strip() != self.contact_item.value))):
+                raise ValueError(f"{self.leaf_id}: contact item must match its source text and slot")
         if self.skill_group is not None:
             expected = f"{self.skill_group.label}: {', '.join(self.skill_group.skills)}"
             if self.kind != "skill_group" or self.source != "skills" or self.text != expected:
@@ -157,26 +164,28 @@ def candidate_document_from_context(
         source: SourceRole | None = None, *, parent: str | None = None,
         slot: str | None = None,
         content_field: str | None = None,
+        contact_item: RenderContactItem | None = None,
     ) -> None:
         if text:
             leaves.append(CandidateLeaf(
                 leaf_id=leaf_id, kind=kind, text=text, source=source,
-                parent_leaf_id=parent, slot=slot, content_field=content_field,
+                parent_leaf_id=parent, slot=slot, content_field=content_field, contact_item=contact_item,
             ))
 
     add("header.name", "header_field", context.candidate_heading, slot="name")
     add("header.subheading", "header_field", context.candidate_subheading, slot="subheading")
     # Typed contacts own their order; legacy contexts may carry only lines.
-    contacts = [(item.field, f"{item.label}: {item.value}") for item in context.contact_items]
+    contacts = [(item.field, f"{item.label}: {item.value}", item) for item in context.contact_items]
     if not contacts:
         for index, text in enumerate(context.contact_lines):
             label, separator, value = text.partition(": ")
             field = CONTACT_LABEL_FIELDS.get(label.strip().casefold()) if separator and value.strip() else None
             # Preserve every line; unknown or duplicate fields must fail binding.
-            contacts.append((field or f"contact_{index}", text))
-    for index, (field, text) in enumerate(contacts):
+            item = RenderContactItem(field=field, label=label.strip(), value=value.strip()) if field else None
+            contacts.append((field or f"contact_{index}", text, item))
+    for index, (field, text, item) in enumerate(contacts):
         slot = CONTACT_FIELD_SLOTS.get(field, field)
-        add(f"header.contact.{index}", "header_field", text, slot=slot)
+        add(f"header.contact.{index}", "header_field", text, slot=slot, contact_item=item)
 
     add("summary.p1", "summary_paragraph", context.professional_summary, "summary")
     for index, group in enumerate(context.skill_groups):

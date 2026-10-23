@@ -471,6 +471,113 @@ def test_product_body_contacts_preserve_ownership_order_and_pdf_content(tmp_path
         assert not report.passed and "alpha@example.test" in report.checks[0].missing_items
 
 
+@pytest.mark.parametrize("mode", ["basic", "sidebar", "blind", "hidden", "collision", "partitioned", "legacy"])
+def test_product_contact_details_preserve_roles_and_source_sections(tmp_path: Path, mode: str) -> None:
+    import re
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+    from app.generation.content_validation import validate_generated_content, validate_output_structure
+    from app.generation.html_renderer import render_html as render_reference
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.layout_state import C2LayoutState
+    from app.pipeline.render_plan import compile_render_plan
+    from app.pipeline.quality import content_gate, content_shape_verification
+    from app.template_analysis.schemas import LayoutTemplateSpec, SectionLayoutSpec
+    from tests.helpers.pipeline_layout import product_template
+
+    spec = product_template()
+    spec.header.contact_fields = ["phone"]
+    spec.sections.insert(0, SectionLayoutSpec(section_id="links", source="additional_details", label="LINKS",
+        contact_fields=["portfolio_url", "email"],
+        spacing=spec.spacing.model_copy(update={"paragraph_after_pt": 7}),
+        skill_label_style=spec.body.model_copy(update={"font_size_pt": 12, "bold": True, "color_hex": "#235789"}),
+        entry_metadata_style=spec.body.model_copy(update={"font_size_pt": 9, "color_hex": "#336633"})))
+    if mode == "sidebar":
+        spec.columns.count, spec.columns.sidebar_side = 2, "right"
+        spec.columns.left_column_ratio, spec.columns.gutter_pt = .58, 24
+        spec.sections[0].placement = "sidebar"
+    if mode == "partitioned":
+        spec.header.contact_fields = []
+        spec.sections.insert(0, SectionLayoutSpec(section_id="contact", source="contact", label="CONTACT", contact_fields=["phone"]))
+        spec.sections.append(SectionLayoutSpec(section_id="details", source="additional_details", label="ADDITIONAL DETAILS"))
+    spec = LayoutTemplateSpec.model_validate(spec.model_dump())
+    profile = CandidateProfile(full_name="Candidate Alpha", email="alpha@example.test", phone="5550101",
+        portfolio_url="https://example.test/p", professional_summary="Builds reliable systems",
+        client_display_rules=({"portfolio_url": "hide", "email": "hide"} if mode == "hidden" else
+                              {"portfolio_url": "show"} if mode == "blind" else {}),
+        notice_period="30 days" if mode == "partitioned" else None,
+        additional_sections=[{"source_heading": "Links", "source_block_id": "candidate-links", "section_type": "other",
+            "entries": [{"title": "Reviewed Resource", "links": ["https://example.test/source"],
+                         "description": ["Preserve this source description"]}]}] if mode in {"collision", "partitioned"} else [])
+    context = build_client_render_context(profile, blind_profile=mode == "blind")
+    if mode == "legacy":
+        context = context.model_copy(update={"contact_items": []})
+    candidate = candidate_document_from_context(context, candidate_id="synthetic-contact-details")
+    original = candidate.model_dump(mode="json")
+    output = tmp_path / "result"
+    run_e5(**_inputs(tmp_path, one_column=True), out_dir=output, candidate=candidate, layout_spec=spec, max_repair_rounds=0)
+    record = json.loads((output / "e5_state.json").read_text())
+    assert record["summary"]["terminal_state"] == "ready_for_owner_review", record
+    html_path, pdf_path = output / "lane_a/render_1.html", output / "lane_a/render_1.pdf"
+    html = html_path.read_text()
+    state = C2LayoutState.model_validate_json((output / "c2_layout_state.json").read_text())
+    plan = compile_render_plan(state, candidate)
+    assert candidate.model_dump(mode="json") == original
+    assert content_gate(plan, html, pdf_path)["passed"]
+    assert validate_generated_content(context, pdf_path=pdf_path, layout_spec=spec).passed
+    structure = validate_output_structure(context, html_path=html_path, pdf_path=pdf_path, layout_spec=spec)
+    assert structure.passed, structure.checks
+    gates = json.loads(next((output / "lane_a").glob("hard_gates_*.json")).read_text())
+    assert gates["details"]["content_shapes_match_evidence"]["passed"], gates
+    with pdfplumber.open(pdf_path) as pdf:
+        text = " ".join(page.extract_text() or "" for page in pdf.pages)
+        words = [word for page in pdf.pages for word in page.extract_words(extra_attrs=["size", "fontname", "non_stroking_color"]) ]
+    if mode == "hidden":
+        assert "LINKS" not in text and "alpha@example.test" not in text and "https://example.test/p" not in text
+        return
+    assert text.count("https://example.test/p") == 1
+    if mode == "blind":
+        assert "Alpha" not in text and "alpha@example.test" not in text and "5550101" not in text
+    else:
+        assert text.count("alpha@example.test") == text.count("5550101") == 1
+        assert text.index("https://example.test/p") < text.index("alpha@example.test")
+    label = next(word for word in words if word["text"] == "Portfolio:")
+    value = next(word for word in words if word["text"] == "https://example.test/p")
+    assert abs(label["size"] - 12) < .1 and "bold" in label["fontname"].casefold()
+    assert abs(value["size"] - 9) < .1 and "bold" not in value["fontname"].casefold()
+    if mode != "blind":
+        email_label = next(word for word in words if word["text"] == "Email:")
+        # Mixed 12/9pt inline fonts add a sub-point line-box adjustment in Chrome.
+        assert abs(email_label["top"] - label["top"] - 21) < 1
+    assert all(abs(a - b) < .01 for a, b in zip(label["non_stroking_color"], (35/255, 87/255, 137/255)))
+    assert all(abs(a - b) < .01 for a, b in zip(value["non_stroking_color"], (.2, .4, .2)))
+    if mode == "sidebar":
+        assert 350 < label["x0"] < value["x0"] and value["x1"] <= 558.1
+    if mode in {"collision", "partitioned"}:
+        for source in ("Reviewed Resource", "https://example.test/source", "Preserve this source description"):
+            assert text.count(source) == 1
+    if mode == "partitioned":
+        assert "30 days" in text and text.index("5550101") < text.index("LINKS")
+    if mode in {"basic", "collision"}:
+        reference = render_reference(context, spec, tmp_path / "reference.html")
+        reference_pdf = export_html_to_pdf(reference, tmp_path / "reference.pdf")
+        reference_check = validate_generated_content(context, pdf_path=reference_pdf, layout_spec=spec)
+        assert reference_check.passed == (mode == "basic")
+        if mode == "collision":
+            assert "Preserve this source description" in reference_check.checks[0].missing_items
+            assert not validate_output_structure(context, html_path=reference, pdf_path=reference_pdf, layout_spec=spec).passed
+        else:
+            for changed in [re.sub(r'class="[^"]*\bcontact-detail-label\b[^"]*"', 'class="contact-detail-label"', html),
+                            html.replace("margin-bottom:7pt;", "margin-bottom:0pt;")]:
+                assert changed != html and content_gate(plan, changed, pdf_path)["passed"]
+                assert not content_shape_verification(state, plan, None, {}, changed, {}, pdf_path)["passed"]
+            missing = tmp_path / "missing_portfolio.html"
+            missing.write_text(html.replace("https://example.test/p", "GONE"))
+            damaged_pdf = export_html_to_pdf(missing, tmp_path / "missing_portfolio.pdf")
+            assert not content_gate(plan, html, damaged_pdf)["passed"]
+            assert not validate_generated_content(context, pdf_path=damaged_pdf, layout_spec=spec).passed
+
+
 @pytest.mark.parametrize("blind,spacing", [(False, 2.5), (True, -1.0)])
 def test_cli_product_word_spacing_reaches_pdf_without_changing_content(
     tmp_path: Path, blind: bool, spacing: float,

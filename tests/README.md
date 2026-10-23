@@ -85,8 +85,21 @@ fail shape checks while content remains present. Deleting a body-only email
 from the PDF fails both A ownership/content and the shared product validator.
 Compiler rejection cases cover overlap, duplicate fields, unspecified body
 fields and unsupported layouts; raw state validation also rejects a body slot
-claiming a header-owned field. Additional Details/Links contact rendering is
-still outside A's supported subset.
+claiming a header-owned field.
+
+Additional Details/Links cases extend the same file with separately styled
+contact labels/values and row spacing, sidebar bounds, blind/hidden output,
+canonical legacy lines, and field partitions shared with Contact and the header.
+Actual PDF font size, weight, color and row-gap checks exercise the template
+roles; removing a role class or spacing declaration fails the shape gate, and
+removing a portfolio value from the PDF fails both content validators. Generic
+additional details can coexist with contact slots. A same-heading Links source
+block retains its independent URL, title and description, including product
+structure checks for the appended entries. Its retained-renderer reference loses
+those facts and must now fail shared content/structure validation rather than
+benefiting from a heading-based exemption. Structured-contact metadata cannot
+override source text or field identity. Contact slots combined with a custom
+selector or an entry title style remain explicitly unsupported.
 
 The same entry cases export a reference PDF through the retained product
 renderer using the identical context and template. Generic custom-group

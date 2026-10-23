@@ -226,7 +226,7 @@ class SectionBinding(StateModel):
     sources: list[SourceRole] = Field(default_factory=list)
     mapping_action: Literal["map", "preserve_as_additional", "unresolved"]
     composite: bool = False
-    partition_policy: Literal["none", "split_items_by_order", "match_section_heading"] = "none"
+    partition_policy: Literal["none", "split_items_by_order", "match_section_heading", "contact_fields"] = "none"
     evidence_ids: list[str] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -244,6 +244,12 @@ class SectionBinding(StateModel):
         if self.composite and len(self.sources) < 2:
             raise ValueError("composite bindings declare at least two sources")
         return self
+
+class ContactDetailLayout(StateModel):
+    label_style_id: str
+    value_style_id: str
+    row_gap_pt: float = Field(ge=0, le=72)
+
 
 class InlineSkillLayout(StateModel):
     separator: str
@@ -347,6 +353,7 @@ class LayoutNode(StateModel):
     badge_label_style_id: str | None = None
     inline_skill_layout: InlineSkillLayout | None = None
     contact_slots: list[str] = Field(default_factory=list)
+    contact_detail_layout: ContactDetailLayout | None = None
     column_slot: Literal["main_column", "sidebar"] | None = None
     slots: list[str] = Field(default_factory=list)
     columns: list[Column] = Field(default_factory=list)
@@ -391,7 +398,7 @@ class LayoutNode(StateModel):
 
     @model_validator(mode="after")
     def kind_shape(self) -> "LayoutNode":
-        if self.contact_slots or (self.binding and "contact" in self.binding.sources):
+        if self.contact_slots or self.contact_detail_layout or (self.binding and "contact" in self.binding.sources):
             if (self.kind != "section" or not self.binding or self.binding.sources != ["contact"]
                 or self.binding.mapping_action != "map" or not self.content
                 or self.content.content_kind != "inline_items" or not self.contact_slots
@@ -625,6 +632,10 @@ class C2LayoutState(StateModel):
                 raise ValueError(f"{node.node_id}: unknown badge label style")
             if node.inline_skill_layout is not None and node.inline_skill_layout.label_style_id not in style_ids:
                 raise ValueError(f"{node.node_id}: unknown inline skill label style")
+            if node.contact_detail_layout is not None and any(ref not in style_ids for ref in (
+                node.contact_detail_layout.label_style_id, node.contact_detail_layout.value_style_id,
+            )):
+                raise ValueError(f"{node.node_id}: unknown contact detail style")
             if node.style_id is not None and node.style_id not in style_ids:
                 raise ValueError(f"{node.node_id}: unknown style ref {node.style_id}")
             if node.entry_layout is not None and any(

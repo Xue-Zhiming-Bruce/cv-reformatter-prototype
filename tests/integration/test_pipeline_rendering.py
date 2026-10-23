@@ -85,6 +85,16 @@ def test_typed_contacts_take_precedence_over_conflicting_legacy_lines() -> None:
     assert "HIDDEN_CONTACT" not in html
 
 
+@pytest.mark.parametrize("patch", [{"value": "FORGED_CONTACT"}, {"field": "phone"}])
+def test_structured_contact_metadata_cannot_override_source_text_or_slot(patch: dict[str, str]) -> None:
+    leaf = CandidateLeaf(leaf_id="header.contact.0", kind="header_field", slot="envelope", text="Email: approved@example.test",
+        contact_item={"field": "email", "label": "Email", "value": "approved@example.test"})
+    payload = leaf.model_dump()
+    payload["contact_item"].update(patch)
+    with pytest.raises(ValueError, match="contact item must match its source text and slot"):
+        CandidateLeaf.model_validate(payload)
+
+
 def test_inline_skills_reject_unstructured_legacy_group_children() -> None:
     from app.pipeline.html_renderer import render_layout_template
     from app.template_analysis.schemas import built_in_layout_template_spec

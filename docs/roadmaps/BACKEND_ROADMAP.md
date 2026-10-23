@@ -113,7 +113,16 @@ Legacy profile-approval names remain compatibility fields only.
       assignment; explicit overlaps and duplicate ownership fail closed. Real PDF
       cases cover all-body, split/default-remainder, blind/hidden output and
       missing body contacts. Product PDF validation now counts body-selected
-      contacts too. Additional Details/Links contact slots remain unsupported by A.
+      contacts too. Additional Details/Links contact slots now share the contact
+      binder, with label/value typography and row spacing; explicit field
+      partitioning permits separate Contact, Links and header destinations.
+      Real PDF cases cover sidebars, blind/hidden output, canonical legacy lines
+      and coexistence with generic additional details. Same-heading source blocks
+      keep their independent entries through the existing preserve/append path;
+      appended custom entries now expose the shared product structure markers.
+      Removed heading-based validator exemptions prevent silent loss of their
+      URLs or descriptions, including through the retained renderer. Combined
+      contact/custom-selector layouts and uploaded-target cutover remain open.
       Full product-template coverage,
       complete pagination parity and uploaded-target API cutover remain open; no replaced
       implementation has been removed.

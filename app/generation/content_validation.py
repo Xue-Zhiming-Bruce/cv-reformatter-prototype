@@ -116,14 +116,7 @@ def _expected_items(
         }:
             continue
         items.extend([detail.label, detail.value])
-    contact_slot_labels = {
-        section.label.casefold()
-        for section in (layout_spec.sections if layout_spec is not None else [])
-        if section.source == "additional_details" and section.contact_fields
-    }
     for section in context.additional_sections:
-        if section.heading.casefold() in contact_slot_labels:
-            continue
         mapped_label = next((item.label for item in (layout_spec.sections if layout_spec else [])
                             if item.source == "additional_details" and item.additional_section_heading is not None
                             and item.additional_section_heading.casefold() == section.heading.casefold()), None)
@@ -226,15 +219,9 @@ def validate_output_structure(
     html = Path(html_path).read_text(encoding="utf-8")
     parser = _StructureHtmlParser()
     parser.feed(html)
-    contact_slot_labels = {
-        section.label.casefold()
-        for section in (layout_spec.sections if layout_spec is not None else [])
-        if section.source == "additional_details" and section.contact_fields
-    }
     expectations = [
         _section_structure_expectation(section, layout_spec, body_pt)
         for section in context.additional_sections
-        if section.heading.casefold() not in contact_slot_labels
     ]
     checks: list[StructureGateCheck] = []
     for expectation in expectations:
@@ -461,10 +448,10 @@ def _check_section_structure(
     issues: list[str] = []
     notes = _unmeasured_tier_notes(expectation)
     try:
-        section = next(
-            item for item in sections
-            if item["label"].casefold() == expectation.heading.casefold()
-        )
+        matches = [item for item in sections if item["label"].casefold() == expectation.heading.casefold()]
+        section = next((item for item in matches if item["entries"]), matches[0] if matches else None)
+        if section is None:
+            raise StopIteration
     except StopIteration:
         return StructureGateCheck(
             section_heading=expectation.heading,

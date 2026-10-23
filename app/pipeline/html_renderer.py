@@ -13,7 +13,7 @@ from app.template_analysis.schemas import LayoutTemplateSpec
 from app.generation.html_renderer import _inline_separator
 
 # Bump when product compilation, HTML or bundled font behavior changes.
-RENDERER_VERSION = "lane-a-product-subset/13"
+RENDERER_VERSION = "lane-a-product-subset/14"
 
 
 def render_layout_template(
@@ -595,7 +595,23 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                             )
                     parts.append("      </div>")
                 parts.append("    </article>")
-        if section_plan.contact_fields:
+        if section_plan.contact_fields and section_plan.contact_detail_layout:
+            layout = section_plan.contact_detail_layout
+            label_class, value_class = _class_for(layout.label_style_id), _class_for(layout.value_style_id)
+            parts.append(f'<div data-node-id="{_esc(section_plan.node_id)}.content.contacts">')
+            for field in section_plan.contact_fields:
+                item = field.contact_item
+                if item is None:
+                    raise ValueError(f"{field.leaf_id}: styled contact requires structured source")
+                prefix = f"{_esc(section_plan.node_id)}.contact.{_esc(field.slot)}"
+                parts.append(f'<p class="{content_class} contact-detail" '
+                    f'data-node-id="{_esc(section_plan.node_id)}.content.contact.{_esc(field.slot)}" '
+                    f'data-leaf-id="{_esc(field.leaf_id)}" data-contact-field="{_esc(item.field)}" '
+                    f'style="overflow-wrap:break-word;word-break:normal;margin-bottom:{_pt(layout.row_gap_pt)};">'
+                    f'<span class="{label_class} contact-detail-label" data-node-id="{prefix}.label">{_esc(item.label)}:</span> '
+                    f'<span class="{value_class} entry-metadata" data-node-id="{prefix}.value">{_esc(item.value)}</span></p>')
+            parts.append('</div>')
+        elif section_plan.contact_fields:
             separator = f" {section_plan.contact_separator} " if section_plan.contact_separator else "   "
             fields = separator.join(
                 f'<span data-node-id="{_esc(section_plan.node_id)}.contact.{_esc(field.slot)}" '

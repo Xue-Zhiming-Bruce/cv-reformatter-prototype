@@ -1170,17 +1170,32 @@ def _product_contact_checks(
         if not section.contact_fields:
             continue
         parent_id = f"{section.node_id}.content.contacts"
-        fields = [element["node_id"] for element in elements if parent_id in element["ancestor_node_ids"]]
-        passed = fields == [f"{section.node_id}.contact.{field.slot}" for field in section.contact_fields]
-        body = re.search(rf'<p\b[^>]*data-node-id="{re.escape(parent_id)}"[^>]*>(.*?)</p>', html, re.DOTALL)
-        separator = f" {section.contact_separator} " if section.contact_separator else "   "
-        expected = separator.join(field.text for field in section.contact_fields)
-        passed &= bool(body and unescape(re.sub(r"<[^>]+>", "", body.group(1))) == expected)
+        if section.contact_detail_layout:
+            fields = [element["node_id"] for element in elements if element["tag"] == "p" and parent_id in element["ancestor_node_ids"]]
+            passed = fields == [f"{section.node_id}.content.contact.{field.slot}" for field in section.contact_fields]
+            by_id = {element["node_id"]: element for element in elements}
+            for field in section.contact_fields:
+                row_id = f"{section.node_id}.content.contact.{field.slot}"
+                gap = _parse_declared_pt(by_id.get(row_id, {"style": ""})["style"], "margin-bottom")
+                passed &= gap is not None and abs(gap - section.contact_detail_layout.row_gap_pt) <= CSS_EXTENT_TOLERANCE_PT
+                prefix = f"{section.node_id}.contact.{field.slot}"
+                for suffix, token in (("label", section.contact_detail_layout.label_style_id),
+                                      ("value", section.contact_detail_layout.value_style_id)):
+                    element = by_id.get(f"{prefix}.{suffix}", {"class": "", "ancestor_node_ids": []})
+                    passed &= _class_matches(element, _class_for(token)) and f"{section.node_id}.content.contact.{field.slot}" in element["ancestor_node_ids"]
+        else:
+            fields = [element["node_id"] for element in elements if parent_id in element["ancestor_node_ids"]]
+            passed = fields == [f"{section.node_id}.contact.{field.slot}" for field in section.contact_fields]
+            body = re.search(rf'<p\b[^>]*data-node-id="{re.escape(parent_id)}"[^>]*>(.*?)</p>', html, re.DOTALL)
+            separator = f" {section.contact_separator} " if section.contact_separator else "   "
+            expected = separator.join(field.text for field in section.contact_fields)
+            passed &= bool(body and unescape(re.sub(r"<[^>]+>", "", body.group(1))) == expected)
         rows.append({"section": section.node_id, "consistent": bool(passed),
             "properties": [{"property": "contact_fields", "required_by_declared_shape": True,
-                "measured": {"slots": [field.slot for field in section.contact_fields], "separator": section.contact_separator},
+                "measured": {"slots": [field.slot for field in section.contact_fields],
+                    **({"detail_layout": section.contact_detail_layout.model_dump()} if section.contact_detail_layout else {"separator": section.contact_separator})},
                 "renderer_consumes": bool(passed),
-                "capability_gap": None if passed else "body contact order or delimiter not consumed"}]})
+                "capability_gap": None if passed else "body contact order, delimiter, typography or spacing not consumed"}]})
     return rows
 
 

@@ -391,8 +391,8 @@ Integration status, October 22, 2026:
   contact body section or the unused legacy document-title flag. This removes
   duplicate contact output and lets the native A4 template compile through A.
   Existing stored specs are not rewritten; older specs and uploaded templates
-  can still request unsupported features such as contact slots inside
-  Additional Details/Links or hidden section headings. Replacing proof/candidate
+  can still request unsupported features such as hidden section headings or
+  contact slots combined with a custom-section selector. Replacing proof/candidate
   rendering requires validating
   proof approval against the selected implementation and proving rollback;
   neither a compatible DOM nor a matching template checksum completes cutover.
@@ -416,7 +416,7 @@ Integration status, October 22, 2026:
   PDFs pass the shared product validators and their HTML matches the CLI bytes.
   Native `built-in-3` API generation now calls this renderer with the saved
   revision's disclosed context projection. Its metadata records the shared A
-  renderer version (`lane-a-product-subset/13`, also used by CLI provenance).
+  renderer version (`lane-a-product-subset/14`, also used by CLI provenance).
   Product-template HTML uses the public page title `Candidate profile`;
   evidence-only diagnostics retain their existing title.
   It keeps the API's content/structure reports and exact final-output identities;
@@ -454,9 +454,26 @@ Integration status, October 22, 2026:
   HTML order/delimiter mutations and missing PDF contacts fail independent gates.
   The shared product content validator now includes fields selected in body
   Contact and Additional Details/Links sections, rather than checking only
-  header selections. Additional Details/Links contact rendering remains outside
-  A's supported subset. Retained-renderer comparisons cover facts, not visual
+  header selections. Retained-renderer comparisons cover facts, not visual
   parity: A preserves source labels and avoids default-header/body repetition.
+- Additional Details/Links sections with explicit `contact_fields` now use the
+  same contact binding and ownership path. Internally they consume `contact`
+  leaves, with an explicit field partition, while product HTML retains
+  `source=additional_details`. Labels use `skill_label_style` and values use
+  `entry_metadata_style`, including their body-derived defaults; paragraph
+  spacing controls the gap between rows. Full-width and sidebar placements,
+  ordinary/blind/hidden output and canonical legacy contact lines have actual
+  PDF coverage. Structured label/value metadata must match each original leaf
+  and slot; a raw leaf without this metadata cannot enter styled rendering.
+  A selector or unrelated entry-layout setting cannot be combined with these
+  contact-only slots. Generic additional details and custom source blocks still
+  use their existing mapped/append paths, even when their heading is `Links`.
+  Appended custom entries use the shared product entry rows with body typography
+  as an explicit fallback, without claiming target-specific styling.
+  Product content/structure validators no longer exclude source blocks merely
+  because their heading matches a contact-slot label. A retained-renderer output
+  that loses a distinct URL, title or description now fails those checks.
+  No automatic source-fact deduplication or uploaded-target cutover is introduced.
 - API proof results and approval aggregates now bind `renderer_version` in
   addition to target, layout and file checksums. The current product renderer
   declares `product-html/1`; update its implementation version when layout,

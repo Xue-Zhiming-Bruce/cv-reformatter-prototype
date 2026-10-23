@@ -34,6 +34,7 @@ from app.pipeline.layout_state import (
     C2LayoutState,
     EntryLayout,
     InlineSkillLayout,
+    ContactDetailLayout,
 )
 
 def _label_case(label: str) -> Literal["upper", "title", "mixed"]:
@@ -1193,7 +1194,7 @@ def state_from_layout_template(
     name_gap = spec.header.name_gap_pt if spec.header.name_gap_pt is not None else spec.spacing.section_after_pt
     if spec.header.show_candidate_subheading:
         header("subheading", ["subheading"], "style.body", name_gap)
-    body_fields = [field for section in spec.sections if section.source == "contact" for field in section.contact_fields]
+    body_fields = [field for section in spec.sections if section.source in {"contact", "additional_details"} for field in section.contact_fields]
     if len(set(body_fields)) != len(body_fields):
         raise ValueError("duplicate body contact_fields")
     if set(body_fields) & set(spec.header.contact_fields):
@@ -1204,15 +1205,16 @@ def state_from_layout_template(
     slots = [CONTACT_FIELD_SLOTS[field] for field in contact_fields]
     header("contact", slots, contact, 0 if spec.header.show_candidate_subheading else name_gap,
            spec.header.contact_separator)
-    seen: set[tuple[str, str | None]] = set()
+    seen: set[tuple[str, str | None, bool]] = set()
     section_ids = [section.section_id for section in spec.sections]
     if len(section_ids) != len(set(section_ids)):
         raise ValueError("duplicate product-template section_id")
     for index, section in enumerate(spec.sections):
         path = f"sections[{index}]"
         inline_skills = section.source == "skills" and section.layout == "inline"
-        body_contact = section.source == "contact"
-        entry_source = section.source in {"work_experience", "education", "additional_details"}
+        contact_details = section.source == "additional_details" and bool(section.contact_fields)
+        body_contact = section.source == "contact" or contact_details
+        entry_source = section.source in {"work_experience", "education", "additional_details"} and not contact_details
         fields = {
             "section_id", "source", "label", "layout", "placement", "optional",
             "heading_style", "body_style", "spacing", "bullet_indent_pt", "page_break_before",
@@ -1221,13 +1223,13 @@ def state_from_layout_template(
             fields.update({"column_count", "column_gap_pt"})
         if entry_source:
             fields.add("entry_gap_pt")
-        if section.source in {"work_experience", "additional_details"}:
+        if section.source in {"work_experience", "additional_details"} and not contact_details:
             fields.update({"entry_title_style", "entry_metadata_style", "entry_title_bold"})
         if section.source == "work_experience":
             fields.update({"entry_secondary_style", "split_entry_rows"})
         if section.source == "education":
             fields.update({"education_institution_style", "education_primary_separator", "education_secondary_separator"})
-        if section.source == "additional_details":
+        if section.source == "additional_details" and not contact_details:
             fields.update({"additional_section_heading", "entry_title_to_metadata_gap_pt"})
         if section.source in {"skills", "languages", "certifications"}:
             fields.add("badge_style")
@@ -1237,11 +1239,13 @@ def state_from_layout_template(
             fields.update({"inline_separator", "skill_group_gap_pt", "skill_first_row_adjustment_pt"})
         if body_contact:
             fields.add("contact_fields")
+        if contact_details:
+            fields.update({"skill_label_style", "entry_metadata_style"})
         consumed(section, fields, path)
         if body_contact and (not section.contact_fields or section.layout != "full_width"):
             raise ValueError(f"{path}: body contacts require explicit contact_fields and full_width layout")
         selector = section.additional_section_heading.casefold() if section.additional_section_heading is not None else None
-        source_key = (section.source, selector)
+        source_key = (section.source, selector, contact_details)
         if source_key in seen:
             raise ValueError(f"duplicate product-template source: {section.source}")
         seen.add(source_key)
@@ -1274,6 +1278,12 @@ def state_from_layout_template(
         content_style = style(f"section_{index}_body", section.body_style or spec.body, section_height)
         heading_style = style(f"section_{index}_heading", section.heading_style or spec.heading, section_height)
         section_id = f"section.{index + 1:02d}"
+        contact_layout = ContactDetailLayout(
+            label_style_id=style(f"section_{index}_contact_label",
+                section.skill_label_style or spec.body.model_copy(update={"bold": True}), section_height),
+            value_style_id=style(f"section_{index}_contact_value", section.entry_metadata_style or spec.body, section_height),
+            row_gap_pt=spacing.paragraph_after_pt,
+        ) if contact_details else None
         inline_layout = None
         if inline_skills:
             inline_layout = InlineSkillLayout(
@@ -1306,12 +1316,13 @@ def state_from_layout_template(
              column_slot=region.slot if region else None,
              flow=FlowConstraint(page_break_before=section.page_break_before),
              additional_section_heading=section.additional_section_heading,
-             binding=SectionBinding(sources=[section.source], mapping_action="map", evidence_ids=evidence,
-                 partition_policy="match_section_heading" if section.source == "additional_details" else "none"),
+             binding=SectionBinding(sources=["contact" if body_contact else section.source], mapping_action="map", evidence_ids=evidence,
+                 partition_policy="contact_fields" if body_contact else "match_section_heading" if entry_source and section.source == "additional_details" else "none"),
              badge_ids=[badge_id] if badge_id else [], badge_label_style_id=badge_label_style,
              inline_skill_layout=inline_layout,
              contact_slots=[CONTACT_FIELD_SLOTS[field] for field in section.contact_fields] if body_contact else [],
-             content=SectionContent(sources=[section.source], content_kind="inline_items" if inline_skills or body_contact else "badge_items" if badge_id else "entries" if entry_source else "paragraph" if paragraph else "item_list", bullet_marker=None if paragraph or badge_id or body_contact else marker,
+             contact_detail_layout=contact_layout,
+             content=SectionContent(sources=["contact" if body_contact else section.source], content_kind="inline_items" if inline_skills or body_contact else "badge_items" if badge_id else "entries" if entry_source else "paragraph" if paragraph else "item_list", bullet_marker=None if paragraph or badge_id or body_contact else marker,
                  inline_separator=spec.header.contact_separator if body_contact else None),
              entry_ref=f"{section_id}.entry" if entry_source else None,
              list_ref=None if paragraph or badge_id or body_contact or section.source == "education" else f"{section_id}.list")
@@ -1376,7 +1387,8 @@ def state_from_layout_template(
         elif current.kind == "heading" and spec.decoration.heading_rule:
             section = next(item for item in nodes if item.node_id == current.parent_id)
             entry = next((item for item in nodes if item.node_id == section.entry_ref), None)
-            first_style = section.badge_label_style_id or (entry.title_style_id if entry else section.content_style_id)
+            first_style = (section.contact_detail_layout.label_style_id if section.contact_detail_layout else
+                section.badge_label_style_id or (entry.title_style_id if entry else section.content_style_id))
             region = next((column for column in body_columns if column.slot == section.column_slot), None)
             rule = product_rule(f"rule.{section.node_id}", "heading", tokens[first_style],
                 region.x0_pt if region else page.margin_left_pt, region.x1_pt if region else page.width_pt-page.margin_right_pt)
