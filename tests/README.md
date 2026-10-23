@@ -75,6 +75,19 @@ and group gaps. HTML delimiter/style/gap mutations fail the consumption check
 while content remains present; removing a skill from the actual PDF fails both
 content validators. This does not certify arbitrary uploaded-template parity.
 
+Dedicated body-contact cases in the same CLI file use existing contact leaves
+through explicit template selections. Real PDFs cover body field order, font
+size, default-header remainder, all-body placement, sidebar bounds, blind links
+explicitly allowed for disclosure, and omission of hidden empty blocks. A split
+header/body reference PDF checks the same facts through the retained renderer;
+it is not a visual-parity assertion. Swapped HTML fields or a changed delimiter
+fail shape checks while content remains present. Deleting a body-only email
+from the PDF fails both A ownership/content and the shared product validator.
+Compiler rejection cases cover overlap, duplicate fields, unspecified body
+fields and unsupported layouts; raw state validation also rejects a body slot
+claiming a header-owned field. Additional Details/Links contact rendering is
+still outside A's supported subset.
+
 The same entry cases export a reference PDF through the retained product
 renderer using the identical context and template. Generic custom-group
 headings must preserve its distinct default size/weight, heading-to-entry gaps

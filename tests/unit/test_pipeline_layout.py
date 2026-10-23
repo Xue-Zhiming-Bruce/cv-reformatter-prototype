@@ -395,7 +395,11 @@ def test_probe_fails_on_duplicated_leaf_consumption() -> None:
       "sections": [{"section_id": "skills", "source": "skills", "label": "SKILLS", "layout": "two_column_bullets", "column_gap_pt": 110}]}, "no list column width"),
     ({"decoration": {"heading_rule": True, "heading_rule_length_pt": 600}}, "exceeds the content width"),
     ({"body": {"font_family": "Helvetica", "font_size_pt": 11, "horizontal_scale_percent": 110}}, "horizontal_scale_percent"),
-    ({"sections": [{"section_id": "contact", "source": "contact", "label": "CONTACT"}]}, "source not yet supported"),
+    ({"sections": [{"section_id": "contact", "source": "contact", "label": "CONTACT"}]}, "explicit contact_fields"),
+    ({"sections": [{"section_id": "contact", "source": "contact", "label": "CONTACT", "contact_fields": ["phone"]}]}, "overlap"),
+    ({"sections": [{"section_id": "contact", "source": "contact", "label": "CONTACT", "contact_fields": ["portfolio_url", "portfolio_url"]}]}, "duplicate body"),
+    ({"sections": [{"section_id": "contact", "source": "contact", "label": "CONTACT", "contact_fields": ["portfolio_url"], "layout": "bullets"}]}, "full_width layout"),
+    ({"sections": [{"section_id": "details", "source": "additional_details", "label": "ADDITIONAL DETAILS", "contact_fields": ["portfolio_url"]}]}, "contact_fields"),
     ({"sections": [{"section_id": "summary", "source": "summary", "label": "Target Person"}]}, "presentation label"),
     ({"sections": [{"section_id": "skills", "source": "skills", "label": "Skills Inc"}]}, "presentation label"),
     ({"sections": [{"section_id": "details", "source": "additional_details", "label": "ADDITIONAL DETAILS", "additional_section_heading": ""}]}, "empty custom heading selector"),
@@ -415,6 +419,20 @@ def test_product_template_rejects_unrepresented_contract_features(patch, reason)
     data.update(patch)
     with pytest.raises(ValueError, match=reason):
         state_from_layout_template(LayoutTemplateSpec.model_validate(data), target_sha256=TARGET_SHA, page_count=1)
+
+
+def test_serialized_contact_state_cannot_claim_an_existing_header_slot() -> None:
+    from app.pipeline.layout_compiler import state_from_layout_template
+    from app.template_analysis.schemas import SectionLayoutSpec
+    from tests.helpers.pipeline_layout import product_template
+
+    spec = product_template()
+    spec.sections.insert(0, SectionLayoutSpec(section_id="contact", source="contact", label="CONTACT",
+        contact_fields=["portfolio_url"]))
+    payload = state_from_layout_template(spec, target_sha256=TARGET_SHA, page_count=1).model_dump()
+    next(node for node in payload["nodes"] if node["kind"] == "section")["contact_slots"] = ["phone"]
+    with pytest.raises(ValidationError, match="one owner"):
+        C2LayoutState.model_validate(payload)
 
 
 def test_badge_row_counts_cannot_stall_materialization() -> None:

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 _RENDERER_SYNTAX = re.compile(r"<\s*/?\s*(html|body|div|span|style|w:)", re.IGNORECASE)
 
 SourceRole = Literal[
+    "contact",
     "summary",
     "skills",
     "languages",
@@ -20,11 +21,12 @@ SourceRole = Literal[
 ]
 
 ALL_SOURCES: tuple[SourceRole, ...] = (
-    "summary", "skills", "languages", "work_experience",
+    "contact", "summary", "skills", "languages", "work_experience",
     "education", "certifications", "additional_details",
 )
 
 _DEFAULT_CONTENT_KINDS: dict[SourceRole, str] = {
+    "contact": "inline_items",
     "summary": "paragraph",
     "work_experience": "entries",
     "education": "entries",
@@ -344,6 +346,7 @@ class LayoutNode(StateModel):
     badge_ids: list[str] = Field(default_factory=list)
     badge_label_style_id: str | None = None
     inline_skill_layout: InlineSkillLayout | None = None
+    contact_slots: list[str] = Field(default_factory=list)
     column_slot: Literal["main_column", "sidebar"] | None = None
     slots: list[str] = Field(default_factory=list)
     columns: list[Column] = Field(default_factory=list)
@@ -388,6 +391,13 @@ class LayoutNode(StateModel):
 
     @model_validator(mode="after")
     def kind_shape(self) -> "LayoutNode":
+        if self.contact_slots or (self.binding and "contact" in self.binding.sources):
+            if (self.kind != "section" or not self.binding or self.binding.sources != ["contact"]
+                or self.binding.mapping_action != "map" or not self.content
+                or self.content.content_kind != "inline_items" or not self.contact_slots
+                or len(set(self.contact_slots)) != len(self.contact_slots)
+                or set(self.contact_slots) - {"envelope", "phone", "location", "linkedin", "portfolio"}):
+                raise ValueError(f"{self.node_id}: contact sections require unique contact slots and inline_items content")
         if self.kind == "header_row" and self.top_pt is None and self.flow_gap_above_pt is None:
             raise ValueError(f"{self.node_id}: header rows carry measured top_pt")
         if self.flow_gap_above_pt is not None and (self.kind != "header_row" or self.top_pt is not None):
@@ -583,6 +593,10 @@ class C2LayoutState(StateModel):
         rule_ids = {rule.rule_id for rule in self.rules}
         badge_ids = {badge.badge_id for badge in self.badges}
         node_id_set = set(node_ids)
+        contact_slots = [slot for node in self.nodes for slot in node.contact_slots]
+        header_slots = [field.slot for node in self.nodes if node.kind == "header_row" for field in node.fields]
+        if len(contact_slots) != len(set(contact_slots)) or set(contact_slots) & set(header_slots):
+            raise ValueError("body contact slots must have one owner across header and sections")
         if self.body_columns:
             if len(self.body_columns) != 2 or {column.slot for column in self.body_columns} != {"main_column", "sidebar"}:
                 raise ValueError("body columns require main_column and sidebar")

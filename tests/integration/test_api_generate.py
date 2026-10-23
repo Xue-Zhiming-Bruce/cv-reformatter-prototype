@@ -96,7 +96,7 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
     body = response.json()
     assert body["artifact_id"] == artifact_id
     assert body["layout_template_version"] == "built-in-3"
-    assert json.loads((artifact_dir / "generation_metadata.json").read_text())["renderer_version"] == "lane-a-product-subset/12"
+    assert json.loads((artifact_dir / "generation_metadata.json").read_text())["renderer_version"] == "lane-a-product-subset/13"
     assert "Boston" not in (artifact_dir / "candidate_profile.html").read_text().partition("</header>")[2]
     assert (artifact_dir / "raw_extracted_text.txt").read_bytes() == raw_text_before
     assert (artifact_dir / "raw_extracted_text.txt").read_text(encoding="utf-8") == draft_raw_text
@@ -180,7 +180,7 @@ def test_builtin_api_shared_a_preserves_real_pdf_and_acceptance_identity(
     assert response.status_code == 200, response.text
     identity = response.json()
     assert identity["client_ready"] is False
-    assert json.loads((directory / "generation_metadata.json").read_text())["renderer_version"] == "lane-a-product-subset/12"
+    assert json.loads((directory / "generation_metadata.json").read_text())["renderer_version"] == "lane-a-product-subset/13"
     context = ClientFacingRenderContext.model_validate_json((directory / "client_render_context.json").read_text())
     spec = built_in_layout_template_spec()
     _, plan, html = render_layout_template(spec, candidate_document_from_context(context, candidate_id="synthetic-api-reference"))

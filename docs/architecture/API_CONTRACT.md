@@ -185,9 +185,12 @@ output has a current final acceptance. Responses also include
 Every successful generation persists `content_validation.json`. If approved
 source-owned content is absent from the PDF, generation returns HTTP 500 with
 `error_code=generated_content_incomplete` and the missing items.
+Expected contacts include the fields selected in body Contact or Additional
+Details/Links sections as well as header selections. A body-only field cannot
+escape the PDF content check because it is absent from the header selection.
 
 No-target generation uses native `built-in-3` through the shared deterministic
-A template compiler/binder/HTML renderer (`lane-a-product-subset/12`). It projects
+A template compiler/binder/HTML renderer (`lane-a-product-subset/13`). It projects
 the saved revision's disclosed `ClientFacingRenderContext`, without a synthetic
 target PDF, provider call or diagnostic CLI run. The existing content/structure
 gates, preview/final-acceptance identities and immutable source files remain in

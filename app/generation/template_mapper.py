@@ -19,6 +19,11 @@ CONTACT_LABEL_FIELDS = {
     "linkedin": "linkedin_url", "portfolio": "portfolio_url",
 }
 
+CONTACT_FIELD_SLOTS = {
+    "email": "envelope", "phone": "phone", "location": "location",
+    "linkedin_url": "linkedin", "portfolio_url": "portfolio",
+}
+
 
 class RenderModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)

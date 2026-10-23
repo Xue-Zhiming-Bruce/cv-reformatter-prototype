@@ -379,6 +379,98 @@ def test_product_inline_skills_preserve_groups_and_pdf_layout(tmp_path: Path, mo
         assert not validate_generated_content(context, pdf_path=damaged_pdf, layout_spec=spec).passed
 
 
+@pytest.mark.parametrize("mode", ["split", "remaining", "all_body", "sidebar", "blind", "hidden"])
+def test_product_body_contacts_preserve_ownership_order_and_pdf_content(tmp_path: Path, mode: str) -> None:
+    import re
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+    from app.generation.content_validation import validate_generated_content, validate_output_structure
+    from app.generation.html_renderer import render_html as render_reference
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.layout_state import C2LayoutState
+    from app.pipeline.render_plan import compile_render_plan
+    from app.pipeline.quality import content_gate, content_shape_verification
+    from app.template_analysis.schemas import LayoutTemplateSpec, SectionLayoutSpec
+    from tests.helpers.pipeline_layout import product_template
+
+    inputs = _inputs(tmp_path, one_column=True)
+    spec = product_template()
+    spec.header.contact_fields = [] if mode in {"remaining", "all_body"} else ["phone"]
+    fields = ["portfolio_url", "email"]
+    if mode == "all_body":
+        fields += ["phone", "location", "linkedin_url"]
+    spec.sections.insert(0, SectionLayoutSpec(section_id="contact", source="contact", label="CONTACT",
+        contact_fields=fields, body_style=spec.body.model_copy(update={"font_size_pt": 11.5, "color_hex": "#235789"})))
+    if mode == "sidebar":
+        spec.columns.count, spec.columns.sidebar_side = 2, "right"
+        spec.columns.left_column_ratio, spec.columns.gutter_pt = .58, 24
+        spec.sections[0].placement = "sidebar"
+    spec = LayoutTemplateSpec.model_validate(spec.model_dump())
+    profile = CandidateProfile(full_name="Candidate Alpha", email="alpha@example.test", phone="5550101",
+        portfolio_url="https://example.test/p", professional_summary="Builds reliable systems",
+        client_display_rules=({field: "hide" for field in ("email", "phone", "portfolio_url")} if mode == "hidden"
+                              else {"portfolio_url": "show"} if mode == "blind" else {}))
+    original = profile.model_dump(mode="json")
+    context = build_client_render_context(profile, blind_profile=mode == "blind")
+    candidate = candidate_document_from_context(context, candidate_id="synthetic-body-contacts")
+    output = tmp_path / "result"
+    run_e5(**inputs, out_dir=output, candidate=candidate, layout_spec=spec, max_repair_rounds=0)
+    record = json.loads((output / "e5_state.json").read_text())
+    assert record["summary"]["terminal_state"] == "ready_for_owner_review", record
+    html_path, pdf_path = output / "lane_a/render_1.html", output / "lane_a/render_1.pdf"
+    html = html_path.read_text()
+    state = C2LayoutState.model_validate_json((output / "c2_layout_state.json").read_text())
+    plan = compile_render_plan(state, candidate)
+    assert content_gate(plan, html, pdf_path)["passed"]
+    assert validate_generated_content(context, pdf_path=pdf_path, layout_spec=spec).passed
+    assert validate_output_structure(context, html_path=html_path, pdf_path=pdf_path, layout_spec=spec).passed
+    gates = json.loads(next((output / "lane_a").glob("hard_gates_*.json")).read_text())
+    assert gates["details"]["content_shapes_match_evidence"]["passed"], gates
+    assert profile.model_dump(mode="json") == original
+    with pdfplumber.open(pdf_path) as pdf:
+        text = " ".join(page.extract_text() or "" for page in pdf.pages)
+        words = [word for page in pdf.pages for word in page.extract_words(extra_attrs=["size"]) ]
+    if mode == "hidden":
+        assert "CONTACT" not in text
+        assert all(value not in text for value in ("alpha@example.test", "5550101", "https://example.test/p"))
+        return
+    visible = ["https://example.test/p"] if mode == "blind" else ["alpha@example.test", "5550101", "https://example.test/p"]
+    for value in visible:
+        assert text.count(value) == 1, text
+    if mode == "blind":
+        assert all(value not in text for value in ("Alpha", "alpha@example.test", "5550101"))
+    else:
+        assert text.index("https://example.test/p") < text.index("alpha@example.test")
+    body_words = [word for word in words if word["text"] in {"alpha@example.test", "https://example.test/p"}]
+    assert len(body_words) == (1 if mode == "blind" else 2)
+    assert all(abs(word["size"] - 11.5) < .1 for word in body_words)
+    if mode == "sidebar":
+        assert all(word["x0"] > 350 and word["x1"] <= 558.1 for word in body_words)
+    elif mode == "all_body":
+        assert text.index("alpha@example.test") < text.index("5550101")
+    elif mode != "blind":
+        assert text.index("5550101") < text.index("CONTACT") < text.index("https://example.test/p")
+    if mode == "split":
+        reference = render_reference(context, spec, tmp_path / "reference.html")
+        reference_pdf = export_html_to_pdf(reference, tmp_path / "reference.pdf")
+        assert validate_generated_content(context, pdf_path=reference_pdf, layout_spec=spec).passed
+        for changed in [html.replace("</span> / <span", "</span> ; <span"),
+                        re.sub(r'(<span[^>]*data-node-id="section.01.contact.portfolio"[^>]*>.*?</span>)( / )(<span[^>]*data-node-id="section.01.contact.envelope"[^>]*>.*?</span>)',
+                               r'\3\2\1', html)]:
+            assert changed != html
+            assert content_gate(plan, changed, pdf_path)["passed"]
+            gate = content_shape_verification(state, plan, None, {}, changed, {}, pdf_path)
+            assert not gate["passed"]
+            assert any(prop["property"] == "contact_fields" and prop["capability_gap"]
+                for row in gate["rows"] for prop in row["properties"])
+        missing = tmp_path / "missing_body_email.html"
+        missing.write_text(html.replace("alpha@example.test", "GONE"))
+        damaged_pdf = export_html_to_pdf(missing, tmp_path / "missing_body_email.pdf")
+        assert not content_gate(plan, html, damaged_pdf)["passed"]
+        report = validate_generated_content(context, pdf_path=damaged_pdf, layout_spec=spec)
+        assert not report.passed and "alpha@example.test" in report.checks[0].missing_items
+
+
 @pytest.mark.parametrize("blind,spacing", [(False, 2.5), (True, -1.0)])
 def test_cli_product_word_spacing_reaches_pdf_without_changing_content(
     tmp_path: Path, blind: bool, spacing: float,

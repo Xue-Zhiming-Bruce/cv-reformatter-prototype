@@ -107,6 +107,13 @@ Legacy profile-approval names remain compatibility fields only.
       normal/blind, flat/empty and sidebar cases. Single-column references cover
       gaps; PDF checks cover label typography. Changed HTML or missing PDF skills fail
       their independent checks. Uploaded-target cutover remains open.
+      Dedicated Contact sections now share A's existing contact leaves, with
+      explicit field order, section typography and full-width/sidebar placement.
+      Empty header selections keep default order for fields remaining after body
+      assignment; explicit overlaps and duplicate ownership fail closed. Real PDF
+      cases cover all-body, split/default-remainder, blind/hidden output and
+      missing body contacts. Product PDF validation now counts body-selected
+      contacts too. Additional Details/Links contact slots remain unsupported by A.
       Full product-template coverage,
       complete pagination parity and uploaded-target API cutover remain open; no replaced
       implementation has been removed.

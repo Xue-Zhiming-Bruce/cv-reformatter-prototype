@@ -13,7 +13,7 @@ from app.template_analysis.schemas import LayoutTemplateSpec
 from app.generation.html_renderer import _inline_separator
 
 # Bump when product compilation, HTML or bundled font behavior changes.
-RENDERER_VERSION = "lane-a-product-subset/12"
+RENDERER_VERSION = "lane-a-product-subset/13"
 
 
 def render_layout_template(
@@ -595,6 +595,15 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                             )
                     parts.append("      </div>")
                 parts.append("    </article>")
+        if section_plan.contact_fields:
+            separator = f" {section_plan.contact_separator} " if section_plan.contact_separator else "   "
+            fields = separator.join(
+                f'<span data-node-id="{_esc(section_plan.node_id)}.contact.{_esc(field.slot)}" '
+                f'data-leaf-id="{_esc(field.leaf_id)}">{_esc(field.text)}</span>'
+                for field in section_plan.contact_fields
+            )
+            parts.append(f'<p class="{content_class}" data-node-id="{_esc(section_plan.node_id)}.content.contacts" '
+                f'style="overflow-wrap:break-word;word-break:normal;">{fields}</p>')
         if section_plan.content_kind in {"item_list", "inline_items", "composite"}:
             if section_plan.items and not section_plan.items_before_entries:
                 parts.append(_inline_skills_html(section_plan, content_class) if section_plan.inline_skill_layout else

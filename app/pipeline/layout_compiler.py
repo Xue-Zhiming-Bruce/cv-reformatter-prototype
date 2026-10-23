@@ -9,6 +9,7 @@ from app.template_analysis.commercial.bridge import _dominant_body, _section_sou
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from app.pipeline.measurement import BodyScaffold
 from app.generation.render_plan import layout_spec_sha256
+from app.generation.template_mapper import CONTACT_FIELD_SLOTS
 from app.template_analysis.schemas import LayoutTemplateSpec, TextStyle
 from app.pipeline.layout_state import (
     SourceRole,
@@ -1192,10 +1193,15 @@ def state_from_layout_template(
     name_gap = spec.header.name_gap_pt if spec.header.name_gap_pt is not None else spec.spacing.section_after_pt
     if spec.header.show_candidate_subheading:
         header("subheading", ["subheading"], "style.body", name_gap)
-    contact_fields = spec.header.contact_fields or ["email", "phone", "location", "linkedin_url", "portfolio_url"]
+    body_fields = [field for section in spec.sections if section.source == "contact" for field in section.contact_fields]
+    if len(set(body_fields)) != len(body_fields):
+        raise ValueError("duplicate body contact_fields")
+    if set(body_fields) & set(spec.header.contact_fields):
+        raise ValueError("header and body contact_fields overlap")
+    contact_fields = spec.header.contact_fields or [field for field in CONTACT_FIELD_SLOTS if field not in body_fields]
     if len(set(contact_fields)) != len(contact_fields):
         raise ValueError("duplicate header contact_fields")
-    slots = [{"email": "envelope", "linkedin_url": "linkedin", "portfolio_url": "portfolio"}.get(field, field) for field in contact_fields]
+    slots = [CONTACT_FIELD_SLOTS[field] for field in contact_fields]
     header("contact", slots, contact, 0 if spec.header.show_candidate_subheading else name_gap,
            spec.header.contact_separator)
     seen: set[tuple[str, str | None]] = set()
@@ -1205,6 +1211,7 @@ def state_from_layout_template(
     for index, section in enumerate(spec.sections):
         path = f"sections[{index}]"
         inline_skills = section.source == "skills" and section.layout == "inline"
+        body_contact = section.source == "contact"
         entry_source = section.source in {"work_experience", "education", "additional_details"}
         fields = {
             "section_id", "source", "label", "layout", "placement", "optional",
@@ -1228,9 +1235,11 @@ def state_from_layout_template(
             fields.add("skill_label_style")
         if inline_skills:
             fields.update({"inline_separator", "skill_group_gap_pt", "skill_first_row_adjustment_pt"})
+        if body_contact:
+            fields.add("contact_fields")
         consumed(section, fields, path)
-        if section.source == "contact":
-            raise ValueError(f"Lane A product-template source not yet supported: {path}.source={section.source}")
+        if body_contact and (not section.contact_fields or section.layout != "full_width"):
+            raise ValueError(f"{path}: body contacts require explicit contact_fields and full_width layout")
         selector = section.additional_section_heading.casefold() if section.additional_section_heading is not None else None
         source_key = (section.source, selector)
         if source_key in seen:
@@ -1301,9 +1310,11 @@ def state_from_layout_template(
                  partition_policy="match_section_heading" if section.source == "additional_details" else "none"),
              badge_ids=[badge_id] if badge_id else [], badge_label_style_id=badge_label_style,
              inline_skill_layout=inline_layout,
-             content=SectionContent(sources=[section.source], content_kind="inline_items" if inline_skills else "badge_items" if badge_id else "entries" if entry_source else "paragraph" if paragraph else "item_list", bullet_marker=None if paragraph or badge_id else marker),
+             contact_slots=[CONTACT_FIELD_SLOTS[field] for field in section.contact_fields] if body_contact else [],
+             content=SectionContent(sources=[section.source], content_kind="inline_items" if inline_skills or body_contact else "badge_items" if badge_id else "entries" if entry_source else "paragraph" if paragraph else "item_list", bullet_marker=None if paragraph or badge_id or body_contact else marker,
+                 inline_separator=spec.header.contact_separator if body_contact else None),
              entry_ref=f"{section_id}.entry" if entry_source else None,
-             list_ref=None if paragraph or badge_id or section.source == "education" else f"{section_id}.list")
+             list_ref=None if paragraph or badge_id or body_contact or section.source == "education" else f"{section_id}.list")
         node(node_id=f"{section_id}.heading", kind="heading", parent_id=section_id,
              label=section.label, label_case=_label_case(section.label), style_id=heading_style,
              spacing=NodeSpacing(gap_above_pt=spacing.section_before_pt, gap_below_pt=spacing.section_after_pt, gap_basis="flow"))
@@ -1327,7 +1338,7 @@ def state_from_layout_template(
                      secondary_separator=section.education_secondary_separator,
                      title_to_metadata_gap_pt=section.entry_title_to_metadata_gap_pt,
                      compensate_entry_gap=section.source == "additional_details" and section.entry_gap_pt is not None))
-        if not paragraph and not badge_id and section.source != "education":
+        if not paragraph and not badge_id and not body_contact and section.source != "education":
             node(node_id=f"{section_id}.list", kind="list_row", parent_id=section_id,
                  list_marker=marker, bullet_dot_x0_pt=x0,
                  bullet_text_x0_pt=x0 + section.bullet_indent_pt,

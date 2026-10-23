@@ -68,9 +68,10 @@ def _expected_items(
     ):
         items.append(context.candidate_subheading)
     if layout_spec is not None and context.contact_items:
-        # Only expect contact items whose field is in the spec's contact_fields;
-        # the renderer only emits those fields.
         spec_fields = set(layout_spec.header.contact_fields) if layout_spec.header.contact_fields else None
+        if spec_fields is not None:
+            spec_fields.update(field for section in layout_spec.sections
+                if section.source in {"contact", "additional_details"} for field in section.contact_fields)
         items.extend(
             item.value
             for item in context.contact_items

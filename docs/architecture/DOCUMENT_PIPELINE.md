@@ -391,8 +391,9 @@ Integration status, October 22, 2026:
   contact body section or the unused legacy document-title flag. This removes
   duplicate contact output and lets the native A4 template compile through A.
   Existing stored specs are not rewritten; older specs and uploaded templates
-  can still request unsupported features such as contact body slots or inline
-  skills. Replacing proof/candidate rendering requires validating
+  can still request unsupported features such as contact slots inside
+  Additional Details/Links or hidden section headings. Replacing proof/candidate
+  rendering requires validating
   proof approval against the selected implementation and proving rollback;
   neither a compatible DOM nor a matching template checksum completes cutover.
 - `app.pipeline.html_renderer.render_layout_template` owns deterministic product
@@ -415,7 +416,7 @@ Integration status, October 22, 2026:
   PDFs pass the shared product validators and their HTML matches the CLI bytes.
   Native `built-in-3` API generation now calls this renderer with the saved
   revision's disclosed context projection. Its metadata records the shared A
-  renderer version (`lane-a-product-subset/12`, also used by CLI provenance).
+  renderer version (`lane-a-product-subset/13`, also used by CLI provenance).
   Product-template HTML uses the public page title `Candidate profile`;
   evidence-only diagnostics retain their existing title.
   It keeps the API's content/structure reports and exact final-output identities;
@@ -437,6 +438,25 @@ Integration status, October 22, 2026:
   checks. This closes a projection prerequisite, not uploaded-target proof
   migration or fidelity acceptance; the approval-aware proof service still
   renders through `product-html/1`.
+- Dedicated product `source=contact` sections now bind their explicit
+  `contact_fields`, in order, to the original disclosed contact leaves. Their
+  `full_width` layout joins labeled source text using the header contact
+  separator and supports full-width, main-column or sidebar placement with
+  section typography. An empty header field list uses its existing default
+  order for fields not assigned to the body; explicit header/body overlap,
+  repeated fields and an empty body field selection are rejected. Every
+  visible leaf still has one owner; missing/hidden fields create no substitute
+  facts, and an empty body block drops its heading. `CandidateProfile` and
+  `LayoutTemplateSpec` schemas, provider prompt bytes and source-label aliases
+  are unchanged; the internal state adds explicit contact-slot bindings rather
+  than detecting them from headings. PDF regressions
+  cover split/all-body/default-remainder, sidebar, blind and hidden output;
+  HTML order/delimiter mutations and missing PDF contacts fail independent gates.
+  The shared product content validator now includes fields selected in body
+  Contact and Additional Details/Links sections, rather than checking only
+  header selections. Additional Details/Links contact rendering remains outside
+  A's supported subset. Retained-renderer comparisons cover facts, not visual
+  parity: A preserves source labels and avoids default-header/body repetition.
 - API proof results and approval aggregates now bind `renderer_version` in
   addition to target, layout and file checksums. The current product renderer
   declares `product-html/1`; update its implementation version when layout,

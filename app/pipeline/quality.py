@@ -259,6 +259,9 @@ def _leaf_text(plan: C2RenderPlan, leaf_id: str) -> str:
             if field.leaf_id == leaf_id:
                 return field.text
     for section in [*plan.sections, *plan.appended_sections]:
+        for field in section.contact_fields:
+            if field.leaf_id == leaf_id:
+                return field.text
         for group in section.badge_groups:
             if group.leaf_id == leaf_id:
                 return " ".join(filter(None, [group.label, *(item.text for item in group.items)]))
@@ -1002,7 +1005,7 @@ def content_shape_verification(
             "content_typography",
             bool(
                 plan_section
-                and (plan_section.paragraph_lines or plan_section.items or plan_section.entries)
+                and (plan_section.paragraph_lines or plan_section.items or plan_section.entries or plan_section.contact_fields)
             ),
             bool(content_token),
             (not body_lines) or all(
@@ -1150,12 +1153,35 @@ def content_shape_verification(
             }
         )
     if state.provenance.provider == "layout_template_spec":
+        rows.extend(_product_contact_checks(plan, elements, html))
         rows.extend(_product_inline_skill_checks(plan, elements, html))
         rows.extend(_product_word_spacing_checks(state, plan, elements, html))
         rows.extend(_product_decoration_checks(state, plan, elements, pdf, rendered_extents))
         rows.extend(_product_column_checks(plan, elements, pdf, rendered_headings))
         rows.extend(_product_pagination_checks(state, plan, elements, pdf, rendered_headings))
     return {"passed": all(row["consistent"] for row in rows), "rows": rows}
+
+
+def _product_contact_checks(
+    plan: C2RenderPlan, elements: list[dict[str, Any]], html: str,
+) -> list[dict[str, Any]]:
+    rows = []
+    for section in plan.sections:
+        if not section.contact_fields:
+            continue
+        parent_id = f"{section.node_id}.content.contacts"
+        fields = [element["node_id"] for element in elements if parent_id in element["ancestor_node_ids"]]
+        passed = fields == [f"{section.node_id}.contact.{field.slot}" for field in section.contact_fields]
+        body = re.search(rf'<p\b[^>]*data-node-id="{re.escape(parent_id)}"[^>]*>(.*?)</p>', html, re.DOTALL)
+        separator = f" {section.contact_separator} " if section.contact_separator else "   "
+        expected = separator.join(field.text for field in section.contact_fields)
+        passed &= bool(body and unescape(re.sub(r"<[^>]+>", "", body.group(1))) == expected)
+        rows.append({"section": section.node_id, "consistent": bool(passed),
+            "properties": [{"property": "contact_fields", "required_by_declared_shape": True,
+                "measured": {"slots": [field.slot for field in section.contact_fields], "separator": section.contact_separator},
+                "renderer_consumes": bool(passed),
+                "capability_gap": None if passed else "body contact order or delimiter not consumed"}]})
+    return rows
 
 
 def _product_inline_skill_checks(

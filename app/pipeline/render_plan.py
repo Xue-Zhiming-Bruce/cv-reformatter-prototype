@@ -249,6 +249,8 @@ class SectionPlan(StateModel):
     page_break_before: bool = False
     item_columns: list[Column] = Field(default_factory=list)
     inline_skill_layout: InlineSkillLayout | None = None
+    contact_fields: list[HeaderFieldPlan] = Field(default_factory=list)
+    contact_separator: str | None = None
     badge_id: str | None = None
     badge_label_style_id: str | None = None
     badge_groups: list[BadgeGroupPlan] = Field(default_factory=list)
@@ -930,6 +932,24 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                 f"{row.node_id}: measured contact icons are declared but the C2-0b "
                 "renderer renders no icon font (explicit capability gap)"
             )
+    body_contacts: dict[str, list[HeaderFieldPlan]] = {}
+    for section in sections:
+        if not section.contact_slots:
+            continue
+        assignments = []
+        for slot in section.contact_slots:
+            match = next((leaf for leaf in candidate.leaves if leaf.kind == "header_field"
+                and leaf.slot == slot and leaf.leaf_id not in used_header_leaves), None)
+            if match is None:
+                notes.append(f"{section.node_id}: contact slot {slot!r} has no candidate value")
+                continue
+            if match.text is None:
+                failures.append(f"candidate leaf {match.leaf_id!r} has no text")
+                continue
+            used_header_leaves.add(match.leaf_id)
+            assignments.append(HeaderFieldPlan(slot=slot, leaf_id=match.leaf_id, text=match.text))
+            own(match.leaf_id, f"{section.node_id}.contact.{slot}")
+        body_contacts[section.node_id] = assignments
     for leaf in candidate.leaves:
         if leaf.kind == "header_field" and leaf.leaf_id not in used_header_leaves:
             # E3 (2026-09-21), corrected 2026-09-22: a leaf whose slot carries
@@ -1169,7 +1189,10 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             plan.heading_gap_below_pt = (
                 heading_node.spacing.gap_below_pt if heading_node.spacing else None
             )
-        if content.content_kind == "paragraph":
+        if role == "contact":
+            plan.contact_fields = body_contacts.get(section.node_id, [])
+            plan.contact_separator = content.inline_separator
+        elif content.content_kind == "paragraph":
             for leaf in body_leaves:
                 if leaf.source == role and leaf.kind == "summary_paragraph":
                     if leaf.text is None:
@@ -1552,7 +1575,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         section_plans.append(plan)
         plan.empty = not (
             plan.paragraph_lines or plan.styled_lines or plan.entries or plan.items
-            or plan.category_grid_cells or plan.badge_groups
+            or plan.category_grid_cells or plan.badge_groups or plan.contact_fields
         )
         if plan.empty:
             notes.append(
