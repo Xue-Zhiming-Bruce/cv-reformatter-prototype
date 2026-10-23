@@ -21,6 +21,9 @@ from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from app.template_analysis.schemas import LayoutTemplateSpec
 
 
+MAX_REQUEST_BYTES = 512000  # Two dense 900px page overviews, including Base64/JSON overhead.
+
+
 class AgenticGenerationError(RuntimeError):
     pass
 
@@ -52,7 +55,7 @@ def _settings() -> dict[str, int]:
 def agentic_renderer_version() -> str:
     # Approval covers the renderer, prompts, models and execution envelope.
     contract = {
-        "renderer": RENDERER_VERSION, "settings": _settings(),
+        "renderer": RENDERER_VERSION, "settings": {**_settings(), "max_request_bytes": MAX_REQUEST_BYTES},
         "models": service._model_identity(),
         "prompts": [service.E5_LANE_A_BUILDER_INSTRUCTIONS, service.E5_REVIEWER_INSTRUCTIONS,
                     service.E5_ATTRIBUTION_INSTRUCTIONS],
@@ -130,7 +133,7 @@ def render_agentic(
         layout_spec=layout_spec, live=True, lanes=("a",),
         max_repair_rounds=settings["max_repair_rounds"], builder_reserve_requests=4,
         budget=RunBudget(max_model_requests=settings["max_model_requests"],
-            max_tool_calls=settings["max_tool_calls"], max_request_bytes=210000),
+            max_tool_calls=settings["max_tool_calls"], max_request_bytes=MAX_REQUEST_BYTES),
     )
     record = service.E5LoopRecord.model_validate(raw_record)
     lane = record.lanes.get("a")

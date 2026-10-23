@@ -228,7 +228,11 @@ optional visual route).
 Execution limits are `AGENTIC_MAX_MODEL_REQUESTS=12` (2–60),
 `AGENTIC_MAX_TOOL_CALLS=24` (2–100), and
 `AGENTIC_MAX_REPAIR_ROUNDS=2` (0–3). These are ceilings, not promised usage or
-quality. Zero repair rounds still performs Builder and Reviewer calls.
+quality. Requests are additionally capped at 512000 serialized bytes, eight
+images and 16384 output tokens. The byte cap includes Base64/JSON overhead;
+it is part of proof identity. An SDK-wrapped local budget failure stops rather
+than being treated as a transient connection failure.
+Zero repair rounds still performs Builder and Reviewer calls.
 The model may propose only existing A primitives: heading rails/alignment and
 title-row entry metadata. Fixed product entry rows retain their declared
 metadata position; the latter primitive does not rearrange those rows.

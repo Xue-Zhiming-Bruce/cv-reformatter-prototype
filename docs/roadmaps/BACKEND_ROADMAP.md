@@ -136,8 +136,16 @@ Legacy profile-approval names remain compatibility fields only.
       regressions cover three proof lengths, continuation-page review,
       saved-revision preview/final acceptance, measured repair promotion,
       non-improving rollback and preserved previews after Reviewer/evidence
-      failure. External model quality, full template coverage and asynchronous
-      execution remain open; this does not retire either baseline or B.
+      failure. An opted-in synthetic live API smoke now completes all three
+      proofs and one saved-revision preview with real Builder/Reviewer and
+      attribution calls (21 HTTP reservations). It exposed an undersized JSON
+      envelope: dense overview images exceeded 210000 bytes after Base64
+      encoding. The API cap is now 512000 bytes and part of proof identity;
+      SDK-wrapped local budget failures no longer enter connection retries.
+      The live sample promoted no model repairs; measured repair/rollback
+      remains covered by offline boundary regressions. General external model
+      quality, full template coverage and asynchronous execution remain open;
+      this does not retire either baseline or B.
 - [ ] Prune redundant orchestration, reports, and tests once their responsibility
       has a single verified owner.
 

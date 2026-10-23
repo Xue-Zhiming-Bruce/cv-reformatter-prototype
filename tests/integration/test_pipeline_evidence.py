@@ -294,6 +294,41 @@ def test_live_request_envelope_rejects_before_transport(tmp_path: Path, monkeypa
     assert budget.model_requests == 0
 
 
+def test_sdk_wrapped_envelope_failure_is_not_retried_as_a_connection_error(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+    import httpx
+    from app.pipeline.runtime import RunTrace, _live_model
+    from app.pipeline.service import _with_connection_retry
+
+    def unexpected_request(_request):
+        pytest.fail("over-budget payload reached the network transport")
+
+    class OfflineClient(httpx.AsyncClient):
+        def __init__(self, **kwargs):
+            super().__init__(transport=httpx.MockTransport(unexpected_request), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", OfflineClient)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "synthetic-secret")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://deepseek.invalid")
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+    budget = RunBudget(max_model_requests=2, max_request_bytes=600)
+    trace = RunTrace(tmp_path)
+    attempts = []
+
+    def call():
+        attempts.append(1)
+        async def request():
+            model = _live_model(budget, trace, "builder")
+            async with model.client:
+                await model.client.chat.completions.create(
+                    model="deepseek-flash", messages=[{"role": "user", "content": "x" * 1000}], max_tokens=16)
+        asyncio.run(request())
+
+    with pytest.raises(BudgetExhausted, match="envelope"):
+        _with_connection_retry(call, trace=trace, what="synthetic reviewer")
+    assert attempts == [1] and budget.model_requests == 0
+
+
 def test_duplicate_unresolved_items_are_deduplicated_by_item_id() -> None:
     items = [
         e.UnresolvedItem(
