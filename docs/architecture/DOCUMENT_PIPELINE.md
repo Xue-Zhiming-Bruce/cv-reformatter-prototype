@@ -2,7 +2,7 @@
 
 Status: `Active contract`
 
-Last reviewed: October 24, 2026 (optional A agentic API integration)
+Last reviewed: October 25, 2026 (agentic measurement and attribution guards)
 
 This document defines the provider-neutral boundaries of the CV Reformatter
 backend. The [Product Specification](../product/PRODUCT_SPEC.md) remains the
@@ -551,9 +551,18 @@ Entry-spacing binding follows the declared parent chain from entry/list regions
 to their measured section boundary. A missing boundary stays `evidence_missing`;
 it cannot fall back to header rows from the whole target page. The bounded
 matcher compares entry rows with matching measured size, weight and fill color,
-excluding bullet rows; unsupported role styling stays unmeasured. Attribution
-receives the exact validated representation that produced its current render.
-The agentic adapter identity is now `agentic-a/2`; this measurement/context
+excluding bullet rows. If other declared entry fields share the head typography,
+or the target yields more than two matching rows, this bounded two-head metric
+returns `ambiguous`; it cannot select the first two matching rows as proof of
+semantic identity. Unsupported role styling stays unmeasured. Measurement and
+attribution retain the same shell-issued request ID even when binding fails.
+Valid atomic findings with unsupported metrics remain open as unmeasured
+warnings; they cannot trigger repair or consume live causal-attribution calls.
+Attribution receives the exact validated proposal and content-free consumed row
+structure for the current render, including primitive effects and whether entry
+metadata placement is actually consumed. Model claims of renderer/plan limits
+without independent shell proof remain unresolved hypotheses for review.
+The agentic adapter identity is now `agentic-a/3`; this measurement/context
 revision requires fresh proofs while preserving the existing system prompt bytes.
 The shell decides promotion and rollback, preserves valid prior versions, and
 records rejected attempts. A quarantined repair base is not automatically an

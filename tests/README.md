@@ -39,6 +39,12 @@ company-row PDF geometry, protecting against header or adjacent title/company
 misbinding. An opted-in real repair smoke extends the same fixture and runner;
 its scripted initial fault and live-model limitations are documented in
 [`live/README.md`](live/README.md).
+The same integration table covers uniform role/company typography with one or
+two target entries, retained unsupported-dimension warnings, failed-binding
+request-ID continuity, and unverified renderer-limit claims. A real PydanticAI
+call with an offline model response checks the content-free consumed-layout
+payload and unresolved ownership through the actual runner. No live quality
+claim follows from these regressions.
 
 The retained pipeline's regression checks live in `unit/test_pipeline_*.py`
 and `integration/test_pipeline*.py`; reusable fixtures live in

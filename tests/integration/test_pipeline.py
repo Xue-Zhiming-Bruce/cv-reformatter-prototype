@@ -657,7 +657,7 @@ def test_cli_product_word_spacing_reaches_pdf_without_changing_content(
                    for row in broken["rows"] for prop in row["properties"])
 
 
-@pytest.mark.parametrize("repair", ["improve", "noop"])
+@pytest.mark.parametrize("repair", ["improve", "noop", "ambiguous", "ambiguous_single", "warning", "unbound", "renderer_claim"])
 def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repair: str,
 ) -> None:
@@ -668,7 +668,8 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
     from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
     from tests.helpers.pipeline import agentic_repair_inputs
 
-    inputs, spec, profile, _ = agentic_repair_inputs(tmp_path, target_entry_gap=32 if repair == "noop" else 18)
+    inputs, spec, profile, _ = agentic_repair_inputs(tmp_path, target_entry_gap=32 if repair in {"noop", "renderer_claim"} else 18,
+        uniform_entry_style=repair.startswith("ambiguous"), target_entry_count=1 if repair == "ambiguous_single" else 2)
     for key, filename in (("adobe_json", ADOBE_RAW_FILENAME), ("normalized_evidence", NORMALIZED_LAYOUT_FILENAME)):
         shutil.copy2(inputs[key], tmp_path / filename)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-model-boundary")
@@ -677,10 +678,12 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
     monkeypatch.setenv("AGENTIC_MAX_TOOL_CALLS", "24")
     phases: list[str] = []
     measured_targets: list[float] = []
-    with pdfplumber.open(inputs["target_pdf"]) as document:
-        first = document.pages[0].search("FirstTargetCompany")[0]["top"]
-        second = document.pages[0].search("SecondTargetCompany")[0]["top"]
-    expected_gap = second - first
+    captured_contexts: list[dict] = []
+    if repair in {"improve", "noop"}:
+        with pdfplumber.open(inputs["target_pdf"]) as document:
+            first = document.pages[0].search("FirstTargetCompany")[0]["top"]
+            second = document.pages[0].search("SecondTargetCompany")[0]["top"]
+        expected_gap = second - first
 
     def builder(_budget, _trace, *, payload, images, proposal_id, audit):
         phases.append(audit.phase)
@@ -693,14 +696,20 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
         return [service.DefectFinding(
             finding_id=kwargs["finding_id"], target_version=kwargs["target_version"],
             render_version=kwargs["render_version"], page=kwargs["page"], region="section.02.entry",
-            observation="Entry head spacing differs from the target.", suspected_dimension="role_gap",
+            observation="Entry head spacing differs from the target.", suspected_dimension="entry_meta_placement" if repair == "warning" else "role_gap",
             requested_measurement=service.MeasurementRequest(request_id="entry-gap", metric="role_gap", page=1,
-                region_id="section.02.entry", intent="vertical gap between the first two job entry heads"),
+                region_id="section.02.entry", intent="compare ordinary body color" if repair == "unbound" else "vertical gap between the first two job entry heads"),
             severity="high", confidence=.9, reviewer="llm",
         )]
 
-    def attribution(_pod, _budget, _trace, *, findings, results, lane, audit, current_representation):
-        assert results and all(result.status == "confirmed" for result in results)
+    def attribution(_pod, _budget, _trace, *, findings, results, lane, audit, current_representation, compiled_layout=None):
+        if repair.startswith("ambiguous"):
+            assert results and all(result.status == "ambiguous" for result in results), results
+            return [service.LiveAttributionHypothesis(finding_id=finding.finding_id,
+                attribution="measurement_failure", hypothesis_status="unresolved", repair_owner="reviewer",
+                reason="Target role rows are ambiguous", evidence_ids=[results[index].request_id])
+                for index, finding in enumerate(findings)]
+        assert results and all(result.status == "confirmed" for result in results), results
         measured_targets.extend(result.target_value_pt for result in results)
         expected_width = 360 if repair == "improve" and audit.render_version.endswith("v1") else 80
         assert current_representation.sections[0].rail_label_width_pt == expected_width
@@ -711,13 +720,51 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
 
     monkeypatch.setattr(service, "_live_lane_a_builder", builder)
     monkeypatch.setattr(service, "_live_reviewer_findings", reviewer)
-    monkeypatch.setattr(service, "_live_attribution_batch", attribution)
+    if repair == "renderer_claim":
+        from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
+        from pydantic_ai.models.function import FunctionModel
+        from app.pipeline import runtime
+
+        def renderer_claim(messages, info):
+            contents = [part.content for message in messages for part in message.parts if isinstance(part, UserPromptPart)]
+            payload = json.loads(contents[-1][0] if isinstance(contents[-1], list) else contents[-1])
+            captured_contexts.append(payload)
+            return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, args={"response": [
+                {"finding_id": finding["finding_id"], "attribution": "render_plan", "hypothesis_status": "confirmed",
+                 "repair_owner": "renderer", "reason": "The renderer cannot put dates beside the role row",
+                 "evidence_ids": [payload["measurements"][index]["request_id"]]}
+                for index, finding in enumerate(payload["findings"])
+            ]})])
+
+        monkeypatch.setattr(runtime, "_live_model", lambda *_: FunctionModel(renderer_claim))
+    else:
+        monkeypatch.setattr(service, "_live_attribution_batch", attribution)
     try:
         html, pdf, report = render_agentic(context=build_client_render_context(profile), layout_spec=spec,
             target_pdf=inputs["target_pdf"], evidence_dir=tmp_path, output_dir=tmp_path / "run")
     finally:
-        assert measured_targets and all(abs(value - expected_gap) < .2 for value in measured_targets), measured_targets
+        if repair in {"improve", "noop"}:
+            assert measured_targets and all(abs(value - expected_gap) < .2 for value in measured_targets), measured_targets
     lane = json.loads((tmp_path / report["run_directory"] / "e5_state.json").read_text())["lanes"]["a"]
+    measurement_ids = {result["request_id"] for result in lane["measurement_results"]}
+    assert measurement_ids and all(item["measurement_request_id"] in measurement_ids for item in lane["attributions"]), lane
+    if repair in {"ambiguous", "ambiguous_single", "warning", "unbound", "renderer_claim"}:
+        assert phases == ["initial"] and len(lane["render_versions"]) == 1 and not lane["repair_attempts"], lane
+        assert lane["findings"] and lane["open_findings"], lane
+        expected_status = {"ambiguous": "ambiguous", "ambiguous_single": "ambiguous", "warning": "not_measurable", "unbound": "not_measurable", "renderer_claim": "confirmed"}[repair]
+        assert all(result["status"] == expected_status for result in lane["measurement_results"]), lane
+        assert all(item["hypothesis_status"] == "unresolved" for item in lane["attributions"]), lane
+        assert report["selected_version"] == lane["render_versions"][0]["version_id"]
+        if repair == "renderer_claim":
+            assert captured_contexts and captured_contexts[0]["current_render_version"] == report["selected_version"]
+            context = captured_contexts[0]["compiled_layout"]
+            section = next(item for item in context["sections"] if item["section_node_id"] == "section.02")
+            assert section["entries"][0]["rows"][0]["right_field_count"] == 1
+            assert section["entries"][0]["entry_meta_placement_consumed"] is False
+            assert "widens" in context["primitive_effects"]["rail_label_width_pt"]
+            assert "Candidate Alpha" not in json.dumps(context) and "FirstCandidateCompany" not in json.dumps(context)
+            assert all(item["repair_owner"] == "reviewer" for item in lane["attributions"])
+        return
     assert phases == ["initial", "repair"], lane
     assert len(lane["render_versions"]) == 2 and lane["repair_attempts"]
     assert lane["measurement_results"] and all(result["status"] == "confirmed" for result in lane["measurement_results"])

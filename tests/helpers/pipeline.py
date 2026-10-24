@@ -284,7 +284,7 @@ def run_pipeline_fixture(target: Path, out_dir: Path, **kwargs):
     )
 
 
-def agentic_repair_inputs(tmp_path: Path, *, target_entry_gap: float = 18) -> tuple[dict, Any, Any, Any]:
+def agentic_repair_inputs(tmp_path: Path, *, target_entry_gap: float = 18, uniform_entry_style: bool = False, target_entry_count: int = 2) -> tuple[dict, Any, Any, Any]:
     """Distinct synthetic target/candidate entries with measurable wrapping."""
     from app.extraction.candidate_schema import CandidateProfile
     from app.generation.chrome_html_to_pdf import export_html_to_pdf
@@ -296,6 +296,8 @@ def agentic_repair_inputs(tmp_path: Path, *, target_entry_gap: float = 18) -> tu
 
     spec = product_entry_template(split_work=True, map_custom=False)
     spec.header.contact_fields = []
+    if uniform_entry_style:
+        spec.sections[1].entry_title_style = spec.sections[1].entry_secondary_style.model_copy()
     profile = CandidateProfile(full_name="Candidate Alpha", work_experience=[
         {"company": "FirstCandidateCompany", "title": "Platform Engineer for Candidate Systems", "start_date": "2020", "end_date": "2022",
          "description": ["Built reliable services"]},
@@ -308,6 +310,7 @@ def agentic_repair_inputs(tmp_path: Path, *, target_entry_gap: float = 18) -> tu
         {"company": "SecondTargetCompany", "title": "Senior Engineer for Target Platforms", "start_date": "2016", "end_date": "2018",
          "description": ["Supported target demo services"]},
     ])
+    target_profile.work_experience = target_profile.work_experience[:target_entry_count]
     target_spec = spec.model_copy(deep=True, update={"source_type": "built_in"})
     target_spec.sections[1].entry_gap_pt = target_entry_gap
     state, plan, _ = render_layout_template(target_spec, candidate_document_from_context(

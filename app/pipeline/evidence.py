@@ -1676,7 +1676,8 @@ def _e5_live_attribution_record(
     requires deterministic shell lineage proof bound to the finding's own
     render version (``lineage``); without it the claim fails closed to
     unresolved/reviewer, because target-person text differing from candidate
-    text is the product contract, not a binding defect."""
+    text is the product contract, not a binding defect. Model renderer/plan
+    limitation claims remain hypotheses; shell gate classifications are separate."""
     attribution = hypothesis.attribution
     status = hypothesis.hypothesis_status
     owner = hypothesis.repair_owner
@@ -1691,6 +1692,12 @@ def _e5_live_attribution_record(
             f"unresolved/reviewer. Model reason: {hypothesis.reason}"
         )
         attribution, status, owner = "unresolved", "unresolved", "reviewer"
+    elif attribution in {"renderer", "render_plan"} and status == "confirmed":
+        status, owner = "unresolved", "reviewer"
+        reason = (
+            "renderer capability limitation has no independent shell proof; "
+            "retained as an unresolved hypothesis for review. Model reason: " + reason
+        )
     elif attribution == "candidate_binding" and status == "confirmed":
         proven = (
             lineage is not None

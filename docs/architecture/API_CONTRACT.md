@@ -4,7 +4,7 @@ Status: `Active contract`
 
 Owner: Backend
 
-Last reviewed: October 21, 2026 (owner-approved saved revisions and final acceptance)
+Last reviewed: October 25, 2026 (agentic evidence and warning handling; saved-revision workflow unchanged)
 
 This document records the current MVP-compatible backend interface used by the
 frontend. It is not a complete versioned OpenAPI replacement; the FastAPI
@@ -236,8 +236,11 @@ Zero repair rounds still performs Builder and Reviewer calls.
 The model may propose only existing A primitives: heading rails/alignment and
 title-row entry metadata. Fixed product entry rows retain their declared
 metadata position; the latter primitive does not rearrange those rows.
-It cannot rewrite candidate facts or the stored template. Open findings remain visible; unsupported dimensions are not claimed
-as repaired. Every generated page, including continuation pages, receives
+It cannot rewrite candidate facts or the stored template. Open findings remain visible;
+valid atomic findings with unsupported metrics remain unmeasured warnings in the
+run state and open-finding IDs. Ambiguous entry-role matches cannot authorize a
+repair. Unproven model claims about renderer limitations remain unresolved.
+Every generated page, including continuation pages, receives
 Reviewer review before its PDF fingerprint is recorded as reviewed.
 
 The same layout-proof and `/api/generate` endpoints use the configured
@@ -297,7 +300,7 @@ matching implementation, approval record and original checksum-verified proof
 files; no automatic fallback grants an older approval. Generation metadata also
 records `renderer_version`. Standard uploaded-target rendering uses
 `product-html/1`; agentic mode uses
-`agentic-a/1+lane-a-product-subset/14+<configuration digest>`. Neither mode
+`agentic-a/3+lane-a-product-subset/14+<configuration digest>`. Neither mode
 changes the six identity fields used for final-output acceptance.
 
 ### Generated-profile artifact and draft preservation

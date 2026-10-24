@@ -1509,10 +1509,12 @@ def _e5_attribution_batches(
     actionable: list[DefectFinding],
     measured: dict[str, tuple[MeasurementResult, MeasurementRequest]],
 ) -> list[list[DefectFinding]]:
-    """Batch every non-no-defect finding for live causal attribution."""
+    """Batch measurable or unbound findings; known unsupported metrics stay warnings."""
     groups: dict[str, list[DefectFinding]] = {}
     for finding in actionable:
         result, _ = measured[finding.finding_id]
+        if result.status == "not_measurable":
+            continue
         if result.status == "confirmed" and abs(result.delta_pt or 0.0) <= E2_IMPROVEMENT_TOLERANCE_PT:
             continue
         groups.setdefault(finding.region, []).append(finding)
@@ -1555,9 +1557,10 @@ def _e5_default_attribution(
         measurement_request_id=request.request_id,
         attribution="not_measurable",
         hypothesis_status="unresolved",
-        repair_owner="binding",
+        repair_owner="reviewer" if result.status in {"ambiguous", "not_measurable"} else "binding",
         evidence=[result.request_id],
         reason=(
+            (result.reason + "; " if result.reason else "") +
             "the semantic measurement intent did not bind to final-PDF objects this "
             "round; the finding stays open for re-verification"
         ),
@@ -1697,6 +1700,7 @@ def _bind_role_gap_anchors(
     current_pdf: Path,
     region_span: tuple[float, float] | None,
     render_leaf_texts: list[str],
+    render_non_head_texts: list[str] | None = None,
 ) -> MeasurementRequest | MeasurementResult:
     """Phase 0 measurement binding: resolve a SEMANTIC measurement intent
     into actual final-PDF objects (exact line-prefix anchors on BOTH sides).
@@ -1717,14 +1721,14 @@ def _bind_role_gap_anchors(
             request_id=request.request_id,
             status="not_measurable",
             reason="the current deterministic metric measures entry-head spacing only",
-            method="role_gap_binding/2",
+            method="role_gap_binding/3",
             warnings=["a different visual dimension requires its own deterministic metric"],
         )
     if region_span is None:
         return MeasurementResult(
             request_id=request.request_id, status="evidence_missing",
             reason="entry-head spacing requires a measured owning-section boundary",
-            method="role_gap_binding/2",
+            method="role_gap_binding/3",
         )
     render_rows = _pdf_line_rows(current_pdf, request.page)
 
@@ -1755,7 +1759,7 @@ def _bind_role_gap_anchors(
                 "the semantic intent could not be bound to two render entry-head "
                 "rows in the final PDF (binding, not OCR, decides)"
             ),
-            method="role_gap_binding/2",
+            method="role_gap_binding/3",
             warnings=["binding resolves the Reviewer's semantic intent against actual PDF rows"],
         )
     target_rows = _pdf_line_rows(target_pdf, request.page)
@@ -1785,6 +1789,16 @@ def _bind_role_gap_anchors(
         return bool(style and reference and abs(style[0] - reference[0]) < .5
                     and style[1:] == reference[1:])
 
+    other_prefixes = [_norm_row(text)[:12] for text in render_non_head_texts or [] if text.strip()]
+    if any(any(_norm_row(row["text"]).startswith(prefix) for prefix in other_prefixes)
+           and any(same_role(render_styles.get(row["top"]), style) for style in anchor_styles)
+           for row in render_rows):
+        return MeasurementResult(
+            request_id=request.request_id, status="ambiguous",
+            reason="entry-head typography also belongs to other declared entry fields",
+            method="role_gap_binding/3",
+        )
+
     # Bind the same measured typographic role, rather than adjacent title,
     # company or date rows. Unsupported style differences stay unmeasured.
     head_rows = [row for row in target_rows
@@ -1797,8 +1811,15 @@ def _bind_role_gap_anchors(
             request_id=request.request_id,
             status="evidence_missing",
             reason="the region's target content rows could not yield two head anchors",
-            method="role_gap_binding/2",
+            method="role_gap_binding/3",
             warnings=["binding resolves the Reviewer's semantic intent against actual PDF rows"],
+        )
+    if len(head_rows) > 2:
+        return MeasurementResult(
+            request_id=request.request_id, status="ambiguous",
+            reason="matching typography does not identify a unique pair of target entry-head rows",
+            method="role_gap_binding/3",
+            target_evidence=[{"page": request.page, "top": row["top"], "text": row["text"]} for row in head_rows],
         )
     return request.model_copy(
         update={
@@ -2357,11 +2378,6 @@ def _validate_reviewer_regions(
             continue
         if "about me" in observation and "contact" in observation:
             continue
-        metric = finding.requested_measurement.metric
-        if metric == "role_gap" and not any(word in dimension for word in ("gap", "spacing", "role")):
-            continue
-        if metric == "header_vertical_rule_geometry" and not finding.region.startswith("header"):
-            continue
         valid.append(finding)
     return valid
 
@@ -2645,6 +2661,34 @@ def _live_lane_b_builder(
     template = run_result.output
     return template.model_copy(update={"template_id": template_id})
 
+def _lane_a_attribution_layout(plan: Any, state: Any, findings: list[DefectFinding]) -> dict[str, Any]:
+    """Describe consumed A structure and primitive effects without candidate values."""
+    sections = {_owning_section_id(state, finding.region) for finding in findings}
+    return {
+        "primitive_effects": {
+            "heading_in_rail": "Places the heading in a label column beside the content.",
+            "rail_label_width_pt": "Sets label-column width in pt; reducing it widens the content column and can reduce wrapping and entry-head spacing.",
+            "rail_label_align": "Aligns text inside the label column; it does not move the content column.",
+            "entry_meta_placement": "Only affects legacy entries without explicit rows. Explicit rows already define left/right placement and are not rearranged by this primitive.",
+        },
+        "sections": [
+            {
+                "section_node_id": section.node_id,
+                "heading_in_rail": bool(section.rail_heading),
+                "rail_label_width_pt": section.rail_label_width_pt,
+                "entries": [
+                    {"node_id": entry.node_id,
+                     "entry_meta_placement_consumed": entry.rows is None and bool(entry.meta_lines),
+                     "rows": [{"role": row.role, "left_field_count": len(row.left),
+                               "right_field_count": len(row.right)} for row in entry.rows or []]}
+                    for entry in section.entries
+                ],
+            }
+            for section in [*plan.sections, *plan.appended_sections] if section.node_id in sections
+        ] if plan is not None else [],
+    }
+
+
 def _live_attribution_batch(
     pod: "DualSourcePod",
     budget: RunBudget,
@@ -2654,6 +2698,7 @@ def _live_attribution_batch(
     results: list[MeasurementResult],
     lane: str = "a",
     current_representation: Any | None = None,
+    compiled_layout: dict[str, Any] | None = None,
     audit: E5AgentAuditSpec | None = None,
 ) -> list[LiveAttributionHypothesis]:
     """Phase 0 batched live attribution: findings that share the same region
@@ -2686,6 +2731,7 @@ def _live_attribution_batch(
             if current_representation is not None else None
         ),
         "current_render_version": audit.render_version if audit is not None else None,
+        "compiled_layout": compiled_layout,
         # The lane's ACTUAL repair surface: ownership of a confirmed defect may
         # only follow a surface that exists. Without it the role had to guess
         # the owning layer, and in live run `e_pipeline_e5_20260923T095557Z` it
@@ -3960,7 +4006,7 @@ def run_e5(
                 trace.add(agent="shell", phase="render", action="render_version", output=version.model_dump(mode="json"), note=note)
                 return version, pdf_path, gates
 
-        def render_leaf_texts(region_id: str | None, plan: Any = None) -> list[str]:
+        def render_entry_texts(region_id: str | None, plan: Any = None) -> tuple[list[str], list[str]]:
             # The plan is always the version-bound plan of the render being
             # measured (the ACTIVE plan for a round measurement, the
             # candidate's own plan for the identical re-measurement) — never
@@ -3972,15 +4018,16 @@ def run_e5(
                     None,
                 )
                 if plan_section is not None and plan_section.entries:
-                    return [
-                        entry.title_lines[0].text
-                        for entry in plan_section.entries if entry.title_lines
-                    ]
+                    heads = [entry.title_lines[0] for entry in plan_section.entries if entry.title_lines]
+                    head_ids = {line.leaf_id for line in heads}
+                    other_fields = [field.text for entry in plan_section.entries for row in entry.rows or []
+                                    for field in [*row.left, *row.right] if field.leaf_id not in head_ids]
+                    return [line.text for line in heads], other_fields
             # generic fallback: the candidate's own entry heads (same role)
             return [
                 leaf.text or "" for leaf in candidate.leaves
                 if leaf.kind in {"work_entry", "education_entry"} and leaf.text
-            ][:4]
+            ][:4], []
 
         def execute_measurement(
             finding: DefectFinding,
@@ -3998,13 +4045,25 @@ def run_e5(
                 input={"render_version": render_version, "finding": finding.finding_id},
             )
             request = finding.requested_measurement.model_copy(update={"request_id": request_id})
+            if request.metric == "role_gap" and not any(
+                word in finding.suspected_dimension.casefold() for word in ("gap", "spacing", "role")
+            ):
+                result = MeasurementResult(
+                    request_id=request_id, status="not_measurable",
+                    reason=f"dimension {finding.suspected_dimension!r} is not supported by the role_gap metric",
+                    method="reviewer_metric_binding/1",
+                )
+                trace.add(agent="measure_controller", phase="measure", action="binding_unresolved",
+                          output=result.model_dump(mode="json"), persist_output=True)
+                return result, request
             if request.metric == "header_vertical_rule_geometry":
                 finding_text = (
                     f"{finding.region} {finding.suspected_dimension} {finding.observation} "
                     f"{request.intent or ''}"
                 ).casefold()
                 if not (
-                    any(word in finding_text for word in ("header", "name"))
+                    finding.region.startswith("header")
+                    and any(word in finding_text for word in ("header", "name"))
                     and "vertical" in finding_text
                     and any(word in finding_text for word in ("rule", "line", "bar"))
                 ):
@@ -4028,19 +4087,20 @@ def run_e5(
                     output=result.model_dump(mode="json"), persist_output=True,
                 )
                 return result, request
+            heads, other_fields = render_entry_texts(finding.region, plan)
             bound = _bind_role_gap_anchors(
                 request,
                 target_pdf=target_pdf,
                 current_pdf=pdf,
                 region_span=span_tuple,
-                render_leaf_texts=render_leaf_texts(finding.region, plan),
+                render_leaf_texts=heads, render_non_head_texts=other_fields,
             )
             if isinstance(bound, MeasurementResult):
                 trace.add(
                     agent="measure_controller", phase="measure", action="binding_unresolved",
                     note=bound.reason, persist_output=True,
                 )
-                return bound, finding.requested_measurement
+                return bound, request
             # MeasureController.execute is the SINGLE tool-budget consumer for
             # a deterministic measurement (one compare_pdf_geometry per call,
             # one trace record). Callers never spend or re-trace it.
@@ -4654,6 +4714,7 @@ def run_e5(
                                 results=[measured[f.finding_id][0] for f in group],
                                 lane=lane,
                                 current_representation=representation_by_version.get(current_version.version_id),
+                                compiled_layout=_lane_a_attribution_layout(current_plan, state, group),
                                 audit=_e5_audit(
                                     agent="attribution_investigator",
                                     phase="attribute",

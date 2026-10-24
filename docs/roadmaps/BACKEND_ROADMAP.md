@@ -159,6 +159,20 @@ Legacy profile-approval names remain compatibility fields only.
       19 skipped). General external model
       quality, full template coverage and asynchronous execution remain open;
       this does not retire either baseline or B.
+      The subsequent four-fix audit now has seven passing offline runner cases:
+      typography collisions stay ambiguous (including one target entry against
+      two candidate entries), failed measurements preserve their issued IDs,
+      valid unsupported-metric findings remain open, and unproven renderer-limit
+      claims remain unresolved. Attribution receives actual consumed row
+      topology and primitive effects without candidate values. Agentic identity
+      advances to version 3; legacy prompt bytes and stored product contracts
+      remain unchanged. Full offline backend validation passes: 762 passed,
+      35 skipped. One post-fix controlled live smoke also passes with six HTTP
+      reservations: the real model changes the rail from 360pt to 92pt,
+      eliminates the measured 41.3pt entry-gap error, and the promoted version
+      passes product gates and exact-PDF review. The initial fault and first
+      review scope remain explicitly controlled; general live repeatability
+      and default whole-page discovery remain unaccepted.
 - [ ] Prune redundant orchestration, reports, and tests once their responsibility
       has a single verified owner.
 
