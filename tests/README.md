@@ -51,6 +51,14 @@ call with an offline model response checks the content-free consumed-layout
 payload and unresolved ownership through the actual runner. No live quality
 claim follows from these regressions.
 
+`integration/test_pipeline_rendering.py` also protects rail-label containment
+and wrapped heading order using real PDFs. Missing headings, disabled label
+wrapping and physical reordering must fail even when the original HTML remains
+correct. The existing content-validation unit table also covers repeated dates,
+hyphen line breaks, missing/changed duplicate values and wrapped first-page
+headings; proof validation rejects near-match heading words. This extends the
+existing regressions without another runner.
+
 The retained pipeline's regression checks live in `unit/test_pipeline_*.py`
 and `integration/test_pipeline*.py`; reusable fixtures live in
 `helpers/pipeline*.py`. Historical A-D and E1-E4 runners and their exclusive

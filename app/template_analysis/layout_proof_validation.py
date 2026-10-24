@@ -462,9 +462,10 @@ def validate_proof_structure(
     # 4. Expected heading labels must appear across all rendered pages.
     if expected_headings is None:
         expected_headings = _declared_heading_labels(layout_spec)
-    text_lower = measured.text.lower()
     missing_headings = [
-        label for label in expected_headings if label.lower() not in text_lower
+        label for label in expected_headings
+        if not re.search(r"(?<!\w)" + r"\s*".join(re.escape(char) for char in label if not char.isspace()) + r"(?!\w)",
+                         measured.text, flags=re.IGNORECASE)
     ]
     headings_ok = not missing_headings
     checks.append(

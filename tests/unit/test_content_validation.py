@@ -92,3 +92,57 @@ def test_pdf_no_loss_gate_covers_approved_urls_and_bullets(tmp_path: Path, mappe
     failed = validate_generated_content(context, pdf_path=incomplete_pdf, layout_spec=spec)
     assert failed.passed is False
     assert failed.checks[0].missing_items == ["https://example.test/demo"]
+
+
+@pytest.mark.parametrize("second_date", ["2018 - 2020", None, "2018 - 2021"])
+def test_repeated_dates_survive_parallel_labels_and_hyphen_wrap(tmp_path: Path, second_date: str | None) -> None:
+    from tests.helpers.synthetic_pdf import _write_single_page_pdf
+
+    context = build_client_render_context(CandidateProfile(
+        full_name="Candidate Alpha",
+        work_experience=[{"company": "Example Ltd", "title": "Engineer", "start_date": "2018", "end_date": "2020"}],
+        education=[{"institution": "Example University", "degree": "BSc", "start_date": "2018", "end_date": "2020"}],
+    ))
+    lines = [(36, 756, "Candidate Alpha"), (36, 740, "Engineer"),
+             (160, 700, "Example Ltd"), (160, 686, "Engineer"),
+             (350, 672, "2018 -"), (350, 658, "2020"),
+             (160, 630, "Example University"), (160, 616, "BSc")]
+    if second_date:
+        lines.append((350, 602, second_date))
+    # This separate label interleaves with the wrapped date in geometric text order.
+    lines.append((36, 658, "LABEL"))
+    pdf = _write_single_page_pdf(tmp_path / "dates.pdf", [
+        f"BT /F1 10 Tf {x} {y} Td ({text}) Tj ET" for x, y, text in lines
+    ])
+    report = validate_generated_content(context, pdf_path=pdf)
+    assert report.passed is (second_date == "2018 - 2020"), report
+    assert report.checks[0].missing_items == ([] if report.passed else ["2018 - 2020"])
+
+
+@pytest.mark.parametrize("wrapped_target,new_page,passed", [(False, False, True), (False, True, False), (True, True, False)])
+def test_wrapped_headings_keep_first_page_break_validation(tmp_path: Path, wrapped_target: bool, new_page: bool, passed: bool) -> None:
+    from app.generation.content_validation import validate_output_structure
+    from app.template_analysis.schemas import built_in_layout_template_spec, SectionLayoutSpec
+
+    spec = built_in_layout_template_spec()
+    spec.page = spec.page.model_copy(update=PAGE)
+    spec.sections = [SectionLayoutSpec(section_id="summary", source="summary", label="SUMMARY"),
+                     SectionLayoutSpec(section_id="education", source="education", label="EDUCATION")]
+    context = build_client_render_context(CandidateProfile(full_name="Candidate Alpha", professional_summary="Builds services",
+        education=[{"institution": "Example University", "degree": "BSc"}]))
+    html = tmp_path / "profile.html"
+    html.write_text('<section data-section-source="summary" data-section-label="SUMMARY">SUMMARY Builds services</section>'
+                    '<section data-section-source="education" data-section-label="EDUCATION">EDUCATION '
+                    '<span class="education-institution" data-bold="true">Example University</span>BSc</section>')
+    prefix = ["Candidate Alpha", "SUMMARY", "Builds services"]
+    target_lines = prefix + (["EDUCATIO", "N"] if wrapped_target else ["EDUCATION"]) + ["Example University", "BSc"]
+    target = build_text_pdf_pages(tmp_path / "target.pdf", target_lines, line_height_pt=100, **PAGE)
+    education = ["EDUCATIO", "N", "Example University", "BSc"]
+    # Seven 100pt rows fit on page one; four empty rows move education to page two.
+    lines = prefix + ([""] * 4 if new_page else []) + education
+    pdf = build_text_pdf_pages(tmp_path / "output.pdf", lines, line_height_pt=100, **PAGE)
+    report = validate_output_structure(context, html_path=html, pdf_path=pdf, layout_spec=spec, target_pdf_path=target)
+    assert report.passed is passed, report
+    geometry = next(check for check in report.checks if check.section_heading == "page-geometry")
+    assert not geometry.notes, geometry
+    assert bool(geometry.issues) is not passed

@@ -416,7 +416,7 @@ Integration status, October 22, 2026:
   PDFs pass the shared product validators and their HTML matches the CLI bytes.
   Native `built-in-3` API generation now calls this renderer with the saved
   revision's disclosed context projection. Its metadata records the shared A
-  renderer version (`lane-a-product-subset/14`, also used by CLI provenance).
+  renderer version (`lane-a-product-subset/15`, also used by CLI provenance).
   Product-template HTML uses the public page title `Candidate profile`;
   evidence-only diagnostics retain their existing title.
   It keeps the API's content/structure reports and exact final-output identities;
@@ -545,6 +545,18 @@ not human output acceptance. Legacy explicit label input still validates both
 checksums. Geometry or substring matches alone cannot authorize arbitrary
 target text; template and exact-output acceptance remain separate gates.
 Source evidence and candidate values retain separate ownership.
+
+Renderer `lane-a-product-subset/15` constrains rail labels to their own grid
+cell and permits word reflow instead of overflow into candidate content.
+Single-column PDF heading anchors reconstruct wrapped label characters from the
+PDF text flow, then use actual page/top coordinates for section order. Labels
+wider than their declared rail remain invalid anchors. Flattened text offsets
+remain diagnostic evidence, not the ordering decision. Typography and rule
+geometry keep their existing independent checks. Independent product content
+checks use PDF text flow and normalize whitespace around retained hyphens;
+source-value multiplicity remains mandatory. Proof heading presence and first-page
+break comparison recognize wrapped label characters without skipping missing
+headings or genuinely different page breaks.
 
 Review findings, typed measurements, attribution, and repairs are version-bound.
 Entry-spacing binding follows the declared parent chain from entry/list regions

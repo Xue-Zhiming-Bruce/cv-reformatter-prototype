@@ -183,9 +183,20 @@ Legacy profile-approval names remain compatibility fields only.
       repeat-export determinism is diagnostic. Gate policy advances agentic
       identity to version 4, requiring fresh proofs. Full offline validation:
       767 passed, 35 skipped; reverting trial dispatch and API diagnostic policy
-      makes the new regressions fail for the intended reasons. No new external
-      model calls were made. Default strategy, provider routes and system prompt
-      bytes remain unchanged. General live discovery,
+      makes the new regressions fail for the intended reasons. Follow-up live
+      verification now exercises unresolved attribution through a real 360pt →
+      92pt repair (41.3pt gap error → 0; seven HTTP requests) and all three API
+      proofs plus a saved-revision preview (23 requests). Two earlier API
+      failures exposed rail-label overflow and PDF text-flow/line-wrap false
+      positives. Renderer /15 constrains labels and verifies physical heading
+      order; independent content/proof checks retain source multiplicity and
+      real pagination failures while accepting safe wrapping. All 50 requests
+      across attempted runs and reviewable outcomes remain in the canonical
+      local pipeline directory. Final live checks pass (2 passed), as does the
+      full offline backend suite (780 passed, 35 skipped). Regression controls
+      still reject missing/changed repeated dates, absent/near-match headings,
+      overflowing rails and incorrect first-page breaks. Default strategy,
+      provider routes and system prompt bytes remain unchanged. General live discovery,
       fidelity acceptance and asynchronous execution remain open.
 - [ ] Prune redundant orchestration, reports, and tests once their responsibility
       has a single verified owner.

@@ -209,15 +209,20 @@ def test_expected_page_count_mismatch_fails() -> None:
     )
 
 
-def test_missing_headings_fail() -> None:
-    pages = [_page(1, text="SYNTHETIC_CANDIDATE_NAME only")]
+@pytest.mark.parametrize("text,passed", [
+    ("SYNTHETIC_CANDIDATE_NAME only", False),
+    ("Skills Work\nExperien\nce", True),
+    ("Skills Work Experiences", False),
+])
+def test_missing_headings_fail(text: str, passed: bool) -> None:
+    pages = [_page(1, text=text)]
     result = validate_proof_structure(
         layout_spec=_spec(),
         measurements=_measurements(pages),
         expected_headings=["Skills", "Work Experience"],
     )
-    assert result.passed is False
-    assert any(check.name == "headings_present" and not check.passed for check in result.checks)
+    assert result.passed is passed, result
+    assert next(check for check in result.checks if check.name == "headings_present").passed is passed
 
 
 def test_default_headings_derive_from_layout_spec() -> None:

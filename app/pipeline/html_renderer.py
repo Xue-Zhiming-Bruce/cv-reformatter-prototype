@@ -13,7 +13,7 @@ from app.template_analysis.schemas import LayoutTemplateSpec
 from app.generation.html_renderer import _inline_separator
 
 # Bump when product compilation, HTML or bundled font behavior changes.
-RENDERER_VERSION = "lane-a-product-subset/14"
+RENDERER_VERSION = "lane-a-product-subset/15"
 
 
 def render_layout_template(
@@ -433,7 +433,7 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                     f"grid-template-columns:{_pt(section_plan.rail_label_width_pt)} 1fr;"
                     f'{gap}column-gap:12pt;">'
                 )
-                parts.append(f'      <div class="c2-rail-label" style="{align}">')
+                parts.append(f'      <div class="c2-rail-label" style="min-width:0;overflow-wrap:anywhere;{align}">')
             if not (section_plan.candidate_only and section_plan.source_heading is None):
                 # Headingless appended sections embed their heading in the content
                 # line itself (e.g. D's "SUMMARY — ..."); never invent an h2 label.

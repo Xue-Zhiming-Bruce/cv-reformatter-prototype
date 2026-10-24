@@ -111,25 +111,30 @@ def test_inline_skills_reject_unstructured_legacy_group_children() -> None:
         render_layout_template(spec, candidate)
 
 
-def test_rail_heading_and_content_occupy_separate_pdf_columns(tmp_path: Path) -> None:
+@pytest.mark.parametrize("label,width", [("SUMMARY", 90), ("WORK EXPERIENCE", 62)])
+def test_rail_heading_and_content_occupy_separate_pdf_columns(tmp_path: Path, label: str, width: int) -> None:
     import pdfplumber
     from app.pipeline.rendering import _export_pinned_html_to_pdf
     from app.pipeline.measurement import pinned_export_environment
     from tests.helpers.pipeline import synthetic_pipeline_candidate
 
-    state = compile_synthetic(["SUMMARY"])
-    plan = compile_render_plan(state, synthetic_pipeline_candidate("Candidate Alpha"))
+    state = compile_synthetic([label])
+    candidate = synthetic_pipeline_candidate("Candidate Alpha") if label == "SUMMARY" else rich_candidate(include_unmatched=False)
+    plan = compile_render_plan(state, candidate)
     plan.sections[0] = plan.sections[0].model_copy(update={
-        "rail_heading": True, "rail_label_width_pt": 90.0, "rail_label_align": "right",
+        "rail_heading": True, "rail_label_width_pt": float(width), "rail_label_align": "right",
         "heading_gap_above_pt": 80.0,
     })
     html_path, pdf_path = tmp_path / "rail.html", tmp_path / "rail.pdf"
     html_path.write_text(render_html(state, plan))
     _export_pinned_html_to_pdf(html_path, pdf_path, pinned_export_environment({}))
     with pdfplumber.open(pdf_path) as document:
-        words = document.pages[0].extract_words()
-    heading = next(word for word in words if word["text"] == "SUMMARY")
-    content = next(word for word in words if word["text"] == "Builds")
+        page = document.pages[0]
+        words = page.extract_words()
+        pattern = r"\s*".join(re.escape(char) for char in label if not char.isspace())
+        heading = page.search(pattern, use_text_flow=True)[0]
+    content = next(word for word in words if word["text"] == ("Builds" if label == "SUMMARY" else "CANDCORP"))
+    assert heading["x1"] <= plan.page.margin_left_pt + width + .75
     assert heading["x1"] < content["x0"]
     assert abs(heading["top"] - content["top"]) < 30
 
@@ -346,27 +351,45 @@ def test_candidate_only_sections_append_after_target_sections_with_source_headin
     assert 'data-overflow-policy="append_after_template_with_source_heading"' in html
 
 
-def test_target_section_order_is_preserved(fake_pdf_text) -> None:
+@pytest.mark.parametrize("mutation", ["none", "wrapped", "overflow", "missing", "visual_reorder"])
+def test_target_section_order_is_preserved(tmp_path: Path, mutation: str) -> None:
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+
     labels = ["SUMMARY", "TECHNICAL SKILLS", "WORK EXPERIENCE", "EDUCATION"]
     state, plan = plan_for(labels, include_unmatched=False)
-    assert [section.label for section in plan.sections if not section.empty] == labels
+    if mutation in {"wrapped", "overflow"}:
+        plan.sections = [section.model_copy(update={"rail_heading": True, "rail_label_width_pt": 62.0}) for section in plan.sections]
     html = render_html(state, plan)
-    h2_sequence = re.findall(r"<h2[^>]*>([^<]*)</h2>", html)
-    assert h2_sequence == labels
-    fake_pdf_text(" ".join(labels))
-    gate = structure_gate(plan, state, html, Path("unused.pdf"))
-    assert gate["section_order_matches_state"] is True
+    assert re.findall(r"<h2[^>]*>([^<]*)</h2>", html) == labels
+    rendered_html = html
+    if mutation == "overflow":
+        rendered_html = html.replace('class="c2-rail-label" style="min-width:0;overflow-wrap:anywhere;',
+                                     'class="c2-rail-label" style="min-width:0;')
+    elif mutation == "missing":
+        rendered_html = html.replace(">WORK EXPERIENCE<", ">REMOVED<")
+    elif mutation == "visual_reorder":
+        rendered_html = html.replace("</style>", '[data-node-id="section.01"] { transform:translateY(300pt); }</style>')
+    html_path, pdf_path = tmp_path / "order.html", tmp_path / "order.pdf"
+    html_path.write_text(rendered_html)
+    export_html_to_pdf(html_path, pdf_path)
+    # Original HTML cannot excuse missing or displaced headings in the actual PDF.
+    gate = structure_gate(plan, state, html, pdf_path)
+    assert gate["section_order_matches_state"] is (mutation in {"none", "wrapped"}), gate
     assert gate["expected_section_order"] == labels
 
 
-def test_body_nodes_compile_without_absolute_y_positioning(fake_pdf_text) -> None:
+def test_body_nodes_compile_without_absolute_y_positioning(tmp_path: Path) -> None:
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+
     state, plan = plan_for()
     html = render_html(state, plan)
     assert not re.search(r"position\s*:\s*(absolute|fixed|relative)", html)
     # And the gate flags it if introduced.
     poisoned = html.replace(".c2-section { }", ".c2-section { position: absolute; }")
-    fake_pdf_text(" ")
-    gate = structure_gate(plan, state, poisoned, Path("unused.pdf"))
+    html_path, pdf_path = tmp_path / "safe.html", tmp_path / "safe.pdf"
+    html_path.write_text(html)
+    export_html_to_pdf(html_path, pdf_path)
+    gate = structure_gate(plan, state, poisoned, pdf_path)
     assert gate["body_absolute_or_fixed_positioning"] is True
     assert gate["passed"] is False
 

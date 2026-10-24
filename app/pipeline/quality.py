@@ -345,6 +345,14 @@ def structure_gate(
             order_ok = False
             break
         cursor = index
+    heading_positions: dict[str, tuple[int, float]] = {}
+    if not plan.body_columns:
+        visible = {section.node_id: section.label for section in [*plan.sections, *plan.appended_sections]
+                   if not section.empty and not (section.candidate_only and section.source_heading is None)}
+        heading_positions = _rendered_heading_positions(pdf, visible, {}, plan)
+        sequence = [heading_positions.get(node_id) for node_id in visible]
+        order_ok = all(position is not None for position in sequence) and all(
+            before < after for before, after in zip(sequence, sequence[1:]))
     if plan.body_columns:
         ordered = [section for group in section_groups(plan)
                    for column in (plan.body_columns if group[0].column_slot else [None])
@@ -385,6 +393,7 @@ def structure_gate(
         "passed": passed,
         "expected_section_order": expected_labels,
         "pdf_label_positions": positions,
+        "pdf_heading_positions": heading_positions,
         "section_order_matches_state": order_ok,
         "body_absolute_or_fixed_positioning": forbidden_positioning,
         "target_images_or_backgrounds": forbidden_images,
@@ -630,18 +639,22 @@ def _rendered_heading_positions(
                 floor = latest
             return positions
         pending: dict[str, list[str]] = {}
+        sections = {section.node_id: section for section in [*plan.sections, *plan.appended_sections]}
         for node_id, label in labels.items():
             if label:
                 pending.setdefault(_norm(label), []).append(node_id)
         for page_index, page in enumerate(document.pages, 1):
-            lines: dict[float, list[str]] = {}
-            for word in page.extract_words():
-                top = round(float(word["top"]), 1)
-                lines.setdefault(top, []).append(word["text"])
-            for top in sorted(lines):
-                line_text = _norm(" ".join(lines[top]))
-                if pending.get(line_text):
-                    positions[pending[line_text].pop(0)] = (page_index, top)
+            for label, node_ids in pending.items():
+                # PDF flow keeps rail-label characters together across visual line breaks.
+                pattern = r"(?<!\w)" + r"\s*".join(re.escape(char) for char in label if not char.isspace()) + r"(?!\w)"
+                hits = sorted(page.search(pattern, case=False, use_text_flow=True) or [], key=lambda hit: hit["top"])
+                for hit in hits:
+                    if not node_ids:
+                        break
+                    section = sections[node_ids[0]]
+                    if section.rail_heading and hit["x1"] - hit["x0"] > section.rail_label_width_pt + .75:
+                        continue  # A heading overflowing its rail is not a valid structural anchor.
+                    positions[node_ids.pop(0)] = (page_index, hit["top"])
     return positions
 
 def _entry_elements(

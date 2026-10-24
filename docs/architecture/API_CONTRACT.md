@@ -194,7 +194,7 @@ URLs, descriptions or entry structure. Retained-renderer output that loses
 those facts now fails the existing generation gates.
 
 No-target generation uses native `built-in-3` through the shared deterministic
-A template compiler/binder/HTML renderer (`lane-a-product-subset/14`). It projects
+A template compiler/binder/HTML renderer (`lane-a-product-subset/15`). It projects
 the saved revision's disclosed `ClientFacingRenderContext`, without a synthetic
 target PDF, provider call or diagnostic CLI run. The existing content/structure
 gates, preview/final-acceptance identities and immutable source files remain in
@@ -313,7 +313,7 @@ matching implementation, approval record and original checksum-verified proof
 files; no automatic fallback grants an older approval. Generation metadata also
 records `renderer_version`. Standard uploaded-target rendering uses
 `product-html/1`; agentic mode uses
-`agentic-a/4+lane-a-product-subset/14+<configuration digest>`. Neither mode
+`agentic-a/4+lane-a-product-subset/15+<configuration digest>`. Neither mode
 changes the six identity fields used for final-output acceptance.
 
 ### Generated-profile artifact and draft preservation

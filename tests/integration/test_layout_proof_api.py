@@ -149,7 +149,8 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
         assert "Jane Candidate" not in json.dumps(payload)
         calls.append("builder")
         return service.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[
-            service.E5LaneASection(section_node_id="section.01", heading_in_rail=True, rail_label_width_pt=80),
+            service.E5LaneASection(section_node_id=f"section.{index:02d}", heading_in_rail=True, rail_label_width_pt=62)
+            for index in range(1, len(spec.sections) + 1)
         ])
 
     def reviewer(images, **kwargs):

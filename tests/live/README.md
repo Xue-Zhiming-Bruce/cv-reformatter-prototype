@@ -30,5 +30,7 @@ improvement greater than 5pt, unchanged candidate/template inputs and passing
 product gates. Model failure to identify or repair the fault fails the smoke;
 it must not be reported as success or grant final-output acceptance. The run
 is capped at 12 HTTP reservations, 24 tools and two repair rounds, with the same
-request envelope as the API smoke. Retain each attempted run under a unique
+request envelope as the API smoke. Attribution may remain unresolved: bounded A
+trials do not require a confirmed cause, but selection still requires independently
+measured improvement and all output gates. Retain each attempted run under a unique
 `--basetemp` and report failures alongside any successful outcome.

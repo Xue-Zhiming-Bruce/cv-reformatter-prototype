@@ -47,9 +47,7 @@ def validate_generated_content(
 
     expected = _expected_items(context, layout_spec)
     checks = [
-        _check("pdf", _read_pdf_text(Path(pdf_path), columnar=bool(layout_spec and (
-            layout_spec.columns.count == 2 or any(section.column_count == 2 or section.layout == "two_column_bullets"
-                                                  for section in layout_spec.sections)))), expected),
+        _check("pdf", _read_pdf_text(Path(pdf_path)), expected),
     ]
     return ContentValidationReport(
         passed=all(check.passed for check in checks),
@@ -151,13 +149,13 @@ def _check(
     )
 
 
-def _read_pdf_text(path: Path, *, columnar: bool = False) -> str:
+def _read_pdf_text(path: Path) -> str:
     with pdfplumber.open(path) as pdf:
-        return "\n".join((page.extract_text(use_text_flow=True) if columnar else page.extract_text()) or "" for page in pdf.pages)
+        return "\n".join(page.extract_text(use_text_flow=True) or "" for page in pdf.pages)
 
 
 def _normalize(value: str) -> str:
-    value = re.sub(r"-[ \t]*\r?\n[ \t]*", "-", value)
+    value = re.sub(r"\s*-\s*", "-", value)
     return re.sub(r"\s+", " ", value).strip().casefold()
 
 
@@ -288,8 +286,8 @@ def _check_pdf_page_geometry(
         generated_break = _last_page_one_heading(pdf.pages[0], layout_spec, rendered_labels)
     if target_pdf_path is not None and target_pdf_path.exists():
         with pdfplumber.open(target_pdf_path) as target_pdf:
-            target_text = _normalize("\n".join(page.extract_text() or "" for page in target_pdf.pages))
-            comparable = all(_normalize(label) in target_text for label in rendered_labels)
+            target_text = "\n".join(page.extract_text(use_text_flow=True) or "" for page in target_pdf.pages)
+            comparable = all(re.search(_heading_pattern(label), target_text, re.IGNORECASE) for label in rendered_labels)
             target_break = _last_page_one_heading(target_pdf.pages[0], layout_spec, rendered_labels)
         if comparable:
             if target_break and generated_break != target_break:
@@ -309,18 +307,21 @@ def _check_pdf_page_geometry(
     )
 
 
+def _heading_pattern(label: str) -> str:
+    return r"(?<!\w)" + r"\s*".join(re.escape(char) for char in label if not char.isspace()) + r"(?!\w)"
+
+
 def _last_page_one_heading(
     page: Any,
     layout_spec: LayoutTemplateSpec,
     rendered_labels: set[str],
 ) -> str | None:
-    text = _normalize(page.extract_text() or "")
+    text = page.extract_text(use_text_flow=True) or ""
     matches = [
-        (text.rfind(_normalize(section.label)), section.label)
+        (match.start(), section.label)
         for section in layout_spec.sections
-        if section.show_heading
-        and section.label in rendered_labels
-        and _normalize(section.label) in text
+        if section.show_heading and section.label in rendered_labels
+        for match in re.finditer(_heading_pattern(section.label), text, re.IGNORECASE)
     ]
     return max(matches, default=(-1, None))[1]
 
