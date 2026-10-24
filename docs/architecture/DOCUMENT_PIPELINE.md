@@ -2,7 +2,7 @@
 
 Status: `Active contract`
 
-Last reviewed: October 25, 2026 (agentic measurement and attribution guards)
+Last reviewed: October 25, 2026 (bounded layout trials and output-gate separation)
 
 This document defines the provider-neutral boundaries of the CV Reformatter
 backend. The [Product Specification](../product/PRODUCT_SPEC.md) remains the
@@ -556,14 +556,30 @@ or the target yields more than two matching rows, this bounded two-head metric
 returns `ambiguous`; it cannot select the first two matching rows as proof of
 semantic identity. Unsupported role styling stays unmeasured. Measurement and
 attribution retain the same shell-issued request ID even when binding fails.
-Valid atomic findings with unsupported metrics remain open as unmeasured
-warnings; they cannot trigger repair or consume live causal-attribution calls.
+Reviewer findings remain bound to real catalog regions/pages and exact versions;
+compound wording or mentions of other sections do not silently discard them.
+Compound dimensions stay unmeasured instead of treating one scalar as proof
+about every stated property. A model dismissal cannot veto a measured mismatch.
+Findings with unsupported metrics remain open and unmeasured, without paid causal
+attribution for known unsupported metrics. In live A, findings in section-owned
+regions may trigger a bounded typed layout trial despite uncertain measurement
+or attribution. Confirmed candidate-binding contradictions and confirmed
+within-tolerance measurements do not authorize such trials. B and offline
+scheduling retain their existing ownership policy.
 Attribution receives the exact validated proposal and content-free consumed row
 structure for the current render, including primitive effects and whether entry
 metadata placement is actually consumed. Model claims of renderer/plan limits
 without independent shell proof remain unresolved hypotheses for review.
-The agentic adapter identity is now `agentic-a/3`; this measurement/context
-revision requires fresh proofs while preserving the existing system prompt bytes.
+Measured repairs are selected only after deterministic improvement, mandatory
+safety checks and accepted-region rechecks. Unmeasured, changed trials passing
+all A output gates, candidate lineage and accepted-region checks remain
+`awaiting_owner_review`, outside active/BEST/probe selection. Their PDF/HTML
+links appear in the existing owner review index and their version IDs in
+`summary.pending_layout_trials`. Unchanged or unsafe trials roll back. They
+remain local and are not recorded as visually reviewed or automatically improved.
+Existing round/request limits and action deduplication also bound trials.
+The agentic adapter identity is now `agentic-a/4`; the gate-policy revision
+requires fresh proofs while preserving the existing system prompt bytes.
 The shell decides promotion and rollback, preserves valid prior versions, and
 records rejected attempts. A quarantined repair base is not automatically an
 active or best output. Lineage checks bind candidate leaves to their actual
@@ -577,9 +593,12 @@ or ambiguous measurements, and keeps the supplied template authoritative.
 `GENERATION_STRATEGY=agentic` applies to measured uploaded-target PDFs in both
 proof and candidate rendering. Native no-target output stays deterministic.
 Default `standard` retains the prior uploaded-target renderer. The adapter
-requires selected BEST output to pass every gate and product validation, a
-successful complete Reviewer pass on its PDF fingerprint, and stable source
-and execution identity before staging the public preview files. Continuation
+requires selected BEST output to pass content accounting, privacy, content,
+section order, blank-page and template-consumption gates plus independent product
+validation. Repeat-render determinism remains a visible diagnostic, not an API
+publication blocker. The adapter records this classification in
+`agentic_generation.json.gate_validation`. It also requires a successful complete
+Reviewer pass on its PDF fingerprint, and stable source and execution identity before staging the public preview files. Continuation
 pages use the last target page as an explicitly identified style reference.
 Reviewer failure cannot publish a render-only result. Open visual findings are
 reported for human review; they are not automatic output approval.

@@ -4,7 +4,7 @@ Status: `Active contract`
 
 Owner: Backend
 
-Last reviewed: October 25, 2026 (agentic evidence and warning handling; saved-revision workflow unchanged)
+Last reviewed: October 25, 2026 (bounded layout trials and mandatory output checks)
 
 This document records the current MVP-compatible backend interface used by the
 frontend. It is not a complete versioned OpenAPI replacement; the FastAPI
@@ -236,10 +236,19 @@ Zero repair rounds still performs Builder and Reviewer calls.
 The model may propose only existing A primitives: heading rails/alignment and
 title-row entry metadata. Fixed product entry rows retain their declared
 metadata position; the latter primitive does not rearrange those rows.
-It cannot rewrite candidate facts or the stored template. Open findings remain visible;
-valid atomic findings with unsupported metrics remain unmeasured warnings in the
-run state and open-finding IDs. Ambiguous entry-role matches cannot authorize a
-repair. Unproven model claims about renderer limitations remain unresolved.
+It cannot rewrite candidate facts or the stored template. Open findings remain
+visible; unsupported metrics and ambiguous entry-role matches remain unmeasured.
+Owner direction, October 25, 2026: section-owned visual findings can initiate
+bounded A layout trials without confirmed attribution or measurement. This does
+not confirm the cause or measurement. Automatic selection requires measured
+improvement and accepted-region rechecks. Safe, changed trials without comparable
+measurements stay local as `awaiting_owner_review`, excluded from active/BEST
+selection; `summary.pending_layout_trials` and the existing owner review index
+identify them for human comparison. Unsafe or unchanged trials roll back.
+Confirmed within-tolerance measurements and proven candidate-binding defects do
+not authorize speculative layout repair. Unproven renderer-limit claims remain
+unresolved hypotheses, without preventing safe trials. Compound wording is
+retained; unknown catalog regions/pages still fail validation.
 Every generated page, including continuation pages, receives
 Reviewer review before its PDF fingerprint is recorded as reviewed.
 
@@ -247,10 +256,14 @@ The same layout-proof and `/api/generate` endpoints use the configured
 renderer. Strategy, prompt, model, provider-route or budget changes require
 fresh short/medium/long proofs and explicit proof approval; switching settings
 does not reuse `product-html/1` approval. Each agentic proof attempt has a unique
-directory. Publication requires the selected BEST version, all deterministic
-gates, product content/structure validation, stable source/configuration and
+directory. Publication requires the selected BEST version, content accounting,
+privacy, content, section order, no-blank-page and template-consumption gates,
+product content/structure validation, stable source/configuration and
 successful Reviewer review of that exact PDF. A failed run returns HTTP 500
 without replacing prior preview HTML/PDF; there is no standard-renderer fallback.
+Repeated-render variability is diagnostic and does not alone block publication;
+the report's `gate_validation` records mandatory gates, blocking failures and
+warnings. All actual selected-file validation remains mandatory.
 The existing artifact download route exposes `agentic_generation.json`, also
 listed in `debug_artifacts.agentic_generation`; it records the selected version,
 budget, open findings and artifact-relative run directory. Detailed run state
@@ -300,7 +313,7 @@ matching implementation, approval record and original checksum-verified proof
 files; no automatic fallback grants an older approval. Generation metadata also
 records `renderer_version`. Standard uploaded-target rendering uses
 `product-html/1`; agentic mode uses
-`agentic-a/3+lane-a-product-subset/14+<configuration digest>`. Neither mode
+`agentic-a/4+lane-a-product-subset/14+<configuration digest>`. Neither mode
 changes the six identity fields used for final-output acceptance.
 
 ### Generated-profile artifact and draft preservation

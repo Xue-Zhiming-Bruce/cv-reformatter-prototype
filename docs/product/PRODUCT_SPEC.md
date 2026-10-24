@@ -4,7 +4,7 @@ Status: `Active product contract`
 
 Owner: Product and backend
 
-Last reviewed: October 21, 2026 (owner-approved preview and final-acceptance workflow)
+Last reviewed: October 25, 2026 (owner-approved bounded layout trials and output-gate separation)
 
 This document defines what CV Reformatter must do and the product boundaries
 that implementations must preserve. It does not serve as an engineering
@@ -283,6 +283,17 @@ Visual similarity cannot substitute for content or privacy validation. AI may
 assist with semantic extraction, ambiguous-region labeling, and visual
 diagnosis, but it must not supply exact geometry, approve candidate facts, or
 replace recruiter approval.
+
+Owner decision, October 25, 2026: uncertain visual diagnosis or unsupported
+measurement does not prohibit a bounded layout trial in the existing controlled
+renderer. Candidate facts, disclosure, privacy, valid structure and exact-output
+identity remain mandatory. Automatic selection of a repair still requires
+verified improvement and preservation of previously verified regions. A safe
+trial without comparable measurements remains a separate local artifact for
+human comparison; it cannot become the selected preview or be claimed improved.
+Repeated-export variability is diagnostic; the actual selected HTML/PDF must
+still pass content, privacy, structure and template-consumption checks and
+complete visual review before API publication. Final acceptance remains human.
 
 ## Accepted Baseline
 

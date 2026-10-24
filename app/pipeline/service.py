@@ -1186,6 +1186,12 @@ def _e5_hard_gate_record(
         "details": details,
     }
 
+# Presentation consumption remains mandatory; repeat-render identity is diagnostic.
+LANE_A_OUTPUT_GATES = (
+    "candidate_content_accounting", "no_target_candidate_facts", "content_gate",
+    "section_order_matches_state", "no_blank_page", "content_shapes_match_evidence",
+)
+
 def _e5_blocking_gates(lane: str) -> tuple[str, ...]:
     """The experiment's minimal safety boundary; all other gates are warnings."""
     del lane
@@ -1461,19 +1467,25 @@ def _next_e5_repair_finding(
     measured: dict[str, tuple[MeasurementResult, MeasurementRequest]],
     attributions: list[AttributionRecord],
     fingerprints: list[str],
+    *,
+    layout_trial_regions: set[str] | None = None,
 ) -> tuple[
     tuple[DefectFinding, MeasurementResult, MeasurementRequest, AttributionRecord, str] | None,
     bool,
 ]:
-    """Return the first measured, material, not-yet-executed action.
+    """Prefer measured Builder repairs; explicitly eligible A regions may try hypotheses.
 
+    Uncertain trials retain their original attribution and cannot establish improvement.
     The boolean says repairable findings existed but every fingerprint was
     already executed, so the lane must stop instead of burning another round.
     """
     repairable_seen = False
+    trial = None
     for finding in actionable:
         result, bound = measured[finding.finding_id]
-        if result.status != "confirmed" or abs(result.delta_pt or 0.0) <= E2_IMPROVEMENT_TOLERANCE_PT:
+        if result.status == "falsified" or (
+            result.status == "confirmed" and abs(result.delta_pt or 0.0) <= E2_IMPROVEMENT_TOLERANCE_PT
+        ):
             continue
         attribution = next(
             (
@@ -1482,12 +1494,21 @@ def _next_e5_repair_finding(
                 if item.finding_id == finding.finding_id
                 and item.render_version == finding.render_version
                 and item.measurement_request_id == bound.request_id
-                and item.hypothesis_status == "confirmed"
-                and item.repair_owner == "builder"
             ),
             None,
         )
         if attribution is None:
+            continue
+        proven_builder = (
+            result.status == "confirmed"
+            and attribution.hypothesis_status == "confirmed"
+            and attribution.repair_owner == "builder"
+        )
+        allow_trial = (
+            finding.region in (layout_trial_regions or set())
+            and not (attribution.attribution == "candidate_binding" and attribution.hypothesis_status == "confirmed")
+        )
+        if not proven_builder and not allow_trial:
             continue
         repairable_seen = True
         # The repair BASE version is part of the action identity (owner work
@@ -1499,10 +1520,16 @@ def _next_e5_repair_finding(
         # repair base) can never collide.
         fingerprint = (
             f"{finding.render_version}:{finding.region}:"
-            f"{finding.suspected_dimension}:{round(result.delta_pt or 0, 3)}"
+            f"{finding.suspected_dimension}:{round(result.delta_pt, 3) if result.delta_pt is not None else result.status}"
         )
         if fingerprint not in fingerprints:
-            return (finding, result, bound, attribution, fingerprint), False
+            item = (finding, result, bound, attribution, fingerprint)
+            if proven_builder:
+                return item, False
+            if trial is None:
+                trial = item
+    if trial is not None:
+        return trial, False
     return None, repairable_seen
 
 def _e5_attribution_batches(
@@ -2370,13 +2397,7 @@ def _validate_reviewer_regions(
     pages = page if isinstance(page, set) else {page}
     valid = []
     for finding in findings:
-        dimension = finding.suspected_dimension.casefold()
-        observation = finding.observation.casefold()
         if finding.page not in pages or finding.region not in region_ids:
-            continue
-        if re.search(r"\b(and|plus)\b|[,/]", dimension):
-            continue
-        if "about me" in observation and "contact" in observation:
             continue
         valid.append(finding)
     return valid
@@ -3461,6 +3482,7 @@ def run_e5(
         fingerprints: list[str] = []
         resolved_measurements: dict[str, tuple[MeasurementRequest, MeasurementResult]] = {}
         rolled_back_versions: set[str] = set()
+        pending_layout_trials: set[str] = set()
         ledger = DefectLedger()
         pages_reviewed: set[int] = set()
         reviewed_render_fingerprints: set[str] = set()
@@ -3531,8 +3553,9 @@ def run_e5(
             # latest attempt gets DIAGNOSTIC probes only — never promotion
             # evidence. A QUARANTINED repair base is excluded exactly like a
             # rolled-back attempt: it was never promoted and may never be
-            # selected as a render, a best, or a probe basis.
-            excluded_versions = set(rolled_back_versions)
+            # selected as a render, a best, or a probe basis. Unmeasured
+            # layout trials likewise require human comparison before selection.
+            excluded_versions = rolled_back_versions | pending_layout_trials
             if quarantine_index is not None:
                 excluded_versions.add(versions[quarantine_index].version_id)
             # Best-valid selection FIRST: the content-shape probes must run
@@ -3735,6 +3758,7 @@ def run_e5(
                         else None
                     ),
                     "probe_mode": probe_report.get("_probe_mode"),
+                    "pending_layout_trials": sorted(pending_layout_trials),
                     "promoted_versions": len([v for v in versions if v.promoted]),
                     "confirmed_measurements": len([r for r in measurement_results if r.status == "confirmed"]),
                     "unbound_measurements": len([r for r in measurement_results if r.status == "evidence_missing"]),
@@ -4045,12 +4069,15 @@ def run_e5(
                 input={"render_version": render_version, "finding": finding.finding_id},
             )
             request = finding.requested_measurement.model_copy(update={"request_id": request_id})
-            if request.metric == "role_gap" and not any(
-                word in finding.suspected_dimension.casefold() for word in ("gap", "spacing", "role")
-            ):
+            dimension = finding.suspected_dimension.casefold()
+            compound = bool(re.search(r"\b(and|plus)\b", dimension))
+            if compound or (request.metric == "role_gap" and not any(
+                word in dimension for word in ("gap", "spacing", "role")
+            )):
                 result = MeasurementResult(
                     request_id=request_id, status="not_measurable",
-                    reason=f"dimension {finding.suspected_dimension!r} is not supported by the role_gap metric",
+                    reason=("compound dimensions need separate measurements" if compound else
+                            f"dimension {finding.suspected_dimension!r} is not supported by the role_gap metric"),
                     method="reviewer_metric_binding/1",
                 )
                 trace.add(agent="measure_controller", phase="measure", action="binding_unresolved",
@@ -4348,6 +4375,10 @@ def run_e5(
             # Offline previews execute the supplied template without a model loop.
             return _lane_terminal(lane)
 
+        layout_trial_regions = {
+            node.node_id for node in state.nodes
+            if live and lane == "a" and _owning_section_id(state, node.node_id) is not None
+        }
         # --- 4. See -> Measure -> Attribute -> Repair -> Re-render loop -----
         # Scheduling state (repair-starvation fix, 2026-09-21 owner work order):
         # a render fingerprint is fully reviewed AT MOST ONCE; each round's
@@ -4653,7 +4684,8 @@ def run_e5(
                     if finding.render_version in repair_scope_versions
                 }
                 pre_repair, _pre_repeated = _next_e5_repair_finding(
-                    pre_scan_candidates, pre_scan_measured, attributions, fingerprints
+                    pre_scan_candidates, pre_scan_measured, attributions, fingerprints,
+                    layout_trial_regions=layout_trial_regions,
                 )
                 skip_attribution = pre_repair is not None
 
@@ -4801,8 +4833,8 @@ def run_e5(
                 # EVERY defect bound to the ACTIVE version — this round's and
                 # previously attributed ones — so the Builder is called as
                 # soon as ONE confirmed, attributed, builder-owned defect
-                # exists. It never waits for the whole open-findings ledger,
-                # and never waits for another full review.
+                # exists. Live A may also try a bounded layout hypothesis;
+                # improvement is established only after rendering and rechecks.
                 scan_candidates = [
                     finding
                     for finding, _result, _bound in measured_by_finding.values()
@@ -4814,7 +4846,8 @@ def run_e5(
                     if finding.render_version in repair_scope_versions
                 }
                 repair_finding, all_repairable_repeated = _next_e5_repair_finding(
-                    scan_candidates, scan_measured, attributions, fingerprints
+                    scan_candidates, scan_measured, attributions, fingerprints,
+                    layout_trial_regions=layout_trial_regions,
                 )
                 if repair_finding is None and all_repairable_repeated:
                     escalate("stalled_no_new_action")
@@ -4907,6 +4940,12 @@ def run_e5(
                     ),
                     compact=lane == "b",
                 )
+                if lane == "a":
+                    repair_builder_evidence["repair_policy"] = {
+                        "mode": "bounded_layout_trial",
+                        "instruction": "Attribution is a hypothesis, not permission. Try only existing typed layout primitives; preserve candidate facts. Unmeasured changes require human comparison and cannot be automatically selected.",
+                        "compiled_layout": _lane_a_attribution_layout(current_plan, state, [finding]),
+                    }
                 (lane_dir / f"builder_evidence_round_{round_no:02d}.json").write_text(
                     json.dumps(
                         repair_builder_evidence,
@@ -5112,6 +5151,26 @@ def run_e5(
                 measurement_results.append(repeat_result)
                 improved, improvement_reason = _measurement_improvement(result, repeat_result)
                 if not improved:
+                    unmeasured_trial = (
+                        lane == "a" and result.status in {"ambiguous", "evidence_missing", "not_measurable"}
+                        and all(candidate_gates.get(name) is True for name in LANE_A_OUTPUT_GATES)
+                        and not binding_lineage_by_version[candidate_version.version_id].proofs
+                        and candidate_version.html_sha256 != repair_base_version.html_sha256
+                    )
+                    if lane == "a" and result.status != "confirmed":
+                        failed = [name for name in LANE_A_OUTPUT_GATES if candidate_gates.get(name) is not True]
+                        if failed:
+                            improvement_reason = f"unmeasured trial failed output gate(s): {failed}"
+                    if unmeasured_trial:
+                        holds, rechecks = accepted_regions_hold(candidate_pdf)
+                        if holds:
+                            pending_layout_trials.add(candidate_version.version_id)
+                            update_builder_candidate(candidate_audit_index, outcome="awaiting_owner_review",
+                                reason="Unmeasured layout trial passed output gates and accepted-region checks; not automatically selected or claimed improved")
+                            trace.add(agent="shell", phase="repair", action="awaiting_owner_review",
+                                output={"version": candidate_version.version_id, "rechecks": rechecks}, persist_output=True)
+                            continue
+                        improvement_reason = "unmeasured trial failed accepted-region recheck"
                     rolled_back_versions.add(candidate_version.version_id)
                     update_builder_candidate(
                         candidate_audit_index,
@@ -5872,6 +5931,13 @@ Recognized: {approved_count} · proposed (unrecognized): {proposed_count}
         path for path in package.rglob("*")
         if path.is_file() and path.name != "missing_page.png"
     )
+    pending_trials = [
+        f"- Lane {lane_id.upper()} `{version}`: [trial PDF](../lane_{lane_id}/render_{index}.pdf), "
+        f"[trial HTML](../lane_{lane_id}/render_{index}.html) — unmeasured, not BEST; human comparison required."
+        for lane_id, lane in record.lanes.items()
+        for index, render in enumerate(lane.render_versions, 1)
+        if (version := render.version_id) in lane.summary.get("pending_layout_trials", [])
+    ]
     (package / "REVIEW_INDEX.md").write_text(
         "# Owner review\n\n"
         "Inspect the selected PDFs, every comparison page, and independent gate reports. "
@@ -5881,7 +5947,7 @@ Recognized: {approved_count} · proposed (unrecognized): {proposed_count}
         + "\n".join(
             f"- [{path.relative_to(package).as_posix()}]({path.relative_to(package).as_posix()})"
             for path in review_files
-        ) + "\n",
+        ) + ("\n\n## Layout trials awaiting human comparison\n\n" + "\n".join(pending_trials) if pending_trials else "") + "\n",
         encoding="utf-8",
     )
     for path in sorted(package.rglob("*")):

@@ -182,10 +182,34 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     assert report["selected_version"] and report["summary"]["reviewed_pdf_sha256"]
     assert identity["debug_artifacts"]["agentic_generation"] == str(directory / "agentic_generation.json")
     assert client.get(main._artifact_url(artifact_id, "agentic_generation.json")).status_code == 200
+    # Repeat-export variability is visible without withholding a safe preview.
+    from app.pipeline import quality
+    with monkeypatch.context() as diagnostic:
+        original_stability = quality._line_stability
+        diagnostic.setattr(quality, "_line_stability", lambda *args: {**original_stability(*args), "passed": False})
+        response = client.post("/api/generate", json=request)
+    assert response.status_code == 200, response.text
+    identity = response.json()
+    report = json.loads((directory / "agentic_generation.json").read_text())
+    assert report["gate_validation"]["passed"]
+    assert "deterministic_render" in report["gate_validation"]["diagnostic_warnings"]
+    assert "deterministic_render" not in report["gate_validation"]["blocking_gates"]
     fields = ("profile_revision_id", "profile_sha256", "layout_template_version", "layout_spec_sha256", "html_sha256", "pdf_sha256")
     accepted = client.post(f"/api/artifacts/{artifact_id}/final-acceptance", json={key: identity[key] for key in fields})
     assert accepted.status_code == 200 and accepted.json()["client_ready"], accepted.text
     published = {path: path.read_bytes() for path in (html_path, pdf_path, directory / "agentic_generation.json")}
+
+    # Output correctness still blocks publication, even if the CLI can show diagnostics.
+    for function_name, failed_field in (("content_shape_verification", "passed"),
+                                       ("blank_page_gate", "passed"),
+                                       ("structure_gate", "section_order_matches_state")):
+        with monkeypatch.context() as blocker:
+            original_gate = getattr(quality, function_name)
+            blocker.setattr(quality, function_name,
+                lambda *args, _gate=original_gate, _field=failed_field, **kwargs: {**_gate(*args, **kwargs), _field: False})
+            failed = client.post("/api/generate", json=request)
+        assert failed.status_code == 500, (function_name, failed.text)
+        assert {path: path.read_bytes() for path in published} == published
 
     # Changing the execution contract invalidates proof approval before model calls.
     calls.clear()

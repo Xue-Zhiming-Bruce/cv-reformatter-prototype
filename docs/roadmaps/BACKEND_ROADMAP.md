@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 24, 2026 (optional A agentic API integration; full uploaded-target cutover and B0/B1 gates remain open)
+Last reviewed: October 25, 2026 (bounded A layout trials; uploaded-target cutover and B0/B1 gates remain open)
 
 This is the active engineering roadmap after completion of the MVP and PDF
 demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
@@ -173,6 +173,20 @@ Legacy profile-approval names remain compatibility fields only.
       passes product gates and exact-PDF review. The initial fault and first
       review scope remain explicitly controlled; general live repeatability
       and default whole-page discovery remain unaccepted.
+      October 25 owner direction separates permission to try from proof of
+      improvement. Live A section findings may enter bounded typed layout trials
+      despite unresolved attribution or measurement. Measured improvement and
+      accepted-region checks still control automatic selection; safe unmeasured
+      trials remain local for human comparison and never enter active/BEST.
+      Wording filters no longer drop valid region-bound findings. API publication
+      keeps content/privacy/structure/template checks and exact-PDF review;
+      repeat-export determinism is diagnostic. Gate policy advances agentic
+      identity to version 4, requiring fresh proofs. Full offline validation:
+      767 passed, 35 skipped; reverting trial dispatch and API diagnostic policy
+      makes the new regressions fail for the intended reasons. No new external
+      model calls were made. Default strategy, provider routes and system prompt
+      bytes remain unchanged. General live discovery,
+      fidelity acceptance and asynchronous execution remain open.
 - [ ] Prune redundant orchestration, reports, and tests once their responsibility
       has a single verified owner.
 

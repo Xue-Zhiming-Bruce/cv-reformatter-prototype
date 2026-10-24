@@ -65,7 +65,7 @@ def agentic_renderer_version() -> str:
         )],
     }
     digest = hashlib.sha256(json.dumps(contract, sort_keys=True).encode()).hexdigest()[:16]
-    return f"agentic-a/3+{RENDERER_VERSION}+{digest}"
+    return f"agentic-a/4+{RENDERER_VERSION}+{digest}"
 
 
 def _structure_basis(state: C2LayoutState, normalized: NormalizedLayoutEvidence) -> TargetStructureDraft:
@@ -150,7 +150,10 @@ def render_agentic(
     if service._sha256_file(html_path) != version.html_sha256 or service._sha256_file(pdf_path) != version.pdf_sha256:
         raise AgenticGenerationError("Selected agentic output changed after validation")
     gates = json.loads((run_dir/f"lane_a/hard_gates_{version.version_id}.json").read_text())
-    if not gates["gates"] or not all(gates["gates"].values()):
+    gate_validation = service._e5_hard_gate_record(version.version_id, gates["gates"], gates.get("details", {}),
+        blocking_gates=service.LANE_A_OUTPUT_GATES)
+    gate_validation.pop("details")  # Detailed evidence stays in the owning run directory.
+    if not gate_validation["passed"]:
         raise AgenticGenerationError("Selected agentic output fails required content, privacy, structure or rendering checks")
     content = validate_generated_content(context, pdf_path=pdf_path, layout_spec=layout_spec)
     structure = validate_output_structure(context, html_path=html_path, pdf_path=pdf_path,
@@ -161,7 +164,7 @@ def render_agentic(
         raise AgenticGenerationError("Agentic model, prompt or execution configuration changed during generation")
     report = {"renderer_version": identity, "generation_strategy": "agentic",
         "terminal_state": terminal, "selected_version": version.version_id,
-        "open_findings": lane.open_findings, "budget": record.budget_state,
+        "open_findings": lane.open_findings, "gate_validation": gate_validation, "budget": record.budget_state,
         "summary": lane.summary, "run_directory": run_dir.resolve().relative_to(evidence_dir.resolve()).as_posix(),
         "content_validation": content.model_dump(mode="json"),
         "structure_validation": structure.model_dump(mode="json"), "client_ready": False}

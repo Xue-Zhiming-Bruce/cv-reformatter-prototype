@@ -41,7 +41,12 @@ its scripted initial fault and live-model limitations are documented in
 [`live/README.md`](live/README.md).
 The same integration table covers uniform role/company typography with one or
 two target entries, retained unsupported-dimension warnings, failed-binding
-request-ID continuity, and unverified renderer-limit claims. A real PydanticAI
+request-ID continuity, and unverified renderer-limit claims. Live A cases also cover bounded trials
+with unresolved causes or model dismissals contradicting PDF measurements, safe
+unmeasured candidates retained outside BEST, unsafe/unchanged trial rollback, and compound feedback preserved independently of wording.
+The API regression distinguishes repeat-render diagnostic warnings from output
+content/structure/template blockers and verifies preserved prior previews.
+A real PydanticAI
 call with an offline model response checks the content-free consumed-layout
 payload and unresolved ownership through the actual runner. No live quality
 claim follows from these regressions.

@@ -4202,7 +4202,7 @@ def test_review_scope_open_findings_is_compact_and_complete() -> None:
     assert "message" not in json.dumps(scope).casefold()
 
 
-def test_reviewer_findings_must_bind_one_catalog_region_and_dimension() -> None:
+def test_reviewer_findings_bind_catalog_region_without_wording_filters() -> None:
     valid = e.DefectFinding(
         finding_id="f", target_version="t", render_version="r", page=1,
         region="section.03", observation="The entry spacing is too large.",
@@ -4221,7 +4221,7 @@ def test_reviewer_findings_must_bind_one_catalog_region_and_dimension() -> None:
     assert e5._validate_reviewer_regions(
         [valid.model_copy(update={"suspected_dimension": "color and alignment"})],
         {"section.03"}, 1,
-    ) == []
+    ) == [valid.model_copy(update={"suspected_dimension": "color and alignment"})]
 
 
 def test_accounting_repair_maps_missing_skills_to_real_region_and_page(monkeypatch) -> None:
