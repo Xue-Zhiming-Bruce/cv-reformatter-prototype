@@ -65,7 +65,7 @@ def agentic_renderer_version() -> str:
         )],
     }
     digest = hashlib.sha256(json.dumps(contract, sort_keys=True).encode()).hexdigest()[:16]
-    return f"agentic-a/1+{RENDERER_VERSION}+{digest}"
+    return f"agentic-a/2+{RENDERER_VERSION}+{digest}"
 
 
 def _structure_basis(state: C2LayoutState, normalized: NormalizedLayoutEvidence) -> TargetStructureDraft:

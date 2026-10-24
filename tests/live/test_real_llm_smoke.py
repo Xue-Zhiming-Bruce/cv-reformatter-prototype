@@ -138,3 +138,88 @@ def test_real_agentic_api_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         total_calls += budget["model_request_count"]
     assert total_calls <= 48
     assert {name: (directory / name).read_bytes() for name in preserved} == preserved
+
+
+def test_real_agentic_repair_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Controlled fault and initial review scope; all model responses are live."""
+    if os.getenv("RUN_REAL_AGENTIC_REPAIR") != "1":
+        pytest.skip("Set RUN_REAL_AGENTIC_REPAIR=1 to run the real agentic repair smoke test.")
+
+    import json
+    import re
+    import shutil
+    import pdfplumber
+    from app.generation.agentic import render_agentic
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline import service
+    from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
+    from tests.helpers.pipeline import agentic_repair_inputs
+
+    inputs, spec, profile, target_profile = agentic_repair_inputs(tmp_path)
+    target_pdf = inputs["target_pdf"]
+    for key, filename in (("adobe_json", ADOBE_RAW_FILENAME), ("normalized_evidence", NORMALIZED_LAYOUT_FILENAME)):
+        shutil.copy2(inputs[key], tmp_path / filename)
+    (tmp_path / "candidate_profile.json").write_text(profile.model_dump_json())
+    (tmp_path / "target_profile.json").write_text(target_profile.model_dump_json())
+    (tmp_path / "layout_template_spec.json").write_text(spec.model_dump_json())
+    preserved = {name: (tmp_path / name).read_bytes() for name in ("candidate_profile.json", "target_profile.json", "layout_template_spec.json")}
+    monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "12")
+    monkeypatch.setenv("AGENTIC_MAX_TOOL_CALLS", "24")
+    monkeypatch.setenv("AGENTIC_MAX_REPAIR_ROUNDS", "2")
+    live_builder = service._live_lane_a_builder
+
+    def initial_fault_then_live_builder(budget, trace, *, payload, images, proposal_id, audit):
+        if audit.phase == "initial":
+            seed = service.LaneAStructureProposal(proposal_id=proposal_id, agent="scripted", sections=[
+                service.E5LaneASection(section_node_id="section.02", heading_in_rail=True, rail_label_width_pt=360),
+            ])
+            (tmp_path / "initial_fault.json").write_text(json.dumps({
+                "kind": "controlled_test_fault", "not_model_output": True,
+                "description": "Overwide label rail narrows entry text and increases wrapping/entry spacing",
+                "proposal": seed.model_dump(mode="json"),
+            }, indent=2))
+            return seed
+        return live_builder(budget, trace, payload=payload, images=images, proposal_id=proposal_id, audit=audit)
+
+    live_reviewer = service._live_reviewer_findings
+
+    def scoped_live_reviewer(*args, **kwargs):
+        if kwargs["audit"].round_no == 1:
+            kwargs["message"] += (
+                "\nControlled smoke review scope: compare one measurable dimension only: "
+                "the top-to-top vertical distance between the first two work-entry "
+                "company/employer rows in TARGET and RENDER (entry-head spacing, "
+                "metric=role_gap). Report a visible spacing difference if present. "
+                "Company names, dates and wording intentionally differ; compare the "
+                "same typographic role on each image, not those content values."
+            )
+        return live_reviewer(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_live_reviewer_findings", scoped_live_reviewer)
+    monkeypatch.setattr(service, "_live_lane_a_builder", initial_fault_then_live_builder)
+    _, pdf, report = render_agentic(context=build_client_render_context(profile), layout_spec=spec,
+        target_pdf=target_pdf, evidence_dir=tmp_path, output_dir=tmp_path / "run")
+    run = tmp_path / report["run_directory"]
+    record = json.loads((run / "e5_state.json").read_text())
+    lane, budget = record["lanes"]["a"], record["budget_state"]
+    assert lane["builder_candidates"][0]["typed_candidate"]["agent"] == "scripted"
+    assert 3 <= budget["calls_by_mode"]["live"] <= 12
+    assert all(budget["calls_by_agent"].get(agent, 0) >= 1 for agent in (
+        "lane_a_builder", "visual_reviewer", "attribution_investigator"))
+    assert lane["repair_attempts"] and lane["summary"]["promoted_versions"] >= 1, lane["summary"]
+    selected = next(version for version in lane["render_versions"] if version["version_id"] == report["selected_version"])
+    assert selected["promoted"] and selected["pdf_sha256"] in lane["summary"]["reviewed_pdf_sha256"]
+
+    def company_gap(path, names):
+        with pdfplumber.open(path) as document:
+            hits = [document.pages[0].search(r"\s*".join(re.escape(char) for char in name)) for name in names]
+            assert all(len(matches) == 1 for matches in hits)
+            return hits[1][0]["top"] - hits[0][0]["top"]
+
+    expected = company_gap(target_pdf, ("FirstTargetCompany", "SecondTargetCompany"))
+    before = company_gap(run / "lane_a/render_1.pdf", ("FirstCandidateCompany", "SecondCandidateCompany"))
+    after = company_gap(pdf, ("FirstCandidateCompany", "SecondCandidateCompany"))
+    assert abs(before - expected) - abs(after - expected) > 5
+    assert report["content_validation"]["passed"] and report["structure_validation"]["passed"]
+    assert report["client_ready"] is False and record["summary"]["source_identity_stable"]
+    assert {name: (tmp_path / name).read_bytes() for name in preserved} == preserved

@@ -205,9 +205,17 @@ def synthetic_pipeline_inputs(tmp_path: Path, *, one_column: bool = False,
             operations.append(f"BT /F1 10 Tf {body_x} {y - 65} Td ({entry_headings[1]}) Tj ET")
     target = _write_single_page_pdf(tmp_path / "target.pdf", operations,
                                     regular_font="Helvetica", bold_font="Helvetica-Bold", width_pt=width, height_pt=height)
+    return measured_pipeline_inputs(target, tmp_path, rules=rules)
+
+
+def measured_pipeline_inputs(target: Path, tmp_path: Path, *, rules: list[NormalizedRule] | None = None) -> dict:
+    """Measure a single-page synthetic PDF into the canonical test evidence bundle."""
     blocks = []
     elements = []
     with pdfplumber.open(target) as pdf:
+        if len(pdf.pages) != 1:
+            raise ValueError("synthetic evidence helper requires one page")
+        width, height = pdf.pages[0].width, pdf.pages[0].height
         words = pdf.pages[0].extract_words(extra_attrs=["fontname", "size"])
     for index, word in enumerate(words):
         bold = "Bold" in word["fontname"]
@@ -231,7 +239,7 @@ def synthetic_pipeline_inputs(tmp_path: Path, *, one_column: bool = False,
     normalized.write_text(NormalizedLayoutEvidence(
         provider="synthetic", page_count=1,
         pages=[NormalizedPage(page_number=1, width_pt=width, height_pt=height)],
-        full_text="\n".join(word["text"] for word in words), text_blocks=blocks, rules=rules,
+        full_text="\n".join(word["text"] for word in words), text_blocks=blocks, rules=rules or [],
     ).model_dump_json())
     draft = tmp_path / "draft.json"
     draft.write_text(TargetStructureDraft(
@@ -274,3 +282,41 @@ def run_pipeline_fixture(target: Path, out_dir: Path, **kwargs):
         structure_draft=LOCAL_INPUTS / "resume_I.draft.json",
         probe_candidates=independent_candidate_fixtures(), **kwargs,
     )
+
+
+def agentic_repair_inputs(tmp_path: Path, *, target_entry_gap: float = 18) -> tuple[dict, Any, Any, Any]:
+    """Distinct synthetic target/candidate entries with measurable wrapping."""
+    from app.extraction.candidate_schema import CandidateProfile
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline import service
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.html_renderer import render_layout_template, render_html
+    from tests.helpers.pipeline_layout import product_entry_template
+
+    spec = product_entry_template(split_work=True, map_custom=False)
+    spec.header.contact_fields = []
+    profile = CandidateProfile(full_name="Candidate Alpha", work_experience=[
+        {"company": "FirstCandidateCompany", "title": "Platform Engineer for Candidate Systems", "start_date": "2020", "end_date": "2022",
+         "description": ["Built reliable services"]},
+        {"company": "SecondCandidateCompany", "title": "Senior Engineer for Candidate Platforms", "start_date": "2022", "end_date": "2024",
+         "description": ["Maintained useful systems"]},
+    ])
+    target_profile = CandidateProfile(full_name="Target Person", work_experience=[
+        {"company": "FirstTargetCompany", "title": "Platform Engineer for Target Systems", "start_date": "2014", "end_date": "2016",
+         "description": ["Created target demo tools"]},
+        {"company": "SecondTargetCompany", "title": "Senior Engineer for Target Platforms", "start_date": "2016", "end_date": "2018",
+         "description": ["Supported target demo services"]},
+    ])
+    target_spec = spec.model_copy(deep=True, update={"source_type": "built_in"})
+    target_spec.sections[1].entry_gap_pt = target_entry_gap
+    state, plan, _ = render_layout_template(target_spec, candidate_document_from_context(
+        build_client_render_context(target_profile), candidate_id="synthetic-target"))
+    reference = service.LaneAStructureProposal(proposal_id="synthetic-target-rail", agent="scripted", sections=[
+        service.E5LaneASection(section_node_id="section.02", heading_in_rail=True, rail_label_width_pt=80),
+    ])
+    target_html = tmp_path / "target.html"
+    target_html.write_text(render_html(state, service._apply_lane_a_structure(plan, reference)))
+    target_pdf = export_html_to_pdf(target_html, tmp_path / "target.pdf")
+    inputs = measured_pipeline_inputs(target_pdf, tmp_path)
+    return inputs, spec, profile, target_profile

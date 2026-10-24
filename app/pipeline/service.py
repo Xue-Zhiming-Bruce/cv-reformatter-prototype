@@ -1717,8 +1717,14 @@ def _bind_role_gap_anchors(
             request_id=request.request_id,
             status="not_measurable",
             reason="the current deterministic metric measures entry-head spacing only",
-            method="role_gap_binding/1",
+            method="role_gap_binding/2",
             warnings=["a different visual dimension requires its own deterministic metric"],
+        )
+    if region_span is None:
+        return MeasurementResult(
+            request_id=request.request_id, status="evidence_missing",
+            reason="entry-head spacing requires a measured owning-section boundary",
+            method="role_gap_binding/2",
         )
     render_rows = _pdf_line_rows(current_pdf, request.page)
 
@@ -1731,11 +1737,13 @@ def _bind_role_gap_anchors(
         if text and len(text.strip()) >= 6
     ]
     render_anchors: list[str] = []
+    render_head_rows: list[dict[str, Any]] = []
     for row in render_rows:
         row_text = _norm_row(row["text"])
         for prefix in prefixes:
             if row_text.startswith(prefix) and prefix not in render_anchors:
                 render_anchors.append(prefix)
+                render_head_rows.append(row)
                 break
         if len(render_anchors) == 2:
             break
@@ -1747,7 +1755,7 @@ def _bind_role_gap_anchors(
                 "the semantic intent could not be bound to two render entry-head "
                 "rows in the final PDF (binding, not OCR, decides)"
             ),
-            method="role_gap_binding/1",
+            method="role_gap_binding/2",
             warnings=["binding resolves the Reviewer's semantic intent against actual PDF rows"],
         )
     target_rows = _pdf_line_rows(target_pdf, request.page)
@@ -1756,21 +1764,40 @@ def _bind_role_gap_anchors(
         target_rows = [
             row for row in target_rows if span_top < row["top"] < span_bottom
         ]
-    # ponytail: target entry heads = the first two non-bullet rows below the
-    # section rule (dates/meta rows carry digits; bullets carry the marker);
-    # a dedicated head classifier is the upgrade if this misbinds.
-    head_rows = [
-        row for row in target_rows
-        if not row["text"].startswith("\u2022")
-        and not row["text"].startswith("\u2022")
-        and any(character.isalpha() for character in row["text"])
-    ]
+    import pdfplumber
+
+    def row_styles(path: Path) -> dict[float, tuple[float, bool, Any]]:
+        with pdfplumber.open(path) as document:
+            words = document.pages[request.page - 1].extract_words(
+                extra_attrs=["fontname", "size", "non_stroking_color"])
+        styles = {}
+        for word in sorted(words, key=lambda item: item["x0"]):
+            styles.setdefault(round(float(word["top"]), 1), (
+                float(word["size"]), "bold" in word["fontname"].casefold(),
+                word["non_stroking_color"],
+            ))
+        return styles
+
+    render_styles, target_styles = row_styles(current_pdf), row_styles(target_pdf)
+    anchor_styles = [render_styles.get(row["top"]) for row in render_head_rows]
+
+    def same_role(style: tuple | None, reference: tuple | None) -> bool:
+        return bool(style and reference and abs(style[0] - reference[0]) < .5
+                    and style[1:] == reference[1:])
+
+    # Bind the same measured typographic role, rather than adjacent title,
+    # company or date rows. Unsupported style differences stay unmeasured.
+    head_rows = [row for row in target_rows
+                 if not row["text"].startswith(("•", "-", "–"))
+                 and any(character.isalpha() for character in row["text"])
+                 and all(same_role(target_styles.get(row["top"]), style)
+                         for style in anchor_styles)]
     if len(head_rows) < 2:
         return MeasurementResult(
             request_id=request.request_id,
             status="evidence_missing",
             reason="the region's target content rows could not yield two head anchors",
-            method="role_gap_binding/1",
+            method="role_gap_binding/2",
             warnings=["binding resolves the Reviewer's semantic intent against actual PDF rows"],
         )
     return request.model_copy(
@@ -2216,18 +2243,24 @@ def _review_scope_payload(
         ),
     }
 
+def _owning_section_id(state: Any, region_id: str | None) -> str | None:
+    nodes = {node.node_id: node for node in state.nodes}
+    current = nodes.get(region_id)
+    visited = set()
+    while current is not None and current.node_id not in visited:
+        if current.kind == "section":
+            return current.node_id
+        visited.add(current.node_id)
+        current = nodes.get(current.parent_id)
+    return None
+
+
 def _e5_region_catalog(state: Any, derived: dict[str, Any]) -> list[dict[str, Any]]:
     label_pages = {
         str(item.get("text") or "").casefold(): int(item["page"])
         for item in derived.get("sidebar_labels") or [] if item.get("page")
     }
     nodes = {node.node_id: node for node in state.nodes}
-
-    def section_for(node: Any) -> Any | None:
-        current = node
-        while current is not None and current.kind != "section":
-            current = nodes.get(current.parent_id)
-        return current
 
     def page_for(node: Any, section: Any | None) -> int | None:
         if node.kind == "header_row":
@@ -2242,7 +2275,7 @@ def _e5_region_catalog(state: Any, derived: dict[str, Any]) -> list[dict[str, An
 
     catalog = []
     for node in state.nodes:
-        section = section_for(node)
+        section = nodes.get(_owning_section_id(state, node.node_id))
         sources = list(getattr(getattr(section, "binding", None), "sources", []) or [])
         catalog.append({
             "region_id": node.node_id,
@@ -2620,6 +2653,7 @@ def _live_attribution_batch(
     findings: list[DefectFinding],
     results: list[MeasurementResult],
     lane: str = "a",
+    current_representation: Any | None = None,
     audit: E5AgentAuditSpec | None = None,
 ) -> list[LiveAttributionHypothesis]:
     """Phase 0 batched live attribution: findings that share the same region
@@ -2647,6 +2681,11 @@ def _live_attribution_batch(
         "findings": [finding.model_dump(mode="json") for finding in findings],
         "measurements": [result.model_dump(mode="json") for result in results],
         "target_description": pod.describe_target(),
+        "current_representation": (
+            current_representation.model_dump(mode="json")
+            if current_representation is not None else None
+        ),
+        "current_render_version": audit.render_version if audit is not None else None,
         # The lane's ACTUAL repair surface: ownership of a confirmed defect may
         # only follow a surface that exists. Without it the role had to guess
         # the owning layer, and in live run `e_pipeline_e5_20260923T095557Z` it
@@ -3929,7 +3968,7 @@ def run_e5(
             # overwrite.
             if lane == "a" and plan is not None:
                 plan_section = next(
-                    (s for s in [*plan.sections, *plan.appended_sections] if s.node_id == region_id),
+                    (s for s in [*plan.sections, *plan.appended_sections] if s.node_id == _owning_section_id(state, region_id)),
                     None,
                 )
                 if plan_section is not None and plan_section.entries:
@@ -3951,7 +3990,8 @@ def run_e5(
             plan: Any = None,
             render_version: str = "",
         ) -> tuple[MeasurementResult, MeasurementRequest]:
-            span = region_spans.get(finding.region)
+            section_id = _owning_section_id(state, finding.region)
+            span = region_spans.get(section_id or finding.region)
             span_tuple = (span[1], span[2]) if span and span[0] == finding.page else None
             trace.add(
                 agent="measure_controller", phase="measure", action="binding",
@@ -4613,6 +4653,7 @@ def run_e5(
                                 findings=group,
                                 results=[measured[f.finding_id][0] for f in group],
                                 lane=lane,
+                                current_representation=representation_by_version.get(current_version.version_id),
                                 audit=_e5_audit(
                                     agent="attribution_investigator",
                                     phase="attribute",

@@ -547,6 +547,14 @@ target text; template and exact-output acceptance remain separate gates.
 Source evidence and candidate values retain separate ownership.
 
 Review findings, typed measurements, attribution, and repairs are version-bound.
+Entry-spacing binding follows the declared parent chain from entry/list regions
+to their measured section boundary. A missing boundary stays `evidence_missing`;
+it cannot fall back to header rows from the whole target page. The bounded
+matcher compares entry rows with matching measured size, weight and fill color,
+excluding bullet rows; unsupported role styling stays unmeasured. Attribution
+receives the exact validated representation that produced its current render.
+The agentic adapter identity is now `agentic-a/2`; this measurement/context
+revision requires fresh proofs while preserving the existing system prompt bytes.
 The shell decides promotion and rollback, preserves valid prior versions, and
 records rejected attempts. A quarantined repair base is not automatically an
 active or best output. Lineage checks bind candidate leaves to their actual

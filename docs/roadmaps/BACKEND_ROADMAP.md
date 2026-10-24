@@ -142,8 +142,21 @@ Legacy profile-approval names remain compatibility fields only.
       envelope: dense overview images exceeded 210000 bytes after Base64
       encoding. The API cap is now 512000 bytes and part of proof identity;
       SDK-wrapped local budget failures no longer enter connection retries.
-      The live sample promoted no model repairs; measured repair/rollback
-      remains covered by offline boundary regressions. General external model
+      The original live API sample promoted no model repairs. A subsequent
+      controlled-fault run, with an explicitly scoped first Reviewer call,
+      promoted a real model repair from a 360pt rail to 92pt. Independent PDF
+      company-row spacing improved from 102pt to the target's 60.75pt, with
+      selected-PDF review and product gates passing. Its live pytest failed on
+      an oracle that assumed unwrapped company text; whitespace-aware full-name
+      matching fixes that oracle and the saved outcome passes read-only checks.
+      Live repeatability remains open: default reviews missed the fault and a
+      later scoped repeat stalled on incorrect ownership attribution. The live
+      repair smoke is not green. Measurement now resolves descendant regions
+      through measured section boundaries and matching row typography; missing
+      evidence cannot bind to page headers. Attribution receives the exact
+      current proposal; agentic identity advances to version 2, requiring fresh
+      proofs. Offline repair/rollback and related API checks pass (297 passed,
+      19 skipped). General external model
       quality, full template coverage and asynchronous execution remain open;
       this does not retire either baseline or B.
 - [ ] Prune redundant orchestration, reports, and tests once their responsibility
