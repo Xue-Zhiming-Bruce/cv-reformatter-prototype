@@ -463,7 +463,38 @@ def _validate_target_replay(directory: Path, target_path: Path) -> None:
             raise ValueError(f"Saved target evidence missing {name}")
 
 
-def _run_pair(client: TestClient, source: str, target: str, *, target_evidence: Path | None = None) -> dict[str, Any]:
+def _replay_target_analysis(artifact_id: str, artifact_dir: Path, target_path: Path, target_evidence: Path) -> dict[str, Any]:
+    _validate_target_replay(target_evidence, target_path)
+    from app import main as api
+    from app.template_analysis.commercial import build_design_evidence_from_normalized
+    from app.template_analysis.design_compiler import compile_measured_layout_template_spec
+    normalized = NormalizedLayoutEvidence.model_validate_json((target_evidence/"normalized_layout_evidence.json").read_text())
+    checksum = hashlib.sha256(target_path.read_bytes()).hexdigest()
+    evidence, style = build_design_evidence_from_normalized(normalized, target_checksum=checksum)
+    spec = compile_measured_layout_template_spec(evidence, style)
+    meta = api._store_target_format(artifact_id=artifact_id, artifact_dir=artifact_dir,
+        input_filename=target_path.name, suffix=".pdf", contents=target_path.read_bytes())
+    saved = api.TargetFormatMetadata.model_validate_json((target_evidence/"target_format.json").read_text())
+    meta = saved.model_copy(update={"artifact_id": artifact_id, "stored_filename": meta.stored_filename, "download_url": meta.download_url,
+        "style_spec_url": f"/api/artifacts/{artifact_id}/layout_template_spec.json",
+        "analysis_artifact_urls": {k: v.replace(saved.artifact_id, artifact_id) for k,v in saved.analysis_artifact_urls.items()}})
+    for name in ("normalized_layout_evidence.json", "adobe_raw_response.json"):
+        shutil.copy2(target_evidence/name, artifact_dir/name)
+    for name, value in (("target_format.json", meta), ("target_layout_evidence.json", evidence), ("layout_template_spec.json", spec)):
+        (artifact_dir/name).write_text(value.model_dump_json(indent=2))
+    return meta.model_dump(mode="json")
+
+
+def _validate_source_replay(directory: Path, source_path: Path) -> None:
+    cached = directory / "source_resume.pdf"
+    if hashlib.sha256(cached.read_bytes()).digest() != hashlib.sha256(source_path.read_bytes()).digest():
+        raise ValueError("Saved source evidence checksum does not match the selected candidate")
+    for name in ("candidate_profile.json", "raw_extracted_text.txt", "candidate_segmentation.json", "normalized_candidate_document.json", "candidate_field_evidence.json", "segmentation_audit.json", "profiles/index.json"):
+        if not (directory/name).is_file():
+            raise ValueError(f"Saved source evidence missing {name}")
+
+
+def _run_pair(client: TestClient, source: str, target: str, *, target_evidence: Path | None = None, source_evidence: Path | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {
         "pair": f"{source}→{target}",
         "artifact_id": None,
@@ -487,16 +518,40 @@ def _run_pair(client: TestClient, source: str, target: str, *, target_evidence: 
     target_path = DATASET_DIR / f"resume_{target}.pdf"
     if target_evidence is not None:
         _validate_target_replay(target_evidence, target_path)
-    process = _request(
-        client,
-        result,
-        "process_source",
-        "POST",
-        "/api/process",
-        files={"file": (source_path.name, source_path.read_bytes(), "application/pdf")},
-    )
-    if process is None:
-        return result
+    if source_evidence is None:
+        process = _request(client, result, "process_source", "POST", "/api/process",
+            files={"file": (source_path.name, source_path.read_bytes(), "application/pdf")})
+        if process is None:
+            return result
+    else:
+        from app import main as api
+        from app.extraction.candidate_schema import CandidateProfile
+        from app.profile_approval import load_current_approved_profile
+        _validate_source_replay(source_evidence, source_path)
+        artifact_id = source_evidence.name
+        if not api._is_safe_artifact_id(artifact_id):
+            raise ValueError("Saved source folder must identify its owning artifact")
+        restored = GENERATED_OUTPUTS_DIR / artifact_id
+        restored.mkdir(parents=True, exist_ok=False)
+        # Resume source evidence only; never import prior outputs, proofs or acceptance.
+        for name in ("candidate_profile.json", "raw_extracted_text.txt", "candidate_segmentation.json",
+                     "normalized_candidate_document.json", "candidate_field_evidence.json", "segmentation_audit.json",
+                     "llm_segmentation.json", "source_resume.pdf", "original_resume_preview.pdf", "missing_fields.json"):
+            if (source_evidence/name).is_file():
+                shutil.copy2(source_evidence/name, restored/name)
+        shutil.copytree(source_evidence/"profiles", restored/"profiles")
+        draft = CandidateProfile.model_validate_json((restored/"candidate_profile.json").read_text())
+        revision = load_current_approved_profile(restored)
+        if revision is None or revision.artifact_id != artifact_id:
+            raise ValueError("Saved source revision is missing or belongs to another artifact")
+        api._local_artifact_store().record_processed_resume(artifact_id=artifact_id, artifact_dir=restored,
+            source_filename=source_path.name, source_file_type="pdf", original_pdf_preview_url=None,
+            original_preview_error=None, missing_fields=draft.missing_fields, debug_artifacts={})
+        process = {"artifact_id": artifact_id, "profile": draft.model_dump(mode="json"),
+            "profile_revision_id": revision.profile_version_id}
+        result["source_evidence_reused"] = True
+        result["steps"]["process_source"] = {"status": "pass", "method": "saved_source_replay", "new_source_requests": 0,
+            "elapsed_seconds": 0, "source_directory": str(source_evidence.resolve())}
     artifact_id = process["artifact_id"]
     result["artifact_id"] = artifact_id
     artifact_dir = (PROJECT_ROOT / GENERATED_OUTPUTS_DIR / artifact_id).resolve()
@@ -550,24 +605,8 @@ def _run_pair(client: TestClient, source: str, target: str, *, target_evidence: 
             return result
         target_format = target_upload["target_format"]
     else:
-        from app import main as api
-        from app.template_analysis.commercial import build_design_evidence_from_normalized
-        from app.template_analysis.design_compiler import compile_measured_layout_template_spec
-        normalized = NormalizedLayoutEvidence.model_validate_json((target_evidence/"normalized_layout_evidence.json").read_text())
+        target_format = _replay_target_analysis(artifact_id, artifact_dir, target_path, target_evidence)
         checksum = hashlib.sha256(target_path.read_bytes()).hexdigest()
-        evidence, style = build_design_evidence_from_normalized(normalized, target_checksum=checksum)
-        spec = compile_measured_layout_template_spec(evidence, style)
-        meta = api._store_target_format(artifact_id=artifact_id, artifact_dir=artifact_dir,
-            input_filename=target_path.name, suffix=".pdf", contents=target_path.read_bytes())
-        saved = api.TargetFormatMetadata.model_validate_json((target_evidence/"target_format.json").read_text())
-        meta = saved.model_copy(update={"artifact_id": artifact_id, "stored_filename": meta.stored_filename,
-            "style_spec_url": f"/api/artifacts/{artifact_id}/layout_template_spec.json",
-            "analysis_artifact_urls": {k: v.replace(saved.artifact_id, artifact_id) for k,v in saved.analysis_artifact_urls.items()}})
-        for name in ("normalized_layout_evidence.json", "adobe_raw_response.json"):
-            shutil.copy2(target_evidence/name, artifact_dir/name)
-        for name, value in (("target_format.json", meta), ("target_layout_evidence.json", evidence), ("layout_template_spec.json", spec)):
-            (artifact_dir/name).write_text(value.model_dump_json(indent=2))
-        target_format = meta.model_dump(mode="json")
         result["steps"]["upload_target"] = {"status": "pass", "method": "saved_evidence_recompiled", "elapsed_seconds": 0,
             "source_directory": str(target_evidence.resolve()), "target_sha256": checksum, "new_adobe_jobs": 0}
         result["observations"].append("Target analysis replayed from explicit checksum-matched saved evidence; no new Adobe call.")
@@ -923,7 +962,7 @@ def _write_review(run_dir: Path, report: dict[str, Any]) -> None:
         review_policy={"final_output_acceptance": "human_pending", "synthetic_proof_approval_only": True},
         network_calls={"agentic_http_reservations": sum(b["model_request_count"] for r in rows for b in r["agentic_usage"]),
                        "adobe_http_count": None, "note": "Adobe HTTP count is not instrumented; API step timing is recorded."},
-        llm_calls={"extraction": [r["api_evidence"]["candidate_segmentation"] for r in rows if "candidate_segmentation" in r["api_evidence"]],
+        llm_calls={"extraction": [r["api_evidence"]["candidate_segmentation"] for r in rows if "candidate_segmentation" in r["api_evidence"] and not r["api_evidence"].get("source_evidence_reused")],
                    "agentic_usage": [b for r in rows for b in r["agentic_usage"]], "billed_cost": None},
         inputs={key: identity(DATASET_DIR/f"resume_{key}.pdf") for key in sorted({v for p in report["pairs_requested"] for v in p.split(":")})},
         transformations=rows, layout_proofs={"evidence_version": "layout-proof-matrix-1.0",
@@ -987,6 +1026,7 @@ def main() -> int:
         default=["A:B"],
         help="Pairs such as A:B A:C, or 'all'. Defaults to the required first gate A:B.",
     )
+    parser.add_argument("--source-evidence", type=Path, help="Resume an explicit checksum-matched processed candidate; no extraction call.")
     parser.add_argument("--target-evidence", type=Path, help="Reuse an explicit checksum-matched target artifact; recompile with current code, no Adobe call.")
     parser.add_argument("--report", type=Path, help="Optional extra copy of the run manifest.")
     parser.add_argument("--out", type=Path, help="New matrix run directory under the canonical local runs directory.")
@@ -1001,6 +1041,9 @@ def main() -> int:
     if provider == "mock":
         parser.error("Live matrix refuses API_LLM_PROVIDER/LLM_PROVIDER=mock.")
 
+    if args.source_evidence is not None:
+        for pair in pairs:
+            _validate_source_replay(args.source_evidence, DATASET_DIR/f"resume_{pair.split(':')[0]}.pdf")
     if args.target_evidence is not None:
         for pair in pairs:
             _validate_target_replay(args.target_evidence, DATASET_DIR/f"resume_{pair.split(':')[1]}.pdf")
@@ -1040,7 +1083,7 @@ def main() -> int:
             GENERATED_OUTPUTS_DIR = run_dir / "transformations" / f"resume_{source.lower()}__to__resume_{target.lower()}" / "artifacts"
             api.GENERATED_OUTPUTS_DIR = GENERATED_OUTPUTS_DIR
             print(f"RUN {source}→{target}", flush=True)
-            result = _run_pair(client, source, target, target_evidence=args.target_evidence)
+            result = _run_pair(client, source, target, target_evidence=args.target_evidence, source_evidence=args.source_evidence)
             report["pairs"].append(result)
             print(json.dumps(result, ensure_ascii=False, sort_keys=True), flush=True)
 

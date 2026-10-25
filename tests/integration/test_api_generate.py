@@ -687,3 +687,21 @@ def test_generate_rejects_missing_target_format_reference(tmp_path: Path, monkey
 
 def _fake_pdf_export(html_path: str | Path, output_path: str | Path) -> Path:
     return make_proof_pdf_exporter()(html_path, output_path)
+
+
+def test_replayed_target_urls_belong_to_current_artifact(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    from scripts.run_abc_live_matrix import _replay_target_analysis
+
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.setenv("GENERATION_STRATEGY", "standard")
+    target = build_styled_target_pdf(tmp_path / "target.pdf")
+    uploaded = client.post("/api/target-format", data={"artifact_id": "artifact_cached_target"},
+        files={"file": (target.name, target.read_bytes(), "application/pdf")})
+    assert uploaded.status_code == 200, uploaded.text
+    destination = tmp_path / "artifact_replayed_target"
+    destination.mkdir()
+    metadata = _replay_target_analysis("artifact_replayed_target", destination, target, tmp_path / "artifact_cached_target")
+    assert client.get(metadata["download_url"]).content == target.read_bytes()
+    response = client.post("/api/artifacts/artifact_replayed_target/layout-proofs", json={})
+    assert response.status_code == 200, response.text
+    assert {v["variant"] for v in response.json()["variants"]} == {"short", "medium", "long"}

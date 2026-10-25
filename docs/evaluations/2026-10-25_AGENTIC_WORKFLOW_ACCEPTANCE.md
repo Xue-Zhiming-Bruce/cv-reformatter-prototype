@@ -140,4 +140,22 @@ passed (39 cases); earlier development attempts remain local logs, not acceptanc
 - [Three identity cases rechecked](../../tests/test_results/pytest/20261025T074100Z_renderer_identity_recheck.txt)
 - [Focused consumption checks](../../tests/test_results/pytest/20261025T072700Z_template_consumption_focused.txt)
 
-Live continuation evidence follows when executed.
+### First E→B Continuation: Replay Reference Failure
+
+The first E→B continuation completed one real extraction and a saved phone-hide
+disclosure revision, with zero new Adobe jobs. It then stopped before any
+Agentic call: the new replay helper retained the prior artifact's download URL,
+and the API correctly returned 400 `Invalid target format reference`.
+[Failed run](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T074300Z_agentic_eb/RESULTS_INDEX.md)
+is retained. This was a canonical-runner defect, not another A compiler failure.
+
+The replay helper now rebinds the download URL as well as artifact/spec/evidence
+URLs. A regression exercises actual downloads and all three proof API variants;
+removing only that fix reproduces the intended 400, and restoration passes.
+[Positive checks](../../tests/test_results/pytest/20261025T075100Z_matrix_replay_reference.txt)
+record 3 passed; [negative control](../../tests/test_results/pytest/20261025T074950Z_matrix_replay_negative_control.txt)
+records the expected failure. Runtime generation code was unchanged.
+An explicit saved-source resume mode avoids paying for extraction again and
+copies no prior proof/output/acceptance records into the new run namespace.
+
+Further live evidence follows when executed.

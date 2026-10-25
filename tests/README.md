@@ -38,6 +38,9 @@ before any source API call, reuses saved Adobe/normalized evidence and recompile
 it with the current compiler. Reports label this as saved-evidence replay, not a
 new Adobe call. The synthetic recruiter edit hides phone before saving a revision;
 this is a disclosure edit, not human final-output acceptance.
+`--source-evidence <artifact-directory>` resumes checksum-matched extraction and
+profile revisions, copying source evidence only. It imports no prior outputs,
+proof approvals or final acceptance, and reports zero new extraction calls.
 
 `integration/test_layout_proof_api.py` exercises the optional agentic strategy
 through the real API, canonical runner, Chrome and approval gates, mocking only
