@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Mapping, NamedTuple, Sequence
-from PIL import Image
+from PIL import Image, ImageChops
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.pipeline.rendering import ROOT, _render_pages
 from app.pipeline.runtime import RunBudget, RunTrace
@@ -1422,7 +1422,11 @@ def _overview_pngs(pdf: Path, out_dir: Path, tag: str) -> list[Path]:
             _lanczos(),
         )
         out = page.with_name(f"{tag}_overview_{page.stem}.png")
-        scaled.save(out)
+        red, green, blue = scaled.split()
+        # Grayscale PNG saves bytes without changing any RGB pixel or page geometry.
+        if ImageChops.difference(red, green).getbbox() is None and ImageChops.difference(red, blue).getbbox() is None:
+            scaled = red
+        scaled.save(out, optimize=True)
         resized.append(out)
     return resized
 

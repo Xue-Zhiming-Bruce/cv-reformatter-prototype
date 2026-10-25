@@ -55,6 +55,7 @@ def _settings() -> dict[str, int]:
 def agentic_renderer_version() -> str:
     # Approval covers the renderer, prompts, models and execution envelope.
     contract = {
+        "image_encoding": "lossless-grayscale-png/1",
         "renderer": RENDERER_VERSION, "settings": {**_settings(), "max_request_bytes": MAX_REQUEST_BYTES},
         "models": service._model_identity(),
         "prompts": [service.E5_LANE_A_BUILDER_INSTRUCTIONS, service.E5_REVIEWER_INSTRUCTIONS,

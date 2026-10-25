@@ -672,6 +672,12 @@ Shared A renderer identity advances to `/16`, invalidating stale Agentic proofs
 through the existing configuration binding. Product schemas, providers, prompts,
 default strategy and final-output approval rules are unchanged.
 
+Whole-page model overviews use lossless grayscale PNG only when all RGB
+channels are identical; colored overviews stay RGB. Pixel dimensions/content
+and full-resolution sources are unchanged. The encoding identity participates
+in Agentic proof configuration; the 512000-byte serialized request limit and
+existing image/output-token/request budgets remain enforced.
+
 ## Reproducibility And Jobs
 
 Long-running analysis, rendering, conversion, and comparison operations use a

@@ -180,4 +180,28 @@ and run provenance without a second runner.
 [Preflight output](../../tests/test_results/pytest/20261025T075700Z_saved_runner_preflight.txt)
 and [label regressions](../../tests/test_results/pytest/20261025T075700Z_exact_custom_labels.txt).
 
+### First Real Reviewer Run: Dense-Image Envelope Failure
+
+The [verified E→B run](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T080100Z_agentic_eb_verified/RESULTS_INDEX.md)
+made **8 Agentic HTTP reservations**: short 3, medium 4, long 1. No source
+extraction or Adobe job was repeated. Short and medium selected PDFs completed
+Reviewer review. Medium made one real repair attempt; v2 was not selected and
+one finding stayed open. Long produced a safety-valid v1 but its first Reviewer
+request was blocked locally, so the API correctly refused publication and did
+not reach candidate preview or final acceptance.
+
+The two long-page Reviewer overviews were 183,688 and 204,056 PNG bytes. Their
+Base64 alone exceeded the frozen 512,000-byte request cap. They are exactly
+gray at every RGB pixel. Lossless grayscale PNG encodes the same pixels as
+78,807 and 89,760 bytes respectively. The generic overview encoder now uses
+that representation only when all three channels are identical; colorful pages
+remain RGB, dimensions are unchanged and full-resolution source images remain.
+
+The request cap, image count, output-token limit and per-run request/repair
+budgets are unchanged. `lossless-grayscale-png/1` is included in Agentic proof
+configuration identity, requiring fresh proofs. Pixel equality/color retention
+and existing budget guards pass: **26 checks** in
+[encoding checks](../../tests/test_results/pytest/20261025T080900Z_lossless_review_encoding.txt).
+No model calls were used to diagnose or test this encoding change.
+
 Further live evidence follows when executed.

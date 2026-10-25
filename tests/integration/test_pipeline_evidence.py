@@ -389,3 +389,21 @@ F"""verdict for {name}: JOB TITLE"""
     generic = '_PROBE_ROLE_HEADING = {"skills": "SKILLS", "languages": "LANGUAGES"}\n'
     findings = _scan_source_for_hardcoded_target_data("generic.py", generic)
     assert not any(findings.values()), findings
+
+
+@pytest.mark.parametrize("color", [False, True])
+def test_whole_page_overviews_preserve_rgb_pixels_with_bounded_encoding(tmp_path: Path, monkeypatch, color: bool) -> None:
+    from PIL import Image, ImageChops
+    image = Image.new("RGB", (900, 900))
+    image.putdata([((i * 17 % 256, i * 29 % 256, i * 53 % 256) if color else (i * 17 % 256,) * 3)
+                   for i in range(900 * 900)])
+    original = tmp_path / "page.png"
+    image.save(original)
+    monkeypatch.setattr(e, "_render_pages", lambda *args: [original])
+    result = e._overview_pngs(tmp_path / "unused.pdf", tmp_path, "review")[0]
+    with Image.open(result) as overview:
+        assert overview.size == image.size
+        assert ImageChops.difference(overview.convert("RGB"), image).getbbox() is None
+        assert overview.mode == ("RGB" if color else "L")
+    if not color:
+        assert result.stat().st_size < original.stat().st_size
