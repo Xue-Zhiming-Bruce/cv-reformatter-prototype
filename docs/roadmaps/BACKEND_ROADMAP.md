@@ -122,21 +122,26 @@ regressions; passing them cannot substitute for owner review of generated files.
 
 ### M2 — Accept The Complete Agentic Workflow On Existing Representative Samples
 
-Status: `[~]` The scoped E→B run now completes fresh audited extraction,
-short/medium/long live proofs, an initial preview, an explicit synthetic recruiter
-revision and ordinary/blind previews. The two edited outputs each have one page
-and pass content/structure checks; hidden identity/contact values are absent from
-the blind PDF. Superseded-revision generation returns 409 before model calls.
-The source evidence and checksum-matched proof approval remain unchanged.
+Status: `[~]` The latest scoped E→B run completes fresh v3 audited extraction,
+short/medium/long live proofs, a synthetic phone-hide revision and ordinary/blind
+previews. Each output has one page, 12 logical work bullets and two distinct
+degrees with both GPAs, without manual content correction. Content/structure
+checks pass; hidden identity/contact values are absent from the blind PDF.
+Source evidence and checksum-matched proof approval remain unchanged. Earlier
+workflow evidence also verifies superseded-revision generation returns 409
+before model calls; that check is not reported as rerun in the latest artifact.
 The [October 25 report](../evaluations/2026-10-25_AGENTIC_WORKFLOW_ACCEPTANCE.md)
 and its current review index preserve initial/edited outcomes, rejected attempts,
-independent inspection and actual usage (20 Agentic calls, one extraction,
+independent inspection and actual usage (15 Agentic calls, one extraction,
 zero Adobe reruns). Raw target comparisons are owner-review diagnostics beside
 actual API results. Adapter /6 and the updated prompt digest bind these proofs.
-M2 remains unaccepted: automatic source bullet grouping is wrong on the initial
-preview; Reviewer misses that defect and retains unsupported alignment/font or
-no-difference findings; effective material repair and exact human output judgment
-remain open. Do not infer broader target acceptance or default cutover.
+M2 remains unaccepted: Reviewer previously missed source-projection defects and
+retained unsupported alignment/font findings; effective material repair and
+exact human output judgment remain open. B→C exposed measured badge mapping
+and PDF-anchor validation gaps; their offline fixes and remaining source/target
+fact-overlap rejection are recorded in the dated report. F→C is the next scoped
+custom-content/style check using independent candidate facts and saved C evidence.
+Do not infer broader target acceptance or default cutover.
 
 - [x] Select existing authorized representative candidate/target samples and
       record their actual source formats, supported layout features and current
@@ -164,13 +169,17 @@ No agent may fabricate human acceptance through the API.
 
 ### M3 — Close Only Critical Gaps Found In M2
 
-Status: `[~]` Template consumption, reflow validation and PDF word gaps are closed within the measured scope. Live evidence leaves automatic bullet grouping, Reviewer reliability and material repair effectiveness open. The recruiter-edited output does not close those automation gaps.
+Status: `[~]` Template consumption, reflow validation, PDF word gaps and logical
+source bullet projection are closed within the measured scope. The latest fresh
+v3 extraction retains the two distinct education entries without repetition.
+Reviewer reliability and material repair effectiveness remain open.
 
-- [ ] Fix the observed extraction projection that turns physical continuation
+- [x] Fix the observed extraction projection that turns physical continuation
       lines into separate description bullets. Keep verbatim source-line coverage
       and immutable evidence separate from logical structured entry items; use
       versioned extraction instructions and a fresh audited draft to verify it.
-      The synthetic recruiter edit demonstrates correction, not an extractor fix.
+      Fresh E→B v3 evidence demonstrates 3/4/3/2 bullets with audited original
+      lines and two degrees; prior synthetic recruiter correction stays separate.
 - [ ] Fix demonstrated default-Reviewer discovery, evidence/binding or Builder
       effectiveness failures that prevent acceptance of the declared samples.
       Recheck the affected PDF and previously verified regions using the existing

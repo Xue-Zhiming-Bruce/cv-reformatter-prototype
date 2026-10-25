@@ -1028,8 +1028,8 @@ def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, s
         assert aliases == {"source_heading": "Projects", "target_label": "ADDITIONAL DETAILS"}
 
 
-@pytest.mark.parametrize("blind,stroke", [(False, 1.5), (True, 6), (True, .25)])
-def test_cli_product_decorations_survive_pdf_export(tmp_path: Path, blind: bool, stroke: float) -> None:
+@pytest.mark.parametrize("blind,stroke,wrapped_contact", [(False, 1.5, False), (True, 6, False), (True, .25, False), (False, 1.5, True)])
+def test_cli_product_decorations_survive_pdf_export(tmp_path: Path, blind: bool, stroke: float, wrapped_contact: bool) -> None:
     from app.generation.content_validation import validate_generated_content
     from app.generation.template_mapper import build_client_render_context
     from app.pipeline.candidate_content import candidate_document_from_context
@@ -1042,11 +1042,16 @@ def test_cli_product_decorations_survive_pdf_export(tmp_path: Path, blind: bool,
     spec = product_decoration_template()
     spec.decoration.rule_width_pt = stroke
     profile = CandidateProfile(full_name="Candidate Alpha", email="alpha@example.test", phone="5550101",
-        professional_summary="Builds reliable systems", skills=["Python", "Rust", "Go", "Java"],
+        professional_summary="Builds reliable systems with skills in languages and certifications", skills=["Python", "Rust", "Go", "Java"],
         skill_groups=[{"label": "Systems", "skills": ["SQL", "Linux", "Containers", "Networking"]},
                       {"label": "Practices", "skills": ["Code review", "Mentoring"]}],
         languages=[{"name": "English"}, {"name": "French"}], certifications=[{"name": "Example Certificate"}],
         salary_expectation="HIDDEN_SALARY", client_display_rules={"salary_expectation": "hide"})
+    if wrapped_contact:
+        import re
+
+        spec.header.contact_fields.append("location")
+        profile.location = "Synthetic city and regional office across several districts in the northern region"
     candidate_path, spec_path = tmp_path / "candidate.json", tmp_path / "layout.json"
     candidate_path.write_text(profile.model_dump_json())
     spec_path.write_text(spec.model_dump_json())
@@ -1087,6 +1092,21 @@ def test_cli_product_decorations_survive_pdf_export(tmp_path: Path, blind: bool,
     html = (output / "lane_a/render_1.html").read_text()
     gates = json.loads(next((output / "lane_a").glob("hard_gates_*.json")).read_text())
     assert gates["details"]["content_shapes_match_evidence"]["passed"], gates
+    assert content_shape_verification(state, plan, None, {}, html, {}, pdf_path)["passed"]
+    if wrapped_contact:
+        with pdfplumber.open(pdf_path) as pdf:
+            contact = pdf.pages[0].search(r"\s+".join(re.escape(word) for word in f"Location: {profile.location}".split()))
+            assert contact and contact[0]["bottom"] - contact[0]["top"] > 14
+        from app.generation.chrome_html_to_pdf import export_html_to_pdf
+        from app.pipeline.quality import structure_gate
+
+        missing_heading = html.replace(">LANGUAGES</h2>", ">REMOVED</h2>")
+        assert missing_heading != html
+        missing_path = tmp_path / "missing_heading.html"
+        missing_path.write_text(missing_heading)
+        missing_pdf = export_html_to_pdf(missing_path, tmp_path / "missing_heading.pdf")
+        assert not structure_gate(plan, state, html, missing_pdf)["section_order_matches_state"]
+        assert not content_shape_verification(state, plan, None, {}, html, {}, missing_pdf)["passed"]
     assert not content_gate(plan, html.replace(">Networking</span>", ">Changed</span>"), pdf_path)["passed"]
     from app.pipeline.html_renderer import _pt
     padding = next(rule.gap_above_pt for rule in state.rules if rule.rule_id.startswith("rule.section"))

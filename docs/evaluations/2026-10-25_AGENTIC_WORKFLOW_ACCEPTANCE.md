@@ -7,11 +7,13 @@ This is an outcome report, not another implementation checklist.
 
 ## Outcome
 
-Latest evidence: live E→B now produces ordinary/blind one-page previews after
-a fresh extraction and explicit synthetic recruiter edit. Content, privacy and
-structure checks pass. Automatic source bullet grouping, Reviewer reliability,
-effective repair and human final acceptance remain open. See the dated continuations
-below and the [current review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T081144Z_agentic_eb_final/RESULTS_INDEX.md).
+Latest E→B evidence uses instruction v3 and fresh audited extraction: ordinary
+and blind previews each have one page, with 12 logical work bullets and two
+distinct degrees, including both source GPAs. No manual fact/grouping correction
+was needed. Content, privacy and structure checks pass; Reviewer reliability,
+effective material repair and human exact-output acceptance remain open.
+See the dated continuations below and the
+[current review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T143445Z_agentic_eb_projection_verified/RESULTS_INDEX.md).
 
 Latest bounded continuation (15:02 UTC): B→C reached a second measured style
 and structured project content. One source extraction and one Adobe job were
@@ -548,5 +550,60 @@ Checks:
   [duplicate projection](../../tests/test_results/pytest/20261025T141800Z_duplicate_projection_negative.txt),
   [zero/zero rules using distinct target/candidate PDFs](../../tests/test_results/pytest/20261025T141430Z_zero_rules_distinct_pdfs_negative.txt).
 
-Full offline regression and fresh v3 end-to-end evidence follow. Neither focused
-checks nor offline replay complete M2 or authorize default cutover/B removal.
+### Fresh v3 E→B And Integrated Offline Regression
+
+[Current E→B review](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T143445Z_agentic_eb_projection_verified/RESULTS_INDEX.md)
+uses frozen build `e7ba2b0`. One fresh audited v3 extraction automatically yields
+12 logical work bullets (3/4/3/2) and two distinct degrees, preserving both source
+GPAs. Only the synthetic phone-hide disclosure choice was edited; no manual
+content/grouping correction was needed. Normal and blind PDFs each have one
+page, have been inspected, and pass content/structure/privacy checks. Source
+and proof approval hashes stay unchanged. No human final acceptance was called.
+
+Canonical proofs/normal preview used 13 Agentic requests; the additional blind
+preview used two. [Combined usage](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T143445Z_agentic_eb_projection_verified/combined_agentic_usage.json):
+**15 Agentic requests, 88,860 input + 4,503 output tokens**, plus one extraction
+(5,106 input + 1,864 output); zero Adobe reruns. The blind receipt/identity checks
+remain linked separately and the original canonical count of 13 is unchanged.
+Exact monetary billing is unavailable. Raw Reviewer findings remain reviewable;
+this run does not establish effective material repair or final human judgment.
+
+Frozen-build full offline command: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B
+-m pytest -p no:cacheprovider tests/unit tests/integration -q --tb=short`.
+[Result](../../tests/test_results/pytest/20261025T143445Z_integrated_full_offline.txt):
+**807 passed, 35 skipped, 5 warnings**, 684.63s. This precedes compiler v9 and
+PDF structure-policy v2; it is not a claim that their full regression ran.
+
+### C Offline Preflight: Real PDF Anchors And Shared-Fact Limitation
+
+The saved B→C PDF contained the word “experience” in its unheaded summary.
+The old checker chose it as the EXPERIENCE heading, although the actual heading
+and rule were present. A wrapped LinkedIn contact also failed literal-space
+matching. `pdf_structure/2` now requires headings on their own line/rail and
+matches contact characters across PDF whitespace. Rule geometry, color/stroke,
+HTML ownership, missing-heading and missing-vector checks remain mandatory.
+The policy is bound into the Agentic proof digest; an actual API regression
+rejects stale-policy approval before model calls.
+
+[Focused checks](../../tests/test_results/pytest/20261025T150500Z_pdf_structure_focused.txt):
+**27 passed, 126 deselected**, including actual PDF rail wrapping/reordering,
+rule removal, API identity/rollback and repair cases. One existing event-loop
+deprecation warning remains. The expanded decoration table also checks that a
+body sentence cannot replace a removed heading and that the contact spans lines.
+That [expanded table](../../tests/test_results/pytest/20261025T151000Z_pdf_structure_negative_controls.txt)
+passes **4 cases**; the [old implementation](../../tests/test_results/pytest/20261025T150900Z_pdf_structure_old_gate_negative.txt)
+fails both selected ordinary/wrapped-contact baseline checks as expected.
+All three canonical C proof contexts also complete the existing offline runner
+with `ready_for_owner_review` and selected v1, without provider calls:
+[preflight log](../../tests/test_results/pytest/20261025T151100Z_c_proof_offline_preflight.txt).
+
+The canonical offline replay now passes all C rendering/structure checks but
+rejects `no_target_candidate_facts`: B and C share the same fictional candidate
+facts. No comparison gate was weakened and this is not independent evidence of
+contamination safety. The original failed artifacts and both preflights remain
+under `matrix_20261025T144615Z_agentic_bc_custom`. The next canonical F→C case
+uses the existing independent F source, which includes structured projects,
+and the same saved C analysis. No additional analyzer call is needed.
+
+Neither focused checks nor offline replay complete M2 or authorize default
+cutover/B removal.

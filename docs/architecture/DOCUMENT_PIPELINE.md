@@ -369,6 +369,11 @@ Integration status, October 22, 2026:
   HTML consumption and exported vector/text objects are checked independently;
   missing or recolored PDF decorations fail even when the HTML is intact.
   Overwide badges fail exported-shape checks rather than claiming fidelity.
+  Exported heading anchors occupy their own line (or label rail); a heading
+  word embedded in a body sentence cannot satisfy rule/order checks. Wrapped
+  contact text is matched across PDF whitespace before locating its header
+  rule. `pdf_structure/2` participates in Agentic proof configuration identity;
+  changed validation policy requires fresh proofs before preview publication.
   Measured compiler v9 maps a badge cluster to `full_width` chip presentation,
   retaining its label typography. It does not attach plain inline-text group
   gaps or first-row corrections to label/chip rows; their measured label delta

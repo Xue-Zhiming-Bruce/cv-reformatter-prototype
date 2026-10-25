@@ -15,7 +15,7 @@ from app.pipeline.evidence import EvidenceRef, SelfReportedStatus, StructuralRel
 from app.pipeline.html_renderer import RENDERER_VERSION, render_layout_template
 from app.pipeline.layout_state import C2LayoutState
 from app.pipeline.runtime import RunBudget
-from app.pipeline import service
+from app.pipeline import quality, service
 from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from app.template_analysis.schemas import LayoutTemplateSpec
@@ -57,6 +57,7 @@ def agentic_renderer_version() -> str:
     contract = {
         "image_encoding": "lossless-grayscale-png/1",
         "measurement_policy": service.HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
+        "pdf_structure_checks": quality.PDF_STRUCTURE_VALIDATION_VERSION,
         "renderer": RENDERER_VERSION, "settings": {**_settings(), "max_request_bytes": MAX_REQUEST_BYTES},
         "models": service._model_identity(),
         "prompts": [service.E5_LANE_A_BUILDER_INSTRUCTIONS, service.E5_REVIEWER_INSTRUCTIONS,

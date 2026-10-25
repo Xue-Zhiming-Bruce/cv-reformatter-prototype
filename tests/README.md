@@ -32,7 +32,9 @@ approvals are synthetic/evaluation-only and no final acceptance is sent. Real
 analyzer-produced templates can fail A preflight before any Builder/Reviewer call;
 keep those failures and replay their saved evidence offline before another live run.
 
-The matrix also accepts E→B for distinct candidate/target facts. Explicit
+The matrix also accepts E→B and F→C for distinct candidate/target facts and
+structured projects. B/C share example facts and cannot independently establish
+cross-person target-contamination safety. Explicit
 `--target-evidence <artifact-directory>` validates the selected target's checksum
 before any source API call, reuses saved Adobe/normalized evidence and recompiles
 it with the current compiler. Reports label this as saved-evidence replay, not a

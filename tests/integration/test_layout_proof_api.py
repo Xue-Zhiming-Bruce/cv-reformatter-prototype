@@ -225,6 +225,10 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
         policy.setattr(service, "HEADER_VERTICAL_RULE_MEASUREMENT_VERSION", "future-policy")
         stale = client.post("/api/generate", json=request)
         assert stale.status_code == 409 and calls == [], stale.text
+    with monkeypatch.context() as policy:
+        policy.setattr(quality, "PDF_STRUCTURE_VALIDATION_VERSION", "future-policy")
+        stale = client.post("/api/generate", json=request)
+        assert stale.status_code == 409 and calls == [], stale.text
     monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "13")
     stale = client.post("/api/generate", json=request)
     assert stale.status_code == 409 and calls == [], stale.text

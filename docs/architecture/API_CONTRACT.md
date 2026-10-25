@@ -253,7 +253,7 @@ Every generated page, including continuation pages, receives
 Reviewer review before its PDF fingerprint is recorded as reviewed.
 
 The same layout-proof and `/api/generate` endpoints use the configured
-renderer. Strategy, prompt, measurement-policy, model, provider-route or budget changes require
+renderer. Strategy, prompt, measurement-policy, PDF structure-check policy, model, provider-route or budget changes require
 fresh short/medium/long proofs and explicit proof approval; switching settings
 does not reuse `product-html/1` approval. Each agentic proof attempt has a unique
 directory. Publication requires the selected BEST version, content accounting,

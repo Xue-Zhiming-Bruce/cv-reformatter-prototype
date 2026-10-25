@@ -36,7 +36,7 @@ from app.template_analysis.visual_comparator import (  # noqa: E402
 
 
 DATASET_DIR = PROJECT_ROOT / "tests" / "local_datasets" / "resume_matrix"
-ALL_PAIRS = ["A:B", "A:C", "B:A", "B:C", "C:A", "C:B", "E:B"]
+ALL_PAIRS = ["A:B", "A:C", "B:A", "B:C", "C:A", "C:B", "E:B", "F:C"]
 STEPS = [
     "server",
     "process_source",

@@ -15,6 +15,8 @@ from app.pipeline.render_plan import C2RenderPlan, section_groups
 from app.pipeline.html_renderer import _pt, _class_for
 from app.generation.html_renderer import _inline_separator
 
+PDF_STRUCTURE_VALIDATION_VERSION = "pdf_structure/2"
+
 def _norm(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace(":", " ")).strip().casefold()
 
@@ -654,6 +656,13 @@ def _rendered_heading_positions(
                     section = sections[node_ids[0]]
                     if section.rail_heading and hit["x1"] - hit["x0"] > section.rail_label_width_pt + .75:
                         continue  # A heading overflowing its rail is not a valid structural anchor.
+                    right = (plan.page.margin_left_pt + section.rail_label_width_pt
+                             if section.rail_heading else page.width - plan.page.margin_right_pt)
+                    if any(char["text"].strip() and char not in hit["chars"]
+                           and plan.page.margin_left_pt - .75 <= char["x0"] < right + .75
+                           and hit["top"] <= (char["top"] + char["bottom"]) / 2 <= hit["bottom"]
+                           for char in page.chars):
+                        continue  # A heading word inside a body sentence is not a section anchor.
                     positions[node_ids.pop(0)] = (page_index, hit["top"])
     return positions
 
@@ -1170,7 +1179,7 @@ def content_shape_verification(
         rows.extend(_product_inline_skill_checks(plan, elements, html))
         rows.extend(_product_word_spacing_checks(state, plan, elements, html))
         rows.extend(_product_heading_and_font_checks(state, plan, elements, html))
-        rows.extend(_product_decoration_checks(state, plan, elements, pdf, rendered_extents))
+        rows.extend(_product_decoration_checks(state, plan, elements, pdf, rendered_extents, rendered_headings))
         rows.extend(_product_column_checks(plan, elements, pdf, rendered_headings))
         rows.extend(_product_pagination_checks(state, plan, elements, pdf, rendered_headings))
     return {"passed": all(row["consistent"] for row in rows), "rows": rows}
@@ -1417,7 +1426,7 @@ def _product_column_checks(
 
 def _product_decoration_checks(
     state: C2LayoutState, plan: C2RenderPlan, elements: list[dict[str, Any]],
-    pdf: Path | None, extents: list[dict[str, Any]],
+    pdf: Path | None, extents: list[dict[str, Any]], headings: dict[str, tuple[int, float]],
 ) -> list[dict[str, Any]]:
     """Check template decoration consumption in HTML and exported PDF objects."""
     import pdfplumber
@@ -1445,13 +1454,14 @@ def _product_decoration_checks(
         shapes = [(page_index, index, obj) for page_index, page in enumerate(document.pages)
                   for index, obj in enumerate([*page.curves, *page.rects])]
         first_section = next((section for section in plan.sections if section.label and not section.empty), None)
-        first_headings = document.pages[0].search(re.escape(first_section.label)) if first_section else []
-        first_body_top = min((hit["top"] for hit in first_headings or []), default=float("inf"))
+        first_heading = headings.get(first_section.node_id) if first_section else None
+        first_body_top = first_heading[1] if first_heading and first_heading[0] == 1 else float("inf")
         for row in plan.header_rows:
             if not row.rule_id or not row.fields:
                 continue
             rule = rules[row.rule_id]
-            text_hits = document.pages[0].search(re.escape(row.fields[-1].text)) or []
+            contact_pattern = r"\s*".join(re.escape(char) for char in row.fields[-1].text if not char.isspace())
+            text_hits = document.pages[0].search(contact_pattern, use_text_flow=True) or []
             matches = [extent for extent in extents if extent["page"] == 1
                 and abs(extent["x0_pt"] - rule.x0_pt) <= 1
                 and abs(extent["x1_pt"] - rule.x1_pt) <= 1
