@@ -185,9 +185,11 @@ selector: warnings remain open without fabricated role-gap values. Eighteen
 focused actual-PDF/API checks pass. Build `43a4514` completes fresh live proofs
 and ordinary/blind B→C previews, retaining disclosure and source/proof identities.
 Explicit unsupported findings carry no scalar measurements. A real unchanged
-short-proof trial rolls back to its initial selected PDF. Reviewer still makes
-an independently disproven blind-name typography claim; effective material
-repair and exact human acceptance remain open.
+short-proof trial rolls back to its initial selected PDF. Build `2d6fa38` supplies paired content-free PDF header typography to the
+Reviewer. Its ordinary preview retains one real contact-label finding and its
+blind preview returns zero findings; the previous name-size/weight false claim
+does not recur in this run. Synthetic proofs still have content-shape warnings,
+and effective material repair plus exact human acceptance remain open.
 
 - [x] Resolve the source/target fact-overlap rejection observed in B→C using
       registered candidate provenance. Preserve target-only leakage controls and
@@ -207,6 +209,11 @@ repair and exact human acceptance remain open.
       versioned extraction instructions and a fresh audited draft to verify it.
       Fresh E→B v3 evidence demonstrates 3/4/3/2 bullets with audited original
       lines and two degrees; prior synthetic recruiter correction stays separate.
+- [ ] Resolve the observed header contact-label presentation gap through a
+      typed, bounded A choice over generated labels. Preserve disclosed contact
+      values/order/delimiter, source/revision identity and independent body
+      contact styling. Ambiguous or unstructured evidence must remain explicit;
+      actual-PDF measurement and improvement are required for promotion.
 - [ ] Fix demonstrated default-Reviewer discovery, evidence/binding or Builder
       effectiveness failures that prevent acceptance of the declared samples.
       Recheck the affected PDF and previously verified regions using the existing

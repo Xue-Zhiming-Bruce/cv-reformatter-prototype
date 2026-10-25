@@ -7,13 +7,13 @@ This is an outcome report, not another implementation checklist.
 
 ## Outcome
 
-Build `43a4514` completes B→C with fresh configuration-bound short/medium/long
+Build `2d6fa38` completes B→C with fresh configuration-bound short/medium/long
 proofs and ordinary/blind previews. The independently discovered structured
 project GitHub leak is absent from the replacement blind HTML/PDF; public demo
 links remain, with original source/proof identities preserved. Both outputs
 have two pages and pass content/structure validation. No human final acceptance
 has been submitted. Reviewer reliability and effective material repair remain
-open. The [current review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T180518Z_agentic_bc_review_contract/RESULTS_INDEX.md)
+open. The [current review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T182543Z_agentic_bc_header_facts/RESULTS_INDEX.md)
 links exact files and historical companion samples.
 
 Earlier integrated build `4f081ae` completes E→B and F→C through the actual
@@ -941,5 +941,52 @@ A zero-provider replay on the saved real B→C normal/blind outputs confirms bot
 header anchors are 24 pt Helvetica-Bold at x=66, with a 9 pt following line and
 exact current-name binding. Local evidence lives in the prior run's
 `offline_diagnosis/reviewer_header_facts_v2/verification.json`.
-This does not establish improved live Reviewer accuracy; fresh proofs and
-ordinary/blind review under the changed context remain pending.
+Frozen build `2d6fa38` now completes fresh short/medium/long proofs and B→C
+ordinary/blind previews. Normal: HTTP 200, 30.077s, two pages, 65 expected items.
+Blind: HTTP 200, 31.609s, two pages, 61 expected items. Content/structure checks
+pass; original source, saved revisions and proof files remain unchanged. Blind
+HTML/PDF text/link annotations pass the existing identity-link checks; both
+public demo URLs remain. Both previews remain `client_ready=false`.
+
+The actual audited Reviewer messages carry the paired 24 pt Helvetica-Bold,
+x=66 pt header facts with exact current candidate-name binding, and explicit
+TARGET/RENDER image order. Normal review returns one contact-label observation;
+blind review returns zero findings on both pages. The previous blind name
+size/weight false claim and normal color-verification-only warning do not recur
+in this run. This is a bounded observation, not a statistical reliability claim.
+Synthetic proofs still retain 3/9/6 open findings, including content-shape
+misinterpretations. Two unchanged short-proof Builder trials roll back; no
+material repair is promoted. Reviewer quality and effective repair remain open.
+
+[Latest review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T182543Z_agentic_bc_header_facts/RESULTS_INDEX.md)
+links outputs, actual delivered facts, raw observations and prior failure files.
+[Package validation](../../tests/test_results/pytest/20261025T183600Z_bc_header_facts_package_validation.txt)
+checks manifest/CSV/review rows 1/1, preservation 1/1, all local index links and
+output hashes, source/revision/proof identities and all ten selected-page PNGs
+(six proofs plus four outputs) identical to inspected predecessors. All 96
+image references resolve to 70 unique local files with matching hash/MIME,
+with no pathless references in this run. Sixteen retained context records
+include duplicated shared-proof snapshots; they are not sixteen new model calls.
+Actual usage: **17 Agentic requests** (14 canonical + 3 blind), 99,356 input +
+8,306 output tokens, zero new extraction/Adobe calls, billed cost unavailable.
+[Canonical terminal log](../../tests/test_results/pytest/20261025T182543Z_agentic_bc_header_facts.txt),
+[blind terminal log](../../tests/test_results/pytest/20261025T183046Z_bc_header_facts_blind.txt).
+No human output acceptance has been recorded, and no final-acceptance API was
+called. The new B→C owner question is separate from the earlier E/F question.
+
+The remaining normal observation names a real presentation difference: measured
+C contacts contain unlabelled pipe-separated values, while A adds generated
+Email/Location/LinkedIn labels. The existing four A primitives cannot alter
+header fields. This explains why the ordinary finding remains unsupported and
+cannot receive an effective Builder correction today.
+
+The bounded next M3 contract is a typed optional choice over generated header
+contact labels only. It must use the structured disclosed contact values,
+preserve their field order/delimiter/leaf ownership and all source/revision
+files, leave body contact formatting separate, and reject ambiguous or
+unstructured evidence instead of stripping arbitrary text. Candidate facts,
+HTML/CSS and target-person values are not model-editable. Automatic promotion
+will require a correctly scoped actual-PDF measurement, improvement and accepted
+region rechecks; unsupported or unmeasured trials remain outside BEST. This is
+a pending internal contract, not an implemented primitive or a cutover claim.
+The selected provider, renderer family and stored product contracts are unchanged.
