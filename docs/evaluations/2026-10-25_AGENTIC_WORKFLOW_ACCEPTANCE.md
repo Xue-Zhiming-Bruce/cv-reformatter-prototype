@@ -708,3 +708,37 @@ confirms manifest/CSV/table counts, content verification, all review links,
 normal/blind PDF identities, source/proof preservation and 99 actual audited
 image path/hash references (20 WebP). Human judgment remains pending. M2–M4,
 default cutover, B retirement and B0/B1 completion remain unaccepted.
+
+### Candidate-Owned Target Overlap: B→C Gate Correction
+
+The original B→C rejection was a false positive in the common target-line
+privacy gate: it had no registered-candidate input and treated matching source
+facts as target copying. `candidate_fact_privacy/2` now receives the already
+disclosed `CandidateDocument` in both A/B rendering and their shape probes.
+A coincident target line can pass only with complete source-value coverage or
+a literal wrapped-prose fragment. Per-line `candidate_content_ids` retain the
+supporting leaf/explicit-rendered-overflow identities. Source overlap does not
+change the approved presentation-label exclusions or authorize omitted content.
+Typed contact/skill-group components preserve their source identities; HTTP
+origin empty-path/slash normalization does not authorize new paths. The gate
+retains its existing target-line detection granularity; separate content,
+disclosure and binding checks remain mandatory.
+
+The [focused actual-PDF/API checks](../../tests/test_results/pytest/20261025T171200Z_candidate_overlap_focused.txt)
+pass **20 cases**, including shared-name parity in both lanes, hidden name/email,
+unknown roles, word recombination, C versus C++, complete composed rows, wrapped
+prose, explicit omissions, and HTML-only/PDF-only target-line leakage. Policy
+identity changes reject stale proof approval before model calls. The extended
+URL boundary table is recorded separately.
+[Extended boundary table](../../tests/test_results/pytest/20261025T171700Z_candidate_overlap_boundaries.txt):
+**19 passed**, including both root-URL slash directions.
+[Old-gate negative controls](../../tests/test_results/pytest/20261025T171300Z_candidate_overlap_old_gate_negative.txt)
+reproduce rejection of source-owned English and a shared source name.
+
+[Saved B→C canonical offline preflight](../../tests/test_results/pytest/20261025T171400Z_bc_overlap_offline_preflight.txt)
+now reaches `ready_for_owner_review`, with all seven independent gates true,
+40 coincident lines supported by disclosed candidate IDs and zero target-only
+line leaks. It uses the saved phone-hide revision and recompiled measured C
+template, without changing original source/evidence or making provider calls.
+Current-build live reproof, preview and broad regression follow; the old failed
+run remains intact and none of this constitutes human output acceptance.

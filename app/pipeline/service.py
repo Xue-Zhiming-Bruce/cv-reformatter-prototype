@@ -3660,7 +3660,7 @@ def run_e5(
                             # shell-recognized label set as the main renders.
                             "privacy_gate": authored_privacy_gate(
                                 html, probe_pdf_path, target_pdf,
-                                labels=approved_label_texts,
+                                labels=approved_label_texts, candidate=probe_candidate,
                             )["passed"],
                             "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
                             "deterministic_render": (
@@ -3699,7 +3699,7 @@ def run_e5(
                             )["passed"],
                             "privacy_gate": authored_privacy_gate(
                                 doc, probe_pdf_path, target_pdf,
-                                labels=approved_label_texts,
+                                labels=approved_label_texts, candidate=probe_candidate,
                             )["passed"],
                             "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
                         }
@@ -3849,7 +3849,7 @@ def run_e5(
                 # shell-recognized label set for BOTH lanes, so the two lanes'
                 # privacy decisions are directly comparable.
                 common_privacy = authored_privacy_gate(
-                    html, pdf_path, target_pdf, labels=approved_label_texts
+                    html, pdf_path, target_pdf, labels=approved_label_texts, candidate=candidate
                 )
                 structure_gate = c2r.structure_gate(plan, state, html, pdf_path)
                 blank = c2r.blank_page_gate(pdf_path)
@@ -3977,7 +3977,7 @@ def run_e5(
                 # identical shell-recognized label set, so both lanes' privacy
                 # decisions are directly comparable.
                 common_privacy = authored_privacy_gate(
-                    doc, pdf_path, target_pdf, labels=approved_label_texts
+                    doc, pdf_path, target_pdf, labels=approved_label_texts, candidate=candidate
                 )
                 label_semantics = _e5_label_semantics(
                     common_privacy, approved_label_catalog

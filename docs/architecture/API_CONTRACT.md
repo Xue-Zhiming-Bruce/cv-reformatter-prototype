@@ -254,9 +254,15 @@ Reviewer review before its PDF fingerprint is recorded as reviewed.
 
 The same layout-proof and `/api/generate` endpoints use the configured
 renderer. Strategy, prompt, measurement-policy, PDF structure-check policy,
-review-image encoding, model, provider-route or budget changes require
-fresh short/medium/long proofs and explicit proof approval; switching settings
-does not reuse `product-html/1` approval. Each agentic proof attempt has a unique
+review-image encoding, candidate-fact privacy policy, model, provider-route or
+budget changes require fresh short/medium/long proofs and explicit proof approval;
+switching settings does not reuse `product-html/1` approval. The common target-line
+privacy check can account for overlap only from the registered, already-disclosed
+candidate document, with source content IDs recorded per matched line. Hidden
+profile values, output plans and target evidence cannot authorize overlap.
+Within this line-based check, incomplete coverage or target-only values still
+fail; source overlap never expands the approved presentation-label exclusions.
+Each agentic proof attempt has a unique
 directory. Publication requires the selected BEST version, content accounting,
 privacy, content, section order, no-blank-page and template-consumption gates,
 product content/structure validation, stable source/configuration and

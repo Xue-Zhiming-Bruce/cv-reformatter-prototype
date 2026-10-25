@@ -2936,8 +2936,10 @@ def test_measured_labels_are_recognized_without_fabricating_human_approval(tmp_p
     from tests.helpers.pipeline_candidates import candidate_resume_E
 
     inputs = synthetic_pipeline_inputs(tmp_path)
+    candidate = candidate_resume_E()
+    next(leaf for leaf in candidate.leaves if leaf.leaf_id == "header.name").text = "Target Person"
     run_dir, _terminal, record = e.run_e5(
-        **inputs, out_dir=tmp_path / "run", candidate=candidate_resume_E(),
+        **inputs, out_dir=tmp_path / "run", candidate=candidate,
         live=False, lanes=("a", "b"), max_repair_rounds=0,
     )
     listing = json.loads((run_dir / "presentation_labels.json").read_text())
@@ -2953,6 +2955,72 @@ def test_measured_labels_are_recognized_without_fabricating_human_approval(tmp_p
         privacy = gate["details"]["no_target_candidate_facts"]
         assert privacy["passed"] is True
         assert privacy["label_semantics"]["excluded_labels"] == ["experience", "summary"]
+        shared_name = next(row for row in privacy["checked_target_lines"] if row["line"] == "Target Person")
+        assert shared_name["hit"] and shared_name["candidate_content_ids"] == ["header.name"]
+
+
+@pytest.mark.parametrize("line,blind,surface,passed", [
+    ("Shared Candidate", False, "both", True),
+    ("Shared Candidate", True, "both", False),
+    ("visible@example.test", False, "both", True),
+    ("visible@example.test", True, "both", False),
+    ("English", False, "both", True),
+    ("Englishman", False, "both", False),
+    ("C++", False, "both", False),
+    ("Data Python SQL", False, "both", True),
+    ("Blue Labs", False, "both", False),
+    ("Blue Systems | Platform Engineer | 2020 - 2024", False, "both", True),
+    ("Blue Systems | Unseen Director", False, "both", False),
+    ("Builds reliable APIs.", False, "both", True),
+    ("Portfolio: https://candidate.example.test", False, "both", True),
+    ("Portfolio: https://candidate.example.test/", False, "both", True),
+    ("Portfolio: https://candidate.example.test/private", False, "both", False),
+    ("Approved overflow", False, "both", True),
+    ("Omitted secret", False, "both", False),
+    ("target-only@example.test", False, "html", False),
+    ("target-only@example.test", False, "pdf", False),
+])
+def test_common_privacy_requires_disclosed_candidate_provenance(
+    tmp_path: Path, line: str, blind: bool, surface: str, passed: bool,
+) -> None:
+    from html import escape
+    from reportlab.pdfgen import canvas
+    from app.extraction.candidate_schema import CandidateProfile
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context, UnroutableContent
+
+    profile = CandidateProfile(full_name="Shared Candidate", email="visible@example.test",
+        portfolio_url="https://candidate.example.test/", skills=["C"], languages=[{"name": "English"}],
+        skill_groups=[{"label": "Data", "skills": ["Python", "SQL"]}],
+        professional_summary="Builds reliable APIs. Deploys measured services.",
+        work_experience=[{"company": "Blue Systems", "title": "Platform Engineer", "start_date": "2020", "end_date": "2024"},
+                         {"company": "Red Labs", "title": "Data Engineer"}])
+    if line == "Portfolio: https://candidate.example.test/":
+        profile.portfolio_url = "https://candidate.example.test"
+    candidate = candidate_document_from_context(build_client_render_context(profile, blind_profile=blind),
+        candidate_id="disclosed-source")
+    candidate.unroutable = [UnroutableContent(text="Approved overflow", reason="reviewed display", slot="overflow"),
+        UnroutableContent(text="Omitted secret", reason="reviewed omission", disposition="omit")]
+
+    def pdf(path: Path, text: str) -> Path:
+        document = canvas.Canvas(str(path))
+        document.drawString(60, 730, text)
+        document.save()
+        return path
+
+    target = pdf(tmp_path / "target.pdf", line)
+    output = pdf(tmp_path / "output.pdf", "Candidate-only content" if surface == "html" else line)
+    html = f"<p>{escape('Candidate-only content' if surface == 'pdf' else line)}</p>"
+    gate = at.authored_privacy_gate(html, output, target, labels={"EXPERIENCE"}, candidate=candidate)
+    assert gate["passed"] is passed, gate
+    assert gate["excluded_labels"] == ["experience"]
+    assert len(gate["checked_target_lines"]) == 1
+    checked = gate["checked_target_lines"][0]
+    assert checked["hit"]
+    assert bool(checked["candidate_content_ids"]) is passed
+    assert set(checked["candidate_content_ids"]) <= {leaf.leaf_id for leaf in candidate.leaves} | {"unroutable.0"}
+    if passed:
+        assert not at.authored_privacy_gate(html, output, target, labels={"EXPERIENCE"})["passed"]
 
 
 @pytest.mark.parametrize("text,recognized", [

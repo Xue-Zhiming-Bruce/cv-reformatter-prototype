@@ -35,6 +35,10 @@ keep those failures and replay their saved evidence offline before another live 
 The matrix also accepts E→B and F→C for distinct candidate/target facts and
 structured projects. B/C share example facts and cannot independently establish
 cross-person target-contamination safety. Explicit
+source provenance is checked separately: `test_pipeline_loop.py` covers shared
+names/languages/composed rows versus target-only and hidden content, using real
+PDFs and the common A/B gate. Source overlap does not expand label exclusions.
+Explicit
 `--target-evidence <artifact-directory>` validates the selected target's checksum
 before any source API call, reuses saved Adobe/normalized evidence and recompiles
 it with the current compiler. Reports label this as saved-evidence replay, not a

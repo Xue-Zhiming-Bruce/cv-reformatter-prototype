@@ -669,6 +669,19 @@ pages use the last target page as an explicitly identified style reference.
 Reviewer failure cannot publish a render-only result. Open visual findings are
 reported for human review; they are not automatic output approval.
 
+The shared target-line privacy policy `candidate_fact_privacy/2` accepts a
+coincident target line only when its entire fact text is supported by complete
+values in the registered, already-disclosed `CandidateDocument` (or a literal
+wrapped-prose fragment). Composed rows keep source content IDs; typed skill
+groups and contact values retain their source ownership. HTTP origin
+empty-path/slash equivalence is normalized without authorizing additional URL
+paths. Partial source coverage, unrelated word combinations and hidden/omitted
+values cannot excuse a target-line hit. The approved-label exclusion set stays
+independent and identical for A/B and probes. This preserves the existing
+line-granularity detection boundary; it is not a claim of universal leakage
+detection or candidate-field relationship validation. The policy is bound into
+proof configuration identity, requiring fresh proofs.
+
 Proof identity includes A's renderer version, existing prompts, model routing
 and bounded budgets; changes require new complete proof approval. Unique
 agentic attempt directories preserve previous proof files. Candidate runs and
