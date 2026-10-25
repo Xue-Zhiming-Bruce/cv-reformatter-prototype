@@ -66,7 +66,7 @@ def agentic_renderer_version() -> str:
         )],
     }
     digest = hashlib.sha256(json.dumps(contract, sort_keys=True).encode()).hexdigest()[:16]
-    return f"agentic-a/5+{RENDERER_VERSION}+{digest}"
+    return f"agentic-a/6+{RENDERER_VERSION}+{digest}"
 
 
 def _structure_basis(state: C2LayoutState, normalized: NormalizedLayoutEvidence) -> TargetStructureDraft:
@@ -159,7 +159,7 @@ def render_agentic(
         raise AgenticGenerationError("Selected agentic output fails required content, privacy, structure or rendering checks")
     content = validate_generated_content(context, pdf_path=pdf_path, layout_spec=layout_spec)
     structure = validate_output_structure(context, html_path=html_path, pdf_path=pdf_path,
-        layout_spec=layout_spec, target_pdf_path=target_pdf)
+        layout_spec=layout_spec)
     if not content.passed or not structure.passed:
         raise AgenticGenerationError("Selected agentic output fails product content or structure validation")
     if agentic_renderer_version() != identity:

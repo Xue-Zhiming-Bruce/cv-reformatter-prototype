@@ -40,6 +40,13 @@ ClientFacingRenderContext + LayoutTemplateSpec
 
 Candidate analysis is LLM-first under ADR 0005. One schema-constrained call
 returns versioned `llm_segmentation/1` sections and structured candidate fields.
+PDF ingestion reconstructs word gaps using a font-relative threshold (0.2 of
+character size), so small-font positioned text does not lose ordinary spaces
+under a fixed 3pt threshold. Original document bytes and stored extraction
+artifacts remain unchanged; this reader fix does not rewrite existing profiles.
+A source-coverage pass compares with extracted text, so it cannot by itself
+certify that extraction matches the visible source PDF.
+
 Every non-empty raw source line must appear exactly once, verbatim, as a heading
 or item. Deterministic code audits those lines as multisets; any missing,
 duplicated, invented, or altered line blocks approval. The LLM never evaluates
@@ -554,9 +561,11 @@ wider than their declared rail remain invalid anchors. Flattened text offsets
 remain diagnostic evidence, not the ordering decision. Typography and rule
 geometry keep their existing independent checks. Independent product content
 checks use PDF text flow and normalize whitespace around retained hyphens;
-source-value multiplicity remains mandatory. Proof heading presence and first-page
-break comparison recognize wrapped label characters without skipping missing
-headings or genuinely different page breaks.
+source-value multiplicity remains mandatory. Proof heading presence recognizes
+wrapped label characters. Candidate page margins are checked against the compiled
+spec; natural section page positions are not compared with target-sample content.
+Explicit breaks and empty-section omission remain enforced by A's mandatory
+template-consumption gate using actual PDF positions and HTML break ownership.
 
 Review findings, typed measurements, attribution, and repairs are version-bound.
 Entry-spacing binding follows the declared parent chain from entry/list regions
@@ -590,7 +599,7 @@ links appear in the existing owner review index and their version IDs in
 `summary.pending_layout_trials`. Unchanged or unsafe trials roll back. They
 remain local and are not recorded as visually reviewed or automatically improved.
 Existing round/request limits and action deduplication also bound trials.
-The agentic adapter identity is now `agentic-a/5`; the gate-policy revision
+The agentic adapter identity is now `agentic-a/6`; the gate-policy revision
 requires fresh proofs while preserving the existing system prompt bytes.
 The v2 exact label vocabulary includes PROJECTS and ADDITIONAL SECTIONS; unknown or suffixed labels remain unrenderable.
 The shell decides promotion and rollback, preserves valid prior versions, and

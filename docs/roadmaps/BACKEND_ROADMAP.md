@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 25, 2026 (bounded measured-template consumption fixed; M2 acceptance open)
+Last reviewed: October 25, 2026 (live E→B evidence and blocking gaps; M2 acceptance open)
 
 This is the sole implementation checklist. Product behavior belongs in the
 [Product Specification](../product/PRODUCT_SPEC.md), approved decisions in
@@ -56,7 +56,7 @@ A fixed business workflow and a bounded Agentic review/repair loop coexist.
 | Final output acceptance | `POST /api/artifacts/{artifact_id}/final-acceptance`; only the exact current preview can become client-ready. |
 
 Shared A implementation: `lane-a-product-subset/16`. Optional Agentic identity:
-`agentic-a/5+lane-a-product-subset/16+<configuration digest>`. Proofs bind the
+`agentic-a/6+lane-a-product-subset/16+<configuration digest>`. Proofs bind the
 implementation, prompts, model routing and budgets as well as target/template
 identities. Changing that configuration requires fresh short/medium/long proofs
 and explicit proof approval; old records do not acquire a new identity on read.
@@ -122,18 +122,18 @@ regressions; passing them cannot substitute for owner review of generated files.
 
 ### M2 — Accept The Complete Agentic Workflow On Existing Representative Samples
 
-Status: `[~]` First real A→B execution reached target analysis/revision saving,
-but short-proof compilation failed before any Agentic model call. See the
-[October 25 workflow evidence](../evaluations/2026-10-25_AGENTIC_WORKFLOW_ACCEPTANCE.md).
-The measured-template consumption gap is now fixed within explicit bounds:
-verified heading-color palette aliases, PostScript face requests and full-width
-hidden summaries. Saved-evidence replay yields 1/2/3-page canonical PDFs passing
-all output checks and API proof structural validation. The same replay closed
-contact-only title-style compilation and derived-subtitle projection defects.
-Compiler v8 and A renderer /16 require new proofs; original evidence/specs remain
-unchanged. M2 is not accepted: ordinary live review/repair, distinct-candidate
-previews and human output judgment remain open. Continue E→B through the canonical
-matrix using explicit checksum-matched saved B evidence, not another Adobe call.
+Status: `[~]` E→B has completed live short/medium/long proof review and a
+reviewed candidate attempt, using saved source/target evidence. The original
+candidate API request failed on an invalid comparison with target-sample page
+breaks. Offline revalidation of the unchanged selected PDF passes content and
+structure after removing that comparison; A's explicit-pagination gates remain.
+The bounded measured-template/compiler fixes and canonical request evidence are
+in the [October 25 report](../evaluations/2026-10-25_AGENTIC_WORKFLOW_ACCEPTANCE.md).
+M2 remains unaccepted: Reviewer content-difference false positives, ineffective
+repairs, re-extraction/review after the word-spacing fix, normal/blind coverage and exact human
+output judgment remain material gaps. Adapter /6 invalidates earlier proof
+approvals after the product validation policy change; do not present offline
+revalidation as a successful repeat API request or human acceptance.
 
 - [ ] Select existing authorized representative candidate/target samples and
       record their actual source formats, supported layout features and current
@@ -161,7 +161,7 @@ No agent may fabricate human acceptance through the API.
 
 ### M3 — Close Only Critical Gaps Found In M2
 
-Status: `[~]` Bounded analyzer-to-A consumption gap closed offline; live workflow quality gaps still require M2 evidence.
+Status: `[~]` Bounded template consumption and candidate reflow blockers closed; source word-gap reconstruction is fixed offline. Reviewer false positives, ineffective repairs and re-extraction/review of the corrected source remain open; keep M2 acceptance open.
 
 - [ ] Fix demonstrated default-Reviewer discovery, evidence/binding or Builder
       effectiveness failures that prevent acceptance of the declared samples.

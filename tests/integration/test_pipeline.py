@@ -887,7 +887,7 @@ def test_product_template_rejects_invalid_dispatch_before_output(tmp_path: Path,
         spec.page.width_pt = 600
     if problem == "label":
         from app.template_analysis.schemas import SectionLayoutSpec
-        spec.sections.append(SectionLayoutSpec(section_id="custom", source="additional_details", label="Projects", additional_section_heading="Projects"))
+        spec.sections.append(SectionLayoutSpec(section_id="custom", source="additional_details", label="Projects Extra", additional_section_heading="Projects"))
     profile = CandidateProfile(full_name="Candidate Alpha", location=None if problem == "label" else "Boston")
     if problem in {"semantic_fields", "duplicate_custom"}:
         from tests.helpers.pipeline_layout import product_entry_template, product_entry_profile

@@ -200,7 +200,6 @@ def validate_output_structure(
     layout_spec: LayoutTemplateSpec | None = None,
     coverage_ledger: SourceCoverageLedger | None = None,
     pdf_path: str | Path | None = None,
-    target_pdf_path: str | Path | None = None,
 ) -> StructureGateReport:
     """Assert entry geometry against expected tiers from the approved render
     context and the compiled layout spec.
@@ -230,8 +229,6 @@ def validate_output_structure(
             checks.append(
                 _check_pdf_page_geometry(
                     Path(pdf_path), layout_spec,
-                    Path(target_pdf_path) if target_pdf_path else None,
-                    set(re.findall(r'data-section-label="([^"]+)"', html)),
                 )
             )
     if coverage_ledger is not None:
@@ -259,11 +256,9 @@ def validate_output_structure(
 def _check_pdf_page_geometry(
     pdf_path: Path,
     layout_spec: LayoutTemplateSpec,
-    target_pdf_path: Path | None,
-    rendered_labels: set[str],
 ) -> StructureGateCheck:
+    # Candidate content reflows; explicit breaks are checked by A's template-consumption gate.
     issues: list[str] = []
-    notes: list[str] = []
     tolerance_pt = 3.0
     with pdfplumber.open(pdf_path) as pdf:
         for page_number, page in enumerate(pdf.pages, start=1):
@@ -283,47 +278,11 @@ def _check_pdf_page_geometry(
                     f"page {page_number} content bottom {bottom:.1f}pt exceeds measured "
                     f"{bottom_limit:.1f}pt bottom threshold"
                 )
-        generated_break = _last_page_one_heading(pdf.pages[0], layout_spec, rendered_labels)
-    if target_pdf_path is not None and target_pdf_path.exists():
-        with pdfplumber.open(target_pdf_path) as target_pdf:
-            target_text = "\n".join(page.extract_text(use_text_flow=True) or "" for page in target_pdf.pages)
-            comparable = all(re.search(_heading_pattern(label), target_text, re.IGNORECASE) for label in rendered_labels)
-            target_break = _last_page_one_heading(target_pdf.pages[0], layout_spec, rendered_labels)
-        if comparable:
-            if target_break and generated_break != target_break:
-                issues.append(
-                    f"page-1 break ends at {generated_break!r}; target ends at {target_break!r}"
-                )
-        else:
-            notes.append(
-                "page-1 break comparison skipped because the target does not expose "
-                "every rendered section label"
-            )
     return StructureGateCheck(
         section_heading="page-geometry",
         matched=True,
         issues=issues,
-        notes=notes,
     )
-
-
-def _heading_pattern(label: str) -> str:
-    return r"(?<!\w)" + r"\s*".join(re.escape(char) for char in label if not char.isspace()) + r"(?!\w)"
-
-
-def _last_page_one_heading(
-    page: Any,
-    layout_spec: LayoutTemplateSpec,
-    rendered_labels: set[str],
-) -> str | None:
-    text = page.extract_text(use_text_flow=True) or ""
-    matches = [
-        (match.start(), section.label)
-        for section in layout_spec.sections
-        if section.show_heading and section.label in rendered_labels
-        for match in re.finditer(_heading_pattern(section.label), text, re.IGNORECASE)
-    ]
-    return max(matches, default=(-1, None))[1]
 
 
 def _check_measured_renderer_semantics(

@@ -73,7 +73,7 @@ claim follows from these regressions.
 and wrapped heading order using real PDFs. Missing headings, disabled label
 wrapping and physical reordering must fail even when the original HTML remains
 correct. The existing content-validation unit table also covers repeated dates,
-hyphen line breaks, missing/changed duplicate values and wrapped first-page
+hyphen line breaks, missing/changed duplicate values and safe reflow with wrapped
 headings; proof validation rejects near-match heading words. This extends the
 existing regressions without another runner.
 
@@ -221,3 +221,9 @@ PDF assertions keep entry headers with their first description and reject blank
 pages. Removing breaks from either HTML or the exported PDF must fail the shape
 gate while preserving candidate content. This is bounded pagination coverage,
 not an assertion that arbitrary long-content layouts have been accepted.
+
+`unit/test_pdf_reader.py` covers positioned word gaps at 8/12/24pt and retains
+ordinary within-word tracking. PDF ingestion uses a font-relative gap threshold;
+existing extraction/profile artifacts are immutable and need a fresh analysis
+and recruiter save to adopt corrected text. Output content-preservation checks
+do not establish visible-source extraction accuracy.

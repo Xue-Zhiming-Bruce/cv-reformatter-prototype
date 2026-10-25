@@ -24,7 +24,8 @@ def read_pdf_text(path: str | Path) -> str:
 
     try:
         with pdfplumber.open(file_path) as pdf:
-            page_text = [page.extract_text() or "" for page in pdf.pages]
+            # A fixed 3pt gap merges ordinary words in small-font PDFs.
+            page_text = [page.extract_text(x_tolerance_ratio=0.2) or "" for page in pdf.pages]
     except (PdfminerException, ValueError) as exc:
         raise CorruptedPdfError("The PDF file appears to be corrupted or invalid.") from exc
     except OSError as exc:

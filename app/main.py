@@ -1408,10 +1408,6 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
             html_path=html_path,
             layout_spec=effective_layout_spec,
             pdf_path=pdf_path,
-            target_pdf_path=(
-                artifact_dir / "target_format_reference.pdf"
-                if uses_uploaded_target else None
-            ),
             coverage_ledger=build_source_coverage_ledger(
                 profile_revision.profile, normalized_document
             ),

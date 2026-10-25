@@ -19,6 +19,18 @@ PDF_RESUME_DATASETS = [
 ]
 
 
+@pytest.mark.parametrize("font_size", [8, 12, 24])
+def test_read_pdf_text_preserves_positioned_word_gaps(tmp_path: Path, font_size: int) -> None:
+    from tests.helpers.synthetic_pdf import _write_single_page_pdf
+
+    pdf = _write_single_page_pdf(tmp_path / "positioned.pdf", [
+        f"BT /F1 {font_size} Tf 72 720 Td [(Software) -230 (Engineer) -230 (II)] TJ ET",
+        f"BT /F1 {font_size} Tf {font_size * 0.08} Tc 72 680 Td (quality-of-service) Tj ET",
+    ])
+
+    assert read_pdf_text(pdf).splitlines() == ["Software Engineer II", "quality-of-service"]
+
+
 def test_read_pdf_text_extracts_text_from_dataset_sample(tmp_path: Path) -> None:
     dataset_path = _require_pdf_resume_dataset()
     pdf_path = _copy_zip_member(

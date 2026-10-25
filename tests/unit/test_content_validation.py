@@ -119,15 +119,17 @@ def test_repeated_dates_survive_parallel_labels_and_hyphen_wrap(tmp_path: Path, 
     assert report.checks[0].missing_items == ([] if report.passed else ["2018 - 2020"])
 
 
-@pytest.mark.parametrize("wrapped_target,new_page,passed", [(False, False, True), (False, True, False), (True, True, False)])
-def test_wrapped_headings_keep_first_page_break_validation(tmp_path: Path, wrapped_target: bool, new_page: bool, passed: bool) -> None:
+@pytest.mark.parametrize("new_page", [False, True])
+def test_candidate_content_can_reflow_with_wrapped_headings(tmp_path: Path, new_page: bool) -> None:
     from app.generation.content_validation import validate_output_structure
     from app.template_analysis.schemas import built_in_layout_template_spec, SectionLayoutSpec
 
     spec = built_in_layout_template_spec()
     spec.page = spec.page.model_copy(update=PAGE)
     spec.sections = [SectionLayoutSpec(section_id="summary", source="summary", label="SUMMARY"),
-                     SectionLayoutSpec(section_id="education", source="education", label="EDUCATION")]
+                     SectionLayoutSpec(section_id="education", source="education", label="EDUCATION"),
+                     SectionLayoutSpec(section_id="languages", source="languages", label="LANGUAGES",
+                                       page_break_before=True)]
     context = build_client_render_context(CandidateProfile(full_name="Candidate Alpha", professional_summary="Builds services",
         education=[{"institution": "Example University", "degree": "BSc"}]))
     html = tmp_path / "profile.html"
@@ -135,14 +137,12 @@ def test_wrapped_headings_keep_first_page_break_validation(tmp_path: Path, wrapp
                     '<section data-section-source="education" data-section-label="EDUCATION">EDUCATION '
                     '<span class="education-institution" data-bold="true">Example University</span>BSc</section>')
     prefix = ["Candidate Alpha", "SUMMARY", "Builds services"]
-    target_lines = prefix + (["EDUCATIO", "N"] if wrapped_target else ["EDUCATION"]) + ["Example University", "BSc"]
-    target = build_text_pdf_pages(tmp_path / "target.pdf", target_lines, line_height_pt=100, **PAGE)
     education = ["EDUCATIO", "N", "Example University", "BSc"]
     # Seven 100pt rows fit on page one; four empty rows move education to page two.
     lines = prefix + ([""] * 4 if new_page else []) + education
     pdf = build_text_pdf_pages(tmp_path / "output.pdf", lines, line_height_pt=100, **PAGE)
-    report = validate_output_structure(context, html_path=html, pdf_path=pdf, layout_spec=spec, target_pdf_path=target)
-    assert report.passed is passed, report
+    report = validate_output_structure(context, html_path=html, pdf_path=pdf, layout_spec=spec)
+    assert report.passed, report
     geometry = next(check for check in report.checks if check.section_heading == "page-geometry")
     assert not geometry.notes, geometry
-    assert bool(geometry.issues) is not passed
+    assert not geometry.issues, geometry

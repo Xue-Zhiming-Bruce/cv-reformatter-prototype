@@ -7,6 +7,12 @@ This is an outcome report, not another implementation checklist.
 
 ## Outcome
 
+Latest evidence: live E→B produced three reviewed proofs and an unpublished
+candidate attempt. Offline fixes close candidate reflow rejection and source
+word-gap reconstruction; Reviewer false positives, ineffective repair and
+fresh extraction/recruiter review remain open. See the dated continuations
+below and the [current review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T081144Z_agentic_eb_final/RESULTS_INDEX.md).
+
 The first real A→B API matrix stopped before the first Agentic model call.
 Candidate extraction, immutable revision saving and Adobe target analysis
 succeeded. The short layout proof failed with HTTP 500:
@@ -204,4 +210,103 @@ and existing budget guards pass: **26 checks** in
 [encoding checks](../../tests/test_results/pytest/20261025T080900Z_lossless_review_encoding.txt).
 No model calls were used to diagnose or test this encoding change.
 
-Further live evidence follows when executed.
+### Complete Live Proof Set And Reviewed Candidate Attempt
+
+The [latest E→B review](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T081144Z_agentic_eb_final/RESULTS_INDEX.md)
+ran source build `856cd8e` with adapter /5, A renderer /16 and lossless grayscale
+encoding. It reused checksum-matched E extraction and B target evidence: zero
+new extraction requests and zero Adobe jobs. The saved revision hides phone;
+this is an actual disclosure edit, not human output acceptance.
+
+| Artifact | Pages | Agentic requests | Open findings | Promoted repairs |
+| --- | --- | --- | --- | --- |
+| Short proof | 1 | 8 | 1 | 0 |
+| Medium proof | 2 | 4 | 1 | 0 |
+| Long proof | 3 | 9 | 5 | 0 |
+| Candidate selected attempt | 1 | 3 | 0 | 0 |
+
+All selected files completed default visual Reviewer review; continuation pages
+were reviewed. Total **24 requests**, **159,741 input + 6,443 output tokens**.
+Exact provider billing is unavailable; no monetary estimate is asserted.
+Each attempt's existing `e5_state.json` and `owner_review/cost_summary.json`
+record usage, timing and bounded tools. No selected repair improved a measured
+defect. Medium and long attempted repairs; their rejected PDFs remain available
+for comparison. This is evidence of the loop's limits, not successful repair.
+
+Direct inspection of all six proof pages and the candidate page found no
+clipping or blank pages, but revealed two material acceptance gaps:
+
+- Reviewer confuses legitimate synthetic/candidate content with target-sample
+  facts (including placeholder names/languages), and treats natural long-content
+  reflow as section omission. Its high-confidence findings cannot establish
+  actual defects or justify target-fact substitution. All seven open findings
+  remain visible; none were silently dismissed or converted into approval.
+- The candidate's approved source projection already contains merged words.
+  The source PDF visibly contains ordinary spaces; the stored raw extraction,
+  normalized document and profile lost them before generation. The selected
+  PDF faithfully preserves those incorrect input strings. A content-preservation
+  pass therefore does not establish extraction accuracy or usable output.
+
+### Candidate Reflow False Rejection
+
+The candidate API request returned **HTTP 500** after successful review because
+its independent product gate compared the last heading on page one with the
+target sample. The candidate has no populated Languages section and fits on one
+page; the target has different content and two pages. Requiring identical natural
+breaks contradicted the safe-reflow product contract.
+
+The product gate now checks candidate page margins against `LayoutTemplateSpec`
+without target-sample page-break equality. A's mandatory template-consumption
+checks remain the owner of declared page breaks: existing actual-PDF regressions
+reject removed HTML breaks and PDF-only break removal, and cover flow, left/right
+columns, empty sections and blind output. No new pagination parser was added.
+Adapter /6 invalidates old proof approval after this validation policy change;
+renderer output bytes and provider selection are unchanged.
+
+[Offline candidate revalidation](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T081144Z_agentic_eb_final/offline_revalidation.json)
+passes 66 expected content items and all product structure checks, using the
+exact live-reviewed PDF SHA-256
+`829ee5eccb73319e2fe1bb641b88938469019c643e8262768dae301e3abb7839`.
+The three unchanged proofs also pass offline product revalidation. No new model
+calls were made, no accepted profile/output was rewritten, the original failed
+HTTP response remains failed, and no candidate preview was published or marked
+client-ready. The review index links the unpublished selected attempt explicitly.
+
+### Source Word-Gap Reconstruction
+
+The default PDF reader's fixed 3pt gap threshold merged visibly separate words
+in small type before the LLM received the source. The shared ingestion reader
+now uses `x_tolerance_ratio=0.2`; it reconstructs gaps from character geometry
+without a model or guessed dictionary. A synthetic positioned-text regression
+at 8/12/24pt rejects the old reader at 8 and 12pt, then passes the revised reader
+while retaining within-word tracking and hyphenated text.
+
+[Local A–F diagnosis](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T081144Z_agentic_eb_final/source_spacing_diagnosis.json)
+records unchanged non-whitespace character sequences for all six files. E's
+whitespace-separated token count changes from 198 to 392; F changes from 54 to
+293. This demonstrates gap recovery on the authorized local corpus, not general
+OCR or extraction acceptance. Proposed E plaintext is available in the review
+index, separate from the preserved raw extraction, profile and selected PDF.
+No old source/profile artifact was rewritten and no new extraction model call
+was made. A fresh audited extraction and recruiter revision are still required
+before a corrected candidate preview can replace this attempt.
+
+Focused checks after the reflow change:
+
+- Unit content validation, proof API, generation API and the product pipeline:
+  **114 passed, 1 failed** in 458.43s. The sole failure was a stale negative
+  fixture treating now-supported exact `Projects` as unknown. It now uses
+  `Projects Extra` to preserve near-match rejection before any output.
+- [Execution log](../../tests/test_results/pytest/20261025T082620Z_declared_pagination_final.txt).
+- [Font-relative ingestion and process checks](../../tests/test_results/pytest/20261025T083300Z_font_relative_ingestion.txt):
+  **15 passed, 2 skipped** (optional local archive missing).
+- [Reflow, invalid dispatch and actual-PDF pagination recheck](../../tests/test_results/pytest/20261025T083335Z_reflow_dispatch_pagination_recheck.txt):
+  **14 passed, 68 deselected**, including the corrected near-match guard and
+  HTML/PDF-only missing-break controls; 25.62s.
+- [Word-gap negative control](../../tests/test_results/pytest/20261025T082700Z_word_spacing_negative.txt):
+  intended 8/12pt failures on the original reader.
+
+The full offline suite and paid workflow were not rerun after these fixes. M2,
+B0/B1, default cutover and B removal remain unaccepted. Source facts, system
+prompt bytes, provider routes, request budgets and human-acceptance boundaries
+were not changed.
