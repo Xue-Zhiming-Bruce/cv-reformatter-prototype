@@ -480,10 +480,22 @@ def _fresh_nested_evidence() -> NormalizedLayoutEvidence:
     )
 
 
-def test_fresh_target_nested_retention_measurement_path() -> None:
+@pytest.mark.parametrize("badges", [False, True])
+def test_fresh_target_nested_retention_measurement_path(badges: bool) -> None:
     """Fresh (non-archived) nested skill rows and work entries must retain their
     measured rhythm through the compile-bridge measurement path."""
     normalized = _fresh_nested_evidence()
+    if badges:
+        from app.template_analysis.commercial.models import NormalizedBadgeCluster
+
+        normalized.badge_clusters = [NormalizedBadgeCluster(
+            element_id="chips", page_number=1,
+            bbox={"x0": 0.08, "top": 0.30, "x1": 0.9, "bottom": 0.40},
+            fill_color_hex="#99F6E4", text_color_hex="#334155",
+            height_pt=18, horizontal_padding_pt=9, items_per_line=[2, 2, 2],
+            badge_count=6,
+            provenance={"source": "local_pdf", "provider": "offline-test", "method": "synthetic_fixture"},
+        )]
     evidence, style = build_design_evidence_from_normalized(normalized, target_checksum="sha")
     from app.template_analysis.design_evidence import build_design_request
 
@@ -517,7 +529,16 @@ def test_fresh_target_nested_retention_measurement_path() -> None:
     projects = next(s for s in layout.sections if s.label == "PROJECTS")
 
     # Nested skill-row retention: 16.5pt row delta - 13.5pt body line height = 3.0pt
-    assert skills.skill_group_gap_pt == pytest.approx(3.0, abs=0.1)
+    if badges:
+        assert skills.layout == "full_width"
+        assert skills.badge_style is not None
+        assert skills.badge_style.badge_fill_hex == "#99F6E4"
+        assert skills.skill_label_style is not None
+        assert skills.skill_group_gap_pt is None
+        assert skills.skill_first_row_adjustment_pt is None
+    else:
+        assert skills.layout == "inline"
+        assert skills.skill_group_gap_pt == pytest.approx(3.0, abs=0.1)
     # Nested work-detail retention: entry title style measured + inter-entry gap measured
     assert experience.entry_title_style is not None
     assert experience.entry_title_style.font_size_pt == 11.5

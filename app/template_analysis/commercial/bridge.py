@@ -377,7 +377,7 @@ def _measured_structure(
             continue
         index = section_by_heading_id[heading_block.element_id]
         sections[index] = sections[index].model_copy(
-            update={"badge_style": _badge_style(cluster), "layout": "inline"}
+            update={"badge_style": _badge_style(cluster), "layout": "full_width"}
         )
 
     # Attach section-local typography instead of collapsing every repeated
@@ -397,7 +397,8 @@ def _measured_structure(
                 round(block.bbox.top * page_by_number[block.page_number].height_pt, 3)
                 for block in labels if block.bbox is not None
             })
-            if len(row_tops) >= 2:
+            # Badge labels precede chip rows; their delta is not an inline-text gap.
+            if section.badge_style is None and len(row_tops) >= 2:
                 row_delta = median(
                     later - earlier for earlier, later in zip(row_tops, row_tops[1:])
                 )
@@ -426,7 +427,7 @@ def _measured_structure(
                         updates["skill_first_row_adjustment_pt"] = (
                             row_tops[0] - rule_top_pt - global_gap_below
                         )
-            updates["layout"] = "inline"
+            updates["layout"] = "full_width" if section.badge_style is not None else "inline"
         elif section.source_hint == "work_experience":
             titles = [
                 block for block in blocks

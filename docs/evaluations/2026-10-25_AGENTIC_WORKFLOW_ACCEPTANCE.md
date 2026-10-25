@@ -13,6 +13,23 @@ structure checks pass. Automatic source bullet grouping, Reviewer reliability,
 effective repair and human final acceptance remain open. See the dated continuations
 below and the [current review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T081144Z_agentic_eb_final/RESULTS_INDEX.md).
 
+Latest bounded continuation (15:02 UTC): B→C reached a second measured style
+and structured project content. One source extraction and one Adobe job were
+saved in `matrix_20261025T144615Z_agentic_bc_custom`. Its short proof rejected
+contradictory inline-plus-badge skills before any Agentic call. Compiler v9 now
+maps the measured chips to existing full-width grouped badges and retains their
+label typography, without applying plain-text inline spacing heuristics.
+The old bridge fails the new synthetic regression; focused checks pass **34,
+13 skipped** (historical local corpus unavailable), including actual-PDF badge
+mutation controls. [Focused log](../../tests/test_results/pytest/20261025T150000Z_badge_bridge_focused.txt)
+and [negative control](../../tests/test_results/pytest/20261025T150200Z_badge_bridge_negative.txt).
+The saved real C evidence compiles and exports a two-page candidate PDF with
+content preserved; both pages were inspected. A full offline canonical-runner
+preflight then fails rule-consumption checks for the EXPERIENCE heading and
+wrapped contact row. Those independent validation gaps remain open, so no new
+paid proof run or C acceptance is claimed. Artifacts stay in the failed run's
+`offline_diagnosis/compiler_v9/`; original evidence and failed records remain.
+
 The first real A→B API matrix stopped before the first Agentic model call.
 Candidate extraction, immutable revision saving and Adobe target analysis
 succeeded. The short layout proof failed with HTTP 500:

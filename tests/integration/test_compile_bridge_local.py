@@ -195,6 +195,10 @@ def test_archived_adobe_af_compiles_with_local_color_enrichment(letter: str) -> 
             assert skills.badge_style is not None
             assert skills.badge_style.badge_fill_hex == "#99F6E4"
             assert skills.badge_style.badge_text_hex == "#334155"
+            assert skills.layout == "full_width"
+            assert skills.skill_label_style is not None
+            assert skills.skill_group_gap_pt is None
+            assert skills.skill_first_row_adjustment_pt is None
 
 
 def test_nonstandard_target_identity_uses_opaque_ids() -> None:

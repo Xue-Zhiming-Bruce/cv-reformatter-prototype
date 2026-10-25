@@ -369,6 +369,11 @@ Integration status, October 22, 2026:
   HTML consumption and exported vector/text objects are checked independently;
   missing or recolored PDF decorations fail even when the HTML is intact.
   Overwide badges fail exported-shape checks rather than claiming fidelity.
+  Measured compiler v9 maps a badge cluster to `full_width` chip presentation,
+  retaining its label typography. It does not attach plain inline-text group
+  gaps or first-row corrections to label/chip rows; their measured label delta
+  includes chip height. Existing contradictory inline-plus-badge templates
+  still reject and must be recompiled from their saved target evidence.
   Product headings stay with their first content line; rule checks consume
   repeated heading labels by section occurrence, including across pages.
   Broader pagination parity remains a pre-cutover requirement.
