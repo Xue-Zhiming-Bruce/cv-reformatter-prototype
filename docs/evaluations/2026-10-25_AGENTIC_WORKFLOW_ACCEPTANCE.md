@@ -803,5 +803,29 @@ leaking blind PDF fails the common source-aware privacy gate when checked
 against the newly disclosed context, despite its raw profile retaining the URL.
 [Ordinary B/E/F context parity](../../tests/test_results/pytest/20261025T174500Z_normal_context_parity.txt)
 confirms each new normal context equals its prior saved context exactly.
-Replacement live proofs/previews and final file inspection follow; the old
-leaking output remains explicitly unaccepted.
+Replacement build `3f0fc59` has now completed fresh short/medium/long live
+proofs and normal/blind B→C previews. Normal: HTTP 200, 39.844s, two pages,
+65 expected content items. Blind: HTTP 200, 36.103s, two pages, 61 expected
+content items. Both pass content/structure checks and remain `client_ready=false`.
+The project GitHub identity link is absent from blind HTML/PDF; both public demo
+URLs remain. Original source/proof files and saved-revision checksum are
+unchanged. All four output pages were inspected, and all six proof-page PNGs
+match previously inspected C proof pages. No material repair was promoted.
+
+[Current review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T174704Z_agentic_bc_blind_links/RESULTS_INDEX.md)
+links the replacement PDFs, comparison pages, actual receipts, independent review
+and the previous rejected blind file. Its companion E/F packages retain their
+historical build identities. [Live blind log](../../tests/test_results/pytest/20261025T175400Z_bc_blind_links_live_preview.txt).
+[Package validation](../../tests/test_results/pytest/20261025T175700Z_bc_blind_links_package_validation.txt)
+checks manifest/CSV/review rows 1/1, preservation 1/1, all index links and output
+checksums, plus 92 actual image references (70 unique files, including lossless
+WebP MIME/checksum validation). Actual usage: **15 Agentic requests** (12 canonical
++ 3 blind), 78,478 input + 4,318 output tokens, zero new extraction/Adobe calls;
+billed cost is unavailable. These results close only the observed blind-link gap.
+
+[Generation API and mapper regressions](../../tests/test_results/pytest/20261025T174704Z_blind_links_generation_regression.txt)
+pass **36 checks**, with four existing fixture serializer warnings. The 829-test
+full-suite result above belongs to build `452f73a`, preceding this mapper change.
+Human output judgment, ordinary Reviewer discovery/effective repair, M2/M3
+acceptance, default cutover and B0/B1 remain open. No final-acceptance API was
+called.

@@ -144,8 +144,10 @@ validation gaps; F→C additionally exposed a colored-image request envelope gap
 Those bounded fixes now have actual current-build workflow evidence. The
 source/target fact-overlap rejection is closed by build `452f73a`, whose actual
 B→C normal preview passes after fresh proofs. Independent inspection of its
-blind preview found a new project GitHub-link disclosure gap; that file remains
-unaccepted and the new gap stays in M3.
+blind preview found a project GitHub-link disclosure gap. Build `3f0fc59`
+replaces it with fresh proofs and ordinary/blind previews: the identity link is
+absent from blind HTML/PDF, public project URLs remain, and source/proof identities
+are preserved. The earlier leaking file remains unaccepted failure evidence.
 Do not infer broader target acceptance or default cutover.
 
 - [x] Select existing authorized representative candidate/target samples and
@@ -184,7 +186,7 @@ Reviewer reliability and material repair effectiveness remain open.
       evidence; shared words/facts must not be treated as proof of target copying
       or excluded through a broad string filter. Recheck this boundary before
       claiming supported-input parity or switching the default.
-- [ ] Apply blind GitHub/portfolio-link disclosure to structured additional-entry
+- [x] Apply blind GitHub/portfolio-link disclosure to structured additional-entry
       links, not only header contacts. Preserve original source/profile links,
       ordinary output and permitted nonpersonal project links; require explicit
       portfolio `show` for GitHub/personal portfolio links in blind output.
