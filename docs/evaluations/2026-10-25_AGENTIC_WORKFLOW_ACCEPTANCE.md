@@ -310,3 +310,36 @@ The full offline suite and paid workflow were not rerun after these fixes. M2,
 B0/B1, default cutover and B removal remain unaccepted. Source facts, system
 prompt bytes, provider routes, request budgets and human-acceptance boundaries
 were not changed.
+
+### Reviewer Context And Page Scheduling Follow-Up
+
+Inspection of the actual call path found two narrow integration defects: the
+message said candidate facts were absent without clarifying that this meant
+only the JSON context, and product review iterated over the maximum target/render
+page count. A shorter candidate therefore received a target-only review call
+with no render image. This was not a missing candidate page.
+
+The Reviewer now receives explicit content ownership/equality policy and plain
+instructions that synthetic proof tokens and different candidate values are
+expected. Product review iterates over generated pages; longer renders still
+receive review on every continuation page against the last target style page.
+No finding-text filters or automatic dismissals were added. The output schema,
+providers, model routes, bounds, repair selection and acceptance gate are unchanged.
+Prompt identity changes require fresh proofs.
+
+Existing message-boundary and actual API/runner regressions were extended.
+Before the fix, the context check failed on missing ownership policy; the API
+check with an extra target overview failed because a target-only call could
+not complete paired-image review. The negative controls are retained locally:
+[context](../../tests/test_results/pytest/20261025T120300Z_review_context_negative.txt),
+[target-only page](../../tests/test_results/pytest/20261025T120325Z_review_pages_negative.txt).
+A successful offline check alone cannot establish real Reviewer quality.
+
+Focused command: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest
+-p no:cacheprovider tests/integration/test_layout_proof_api.py
+tests/integration/test_pipeline_loop.py -k 'agentic_api_runs_real_loop or
+reviewer_message_carries or candidate_shape_filter or target_only_candidate_sections
+or reviewer_receives_existing' -q --tb=short`.
+[Result](../../tests/test_results/pytest/20261025T120430Z_review_context_pages.txt):
+**5 passed, 172 deselected**, 52.40s. The API case retains complete proof/preview,
+continuation, approval invalidation and failed-publication regression controls.

@@ -107,7 +107,11 @@ E5_REVIEWER_INSTRUCTIONS = (
     "target and render version strings you were given and carries one typed\n"
     "measurement request with `intent` set.\n"
     "Target person facts and values are diagnostic evidence only; they never\n"
-    "become candidate content. Compare layout, typography, spacing, alignment,\n"
+    "become candidate content. The render's different name, contact values,\n"
+    "employers, languages and synthetic placeholder tokens are expected\n"
+    "candidate-owned content, not substitutions or missing target facts.\n"
+    "Never report value inequality as a defect or request target-value copying.\n"
+    "Compare layout, typography, spacing, alignment,\n"
     "rules, colors, and structure only where the candidate inventory carries\n"
     "the same content shape. If the target has a content shape absent from the\n"
     "candidate inventory, do not request that it be copied or recreated. A\n"
@@ -2370,6 +2374,11 @@ def _e5_reviewer_message(
         "region_catalog": region_catalog,
         "review_scope": review_scope,
         "candidate_review_scope": candidate_review_scope,
+        "content_comparison_policy": {
+            "target_values": "style_reference_only",
+            "render_values": "candidate_owned_including_synthetic_placeholders",
+            "value_equality_required": False,
+        },
         "representation_capabilities": E5_LANE_REPAIR_SURFACE[lane],
         "deterministic_presentation_facts": deterministic_presentation_facts,
     }
@@ -2388,7 +2397,9 @@ def _e5_reviewer_message(
         "only for entry/job/role spacing; header_vertical_rule_geometry is only "
         "for the header/name vertical rule. Atomic candidate:name and flat "
         "candidate:contact cannot create Builder-repairable split-name or "
-        "label/value-table residuals. Candidate facts are absent by design.\n"
+        "label/value-table residuals. Candidate values are omitted from this JSON,\n"
+        "not from the rendered document. Different values and synthetic proof\n"
+        "tokens are expected; compare their presentation, not their wording.\n"
         + json.dumps(context, ensure_ascii=False, sort_keys=True)
     )
 
@@ -4492,7 +4503,7 @@ def run_e5(
                         # Bounded images per call: one PAGE per reviewer call
                         # (target overview + render overview), merged across pages.
                         review_page_count = (
-                            max(len(target_overviews), len(render_overviews))
+                            len(render_overviews)
                             if layout_spec is not None else len(target_overviews)
                         )
                         for page_index in range(1, review_page_count + 1):

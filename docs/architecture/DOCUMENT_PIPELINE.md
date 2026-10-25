@@ -567,6 +567,16 @@ spec; natural section page positions are not compared with target-sample content
 Explicit breaks and empty-section omission remain enforced by A's mandatory
 template-consumption gate using actual PDF positions and HTML break ownership.
 
+The Reviewer message explicitly distinguishes candidate values (including
+synthetic proof tokens) from target values, which are style references only;
+value equality is not a fidelity requirement. Candidate values are absent from
+the JSON context, not from the rendered document. For product templates the
+review scheduler visits every generated page, using the last target page as a
+style reference for continuation pages. It does not send target-only pages
+without a corresponding generated page. Raw findings and independent safety,
+measurement, repair and human-acceptance boundaries retain their existing roles.
+Prompt changes alter the proof configuration digest and require new proofs.
+
 Review findings, typed measurements, attribution, and repairs are version-bound.
 Entry-spacing binding follows the declared parent chain from entry/list regions
 to their measured section boundary. A missing boundary stays `evidence_missing`;

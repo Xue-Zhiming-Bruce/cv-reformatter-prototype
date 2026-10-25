@@ -4115,6 +4115,10 @@ def test_e5_reviewer_message_carries_exact_scope_without_candidate_text() -> Non
     assert "candidate_review_scope" in message
     assert "constrained authored HTML/CSS" in message
     assert candidate.leaves[0].text not in message
+    context = json.loads(message[message.index("{"):])
+    assert context["content_comparison_policy"]["target_values"] == "style_reference_only"
+    assert context["content_comparison_policy"]["render_values"] == "candidate_owned_including_synthetic_placeholders"
+    assert context["content_comparison_policy"]["value_equality_required"] is False
 
 
 def test_reviewer_receives_existing_deterministic_presentation_facts(monkeypatch) -> None:

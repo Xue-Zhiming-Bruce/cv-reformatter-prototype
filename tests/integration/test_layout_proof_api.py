@@ -170,7 +170,14 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     proof_bytes = {path: path.read_bytes() for path in proof_paths}
     assert len(proof_bytes) == 3
     calls.clear()
-    response = client.post("/api/generate", json=request)
+    # Extra target overviews are style references, not missing candidate pages.
+    original_overviews = service._overview_pngs
+    def extra_target_page(path, *args, **kwargs):
+        pages = original_overviews(path, *args, **kwargs)
+        return [*pages, pages[-1]] if Path(path).resolve() == (directory / metadata.stored_filename).resolve() else pages
+    with monkeypatch.context() as target_pages:
+        target_pages.setattr(service, "_overview_pngs", extra_target_page)
+        response = client.post("/api/generate", json=request)
     assert response.status_code == 200, response.text
     identity = response.json()
     assert identity["client_ready"] is False and calls == ["builder", "reviewer"]
