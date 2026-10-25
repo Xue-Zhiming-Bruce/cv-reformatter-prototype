@@ -95,3 +95,49 @@ Focused check: `python -B -m pytest -p no:cacheprovider
 with plugin autoload disabled: **63 passed**.
 [Terminal output](../../tests/test_results/pytest/20261025T070118Z_m2_matrix_review_offline.txt).
 No full backend suite was rerun; production generation code is unchanged.
+
+
+## Follow-Up: Bounded Template Consumption Fix
+
+The original failed matrix remains unchanged. The follow-up uses its exact
+checksum-matched normalized B evidence, without another Adobe request.
+Shared A renderer `/16` consumes measured PostScript face identity and hidden
+full-width summaries; it accepts legacy palette values only as defaults or
+verified aliases of the global heading color. Independent palette roles,
+non-summary hidden headings and hidden-summary explicit page breaks still reject.
+
+Two linked integration defects were exposed by the same saved-evidence replay:
+measured compiler v8 stops assigning entry-title styling to contact-only zones,
+and product projection follows the template's visibility choice for the derived
+job-title/location subtitle. The underlying source facts remain in the profile
+and independently validated render context; manual/evidence-only unroutable
+header leaves still fail. Stored old templates/evidence are not modified.
+
+[Offline review package](../../data/generated_outputs/pipeline/template_consumption_20261025T072821Z/REVIEW_INDEX.md)
+contains real Chrome short/medium/long PDFs and comparison images. The page
+counts are 1/2/3. All three pass content accounting, section order, template
+consumption, blank-page and product content/structure checks; the API's separate
+proof geometry/heading validation also passes. All six pages were inspected.
+This establishes bounded offline consumption, not visual fidelity or live model
+acceptance. The medium language section starts a new page as specified; long
+work content and education continue naturally before that explicit boundary.
+
+Regression controls reject conflicting palette values, CSS-unsafe face names,
+unsupported hidden-heading combinations, injected summary headings, removed
+summary spacing and changed face CSS. The normal/blind actual-PDF table retains
+source work title, employer and location while honoring a hidden derived subtitle.
+The existing matrix now supports E→B with an explicit saved-target-evidence
+argument; identity mismatch stops before source API/provider calls.
+
+Frozen-code full offline execution: **786 passed, 35 skipped, 3 failed** in
+636.10s. All three failures were native API assertions still pinned to `/15`.
+After updating those identity expectations to `/16`, the same three cases
+passed in 6.34s; runtime files did not change between these checks. The full
+suite was not rerun a second time. Focused template/compiler/PDF checks also
+passed (39 cases); earlier development attempts remain local logs, not acceptance.
+
+- [Full offline terminal output](../../tests/test_results/pytest/20261025T072934Z_template_consumption_full_offline.txt)
+- [Three identity cases rechecked](../../tests/test_results/pytest/20261025T074100Z_renderer_identity_recheck.txt)
+- [Focused consumption checks](../../tests/test_results/pytest/20261025T072700Z_template_consumption_focused.txt)
+
+Live continuation evidence follows when executed.

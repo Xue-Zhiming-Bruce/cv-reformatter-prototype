@@ -1352,7 +1352,8 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
             _, _, html = render_layout_template(
                 effective_layout_spec,
                 candidate_document_from_context(
-                    render_context, candidate_id=f"candidate-{profile_revision.profile_sha256[:16]}"
+                    render_context, candidate_id=f"candidate-{profile_revision.profile_sha256[:16]}",
+                    include_subheading=effective_layout_spec.header.show_candidate_subheading
                 ),
             )
             html_path.write_text(html, encoding="utf-8")

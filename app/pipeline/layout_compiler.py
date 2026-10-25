@@ -1122,8 +1122,15 @@ def state_from_layout_template(
         "header_rule", "heading_rule", "rule_width_pt", "rule_color_hex",
         "header_rule_gap_above_pt", "header_rule_gap_below_pt", "header_rule_length_pt",
         "heading_rule_gap_above_pt", "heading_rule_gap_below_pt", "heading_rule_length_pt",
-        "sidebar_background_hex",
+        "sidebar_background_hex", "primary_color_hex", "accent_color_hex",
     }, "decoration")
+    # The measured bridge duplicates heading color into these legacy palette aliases.
+    # Independent palette roles remain unsupported; concrete role colors own output.
+    for name in ("primary_color_hex", "accent_color_hex"):
+        value = getattr(spec.decoration, name)
+        default = type(spec.decoration).model_fields[name].default
+        if value != default and value != spec.heading.color_hex:
+            raise ValueError(f"decoration.{name} must match the measured heading color")
     consumed(spec.spacing, {"line_spacing", "line_height_pt", "section_before_pt", "section_after_pt", "paragraph_after_pt"}, "spacing")
     consumed(spec.header, {
         "show_candidate_subheading", "contact_fields", "contact_separator",
@@ -1158,7 +1165,7 @@ def state_from_layout_template(
 
     def style(name: str, value: TextStyle, height: float | None = None) -> str:
         consumed(value, {
-            "font_family", "font_size_pt", "bold", "italic", "color_hex",
+            "font_family", "font_postscript_name", "font_size_pt", "bold", "italic", "color_hex",
             "character_spacing_pt", "word_spacing_pt", "line_height_pt",
         }, name)
         # CSS families are inserted into a quoted declaration, never raw CSS.
@@ -1166,7 +1173,7 @@ def state_from_layout_template(
             raise ValueError(f"unsupported font family in {name}")
         style_id = f"style.{name}"
         styles.append(StyleToken(
-            style_id=style_id, font_family=value.font_family,
+            style_id=style_id, font_family=value.font_family, font_postscript_name=value.font_postscript_name,
             font_size_pt=value.font_size_pt, bold=value.bold, italic=value.italic,
             color_hex=value.color_hex, character_spacing_pt=value.character_spacing_pt,
             word_spacing_pt=value.word_spacing_pt or None,
@@ -1217,7 +1224,7 @@ def state_from_layout_template(
         entry_source = section.source in {"work_experience", "education", "additional_details"} and not contact_details
         fields = {
             "section_id", "source", "label", "layout", "placement", "optional",
-            "heading_style", "body_style", "spacing", "bullet_indent_pt", "page_break_before",
+            "heading_style", "body_style", "spacing", "bullet_indent_pt", "page_break_before", "show_heading",
         }
         if section.source in {"skills", "languages", "certifications"}:
             fields.update({"column_count", "column_gap_pt"})
@@ -1264,9 +1271,11 @@ def state_from_layout_template(
             raise ValueError(f"{path}: two-column lists require plain skills, languages or certifications")
         if two_item_columns and section.column_gap_pt >= x1 - x0:
             raise ValueError(f"{path}.column_gap_pt leaves no list column width")
-        if not section.label:
+        if not section.show_heading and (section.source != "summary" or section.placement != "full_width" or section.page_break_before):
+            raise ValueError(f"{path}: hidden headings support full-width summary without page_break_before only")
+        if section.show_heading and not section.label:
             raise ValueError(f"empty product-template label in {path}")
-        if selector is None and _section_source_hint(section.label)[0] != section.source:
+        if selector is None and section.label and _section_source_hint(section.label)[0] != section.source:
             raise ValueError(f"unrecognized product-template presentation label in {path}")
         if selector is not None and not selector:
             raise ValueError(f"empty custom heading selector in {path}")
@@ -1315,6 +1324,7 @@ def state_from_layout_template(
         node(node_id=section_id, kind="section", content_style_id=content_style,
              column_slot=region.slot if region else None,
              flow=FlowConstraint(page_break_before=section.page_break_before),
+             spacing=NodeSpacing(gap_above_pt=spacing.section_before_pt, gap_basis="flow") if not section.show_heading else None,
              additional_section_heading=section.additional_section_heading,
              binding=SectionBinding(sources=["contact" if body_contact else section.source], mapping_action="map", evidence_ids=evidence,
                  partition_policy="contact_fields" if body_contact else "match_section_heading" if entry_source and section.source == "additional_details" else "none"),
@@ -1326,9 +1336,10 @@ def state_from_layout_template(
                  inline_separator=spec.header.contact_separator if body_contact else None),
              entry_ref=f"{section_id}.entry" if entry_source else None,
              list_ref=None if paragraph or badge_id or body_contact or section.source == "education" else f"{section_id}.list")
-        node(node_id=f"{section_id}.heading", kind="heading", parent_id=section_id,
-             label=section.label, label_case=_label_case(section.label), style_id=heading_style,
-             spacing=NodeSpacing(gap_above_pt=spacing.section_before_pt, gap_below_pt=spacing.section_after_pt, gap_basis="flow"))
+        if section.show_heading:
+            node(node_id=f"{section_id}.heading", kind="heading", parent_id=section_id,
+                 label=section.label, label_case=_label_case(section.label), style_id=heading_style,
+                 spacing=NodeSpacing(gap_above_pt=spacing.section_before_pt, gap_below_pt=spacing.section_after_pt, gap_basis="flow"))
         if entry_source:
             body = section.body_style or spec.body
             title_value = section.education_institution_style or spec.body.model_copy(update={"bold": True}) if section.source == "education" else section.entry_title_style or spec.body

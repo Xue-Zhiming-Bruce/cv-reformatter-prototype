@@ -332,7 +332,7 @@ def structure_gate(
     expected_labels = [
         section.label
         for section in [*plan.sections, *plan.appended_sections]
-        if not section.empty and not (section.candidate_only and section.source_heading is None)
+        if section.label and not section.empty and not (section.candidate_only and section.source_heading is None)
     ]
     cursor = -1
     order_ok = True
@@ -348,7 +348,7 @@ def structure_gate(
     heading_positions: dict[str, tuple[int, float]] = {}
     if not plan.body_columns:
         visible = {section.node_id: section.label for section in [*plan.sections, *plan.appended_sections]
-                   if not section.empty and not (section.candidate_only and section.source_heading is None)}
+                   if section.label and not section.empty and not (section.candidate_only and section.source_heading is None)}
         heading_positions = _rendered_heading_positions(pdf, visible, {}, plan)
         sequence = [heading_positions.get(node_id) for node_id in visible]
         order_ok = all(position is not None for position in sequence) and all(
@@ -366,7 +366,7 @@ def structure_gate(
             for section in [*plan.sections, *plan.appended_sections]:
                 if section.empty or section.column_slot != (column.slot if column else None):
                     continue
-                if section.candidate_only and section.source_heading is None:
+                if not section.label or (section.candidate_only and section.source_heading is None):
                     continue
                 index = text.find(_norm(section.label), cursor + 1)
                 positions[section.node_id] = index
@@ -762,7 +762,7 @@ def content_shape_verification(
         if node.kind == "section"
     }
     visible_labels = {node_id: label for node_id, label in label_of_section.items()
-                      if node_id in plan_sections and not plan_sections[node_id].empty}
+                      if label and node_id in plan_sections and not plan_sections[node_id].empty}
     regions = {node_id: next((column for column in plan.body_columns
                if column.slot == plan_sections[node_id].column_slot), None) for node_id in visible_labels}
     rendered_headings = _rendered_heading_positions(pdf, visible_labels, regions, plan)
@@ -1169,6 +1169,7 @@ def content_shape_verification(
         rows.extend(_product_contact_checks(plan, elements, html))
         rows.extend(_product_inline_skill_checks(plan, elements, html))
         rows.extend(_product_word_spacing_checks(state, plan, elements, html))
+        rows.extend(_product_heading_and_font_checks(state, plan, elements, html))
         rows.extend(_product_decoration_checks(state, plan, elements, pdf, rendered_extents))
         rows.extend(_product_column_checks(plan, elements, pdf, rendered_headings))
         rows.extend(_product_pagination_checks(state, plan, elements, pdf, rendered_headings))
@@ -1244,6 +1245,39 @@ def _product_inline_skill_checks(
             "properties": [{"property": "inline_skills", "required_by_declared_shape": True,
                 "measured": layout.model_dump(), "renderer_consumes": bool(passed),
                 "capability_gap": None if passed else "inline skill groups, delimiter, typography or spacing not consumed"}]})
+    return rows
+
+
+def _product_heading_and_font_checks(
+    state: C2LayoutState, plan: C2RenderPlan, elements: list[dict[str, Any]], html: str,
+) -> list[dict[str, Any]]:
+    rows = []
+    def record(node_id: str, property_name: str, passed: bool) -> None:
+        rows.append({"section": node_id, "consistent": passed, "properties": [{
+            "property": property_name, "required_by_declared_shape": True,
+            "measured": "LayoutTemplateSpec", "renderer_consumes": passed,
+            "capability_gap": None if passed else f"{property_name} not consumed"}]})
+
+    for section in plan.sections:
+        if section.empty or section.label:
+            continue
+        parent = next((e for e in elements if e["node_id"] == section.node_id), None)
+        unexpected = any(e["tag"] == "h2" and section.node_id in e["ancestor_node_ids"] for e in elements)
+        gap = _parse_declared_pt(parent["style"], "margin-top") if parent else None
+        record(section.node_id, "hidden_summary_heading", bool(parent and not unexpected and gap is not None
+            and abs(gap - (section.heading_gap_above_pt or 0)) <= CSS_EXTENT_TOLERANCE_PT))
+    for token in state.styles:
+        if not token.font_postscript_name:
+            continue
+        owners = [element for element in elements if _class_matches(element, _class_for(token.style_id))]
+        if not owners:
+            continue
+        rules = re.findall(rf"\.{re.escape(_class_for(token.style_id))}\s*\{{([^{{}}]*)\}}", html)
+        families = re.findall(r"\bfont-family\s*:\s*([^;]+)", rules[-1]) if rules else []
+        expected = f"'{token.font_postscript_name}', '{token.font_family}', Arial, sans-serif"
+        passed = bool(families and families[-1].strip() == expected)
+        passed &= all(not re.search(r"\bfont-family\s*:", owner["style"]) for owner in owners)
+        record(token.style_id, "font_face_css", passed)
     return rows
 
 
@@ -1410,7 +1444,7 @@ def _product_decoration_checks(
         used_shapes: set[tuple[int, int]] = set()
         shapes = [(page_index, index, obj) for page_index, page in enumerate(document.pages)
                   for index, obj in enumerate([*page.curves, *page.rects])]
-        first_section = next((section for section in plan.sections if not section.empty), None)
+        first_section = next((section for section in plan.sections if section.label and not section.empty), None)
         first_headings = document.pages[0].search(re.escape(first_section.label)) if first_section else []
         first_body_top = min((hit["top"] for hit in first_headings or []), default=float("inf"))
         for row in plan.header_rows:

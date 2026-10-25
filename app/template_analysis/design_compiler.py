@@ -306,7 +306,7 @@ def _compile_measured_sections(
                 spacing=spacing,
                 entry_title_style=(
                     measured_entry_title
-                    if source in {"work_experience", "additional_details"}
+                    if source in {"work_experience", "additional_details"} and not measured.contact_fields
                     else None
                 ),
                 entry_metadata_style=(

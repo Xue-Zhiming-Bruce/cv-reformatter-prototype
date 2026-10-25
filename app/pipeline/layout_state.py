@@ -125,6 +125,7 @@ class StyleToken(StateModel):
 
     style_id: str = Field(pattern=r"^style\.[a-z0-9_]+$")
     font_family: str
+    font_postscript_name: str | None = Field(default=None, pattern=r"^[\w .+\-]+$")
     font_size_pt: float = Field(gt=0)
     line_height_pt: float | None = Field(default=None, gt=0)
     bold: bool = False

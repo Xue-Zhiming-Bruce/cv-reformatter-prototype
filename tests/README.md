@@ -32,6 +32,13 @@ approvals are synthetic/evaluation-only and no final acceptance is sent. Real
 analyzer-produced templates can fail A preflight before any Builder/Reviewer call;
 keep those failures and replay their saved evidence offline before another live run.
 
+The matrix also accepts E→B for distinct candidate/target facts. Explicit
+`--target-evidence <artifact-directory>` validates the selected target's checksum
+before any source API call, reuses saved Adobe/normalized evidence and recompiles
+it with the current compiler. Reports label this as saved-evidence replay, not a
+new Adobe call. The synthetic recruiter edit hides phone before saving a revision;
+this is a disclosure edit, not human final-output acceptance.
+
 `integration/test_layout_proof_api.py` exercises the optional agentic strategy
 through the real API, canonical runner, Chrome and approval gates, mocking only
 the model-call boundaries. Coverage includes all three canonical proofs,

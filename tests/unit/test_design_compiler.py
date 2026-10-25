@@ -70,8 +70,8 @@ def test_compile_is_deterministic() -> None:
     assert spec_a.template_version == spec_b.template_version
 
 
-def test_badge_contract_bumps_compiler_cache_version() -> None:
-    assert compiler_version() == "7"
+def test_measured_contact_slots_invalidate_pre_v8_compiler_cache() -> None:
+    assert int(compiler_version()) >= 8
 
 
 def test_proposal_checksum_is_stable() -> None:
@@ -243,7 +243,8 @@ def test_compiled_spec_placement_has_no_coordinates() -> None:
         assert geometry_marker not in sections_payload
 
 
-def test_measured_additional_sections_carry_entry_tiers() -> None:
+@pytest.mark.parametrize("contact_only", [False, True])
+def test_measured_additional_sections_carry_entry_tiers(contact_only: bool) -> None:
     """Entry-type additional zones reuse the measured work-entry tiers."""
     from app.template_analysis.design_compiler import (
         compile_measured_layout_template_spec,
@@ -287,7 +288,9 @@ def test_measured_additional_sections_carry_entry_tiers() -> None:
         header_structure=MeasuredHeaderStructure(contact_style_role_ref="role.metadata"),
         section_structure=[
             MeasuredSectionStructure(
-                region_id="r1", label="PROJECTS", source_hint="additional_section"
+                region_id="r1", label="LINKS" if contact_only else "PROJECTS",
+                source_hint="additional_details" if contact_only else "additional_section",
+                contact_fields=["portfolio_url"] if contact_only else []
             )
         ],
         entry_title_style_role_ref="role.entry",
@@ -299,8 +302,12 @@ def test_measured_additional_sections_carry_entry_tiers() -> None:
     projects = next(
         section for section in spec.sections if section.source == "additional_details"
     )
-    assert projects.entry_title_style is not None
-    assert projects.entry_title_style.font_size_pt == 11.5
-    assert projects.entry_title_style.bold is True
+    if contact_only:
+        assert projects.entry_title_style is None
+        assert projects.contact_fields == ["portfolio_url"]
+    else:
+        assert projects.entry_title_style is not None
+        assert projects.entry_title_style.font_size_pt == 11.5
+        assert projects.entry_title_style.bold is True
     assert projects.entry_metadata_style is not None
     assert projects.entry_metadata_style.font_size_pt == 9.5

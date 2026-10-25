@@ -1146,7 +1146,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
         list_node = by_id.get(section.list_ref) if section.list_ref else None
         plan = SectionPlan(
             node_id=section.node_id,
-            label=heading_node.label if heading_node else section.node_id,
+            label=heading_node.label if heading_node else ("" if state.provenance.provider == "layout_template_spec" else section.node_id),
             label_case=heading_node.label_case if heading_node else None,
             style_id=heading_node.style_id if heading_node else None,
             rule_id=heading_node.rule_id if heading_node else None,
@@ -1194,6 +1194,8 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             plan.heading_gap_below_pt = (
                 heading_node.spacing.gap_below_pt if heading_node.spacing else None
             )
+        elif section.spacing and section.spacing.gap_basis == "flow":
+            plan.heading_gap_above_pt = section.spacing.gap_above_pt
         if role == "contact":
             plan.contact_fields = body_contacts.get(section.node_id, [])
             plan.contact_separator = content.inline_separator
@@ -1653,7 +1655,8 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
             section_order[order_index[node_id] - 1] if order_index[node_id] > 0 else None
         )
         heading = heading_of(node_id)
-        if heading and heading.spacing and heading.spacing.gap_basis == "flow":
+        spacing_owner = heading or by_id[node_id]
+        if spacing_owner.spacing and spacing_owner.spacing.gap_basis == "flow":
             rhythm_decisions.append(RhythmDecision(
                 node_id=node_id, original_predecessor=original_predecessor,
                 visible_predecessor=visible_predecessor_by_node[node_id],

@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 25, 2026 (first real-template M2 preflight; acceptance incomplete)
+Last reviewed: October 25, 2026 (bounded measured-template consumption fixed; M2 acceptance open)
 
 This is the sole implementation checklist. Product behavior belongs in the
 [Product Specification](../product/PRODUCT_SPEC.md), approved decisions in
@@ -55,8 +55,8 @@ A fixed business workflow and a bounded Agentic review/repair loop coexist.
 | Diagnostic CLI/service | `python -m app.pipeline` and `run_e5` default to A. B and paired comparisons require explicit selection. Product-template runs are A-only; the CLI does not perform extraction or establish human acceptance. |
 | Final output acceptance | `POST /api/artifacts/{artifact_id}/final-acceptance`; only the exact current preview can become client-ready. |
 
-Shared A implementation: `lane-a-product-subset/15`. Optional Agentic identity:
-`agentic-a/4+lane-a-product-subset/15+<configuration digest>`. Proofs bind the
+Shared A implementation: `lane-a-product-subset/16`. Optional Agentic identity:
+`agentic-a/4+lane-a-product-subset/16+<configuration digest>`. Proofs bind the
 implementation, prompts, model routing and budgets as well as target/template
 identities. Changing that configuration requires fresh short/medium/long proofs
 and explicit proof approval; old records do not acquire a new identity on read.
@@ -125,11 +125,15 @@ regressions; passing them cannot substitute for owner review of generated files.
 Status: `[~]` First real A→B execution reached target analysis/revision saving,
 but short-proof compilation failed before any Agentic model call. See the
 [October 25 workflow evidence](../evaluations/2026-10-25_AGENTIC_WORKFLOW_ACCEPTANCE.md).
-The measured template exposes unrepresented decoration palette, PostScript font
-identity and hidden-summary behavior. M2 is not accepted; full previews, ordinary
-Reviewer discovery/repair and human output review remain unexecuted. Resolve this
-specific analyzer-to-A consumption gap with saved-evidence offline replay before
-spending on another live workflow; do not weaken unknown-property checks.
+The measured-template consumption gap is now fixed within explicit bounds:
+verified heading-color palette aliases, PostScript face requests and full-width
+hidden summaries. Saved-evidence replay yields 1/2/3-page canonical PDFs passing
+all output checks and API proof structural validation. The same replay closed
+contact-only title-style compilation and derived-subtitle projection defects.
+Compiler v8 and A renderer /16 require new proofs; original evidence/specs remain
+unchanged. M2 is not accepted: ordinary live review/repair, distinct-candidate
+previews and human output judgment remain open. Continue E→B through the canonical
+matrix using explicit checksum-matched saved B evidence, not another Adobe call.
 
 - [ ] Select existing authorized representative candidate/target samples and
       record their actual source formats, supported layout features and current
@@ -157,7 +161,7 @@ No agent may fabricate human acceptance through the API.
 
 ### M3 — Close Only Critical Gaps Found In M2
 
-Status: `[ ]` Dependent on reviewable M2 evidence.
+Status: `[~]` Bounded analyzer-to-A consumption gap closed offline; live workflow quality gaps still require M2 evidence.
 
 - [ ] Fix demonstrated default-Reviewer discovery, evidence/binding or Builder
       effectiveness failures that prevent acceptance of the declared samples.

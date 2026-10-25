@@ -219,3 +219,27 @@ def test_matrix_failure_review_retains_error_without_placeholder_output(tmp_path
     index = (run / "RESULTS_INDEX.md").read_text()
     assert "| [ ] | 1 |" in index and "content 0/1" in index
     assert all((run / target).exists() for target in re.findall(r"\]\(([^)]+)\)", index))
+
+
+def test_matrix_stale_target_replay_stops_before_any_api_call(tmp_path: Path, monkeypatch) -> None:
+    import json
+    import sys
+    import pytest
+    from scripts import run_abc_live_matrix as matrix
+
+    (tmp_path / "resume_B.pdf").write_bytes(b"selected target bytes")
+    cache = tmp_path / "saved"
+    cache.mkdir()
+    (cache / "target.pdf").write_bytes(b"different target bytes")
+    (cache / "target_format.json").write_text(json.dumps({"stored_filename": "target.pdf"}))
+    (cache / "target_layout_evidence.json").write_text(json.dumps({"target_checksum": "0" * 64}))
+    monkeypatch.setattr(matrix, "DATASET_DIR", tmp_path)
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.delenv("API_LLM_PROVIDER", raising=False)
+    monkeypatch.setattr(sys, "argv", ["matrix", "--pairs", "E:B", "--target-evidence", str(cache)])
+    def unexpected(*args, **kwargs):
+        pytest.fail("A stale target replay must not reach an API request")
+    monkeypatch.setattr(matrix, "_request", unexpected)
+    with pytest.raises(ValueError, match="checksum does not match"):
+        matrix.main()
+    assert not (tmp_path / "runs").exists()

@@ -119,7 +119,8 @@ def render_agentic(
     normalized = NormalizedLayoutEvidence.model_validate_json(normalized_path.read_text())
     import pdfplumber
 
-    candidate = candidate_document_from_context(context, candidate_id="reviewed-api-candidate")
+    candidate = candidate_document_from_context(context, candidate_id="reviewed-api-candidate",
+        include_subheading=layout_spec.header.show_candidate_subheading)
     with pdfplumber.open(target_pdf) as pdf:
         state, _, _ = render_layout_template(layout_spec, candidate,
             target_sha256=service._sha256_file(target_pdf), page_count=len(pdf.pages))

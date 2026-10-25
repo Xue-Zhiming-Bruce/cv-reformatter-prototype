@@ -13,7 +13,7 @@ from app.template_analysis.schemas import LayoutTemplateSpec
 from app.generation.html_renderer import _inline_separator
 
 # Bump when product compilation, HTML or bundled font behavior changes.
-RENDERER_VERSION = "lane-a-product-subset/15"
+RENDERER_VERSION = "lane-a-product-subset/16"
 
 
 def render_layout_template(
@@ -46,6 +46,8 @@ def _style_css(token: StyleToken) -> str:
         f"font-family: '{token.font_family}', Arial, sans-serif;",
         f"font-size: {_pt(token.font_size_pt)};",
     ]
+    if token.font_postscript_name:
+        declarations[0] = f"font-family: '{token.font_postscript_name}', '{token.font_family}', Arial, sans-serif;"
     if token.line_height_pt:
         declarations.append(f"line-height: {_pt(token.line_height_pt)};")
     declarations.append(f"font-weight: {700 if token.bold else 400};")
@@ -415,7 +417,12 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
             else rule_payload
         )
         if not section_plan.empty:
-            flow_attr = ' style="break-before:page;"' if section_plan.page_break_before and region is None else ""
+            section_css = []
+            if section_plan.page_break_before and region is None:
+                section_css.append("break-before:page;")
+            if not section_plan.label and section_plan.heading_gap_above_pt is not None:
+                section_css.append(f"margin-top:{_pt(section_plan.heading_gap_above_pt)};")
+            flow_attr = f' style="{"".join(section_css)}"' if section_css else ""
             section_class, semantic_attrs = "c2-section", ""
             if state.provenance.provider == "layout_template_spec":
                 section_class += " section"
@@ -434,7 +441,7 @@ def render_html(state: C2LayoutState, plan: C2RenderPlan) -> str:
                     f'{gap}column-gap:12pt;">'
                 )
                 parts.append(f'      <div class="c2-rail-label" style="min-width:0;overflow-wrap:anywhere;{align}">')
-            if not (section_plan.candidate_only and section_plan.source_heading is None):
+            if section_plan.label and not (section_plan.candidate_only and section_plan.source_heading is None):
                 # Headingless appended sections embed their heading in the content
                 # line itself (e.g. D's "SUMMARY — ..."); never invent an h2 label.
                 heading_plan = section_plan.model_copy(update={"heading_gap_above_pt": None}) if rail else section_plan

@@ -53,12 +53,13 @@ def main(argv: list[str] | None = None) -> int:
         context = build_client_render_context(profile, blind_profile=args.blind_profile)
         if context.additional_sections and "b" in lanes:
             parser.error("structured additional sections require Lane A only")
+        layout_spec = LayoutTemplateSpec.model_validate_json(args.layout_spec.read_text()) if args.layout_spec else None
         candidate = candidate_document_from_context(
-            context, candidate_id=f"candidate-{profile_sha256(profile)[:16]}"
+            context, candidate_id=f"candidate-{profile_sha256(profile)[:16]}",
+            include_subheading=layout_spec.header.show_candidate_subheading if layout_spec else True,
         )
         approval = (PresentationLabelApproval.model_validate_json(args.presentation_label_approval.read_text())
                     if args.presentation_label_approval else None)
-        layout_spec = LayoutTemplateSpec.model_validate_json(args.layout_spec.read_text()) if args.layout_spec else None
         if layout_spec is not None and (lanes != ("a",) or (not args.live and args.max_repair_rounds)):
             parser.error("--layout-spec requires Lane A; offline previews require zero repair rounds")
     except (OSError, ValueError) as error:

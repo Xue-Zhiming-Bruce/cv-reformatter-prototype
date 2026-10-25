@@ -153,7 +153,7 @@ class CandidateDocument(StateModel):
 
 
 def candidate_document_from_context(
-    context: ClientFacingRenderContext, *, candidate_id: str
+    context: ClientFacingRenderContext, *, candidate_id: str, include_subheading: bool = True
 ) -> CandidateDocument:
     """Project already-disclosed values without reading a target or raw profile."""
     leaves: list[CandidateLeaf] = []
@@ -173,7 +173,8 @@ def candidate_document_from_context(
             ))
 
     add("header.name", "header_field", context.candidate_heading, slot="name")
-    add("header.subheading", "header_field", context.candidate_subheading, slot="subheading")
+    if include_subheading:
+        add("header.subheading", "header_field", context.candidate_subheading, slot="subheading")
     # Typed contacts own their order; legacy contexts may carry only lines.
     contacts = [(item.field, f"{item.label}: {item.value}", item) for item in context.contact_items]
     if not contacts:

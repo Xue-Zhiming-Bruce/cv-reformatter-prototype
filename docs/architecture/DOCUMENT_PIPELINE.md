@@ -391,7 +391,7 @@ Integration status, October 22, 2026:
   contact body section or the unused legacy document-title flag. This removes
   duplicate contact output and lets the native A4 template compile through A.
   Existing stored specs are not rewritten; older specs and uploaded templates
-  can still request unsupported features such as hidden section headings or
+  can still request unsupported features such as hidden headings outside full-width summaries or
   contact slots combined with a custom-section selector. Replacing proof/candidate
   rendering requires validating
   proof approval against the selected implementation and proving rollback;
@@ -416,7 +416,7 @@ Integration status, October 22, 2026:
   PDFs pass the shared product validators and their HTML matches the CLI bytes.
   Native `built-in-3` API generation now calls this renderer with the saved
   revision's disclosed context projection. Its metadata records the shared A
-  renderer version (`lane-a-product-subset/15`, also used by CLI provenance).
+  renderer version (`lane-a-product-subset/16`, also used by CLI provenance).
   Product-template HTML uses the public page title `Candidate profile`;
   evidence-only diagnostics retain their existing title.
   It keeps the API's content/structure reports and exact final-output identities;
@@ -546,7 +546,7 @@ checksums. Geometry or substring matches alone cannot authorize arbitrary
 target text; template and exact-output acceptance remain separate gates.
 Source evidence and candidate values retain separate ownership.
 
-Renderer `lane-a-product-subset/15` constrains rail labels to their own grid
+Renderer `lane-a-product-subset/16` constrains rail labels to their own grid
 cell and permits word reflow instead of overflow into candidate content.
 Single-column PDF heading anchors reconstruct wrapped label characters from the
 PDF text flow, then use actual page/top coordinates for section order. Labels
@@ -640,6 +640,36 @@ Regression checks live in `tests/unit/test_pipeline_*.py` and
 inputs are documented in [the test index](../../tests/README.md). Changes belong
 in these production modules and canonical tests, with Git retaining previous
 versions instead of parallel experiment sources or ledgers.
+
+### Real Measured-Template Consumption — October 25, 2026
+
+The A product projection now retains measured PostScript face identity in an
+optional internal typography field and requests that face before the measured
+family and existing fallbacks. Actual font availability/substitution still
+requires PDF inspection; a CSS request is not proof of exact font equivalence.
+Legacy primary/accent palette values are accepted only at their existing default
+or when equal to the measured global heading color. Concrete text/rule/badge
+colors remain authoritative; independent palette roles stay unsupported.
+
+A hidden heading is supported for full-width summaries without an explicit
+page break. The compiler omits the heading/rule node, preserves section flow
+spacing and renders the summary paragraphs. Content checks remain mandatory;
+heading checks apply to declared visible headings, and consumption checks reject
+an injected summary heading, lost spacing or changed font-face CSS. Other hidden
+heading combinations still fail explicitly.
+
+Product-context projection follows `header.show_candidate_subheading` for the
+system-derived title/location composite, matching the existing product renderer.
+The underlying work-title and disclosed location values remain source-owned and
+validated in their destinations. Evidence-only/manual candidate projections keep
+their existing strict treatment of unroutable header leaves.
+
+Measured compiler version 8 omits entry-title styling on contact-only zones;
+contact value metadata styling remains present. Stored earlier templates are not
+rewritten: regenerate the design/spec from saved evidence and reapprove proofs.
+Shared A renderer identity advances to `/16`, invalidating stale Agentic proofs
+through the existing configuration binding. Product schemas, providers, prompts,
+default strategy and final-output approval rules are unchanged.
 
 ## Reproducibility And Jobs
 

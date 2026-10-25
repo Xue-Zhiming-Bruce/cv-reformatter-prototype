@@ -36,7 +36,7 @@ from app.template_analysis.visual_comparator import (  # noqa: E402
 
 
 DATASET_DIR = PROJECT_ROOT / "tests" / "local_datasets" / "resume_matrix"
-ALL_PAIRS = ["A:B", "A:C", "B:A", "B:C", "C:A", "C:B"]
+ALL_PAIRS = ["A:B", "A:C", "B:A", "B:C", "C:A", "C:B", "E:B"]
 STEPS = [
     "server",
     "process_source",
@@ -450,7 +450,20 @@ def _nonempty(path: Path) -> dict[str, Any]:
     }
 
 
-def _run_pair(client: TestClient, source: str, target: str) -> dict[str, Any]:
+def _validate_target_replay(directory: Path, target_path: Path) -> None:
+    metadata = json.loads((directory / "target_format.json").read_text())
+    cached_pdf = (directory / metadata["stored_filename"]).resolve()
+    checksum = hashlib.sha256(target_path.read_bytes()).hexdigest()
+    if (not cached_pdf.is_relative_to(directory.resolve())
+        or hashlib.sha256(cached_pdf.read_bytes()).hexdigest() != checksum
+        or json.loads((directory / "target_layout_evidence.json").read_text())["target_checksum"] != checksum):
+        raise ValueError("Saved target evidence checksum does not match the selected target")
+    for name in ("normalized_layout_evidence.json", "adobe_raw_response.json"):
+        if not (directory / name).is_file():
+            raise ValueError(f"Saved target evidence missing {name}")
+
+
+def _run_pair(client: TestClient, source: str, target: str, *, target_evidence: Path | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {
         "pair": f"{source}→{target}",
         "artifact_id": None,
@@ -472,6 +485,8 @@ def _run_pair(client: TestClient, source: str, target: str) -> dict[str, Any]:
 
     source_path = DATASET_DIR / f"resume_{source}.pdf"
     target_path = DATASET_DIR / f"resume_{target}.pdf"
+    if target_evidence is not None:
+        _validate_target_replay(target_evidence, target_path)
     process = _request(
         client,
         result,
@@ -496,6 +511,8 @@ def _run_pair(client: TestClient, source: str, target: str) -> dict[str, Any]:
         )
 
     profile = process["profile"]
+    profile.setdefault("client_display_rules", {})["phone"] = "hide"
+    result["recruiter_edit"] = {"field": "client_display_rules.phone", "value": "hide", "synthetic_evaluation": True}
     pending_sections = [
         section
         for section in profile.get("additional_sections", [])
@@ -523,18 +540,37 @@ def _run_pair(client: TestClient, source: str, target: str) -> dict[str, Any]:
     result["profile_revision_id"] = version_id
     result["initial_profile_revision_id"] = process["profile_revision_id"]
 
-    target_upload = _request(
-        client,
-        result,
-        "upload_target",
-        "POST",
-        "/api/target-format",
-        data={"artifact_id": artifact_id},
-        files={"file": (target_path.name, target_path.read_bytes(), "application/pdf")},
-    )
-    if target_upload is None:
-        return result
-    target_format = target_upload["target_format"]
+    if target_evidence is None:
+        target_upload = _request(
+            client, result, "upload_target", "POST", "/api/target-format",
+            data={"artifact_id": artifact_id},
+            files={"file": (target_path.name, target_path.read_bytes(), "application/pdf")},
+        )
+        if target_upload is None:
+            return result
+        target_format = target_upload["target_format"]
+    else:
+        from app import main as api
+        from app.template_analysis.commercial import build_design_evidence_from_normalized
+        from app.template_analysis.design_compiler import compile_measured_layout_template_spec
+        normalized = NormalizedLayoutEvidence.model_validate_json((target_evidence/"normalized_layout_evidence.json").read_text())
+        checksum = hashlib.sha256(target_path.read_bytes()).hexdigest()
+        evidence, style = build_design_evidence_from_normalized(normalized, target_checksum=checksum)
+        spec = compile_measured_layout_template_spec(evidence, style)
+        meta = api._store_target_format(artifact_id=artifact_id, artifact_dir=artifact_dir,
+            input_filename=target_path.name, suffix=".pdf", contents=target_path.read_bytes())
+        saved = api.TargetFormatMetadata.model_validate_json((target_evidence/"target_format.json").read_text())
+        meta = saved.model_copy(update={"artifact_id": artifact_id, "stored_filename": meta.stored_filename,
+            "style_spec_url": f"/api/artifacts/{artifact_id}/layout_template_spec.json",
+            "analysis_artifact_urls": {k: v.replace(saved.artifact_id, artifact_id) for k,v in saved.analysis_artifact_urls.items()}})
+        for name in ("normalized_layout_evidence.json", "adobe_raw_response.json"):
+            shutil.copy2(target_evidence/name, artifact_dir/name)
+        for name, value in (("target_format.json", meta), ("target_layout_evidence.json", evidence), ("layout_template_spec.json", spec)):
+            (artifact_dir/name).write_text(value.model_dump_json(indent=2))
+        target_format = meta.model_dump(mode="json")
+        result["steps"]["upload_target"] = {"status": "pass", "method": "saved_evidence_recompiled", "elapsed_seconds": 0,
+            "source_directory": str(target_evidence.resolve()), "target_sha256": checksum, "new_adobe_jobs": 0}
+        result["observations"].append("Target analysis replayed from explicit checksum-matched saved evidence; no new Adobe call.")
     if not target_format.get("used_as_template_source"):
         result["steps"]["upload_target"] = {
             "status": "fail",
@@ -933,7 +969,7 @@ def _write_review(run_dir: Path, report: dict[str, Any]) -> None:
     index += [f"- {target}: "+link(run_dir/data["path"]/"layout_proof_summary.json", "proof evidence")+"; no human fidelity acceptance." for target, data in proofs.items()]
     index += ["", " · ".join(link(run_dir/name, name) for name in ("RUN_README.md", "transformation_matrix.csv", "content_preservation_verification.json", "run_manifest.json")), ""]
     (run_dir/"RESULTS_INDEX.md").write_text("\n".join(index))
-    (run_dir/"RUN_README.md").write_text("# Run scope\n\nExisting authorized A–C PDF corpus; candidate facts and target presentation stay separate.\nSource/configuration, API steps, usage and failures are in run_manifest.json.\nNo final acceptance call is made. Inspect actual outputs before accepting them.\n")
+    (run_dir/"RUN_README.md").write_text("# Run scope\n\nExisting authorized PDF corpus; candidate facts and target presentation stay separate.\nSource/configuration, API steps, usage and failures are in run_manifest.json.\nNo final acceptance call is made. Inspect actual outputs before accepting them.\n")
     assert len(rows) == len(report["pairs_requested"]) == len({r["transformation_id"] for r in rows})
     with (run_dir/"transformation_matrix.csv").open() as output:
         assert len(list(csv.DictReader(output))) == len(rows)
@@ -951,6 +987,7 @@ def main() -> int:
         default=["A:B"],
         help="Pairs such as A:B A:C, or 'all'. Defaults to the required first gate A:B.",
     )
+    parser.add_argument("--target-evidence", type=Path, help="Reuse an explicit checksum-matched target artifact; recompile with current code, no Adobe call.")
     parser.add_argument("--report", type=Path, help="Optional extra copy of the run manifest.")
     parser.add_argument("--out", type=Path, help="New matrix run directory under the canonical local runs directory.")
     args = parser.parse_args()
@@ -964,6 +1001,9 @@ def main() -> int:
     if provider == "mock":
         parser.error("Live matrix refuses API_LLM_PROVIDER/LLM_PROVIDER=mock.")
 
+    if args.target_evidence is not None:
+        for pair in pairs:
+            _validate_target_replay(args.target_evidence, DATASET_DIR/f"resume_{pair.split(':')[1]}.pdf")
     run_dir = args.out or DATASET_DIR / "runs" / datetime.now(timezone.utc).strftime("matrix_%Y%m%dT%H%M%SZ_agentic_workflow")
     if not run_dir.resolve().is_relative_to((DATASET_DIR/"runs").resolve()):
         parser.error("--out must be under tests/local_datasets/resume_matrix/runs")
@@ -1000,7 +1040,7 @@ def main() -> int:
             GENERATED_OUTPUTS_DIR = run_dir / "transformations" / f"resume_{source.lower()}__to__resume_{target.lower()}" / "artifacts"
             api.GENERATED_OUTPUTS_DIR = GENERATED_OUTPUTS_DIR
             print(f"RUN {source}→{target}", flush=True)
-            result = _run_pair(client, source, target)
+            result = _run_pair(client, source, target, target_evidence=args.target_evidence)
             report["pairs"].append(result)
             print(json.dumps(result, ensure_ascii=False, sort_keys=True), flush=True)
 

@@ -657,6 +657,68 @@ def test_cli_product_word_spacing_reaches_pdf_without_changing_content(
                    for row in broken["rows"] for prop in row["properties"])
 
 
+@pytest.mark.parametrize("blind", [False, True])
+def test_product_measured_font_palette_and_hidden_summary_reach_pdf(tmp_path: Path, blind: bool) -> None:
+    import hashlib
+    import re
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+    from app.generation.content_validation import validate_generated_content, validate_output_structure
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.html_renderer import render_layout_template
+    from app.pipeline.quality import content_shape_verification, structure_gate
+    from tests.helpers.pipeline_layout import product_template
+
+    inputs = _inputs(tmp_path, one_column=True)
+    spec = product_template()
+    spec.header.show_candidate_subheading = False
+    spec.header.contact_fields = ["email", "location"]
+    from app.template_analysis.schemas import SectionLayoutSpec
+    spec.sections.append(SectionLayoutSpec(section_id="work", source="work_experience", label="EXPERIENCE"))
+    spec.sections[0].show_heading = False
+    spec.sections[0].label = ""
+    spec.sections[0].spacing = spec.spacing.model_copy(update={"section_before_pt": 11})
+    spec.heading.color_hex = "#1A1A1A"
+    spec.decoration.primary_color_hex = spec.decoration.accent_color_hex = "#1A1A1A"
+    for style in (spec.body, spec.title, spec.heading):
+        style.font_family = "Times"
+        style.font_postscript_name = "Times-Bold" if style.bold else "Times-Roman"
+    profile = CandidateProfile(full_name="Candidate Alpha", email="alpha@example.test", location="Singapore",
+        professional_summary="Builds reliable services", skills=["Python", "SQL"],
+        work_experience=[{"title": "PlatformEngineer", "company": "Source Systems"}])
+    context = build_client_render_context(profile, blind_profile=blind)
+    candidate = candidate_document_from_context(context, candidate_id="measured-template",
+        include_subheading=spec.header.show_candidate_subheading)
+    original = spec.model_dump_json()
+    state, plan, html = render_layout_template(spec, candidate,
+        target_sha256=hashlib.sha256(inputs["target_pdf"].read_bytes()).hexdigest(), page_count=1)
+    path = tmp_path / "measured.html"
+    path.write_text(html)
+    pdf_path = export_html_to_pdf(path, tmp_path / "measured.pdf")
+    assert spec.model_dump_json() == original
+    assert validate_generated_content(context, pdf_path=pdf_path, layout_spec=spec).passed
+    assert validate_output_structure(context, html_path=path, pdf_path=pdf_path, layout_spec=spec).passed
+    assert structure_gate(plan, state, html, pdf_path)["passed"]
+    assert content_shape_verification(state, plan, None, {}, html, {}, pdf_path)["passed"]
+    with pdfplumber.open(pdf_path) as pdf:
+        text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        assert "SUMMARY" not in text and "section.01" not in text
+        assert "Builds reliable services" in text and ("alpha@example.test" in text) != blind
+        assert "PlatformEngineer" in text and "Singapore" in text and "Source Systems" in text
+        chars = pdf.pages[0].search("Builds reliable services")[0]["chars"]
+        assert all("Times" in char["fontname"] for char in chars)
+    for broken in (
+        html.replace('margin-top:11pt;', 'margin-top:0pt;', 1),
+        html.replace("font-family: 'Times-Roman', 'Times', Arial, sans-serif;", "font-family: 'Courier';"),
+        re.sub(r'(<section[^>]+data-node-id="section.01"[^>]*>)', r'\1<h2>Invented heading</h2>', html),
+    ):
+        assert broken != html
+        check = content_shape_verification(state, plan, None, {}, broken, {}, pdf_path)
+        assert not check["passed"], check
+        assert any(prop["capability_gap"] for row in check["rows"] for prop in row["properties"]
+                   if prop["property"] in {"hidden_summary_heading", "font_face_css"})
+
+
 @pytest.mark.parametrize("repair", ["improve", "noop", "ambiguous", "ambiguous_single", "warning", "unbound", "renderer_claim", "unresolved", "compound", "unsafe_trial", "trial_noop", "dismissed_claim"])
 def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repair: str,
