@@ -182,7 +182,12 @@ v3 extraction retains the two distinct education entries without repetition.
 Reviewer reliability and material repair effectiveness remain open. The observed
 measurement-schema mismatch now has an explicit version-bound `unsupported`
 selector: warnings remain open without fabricated role-gap values. Eighteen
-focused actual-PDF/API checks pass; fresh live evidence for that contract follows.
+focused actual-PDF/API checks pass. Build `43a4514` completes fresh live proofs
+and ordinary/blind B→C previews, retaining disclosure and source/proof identities.
+Explicit unsupported findings carry no scalar measurements. A real unchanged
+short-proof trial rolls back to its initial selected PDF. Reviewer still makes
+an independently disproven blind-name typography claim; effective material
+repair and exact human acceptance remain open.
 
 - [x] Resolve the source/target fact-overlap rejection observed in B→C using
       registered candidate provenance. Preserve target-only leakage controls and

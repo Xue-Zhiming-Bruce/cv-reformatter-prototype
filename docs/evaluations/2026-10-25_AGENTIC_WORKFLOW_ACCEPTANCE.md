@@ -7,13 +7,13 @@ This is an outcome report, not another implementation checklist.
 
 ## Outcome
 
-Build `3f0fc59` completes B→C with fresh configuration-bound short/medium/long
+Build `43a4514` completes B→C with fresh configuration-bound short/medium/long
 proofs and ordinary/blind previews. The independently discovered structured
 project GitHub leak is absent from the replacement blind HTML/PDF; public demo
 links remain, with original source/proof identities preserved. Both outputs
 have two pages and pass content/structure validation. No human final acceptance
 has been submitted. Reviewer reliability and effective material repair remain
-open. The [current review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T174704Z_agentic_bc_blind_links/RESULTS_INDEX.md)
+open. The [current review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T180518Z_agentic_bc_review_contract/RESULTS_INDEX.md)
 links exact files and historical companion samples.
 
 Earlier integrated build `4f081ae` completes E→B and F→C through the actual
@@ -856,4 +856,56 @@ passes after expressing the unsupported observation as entry metadata placement.
 The first broader run had a test assertion indexing finding IDs as objects;
 that assertion was corrected and the command rerun green. Provider calls are
 stubbed in these regressions; rendering, gates and API identities are real.
-Fresh live proof/preview evidence under the changed contract remains pending.
+Build `43a4514` subsequently completes fresh short/medium/long proofs and B→C
+ordinary/blind previews. Normal: HTTP 200, 33.765s, two pages, 65 expected items.
+Blind: HTTP 200, 40.745s, two pages, 61 expected items. Content/structure gates
+pass. Source, saved revisions and proof files remain unchanged; blind HTML,
+PDF text and PDF hyperlink annotations contain no checked personal/contact or
+structured GitHub identity links, while both public demo URLs remain. Neither
+preview is client-ready and no final-acceptance API was called.
+
+[Current review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T180518Z_agentic_bc_review_contract/RESULTS_INDEX.md)
+retains raw observations beside independent facts and previous rejected files.
+All five live cases use explicit unsupported requests; routed results are
+`not_measurable` without scalar values. This is contract evidence, not general
+Reviewer acceptance. The blind Reviewer still claims the name lacks hierarchy;
+actual target/normal/blind name text is 24 pt Helvetica-Bold at x=66 pt. Actual
+certification body text color is `#334155` in all three files. Those independent
+facts are recorded without silently closing raw findings.
+
+One actual short-proof Builder repair is attempted after an unsupported summary
+formatting observation. Its HTML is unchanged and remeasurement remains
+unmeasurable; the attempt rolls back and the initial reviewed PDF remains BEST.
+No material repair is promoted. The low-level budget's zero `repair_attempt_count`
+does not represent the actual loop attempt ledger; the report uses the latter
+and preserves both. This is real no-improvement rollback evidence, not effective
+material repair or broad failure acceptance.
+
+[Package validation](../../tests/test_results/pytest/20261025T181559Z_bc_review_contract_package_validation.txt)
+checks manifest/CSV/review rows 1/1, content preservation 1/1, all local index
+links and output hashes, unchanged source/revision/proof identity and six proof
+plus four output page PNGs identical to the individually inspected prior build.
+110 image references resolve to 80 unique local files with matching hash/MIME.
+Four duplicated pathless audit references represent two tool-returned images;
+their exact hashes resolve to the saved overview/region files and the mapping
+is retained in `audit_image_verification.json`. Initial ad hoc validation
+attempts assumed every reference carried a path and every proof run directory
+was proof-relative; those assumptions were corrected without changing outputs.
+The blind run also retains SDK audit-serialization warnings; actual image
+hashes/MIME and generated files validate. Exact billed cost is unavailable.
+
+Actual usage: **20 Agentic requests** (17 canonical + 3 blind), 125,415 input +
+9,050 output tokens; zero new extraction/Adobe calls.
+[Canonical live terminal log](../../tests/test_results/pytest/20261025T180518Z_agentic_bc_review_contract.txt),
+[blind terminal log](../../tests/test_results/pytest/20261025T181021Z_bc_review_contract_blind.txt).
+M2/M3 acceptance, default cutover and B0/B1 remain open.
+
+Reproduce the focused offline checks from the worktree with the existing runtime:
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 "/Users/xuezhiming/Desktop/CV converter prototype/.venv/bin/python" -B -m pytest -p no:cacheprovider tests/integration/test_pipeline_loop.py tests/integration/test_pipeline.py tests/integration/test_layout_proof_api.py -k 'measurement_request_accepts_semantic_intent or measurement_tool_budget_consumed_once or agentic_product_template_measures_repairs_and_selects_accepted_version or agentic' -q --tb=short
+```
+
+Save output under the timestamped pytest result path as required by the test
+contract. The 18-pass log above predates only the final warning-fixture wording;
+that one case was independently rerun and passed with the same production code.
