@@ -469,3 +469,67 @@ tests/integration/test_api_process.py -q --tb=short`.
 [Original-instruction negative control](../../tests/test_results/pytest/20261025T140640Z_logical_bullets_negative.txt)
 retains the intended failure. Existing provider-failure, audit-failure, immutable
 evidence and process behavior checks remain in the same canonical lane.
+
+### v2 Live Outcome: Logical Bullets Fixed, Duplicate Education Exposed
+
+[Fresh canonical E→B run](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T140832Z_agentic_eb_logical_bullets/RESULTS_INDEX.md),
+source build `b40f79a`, used one extraction request (5,070 input + 1,975 output
+tokens) and zero Adobe jobs. Instruction v2 automatically produced work-description
+counts **3/4/3/2**, matching all 12 original bullets without the earlier manual
+profile correction. Verbatim line coverage passed. All three proofs and candidate
+API preview completed; **21 Agentic requests** were used, with the long proof
+reaching its frozen 12-request ceiling. The candidate API returned 200 in 53.523s,
+with 62 expected content items and product structure passing, `client_ready=false`.
+
+Direct inspection of both candidate pages found two education records repeated
+twice. The LLM put the same two records in both work and education sections.
+The raw line audit checks evidence multiplicity, so it did not catch duplicate
+structured facts; output gates correctly accounted for the supplied profile but
+could not establish extraction correctness. The output is unaccepted, not a new
+baseline. Its source/profile/raw response/PDF remain unchanged and reviewable.
+
+Instruction v3 now explicitly projects each structured entry once. Strict output
+validation rejects exact duplicate work/education/certification records within
+or across sections before materialization, with a clear extraction failure rather
+than silently choosing/deduplicating records. Distinct degrees at one institution
+remain valid. The response schema stays `llm_segmentation/1`; no provider/model
+or product storage model changes.
+[Offline replay](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T140832Z_agentic_eb_logical_bullets/duplicate_projection_revalidation.json)
+rejects the unchanged bad v2 response without a model call.
+
+### Paired Header-Rule Absence And Measurement Identity
+
+The earlier blind Reviewer reported a defect while its observation said both
+header vertical-rule counts were zero. Policy /1 classified both empty sets as
+missing evidence, leaving that false finding unresolved. Policy
+`header_vertical_rule_geometry/2` measures error zero when both located headers
+have no rules. A target with required rules and a render with none still returns
+`evidence_missing`; deleting rules cannot demonstrate improvement.
+The existing matched-measurement path records `no_defect` and closes the ledger,
+retaining the raw finding. There is no finding-wording filter.
+[Offline remeasurement](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T140832Z_agentic_eb_logical_bullets/paired_absence_revalidation.json)
+of the unchanged earlier blind PDF confirms zero error; original run state is
+not rewritten.
+
+The policy version is part of Agentic proof configuration identity. The actual
+API regression rejects changed-policy approval before model calls; fresh proofs
+are mandatory. Repair comparison rejects mismatched method versions, while
+earlier same-version records retain their original semantics for inspection.
+
+Checks:
+
+- Source/measurement/API focused command over existing `test_llm_segmentation`,
+  `test_api_process`, `test_pipeline_loop`, `test_layout_proof_api` selected cases:
+  [20 passed, 173 deselected](../../tests/test_results/pytest/20261025T142600Z_projection_and_zero_rules_focused.txt),
+  including policy-bound approval invalidation, 47.85s.
+- Extended source entry-type table plus process API:
+  [20 passed](../../tests/test_results/pytest/20261025T143000Z_entry_projection_focused.txt), 0.35s.
+- Existing actual-PDF repair/promotion/rollback table:
+  [12 passed, 63 deselected](../../tests/test_results/pytest/20261025T142800Z_measurement_repair_regression.txt),
+  89.14s; one existing event-loop deprecation warning.
+- Original implementation negative controls:
+  [duplicate projection](../../tests/test_results/pytest/20261025T141800Z_duplicate_projection_negative.txt),
+  [zero/zero rules using distinct target/candidate PDFs](../../tests/test_results/pytest/20261025T141430Z_zero_rules_distinct_pdfs_negative.txt).
+
+Full offline regression and fresh v3 end-to-end evidence follow. Neither focused
+checks nor offline replay complete M2 or authorize default cutover/B removal.

@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.extraction.coverage_audit import audit_segmentation_lines
+from app.extraction.llm_extractor import LLMExtractionError
 from app.extraction.llm_segmentation import (
     LLMSegmentationOutput,
     materialize_llm_segmentation,
@@ -104,7 +105,7 @@ def test_provider_instructions_distinguish_verbatim_evidence_from_logical_descri
     client = CapturingClient()
     segment_and_extract_resume("• Built fault-tolerant\nservices for clients.", client)
 
-    assert "Instruction version: llm-segmentation/2" in client.system
+    assert "Instruction version: llm-segmentation/3" in client.system
     assert "response schema: llm_segmentation/1" in client.system
     assert "heading and items only" in client.system
     assert "work_experience[].description" in client.system
@@ -114,3 +115,39 @@ def test_provider_instructions_distinguish_verbatim_evidence_from_logical_descri
     assert json.loads(client.prompt.split("SOURCE LINES JSON:\n")[1].split("\n\n")[0]) == [
         "• Built fault-tolerant", "services for clients.",
     ]
+
+
+@pytest.mark.parametrize("across_sections", [False, True])
+@pytest.mark.parametrize("field,entry", [
+    ("education", {"institution": "Example University", "degree": "BSc"}),
+    ("work_experience", {"company": "Example Ltd", "title": "Engineer"}),
+    ("certifications", {"name": "Example certification"}),
+])
+def test_duplicate_structured_entries_fail_before_materialization(
+    across_sections: bool, field: str, entry: dict[str, str],
+) -> None:
+    from unittest.mock import Mock
+
+    payload = _output().model_dump(mode="json")
+    payload["sections"][-1][field] = [entry]
+    if across_sections:
+        payload["sections"].append({"heading": field.upper(), "section_type": field,
+                                    "items": list(entry.values()), field: [entry]})
+    else:
+        payload["sections"][-1][field].append(entry)
+    client = Mock()
+    client.complete_json.return_value = json.dumps(payload)
+
+    with pytest.raises(LLMExtractionError, match=f"duplicate structured {field} entry"):
+        segment_and_extract_resume("Example University\nBSc", client)
+
+
+def test_same_institution_with_different_degrees_remains_distinct() -> None:
+    payload = _output().model_dump(mode="json")
+    payload["sections"].append({"heading": "EDUCATION", "section_type": "education",
+        "items": ["Example University", "BSc", "MSc"], "education": [
+            {"institution": "Example University", "degree": "BSc"},
+            {"institution": "Example University", "degree": "MSc"},
+        ]})
+    profile, _ = materialize_llm_segmentation("Example University\nBSc\nMSc", LLMSegmentationOutput.model_validate(payload))
+    assert [entry.degree for entry in profile.education] == ["BSc", "MSc"]

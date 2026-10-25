@@ -237,6 +237,12 @@ score or successful preview grants human final-output acceptance.
 
 `unit/test_llm_segmentation.py` distinguishes original heading/item evidence
 from logical work/custom descriptions, retaining wrapped raw blocks and rejecting
-joined evidence lines. Extraction instruction v2 keeps response schema v1;
+joined evidence lines. Extraction instruction v3 keeps response schema v1;
 provider-boundary checks verify both identities reach the actual client call.
 Offline fixtures do not prove live extraction quality.
+Exact duplicate structured work, education and certification entries are rejected
+within/across source sections before materialization. Repeated evidence lines
+remain covered independently; different degrees at one institution stay valid.
+The header-rule regression covers two rule-free PDFs with different names,
+required-rule deletion, additive/valid repairs and mismatched measurement method
+versions. Measurement policy also participates in API proof identity.

@@ -1108,10 +1108,10 @@ def test_candidate_shape_filter_keeps_real_skills_layout_and_page_local_residual
 def test_header_vertical_rule_metric_counts_additive_repairs(tmp_path: Path) -> None:
     from reportlab.pdfgen import canvas
 
-    def make(path: Path, rules: list[tuple[float, float, float]]) -> Path:
+    def make(path: Path, rules: list[tuple[float, float, float]], name: str = "CANDIDATE NAME") -> Path:
         document = canvas.Canvas(str(path), pagesize=(612, 792))
         document.setFont("Helvetica-Bold", 20)
-        document.drawString(120, 700, "CANDIDATE NAME")
+        document.drawString(120, 700, name)
         document.setLineWidth(1)
         for x, y0, y1 in rules:
             document.line(x, y0, x, y1)
@@ -1123,6 +1123,7 @@ def test_header_vertical_rule_metric_counts_additive_repairs(tmp_path: Path) -> 
     additive_pdf = make(tmp_path / "additive.pdf", [(100, 675, 750), (95, 725, 750)])
     fixed_pdf = make(tmp_path / "fixed.pdf", [(100, 725, 750), (100, 675, 695)])
     empty_pdf = make(tmp_path / "empty.pdf", [])
+    empty_target = make(tmp_path / "empty_target.pdf", [], "TARGET NAME")
     request = e.MeasurementRequest(
         request_id="header-rule",
         metric="header_vertical_rule_geometry",
@@ -1141,14 +1142,25 @@ def test_header_vertical_rule_metric_counts_additive_repairs(tmp_path: Path) -> 
     empty = e5._measure_header_vertical_rule_geometry(
         request, target_pdf=target, current_pdf=empty_pdf
     )
+    both_empty = e5._measure_header_vertical_rule_geometry(
+        request, target_pdf=empty_target, current_pdf=empty_pdf
+    )
     assert before.current_evidence[0]["vertical_rule_count"] == 1
     assert additive.current_evidence[0]["vertical_rule_count"] == 2
     assert fixed.current_value_pt == 0
     assert empty.status == "evidence_missing"
+    assert both_empty.status == "confirmed"
+    assert both_empty.delta_pt == 0
+    assert both_empty.target_evidence[0]["vertical_rule_count"] == 0
+    assert both_empty.current_evidence[0]["vertical_rule_count"] == 0
     improved, reason = e5._measurement_improvement(before, additive)
     assert improved is False
     assert "retaining the original long" in reason
     assert e5._measurement_improvement(before, fixed)[0] is True
+    legacy = before.model_copy(update={"method": "header_vertical_rule_geometry/1"})
+    assert e5._measurement_improvement(legacy, fixed) == (
+        False, "measurement methods differ; improvement is not comparable",
+    )
 
 
 def test_header_vertical_rule_metric_rejects_unrelated_finding() -> None:

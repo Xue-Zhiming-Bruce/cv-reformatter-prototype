@@ -88,6 +88,7 @@ E5_REVIEWER_MAX_REQUESTS = 4
 E5_BUILDER_MAX_REQUESTS = 4
 
 E5_ATTRIBUTION_MAX_REQUESTS = 8  # floor only; the batch envelope is derived below
+HEADER_VERTICAL_RULE_MEASUREMENT_VERSION = "header_vertical_rule_geometry/2"
 
 
 
@@ -1568,7 +1569,7 @@ def _e5_default_attribution(
                 hypothesis_status="rejected",
                 repair_owner="none",
                 evidence=[result.request_id],
-                reason="measured role gap matches the target within the documented tolerance",
+                reason="measured final-PDF property matches the target within the documented tolerance",
             )
         return AttributionRecord(
             finding_id=finding.finding_id,
@@ -2025,7 +2026,7 @@ def _measure_header_vertical_rule_geometry(
             request_id=request.request_id,
             status="not_measurable",
             reason="header_vertical_rule_geometry requires an explicit header/name vertical-rule intent",
-            method="header_vertical_rule_geometry/1",
+            method=HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
         )
     target = _header_vertical_rule_evidence(target_pdf, request.page)
     current = _header_vertical_rule_evidence(
@@ -2036,18 +2037,18 @@ def _measure_header_vertical_rule_geometry(
             request_id=request.request_id,
             status="evidence_missing",
             reason="the name/header region could not be located in one of the final PDFs",
-            method="header_vertical_rule_geometry/1",
+            method=HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
         )
     target_rules = target["vertical_rules"]
     current_rules = current["vertical_rules"]
-    if not target_rules or not current_rules:
+    if bool(target_rules) != bool(current_rules):
         return MeasurementResult(
             request_id=request.request_id,
             status="evidence_missing",
             target_evidence=[target],
             current_evidence=[current],
-            reason="a header vertical-rule set is empty; deletion is not automatic improvement",
-            method="header_vertical_rule_geometry/1",
+            reason="one header vertical-rule set is empty; deletion is not automatic improvement",
+            method=HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
         )
     paired_error = sum(
         abs(current_rule["relative_x_to_name_left"] - target_rule["relative_x_to_name_left"])
@@ -2078,13 +2079,15 @@ def _measure_header_vertical_rule_geometry(
         delta_pt=round(error, 3),
         target_evidence=[target],
         current_evidence=[current],
-        method="header_vertical_rule_geometry/1",
+        method=HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
         warnings=["coordinates are page-local pt; geometry is relative to the detected name region"],
     )
 
 def _measurement_improvement(
     before: MeasurementResult, after: MeasurementResult
 ) -> tuple[bool, str]:
+    if before.method != after.method:
+        return False, "measurement methods differ; improvement is not comparable"
     if after.status != "confirmed":
         return False, f"identical re-measurement was {after.status}"
     if any(value is None for value in (
@@ -2092,7 +2095,9 @@ def _measurement_improvement(
         after.current_value_pt, after.target_value_pt,
     )):
         return False, "identical re-measurement left scalar evidence missing"
-    if before.method == after.method == "header_vertical_rule_geometry/1":
+    if before.method == after.method and before.method in {
+        "header_vertical_rule_geometry/1", HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
+    }:
         before_rules = (before.current_evidence[0].get("vertical_rules", []) if before.current_evidence else [])
         after_rules = (after.current_evidence[0].get("vertical_rules", []) if after.current_evidence else [])
         if len(after_rules) > len(before_rules):
@@ -4110,7 +4115,7 @@ def run_e5(
                         request_id=request_id,
                         status="not_measurable",
                         reason="metric may bind only to an explicit header vertical-rule finding",
-                        method="header_vertical_rule_geometry/1",
+                        method=HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
                     )
                 else:
                     lane_budget.spend_tool("measure_header_vertical_rule_geometry")

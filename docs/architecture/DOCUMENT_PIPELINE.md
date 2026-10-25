@@ -52,7 +52,7 @@ or item. Deterministic code audits those lines as multisets; any missing,
 duplicated, invented, or altered line blocks approval. The LLM never evaluates
 its own completeness.
 
-Extraction instruction version `llm-segmentation/2` keeps the existing
+Extraction instruction version `llm-segmentation/3` keeps the existing
 `llm_segmentation/1` response schema. Verbatim line rules apply only to section
 headings/items; structured work/custom descriptions represent logical source
 bullets or paragraphs. The LLM joins continuation lines and clearly wrapped
@@ -60,6 +60,10 @@ words in those structured values while preserving separate bullets, meaningful
 hyphens and every original evidence line. No deterministic semantic regrouping
 or implicit reinterpretation of stored artifacts is introduced. Metadata records
 the instruction version; existing drafts require a new audited extraction.
+Exact duplicate work, education and certification records within/across response
+sections are rejected before materialization. Distinct entries at the same
+institution/employer remain distinct. Verbatim repeated evidence is preserved;
+the backend does not silently deduplicate or rewrite existing profiles.
 
 `NormalizedDocument` preserves source order and recognizable structural units
 such as paragraphs, table cells, lists, headings, and page references.
@@ -585,6 +589,11 @@ style reference for continuation pages. It does not send target-only pages
 without a corresponding generated page. Raw findings and independent safety,
 measurement, repair and human-acceptance boundaries retain their existing roles.
 Prompt changes alter the proof configuration digest and require new proofs.
+The digest also binds header vertical-rule measurement policy /2. When both
+located header regions contain zero vertical rules, the measured error is zero;
+a one-sided empty set remains unresolved so deletion cannot prove improvement.
+Repair comparisons reject different measurement method versions. Earlier same-
+version records remain readable without acquiring current proof approval.
 
 Review findings, typed measurements, attribution, and repairs are version-bound.
 Entry-spacing binding follows the declared parent chain from entry/list regions

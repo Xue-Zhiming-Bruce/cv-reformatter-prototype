@@ -35,7 +35,7 @@ from app.extraction.llm_extractor import LLMClient, LLMExtractionError
 from app.validation.missing_fields import apply_missing_field_detection
 
 
-LLM_SEGMENTATION_PROMPT_VERSION = "llm-segmentation/2"
+LLM_SEGMENTATION_PROMPT_VERSION = "llm-segmentation/3"
 
 
 class SegmentationRunMetadata(BaseModel):
@@ -120,6 +120,18 @@ class LLMSegmentationOutput(BaseModel):
     schema_version: Literal["llm_segmentation/1"] = "llm_segmentation/1"
     sections: list[LLMSegmentedSection] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def unique_structured_entries(self) -> "LLMSegmentationOutput":
+        for field in ("work_experience", "education", "certifications"):
+            seen: set[str] = set()
+            for section in self.sections:
+                for entry in getattr(section, field):
+                    identity = entry.model_dump_json()
+                    if identity in seen:
+                        raise ValueError(f"duplicate structured {field} entry; project each fact once")
+                    seen.add(identity)
+        return self
+
 
 SYSTEM_PROMPT = f"""You segment and extract a candidate resume in one operation.
 Instruction version: {LLM_SEGMENTATION_PROMPT_VERSION}
@@ -137,6 +149,7 @@ Verbatim evidence rules (heading and items only):
 
 Extraction rules:
 - Populate structured fields only when explicitly supported by that section's source lines; never guess missing facts.
+- Project each structured work/education/certification entry once across the response. Do not copy resume-wide collections into other sections. Repeated source evidence does not create another fact.
 - work_experience[].description and additional_entries[].description contain logical bullets or paragraphs, not physical source lines. Join continuation lines of the same source item into one string, using the section and entry context. Keep distinct bullets separate and omit their leading bullet glyphs.
 - Normalize a clearly line-wrapped word when joining structured descriptions (for example, "de-" followed by "tect" becomes "detect"). Preserve meaningful hyphens such as "fault-tolerant"; retain uncertain text rather than guessing.
 - This joining applies only to structured field values. The same original lines must still appear separately and verbatim in heading/items for the coverage audit.
