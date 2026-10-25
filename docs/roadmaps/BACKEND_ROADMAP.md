@@ -4,815 +4,385 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 25, 2026 (bounded A layout trials; uploaded-target cutover and B0/B1 gates remain open)
+Last reviewed: October 25, 2026 (owner-directed mainline consolidation)
 
-This is the active engineering roadmap after completion of the MVP and PDF
-demo. Use it with the [Product Specification](../product/PRODUCT_SPEC.md) and
-[Document Pipeline](../architecture/DOCUMENT_PIPELINE.md). Commercial provider
-evaluations live as dated evidence in
-[docs/evaluations](../evaluations/); no provider is approved outside an ADR.
+This is the sole implementation checklist. Product behavior belongs in the
+[Product Specification](../product/PRODUCT_SPEC.md), approved decisions in
+[ADRs](../decisions/README.md), implementation boundaries in
+[Document Pipeline](../architecture/DOCUMENT_PIPELINE.md), and frontend-facing
+behavior in the [API Contract](../architecture/API_CONTRACT.md). Follow the
+[Test Structure](../testing/TEST_STRUCTURE.md) and [test index](../../tests/README.md)
+for all checks and evidence. Git retains superseded plans and debugging history;
+there is no experiment tree, parallel runner, or second planning system.
 
-This file is the sole implementation checklist. Reviewable Git commits retain
-execution history; current behavior belongs in the owning architecture or API
-document. Superseded experiment histories and repository memory are recovered
-from Git, not maintained as a second plan. This file lists the remaining work,
-by stage, and the definitions and boundaries that govern it.
+## Current Direction And Implemented State
 
-Maintenance note (October 19, 2026): the retained pipeline is under
-`app/pipeline/`, with canonical pytest coverage. Historical runners and the
-commercial comparison harness have been retired. This cleanup does not
-complete B0/B1 or approve API integration, a provider, or a renderer.
+The MVP and target-PDF demo accepted on July 26, 2026 remain the functional
+baseline. The owner selected A, structured layout with controlled rendering,
+on October 22. The present task is to integrate and accept that path before
+retiring its alternatives. B0/B1 remain incomplete.
 
-## Mainline Consolidation (Owner Direction, October 21, 2026)
-
-Execute in order within existing modules and canonical tests. The owner selected
-saved profile revisions for previews, with human approval on the final output.
-Legacy profile-approval names remain compatibility fields only.
-
-- [x] Restore a runnable API/mock baseline, including revision preview, final
-      acceptance invalidation, disclosure, and generation regressions.
-- [x] Unify candidate input through `CandidateProfile` ->
-      `ClientFacingRenderContext`; keep `CandidateDocument` an internal projection.
-      Record layout-contract gaps before replacing either compiler. CLI core
-      and A custom-section projections are integrated; full template behavior
-      still needs parity before API cutover.
-- [x] Produce comparable A/B outcome PDFs and independent gates using existing
-      workflows; obtain owner selection before retiring either representation.
-      Owner initially selected A on October 22. CLI/service now default to A;
-      B remains an explicit comparison choice until migration conditions pass.
-- [~] Route API and CLI through the selected shared generation implementation;
-      remove replaced paths only after behavior/output parity and rollback checks.
-      A content prerequisites now preserve structured custom sections and empty
-      history, with real PDF/product-validator and negative gate checks. Product
-      LayoutTemplateSpec compilation now has an explicit offline single-column
-      subset in the existing CLI/A path, now including work rows, education
-      separators and custom-section selectors with role styles. Real PDF,
-      independent content and renderer-mutation checks cover these mappings.
-      Header/heading rules and grouped rounded badges now map through the same
-      path, with real PDF vector/text checks and negative HTML/PDF controls.
-      Explicit left/right sidebars, column ratios/gutters/backgrounds,
-      full-width group boundaries and two-column plain lists now compile and
-      render through A. PDF checks cover wrapped content, region membership,
-      ordinary/blind output, empty sidebars and displaced-column controls.
-      Explicit section page breaks now survive spacing overrides; column breaks
-      start a fresh pair of rails, while empty sections do not force blank pages.
-      Single-column and sidebar entries flow across pages with header/first-body
-      attachment; real PDF cases and removed-break HTML/PDF controls cover this
-      bounded pagination subset.
-      Generic custom-group headings now preserve the product renderer's
-      distinct default typography and margins. Same-input ordinary/blind PDF
-      comparisons cover group headings, title/link gaps and within-group gaps;
-      this fallback is not measured target-specific group styling.
-      A product HTML now carries the existing product semantic markers and
-      passes the API's shared structure validator in ordinary/blind CLI entry
-      regressions, including missing fields and non-bold institutions. This is
-      compatibility preparation; uploaded-target/proof rendering has not switched.
-      Native `built-in-3` removes the unused document-title declaration and
-      repeated contact body section. The unchanged A compiler now renders its
-      A4 template in ordinary/blind CLI cases, alongside independent product
-      content/structure checks; API default-template version and header-only
-      contact behavior are covered without replacing its renderer.
-      Deterministic product-template compilation, binding and HTML rendering
-      now share one callable used by CLI preflight/rendering and probes. Native
-      templates can render without fabricated target evidence; ordinary/blind
-      PDFs pass product validators and HTML matches the CLI bytes. Uploaded
-      target identity, label authorization and independent gates remain at the
-      caller boundary. API/proof rendering remains on the retained implementation.
-      Proof results and approval aggregates now bind the renderer version, with
-      a fixed historical identity for legacy records. Version changes block
-      approval and generation until a fresh complete proof set is explicitly
-      approved; new proof IDs preserve old files. API regressions cover stale
-      and preloaded approvals, read-only legacy compatibility, reapproval and
-      matching-record rollback. The version simulation retains the existing
-      renderer; uploaded-target/proof cutover to A remains open.
-      No-target `built-in-3` API generation now uses the shared A compiler,
-      binder and HTML renderer with its actual implementation identity. Real
-      Chrome ordinary/blind regressions cover source preservation, independent
-      content/structure and A ownership gates, saved-revision previews, exact
-      output acceptance and invalidation after disclosure changes. Unsupported
-      native features preserve existing HTML/PDF and cannot fall back. Existing
-      product-renderer PDFs remain reviewable references. Uploaded templates
-      retain their existing proof-bound path. Canonical proof-contact projection
-      now uses the existing exact label vocabulary, preserving each source line
-      and rejecting unknown/malformed/duplicate fields. Short/medium/long actual
-      A PDFs pass independent product and ownership checks without changing
-      canonical context checksums or retained renderer bytes. Unrepresented
-      template properties and proof/candidate parity still block their cutover.
-      A now consumes nonzero word spacing in supported typography roles, with
-      an HTML consumption guard and positive/negative actual PDF measurements
-      against zero-spacing output. Default HTML remains unchanged; the retained
-      renderer still ignores this property and is not a parity reference.
-      Inline skills now preserve typed groups and flat-item ownership, consume
-      delimiters/label styles/group spacing and pass actual PDF regressions for
-      normal/blind, flat/empty and sidebar cases. Single-column references cover
-      gaps; PDF checks cover label typography. Changed HTML or missing PDF skills fail
-      their independent checks. Uploaded-target cutover remains open.
-      Dedicated Contact sections now share A's existing contact leaves, with
-      explicit field order, section typography and full-width/sidebar placement.
-      Empty header selections keep default order for fields remaining after body
-      assignment; explicit overlaps and duplicate ownership fail closed. Real PDF
-      cases cover all-body, split/default-remainder, blind/hidden output and
-      missing body contacts. Product PDF validation now counts body-selected
-      contacts too. Additional Details/Links contact slots now share the contact
-      binder, with label/value typography and row spacing; explicit field
-      partitioning permits separate Contact, Links and header destinations.
-      Real PDF cases cover sidebars, blind/hidden output, canonical legacy lines
-      and coexistence with generic additional details. Same-heading source blocks
-      keep their independent entries through the existing preserve/append path;
-      appended custom entries now expose the shared product structure markers.
-      Removed heading-based validator exemptions prevent silent loss of their
-      URLs or descriptions, including through the retained renderer. Combined
-      contact/custom-selector layouts and uploaded-target cutover remain open.
-      Full product-template coverage,
-      complete pagination parity and uploaded-target API cutover remain open; no replaced
-      implementation has been removed.
-      Owner-requested optional agentic integration now connects measured target
-      PDF proofs and candidate previews to the same live A runner through
-      `GENERATION_STRATEGY=agentic`. Default standard rendering and native
-      deterministic A remain available. Model proposals affect only compiled
-      plans; all product gates and completed selected-PDF Reviewer review are
-      required before publication. Configured renderer/model/budget identity
-      requires fresh complete proof approval. Real Chrome offline boundary
-      regressions cover three proof lengths, continuation-page review,
-      saved-revision preview/final acceptance, measured repair promotion,
-      non-improving rollback and preserved previews after Reviewer/evidence
-      failure. An opted-in synthetic live API smoke now completes all three
-      proofs and one saved-revision preview with real Builder/Reviewer and
-      attribution calls (21 HTTP reservations). It exposed an undersized JSON
-      envelope: dense overview images exceeded 210000 bytes after Base64
-      encoding. The API cap is now 512000 bytes and part of proof identity;
-      SDK-wrapped local budget failures no longer enter connection retries.
-      The original live API sample promoted no model repairs. A subsequent
-      controlled-fault run, with an explicitly scoped first Reviewer call,
-      promoted a real model repair from a 360pt rail to 92pt. Independent PDF
-      company-row spacing improved from 102pt to the target's 60.75pt, with
-      selected-PDF review and product gates passing. Its live pytest failed on
-      an oracle that assumed unwrapped company text; whitespace-aware full-name
-      matching fixes that oracle and the saved outcome passes read-only checks.
-      Live repeatability remains open: default reviews missed the fault and a
-      later scoped repeat stalled on incorrect ownership attribution. The live
-      repair smoke is not green. Measurement now resolves descendant regions
-      through measured section boundaries and matching row typography; missing
-      evidence cannot bind to page headers. Attribution receives the exact
-      current proposal; agentic identity advances to version 2, requiring fresh
-      proofs. Offline repair/rollback and related API checks pass (297 passed,
-      19 skipped). General external model
-      quality, full template coverage and asynchronous execution remain open;
-      this does not retire either baseline or B.
-      The subsequent four-fix audit now has seven passing offline runner cases:
-      typography collisions stay ambiguous (including one target entry against
-      two candidate entries), failed measurements preserve their issued IDs,
-      valid unsupported-metric findings remain open, and unproven renderer-limit
-      claims remain unresolved. Attribution receives actual consumed row
-      topology and primitive effects without candidate values. Agentic identity
-      advances to version 3; legacy prompt bytes and stored product contracts
-      remain unchanged. Full offline backend validation passes: 762 passed,
-      35 skipped. One post-fix controlled live smoke also passes with six HTTP
-      reservations: the real model changes the rail from 360pt to 92pt,
-      eliminates the measured 41.3pt entry-gap error, and the promoted version
-      passes product gates and exact-PDF review. The initial fault and first
-      review scope remain explicitly controlled; general live repeatability
-      and default whole-page discovery remain unaccepted.
-      October 25 owner direction separates permission to try from proof of
-      improvement. Live A section findings may enter bounded typed layout trials
-      despite unresolved attribution or measurement. Measured improvement and
-      accepted-region checks still control automatic selection; safe unmeasured
-      trials remain local for human comparison and never enter active/BEST.
-      Wording filters no longer drop valid region-bound findings. API publication
-      keeps content/privacy/structure/template checks and exact-PDF review;
-      repeat-export determinism is diagnostic. Gate policy advances agentic
-      identity to version 4, requiring fresh proofs. Full offline validation:
-      767 passed, 35 skipped; reverting trial dispatch and API diagnostic policy
-      makes the new regressions fail for the intended reasons. Follow-up live
-      verification now exercises unresolved attribution through a real 360pt →
-      92pt repair (41.3pt gap error → 0; seven HTTP requests) and all three API
-      proofs plus a saved-revision preview (23 requests). Two earlier API
-      failures exposed rail-label overflow and PDF text-flow/line-wrap false
-      positives. Renderer /15 constrains labels and verifies physical heading
-      order; independent content/proof checks retain source multiplicity and
-      real pagination failures while accepting safe wrapping. All 50 requests
-      across attempted runs and reviewable outcomes remain in the canonical
-      local pipeline directory. Final live checks pass (2 passed), as does the
-      full offline backend suite (780 passed, 35 skipped). Regression controls
-      still reject missing/changed repeated dates, absent/near-match headings,
-      overflowing rails and incorrect first-page breaks. Default strategy,
-      provider routes and system prompt bytes remain unchanged. General live discovery,
-      fidelity acceptance and asynchronous execution remain open.
-- [ ] Prune redundant orchestration, reports, and tests once their responsibility
-      has a single verified owner.
-
-This work does not itself satisfy the B0/B1 or provider/renderer acceptance gates.
-The initial synthetic offline A/B integration run produced reviewable files but
-does not support a quality selection: Lane A retains structure/label gaps and
-the scripted Lane B template does not reproduce the measured target. No lane
-is retired. Independent source/PDF date normalization was corrected and tested;
-the failed run remains local diagnostic evidence.
-
-October 22 update: [A/B review evidence](../evaluations/2026-10-22_AB_MAINLINE_REVIEW.md)
-records 89 DeepSeek-only request reservations after the owner requested more
-trials: 13 paired ordinary/blind runs, one interrupted native-crash run,
-actual repair/rollback PDFs, independent content/privacy/repeat checks, visual
-comparisons, and canonical shape probes. Final same-source outputs from both
-lanes preserve the primary candidate content; B still fails template reuse
-probes, while A retains measured-layout capability gaps. Renderer, probe,
-budget configuration, native tool concurrency, and header accounting defects
-were fixed with regressions. The owner
-explicitly replaced individual label approval with conservative measured
-exact-alias recognition (product/ADR 0001 amendment). The agent recommends A
-as the next convergence direction within the measured sidebar/core-field
-scope. The owner subsequently confirmed “先选A”: A is the initial mainline,
-not a permanent fidelity winner or product acceptance. Both lanes and the
-original API remain while the migration conditions below are open; no API
-cutover or B0/B1 exit condition is claimed. The next implementation work is
-product LayoutTemplateSpec integration, structured custom-section parity,
-measured layout/continuation coverage, and fail-closed rollback verification
-before routing both entrances through A and deleting replaced code.
-
-## Current Phase
-
-As of July 26, 2026, the product owner has accepted the MVP and PDF demo as the
-working baseline.
-
-The active sequence is:
+The product flow remains:
 
 ```text
-Accepted MVP/PDF demo
--> production-standard document backend
--> post-MVP persistence, security, and operations
--> controlled staging and production launch
+Candidate resume -> extracted source + validated CandidateProfile
+-> recruiter edits saved as an immutable revision
+-> ClientFacingRenderContext
+                                      +
+Target document -> TargetLayoutEvidence -> LayoutTemplateSpec
+-> controlled A compilation/binding/rendering
+-> HTML + headless-Chrome PDF -> independent checks + visual review
+-> human acceptance of the exact generated HTML/PDF
 ```
 
-The current backend priority is target-format fidelity:
+`CandidateProfile` and `LayoutTemplateSpec` are the product contracts. Internal
+`CandidateDocument`, layout state and model proposals are implementation details.
+Saving a current profile revision permits preview, subject to source/disclosure
+checks. Template approval, green tests and model review do not grant final
+output acceptance. Final acceptance binds the profile revision/checksum, layout
+version/checksum and HTML/PDF checksums; changed identities invalidate it.
+A fixed business workflow and a bounded Agentic review/repair loop coexist.
 
-```text
-Recruiter target PDF
--> reliable layout and style understanding
--> validated reusable layout specification
--> controlled CandidateProfile rendering
--> faithful editable HTML surface and headless-Chrome-exported PDF
--> deterministic and visual quality gates
-```
+### Actual Entrances (Verified At `ff4b16e`)
 
-Do not restart the MVP or replace working components without a benchmark that
-shows a material quality, reliability, privacy, or operational benefit.
+| Entrance | Current behavior and owner |
+| --- | --- |
+| Candidate processing and revision saving | `POST /api/process` and `POST /api/artifacts/{artifact_id}/profiles/revisions` in `app/main.py`; preserve extraction evidence and save immutable revisions. |
+| Target analysis | `POST /api/target-format`; presentation-only DOCX/PDF analysis into the existing evidence/template contracts. Adobe remains the sole target-PDF analyzer (ADR 0002), with no analyzer fallback. |
+| No-target preview | `/api/generate` uses native `built-in-3` through `app.pipeline.html_renderer.render_layout_template`: shared deterministic A compilation, binding and rendering, then Chrome and product validation. |
+| Uploaded-target proofs and preview, default | `app/template_analysis/layout_proof_service.py` selects `standard`; `app/generation/html_renderer.py` supplies `product-html/1`. This remains the default uploaded-target path. |
+| Uploaded-target proofs and preview, explicit Agentic | Server configuration `GENERATION_STRATEGY=agentic` selects `app/generation/agentic.py`, adapting artifact-scoped inputs to the existing `app.pipeline.service.run_e5` A loop. It currently requires a measured target PDF and saved Adobe/normalized evidence. Native generation stays deterministic. |
+| Diagnostic CLI/service | `python -m app.pipeline` and `run_e5` default to A. B and paired comparisons require explicit selection. Product-template runs are A-only; the CLI does not perform extraction or establish human acceptance. |
+| Final output acceptance | `POST /api/artifacts/{artifact_id}/final-acceptance`; only the exact current preview can become client-ready. |
 
-## Product-Standard Definition
+Shared A implementation: `lane-a-product-subset/15`. Optional Agentic identity:
+`agentic-a/4+lane-a-product-subset/15+<configuration digest>`. Proofs bind the
+implementation, prompts, model routing and budgets as well as target/template
+identities. Changing that configuration requires fresh short/medium/long proofs
+and explicit proof approval; old records do not acquire a new identity on read.
 
-“Product standard” means that the backend is measurably reliable across the
-supported document classes. It does not mean that a commercial SDK is
-automatically accepted as correct.
+### Implemented Slices And Evidence Limits
 
-The backend reaches product standard when it has:
+- Shared candidate projection, disclosure/blind filtering, structured custom
+  entries and native A generation are integrated. Bounded A template support
+  includes measured typography, contact placement, inline skills, rules/badges,
+  explicit columns/sidebars and continuation/page-break behavior. These are
+  implemented subsets, not acceptance of every template property or layout.
+- Optional Agentic API integration covers short/medium/long proofs and
+  saved-revision previews through the existing runner. Typed model repairs
+  change compiled plans, never candidate facts or the stored template.
+  Independent checks and completed Reviewer review of the exact selected PDF
+  precede publication; failure must preserve safe prior output.
+- Bounded layout trials may proceed with uncertain attribution/measurement.
+  Automatic selection still requires measured improvement, safety and rechecks
+  of previously verified regions. Safe unmeasured trials remain local
+  `awaiting_owner_review` artifacts outside active/BEST. Repeat-export variability
+  is diagnostic; selected-output content, privacy, structure, template consumption
+  and identity checks remain mandatory. Human acceptance remains separate.
+- Candidate segmentation/coverage, structured additional-section contracts,
+  HTML/Chrome selection and DOCX/LibreOffice output retirement are established
+  slices under ADRs 0003–0006. They are not new implementation tasks. DOCX input
+  support remains distinct from retired DOCX output.
 
-- explicit provider interfaces for extraction, target analysis, rendering,
-  export, and visual evaluation;
-- a versioned internal document-layout contract;
-- repeatable evaluation against a representative target-format corpus;
-- deterministic validation before any AI-assisted judgment;
-- no candidate facts copied from a target sample;
-- clear confidence, fallback, and unsupported-format behavior;
-- idempotent jobs, bounded retries, timeouts, and safe error messages;
-- structured logs and operational metrics without leaking candidate data;
-- reproducible HTML/PDF generation from the approved `CandidateProfile`,
-  disclosure rules, blind-profile state, and template version;
-- automated tests for success, degradation, provider failure, and recovery;
-- documented data retention, deletion, and external-provider processing
-  boundaries.
+Latest local evidence, verified to exist during this documentation revision:
+[review index](../../data/generated_outputs/pipeline/gate_policy_live_20261024T174632Z/REVIEW_INDEX.md).
+Its referenced logs record [780 passed, 35 skipped offline](../../tests/test_results/pytest/20261024T182035Z_gate_policy_renderer_offline.txt)
+and [2 passed live](../../tests/test_results/pytest/20261024T181716Z_gate_policy_final_live.txt).
+These are previous-run evidence, not checks rerun for this document change.
+The index links target/proof/preview PDFs and repair comparison images; generated
+files remain ignored and local.
 
-## Non-Negotiable Architecture
+The 360pt → 92pt repair used a scripted initial fault and a restricted first
+Reviewer comparison. It demonstrates one real bounded repair, not reliable
+problem discovery by the default whole-page Reviewer. Ordinary Reviewer
+quality, general target fidelity, automatic repair selection across representative
+samples and asynchronous execution remain unaccepted. No live test or score
+completes B0/B1 or approves a final document.
 
-Candidate content and target presentation remain separate:
+### Why Old Paths Still Exist
 
-```text
-Candidate resume
--> CandidateDocumentAnalyzer
--> NormalizedDocument + CandidateFieldEvidence
--> semantic extraction
--> versioned CandidateProfile
--> recruiter review/edit
--> client-facing render context
+| Retained path | Reason for retention | Removal condition |
+| --- | --- | --- |
+| Original accepted baseline/build | Replacement parity and reproducibility have not been accepted. | Preserve recoverable source/evidence and prove the selected replacement plus explicit build rollback (M4–M6). |
+| Standard uploaded-target `product-html/1` orchestration | Current default; existing supported API behavior has not completed A migration. | Supported-input parity, exact-output review, identity-bound reproof and rollback verified before default cutover (M4); delete replaced code in M5. |
+| B authored HTML/CSS | Explicit historical comparison; A was selected, but replacement acceptance is incomplete. It is not an API runtime fallback. | A acceptance and migration conditions met; retain history in Git, then remove B and exclusive checks (M5). |
 
-Target PDF sample
--> TargetLayoutAnalyzer
--> TargetLayoutEvidence
--> TemplateCompiler + validation
--> versioned LayoutTemplateSpec
+There is no silent fallback from an uploaded target or failed Agentic run to a
+built-in template, B or the standard renderer. Retention is transitional; it is
+not a second development track.
 
-Client-facing render context
-+ LayoutTemplateSpec
--> RendererCompiler
--> renderer-specific RenderPlan
--> HtmlRenderer
--> editable HTML surface
--> headless-Chrome PDF
--> content, privacy, structural, and visual quality gates
--> versioned ArtifactManifest
-```
+## Ordered Remaining Mainline Work
 
-`CandidateProfile` is the only candidate-content source for generated output.
-A target PDF may contribute measurements, inferred regions, presentation
-labels, and reusable visual assets only when those assets are confirmed as
-branding rather than candidate content.
+M1 (this revision) consolidates the roadmap and records actual entrances,
+retention reasons and exit conditions. It changes no runtime behavior. Execute
+M2–M6 in order; do not begin with more local gate tuning or a new model bakeoff.
+Every subsequent change must name the acceptance gap below that it closes and
+supply proportional evidence. Preserve independent content/privacy/error
+regressions; passing them cannot substitute for owner review of generated files.
 
-Never implement:
+### M2 — Accept The Complete Agentic Workflow On Existing Representative Samples
 
-```text
-target PDF page image as output background
-target candidate text copied into generated output
-target PDF -> LLM -> final PDF
-```
+Status: `[ ]` Next work; no new execution is part of M1.
 
-Cross-cutting boundaries:
+- [ ] Select existing authorized representative candidate/target samples and
+      record their actual source formats, supported layout features and current
+      source/configuration identities. Reuse the canonical API/matrix workflow;
+      follow [Test Result Format](../testing/TEST_RESULT_FORMAT.md) for a matrix
+      run. Do not add a runner, corpus or result schema.
+- [ ] Exercise target analysis → short/medium/long template proofs and approval
+      → candidate edit/save → preview → default whole-page Reviewer and bounded
+      Builder repair/review → exact-output human acceptance. Include normal/blind
+      disclosure, structured custom content and long-content continuation within
+      the declared sample scope. Show revision/output-change invalidation.
+- [ ] Deliver a single review index linking target and selected outcome PDFs,
+      before/after repair PDFs where applicable, page previews/comparison images,
+      independent content/privacy/structure results, unresolved findings and
+      actual request/cost/latency evidence. Separate controlled-fault controls
+      from ordinary default-review evidence; do not scope the ordinary Reviewer
+      to the known defect or script a successful repair.
 
-- `ProviderPolicy` controls which organization may send which artifact to which
-  provider, region, and deployment mode.
-- Durable, idempotent jobs own long-running provider calls, rendering,
-  conversion, and comparison.
-- Provider output is evidence, not a stored product template.
-- Renderer-specific instructions are compiled output, not the provider-neutral
-  layout contract.
-- Every generation is reproducible from a versioned artifact manifest.
+Exit: the owner can inspect the complete workflow and exact outputs, record
+acceptance or rejection, and identify concrete remaining failures. Default
+Reviewer discovery of a material real mismatch and effective Builder correction
+must be demonstrated before claiming that loop accepted. A missed issue or
+failed repair becomes a bounded M3 gap; an otherwise green run cannot hide it.
+No agent may fabricate human acceptance through the API.
 
-## Stage B0: Freeze The Accepted Baseline
+### M3 — Close Only Critical Gaps Found In M2
 
-Status: `[~]` Current prerequisite.
+Status: `[ ]` Dependent on reviewable M2 evidence.
 
-- [x] Treat the existing MVP and PDF demo as the accepted functional baseline.
-- [x] Preserve strict `CandidateProfile`, missing-field detection, disclosure
-      rules, blind-profile behavior, and debug artifacts.
-- [ ] Record one reproducible synthetic end-to-end baseline run.
-- [ ] Save baseline target-analysis, DOCX, PDF, and visual-comparison artifacts.
-- [ ] Record current latency, failure behavior, and visual scores before
-      introducing commercial providers.
-- [ ] Tag or otherwise identify the baseline source revision after the current
-      working tree is reviewed and committed.
+- [ ] Fix demonstrated default-Reviewer discovery, evidence/binding or Builder
+      effectiveness failures that prevent acceptance of the declared samples.
+      Recheck the affected PDF and previously verified regions using the existing
+      runner. Automatic repair selection must prove improvement; safe unmeasured
+      attempts stay available for human comparison outside BEST.
+- [ ] Verify safe failure on model/measurement/export failure, exhausted budgets
+      and non-improving/unsafe repairs: retain the last safe HTML/PDF, expose the
+      failure/open findings and keep acceptance identities consistent. Do not
+      publish an unreviewed attempt or silently select another renderer.
+- [ ] Add or consolidate focused regressions only for the observed core behavior
+      gaps, rerun affected existing checks and return corrected outcomes for
+      owner review. Stop tuning when the declared acceptance gap is closed;
+      document unsupported behavior instead of accumulating speculative gates.
 
-Exit gate:
+Exit: M2's critical failures are resolved or explicitly outside the approved
+support boundary, with reviewable safe output and failure evidence. A green
+controlled smoke alone does not meet this condition. Synchronous execution is
+still a known limitation; durable/asynchronous operation belongs to B1A/P2 unless
+M2 demonstrates a blocking local workflow failure.
 
-- The current pipeline can be rerun and compared with every later backend
-  implementation.
+### M4 — Unify Uploaded-Target Generation, Then Switch The Default
 
-## Stage B1: Target-Format Fidelity Contract
+Status: `[ ]` Dependent on M2/M3 acceptance; default remains unchanged today.
 
-Status: `[~]` Active product-standard work.
+- [ ] Publish the supported A template/input boundary against existing API
+      behavior: measured properties, custom/contact combinations, columns,
+      pagination, headers/footers and branding assets. Missing provenance,
+      impossible geometry and unimplemented properties must have explicit
+      validation/support states. Current Agentic PDF-only evidence requirements
+      do not cover API-supported DOCX targets or every designer-template route;
+      resolve those integration boundaries without silently losing supported
+      capabilities or introducing a parallel loop.
+- [ ] Route proofs and candidate generation through the same selected A
+      implementation/contracts, retaining native deterministic generation and
+      current revision/disclosure/source-review behavior. Compare supported
+      outcomes with the retained baseline; similarity scores alone cannot
+      authorize migration.
+- [ ] Verify stale proof/configuration rejection, fresh complete reproof and
+      explicit approval, unchanged final-acceptance identities, preserved prior
+      files on failure, and rollback with the matching prior build, approval and
+      checksum-verified artifacts. Preserve old evidence without treating an old
+      approval as approval of the new implementation.
+- [ ] Switch the uploaded-target default only after the scope, outcome review,
+      identity and rollback conditions above pass. Update the owning architecture
+      and API documents with the actual behavior in the same milestone.
 
-The current `TemplateStyleSpec` is a useful MVP theme contract. The
-product-standard backend needs a richer, versioned `LayoutTemplateSpec` that can
-describe how content flows, not only how it is styled.
+Exit: supported uploaded-target proofs and previews have one A implementation
+owner, accepted outputs and explicit failure/rollback behavior. Neither an
+environment-variable flip nor a compatible DOM constitutes cutover acceptance.
 
-Required model coverage:
+### M5 — Delete Replaced Paths And Merge Redundant Tests
 
-- page size, orientation, margins, and per-page variants;
-- ordered layout regions and region bounding boxes;
-- one-column, two-column, sidebar, and spanning regions;
-- fixed, flowing, repeating, and continuation regions;
-- header and footer behavior;
-- logo and approved branding-asset slots;
-- typography roles at document, region, and section level;
-- paragraph, list, table, and date-line presentation;
-- background fills, borders, rules, shapes, and supported decorations;
-- section order, labels, visibility, and column placement;
-- content overflow, page-break, keep-together, and continuation policies;
-- analyzer confidence and field-level provenance;
-- warnings and an explicit unsupported-feature list;
-- schema version and template version.
+Status: `[ ]` Dependent on verified M4 cutover.
 
-Checklist:
+- [ ] Remove B authored-template execution, replaced uploaded-target rendering
+      and duplicate orchestration/helpers whose responsibility now has one
+      verified owner. Recover historical comparisons from Git; do not maintain
+      experiments or an inactive alternative development framework.
+- [ ] Merge tests that protect the same observable behavior. Keep independent
+      candidate-content, disclosure/privacy, unsupported-input, error, identity,
+      repair/rollback and actual-PDF regressions. Remove checks exclusive to
+      retired implementations, and update commands/imports/document references.
 
-- [x] Define strict `TargetLayoutEvidence` and provenance models.
-- [x] Define `LayoutTemplateSpec` as a strict Pydantic model.
-- [x] Define a deterministic `TemplateCompiler` boundary (compile bridge v1,
-      2026-08-26).
-- [x] Retire the legacy v1 spec path for uploaded PDF targets: target analysis
-      compiles the measured `LayoutTemplateSpec`; generation loads only that
-      spec (no silent fallback to artifact-level `template_style_spec.json`).
-      The `migrate_template_style_spec` shim remains only for reading stored
-      legacy artifacts, with a warning (single-spec-source decision, ADR 0004).
-- [x] Keep raw provider output as a debug artifact.
-- [ ] Record provenance for every inferred layout field.
-- [x] Separate exact measurements from semantic inference (ADR 0001:
-      LLM labels only; measurement owns geometry).
-- [ ] Add validation that rejects impossible or unsafe region geometry.
-- [ ] Add explicit branding-asset review; do not automatically treat every
-      target image as reusable branding.
-- [x] Remove silent built-in-template fallback for uploaded targets. Unsupported
-      uploaded targets fail closed; the built-in template is a normal no-target
-      choice only (owner direction, 2026-08-28). Explicit escapes
-      (`allow_existing_template`, deprecated `allow_built_in_fallback`) are
-      recorded in the render plan and artifact metadata, never silently honored
-      (ADR 0004).
-- [x] Production generation gates generated structure: the structure gate runs
-      alongside content validation, persists `structure_validation.json`
-      fail-closed on material entry-structure defects, asserts entry-title and
-      link tier sizes where measurable, and records unavailable measurements
-      instead of silently passing them (2026-08-28).
-- [x] DOCX target analysis emits the measured structure contract from actual
-      document structure — header membership, section labels/order/casing,
-      direct bottom borders, `character_spacing_pt` from `w:spacing` — with
-      explicit `limited_capability` markers surfaced in the API response
-      (2026-08-28).
-- [x] Offline acceptance pair re-rendered and geometrically asserted (PROJECTS
-      entry-title/metadata tiers, 3+3 description bullets, zero PUA glyphs,
-      9 rules within tolerances); canonical live-matrix showcase refreshed by
-      the four-pair Chrome run on 2026-08-31.
-- [x] Measured row rhythm compiled from retained nested rows and consumed by
-      the renderer: `entry_gap_pt` (median inter-entry gap incl. next-title
-      half-leading), `skill_group_gap_pt` (row delta − body line height), and
-      `skill_first_row_adjustment_pt` (heading-rule-relative first-row
-      correction) in `commercial/bridge.py` → `html_renderer.py`; unmeasurable
-      gaps record an explicit review warning, never a silent paragraph
-      fallback. Geometrically verified on A→B (2026-08-31): inter-job
-      first→second title top −0.5pt vs target (±1pt gate), every
-      company/location on separate rows, first skill-row leading −0.3pt
-      (Chrome half-leading quantization). Matrix runner does not yet gate on
-      line-top deltas.
-- [x] Inter-section and additional-section rhythm measured and consumed
-      (2026-08-31): per-section inter-section gaps measured locally from the
-      target PDF (`commercial/local_color.py`, provenance `local_pdf`) and
-      compiled into per-section `SectionLayoutSpec.spacing` (was always
-      None); renderer consumes `section.spacing or spec.spacing`. Additional
-      sections (PROJECTS) compile entry gap (entry-N last line → entry-N+1
-      title), title→first-link spacing, and link row line height into the
-      provider-neutral `TextStyle.line_height_pt` (new optional field),
-      rendered via `--entry-gap`/`--entry-margin`/`--metadata-to-body-
-      adjust` CSS variables. Unmeasurable values record an explicit review
-      warning, never invented. Geometrically verified on A→B
-      (artifact_9e809c…): 4 section transitions ±1pt, entry-title delta
-      84.0 vs 83.0, link row 11.25 vs 11.5, last-bullet→next-title 18.75 vs
-      18.72, page-1 bottom drift +7.5 → −1.45pt; offline 467 passed. Known
-      unresolved: inter-job title delta 72.75 vs 74.5 (−1.75pt, work-entry
-      gap, outside this fix).
-- [x] Inter-section spacing regression fixed (2026-08-31): global
-      `SpacingStyle.section_before_pt` no longer absorbs the first
-      heading's measured inter-section gap (bridge now writes 0.0; the gap
-      stays section-local in `SectionLayoutSpec.spacing`); `_gap_compensated`
-      no longer hardcodes a `+1.0` half-leading — it computes
-      `(line_height − font_size) / 2` from the actual next text tier
-      (contact 0.875 / entry title 1.0 / body 1.5). A→C header.gap_below
-      restored 13.30 → 10.30 (+0.232), A→B 13.125 → 10.125 (+0.346);
-      inter-section transitions and PROJECTS rhythm unchanged; offline 469
-      passed. Full ABC matrix rerun pending (disk artifact specs are
-      pre-fix snapshots).
+Exit: API and CLI share the selected product compilation/rendering ownership;
+no supported caller depends on deleted paths. Appropriate canonical offline
+checks pass, and the accepted review outputs remain attributable to their build.
+Rollback is explicit deployment of a recoverable build, not a hidden runtime path.
 
-Landed slices that do NOT complete this stage: bounded Claude designer
-(ADR 0001), Adobe-analyzer compile bridge (ADR 0002), horizontal-rule and
-rule-geometry fidelity (compiler v3), measured text-volume body typography
-(compiler v4), measured header/section structure and sub-role typography
-(compiler v5), measured heading tracking and width gates (compiler v6), bounded
-badge decoration measurement plus square DOCX/rounded verification-HTML
-rendering (compiler v7, ADR 0006), bounded layout proofs, approved-content binding, and the
-content-integrity generation gate. Compiler v5 retains supported nested Adobe
-spans; compiles compact contact membership/order/delimiters, exact target
-section labels/order/casing, hidden headings, target-matched custom sections,
-overflow links, and entry-title/metadata styles; and gates those properties in
-the canonical matrix. Superseded experiment histories remain in
-Git; the remaining stage status and exit gates stay in this roadmap.
+### M6 — Freeze The Integrated Baseline And Close B0/B1 By Their Actual Gates
 
-Exit gate:
+Status: `[ ]` Dependent on M5; neither stage is completed by this document.
 
-- Supported target layouts can be represented without embedding target
-  candidate content or a target page image.
+Stage B0 — reproducible accepted baseline (`[~]`):
 
-## Stage B1A: Provider Execution And Reproducibility Foundation
+- [ ] Identify/tag the reviewed source revision and record one reproducible
+      end-to-end run using the existing versioned samples/workflow. Record input
+      checksums, candidate revision, target/evidence/template identities,
+      provider/prompt/model/budget settings, compiler/renderer/font versions,
+      output checksums, independent gate results and human review disposition.
+- [ ] Preserve directly reviewable target-analysis, HTML/PDF and comparison
+      artifacts plus measured latency, cost and failure/rollback behavior. Keep
+      raw files local/ignored and retain only intentional safe summaries in Git.
+      Compare with the original baseline before claiming replacement parity.
+
+B0 exit: the accepted integrated build can be rerun and compared with later
+changes from its recorded inputs/settings. Historical accepted source remains
+recoverable. DOCX output and new provider selection are not B0 prerequisites.
+
+Stage B1 — versioned fidelity/support contract (`[~]`):
+
+- [ ] Freeze the supported `LayoutTemplateSpec` coverage and unsupported-feature
+      behavior demonstrated in M2–M4. Trace measured/inferred fields to evidence;
+      verify geometry, content reflow/continuation and reviewed branding where
+      supported. Unsupported assets/features must remain explicit, never guessed.
+- [ ] Bind the support statement and layout-class tolerances to outcome PDFs,
+      independent content/privacy/structure checks, visual comparisons and owner
+      decisions. Record remaining limits without generalizing from the bounded
+      sidebar repair, historical matrix scores or native-template regressions.
+
+B1 exit: supported target layouts have a versioned, provider-neutral reusable
+representation and accepted output evidence without target-person facts or
+page-image backgrounds. New layout classes require review before expanding
+support. Complete only the corresponding verified gates, then proceed to the
+post-integration work below.
+
+## Stage Ownership After Consolidation
+
+These stages describe responsibility, not a second checklist. Their remaining
+integration work is owned by M2–M6 above.
+
+| Stage | Current status | Completion authority |
+| --- | --- | --- |
+| B0 baseline | Open; accepted MVP exists, integrated freeze incomplete. | M6 B0 evidence and exit. |
+| B1 fidelity contract | Strict models/compiler and bounded mappings exist; accepted support boundary incomplete. | M2–M4 outcomes, M6 B1 exit. |
+| B3 HTML/PDF renderer | HTML/Chrome selected (ADR 0006); DOCX/LibreOffice output retired. Full supported A migration and continuation acceptance remain open. | M2–M5 output/migration evidence, M6 version freeze. Historical Chrome tolerances remain in ADR 0006, not a fresh acceptance claim. |
+| B4 semantic/visual layer | LLM-first segmentation and deterministic coverage established (ADR 0005); ordinary Reviewer discovery and general repair quality unaccepted. | M2/M3 real workflow evidence; no new extraction/provider choice. |
+| B5 reliability/acceptance | Canonical tests and independent checks exist; supported-corpus product acceptance and production reliability remain open. | M6 corpus evidence; B1A/P2–P5 operational checks below. |
+
+Do not reopen completed segmentation/schema/renderer selection or evaluate
+Azure/alternative renderers merely because an old checklist requested it.
+Historical Adobe/Chrome measurements and A/B comparisons remain evidence under
+ADRs and [the October 22 A/B review](../evaluations/2026-10-22_AB_MAINLINE_REVIEW.md).
+They do not override the current acceptance sequence.
+
+## After M6 — Production Foundations (Not The Current Work)
+
+### B1A — Provider Execution And Reproducibility
 
 Status: `[ ]` Required before production provider integration.
 
-- [ ] Introduce `ProviderPolicy` with organization, artifact type, provider,
-      region, deployment mode, retention, deletion, and cost controls.
-- [ ] Introduce a durable job interface for extraction, target analysis,
-      rendering, conversion, and comparison.
-- [ ] Define idempotency keys, job states, progress, retryability, cancellation,
-      timeout, and terminal error behavior.
-- [ ] Separate provider adapters from provider-policy decisions.
-- [ ] Define a versioned `ArtifactManifest`.
-- [ ] Record input checksum; analyzer/provider version; raw evidence version;
-      template compiler and schema version; prompt/model version; renderer and
-  font manifest; output checksums; and quality-gate results.
-- [ ] Add a provider capability registry so routing uses structured
-      capabilities rather than warning-string inspection.
-- [ ] Define explicit support states:
-      - `ready`
-  - `ready_with_review`
-  - `unsupported`
-  - `provider_failed`
-  - `fallback_requires_approval`
-- [x] Prevent silent fallback to the built-in template when a recruiter
-      requested an uploaded target format.
+- [ ] Add organization/artifact/provider/region/deployment/retention/deletion/cost
+      `ProviderPolicy`, separate from adapters, and structured capability routing.
+- [ ] Define durable jobs, states, progress, idempotency, cancellation, bounded
+      retries/timeouts and safe terminal errors for analysis/render/export/compare.
+- [ ] Consolidate existing identity metadata into a versioned `ArtifactManifest`
+      with input/output checksums, schema/evidence/template/compiler, prompt/model,
+      renderer/fonts, disclosure/blind settings and independent check results.
+      Validate support states (`ready`, `ready_with_review`, `unsupported`,
+      `provider_failed`, `fallback_requires_approval`) at the workflow boundary.
 
-Exit gate:
+Exit: provider failure/retry preserves state, provenance and policy boundaries.
+Current opt-in local integration is not acceptance of these production controls.
 
-- A provider call can fail, retry, or be replaced without corrupting workflow
-  state, violating provider policy, or losing generation provenance.
+### B2 — Analyzer Operational Readiness
 
-## Stage B2: Target-PDF Analyzer
+Status: analyzer decision accepted (ADR 0002); operational readiness `[ ]`.
 
-Status: `[x]` Decided — Adobe is the sole production target-PDF analyzer
-(ADR 0002, owner ruling August 27, 2026). Azure is retained as backup
-knowledge only; there is no analyzer fallback. The remaining items are
-operational exit gates, not provider selection.
+- [ ] Verify Adobe deployment model, regional availability, privacy,
+      retention/deletion, latency, cost and current commercial terms before
+      production use; evaluate private/container feasibility against actual
+      requirements before real hosted data.
 
-- [x] Select the production analyzer and document routing + failure behavior
-      (ADR 0002).
-- [ ] Build a repeatable provider comparison report over the canonical
-      synthetic corpus (Azure and Adobe replay lanes, for evidence continuity).
-- [ ] Evaluate Adobe private/container deployment separately from the managed
-      cloud service before hosting real candidate data.
-- [ ] Reconfirm commercial terms (latency, cost per typical resume, data
-      location, retention/deletion) before production use.
+Exit: production requirements and provider terms are evidenced and satisfied.
+Adobe remains the sole target-PDF analyzer; no multi-analyzer defaults, new
+provider comparison harness or assumed private-deployment capability.
 
-Standing decision rules:
+### P1 — PostgreSQL Workflow Persistence
 
-- No sequential multi-analyzer defaults; provider failures surface explicitly
-  and produce no target artifacts.
-- GPT/Claude may label ambiguous regions or evaluate rendered pages, but must
-  not supply exact geometry.
-- Provider output is evidence into the internal contracts, never a stored
-  product schema.
+Status: `[ ]` First post-MVP structured-persistence foundation.
 
-Exit gate:
+- [ ] Add SQLAlchemy 2, Psycopg 3, Alembic and environment-based `DATABASE_URL`;
+      decouple API storage through repository interfaces. Store workflow/job
+      state, immutable profiles, disclosure, templates and reproducibility versions
+      with constraints, transactions, concurrency control and idempotency.
+- [ ] Prove migrations, rollback, clean-database behavior and the synthetic
+      workflow on local PostgreSQL. Keep document/debug files outside the DB;
+      SQLite is transitional only.
 
-- Operational terms and deployment model are verified against production
-  requirements before real candidate data reaches the analyzer.
+Exit: the accepted workflow survives restart/migration without losing revisions,
+identities or artifact references.
 
-## Stage B3: Product-Standard HTML/PDF Renderer
+### P2 — Jobs, Storage And API Hardening
 
-Status: `[~]` HTML selected by ADR 0006; live HTML→PDF fidelity fixed
-(2026-08-31) — headless Chrome is the HTML→PDF exporter; font tiers, rule
-geometry, contact separator, badges, and content/no-loss gates pass on A→B
-and A→C on the Chrome baseline (measured deltas below); the section-label
-width gate is re-baselined to the HTML path (evidence below).
+Status: `[ ]` Builds on B1A and P1.
 
-The output engine must reproduce supported layouts while allowing candidate
-content to reflow safely.
+- [ ] Productionize durable queues/workers, progress, bounded retries,
+      cancellation/dead letters and idempotent processing/generation endpoints;
+      verify concurrency, timeouts, recovery and performance/cost budgets.
+- [ ] Add private local/Spaces artifact adapters, signed short-lived access,
+      checksums/lifecycle/deletion, safe paths and upload size/type/page/time
+      limits. Verify corrupt, oversized, traversal and decompression failures.
+- [ ] Version machine-readable API errors, capability/support reporting and
+      frontend alignment through the API contract; keep frontend code outside
+      backend scope.
 
-Selected render path: provider-neutral `RenderPlan` to product HTML, then
-headless Chrome/Chromium `--headless --print-to-pdf` (owner decision
-2026-08-30). DOCX, LibreOffice, and provider-hosted export are retired from
-generation.
+Exit: bounded jobs and private artifacts remain safe under retry, concurrency
+and malformed inputs, with actionable API errors and reproducible outputs.
 
-Checklist:
-
-- [x] Compile `RendererCompiler` and `RenderPlan` into semantic product HTML;
-      export the deliverable through headless Chrome.
-- [~] Compile `ClientFacingRenderContext` plus `LayoutTemplateSpec` into a
-      renderer-specific `RenderPlan`.
-- [~] Keep renderer-specific properties out of `LayoutTemplateSpec`.
-- [ ] Add headers, footers, region-specific styling, branding assets, and
-      controlled multi-page continuation.
-- [x] Prevent clipped text, overlaps, orphan headings, empty continuation
-      regions, and accidental blank pages.
-- [x] Define font availability, substitution, embedding, and licensing rules.
-- [ ] Benchmark every shortlisted renderer against the accepted baseline and
-      the same output corpus.
-- [x] Select HTML as the product renderer (ADR 0006).
-- [x] Retire the DOCX/LibreOffice render path; rollback is by build deployment,
-      not a silent runtime fallback.
-- [ ] Save renderer name, version, template version, and font manifest with
-      every generation.
-
-Decision authority is ADR 0006. Alternative renderer experiments remain
-evaluation evidence only and cannot introduce a second product render path.
-
-Exit gate:
-
-- Supported corpus documents generate editable interface HTML and visually consistent PDF
-  without content contamination, clipping, or silent fallback.
-
-### HTML→PDF fidelity re-baseline (2026-08-31, headless Chrome)
-
-Live A→B and A→C through the HTML→Chrome path pass every generate gate on the
-measured Chrome baseline (all 8 matrix steps green): font tiers ±0.25pt, 9
-rules with geometry ±1pt, header text/order, entry titles, badges
-18×`#99F6E4`/`#334155` with rounded corners surviving the PDF (18 filled
-bezier paths), content no-loss (PDF text ⊇ HTML text), and the HTML structure
-gate including ADDITIONAL SECTIONS.
-
-The fresh full feasible matrix (A→B, A→C, B→C, C→B) passed all eight steps
-per pair on 2026-08-31. Every pair retained 9 rules within ±1pt, target font
-tiers within ±0.25pt, 0.8pt heading tracking, content no-loss (65/65 expected
-items), and the HTML structure gate including ADDITIONAL SECTIONS. Both
-C-target pairs retained 18 `#99F6E4`/`#334155` chips in 6/6/6 rows. B→A and
-C→A remain expected-fail/not-run because target A lacks measured structure.
-
-Chrome baseline deltas vs the Adobe reference (2026-08-30):
-
-- **A→B**: rule heading length 463.500 vs target 463.276 (+0.224pt, gate
-  ±1.0); name 25.995 vs 26.0; contact 9.495 vs 9.5; body 10.5; entry title
-  11.4975 vs 11.5; section labels 12.000pt. Label widths: Chrome resolves
-  Times via the system font and measures CLOSER to the embedded target Times
-  than Adobe's TimesNewRomanPS — worst |delta| 2.404pt (ADDITIONAL LINKS OR
-  DATA) vs Adobe's worst 3.22pt (A→C ADDITIONAL SECTIONS), both inside the
-  ±3.5pt HTML-path tolerance. The ±3.5pt width gate is unchanged.
-- **A→C**: 18 rounded chips fill `#99F6E4` / text `#334155` in 6/6/6 rows;
-  name 24.0, contact 9.0, labels/entry title 10.995 vs 11.0, body 10.0 — all
-  within ±0.25pt; heading tracking 0.8pt; 9 rules length 462.750 vs 463.276
-  (−0.526pt, gate ±1.0); no-loss 174/174 tokens.
-
-Chrome pt fidelity is confirmed: `@page { size: 612pt 792pt; margin: 0 }`
-from the renderer is honored by `--no-pdf-header-footer` print export, so
-declared pt sizes stay pt sizes (no Adobe-style scaling). Generation's own
-structure gate (HTML-anchored) is unchanged and does not measure PDF label
-widths.
-
-## Stage B4: AI Extraction And Visual Quality Layer
-
-Status: `[x]` Segmentation/coverage completed via ADR 0005 (2026-08-29); the
-visual-evaluation phase remains `[~]` for the items below (layer doctrine: LLM
-owns semantic interpretation; deterministic code owns measurement, validation
-gates, and approval).
-
-- [ ] Keep the existing OpenAI/Anthropic provider abstraction.
-- [ ] Require schema-constrained output for every production provider.
-- [ ] Separate extraction, ambiguous-region labeling, and visual-evaluation
-      prompts and model settings.
-- [ ] Add evidence/provenance for extracted candidate fields where practical.
-- [ ] Add a deterministic validation gate before AI visual evaluation.
-- [ ] Use GPT/Claude vision to describe material mismatches between target and
-      generated page images.
-- [ ] Prevent the visual evaluator from approving content accuracy or replacing
-      recruiter review.
-- [ ] Add prompt/model versioning, token/cost metrics, timeouts, retries, and
-      safe fallback behavior.
-- [ ] Add regression tests for hallucination, unsupported fields, invalid URLs,
-      and provider refusal/failure.
-- [ ] CandidateProfile schema v2: upgrade `additional_sections` from flat
-      `items` strings to structured entries (title, links, description
-      bullets, evidence); `section_type` classified by the LLM against a
-      versioned vocabulary with `other` + recruiter review fallback — no
-      per-section-type hardcoded fields. Rendering reuses the work-experience
-      entry machinery (entry title / links / bullets tiers) for all
-      entry-type sections. Also add a source-coverage ledger — every
-      meaningful source block must be mapped, explicitly omitted, or pending
-      review before profile approval; silent omission blocks generation
-      (direction approved 2026-08-28; see the PRODUCT_SPEC planned note).
-      Contract slice done 2026-08-28: strict v2 models in
-      `app/extraction/candidate_schema.py` (structured entries, versioned
-      vocabulary, pending-review state) and ADR
-      [0003](../decisions/0003-additional-sections-schema-v2.md) accepted;
-      segmentation/coverage slice done same day: alias fast path with
-      hit-rate stats, schema-constrained classifier route (other + pending
-      review on unknown/weak/failure), structured entries with per-entry
-      evidence, coverage ledger + approval gate; rendering slice done same
-      day: additional sections render through the shared entry machinery
-      (entry-title/metadata tiers, body bullets) driven by structured
-      entries + measured tier styles, flat render path removed; structure
-      gate done same day: extends content validation with entry-geometry
-      checks (tiers, bullet state, ordering, bullet counts) and
-      coverage-safety checks; A→B and A→C PROJECTS zones pass geometric
-      comparisons against target rows (run-mtclu4yi step 5 done).
-- [x] Accept ADR 0005 and implement flagged LLM-first candidate segmentation:
-      one `llm_segmentation/1` call returns sections plus structured extraction;
-      a deterministic Counter-based verbatim line audit blocks approval on
-      omissions, duplication, or invention; the validated result, prompt/model,
-      latency, token usage, and audit are persisted per artifact (2026-08-29).
-      Superseded by Phase 2/3 below: the transient fallback-to-deterministic
-      behavior recorded here was removed with the deterministic path.
-- [x] Verify the flagged path on the authorized A-F corpus and canonical A→B /
-      A→C matrix. Latest corpus calls audit clean on all six; A/B/C each retain
-      the clean nine-section inventory. Earlier D calls exposed both a duplicate
-      inline-summary line and 8/9-section instability, correctly blocked and
-      retained as evidence. Both canonical pairs completed all eight steps with
-      nine measured rules and target-matched typography/structure (2026-08-29).
-- [x] Change the default to LLM-first after the literal full offline suite is
-      green, then consolidate to a single segmentation path (ADR 0005 Phase
-      2/3, 2026-08-29): the `CANDIDATE_SEGMENTATION` flag and both-mode
-      branching were removed from `app/main.py`; the deterministic semantic
-      machinery (alias tables, heading-shape gates, section classifier,
-      segment-then-extract orchestration) was deleted from `app/extraction/`;
-      offline tests moved onto the mock LLM-first path; candidate processes
-      fail closed on LLM unavailability/malformation (structured 502, no
-      fallback segmenter). The earlier "fast-path + hybrid" wording is
-      superseded: there is now exactly one segmentation path.
-
-Exit gate:
-
-- AI improves semantic interpretation and visual diagnosis without becoming the
-  source of candidate facts, layout measurements, or final approval.
-
-## Stage B5: Backend Reliability And Acceptance Suite
-
-Status: `[ ]`.
-
-- [ ] Create a versioned golden corpus and expected-result manifest.
-- [ ] Add unit, integration, contract, snapshot, and end-to-end tests.
-- [ ] Add provider-independent contract tests.
-- [ ] Add deterministic DOCX inspection and PDF render checks.
-- [x] Add a content gate that compares generated text with the approved
-      `ClientFacingRenderContext`.
-- [ ] Add a privacy gate that checks hidden identifiers and prevents target
-      candidate facts from leaking into generated output.
-- [ ] Add a structural gate for missing regions, clipping, overlap, orphan
-      headings, blank pages, and invalid continuation behavior.
-- [ ] Keep visual comparison as a separate gate; do not let image similarity
-      substitute for content or privacy validation.
-- [ ] Add visual regression thresholds by supported layout class.
-- [ ] Require manual review for new layout classes until thresholds are proven.
-- [ ] Add concurrency, timeout, retry, cancellation, and idempotency tests.
-- [ ] Add malformed-file, oversized-file, path traversal, and decompression
-      safety tests.
-- [ ] Add structured error codes suitable for the frontend.
-- [ ] Add performance and cost budgets for processing and generation.
-- [ ] Save timestamped pytest reports under `tests/test_results/pytest/` and
-      commercial evaluations under `tests/test_results/commercial_api/`.
-
-Product-standard acceptance:
-
-- all supported-corpus cases pass structural and content-safety checks;
-- no generated output contains target candidate facts;
-- no silent degradation from requested target style to the built-in style;
-- fallbacks and unsupported cases are visible to the recruiter;
-- regenerated artifacts are reproducible from stored versions and settings.
-
-## Stage P1: PostgreSQL Workflow Persistence
-
-Status: `[ ]` First post-MVP backend foundation.
-
-- [ ] Add SQLAlchemy 2, Psycopg 3, and Alembic.
-- [ ] Add environment-based `DATABASE_URL`.
-- [ ] Replace direct API coupling to `LocalArtifactStore` with repository
-      interfaces.
-- [ ] Store artifact/job state and versioned validated `CandidateProfile`
-      records.
-- [ ] Store disclosure, blind-profile, template, provider, prompt, model,
-      renderer, and schema versions required for reproducibility.
-- [ ] Add constraints, transactions, optimistic concurrency where needed, and
-      idempotency keys.
-- [ ] Preserve document/debug artifacts outside PostgreSQL.
-- [ ] Keep SQLite only for isolated tests or temporary compatibility.
-- [ ] Add migration, rollback, transaction, and clean-database tests.
-- [ ] Prove the full synthetic workflow against local PostgreSQL.
-
-## Stage P2: Jobs, Storage, And API Hardening
-
-Status: `[ ]`.
-
-- [ ] Productionize the Stage B1A job abstraction with durable queues, workers,
-      progress, retry policy, cancellation, and dead-letter handling.
-- [ ] Make processing and generation endpoints idempotent.
-- [ ] Add upload size, page count, file type, and processing-time limits.
-- [ ] Add private artifact-storage interfaces with signed, short-lived access.
-- [ ] Implement local filesystem and DigitalOcean Spaces adapters.
-- [ ] Add checksums, metadata validation, lifecycle states, and safe deletion.
-- [ ] Prevent public object access and unsafe path construction.
-- [ ] Version the API contract and publish machine-readable error responses.
-
-## Stage P3: Authentication, Organizations, And Candidate Privacy
+### P3 — Authentication, Organizations And Candidate Privacy
 
 Status: `[ ]` Required before real hosted candidate data.
 
-- [ ] Add authentication.
-- [ ] Add organization and membership models.
-- [ ] Enforce organization-level authorization on every workflow and artifact.
-- [ ] Separate staging and production identities, databases, buckets, and keys.
-- [ ] Define retention periods and recruiter-initiated deletion.
-- [ ] Implement complete deletion across database, object storage, derived
-      artifacts, logs, and provider-held files where supported.
-- [ ] Define audit events for upload, review, generation, download, and deletion.
-- [ ] Define external-provider data processing, region, retention, and
-      no-training requirements.
-- [ ] Add secret management and key-rotation procedures.
-- [ ] Complete a privacy and threat-model review before beta.
+- [ ] Add authentication, organization/membership models and authorization on
+      every workflow/artifact; isolate staging/production identities and secrets.
+- [ ] Implement retention and complete deletion across DB, objects, derived
+      artifacts, logs and provider-held files where supported; define audit
+      events, provider data-processing/no-training requirements and key rotation.
+- [ ] Complete privacy/threat-model review and authorization/deletion regressions.
 
-## Stage P4: DigitalOcean Staging And Production
+Exit: organization isolation and data lifecycle are tested, including external
+provider boundaries; no real candidate documents are hosted before the gates pass.
 
-Status: `[ ]`.
+### P4 — DigitalOcean Staging And Production
 
-- [ ] Containerize backend and frontend with pinned runtime dependencies.
-- [ ] Provision separate staging and production App Platform services.
-- [ ] Provision separate Managed PostgreSQL databases.
-- [ ] Provision separate private Spaces buckets.
-- [ ] Run Alembic migrations through a controlled release step.
-- [ ] Add health, readiness, and dependency checks.
-- [ ] Configure TLS, domains, CORS, environment variables, and secret injection.
-- [ ] Add centralized logs, metrics, traces, and alerting.
-- [ ] Add rate limits, abuse controls, and cost alerts.
-- [ ] Add database and object-storage backup/restore procedures.
-- [ ] Test restoration rather than only enabling backups.
-- [ ] Add deployment rollback and renderer/provider feature flags.
+Status: `[ ]` After document-quality and required security gates.
 
-## Stage P5: Controlled Beta Readiness
+- [ ] Pin/containerize services and provision separate App Platform services,
+      Managed PostgreSQL databases and private Spaces buckets for staging/production;
+      control migrations, TLS/domains/CORS and secret injection.
+- [ ] Add health/readiness checks, logs/metrics/traces/alerts, rate/abuse/cost
+      limits, tested database/object backup restoration and deployment rollback.
+
+Exit: staging demonstrates secure operation, observability, restoration and
+rollback before a production release.
+
+### P5 — Controlled Beta
 
 Status: `[ ]`.
 
-- [ ] Pass the product-standard corpus and backend acceptance suite in staging.
-- [ ] Complete load and soak tests at the expected beta volume.
-- [ ] Complete authorization, privacy, retention, deletion, and recovery tests.
-- [ ] Verify commercial provider licenses and production quotas.
-- [ ] Document supported and unsupported document classes for recruiters.
-- [ ] Add operational runbooks for provider outages, stuck jobs, failed
-      conversions, storage failures, and rollback.
-- [ ] Run a controlled beta with synthetic or explicitly authorized data.
-- [ ] Review quality, cost, latency, and support incidents before broadening use.
+- [ ] Pass supported-corpus acceptance, expected-volume load/soak checks,
+      authorization, privacy, retention/deletion and recovery in staging;
+      verify commercial licenses/quotas.
+- [ ] Publish recruiter-facing support limits and operational runbooks; run a
+      controlled beta with synthetic or explicitly authorized data and review
+      quality, latency, cost and incidents before expanding use.
+
+Exit: product and operational evidence support the declared beta scope.
 
 ## Deferred Product Areas
 
-- scanned/photo resume OCR and ABBYY evaluation;
-- multiple independent recruiter templates beyond the validated template
-  contract;
-- ATS/CRM integrations;
-- billing;
-- automatic candidate or client sending;
-- complex dashboards and searchable talent-pool features.
-
-These require a separate product decision and must not interrupt the active
-target-fidelity and backend-readiness sequence.
+Scanned/photo OCR, unsupported brochure layouts, arbitrary PDF editing, billing,
+ATS/CRM integration, automatic sending, searchable talent-pool dashboards and
+multiple independent templates beyond the validated contract remain deferred.
+They require separate product decisions and must not interrupt M2–M6.
