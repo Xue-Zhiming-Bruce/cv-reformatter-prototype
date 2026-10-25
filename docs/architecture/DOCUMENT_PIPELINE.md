@@ -374,6 +374,12 @@ Integration status, October 22, 2026:
   contact text is matched across PDF whitespace before locating its header
   rule. `pdf_structure/2` participates in Agentic proof configuration identity;
   changed validation policy requires fresh proofs before preview publication.
+  Reviewer attachments additionally use `lossless-png-webp/1`: RGB overviews
+  use WebP only when its lossless encoding is smaller; grayscale and smaller
+  PNGs stay unchanged. Dimensions/RGB pixels and original diagnostic PNGs are
+  preserved. The call/audit uses the actual MIME, path and byte hash. This is
+  an input encoding change, not a resolution, provider or request-budget change,
+  and its policy version participates in proof configuration identity.
   Measured compiler v9 maps a badge cluster to `full_width` chip presentation,
   retaining its label typography. It does not attach plain inline-text group
   gaps or first-row corrections to label/chip rows; their measured label delta

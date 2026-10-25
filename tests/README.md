@@ -43,6 +43,9 @@ this is a disclosure edit, not human final-output acceptance.
 `--source-evidence <artifact-directory>` resumes checksum-matched extraction and
 profile revisions, copying source evidence only. It imports no prior outputs,
 proof approvals or final acceptance, and reports zero new extraction calls.
+Dense RGB Reviewer attachments use smaller lossless WebP with unchanged pixels
+and dimensions; diagnostic PNGs remain. `test_pipeline_evidence.py` covers the
+actual bounded PydanticAI request, MIME and audited image path/hash offline.
 
 `integration/test_layout_proof_api.py` exercises the optional agentic strategy
 through the real API, canonical runner, Chrome and approval gates, mocking only

@@ -407,3 +407,72 @@ def test_whole_page_overviews_preserve_rgb_pixels_with_bounded_encoding(tmp_path
         assert overview.mode == ("RGB" if color else "L")
     if not color:
         assert result.stat().st_size < original.stat().st_size
+    from app.pipeline.review import prepare_review_image
+
+    prepared = prepare_review_image(result)
+    with Image.open(prepared) as decoded:
+        assert decoded.size == image.size
+        assert ImageChops.difference(decoded.convert("RGB"), image).getbbox() is None
+    assert result.exists()  # The original diagnostic PNG remains available.
+    assert prepared.stat().st_size <= result.stat().st_size
+
+
+def test_color_review_request_preserves_pixels_and_fits_existing_wire_cap(tmp_path: Path, monkeypatch) -> None:
+    import random
+    from PIL import Image, ImageDraw, ImageFont, ImageChops
+    import httpx
+    from app.pipeline.review import prepare_review_image, _live_reviewer_findings
+    from app.pipeline.runtime import RunTrace
+
+    page = Image.new("RGB", (1272, 1800), "white")
+    draw, font, randomizer = ImageDraw.Draw(page), ImageFont.load_default(size=24), random.Random(7)
+    for row in range(58):
+        text = " ".join(randomizer.choice(["SYNTHETIC", "layout", "project", "measured", "service",
+            "candidate", "example", "review", "output", str(row)]) for _ in range(11))
+        draw.text((30, 20 + row * 30), text, font=font, fill="#0D9488" if row % 9 == 0 else "#334155")
+    page = page.resize((636, 900), Image.Resampling.LANCZOS)
+    original = tmp_path / "overview.png"
+    page.save(original, optimize=True)
+    prepared = prepare_review_image(original)
+    assert prepared.suffix == ".webp"
+    with Image.open(prepared) as decoded:
+        assert ImageChops.difference(page, decoded.convert("RGB")).getbbox() is None
+    assert 2 * 4 * ((original.stat().st_size + 2) // 3) > 512000
+
+    requests = []
+
+    async def respond(request):
+        body = json.loads(request.content)
+        images = [part["image_url"]["url"] for message in body["messages"]
+                  if isinstance(message["content"], list) for part in message["content"] if part["type"] == "image_url"]
+        assert len(images) == 2 and all(image.startswith("data:image/webp;base64,") for image in images)
+        requests.append(len(request.content))
+        tool = body["tools"][0]["function"]["name"]
+        return httpx.Response(200, json={"id": "synthetic", "object": "chat.completion", "created": 1,
+            "model": "synthetic-vision", "choices": [{"index": 0, "message": {"role": "assistant", "tool_calls": [
+                {"id": "result", "type": "function", "function": {"name": tool, "arguments": '{"response":[]}'}}]},
+                "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+
+    class OfflineClient(httpx.AsyncClient):
+        def __init__(self, **kwargs):
+            super().__init__(transport=httpx.MockTransport(respond), trust_env=False, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", OfflineClient)
+    monkeypatch.setenv("VISUAL_API_BASE", "https://visual.invalid/v1")
+    monkeypatch.setenv("VISUAL_API_KEY", "synthetic-key")
+    monkeypatch.setenv("A_PIPELINE_VISUAL_MODEL", "synthetic-vision")
+    budget = RunBudget(max_model_requests=12, max_tool_calls=24, max_request_bytes=512000)
+    audit = e.E5AgentAuditSpec(agent="visual_reviewer", lane="a", phase="review", round_no=1,
+        target_version="target-v1", render_version="render-v1", finding_ids=("finding-1",),
+        measurement_ids=(), model="synthetic-vision", instructions="synthetic review",
+        image_refs=({"path": prepared.name, "role": "target", "page": 1},
+                    {"path": prepared.name, "role": "render", "page": 1}))
+    findings = _live_reviewer_findings([prepared, prepared], "finding-1", "target-v1", "render-v1",
+        1, "synthetic inventory", budget, RunTrace(tmp_path), visual_model=True, audit=audit)
+    assert findings == [] and budget.model_requests == 1
+    assert len(requests) == 1 and requests[0] < 512000
+    record = json.loads((tmp_path / "agent_messages.jsonl").read_text())
+    images = record["messages"][0]["parts"][0]["content"][1:]
+    assert len(images) == 2
+    assert all(image["media_type"] == "image/webp" and image["path"] == prepared.name
+               and image["sha256"] == hashlib.sha256(prepared.read_bytes()).hexdigest() for image in images)

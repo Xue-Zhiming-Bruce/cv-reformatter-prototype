@@ -607,3 +607,63 @@ and the same saved C analysis. No additional analyzer call is needed.
 
 Neither focused checks nor offline replay complete M2 or authorize default
 cutover/B removal.
+
+### Integrated Check And First F→C Live Attempt
+
+Committed build `9ec2715` passed the full canonical offline suite:
+**809 passed, 35 skipped, 5 warnings**, 762.57s.
+[Full terminal output](../../tests/test_results/pytest/20261025T151200Z_integrated_pdf_structure_full.txt).
+This includes the badge mapping and PDF structure-check fixes; it precedes the
+lossless color attachment change below.
+
+[First F→C live attempt](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T151200Z_agentic_fc_custom_verified/RESULTS_INDEX.md)
+uses fresh audited v3 F extraction (4,774 input + 1,791 output tokens), two work
+entries, two degrees and two source-preserved project entries. Its short and
+medium proofs completed real Reviewer review. The long three-page PDF passed
+independent output gates but its first Reviewer request exceeded the frozen
+512,000-byte envelope before I/O. The API correctly rejected publication of the
+unreviewed long proof; candidate preview did not run. Total Agentic HTTP
+reservations: **6** (short 2, medium 3, long Builder 1), one extraction, zero
+Adobe reruns. The failed run and raw failure remain unchanged.
+
+The same F revision and C template pass a full offline canonical candidate run;
+both diagnostic PDF pages were inspected. It is explicitly an offline diagnostic
+output without completed live review, not a successful API candidate preview.
+Projects remain two independent entries with their original titles/dates and
+descriptions. Generic additional-entry fields do not infer a separate date or
+technology-row schema; those source values remain in title/description text.
+
+#### Lossless Color Request Diagnosis
+
+The blocked target/render overviews are RGB, with unchanged 900px long edges.
+Their PNGs total **412,854 bytes**; lossless WebP totals **225,200 bytes** and
+decodes to exactly the same RGB pixels and sizes. The existing Qwen3-VL service
+documents WebP/Base64 support below 4K in its
+[official vision reference](https://www.alibabacloud.com/help/en/model-studio/vision)
+(checked October 25, 2026). No provider/model selection is changed.
+
+[Exact saved-message offline wire replay](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T151200Z_agentic_fc_custom_verified/image_encoding_diagnosis.json)
+uses the actual PydanticAI model/typed output and guarded HTTP adapter with a
+mock transport: PNG is blocked with zero reservations/transport calls; WebP
+produces one **314,353-byte** request with correct `image/webp` data URIs. No
+external provider call was made. The byte cap, resolution, image count and
+model/tool/repair budgets remain unchanged. Original PNGs remain reviewable.
+
+The bounded implementation prepares only Reviewer attachments, retaining their
+actual paths in the existing image audit. It uses smaller lossless WebP for RGB
+overviews, otherwise PNG. `lossless-png-webp/1` is bound into the proof digest;
+old short/medium approval cannot be reused after this change. No gray conversion,
+quantization, lossy compression or overview resizing is introduced.
+
+Focused existing evidence/API/loop checks:
+[23 passed, 1 skipped, 180 deselected](../../tests/test_results/pytest/20261025T152800Z_color_review_encoding_focused.txt),
+including stale-encoding proof rejection and over-budget/no-I/O controls. A
+synthetic dense color page drives the actual Reviewer PydanticAI request, not
+an alternate payload builder: its PNG pair alone exceeds the byte cap and the
+lossless WebP pair passes with correct MIME. The
+[PNG-only negative control](../../tests/test_results/pytest/20261025T152900Z_color_encoding_negative.txt)
+fails the new case as expected. The full offline suite above is frozen pre-encoding
+evidence; these focused checks do not establish live long-page completion.
+The [complete evidence-module check](../../tests/test_results/pytest/20261025T153100Z_color_encoding_audit_focused.txt)
+passes **27 cases**, including exact path/hash/MIME references for the actual
+encoded Reviewer attachments in `agent_messages.jsonl`.

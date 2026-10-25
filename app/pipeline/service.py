@@ -71,6 +71,7 @@ from app.pipeline.review import (
     _validate_finding_versions,
     compile_two_column_state,
     compile_two_column_state_for_scaffold,
+    prepare_review_image,
 )
 
 E5_SCHEMA_VERSION = "pipeline-e-e5-state/1"
@@ -4513,10 +4514,10 @@ def run_e5(
                         )
                         for page_index in range(1, review_page_count + 1):
                             target_page_number = min(page_index, len(target_overviews))
-                            target_page = target_overviews[target_page_number - 1]
+                            target_page = prepare_review_image(target_overviews[target_page_number - 1])
                             lane_images = [target_page]
                             if page_index <= len(render_overviews):
-                                lane_images.append(render_overviews[page_index - 1])
+                                lane_images.append(prepare_review_image(render_overviews[page_index - 1]))
                             counter["finding"] += 1
                             page_findings = _with_connection_retry(
                                 lambda lane_images=lane_images, page_index=page_index, target_page_number=target_page_number: _live_reviewer_findings(

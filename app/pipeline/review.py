@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from app.pipeline.runtime import CheckpointBudgetExceeded, RunBudget, RunTrace, _record_usage
@@ -27,6 +28,24 @@ from app.pipeline.evidence import (
 )
 
 E2_IMPROVEMENT_TOLERANCE_PT = 1.0  # measured local-gap tolerance in points
+
+REVIEW_IMAGE_ENCODING_VERSION = "lossless-png-webp/1"
+
+
+def prepare_review_image(path: Path) -> Path:
+    """Keep the full overview pixels; use smaller lossless color bytes for I/O."""
+    from PIL import Image
+
+    with Image.open(path) as image:
+        if image.mode != "RGB":
+            return path
+        encoded = BytesIO()
+        image.save(encoded, format="WEBP", lossless=True, method=6)
+    if encoded.tell() >= path.stat().st_size:
+        return path
+    output = path.with_suffix(".webp")
+    output.write_bytes(encoded.getvalue())
+    return output
 
 REVIEWER_INSTRUCTIONS = (
     "You are the independent Visual Reviewer of a resume-layout experiment.\n"
@@ -146,7 +165,7 @@ def _live_reviewer_findings(
         "SEE from what you SUSPECT: proposed_cause is a hypothesis only. You "
         "never approve delivery and never decide the root cause.\nNode inventory:\n"
         + node_inventory)),
-        *[BinaryContent(data=image.read_bytes(), media_type="image/png") for image in page_images],
+        *[BinaryContent(data=image.read_bytes(), media_type="image/webp" if image.suffix == ".webp" else "image/png") for image in page_images],
     ]
     model_name = getattr(getattr(agent, "model", None), "model_name", None)
     try:
