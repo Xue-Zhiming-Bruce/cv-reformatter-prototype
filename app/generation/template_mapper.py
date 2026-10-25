@@ -1,5 +1,6 @@
 import re
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -12,6 +13,7 @@ from app.extraction.candidate_schema import (
 
 
 DEFAULT_TEMPLATE_NAME = "apex_standard"
+CLIENT_DISCLOSURE_VERSION = "client_disclosure/2"
 PENDING_CONFIRMATION_LABEL = "To be confirmed"
 AVAILABLE_UPON_REQUEST_LABEL = "Available upon request"
 CONTACT_LABEL_FIELDS = {
@@ -133,33 +135,60 @@ def build_client_render_context(
         education=_build_education(profile),
         certifications=_build_certifications(profile),
         additional_details=_build_additional_details(profile),
-        additional_sections=[
-            RenderAdditionalSection(
-                heading=section.source_heading,
-                section_type=section.section_type,
-                entries=[
-                    RenderAdditionalEntry(
-                        title=entry.title,
-                        links=[link for link in entry.links if link.strip()],
-                        description=[
-                            _display_list_item(item)
-                            for item in entry.description
-                            if item.strip()
-                        ],
-                    )
-                    for entry in section.entries
-                ],
-                source_block_id=section.source_block_id,
-            )
-            for section in profile.additional_sections
-            if section.disposition == SourceSectionDisposition.SHOW
-        ],
+        additional_sections=_build_additional_sections(profile, blind_profile=blind_profile),
         blind_profile=blind_profile,
     )
 
 
 def map_profile_to_template_context(profile: CandidateProfile) -> dict[str, object]:
     return build_client_render_context(profile).model_dump(mode="json")
+
+
+def _web_host(value: str) -> str:
+    try:
+        value = value.strip()
+        parsed = urlsplit(value if "://" in value or value.startswith("//") else "//" + value)
+        return (parsed.hostname or "").casefold().removeprefix("www.").rstrip(".")
+    except ValueError:
+        return ""
+
+
+def _additional_link_visible(link: str, profile: CandidateProfile, *, blind_profile: bool) -> bool:
+    if not link.strip():
+        return False
+    if not blind_profile:
+        return True
+    host = _web_host(link)
+    if link.strip().casefold().startswith(("mailto:", "tel:", "sms:")) or host == "linkedin.com" or host.endswith(".linkedin.com"):
+        return False
+    if profile.client_display_rules.get("portfolio_url") == DisplayRule.SHOW:
+        return True
+    github = any(host == root or host.endswith("." + root) for root in (
+        "github.com", "github.io", "githubusercontent.com",
+    ))
+    portfolio_host = _web_host(str(profile.portfolio_url) if profile.portfolio_url is not None else "")
+    personal_site = bool(portfolio_host and (host == portfolio_host or host.endswith("." + portfolio_host)))
+    return not (github or personal_site)
+
+
+def _build_additional_sections(profile: CandidateProfile, *, blind_profile: bool) -> list[RenderAdditionalSection]:
+    sections: list[RenderAdditionalSection] = []
+    for section in profile.additional_sections:
+        if section.disposition != SourceSectionDisposition.SHOW:
+            continue
+        entries = []
+        for entry in section.entries:
+            rendered = RenderAdditionalEntry(
+                title=entry.title,
+                links=[link for link in entry.links if _additional_link_visible(link, profile, blind_profile=blind_profile)],
+                description=[_display_list_item(item) for item in entry.description if item.strip()],
+            )
+            if rendered.title or rendered.links or rendered.description:
+                entries.append(rendered)
+        if entries:
+            sections.append(RenderAdditionalSection(heading=section.source_heading,
+                section_type=section.section_type, entries=entries, source_block_id=section.source_block_id))
+    return sections
 
 
 def _build_contact_items(

@@ -1143,6 +1143,7 @@ def test_cli_native_builtin_preserves_facts_without_repeating_contacts(tmp_path:
     profile = product_entry_profile()
     profile = CandidateProfile.model_validate({**profile.model_dump(), "skills": ["Python", "SQL"],
         "languages": [{"name": "English", "proficiency": "Fluent"}]})
+    profile.additional_sections[0].entries[0].links.append("https://github.com/synthetic-owner/project")
     context = build_client_render_context(profile, blind_profile=blind)
     projected = candidate_document_from_context(context, candidate_id=f"candidate-{profile_sha256(profile)[:16]}")
     snapshot = (spec.model_dump_json(), projected.model_dump_json())
@@ -1182,6 +1183,7 @@ def test_cli_native_builtin_preserves_facts_without_repeating_contacts(tmp_path:
             text = "\n".join(page.extract_text() or "" for page in document.pages)
         assert text.count("alpha@example.test") == (0 if blind else 1)
         assert text.count("5550101") == (0 if blind else 1)
+        assert ("https://github.com/synthetic-owner/project" not in text) is blind
         assert "HIDDEN_SALARY" not in text and "HIDDEN_PROJECT" not in text and "Target facts only" not in text
     gates = json.loads(next((output / "lane_a").glob("hard_gates_*.json")).read_text())
     assert gates["details"]["content_shapes_match_evidence"]["passed"], gates

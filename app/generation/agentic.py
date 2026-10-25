@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.generation.content_validation import validate_generated_content, validate_output_structure
+from app.generation import template_mapper
 from app.generation.template_mapper import ClientFacingRenderContext
 from app.pipeline.candidate_content import candidate_document_from_context
 from app.pipeline.evidence import EvidenceRef, SelfReportedStatus, StructuralRelation, TargetStructureDraft
@@ -60,6 +61,7 @@ def agentic_renderer_version() -> str:
         "measurement_policy": service.HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
         "pdf_structure_checks": quality.PDF_STRUCTURE_VALIDATION_VERSION,
         "candidate_fact_privacy": authored_template.PRIVACY_GATE_VERSION,
+        "client_disclosure": template_mapper.CLIENT_DISCLOSURE_VERSION,
         "renderer": RENDERER_VERSION, "settings": {**_settings(), "max_request_bytes": MAX_REQUEST_BYTES},
         "models": service._model_identity(),
         "prompts": [service.E5_LANE_A_BUILDER_INSTRUCTIONS, service.E5_REVIEWER_INSTRUCTIONS,

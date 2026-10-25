@@ -50,6 +50,10 @@ proof approvals or final acceptance, and reports zero new extraction calls.
 Dense RGB Reviewer attachments use smaller lossless WebP with unchanged pixels
 and dimensions; diagnostic PNGs remain. `test_pipeline_evidence.py` covers the
 actual bounded PydanticAI request, MIME and audited image path/hash offline.
+The mapper's unit table and existing native/CLI/retained-renderer PDF test also
+cover blind additional-entry link disclosure, explicit portfolio `show`, retained
+public URLs, empty filtered entries and unchanged source data. API coverage
+rejects a changed client-disclosure policy before model calls.
 
 `integration/test_layout_proof_api.py` exercises the optional agentic strategy
 through the real API, canonical runner, Chrome and approval gates, mocking only

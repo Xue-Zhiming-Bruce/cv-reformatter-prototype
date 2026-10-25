@@ -104,6 +104,7 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     import shutil
     from app.pipeline import authored_template, review, service
     from app.generation.agentic import agentic_renderer_version
+    from app.generation import template_mapper
     from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME, LAYOUT_SPEC_FILENAME
     from app.template_analysis.schemas import SectionLayoutSpec
     from tests.helpers.pipeline import synthetic_pipeline_inputs
@@ -235,6 +236,10 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
         assert stale.status_code == 409 and calls == [], stale.text
     with monkeypatch.context() as policy:
         policy.setattr(authored_template, "PRIVACY_GATE_VERSION", "future-policy")
+        stale = client.post("/api/generate", json=request)
+        assert stale.status_code == 409 and calls == [], stale.text
+    with monkeypatch.context() as policy:
+        policy.setattr(template_mapper, "CLIENT_DISCLOSURE_VERSION", "future-policy")
         stale = client.post("/api/generate", json=request)
         assert stale.status_code == 409 and calls == [], stale.text
     monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "13")

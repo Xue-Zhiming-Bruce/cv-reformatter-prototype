@@ -776,3 +776,32 @@ limit: findings may describe arbitrary visual warnings, while the request
 schema offers only `role_gap` and `header_vertical_rule_geometry`. Unsupported
 dimensions are therefore forced onto a mismatched metric and remain unmeasured.
 This diagnosis does not establish Reviewer accuracy or a successful repair.
+
+#### Blind Additional-Link Projection Fix
+
+The shared client mapper now applies the approved blind-link rules to typed
+additional-entry links. GitHub and known portfolio-host links require explicit
+portfolio `show`; LinkedIn/mail/telephone links remain hidden in blind mode.
+Other project/publication links remain, and entries/sections left empty by
+filtering disappear only from the client context. Original profile/source
+values remain unchanged. `client_disclosure/2` is included in Agentic proof
+identity; old proof approval cannot be reused under this policy.
+
+[Focused checks](../../tests/test_results/pytest/20261025T174124Z_blind_additional_links_verified.txt):
+**16 passed**, including the unit disclosure table, actual native/CLI/retained
+renderer PDFs, unchanged source and API stale-policy rejection before model
+calls. [Old-mapper negative control](../../tests/test_results/pytest/20261025T174100Z_blind_links_old_mapper_negative.txt)
+reproduces five intended blind-link/empty-section failures while ordinary mode
+still passes. This controls the observed leak rather than changing test content
+to remove the offending URL.
+
+[Offline canonical B→C blind replay](../../tests/test_results/pytest/20261025T174245Z_bc_blind_links_offline.txt)
+reaches `ready_for_owner_review` with the same saved revision and target.
+The GitHub account URL is absent from HTML/PDF, while both public project URLs
+remain. Source and proof files are unchanged; zero provider calls. The old
+leaking blind PDF fails the common source-aware privacy gate when checked
+against the newly disclosed context, despite its raw profile retaining the URL.
+[Ordinary B/E/F context parity](../../tests/test_results/pytest/20261025T174500Z_normal_context_parity.txt)
+confirms each new normal context equals its prior saved context exactly.
+Replacement live proofs/previews and final file inspection follow; the old
+leaking output remains explicitly unaccepted.

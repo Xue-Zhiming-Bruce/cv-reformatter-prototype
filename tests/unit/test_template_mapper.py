@@ -1,3 +1,5 @@
+import pytest
+
 from app.extraction.candidate_schema import CandidateProfile, DisplayRule, Language, SectionType, WorkExperience
 from app.generation.template_mapper import (
     AVAILABLE_UPON_REQUEST_LABEL,
@@ -63,6 +65,43 @@ def test_blind_profile_can_explicitly_show_portfolio() -> None:
     context = build_client_render_context(profile, blind_profile=True)
 
     assert "Portfolio: https://jane.example.com/portfolio" in context.contact_lines
+
+
+@pytest.mark.parametrize("blind,rule", [
+    (False, None), (True, None), (True, DisplayRule.HIDE),
+    (True, DisplayRule.SHOW), (True, DisplayRule.PENDING_CONFIRMATION),
+])
+def test_additional_links_follow_blind_disclosure_without_changing_source(blind, rule) -> None:
+    personal = ["https://github.com/synthetic-owner/project", "https://gist.github.com/synthetic-owner/example",
+        "https://synthetic-owner.github.io/demo", "https://raw.githubusercontent.com/synthetic-owner/repo/main/file",
+        "https://www.candidate.example.test/projects/demo"]
+    public = ["https://demo.example.test/project", "https://doi.org/10.0000/example",
+        "https://github.com.example.test/demo"]
+    contact = ["https://www.linkedin.com/in/synthetic-owner", "mailto:candidate@example.test", "tel:+15550101"]
+    links = personal + public + contact
+    profile = CandidateProfile(full_name="Synthetic Candidate", portfolio_url="https://candidate.example.test/portfolio",
+        client_display_rules={} if rule is None else {"portfolio_url": rule},
+        additional_sections=[{"section_type": "projects", "source_heading": "PROJECTS",
+            "source_block_id": "candidate-block-004", "entries": [{"title": "Example project", "links": links,
+                "description": ["Built a documented service."]}]}])
+    original = profile.model_dump_json()
+    context = build_client_render_context(profile, blind_profile=blind)
+    expected = links if not blind else personal + public if rule == DisplayRule.SHOW else public
+    entry = context.additional_sections[0].entries[0]
+    assert entry.links == expected
+    assert entry.title == "Example project" and entry.description == ["Built a documented service."]
+    assert profile.model_dump_json() == original
+
+
+def test_blind_link_only_entry_drops_empty_client_section_without_changing_source() -> None:
+    profile = CandidateProfile(full_name="Synthetic Candidate", additional_sections=[
+        {"section_type": "projects", "source_heading": "PROJECTS", "source_block_id": "candidate-block-004",
+         "entries": [{"links": ["https://github.com/synthetic-owner/project"]}]}])
+    original = profile.model_dump_json()
+    assert build_client_render_context(profile, blind_profile=True).additional_sections == []
+    assert build_client_render_context(profile).additional_sections[0].entries[0].links == [
+        "https://github.com/synthetic-owner/project"]
+    assert profile.model_dump_json() == original
 
 
 def test_render_context_formats_nested_sections() -> None:

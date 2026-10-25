@@ -262,6 +262,12 @@ candidate document, with source content IDs recorded per matched line. Hidden
 profile values, output plans and target evidence cannot authorize overlap.
 Within this line-based check, incomplete coverage or target-only values still
 fail; source overlap never expands the approved presentation-label exclusions.
+Blind disclosure also filters structured additional-entry GitHub and known
+portfolio-host links unless `client_display_rules.portfolio_url=show`; LinkedIn,
+email and telephone links remain hidden. Public project/publication links are
+retained, and empty filtered entries/sections do not render. Original profile
+links remain available to recruiter review. The `client_disclosure/2` version
+is part of the Agentic proof identity and requires fresh proofs after an update.
 Each agentic proof attempt has a unique
 directory. Publication requires the selected BEST version, content accounting,
 privacy, content, section order, no-blank-page and template-consumption gates,

@@ -682,6 +682,16 @@ line-granularity detection boundary; it is not a claim of universal leakage
 detection or candidate-field relationship validation. The policy is bound into
 proof configuration identity, requiring fresh proofs.
 
+`client_disclosure/2` applies the existing blind-link policy to structured
+additional-entry links as well as header contacts. GitHub repository/Pages/media
+links and links on the known portfolio host stay hidden unless `portfolio_url`
+is explicitly `show`. LinkedIn and email/telephone contact links remain hidden
+in blind mode. Other project/publication URLs remain; ordinary contexts retain
+their previous links. If filtering removes the only content in an entry or
+section, the empty client structure is omitted. Original profile/source values
+are unchanged. The disclosure version participates in Agentic proof identity;
+this is a typed-link disclosure policy, not a free-text identity detector.
+
 Proof identity includes A's renderer version, existing prompts, model routing
 and bounded budgets; changes require new complete proof approval. Unique
 agentic attempt directories preserve previous proof files. Candidate runs and
