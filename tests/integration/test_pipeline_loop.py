@@ -58,12 +58,13 @@ def test_lane_b_can_opt_into_thinking_without_changing_other_live_roles() -> Non
     assert "page-spanning rail" in e5.E5_LANE_B_BUILDER_INSTRUCTIONS
 
 
-def test_measurement_request_accepts_semantic_intent_without_anchors() -> None:
+@pytest.mark.parametrize("metric", ["role_gap", "unsupported"])
+def test_measurement_request_accepts_semantic_intent_without_anchors(metric: str) -> None:
     """Phase 0: the Reviewer reports a semantic measurement intent; exact
     verbatim PDF text anchors are no longer required."""
     request = e.MeasurementRequest(
         request_id="measure-pending",
-        metric="role_gap",
+        metric=metric,
         page=1,
         region_id="section.04",
         intent="vertical gap between the first two dated entry heads",
@@ -72,7 +73,7 @@ def test_measurement_request_accepts_semantic_intent_without_anchors() -> None:
     assert not request.from_text
     with pytest.raises(ValueError):
         e.MeasurementRequest(
-            request_id="measure-pending", metric="role_gap", page=1,
+            request_id="measure-pending", metric=metric, page=1,
         )  # neither anchors nor intent
 
 
@@ -1926,9 +1927,9 @@ def test_lane_b_candidate_values_are_never_rescanned_as_slot_syntax() -> None:
         at.fill_authored_template(_base_authored_template(), hostile)
 
 
-def test_measurement_tool_budget_consumed_once_per_measurement(tmp_path: Path) -> None:
-    """The MeasureController is the SINGLE tool-budget consumer for a
-    deterministic measurement: one execute -> exactly one tool call."""
+@pytest.mark.parametrize("metric", ["role_gap", "header_vertical_rule_geometry", "unsupported"])
+def test_measurement_tool_budget_consumed_once_per_measurement(tmp_path: Path, metric: str) -> None:
+    """Only role-gap execution spends the geometry budget; other metrics stay unmeasured."""
     inputs = synthetic_pipeline_inputs(tmp_path)
     target = inputs["target_pdf"]
     pod = e.DualSourcePod(target, inputs["adobe_json"], tmp_path, render_pdf=None)
@@ -1936,13 +1937,20 @@ def test_measurement_tool_budget_consumed_once_per_measurement(tmp_path: Path) -
     trace = e.RunTrace(tmp_path)
     controller = e.MeasureController(pod, budget, trace)
     request = e.MeasurementRequest(
-        request_id="measure-budget-001", metric="role_gap", page=1,
+        request_id="measure-budget-001", metric=metric, page=1,
         from_text="Target Person", to_text="Target facts only",
         render_from_text="Target Person", render_to_text="Target facts only",
     )
-    controller.execute(request, current_pdf=target)
-    assert budget.tool_calls == 1
-    assert budget.calls_by_tool["compare_pdf_geometry"] == 1
+    result = controller.execute(request, current_pdf=target)
+    if metric == "role_gap":
+        assert result.status == "confirmed"
+        assert budget.tool_calls == 1
+        assert budget.calls_by_tool["compare_pdf_geometry"] == 1
+    else:
+        assert result.status == "not_measurable"
+        assert result.target_value_pt is result.current_value_pt is result.delta_pt is None
+        assert budget.tool_calls == 0
+        assert metric in result.reason
 
 
 @pytest.mark.local_dataset

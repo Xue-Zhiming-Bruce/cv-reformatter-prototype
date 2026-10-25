@@ -238,6 +238,11 @@ title-row entry metadata. Fixed product entry rows retain their declared
 metadata position; the latter primitive does not rearrange those rows.
 It cannot rewrite candidate facts or the stored template. Open findings remain
 visible; unsupported metrics and ambiguous entry-role matches remain unmeasured.
+The internal `review-measurement/2` contract offers an explicit `unsupported`
+selector and preserves the requested intent. It produces no geometry value or
+causal confirmation; unsupported warnings cannot be closed by an unrelated
+role-gap measurement. The contract is included in proof identity. Existing
+stored requests using either measured selector remain readable.
 Owner direction, October 25, 2026: section-owned visual findings can initiate
 bounded A layout trials without confirmed attribution or measurement. This does
 not confirm the cause or measurement. Automatic selection requires measured

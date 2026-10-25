@@ -259,3 +259,9 @@ remain covered independently; different degrees at one institution stay valid.
 The header-rule regression covers two rule-free PDFs with different names,
 required-rule deletion, additive/valid repairs and mismatched measurement method
 versions. Measurement policy also participates in API proof identity.
+
+The existing pipeline/API regressions also cover `review-measurement/2`:
+unsupported visual observations remain open without scalar geometry values or
+paid attribution, safe unmeasured trials remain outside BEST, and a changed
+contract rejects stale proof approval before any model call. Both existing
+measurement selectors retain serialized compatibility.

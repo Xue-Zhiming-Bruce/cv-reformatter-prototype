@@ -121,8 +121,11 @@ E5_REVIEWER_INSTRUCTIONS = (
     "must never claim the whole document lacks a section from one page image.\n"
     "Use metric='role_gap' only for entry/job/role spacing. Use\n"
     "metric='header_vertical_rule_geometry' only for a clearly visible vertical\n"
-    "rule beside or through the name/header region. Other dimensions are valid\n"
-    "warnings but are not deterministically measurable in this experiment."
+    "rule beside or through the name/header region. For every other property,\n"
+    "use metric='unsupported' and describe the desired measurement in intent.\n"
+    "Do not substitute role_gap or header_vertical_rule_geometry for alignment,\n"
+    "font, color, contact-row styling, or other unsupported properties. These\n"
+    "observations remain open warnings; no metric value or cause is established."
 )
 
 E5_LANE_A_BUILDER_INSTRUCTIONS = (
@@ -4087,6 +4090,8 @@ def run_e5(
                 input={"render_version": render_version, "finding": finding.finding_id},
             )
             request = finding.requested_measurement.model_copy(update={"request_id": request_id})
+            if request.metric == "unsupported":
+                return MeasureController(pod, lane_budget, trace).execute(request, current_pdf=pdf), request
             dimension = finding.suspected_dimension.casefold()
             compound = bool(re.search(r"\b(and|plus)\b", dimension))
             if compound or (request.metric == "role_gap" and not any(

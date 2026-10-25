@@ -30,6 +30,7 @@ from app.pipeline.evidence import (
 E2_IMPROVEMENT_TOLERANCE_PT = 1.0  # measured local-gap tolerance in points
 
 REVIEW_IMAGE_ENCODING_VERSION = "lossless-png-webp/1"
+REVIEW_MEASUREMENT_CONTRACT_VERSION = "review-measurement/2"
 
 
 def prepare_review_image(path: Path) -> Path:
@@ -56,7 +57,8 @@ REVIEWER_INSTRUCTIONS = (
     "is a hypothesis for verification, never a verdict. You never approve\n"
     "delivery. You never modify anything. Every finding binds the exact\n"
     "target and render version strings you were given, and carries one\n"
-    "typed measurement request the shell must execute on the final PDF.\n"
+    "typed measurement request. Use metric='unsupported' with an intent for\n"
+    "properties outside the supported measurements; these stay open warnings.\n"
     "Coordinates you report are page-local points; text anchors are VERBATIM\n"
     "line-prefix strings that deterministic measurement can locate in the\n"
     "final PDF.\n"
@@ -208,6 +210,17 @@ class MeasureController:
         self.trace = trace
 
     def execute(self, request: MeasurementRequest, *, current_pdf: Path) -> MeasurementResult:
+        if request.metric != "role_gap":
+            result = MeasurementResult(
+                request_id=request.request_id, status="not_measurable",
+                reason=f"role-gap controller cannot execute metric {request.metric!r}; intent: {request.intent or ''}",
+                method=REVIEW_MEASUREMENT_CONTRACT_VERSION,
+            )
+            self.trace.add(
+                agent="measure_controller", phase="measure", action="binding_unresolved",
+                output=result.model_dump(mode="json"), persist_output=True,
+            )
+            return result
         self.budget.spend_tool("compare_pdf_geometry")
         target_rows = self.pod.pdf_line_rows(self.pod.target_pdf, request.page)
         current_rows = self.pod.pdf_line_rows(current_pdf, request.page)

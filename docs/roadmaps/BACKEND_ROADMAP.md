@@ -179,7 +179,10 @@ No agent may fabricate human acceptance through the API.
 Status: `[~]` Template consumption, reflow validation, PDF word gaps and logical
 source bullet projection are closed within the measured scope. The latest fresh
 v3 extraction retains the two distinct education entries without repetition.
-Reviewer reliability and material repair effectiveness remain open.
+Reviewer reliability and material repair effectiveness remain open. The observed
+measurement-schema mismatch now has an explicit version-bound `unsupported`
+selector: warnings remain open without fabricated role-gap values. Eighteen
+focused actual-PDF/API checks pass; fresh live evidence for that contract follows.
 
 - [x] Resolve the source/target fact-overlap rejection observed in B→C using
       registered candidate provenance. Preserve target-only leakage controls and

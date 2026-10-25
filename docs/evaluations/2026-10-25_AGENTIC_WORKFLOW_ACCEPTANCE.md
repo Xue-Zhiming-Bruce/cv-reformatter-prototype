@@ -7,22 +7,23 @@ This is an outcome report, not another implementation checklist.
 
 ## Outcome
 
-Latest integrated build `4f081ae` completes E→B and F→C through the actual
-Agentic API with fresh configuration-bound short/medium/long proofs and
-ordinary/blind previews. E outputs each have one page, 12 logical work bullets
-and two distinct degrees with both GPAs; F outputs each have two pages and
-preserve two structured projects. Content, privacy and structure checks pass.
-Source evidence and proof approvals are unchanged by blind generation.
-No human final acceptance has been submitted. Reviewer reliability, effective
-material repair and common source/target fact-overlap rejection remain open.
-The [main review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T153100Z_agentic_fc_color_review/RESULTS_INDEX.md)
-links both same-build sample sets and their exact identities.
+Build `3f0fc59` completes B→C with fresh configuration-bound short/medium/long
+proofs and ordinary/blind previews. The independently discovered structured
+project GitHub leak is absent from the replacement blind HTML/PDF; public demo
+links remain, with original source/proof identities preserved. Both outputs
+have two pages and pass content/structure validation. No human final acceptance
+has been submitted. Reviewer reliability and effective material repair remain
+open. The [current review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T174704Z_agentic_bc_blind_links/RESULTS_INDEX.md)
+links exact files and historical companion samples.
 
-Newer build `452f73a` closes B→C's source-overlap rejection and passes the full
-offline suite. Its normal preview completes, but independent page inspection
-rejects its blind output: a structured project GitHub URL still exposes the
-account. Top-level identity assertions did not cover additional-entry links.
-This newly observed privacy gap remains open; the original failed PDF is kept.
+Earlier integrated build `4f081ae` completes E→B and F→C through the actual
+Agentic API. E outputs each have one page, 12 logical work bullets and two
+distinct degrees with both GPAs; F outputs each have two pages and two structured
+projects. Their normal/blind checks and preserved source/proof identities remain
+historical evidence under their own configuration; approvals are not reused by
+newer builds. Build `452f73a` subsequently closed source/target fact-overlap
+rejection, with 829 full offline tests passing. Its independently rejected blind
+PDF remains intact as failure evidence; the replacement does not erase it.
 
 Earlier bounded continuation (15:02 UTC): B→C reached a second measured style
 and structured project content. One source extraction and one Adobe job were
@@ -829,3 +830,30 @@ full-suite result above belongs to build `452f73a`, preceding this mapper change
 Human output judgment, ordinary Reviewer discovery/effective repair, M2/M3
 acceptance, default cutover and B0/B1 remain open. No final-acceptance API was
 called.
+
+#### Reviewer Measurement Contract Repair
+
+The observed schema/prompt mismatch now has an explicit `unsupported` selector
+in `MeasurementRequest`, preserving the observation and desired measurement
+intent. Existing role-gap and header-rule records remain readable. Unsupported
+requests return `not_measurable`, no scalar values and no geometry tool charge;
+the role-gap controller also refuses other selectors instead of reporting an
+unrelated confirmed role gap. Raw findings remain open. The existing bounded
+layout trial can retain a safe changed attempt for owner comparison, excluded
+from BEST until improvement is actually measured. This does not establish
+Reviewer accuracy or effective ordinary material repair.
+
+The `review-measurement/2` policy and revised instructions participate in Agentic
+proof identity. [Old-code negative controls](../../tests/test_results/pytest/20261025T180000Z_unsupported_metric_old_negative.txt)
+fail three intended checks: two unsupported-request schema rejections and one
+header selector incorrectly confirmed by the role-gap controller.
+[Focused actual-PDF/API regression command](../../tests/test_results/pytest/20261025T180300Z_review_measurement_contract_verified.txt)
+passes **18 checks**, 257 deselected, one existing event-loop deprecation warning.
+This includes ordinary repair/improvement, non-improving and unsafe rollback,
+unmeasured trials, source-bound output validation and stale-policy rejection
+before model calls. [Final realistic warning fixture](../../tests/test_results/pytest/20261025T180350Z_unsupported_warning_final.txt)
+passes after expressing the unsupported observation as entry metadata placement.
+The first broader run had a test assertion indexing finding IDs as objects;
+that assertion was corrected and the command rerun green. Provider calls are
+stubbed in these regressions; rendering, gates and API identities are real.
+Fresh live proof/preview evidence under the changed contract remains pending.

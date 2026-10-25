@@ -231,6 +231,10 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
         stale = client.post("/api/generate", json=request)
         assert stale.status_code == 409 and calls == [], stale.text
     with monkeypatch.context() as policy:
+        policy.setattr(review, "REVIEW_MEASUREMENT_CONTRACT_VERSION", "future-policy")
+        stale = client.post("/api/generate", json=request)
+        assert stale.status_code == 409 and calls == [], stale.text
+    with monkeypatch.context() as policy:
         policy.setattr(review, "REVIEW_IMAGE_ENCODING_VERSION", "future-policy")
         stale = client.post("/api/generate", json=request)
         assert stale.status_code == 409 and calls == [], stale.text

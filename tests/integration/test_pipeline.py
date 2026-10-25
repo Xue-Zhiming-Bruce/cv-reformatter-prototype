@@ -759,10 +759,10 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
         return [service.DefectFinding(
             finding_id=kwargs["finding_id"], target_version=kwargs["target_version"],
             render_version=kwargs["render_version"], page=kwargs["page"], region="section.02.entry",
-            observation="Entry head spacing differs from the target. About me and contact provide context.",
+            observation="Entry date placement differs from the target." if repair == "warning" else "Entry head spacing differs from the target. About me and contact provide context.",
             suspected_dimension={"warning": "entry_meta_placement", "compound": "role_spacing and alignment", "trial_noop": "entry_meta_placement"}.get(repair, "role_gap"),
-            requested_measurement=service.MeasurementRequest(request_id="entry-gap", metric="role_gap", page=1,
-                region_id="section.02.entry", intent="compare ordinary body color" if repair == "unbound" else "vertical gap between the first two job entry heads"),
+            requested_measurement=service.MeasurementRequest(request_id="entry-gap", metric="unsupported" if repair == "warning" else "role_gap", page=1,
+                region_id="section.02.entry", intent={"warning": "compare date metadata placement beside the entry title", "unbound": "compare ordinary body color"}.get(repair, "vertical gap between the first two job entry heads")),
             severity="high", confidence=.9, reviewer="llm",
         )]
 
@@ -844,6 +844,12 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
             run_dir = tmp_path / report["run_directory"]
             assert (run_dir / "lane_a/render_2.pdf").is_file()
             assert "render_2.pdf" in (run_dir / "owner_review/REVIEW_INDEX.md").read_text()
+        if repair == "warning":
+            assert all(result["target_value_pt"] is None and result["current_value_pt"] is None
+                       and result["delta_pt"] is None for result in lane["measurement_results"])
+            assert report["budget"]["calls_by_tool"].get("compare_pdf_geometry", 0) == 0
+            assert all(finding["requested_measurement"]["metric"] == "unsupported"
+                       for finding in lane["findings"])
         assert html.name == "render_1.html" and pdf.name == "render_1.pdf"
     elif repair in {"improve", "renderer_claim", "unresolved", "dismissed_claim"}:
         before, after = lane["measurement_results"][:2]

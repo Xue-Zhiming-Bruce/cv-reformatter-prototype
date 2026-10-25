@@ -625,6 +625,15 @@ Reviewer findings remain bound to real catalog regions/pages and exact versions;
 compound wording or mentions of other sections do not silently discard them.
 Compound dimensions stay unmeasured instead of treating one scalar as proof
 about every stated property. A model dismissal cannot veto a measured mismatch.
+The versioned `review-measurement/2` contract adds the explicit `unsupported`
+measurement selector alongside the existing two selectors. A Reviewer can retain
+its observation and desired measurement intent without claiming that an
+alignment/font/color/contact-style warning is a role gap or vertical rule.
+The dispatcher records `not_measurable` with no scalar values and no geometry
+tool charge for this selector; the role-gap controller also rejects any other
+selector rather than applying a different measurement. Existing serialized
+requests remain readable. This contract and Reviewer instructions are included
+in Agentic proof identity, so a change requires fresh proofs.
 Findings with unsupported metrics remain open and unmeasured, without paid causal
 attribution for known unsupported metrics. In live A, findings in section-owned
 regions may trigger a bounded typed layout trial despite uncertain measurement
