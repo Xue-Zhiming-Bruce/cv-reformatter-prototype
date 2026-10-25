@@ -209,6 +209,70 @@ def _pdf_lines_and_marks(pdf: Path) -> tuple[list[dict[str, Any]], list[dict[str
                 })
     return lines, marks
 
+
+def header_contact_label_evidence(
+    pdf: Path, *, name_region: dict[str, float], font_size_pt: float,
+    labels: dict[str, str], separator: str | None, values: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Measure canonical label prefixes in one declared header contact row."""
+    import re
+    import pdfplumber
+
+    _, marks = _pdf_lines_and_marks(pdf)
+    top = name_region["bottom"]
+    bottom = min([top + 72, *(mark["top"] for mark in marks
+        if mark["page"] == 1 and mark.get("kind") == "rule" and mark["top"] > top + .5)])
+    with pdfplumber.open(pdf) as document:
+        page = document.pages[0]
+        chars = [char for char in page.chars if str(char["text"]).strip()
+            and char["top"] >= top - .25 and char["bottom"] <= bottom + .25
+            and abs(float(char["size"]) - font_size_pt) <= .25]
+        if not chars:
+            return {"status": "evidence_missing", "reason": "no text binds to the declared contact font/window"}
+
+        def in_scope(hit: dict[str, Any]) -> bool:
+            return bool(hit.get("chars")) and all(char in chars for char in hit["chars"])
+
+        value_boxes = []
+        for value in (values or {}).values():
+            pattern = r"\s+".join(re.escape(word) for word in value.split())
+            found = [hit for hit in page.search(pattern, regex=True) or [] if in_scope(hit)]
+            if len(found) != 1:
+                return {"status": "evidence_missing", "reason": "a disclosed contact value does not bind uniquely to the actual header"}
+            value_boxes.append(found[0])
+
+        def label_prefix(hit: dict[str, Any]) -> bool:
+            if not in_scope(hit):
+                return False
+            if any(box["x0"] - .25 <= hit["x0"] and hit["x1"] <= box["x1"] + .25
+                   and abs(box["top"] - hit["top"]) < 1.5 for box in value_boxes):
+                return False  # A colon within a source value is not a generated label.
+            preceding = [char for char in chars if abs(char["top"] - hit["top"]) < 1.5
+                         and char["x1"] <= hit["x0"] + .1]
+            previous = max(preceding, key=lambda char: char["x1"], default=None)
+            return previous is None or previous["text"] in (separator or "")
+
+        widths = {}
+        for slot, label in labels.items():
+            hits = [hit for hit in page.search(r"(?<!\w)" + re.escape(label) + r"\s*:",
+                regex=True, case=False) or [] if label_prefix(hit)]
+            if len(hits) > 1:
+                return {"status": "ambiguous", "reason": "multiple label prefixes bind to the same header field"}
+            widths[slot] = round(hits[0]["x1"] - hits[0]["x0"], 3) if hits else 0.0
+        known = {label.casefold() for label in labels.values()}
+        for hit in page.search(r"(?<![A-Za-z])([A-Za-z][A-Za-z -]{0,24}):", regex=True) or []:
+            token = hit["text"][:-1].strip().casefold()
+            if label_prefix(hit) and token not in known | {"http", "https", "mailto", "tel"}:
+                return {"status": "not_measurable", "reason": "an unrecognized header label prefix requires review"}
+        visible = {slot for slot, width in widths.items() if width > 0}
+        if visible and visible != set(labels):
+            return {"status": "ambiguous", "reason": "mixed per-field contact labels cannot bind to one uniform label choice"}
+        return {"status": "confirmed", "page": 1, "window_top_pt": round(top, 3),
+            "window_bottom_pt": round(bottom, 3), "font_size_pt": font_size_pt,
+            "label_mode": bool(visible), "label_widths_pt": widths,
+            "selection": "declared contact font after name, before first horizontal rule or 72pt bound"}
+
+
 def pinned_export_environment(summary: dict[str, Any]) -> dict[str, Any]:
     """Pinned Chrome export environment with font-load determinism forced on.
 

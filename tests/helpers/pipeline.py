@@ -323,3 +323,35 @@ def agentic_repair_inputs(tmp_path: Path, *, target_entry_gap: float = 18, unifo
     target_pdf = export_html_to_pdf(target_html, tmp_path / "target.pdf")
     inputs = measured_pipeline_inputs(target_pdf, tmp_path)
     return inputs, spec, profile, target_profile
+
+
+def header_contact_inputs(tmp_path: Path, *, target_labels: str = "hidden") -> tuple[dict, Any, Any]:
+    """Independent PDF prefixes for the bounded header-label measurement."""
+    from app.extraction.candidate_schema import CandidateProfile
+    from app.template_analysis.schemas import SectionLayoutSpec
+    from tests.helpers.pipeline_layout import product_template
+
+    contacts = {
+        "hidden": "target@example.test | Target City",
+        "shown": "Email: target@example.test | Location: Target City",
+        "mixed": "Email: target@example.test | Target City",
+        "unknown": "E-mail: target@example.test | Location: Target City",
+        "empty": "",
+    }
+    target = _write_single_page_pdf(tmp_path / "target.pdf", [
+        "BT /F2 20 Tf 54 740 Td (Target Person) Tj ET",
+        f"BT /F1 9 Tf 54 716 Td ({contacts[target_labels]}) Tj ET",
+        "0.5 w 54 700 m 558 700 l S",
+        "BT /F1 12 Tf 54 674 Td (SUMMARY) Tj ET",
+        "BT /F1 10 Tf 54 652 Td (Target copy only.) Tj ET",
+    ], regular_font="Helvetica", bold_font="Helvetica-Bold")
+    spec = product_template()
+    spec.header.show_candidate_subheading = False
+    spec.header.contact_fields, spec.header.contact_separator = ["email", "location"], "|"
+    spec.header.contact_style = spec.body.model_copy(update={"font_size_pt": 9})
+    spec.header.contact_line_height_pt = 11
+    spec.decoration.header_rule = True
+    spec.sections = [SectionLayoutSpec(section_id="summary", source="summary", label="SUMMARY")]
+    profile = CandidateProfile(full_name="Candidate Alpha", email="alpha@example.test",
+        location="Office: West", professional_summary="Builds reliable services")
+    return measured_pipeline_inputs(target, tmp_path), spec, profile

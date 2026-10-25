@@ -233,11 +233,20 @@ images and 16384 output tokens. The byte cap includes Base64/JSON overhead;
 it is part of proof identity. An SDK-wrapped local budget failure stops rather
 than being treated as a transient connection failure.
 Zero repair rounds still performs Builder and Reviewer calls.
-The model may propose only existing A primitives: heading rails/alignment and
-title-row entry metadata. Fixed product entry rows retain their declared
+The model may propose controlled A primitives: heading rails/alignment,
+title-row entry metadata and an optional root `header_contact_labels` choice.
+The latter shows/hides only generated labels in structured mapped header fields;
+null preserves prior presentation. It cannot modify values, order, delimiters,
+body contacts or other header geometry. Unstructured fields fail explicitly. Fixed product entry rows retain their declared
 metadata position; the latter primitive does not rearrange those rows.
 It cannot rewrite candidate facts or the stored template. Open findings remain
 visible; unsupported metrics and ambiguous entry-role matches remain unmeasured.
+The dedicated `header_contact_label_geometry/1` policy measures only uniform
+canonical header label presence on actual PDF glyphs in its declared font/window,
+with exact current-value binding. Mixed/unknown labels or unbound values stay
+unmeasured. Its point-valued error is the actual prefix width for extra/missing
+labels over currently disclosed fields; it does not certify other contact styling.
+Policy/proposal changes require fresh configuration-bound proofs.
 The internal `review-measurement/2` contract offers an explicit `unsupported`
 selector and preserves the requested intent. It produces no geometry value or
 causal confirmation; unsupported warnings cannot be closed by an unrelated

@@ -270,3 +270,10 @@ The same reviewer-context regression now uses actual PDFs for paired header
 font/position facts (`review-presentation-facts/2`), including a genuinely small
 regular name, shifted name and missing-name binding. Facts retain their selection
 scope and omit candidate strings; stale context policy invalidates Agentic proofs.
+
+Header-label projection/measurement regressions stay in the existing pipeline
+integration files. The optional strict A choice affects structured mapped header
+labels only. Independent PDF fixtures cover canonical uniform presence, mixed or
+unknown prefixes, missing contact evidence and source-value colons; geometry reads
+actual PDF bytes. Controlled model stubs exercise measured promotion and broader
+unmeasured contact styling. These are separate from default live Reviewer evidence.

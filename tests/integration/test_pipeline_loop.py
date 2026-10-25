@@ -1927,7 +1927,7 @@ def test_lane_b_candidate_values_are_never_rescanned_as_slot_syntax() -> None:
         at.fill_authored_template(_base_authored_template(), hostile)
 
 
-@pytest.mark.parametrize("metric", ["role_gap", "header_vertical_rule_geometry", "unsupported"])
+@pytest.mark.parametrize("metric", ["role_gap", "header_vertical_rule_geometry", "header_contact_label_geometry", "unsupported"])
 def test_measurement_tool_budget_consumed_once_per_measurement(tmp_path: Path, metric: str) -> None:
     """Only role-gap execution spends the geometry budget; other metrics stay unmeasured."""
     inputs = synthetic_pipeline_inputs(tmp_path)

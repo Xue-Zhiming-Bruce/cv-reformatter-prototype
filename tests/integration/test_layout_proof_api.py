@@ -223,6 +223,10 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     # Changing the execution contract invalidates proof approval before model calls.
     calls.clear()
     with monkeypatch.context() as policy:
+        policy.setattr(service, "HEADER_CONTACT_LABEL_MEASUREMENT_VERSION", "future-policy")
+        stale = client.post("/api/generate", json=request)
+        assert stale.status_code == 409 and calls == [], stale.text
+    with monkeypatch.context() as policy:
         policy.setattr(service, "HEADER_VERTICAL_RULE_MEASUREMENT_VERSION", "future-policy")
         stale = client.post("/api/generate", json=request)
         assert stale.status_code == 409 and calls == [], stale.text

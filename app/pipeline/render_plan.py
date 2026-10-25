@@ -305,6 +305,7 @@ class C2RenderPlan(StateModel):
     body_columns: list[Column] = Field(default_factory=list)
     sidebar_background_hex: str | None = None
     header_rows: list[HeaderRowPlan] = Field(default_factory=list)
+    header_contact_labels: bool | None = Field(default=None, strict=True)
     header_overflow: HeaderOverflowPlan | None = None
     header_gap_below_pt: float | None = Field(default=None, ge=0)
     sections: list[SectionPlan] = Field(default_factory=list)  # mapped target sections, state order
@@ -903,7 +904,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                 failures.append(f"candidate leaf {match.leaf_id!r} has no text")
                 continue
             used_header_leaves.add(match.leaf_id)
-            assignments.append(HeaderFieldPlan(slot=field.slot, leaf_id=match.leaf_id, text=match.text))
+            assignments.append(HeaderFieldPlan(slot=field.slot, leaf_id=match.leaf_id, text=match.text, contact_item=match.contact_item))
             own(match.leaf_id, f"{row.node_id}.{field.slot}")
         column = row.columns[0] if row.columns else None
         if row.flow_gap_above_pt is not None:

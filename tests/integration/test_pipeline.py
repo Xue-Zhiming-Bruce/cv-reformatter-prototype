@@ -471,6 +471,183 @@ def test_product_body_contacts_preserve_ownership_order_and_pdf_content(tmp_path
         assert not report.passed and "alpha@example.test" in report.checks[0].missing_items
 
 
+@pytest.mark.parametrize("labels,blind", [(None, False), (True, False), (False, False), (False, True)])
+def test_agentic_header_label_choice_preserves_source_and_body_contacts(tmp_path: Path, labels: bool | None, blind: bool) -> None:
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+    from app.generation.content_validation import validate_generated_content, validate_output_structure
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.html_renderer import render_layout_template, render_html
+    from app.pipeline.quality import content_gate, content_shape_verification
+    from app.pipeline import service
+    from app.template_analysis.schemas import SectionLayoutSpec
+    from tests.helpers.pipeline_layout import product_template
+
+    spec = product_template()
+    spec.header.show_candidate_subheading = False
+    spec.header.contact_fields = ["email", "location"]
+    spec.sections.insert(0, SectionLayoutSpec(section_id="contact", source="contact", label="CONTACT", contact_fields=["phone"]))
+    profile = CandidateProfile(full_name="Candidate Alpha", email="alpha@example.test", phone="5550101",
+        location="Office: West", professional_summary="Builds reliable services")
+    context = build_client_render_context(profile, blind_profile=blind)
+    candidate = candidate_document_from_context(context, candidate_id="synthetic-header-contacts",
+        include_subheading=spec.header.show_candidate_subheading)
+    originals = [value.model_dump_json() for value in (profile, context, candidate, spec)]
+    import hashlib
+    inputs = _inputs(tmp_path, one_column=True)
+    state, base, _ = render_layout_template(spec, candidate,
+        target_sha256=hashlib.sha256(inputs["target_pdf"].read_bytes()).hexdigest(), page_count=1)
+    original_plan = base.model_dump_json()
+    proposal = service.LaneAStructureProposal(proposal_id="contact-labels", agent="scripted", sections=[], header_contact_labels=labels)
+    plan = service._apply_lane_a_structure(base, proposal)
+    html = render_html(state, plan)
+    html_path = tmp_path / "preview.html";html_path.write_text(html)
+    pdf_path = export_html_to_pdf(html_path, tmp_path / "preview.pdf")
+    assert content_gate(plan, html, pdf_path)["passed"]
+    assert content_shape_verification(state, plan, None, {}, html, {}, pdf_path)["passed"]
+    assert validate_generated_content(context, pdf_path=pdf_path, layout_spec=spec).passed
+    assert validate_output_structure(context, html_path=html_path, pdf_path=pdf_path, layout_spec=spec).passed
+    assert [value.model_dump_json() for value in (profile, context, candidate, spec)] == originals
+    assert base.model_dump_json() == original_plan and plan.leaf_ledger == base.leaf_ledger
+    assert plan.header_contact_labels is labels
+    with pdfplumber.open(pdf_path) as doc:text = " ".join(page.extract_text() or "" for page in doc.pages)
+    assert text.count("Office: West") == 1
+    assert ("Location: Office: West" in text) == (labels is not False)
+    if blind:
+        assert all(value not in text for value in ("Alpha", "alpha@example.test", "5550101"))
+    else:
+        assert text.count("alpha@example.test") == text.count("5550101") == 1
+        assert ("Email: alpha@example.test" in text) == (labels is not False)
+        assert "Phone: 5550101" in text  # body labels are independent
+        assert text.index("alpha@example.test") < text.index("Office: West") < text.index("Phone:")
+    if labels is False and not blind:
+        damaged_html = html.replace("alpha@example.test", "GONE")
+        damaged_path = tmp_path / "damaged.html";damaged_path.write_text(damaged_html)
+        damaged_pdf = export_html_to_pdf(damaged_path, tmp_path / "damaged.pdf")
+        assert not content_gate(plan, damaged_html, damaged_pdf)["passed"]
+        assert not validate_generated_content(context, pdf_path=damaged_pdf, layout_spec=spec).passed
+        contact_row = next(row for row in base.header_rows if any(field.slot == "envelope" for field in row.fields))
+        unstructured = contact_row.model_copy(update={"fields": [field.model_copy(update={"contact_item": None}) for field in contact_row.fields]})
+        broken = base.model_copy(update={"header_rows": [unstructured if row.node_id == contact_row.node_id else row for row in base.header_rows]})
+        with pytest.raises(ValueError, match="structured"):
+            service._apply_lane_a_structure(broken, proposal)
+        with pytest.raises(ValueError):
+            service.LaneAStructureProposal(proposal_id="untrusted", agent="llm", sections=[], header_contact_labels="false")
+
+
+@pytest.mark.parametrize("target_labels,labels,status", [
+    ("hidden", True, "confirmed"), ("shown", False, "confirmed"), ("hidden", False, "confirmed"),
+    ("mixed", True, "ambiguous"), ("unknown", True, "not_measurable"), ("empty", True, "evidence_missing"),
+])
+def test_header_contact_label_geometry_uses_actual_scoped_prefixes(tmp_path: Path, target_labels: str, labels: bool, status: str) -> None:
+    import hashlib
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.html_renderer import render_layout_template, render_html
+    from app.pipeline import service
+    from tests.helpers.pipeline import header_contact_inputs
+
+    inputs, spec, profile = header_contact_inputs(tmp_path, target_labels=target_labels)
+    context = build_client_render_context(profile)
+    candidate = candidate_document_from_context(context, candidate_id="label-metric", include_subheading=False)
+    state, base, _ = render_layout_template(spec, candidate,
+        target_sha256=hashlib.sha256(inputs["target_pdf"].read_bytes()).hexdigest(), page_count=1)
+    def render(visible: bool, name: str):
+        plan = service._apply_lane_a_structure(base, service.LaneAStructureProposal(
+            proposal_id=name, agent="scripted", sections=[], header_contact_labels=visible))
+        path = tmp_path / f"{name}.html";path.write_text(render_html(state, plan))
+        return plan, export_html_to_pdf(path, tmp_path / f"{name}.pdf")
+    plan, pdf = render(labels, "before")
+    request = service.MeasurementRequest(request_id="header-labels", metric="header_contact_label_geometry",
+        page=1, region_id="header.product_contact", intent="compare generated header contact label presence")
+    result = service._measure_header_contact_label_geometry(request, target_pdf=inputs["target_pdf"],
+        current_pdf=pdf, state=state, plan=plan, current_name_text=context.candidate_heading)
+    assert result.status == status, result
+    if status != "confirmed":
+        assert result.target_value_pt is result.current_value_pt is result.delta_pt is None
+        return
+    matches = labels == (target_labels == "shown")
+    assert result.delta_pt == 0 if matches else result.delta_pt > 20
+    assert result.method == service.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION
+    assert "alpha@example.test" not in result.model_dump_json() and "Office: West" not in result.model_dump_json()
+    if not matches:
+        repaired, repaired_pdf = render(target_labels == "shown", "after")
+        after = service._measure_header_contact_label_geometry(request, target_pdf=inputs["target_pdf"],
+            current_pdf=repaired_pdf, state=state, plan=repaired, current_name_text=context.candidate_heading)
+        assert after.status == "confirmed" and after.delta_pt == 0
+        actual_pdf = service._measure_header_contact_label_geometry(request, target_pdf=inputs["target_pdf"],
+            current_pdf=repaired_pdf, state=state, plan=plan, current_name_text=context.candidate_heading)
+        assert actual_pdf.status == "confirmed" and actual_pdf.delta_pt == 0  # PDF bytes differ from the stale label choice.
+        with pdfplumber.open(repaired_pdf) as doc:text = " ".join(page.extract_text() or "" for page in doc.pages)
+        assert "alpha@example.test" in text and "Office: West" in text and "target@example.test" not in text
+        wrong_region = service._measure_header_contact_label_geometry(request.model_copy(update={"region_id": "header.product_name"}),
+            target_pdf=inputs["target_pdf"], current_pdf=repaired_pdf, state=state, plan=repaired, current_name_text=context.candidate_heading)
+        assert wrong_region.status == "not_measurable" and wrong_region.delta_pt is None
+
+
+@pytest.mark.parametrize("dimension", ["header_contact_labels", "contact_row_styling"])
+def test_agentic_header_label_repair_requires_scoped_measured_improvement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dimension: str) -> None:
+    import shutil
+    from app.generation.agentic import render_agentic
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline import service
+    from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
+    from tests.helpers.pipeline import header_contact_inputs
+
+    inputs, spec, profile = header_contact_inputs(tmp_path)
+    for key, filename in (("adobe_json", ADOBE_RAW_FILENAME), ("normalized_evidence", NORMALIZED_LAYOUT_FILENAME)):
+        shutil.copy2(inputs[key], tmp_path / filename)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-model-boundary")
+    monkeypatch.setenv("AGENTIC_MAX_REPAIR_ROUNDS", "1")
+    monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "12")
+    monkeypatch.setenv("AGENTIC_MAX_TOOL_CALLS", "24")
+    phases = []
+    def builder(_budget, _trace, *, payload, images, proposal_id, audit):
+        phases.append(audit.phase)
+        return service.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[],
+            header_contact_labels=False if audit.phase == "repair" else None)
+    def reviewer(_images, **kwargs):
+        if not kwargs["render_version"].endswith("v1"):
+            return []
+        return [service.DefectFinding(finding_id=kwargs["finding_id"], target_version=kwargs["target_version"],
+            render_version=kwargs["render_version"], page=1, region="header.product_contact",
+            observation="The render adds field labels in the header contact row; the target presents values only.",
+            suspected_dimension=dimension, requested_measurement=service.MeasurementRequest(request_id="labels",
+                metric="header_contact_label_geometry", page=1, intent="compare generated header contact label presence"),
+            severity="medium", confidence=.9, reviewer="llm")]
+    def attribute(_pod, _budget, _trace, *, findings, results, lane, audit, current_representation, compiled_layout):
+        assert all(result.status == "confirmed" and result.delta_pt > 20 for result in results)
+        assert compiled_layout["structured_header_contact_count"] == 2
+        assert "header_contact_labels" in compiled_layout["primitive_effects"]
+        return [service.LiveAttributionHypothesis(finding_id=finding.finding_id, attribution="template_compilation",
+            hypothesis_status="confirmed", repair_owner="builder", reason="The typed header label choice controls the measured prefix presence.",
+            evidence_ids=[results[index].request_id]) for index, finding in enumerate(findings)]
+    monkeypatch.setattr(service, "_live_lane_a_builder", builder)
+    monkeypatch.setattr(service, "_live_reviewer_findings", reviewer)
+    monkeypatch.setattr(service, "_live_attribution_batch", attribute)
+    source = profile.model_dump_json()
+    html, pdf, report = render_agentic(context=build_client_render_context(profile), layout_spec=spec,
+        target_pdf=inputs["target_pdf"], evidence_dir=tmp_path, output_dir=tmp_path / "run")
+    lane = json.loads((tmp_path / report["run_directory"] / "e5_state.json").read_text())["lanes"]["a"]
+    assert profile.model_dump_json() == source
+    assert report["gate_validation"]["passed"] and not report["client_ready"]
+    assert "alpha@example.test" in html.read_text() and "Office: West" in html.read_text()
+    if dimension == "header_contact_labels":
+        assert phases == ["initial", "repair"]
+        assert report["selected_version"].endswith("v2") and html.name == "render_2.html" and pdf.name == "render_2.pdf"
+        before, after = lane["measurement_results"][:2]
+        assert before["delta_pt"] > 20 and after["delta_pt"] == 0
+        assert before["method"] == after["method"] == service.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION
+        assert lane["render_versions"][-1]["promoted"] and not report["open_findings"]
+        assert "Email:" not in html.read_text() and "Location:" not in html.read_text()
+    else:
+        assert phases == ["initial"] and report["selected_version"].endswith("v1")
+        assert report["open_findings"] and all(result["status"] == "not_measurable" for result in lane["measurement_results"])
+        assert all(result["delta_pt"] is None for result in lane["measurement_results"])
+        assert not lane["repair_attempts"] and html.name == "render_1.html"
+
+
 @pytest.mark.parametrize("mode", ["basic", "sidebar", "blind", "hidden", "collision", "partitioned", "legacy"])
 def test_product_contact_details_preserve_roles_and_source_sections(tmp_path: Path, mode: str) -> None:
     import re

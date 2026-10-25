@@ -1011,7 +1011,7 @@ class MeasurementRequest(EvidenceModel):
     records `evidence_missing` for re-verification."""
 
     request_id: str
-    metric: Literal["role_gap", "header_vertical_rule_geometry", "unsupported"]
+    metric: Literal["role_gap", "header_vertical_rule_geometry", "header_contact_label_geometry", "unsupported"]
     page: int = Field(ge=1)
     from_text: str = ""
     to_text: str = ""

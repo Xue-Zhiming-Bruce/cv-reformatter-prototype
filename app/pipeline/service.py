@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from pydantic import Field, model_validator
+from app.generation.template_mapper import CONTACT_FIELD_SLOTS, CONTACT_LABEL_FIELDS
 from app.pipeline.candidate_content import CandidateDocument
 from app.template_analysis.schemas import LayoutTemplateSpec
 from app.pipeline.rendering import ROOT, RUNS, _export_pinned_html_to_pdf, _render_pages
@@ -25,7 +26,7 @@ from app.pipeline.runtime import (
     RunTrace,
     _record_usage,
 )
-from app.pipeline.measurement import _pdf_lines_and_marks, pinned_export_environment
+from app.pipeline.measurement import _pdf_lines_and_marks, header_contact_label_evidence, pinned_export_environment
 from app.pipeline.evidence import (
     AttributionRecord,
     CandidateBindingLineage,
@@ -91,6 +92,7 @@ E5_BUILDER_MAX_REQUESTS = 4
 
 E5_ATTRIBUTION_MAX_REQUESTS = 8  # floor only; the batch envelope is derived below
 HEADER_VERTICAL_RULE_MEASUREMENT_VERSION = "header_vertical_rule_geometry/2"
+HEADER_CONTACT_LABEL_MEASUREMENT_VERSION = "header_contact_label_geometry/1"
 
 
 
@@ -122,7 +124,11 @@ E5_REVIEWER_INSTRUCTIONS = (
     "must never claim the whole document lacks a section from one page image.\n"
     "Use metric='role_gap' only for entry/job/role spacing. Use\n"
     "metric='header_vertical_rule_geometry' only for a clearly visible vertical\n"
-    "rule beside or through the name/header region. For every other property,\n"
+    "rule beside or through the name/header region. Use\n"
+    "metric='header_contact_label_geometry' with suspected_dimension='header_contact_labels'\n"
+    "only for presence/absence of generated header field labels such as Email:.\n"
+    "This does not measure separators, typography, field values or spacing.\n"
+    "For every other property,\n"
     "use metric='unsupported' and describe the desired measurement in intent.\n"
     "Do not substitute role_gap or header_vertical_rule_geometry for alignment,\n"
     "font, color, contact-row styling, or other unsupported properties. These\n"
@@ -139,6 +145,11 @@ E5_LANE_A_BUILDER_INSTRUCTIONS = (
     "(the label-rail column width), rail_label_align (left/right), and\n"
     "entry_meta_placement='title_row' (the entry meta column shares the\n"
     "first title line's row). Unknown or invalid fields fail validation.\n"
+    "At the proposal root, header_contact_labels=true renders generated labels\n"
+    "with structured header contact values; false renders only those values.\n"
+    "null leaves the compiled presentation unchanged. This cannot alter values,\n"
+    "field order, delimiters, body contacts or other header properties. Use this\n"
+    "only for structured contact fields supported by the supplied evidence.\n"
     "Hard boundaries: candidate facts are NEVER editable and never appear in\n"
     "your output; target person strings never appear in your output; no\n"
     "target-specific identifiers (no target hash, filename, or person\n"
@@ -241,8 +252,10 @@ E5_LANE_REPAIR_SURFACE: dict[str, str] = {
         "Lane A — provider-neutral structured layout interpreted by a FIXED\n"
         "renderer. The Builder can change ONLY these per-section primitives:\n"
         "heading_in_rail, rail_label_width_pt, rail_label_align,\n"
-        "entry_meta_placement. It can NOT change the header block, the contact\n"
-        "rows, section rule geometry, or anything the fixed renderer does not\n"
+        "entry_meta_placement. Root header_contact_labels may only show/hide\n"
+        "generated labels on structured header contacts; it cannot change values,\n"
+        "order, delimiters, body contacts or header geometry. It cannot change\n"
+        "section rule geometry or anything the fixed renderer does not\n"
         "consume. A plan-level structural difference that those primitives CAN\n"
         "express is a template_compilation defect owned by this Builder; a\n"
         "difference they cannot express is the shell's representation\n"
@@ -318,6 +331,7 @@ def _candidate_review_scope(candidate: Any, labels: list[PresentationLabel]) -> 
     for section in candidate.sections:
         content_kinds_by_role.setdefault(section.source, set()).add(section.content_kind)
     return {
+        "has_structured_header_contacts": any(leaf.contact_item is not None for leaf in candidate.leaves),
         "available_section_roles": sorted(available),
         "content_kinds_by_role": {
             role: sorted(kinds) for role, kinds in sorted(content_kinds_by_role.items())
@@ -432,7 +446,8 @@ def _candidate_boundary_filter_reason(
         return "representation_limit:atomic_candidate_name"
     if "contact" in text and any(
         term in text for term in ("label value", "label/value", "contact table", "typed row")
-    ):
+    ) and not (finding.suspected_dimension == "header_contact_labels"
+               and review_scope.get("has_structured_header_contacts")):
         return "representation_limit:flat_candidate_contact"
 
     dimension = finding.suspected_dimension.casefold()
@@ -614,6 +629,7 @@ class LaneAStructureProposal(EvidenceModel):
 
     proposal_id: str = Field(pattern=r"^[a-z0-9_-]+$")
     sections: list[E5LaneASection]
+    header_contact_labels: bool | None = Field(default=None, strict=True)
     agent: Literal["scripted", "llm"]
 
 class E5LaneRecord(EvidenceModel):
@@ -1026,6 +1042,15 @@ def _e5_builder_evidence_package(
     }
     if candidate is not None:
         package["candidate_layout_footprint"] = _candidate_layout_footprint(candidate)
+        header_slots = {field.slot for node in state.nodes if node.kind == "header_row" for field in node.fields}
+        contact_leaves = [leaf for leaf in candidate.leaves if leaf.kind == "header_field"
+            and leaf.slot in header_slots and leaf.slot in CONTACT_FIELD_SLOTS.values()]
+        package["lane_a_header_contact_label_control"] = {
+            "supported": bool(contact_leaves) and all(leaf.contact_item is not None for leaf in contact_leaves)
+                and "contact" not in header_slots,
+            "structured_field_count": len(contact_leaves),
+            "allowed_changes": "generated header labels only; source values/order/delimiters/body contacts stay unchanged",
+        }
     if candidate_compatible_labels is not None:
         package["candidate_compatible_labels"] = candidate_compatible_labels
     if body_color_context is not None:
@@ -1585,7 +1610,7 @@ def _e5_default_attribution(
             repair_owner="reviewer",
             evidence=[result.request_id],
             reason=(
-                "the measured final-PDF role gap differs beyond tolerance, but the "
+                "the measured final-PDF property differs beyond tolerance, but the "
                 "measurement alone does not establish the owning layer"
             ),
         )
@@ -2009,6 +2034,54 @@ def _target_body_text_color_context(pdf: Path) -> dict[str, Any] | None:
         "excluded_roles": ["header_name", "section_labels", "rules"],
     }
 
+
+def _measure_header_contact_label_geometry(
+    request: MeasurementRequest, *, target_pdf: Path, current_pdf: Path,
+    state: Any, plan: Any, current_name_text: str | None,
+) -> MeasurementResult:
+    """Physical glyph-width cost of a mismatched uniform header label policy."""
+    def unavailable(status: str, reason: str, target: dict[str, Any] | None = None,
+                    current: dict[str, Any] | None = None) -> MeasurementResult:
+        return MeasurementResult(request_id=request.request_id, status=status, reason=reason,
+            method=HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
+            target_evidence=[target] if target else [], current_evidence=[current] if current else [])
+
+    nodes = [node for node in state.nodes if node.kind == "header_row"
+             and any(field.slot in CONTACT_FIELD_SLOTS.values() for field in node.fields)]
+    if request.page != 1 or len(nodes) != 1 or plan is None:
+        return unavailable("not_measurable", "label geometry requires one declared page-one contact row")
+    node = nodes[0]
+    if request.region_id != node.node_id:
+        return unavailable("not_measurable", "label geometry must bind to the declared contact row")
+    row = next((row for row in plan.header_rows if row.node_id == node.node_id), None)
+    fields = list(row.fields) if row else []
+    if not fields or any(field.contact_item is None for field in fields):
+        return unavailable("not_measurable", "label geometry requires structured disclosed contact fields")
+    font = next(style.font_size_pt for style in state.styles if style.style_id == node.style_id)
+    target_name = _header_vertical_rule_evidence(target_pdf, 1)
+    current_name = _header_vertical_rule_evidence(current_pdf, 1, name_text=current_name_text)
+    if target_name is None or current_name is None or current_name["name_anchor_source"] != "candidate_name_text":
+        return unavailable("evidence_missing", "the header name did not bind to the actual PDF")
+    labels = {CONTACT_FIELD_SLOTS[field]: label for label, field in CONTACT_LABEL_FIELDS.items()
+              if CONTACT_FIELD_SLOTS[field] in {item.slot for item in node.fields}}
+    target = header_contact_label_evidence(target_pdf, name_region=target_name["name_region"],
+        font_size_pt=font, labels=labels, separator=node.separator)
+    current = header_contact_label_evidence(current_pdf, name_region=current_name["name_region"],
+        font_size_pt=font, labels={field.slot: field.contact_item.label for field in fields},
+        values={field.slot: field.contact_item.value for field in fields}, separator=row.separator)
+    for evidence in (target, current):
+        if evidence["status"] != "confirmed":
+            return unavailable(evidence["status"], evidence["reason"], target, current)
+    error = 0.0
+    if target["label_mode"] != current["label_mode"]:
+        visible_side = target if target["label_mode"] else current
+        error = sum(visible_side["label_widths_pt"][field.slot] for field in fields)
+    return MeasurementResult(request_id=request.request_id, status="confirmed", target_value_pt=0.0,
+        current_value_pt=round(error, 3), delta_pt=round(error, 3),
+        method=HEADER_CONTACT_LABEL_MEASUREMENT_VERSION, target_evidence=[target], current_evidence=[current],
+        warnings=["error_pt sums actual label-prefix glyph widths only where uniform presence differs; field values, delimiters, fonts and other contact styling are separate properties"])
+
+
 def _measure_header_vertical_rule_geometry(
     request: MeasurementRequest,
     *,
@@ -2157,6 +2230,22 @@ def _apply_lane_a_structure(plan: Any, proposal: LaneAStructureProposal | None) 
     renderer interprets them; unknown section ids fail validation)."""
     if proposal is None:
         return plan
+    header_rows = plan.header_rows
+    if proposal.header_contact_labels is not None:
+        header_rows = []
+        for row in plan.header_rows:
+            fields = []
+            for field in row.fields:
+                if field.slot == "contact":
+                    raise ValueError("header contact labels require structured contact fields")
+                if field.slot in CONTACT_FIELD_SLOTS.values():
+                    item = field.contact_item
+                    if item is None or CONTACT_FIELD_SLOTS[item.field] != field.slot:
+                        raise ValueError("header contact labels require structured source values matching each slot")
+                    text = f"{item.label}: {item.value}" if proposal.header_contact_labels else item.value
+                    field = field.model_copy(update={"text": text})
+                fields.append(field)
+            header_rows.append(row.model_copy(update={"fields": fields}))
     updated_sections = []
     for section in plan.sections:
         match = next(
@@ -2202,7 +2291,8 @@ def _apply_lane_a_structure(plan: Any, proposal: LaneAStructureProposal | None) 
         for node_id in skipped
     )]
     return plan.model_copy(
-        update={"sections": updated_sections, "appended_sections": updated_appended, "notes": notes}
+        update={"header_rows": header_rows, "header_contact_labels": proposal.header_contact_labels,
+                "sections": updated_sections, "appended_sections": updated_appended, "notes": notes}
     )
 
 def _validate_lane_a_proposal(
@@ -2444,7 +2534,9 @@ def _e5_reviewer_message(
         "below. Do not combine ABOUT ME with contact, target-only content with "
         "candidate presentation, or multiple regions/dimensions. role_gap is "
         "only for entry/job/role spacing; header_vertical_rule_geometry is only "
-        "for the header/name vertical rule. Atomic candidate:name and flat "
+        "for the header/name vertical rule; header_contact_label_geometry with "
+        "dimension header_contact_labels measures only generated header labels. "
+        "Atomic candidate:name and flat "
         "candidate:contact cannot create Builder-repairable split-name or "
         "label/value-table residuals. Candidate values are omitted from this JSON,\n"
         "not from the rendered document. Different values and synthetic proof\n"
@@ -2752,7 +2844,10 @@ def _lane_a_attribution_layout(plan: Any, state: Any, findings: list[DefectFindi
             "rail_label_width_pt": "Sets label-column width in pt; reducing it widens the content column and can reduce wrapping and entry-head spacing.",
             "rail_label_align": "Aligns text inside the label column; it does not move the content column.",
             "entry_meta_placement": "Only affects legacy entries without explicit rows. Explicit rows already define left/right placement and are not rearranged by this primitive.",
+            "header_contact_labels": "Shows or hides only generated labels of structured header contacts; source values/order/delimiter and body contacts are unchanged.",
         },
+        "header_contact_labels": plan.header_contact_labels if plan is not None else None,
+        "structured_header_contact_count": sum(field.contact_item is not None for row in plan.header_rows for field in row.fields) if plan is not None else 0,
         "sections": [
             {
                 "section_node_id": section.node_id,
@@ -4145,6 +4240,19 @@ def run_e5(
                 )
                 trace.add(agent="measure_controller", phase="measure", action="binding_unresolved",
                           output=result.model_dump(mode="json"), persist_output=True)
+                return result, request
+            if request.metric == "header_contact_label_geometry":
+                if finding.suspected_dimension != "header_contact_labels":
+                    result = MeasurementResult(request_id=request_id, status="not_measurable",
+                        reason="label geometry cannot measure other or compound contact dimensions",
+                        method=HEADER_CONTACT_LABEL_MEASUREMENT_VERSION)
+                else:
+                    lane_budget.spend_tool("measure_header_contact_label_geometry")
+                    request = request.model_copy(update={"region_id": finding.region})
+                    result = _measure_header_contact_label_geometry(request, target_pdf=target_pdf,
+                        current_pdf=pdf, state=state, plan=plan, current_name_text=candidate_name_text)
+                trace.add(agent="measure_controller", phase="measure", action="measurement",
+                    tool="measure_header_contact_label_geometry", output=result.model_dump(mode="json"), persist_output=True)
                 return result, request
             if request.metric == "header_vertical_rule_geometry":
                 finding_text = (

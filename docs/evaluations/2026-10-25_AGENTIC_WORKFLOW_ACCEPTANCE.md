@@ -990,3 +990,57 @@ will require a correctly scoped actual-PDF measurement, improvement and accepted
 region rechecks; unsupported or unmeasured trials remain outside BEST. This is
 a pending internal contract, not an implemented primitive or a cutover claim.
 The selected provider, renderer family and stored product contracts are unchanged.
+
+#### Controlled Header Contact Labels And Actual-PDF Measurement
+
+The pending M3 header-label contract is now implemented as an optional strict
+boolean `LaneAStructureProposal.header_contact_labels`. Null retains existing
+presentation; false uses each structured disclosed contact value; true restores
+its generated label/value form. The renderer is unchanged: the controlled plan
+selects display text while preserving typed contact metadata and original leaf
+ownership. Header order/delimiter, body contacts, source/profile data and the
+stored product template remain unchanged. Fused/unstructured fields fail rather
+than being parsed or stripped at a colon. An actual value such as Office: West
+remains intact. Candidate/content/privacy gates stay mandatory.
+
+The new `header_contact_label_geometry/1` metric binds only the exact contact row
+and primary dimension `header_contact_labels`. It measures actual PDF prefixes
+in the declared font/window, excludes source-value spans and requires uniquely
+bound current values. Mixed/unknown/unbound evidence has no fabricated scalar.
+Point-valued error sums extra/missing prefix glyph widths over currently
+disclosed fields. It cannot confirm fonts, colors, delimiters or compound
+contact styling. A stale policy invalidates proof approval before model calls.
+No new provider, renderer family or stored product contract was introduced.
+
+[Old-schema negative control](../../tests/test_results/pytest/20261025T185100Z_header_labels_old_schema_negative.txt)
+rejects the new choice as an unknown field, as intended. Earlier fixture failures
+in this change were unrelated to the feature; the final fixtures provide actual
+target identity and align subheading projection with the template.
+[Projection checks](../../tests/test_results/pytest/20261025T185700Z_header_labels_projection_verified.txt)
+pass **4 cases** (default/show/hide/blind), including preserved body labels,
+source-value colons, missing-value failures and strict/unstructured rejection.
+[Geometry checks](../../tests/test_results/pytest/20261025T190100Z_header_label_geometry_focused.txt)
+pass **10 cases** including the projection cases and independent target-PDF
+hidden/shown/mixed/unknown/missing-prefix conditions. Geometry follows PDF bytes
+even when a stale plan choice disagrees.
+[Boundary and loop regression](../../tests/test_results/pytest/20261025T190200Z_header_labels_boundary_regression.txt)
+passes **38 checks**, 253 deselected, one existing event-loop deprecation warning.
+The existing API/runner/Chrome/gates exercise a scoped measured label repair
+promoting v2, while a broader contact-styling observation stays unmeasured at v1.
+Provider responses are stubbed in those loop regressions; they are not proof of
+default live Reviewer discovery/effective repair.
+
+[Saved real B→C preflight](../../tests/test_results/pytest/20261025T190600Z_bc_header_labels_offline_preflight.txt)
+reproduces the previous selected HTML byte-for-byte from its exact proposal,
+then changes only the new label choice. Actual normal prefix error is
+**98.059 → 0 pt**; blind **36.527 → 0 pt**. Both new two-page PDFs pass eight
+independent accounting/privacy/content/shape/structure/blank-page/product checks.
+The body from y=120pt on page one and the entire second page are pixel-identical.
+Both changed first pages were viewed; source/revision/proof hashes are unchanged.
+Local files and verification are in the prior run's
+`offline_diagnosis/header_contact_labels_v1/{normal,blind}/`, alongside target
+comparisons and before/after images. Provider calls: zero; no human acceptance.
+
+Fresh current-build proofs and ordinary/blind live previews are still required
+before closing this M3 item. Default cutover and general repair acceptance
+remain open.

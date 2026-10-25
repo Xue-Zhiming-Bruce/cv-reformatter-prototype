@@ -635,6 +635,25 @@ Reviewer findings remain bound to real catalog regions/pages and exact versions;
 compound wording or mentions of other sections do not silently discard them.
 Compound dimensions stay unmeasured instead of treating one scalar as proof
 about every stated property. A model dismissal cannot veto a measured mismatch.
+A typed A proposal may also set root `header_contact_labels` to true/false,
+with null retaining compiled presentation. This only selects generated labels
+versus structured values in mapped header contact fields. Binding now retains
+each contact item's typed metadata; order, delimiter, leaf identity, source
+values and body/overflow contacts are unchanged. Unstructured/fused fields
+cannot use the control. The optional render-plan field is an additive extension;
+old plans/proposals retain their original behavior.
+The dedicated `header_contact_label_geometry/1` measurement binds only to
+`header_contact_labels` on the actual contact-row region. It reads the declared
+contact font after the name and before the first horizontal rule (bounded at
+72pt), with exact disclosed-value binding on the current PDF. Canonical uniform
+English label prefixes are measured; mixed, unknown or unbound evidence stays
+ambiguous/unmeasured. Source-value colons are excluded through their typed value
+spans. Its error is the sum of actual label-prefix glyph widths for mismatched
+presence over currently disclosed fields, in points; matching presence has zero
+error. This says nothing about field values, delimiters, font/color or other
+contact spacing. Promotion still requires measured improvement and accepted-region
+rechecks. The metric policy and changed proposal/reviewer instructions require
+fresh proofs; neither source facts nor the stored LayoutTemplateSpec are edited.
 The versioned `review-measurement/2` contract adds the explicit `unsupported`
 measurement selector alongside the existing two selectors. A Reviewer can retain
 its observation and desired measurement intent without claiming that an
