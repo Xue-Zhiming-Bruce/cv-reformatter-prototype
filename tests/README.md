@@ -24,6 +24,14 @@ Existing local results remain archival evidence, not a source of new runs.
 The CLI and service default to the selected A mainline. B and paired runs
 remain explicit comparisons; their regression checks remain until retirement.
 
+The canonical `scripts/run_abc_live_matrix.py` now saves `/profiles/revisions`
+and writes the existing `resume-matrix-review-1.0` manifest, CSV, failed-result
+records and portable review index under `tests/local_datasets/resume_matrix/runs/`.
+`--out` selects a new run there; existing runs cannot be overwritten. Proof
+approvals are synthetic/evaluation-only and no final acceptance is sent. Real
+analyzer-produced templates can fail A preflight before any Builder/Reviewer call;
+keep those failures and replay their saved evidence offline before another live run.
+
 `integration/test_layout_proof_api.py` exercises the optional agentic strategy
 through the real API, canonical runner, Chrome and approval gates, mocking only
 the model-call boundaries. Coverage includes all three canonical proofs,

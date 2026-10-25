@@ -887,7 +887,8 @@ def _write_review(run_dir: Path, report: dict[str, Any]) -> None:
         review_policy={"final_output_acceptance": "human_pending", "synthetic_proof_approval_only": True},
         network_calls={"agentic_http_reservations": sum(b["model_request_count"] for r in rows for b in r["agentic_usage"]),
                        "adobe_http_count": None, "note": "Adobe HTTP count is not instrumented; API step timing is recorded."},
-        llm_calls={"agentic_usage": [b for r in rows for b in r["agentic_usage"]], "billed_cost": None},
+        llm_calls={"extraction": [r["api_evidence"]["candidate_segmentation"] for r in rows if "candidate_segmentation" in r["api_evidence"]],
+                   "agentic_usage": [b for r in rows for b in r["agentic_usage"]], "billed_cost": None},
         inputs={key: identity(DATASET_DIR/f"resume_{key}.pdf") for key in sorted({v for p in report["pairs_requested"] for v in p.split(":")})},
         transformations=rows, layout_proofs={"evidence_version": "layout-proof-matrix-1.0",
             "reviewer_id": "matrix_harness_synthetic_reviewer", "targets": proofs})
@@ -900,17 +901,23 @@ def _write_review(run_dir: Path, report: dict[str, Any]) -> None:
         writer.writeheader()
         writer.writerows(rows)
     verification = {"passed": sum(r["api_evidence"].get("content_validation", {}).get("passed", False) for r in rows),
-                    "total": len(rows), "manual_review": "pending"}
+                    "total": len(rows), "not_run": sum("content_validation" not in r["api_evidence"] for r in rows),
+                    "manual_review": "pending"}
     write_json(run_dir/"content_preservation_verification.json", verification)
     completed = sum(r["status"] == "completed" for r in rows)
     index = ["# Agentic workflow review", "", "Automated: "+report["state"]+". Human review: pending. No final acceptance.",
              f"Completed {completed}; failed {len(rows)-completed}; content {verification['passed']}/{len(rows)}; negative deltas 0 (baseline not measured); page-count differences "+str(sum(r["generated_page_count"] is not None and r["generated_page_count"] != report["inputs"][r["target_id"][-1].upper()]["page_count"] for r in rows))+".",
              "", "Layout similarity is diagnostic, not a pass/fail gate. Baseline/delta are unmeasured.", "", "## Input key", ""]
-    index += [f"- {key}: {value['filename']}, {value['page_count']} pages." for key, value in report["inputs"].items()]
+    for key, value in report["inputs"].items():
+        role = "source" if any(r["source_id"] == f"resume_{key.lower()}" for r in rows) else "target"
+        path = run_dir/"shared"/f"{role}_analysis"/f"resume_{key.lower()}"/"input.pdf"
+        index.append(f"- {key}: "+link(path, value["filename"])+f", {value['page_count']} pages.")
     index += ["", "## Source-by-target scores", "", "| Source | Target | Score / PDF |", "| --- | --- | --- |"]
     index += [f"| {r['source_id']} | {r['target_id']} | "+(link(run_dir/r["generated_pdf"], f"{r['average_layout_similarity']:.4f}") if r["generated_pdf"] else "failed")+" |" for r in rows]
     index += ["", "## Review first", ""]
     index += [f"- {r['transformation_id']}: {r['error_message']} — "+link(run_dir/"transformations"/r["transformation_id"]/"result.json", "failure evidence") for r in rows if r["status"] == "failed"]
+    if report.get("offline_preflight_diagnosis"):
+        index.append("- "+link(run_dir/report["offline_preflight_diagnosis"], "Offline diagnosis (no additional provider calls)"))
     index += ["", "## Results", "", "| Check | # | Target design | Automated result | Pages | Score | Delta | Recovered | Added | Open |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for number, row in enumerate(rows, 1):
         directory = run_dir/"transformations"/row["transformation_id"]
@@ -923,7 +930,7 @@ def _write_review(run_dir: Path, report: dict[str, Any]) -> None:
         score = "n/a" if row["average_layout_similarity"] is None else f"{row['average_layout_similarity']:.4f}"
         index.append(f"| [ ] | {number} | {row['target_id']} | {row['status']}{flags} | {row['generated_page_count'] or 'n/a'}/{target_pages} | {score} | n/a | {len(row['recovered_candidate_block_ids'])} | {len(row['added_section_ids'])} | {' · '.join(opens)} |")
     index += ["", "## Layout proofs (synthetic, evaluation-only)", ""]
-    index += [f"- {target}: "+link(run_dir/data["path"] , "proof evidence")+"; no human fidelity acceptance." for target, data in proofs.items()]
+    index += [f"- {target}: "+link(run_dir/data["path"]/"layout_proof_summary.json", "proof evidence")+"; no human fidelity acceptance." for target, data in proofs.items()]
     index += ["", " · ".join(link(run_dir/name, name) for name in ("RUN_README.md", "transformation_matrix.csv", "content_preservation_verification.json", "run_manifest.json")), ""]
     (run_dir/"RESULTS_INDEX.md").write_text("\n".join(index))
     (run_dir/"RUN_README.md").write_text("# Run scope\n\nExisting authorized A–C PDF corpus; candidate facts and target presentation stay separate.\nSource/configuration, API steps, usage and failures are in run_manifest.json.\nNo final acceptance call is made. Inspect actual outputs before accepting them.\n")
@@ -969,6 +976,7 @@ def main() -> int:
         "source_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, text=True).strip(),
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "generation_strategy": os.getenv("GENERATION_STRATEGY", "standard"),
+        "execution_settings": {key: os.getenv(key) for key in ("AGENTIC_MAX_MODEL_REQUESTS", "AGENTIC_MAX_TOOL_CALLS", "AGENTIC_MAX_REPAIR_ROUNDS")},
         "llm_provider": provider,
         "pairs_requested": pairs,
         "expected_fail_observations": [

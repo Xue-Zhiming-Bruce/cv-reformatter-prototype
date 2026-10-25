@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 25, 2026 (owner-directed mainline consolidation)
+Last reviewed: October 25, 2026 (first real-template M2 preflight; acceptance incomplete)
 
 This is the sole implementation checklist. Product behavior belongs in the
 [Product Specification](../product/PRODUCT_SPEC.md), approved decisions in
@@ -122,7 +122,14 @@ regressions; passing them cannot substitute for owner review of generated files.
 
 ### M2 — Accept The Complete Agentic Workflow On Existing Representative Samples
 
-Status: `[ ]` Next work; no new execution is part of M1.
+Status: `[~]` First real A→B execution reached target analysis/revision saving,
+but short-proof compilation failed before any Agentic model call. See the
+[October 25 workflow evidence](../evaluations/2026-10-25_AGENTIC_WORKFLOW_ACCEPTANCE.md).
+The measured template exposes unrepresented decoration palette, PostScript font
+identity and hidden-summary behavior. M2 is not accepted; full previews, ordinary
+Reviewer discovery/repair and human output review remain unexecuted. Resolve this
+specific analyzer-to-A consumption gap with saved-evidence offline replay before
+spending on another live workflow; do not weaken unknown-property checks.
 
 - [ ] Select existing authorized representative candidate/target samples and
       record their actual source formats, supported layout features and current
