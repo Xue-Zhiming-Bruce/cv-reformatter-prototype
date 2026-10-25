@@ -234,3 +234,9 @@ header wording, section inventory and comparison metrics are content-sensitive
 overwrite a successful API/product-validation result. API failure, missing
 artifacts and failed content/structure validation remain failures. No diagnostic
 score or successful preview grants human final-output acceptance.
+
+`unit/test_llm_segmentation.py` distinguishes original heading/item evidence
+from logical work/custom descriptions, retaining wrapped raw blocks and rejecting
+joined evidence lines. Extraction instruction v2 keeps response schema v1;
+provider-boundary checks verify both identities reach the actual client call.
+Offline fixtures do not prove live extraction quality.

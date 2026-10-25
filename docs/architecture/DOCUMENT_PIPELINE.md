@@ -52,6 +52,15 @@ or item. Deterministic code audits those lines as multisets; any missing,
 duplicated, invented, or altered line blocks approval. The LLM never evaluates
 its own completeness.
 
+Extraction instruction version `llm-segmentation/2` keeps the existing
+`llm_segmentation/1` response schema. Verbatim line rules apply only to section
+headings/items; structured work/custom descriptions represent logical source
+bullets or paragraphs. The LLM joins continuation lines and clearly wrapped
+words in those structured values while preserving separate bullets, meaningful
+hyphens and every original evidence line. No deterministic semantic regrouping
+or implicit reinterpretation of stored artifacts is introduced. Metadata records
+the instruction version; existing drafts require a new audited extraction.
+
 `NormalizedDocument` preserves source order and recognizable structural units
 such as paragraphs, table cells, lists, headings, and page references.
 

@@ -35,7 +35,7 @@ from app.extraction.llm_extractor import LLMClient, LLMExtractionError
 from app.validation.missing_fields import apply_missing_field_detection
 
 
-LLM_SEGMENTATION_PROMPT_VERSION = "llm-segmentation/1"
+LLM_SEGMENTATION_PROMPT_VERSION = "llm-segmentation/2"
 
 
 class SegmentationRunMetadata(BaseModel):
@@ -122,11 +122,12 @@ class LLMSegmentationOutput(BaseModel):
 
 
 SYSTEM_PROMPT = f"""You segment and extract a candidate resume in one operation.
-Return only the strict {LLM_SEGMENTATION_PROMPT_VERSION} response schema.
+Instruction version: {LLM_SEGMENTATION_PROMPT_VERSION}
+Return only the strict response schema: llm_segmentation/1.
 
-Completeness rules:
+Verbatim evidence rules (heading and items only):
 - Every non-empty source line must appear exactly once, verbatim, either as one section heading or one item.
-- Preserve bullets, spelling, punctuation, case, and line boundaries. Never merge, split, rewrite, omit, duplicate, or invent source lines.
+- In heading/items preserve bullets, spelling, punctuation, case, and line boundaries. Never merge, split, rewrite, omit, duplicate, or invent source lines in these evidence fields.
 - The SOURCE LINES JSON array is the authoritative checklist: consume every array value exactly once. A line used as heading must not also appear in items.
 - A heading is a standalone source line. Use heading=null only for contact/header or an unheaded summary.
 - Keep intra-section content such as skill-group labels, employers, job titles, and project titles inside items.
@@ -136,6 +137,9 @@ Completeness rules:
 
 Extraction rules:
 - Populate structured fields only when explicitly supported by that section's source lines; never guess missing facts.
+- work_experience[].description and additional_entries[].description contain logical bullets or paragraphs, not physical source lines. Join continuation lines of the same source item into one string, using the section and entry context. Keep distinct bullets separate and omit their leading bullet glyphs.
+- Normalize a clearly line-wrapped word when joining structured descriptions (for example, "de-" followed by "tect" becomes "detect"). Preserve meaningful hyphens such as "fault-tolerant"; retain uncertain text rather than guessing.
+- This joining applies only to structured field values. The same original lines must still appear separately and verbatim in heading/items for the coverage audit.
 - Put projects, awards, publications, volunteering, interests, and unknown sections in additional_entries using the existing entry title/link/description shape.
 - Classify a trailing section containing only portfolio/contact links as contact, not an additional section.
 - Use section_type=other and review_state=pending_review for unknown or low-confidence semantics while preserving all source lines in items.

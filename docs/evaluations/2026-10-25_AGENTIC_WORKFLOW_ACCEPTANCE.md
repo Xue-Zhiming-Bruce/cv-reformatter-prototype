@@ -441,3 +441,31 @@ selected proofs, rejected attempts, validations and raw findings. Final checks
 confirm every link exists, exact copied PDF hashes match their API responses,
 all sources remain unchanged and no human acceptance is present. No additional
 paid iteration was used to tune the remaining Reviewer findings.
+
+### Logical Description Extraction Instructions v2
+
+M3's observed line-to-bullet defect is addressed in the existing single-call
+extraction instructions, not by a renderer workaround or source-text rewrite.
+`llm-segmentation/2` explicitly scopes verbatim line coverage to headings/items
+and asks work/custom descriptions to contain logical source bullets/paragraphs.
+Continuation lines and clearly wrapped words can join there, while separate
+bullets, meaningful hyphens and uncertain wording remain protected. The strict
+`llm_segmentation/1` response schema and stored product models are unchanged.
+The previous prompt incorrectly named its instruction version as the response
+schema and gave a global no-merge rule; both ambiguities are removed.
+
+The canonical unit fixture now carries wrapped work and project evidence beside
+joined structured descriptions. Materialization retains original raw block text
+and lineage; merging evidence lines still fails coverage. A provider-boundary
+regression verifies the v2 instruction/schema distinction reaches the client.
+The negative control fails with the original instructions; a fresh live call is
+still required to establish model behavior.
+
+Command: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest
+-p no:cacheprovider tests/unit/test_llm_segmentation.py
+tests/integration/test_api_process.py -q --tb=short`.
+[Focused result](../../tests/test_results/pytest/20261025T140600Z_logical_bullets_focused.txt):
+**13 passed**, 0.40s.
+[Original-instruction negative control](../../tests/test_results/pytest/20261025T140640Z_logical_bullets_negative.txt)
+retains the intended failure. Existing provider-failure, audit-failure, immutable
+evidence and process behavior checks remain in the same canonical lane.
