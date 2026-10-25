@@ -84,7 +84,7 @@ and explicit proof approval; old records do not acquire a new identity on read.
   slices under ADRs 0003–0006. They are not new implementation tasks. DOCX input
   support remains distinct from retired DOCX output.
 
-Latest local evidence, verified to exist during this documentation revision:
+Earlier local gate/repair evidence, verified to exist during this documentation revision:
 [review index](../../data/generated_outputs/pipeline/gate_policy_live_20261024T174632Z/REVIEW_INDEX.md).
 Its referenced logs record [780 passed, 35 skipped offline](../../tests/test_results/pytest/20261024T182035Z_gate_policy_renderer_offline.txt)
 and [2 passed live](../../tests/test_results/pytest/20261024T181716Z_gate_policy_final_live.txt).
@@ -122,25 +122,27 @@ regressions; passing them cannot substitute for owner review of generated files.
 
 ### M2 — Accept The Complete Agentic Workflow On Existing Representative Samples
 
-Status: `[~]` The latest scoped E→B run completes fresh v3 audited extraction,
-short/medium/long live proofs, a synthetic phone-hide revision and ordinary/blind
-previews. Each output has one page, 12 logical work bullets and two distinct
-degrees with both GPAs, without manual content correction. Content/structure
-checks pass; hidden identity/contact values are absent from the blind PDF.
-Source evidence and checksum-matched proof approval remain unchanged. Earlier
-workflow evidence also verifies superseded-revision generation returns 409
-before model calls; that check is not reported as rerun in the latest artifact.
+Status: `[~]` Committed build `4f081ae` completes both E→B and F→C with fresh
+configuration-bound short/medium/long live proofs, saved synthetic disclosure
+revisions and ordinary/blind previews. E outputs each have one page, 12 logical
+work bullets and two distinct degrees with both GPAs; F outputs each have two
+pages, two work entries/degrees and two structured projects. Content/structure
+checks pass; hidden identity/contact values are absent from blind outputs.
+Source evidence and proof approvals remain unchanged. These runs reuse prior
+audited v3 extraction and target evidence, with zero new extraction/Adobe calls.
+Earlier workflow evidence verifies superseded-revision generation returns 409
+before model calls; that check is not reported as rerun in these live artifacts.
 The [October 25 report](../evaluations/2026-10-25_AGENTIC_WORKFLOW_ACCEPTANCE.md)
 and its current review index preserve initial/edited outcomes, rejected attempts,
-independent inspection and actual usage (15 Agentic calls, one extraction,
-zero Adobe reruns). Raw target comparisons are owner-review diagnostics beside
+independent inspection and actual usage (15 Agentic calls per same-build sample,
+30 total, zero new extraction/Adobe calls). Raw target comparisons are owner-review diagnostics beside
 actual API results. Adapter /6 and the updated prompt digest bind these proofs.
 M2 remains unaccepted: Reviewer previously missed source-projection defects and
 retained unsupported alignment/font findings; effective material repair and
-exact human output judgment remain open. B→C exposed measured badge mapping
-and PDF-anchor validation gaps; their offline fixes and remaining source/target
-fact-overlap rejection are recorded in the dated report. F→C is the next scoped
-custom-content/style check using independent candidate facts and saved C evidence.
+exact human output judgment remain open. B→C exposed badge mapping and PDF-anchor
+validation gaps; F→C additionally exposed a colored-image request envelope gap.
+Those bounded fixes now have actual current-build workflow evidence. The
+source/target fact-overlap rejection remains open, with the failed B→C preserved.
 Do not infer broader target acceptance or default cutover.
 
 - [x] Select existing authorized representative candidate/target samples and
@@ -173,6 +175,12 @@ Status: `[~]` Template consumption, reflow validation, PDF word gaps and logical
 source bullet projection are closed within the measured scope. The latest fresh
 v3 extraction retains the two distinct education entries without repetition.
 Reviewer reliability and material repair effectiveness remain open.
+
+- [ ] Resolve the source/target fact-overlap rejection observed in B→C using
+      registered candidate provenance. Preserve target-only leakage controls and
+      evidence; shared words/facts must not be treated as proof of target copying
+      or excluded through a broad string filter. Recheck this boundary before
+      claiming supported-input parity or switching the default.
 
 - [x] Fix the observed extraction projection that turns physical continuation
       lines into separate description bullets. Keep verbatim source-line coverage

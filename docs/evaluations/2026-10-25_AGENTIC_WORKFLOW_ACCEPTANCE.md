@@ -7,15 +7,18 @@ This is an outcome report, not another implementation checklist.
 
 ## Outcome
 
-Latest E→B evidence uses instruction v3 and fresh audited extraction: ordinary
-and blind previews each have one page, with 12 logical work bullets and two
-distinct degrees, including both source GPAs. No manual fact/grouping correction
-was needed. Content, privacy and structure checks pass; Reviewer reliability,
-effective material repair and human exact-output acceptance remain open.
-See the dated continuations below and the
-[current review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T143445Z_agentic_eb_projection_verified/RESULTS_INDEX.md).
+Latest integrated build `4f081ae` completes E→B and F→C through the actual
+Agentic API with fresh configuration-bound short/medium/long proofs and
+ordinary/blind previews. E outputs each have one page, 12 logical work bullets
+and two distinct degrees with both GPAs; F outputs each have two pages and
+preserve two structured projects. Content, privacy and structure checks pass.
+Source evidence and proof approvals are unchanged by blind generation.
+No human final acceptance has been submitted. Reviewer reliability, effective
+material repair and common source/target fact-overlap rejection remain open.
+The [main review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T153100Z_agentic_fc_color_review/RESULTS_INDEX.md)
+links both same-build sample sets and their exact identities.
 
-Latest bounded continuation (15:02 UTC): B→C reached a second measured style
+Earlier bounded continuation (15:02 UTC): B→C reached a second measured style
 and structured project content. One source extraction and one Adobe job were
 saved in `matrix_20261025T144615Z_agentic_bc_custom`. Its short proof rejected
 contradictory inline-plus-badge skills before any Agentic call. Compiler v9 now
@@ -667,3 +670,41 @@ evidence; these focused checks do not establish live long-page completion.
 The [complete evidence-module check](../../tests/test_results/pytest/20261025T153100Z_color_encoding_audit_focused.txt)
 passes **27 cases**, including exact path/hash/MIME references for the actual
 encoded Reviewer attachments in `agent_messages.jsonl`.
+
+### Same-Build Complete E→B And F→C Previews
+
+Committed build `4f081ae` completed both canonical API replays, fresh
+configuration-bound proofs, synthetic phone-hide revisions and ordinary/blind
+previews. Each replay uses **15 Agentic requests**, with zero new extraction or
+Adobe jobs. Earlier audited v3 source and checksum-matched target evidence are
+explicitly referenced; no old proof approval was copied.
+
+| Sample | Normal / blind pages | Content items passed | Normal / blind open findings | Promoted material repairs |
+| --- | --- | --- | --- | --- |
+| E→B | 1 / 1 | 53 / 50 | 1 / 0 | 0 |
+| F→C | 2 / 2 | 58 / 55 | 3 / 1 | 0 |
+
+[Main F→C review](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T153100Z_agentic_fc_color_review/RESULTS_INDEX.md)
+links both same-build packages. E→B used 86,667 input + 4,055 output tokens;
+F→C used 78,412 input + 4,869 output tokens. Candidate normal API timings were
+44.388s and 65.540s respectively; blind receipts retain their own timings.
+Exact billing is unavailable. Source and proof-approval hashes stay unchanged
+after blind generation, with source name, phone, email and personal URLs absent.
+Neither output is client-ready and no human final-acceptance call was made.
+
+Both F candidate pages and all six C proof pages were visually inspected.
+E's ordinary/blind page PNGs and six proof-page PNGs are byte-identical to the
+previously inspected v3 images. E retains 3/4/3/2 work bullets, two degrees and
+both GPAs; F retains two work entries, two degrees and two structured projects.
+All generated proof pages completed actual Reviewer review (short 1, medium 2,
+long 3). Actual header-name left edges are 66pt for target and approximately
+65.999997pt for generated files, contradicting the centered-name findings.
+F's candidate-content-difference findings remain raw/open despite the Reviewer
+itself describing those differences as candidate-owned and not layout defects.
+No wording filter or successful material-repair claim is introduced.
+
+[Package validation](../../tests/test_results/pytest/20261025T154300Z_integrated_review_package_validation.txt)
+confirms manifest/CSV/table counts, content verification, all review links,
+normal/blind PDF identities, source/proof preservation and 99 actual audited
+image path/hash references (20 WebP). Human judgment remains pending. M2–M4,
+default cutover, B retirement and B0/B1 completion remain unaccepted.
