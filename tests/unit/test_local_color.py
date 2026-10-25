@@ -184,3 +184,38 @@ def test_structure_gate_rejects_heading_width_drift_over_one_point() -> None:
             ],
         },
     ) == ["section_labels[0].width drift=3.60pt exceeds 3.50pt"]
+
+
+def test_matrix_failure_review_retains_error_without_placeholder_output(tmp_path: Path, monkeypatch) -> None:
+    """A rejected API run stays inspectable and cannot appear as a completed PDF."""
+    import csv
+    import json
+    import re
+    from scripts import run_abc_live_matrix as matrix
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    for label in ("A", "B"):
+        build_styled_target_pdf(inputs / f"resume_{label}.pdf")
+    monkeypatch.setattr(matrix, "DATASET_DIR", inputs)
+    run = tmp_path / "run"
+    run.mkdir()
+    report = {"pairs_requested": ["A:B"], "pairs": [{
+        "pair": "A→B", "artifact_id": None, "files": {}, "observations": [],
+        "steps": {"process_source": {"status": "fail", "http_status": 502,
+                  "error": "candidate_segmentation_failed", "elapsed_seconds": 1}},
+    }]}
+    matrix._write_review(run, report)
+    manifest = json.loads((run / "run_manifest.json").read_text())
+    result = json.loads((run / "transformations/resume_a__to__resume_b/result.json").read_text())
+    assert manifest["state"] == "failed"
+    assert manifest["review_policy"]["final_output_acceptance"] == "human_pending"
+    assert result["status"] == "failed" and result["generated_pdf"] is None
+    assert result["errors"][0]["http_status"] == 502
+    assert not list((run / "transformations").rglob("candidate_profile.pdf"))
+    with (run / "transformation_matrix.csv").open() as output:
+        rows = list(csv.DictReader(output))
+    assert len(rows) == 1 and rows[0]["error_message"] == "candidate_segmentation_failed"
+    index = (run / "RESULTS_INDEX.md").read_text()
+    assert "| [ ] | 1 |" in index and "content 0/1" in index
+    assert all((run / target).exists() for target in re.findall(r"\]\(([^)]+)\)", index))
