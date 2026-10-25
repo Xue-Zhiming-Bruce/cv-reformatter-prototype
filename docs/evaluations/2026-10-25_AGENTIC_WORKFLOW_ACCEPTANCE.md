@@ -7,10 +7,10 @@ This is an outcome report, not another implementation checklist.
 
 ## Outcome
 
-Latest evidence: live E→B produced three reviewed proofs and an unpublished
-candidate attempt. Offline fixes close candidate reflow rejection and source
-word-gap reconstruction; Reviewer false positives, ineffective repair and
-fresh extraction/recruiter review remain open. See the dated continuations
+Latest evidence: live E→B now produces ordinary/blind one-page previews after
+a fresh extraction and explicit synthetic recruiter edit. Content, privacy and
+structure checks pass. Automatic source bullet grouping, Reviewer reliability,
+effective repair and human final acceptance remain open. See the dated continuations
 below and the [current review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T081144Z_agentic_eb_final/RESULTS_INDEX.md).
 
 The first real A→B API matrix stopped before the first Agentic model call.
@@ -385,3 +385,59 @@ Command: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest
 **9 passed**; [negative control](../../tests/test_results/pytest/20261025T121210Z_matrix_diagnostics_negative.txt)
 fails for the original receipt overwrite. No generation or fidelity gate was
 relaxed by this reporting fix.
+
+### Explicit Recruiter Revision, Normal And Blind Previews
+
+The same artifact was continued through existing APIs after the reporting fix
+(build `f623627`). A synthetic recruiter revision groups explicit source bullet
+starts and their continuation lines within each existing work entry, including
+three manually checked soft-hyphen joins. It changes 23 physical description
+lines into the source's 12 logical bullets, adding/removing no candidate facts.
+The [explicit edit](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T120630Z_agentic_eb_source_review/recruiter_profile_edit.json)
+is local and separate from the immutable extraction/profile draft. This is a
+workflow demonstration, not an automatic extraction fix or human approval.
+
+[Workflow receipts](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T120630Z_agentic_eb_source_review/recruiter_revision_workflow.json)
+record revision save 200, superseded-revision generation 409 before a pipeline
+run, deterministic re-design/approval 200, and both edited preview requests 200.
+The new design has the same exact template checksum as the existing approved
+proof set; its validation gate was used without a bypass or fresh proof calls.
+Source document, raw text, segmentation/audit, normalized document, field evidence
+and original profile-draft hashes are unchanged, as is proof-approval file SHA.
+
+| Preview | Pages | Expected content items | Content / structure | Agentic calls | Open findings |
+| --- | --- | --- | --- | --- | --- |
+| Recruiter-edited ordinary | 1 | 54 | pass / pass | 2 | 1 |
+| Recruiter-edited blind | 1 | 51 | pass / pass | 5 | 1 |
+
+Both pages were inspected. No clipping, empty page, continuation-line bullets
+or the earlier merged-word defect was observed. The blind output replaces the
+name and contains no source email, phone or personal links (including URLs
+without their scheme). The original source still contains those facts. The
+current artifact preview is blind; the ordinary copy and initial defective
+two-page preview are separate frozen snapshots, with their own exact identities.
+Neither is client-ready and no final-acceptance API was called.
+
+[Independent inspection](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T120630Z_agentic_eb_source_review/independent_owner_review_evidence.json)
+also records all six proof-page PNG hashes: they are byte-identical to the six
+previously inspected proof images. Header name left edges are 66.000pt for the
+target and 65.999997pt for both edited outputs, contradicting the centered-name
+claim. Blind Reviewer returns a finding whose own observation says both rule
+counts are zero. These are retained model failures, not confirmed product defects
+or automatically suppressed findings. The missed initial bullet grouping issue
+and absence of a promoted material repair keep M2's automation exit open.
+
+Combined same-run usage: **20 Agentic requests, 117,940 input + 5,042 output
+tokens**, plus the one 6,814-token extraction; **zero Adobe reruns**.
+[Per-attempt timing/usage](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T120630Z_agentic_eb_source_review/combined_agentic_usage.json)
+retains all six pipeline records. Exact billing is unavailable. Initial candidate
+API timing was lost when the old reporter overwrote its receipt; no reconstructed
+time or monetary amount is asserted. The old raw-target-failed manifest/index
+are preserved before the transparent report reprojection.
+
+The [single current review entry](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T120630Z_agentic_eb_source_review/RESULTS_INDEX.md)
+links ordinary/blind outcomes, before/after edit images, target comparisons,
+selected proofs, rejected attempts, validations and raw findings. Final checks
+confirm every link exists, exact copied PDF hashes match their API responses,
+all sources remain unchanged and no human acceptance is present. No additional
+paid iteration was used to tune the remaining Reviewer findings.

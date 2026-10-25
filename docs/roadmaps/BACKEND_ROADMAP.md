@@ -122,20 +122,23 @@ regressions; passing them cannot substitute for owner review of generated files.
 
 ### M2 — Accept The Complete Agentic Workflow On Existing Representative Samples
 
-Status: `[~]` E→B has completed live short/medium/long proof review and a
-reviewed candidate attempt, using saved source/target evidence. The original
-candidate API request failed on an invalid comparison with target-sample page
-breaks. Offline revalidation of the unchanged selected PDF passes content and
-structure after removing that comparison; A's explicit-pagination gates remain.
-The bounded measured-template/compiler fixes and canonical request evidence are
-in the [October 25 report](../evaluations/2026-10-25_AGENTIC_WORKFLOW_ACCEPTANCE.md).
-M2 remains unaccepted: Reviewer content-difference false positives, ineffective
-repairs, re-extraction/review after the word-spacing fix, normal/blind coverage and exact human
-output judgment remain material gaps. Adapter /6 invalidates earlier proof
-approvals after the product validation policy change; do not present offline
-revalidation as a successful repeat API request or human acceptance.
+Status: `[~]` The scoped E→B run now completes fresh audited extraction,
+short/medium/long live proofs, an initial preview, an explicit synthetic recruiter
+revision and ordinary/blind previews. The two edited outputs each have one page
+and pass content/structure checks; hidden identity/contact values are absent from
+the blind PDF. Superseded-revision generation returns 409 before model calls.
+The source evidence and checksum-matched proof approval remain unchanged.
+The [October 25 report](../evaluations/2026-10-25_AGENTIC_WORKFLOW_ACCEPTANCE.md)
+and its current review index preserve initial/edited outcomes, rejected attempts,
+independent inspection and actual usage (20 Agentic calls, one extraction,
+zero Adobe reruns). Raw target comparisons are owner-review diagnostics beside
+actual API results. Adapter /6 and the updated prompt digest bind these proofs.
+M2 remains unaccepted: automatic source bullet grouping is wrong on the initial
+preview; Reviewer misses that defect and retains unsupported alignment/font or
+no-difference findings; effective material repair and exact human output judgment
+remain open. Do not infer broader target acceptance or default cutover.
 
-- [ ] Select existing authorized representative candidate/target samples and
+- [x] Select existing authorized representative candidate/target samples and
       record their actual source formats, supported layout features and current
       source/configuration identities. Reuse the canonical API/matrix workflow;
       follow [Test Result Format](../testing/TEST_RESULT_FORMAT.md) for a matrix
@@ -145,7 +148,7 @@ revalidation as a successful repeat API request or human acceptance.
       Builder repair/review → exact-output human acceptance. Include normal/blind
       disclosure, structured custom content and long-content continuation within
       the declared sample scope. Show revision/output-change invalidation.
-- [ ] Deliver a single review index linking target and selected outcome PDFs,
+- [x] Deliver a single review index linking target and selected outcome PDFs,
       before/after repair PDFs where applicable, page previews/comparison images,
       independent content/privacy/structure results, unresolved findings and
       actual request/cost/latency evidence. Separate controlled-fault controls
@@ -161,8 +164,13 @@ No agent may fabricate human acceptance through the API.
 
 ### M3 — Close Only Critical Gaps Found In M2
 
-Status: `[~]` Bounded template consumption and candidate reflow blockers closed; source word-gap reconstruction is fixed offline. Reviewer false positives, ineffective repairs and re-extraction/review of the corrected source remain open; keep M2 acceptance open.
+Status: `[~]` Template consumption, reflow validation and PDF word gaps are closed within the measured scope. Live evidence leaves automatic bullet grouping, Reviewer reliability and material repair effectiveness open. The recruiter-edited output does not close those automation gaps.
 
+- [ ] Fix the observed extraction projection that turns physical continuation
+      lines into separate description bullets. Keep verbatim source-line coverage
+      and immutable evidence separate from logical structured entry items; use
+      versioned extraction instructions and a fresh audited draft to verify it.
+      The synthetic recruiter edit demonstrates correction, not an extractor fix.
 - [ ] Fix demonstrated default-Reviewer discovery, evidence/binding or Builder
       effectiveness failures that prevent acceptance of the declared samples.
       Recheck the affected PDF and previously verified regions using the existing
