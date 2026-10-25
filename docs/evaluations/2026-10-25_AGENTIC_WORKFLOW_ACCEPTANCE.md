@@ -343,3 +343,45 @@ or reviewer_receives_existing' -q --tb=short`.
 [Result](../../tests/test_results/pytest/20261025T120430Z_review_context_pages.txt):
 **5 passed, 172 deselected**, 52.40s. The API case retains complete proof/preview,
 continuation, approval invalidation and failed-publication regression controls.
+
+### Fresh E Extraction And Reviewer Context Run (12:06 UTC)
+
+The [new E→B run](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T120630Z_agentic_eb_source_review/RESULTS_INDEX.md)
+used committed build `bc7953b`, one fresh audited extraction (4,916 input + 1,898
+output tokens, 8.68s) and zero Adobe jobs. Word boundaries are restored in the
+profile and actual PDF. New proof configuration identities were used.
+Short/medium/long used 2/3/5 Agentic requests, with 0/0/1 open findings; the
+candidate used 3 with one open finding, for **13 Agentic requests** total.
+The API published a preview after 65 expected content items and all product
+structure checks passed, retaining `client_ready=false`.
+
+The two remaining Reviewer findings are not established defects: long claims
+monospaced language text but the PDF fonts are Times-Roman/Times-Bold; candidate
+claims a centered name while direct inspection shows left alignment. Both
+requested incompatible metrics (line gap for font family; vertical-rule geometry
+for horizontal alignment). They remain in the raw run evidence; no new wording
+filter dismisses them and no successful repair is claimed.
+
+Direct candidate inspection also found a genuine source-projection problem that
+Reviewer missed: physical wrapped source lines became separate description
+items/bullets. Raw extraction preserves word gaps, but the current segmentation
+prompt's verbatim line rules are not clearly scoped apart from structured
+descriptions. Original segmentation/profile evidence remains immutable. This
+run therefore cannot establish usable output or default defect-discovery quality.
+
+The canonical matrix incorrectly overwrote the successful generation receipt
+with content-sensitive raw-target differences: rule counts, names/contact text,
+section inventory and a 2.22pt header-gap diagnostic. Those are retained for
+owner review, while actual API failure, missing artifacts and failed product
+validation still fail the run. The reporter now records `fidelity_diagnostics`
+without erasing API status/timing, and exposes these differences in Review first.
+A regression uses stubbed successful API receipts and genuinely different PDFs;
+the old reporter fails it by changing HTTP success into a synthetic failure.
+The existing failed-run/no-placeholder regression remains green.
+
+Command: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest
+-p no:cacheprovider tests/unit/test_local_color.py -q --tb=short`.
+[Result](../../tests/test_results/pytest/20261025T121300Z_matrix_diagnostics.txt):
+**9 passed**; [negative control](../../tests/test_results/pytest/20261025T121210Z_matrix_diagnostics_negative.txt)
+fails for the original receipt overwrite. No generation or fidelity gate was
+relaxed by this reporting fix.

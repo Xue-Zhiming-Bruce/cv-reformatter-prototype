@@ -243,3 +243,65 @@ def test_matrix_stale_target_replay_stops_before_any_api_call(tmp_path: Path, mo
     with pytest.raises(ValueError, match="checksum does not match"):
         matrix.main()
     assert not (tmp_path / "runs").exists()
+
+
+def test_matrix_retains_successful_api_receipt_with_raw_target_differences(tmp_path: Path, monkeypatch) -> None:
+    """API receipts are stubbed; actual differing PDFs still produce review diagnostics."""
+    import json
+    import shutil
+    from scripts import run_abc_live_matrix as matrix
+    from tests.helpers.synthetic_pdf import build_text_pdf_pages
+
+    for key in ("E", "B"):
+        build_styled_target_pdf(tmp_path / f"resume_{key}.pdf")
+    artifact = tmp_path / "artifacts" / "artifact_matrix"
+    artifact.mkdir(parents=True)
+    monkeypatch.setattr(matrix, "DATASET_DIR", tmp_path)
+    monkeypatch.setattr(matrix, "GENERATED_OUTPUTS_DIR", artifact.parent)
+    for name in ("normalized_layout_evidence.json", "target_layout_evidence.json", "visual_comparison.json"):
+        (artifact / name).write_text("{}")
+    for name in ("content_validation.json", "structure_validation.json"):
+        (artifact / name).write_text(json.dumps({"passed": True}))
+    spec = artifact / "designs/d1/layout_template_spec.json"
+    spec.parent.mkdir(parents=True)
+    spec.write_text("{}")
+    (artifact / "candidate_profile.html").write_text("<h1>Candidate Beta</h1>")
+    build_text_pdf_pages(artifact / "candidate_profile.pdf", ["Candidate Beta", "Different approved content"],
+        width_pt=612, height_pt=792, margin_top_pt=36, margin_left_pt=36,
+        margin_bottom_pt=36, margin_right_pt=36)
+    variants = []
+    for variant in ("short", "medium", "long"):
+        proof = artifact / "layout_proofs" / variant
+        proof.mkdir(parents=True)
+        (proof / "proof.html").write_text("<h1>SYNTHETIC</h1>")
+        shutil.copy2(artifact / "candidate_profile.pdf", proof / "proof.pdf")
+        variants.append({"variant": variant, "proof_id": variant,
+                         "html_filename": "proof.html", "pdf_filename": "proof.pdf"})
+
+    def receipts(_client, result, step, _method, path, **_kwargs):
+        result["steps"][step] = {"status": "pass", "http_status": 200, "elapsed_seconds": 0.25}
+        if step == "server":
+            return {"status": "ok"}
+        if step == "process_source":
+            return {"artifact_id": artifact.name, "profile_revision_id": "initial",
+                    "profile": {"full_name": "Candidate Beta"}}
+        if step == "save_revision":
+            return {"profile_revision_id": "saved"}
+        if step == "upload_target":
+            return {"target_format": {"used_as_template_source": True}}
+        if step == "request_design":
+            return {"design_id": "d1", "state": "ready"}
+        if step == "approve_design" or path.endswith("/approve"):
+            return {"state": "approved"}
+        if step == "layout_proofs":
+            return {"variants": variants}
+        assert step == "generate"
+        return {**dict.fromkeys(("profile_revision_id", "profile_sha256", "layout_template_version",
+                 "layout_spec_sha256", "html_sha256", "pdf_sha256"), "synthetic"), "client_ready": False}
+
+    monkeypatch.setattr(matrix, "_request", receipts)
+    result = matrix._run_pair(matrix.TestClient(matrix.app), "E", "B")
+    assert result["steps"]["generate"] == {"status": "pass", "http_status": 200, "elapsed_seconds": 0.25}
+    assert result["fidelity_diagnostics"]["issues"]
+    assert result["fidelity_diagnostics"]["human_review"] == "pending"
+    assert result["preview_identity"]["client_ready"] is False

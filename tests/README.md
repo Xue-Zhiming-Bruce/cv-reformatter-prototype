@@ -227,3 +227,10 @@ ordinary within-word tracking. PDF ingestion uses a font-relative gap threshold;
 existing extraction/profile artifacts are immutable and need a fresh analysis
 and recruiter save to adopt corrected text. Output content-preservation checks
 do not establish visible-source extraction accuracy.
+
+The matrix retains the actual generation API receipt. Raw target rule counts,
+header wording, section inventory and comparison metrics are content-sensitive
+`fidelity_diagnostics` for owner review, shown in Review first; they cannot
+overwrite a successful API/product-validation result. API failure, missing
+artifacts and failed content/structure validation remain failures. No diagnostic
+score or successful preview grants human final-output acceptance.
