@@ -313,7 +313,7 @@ matching implementation, approval record and original checksum-verified proof
 files; no automatic fallback grants an older approval. Generation metadata also
 records `renderer_version`. Standard uploaded-target rendering uses
 `product-html/1`; agentic mode uses
-`agentic-a/4+lane-a-product-subset/16+<configuration digest>`. Neither mode
+`agentic-a/5+lane-a-product-subset/16+<configuration digest>`. Neither mode
 changes the six identity fields used for final-output acceptance.
 
 ### Generated-profile artifact and draft preservation

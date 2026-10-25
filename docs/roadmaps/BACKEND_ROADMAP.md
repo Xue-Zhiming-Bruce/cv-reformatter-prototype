@@ -56,7 +56,7 @@ A fixed business workflow and a bounded Agentic review/repair loop coexist.
 | Final output acceptance | `POST /api/artifacts/{artifact_id}/final-acceptance`; only the exact current preview can become client-ready. |
 
 Shared A implementation: `lane-a-product-subset/16`. Optional Agentic identity:
-`agentic-a/4+lane-a-product-subset/16+<configuration digest>`. Proofs bind the
+`agentic-a/5+lane-a-product-subset/16+<configuration digest>`. Proofs bind the
 implementation, prompts, model routing and budgets as well as target/template
 identities. Changing that configuration requires fresh short/medium/long proofs
 and explicit proof approval; old records do not acquire a new identity on read.

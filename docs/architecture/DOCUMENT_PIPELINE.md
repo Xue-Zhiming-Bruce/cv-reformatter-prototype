@@ -496,7 +496,7 @@ Integration status, October 22, 2026:
   than substring source binding. Every supplied template heading must be
   recognized or covered by the existing identity-bound explicit label input
   before run creation. Unknown headings never become privacy exclusions from
-  geometry or substring matches. No alias vocabulary was expanded.
+  geometry or substring matches. The bounded v2 vocabulary adds exact PROJECTS and ADDITIONAL SECTIONS headings; substring/person-name matches remain rejected.
 - Product-template execution is A-only. Offline previews require zero repair
   rounds. Live execution uses the existing Builder/Reviewer/measurement/repair
   loop, applying typed A proposals to the compiled plan without rewriting the
@@ -538,7 +538,7 @@ inputs, not an alternative public candidate schema.
 
 Owner direction, October 22, 2026: measured presentation labels matching the
 existing product's exact heading aliases are recognized automatically
-(`measured_exact_alias/1`), without per-label human approval. Unknown labels
+(`measured_exact_alias/2`), without per-label human approval. Unknown labels
 remain proposed and unrenderable. Target/catalog checksums and the recognition
 method are persisted; the compatibility status `approved` means renderable,
 not human output acceptance. Legacy explicit label input still validates both
@@ -590,8 +590,9 @@ links appear in the existing owner review index and their version IDs in
 `summary.pending_layout_trials`. Unchanged or unsafe trials roll back. They
 remain local and are not recorded as visually reviewed or automatically improved.
 Existing round/request limits and action deduplication also bound trials.
-The agentic adapter identity is now `agentic-a/4`; the gate-policy revision
+The agentic adapter identity is now `agentic-a/5`; the gate-policy revision
 requires fresh proofs while preserving the existing system prompt bytes.
+The v2 exact label vocabulary includes PROJECTS and ADDITIONAL SECTIONS; unknown or suffixed labels remain unrenderable.
 The shell decides promotion and rollback, preserves valid prior versions, and
 records rejected attempts. A quarantined repair base is not automatically an
 active or best output. Lineage checks bind candidate leaves to their actual

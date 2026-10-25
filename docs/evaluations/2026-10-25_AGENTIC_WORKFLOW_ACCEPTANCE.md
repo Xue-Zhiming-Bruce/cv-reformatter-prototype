@@ -158,4 +158,26 @@ records the expected failure. Runtime generation code was unchanged.
 An explicit saved-source resume mode avoids paying for extraction again and
 copies no prior proof/output/acceptance records into the new run namespace.
 
+### Full Runner Preflight And Conventional Custom Labels
+
+The resumed source/target replay reached the A runner without provider calls,
+then rejected `PROJECTS` and `ADDITIONAL SECTIONS`: the generic custom-section
+source hint had treated both conventional headings as unknown. The failed
+[resumed attempt](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T075400Z_agentic_eb_resumed/RESULTS_INDEX.md)
+remains separate from successful output evidence.
+
+The recognition vocabulary v2 adds only those two complete headings, preserving
+case/whitespace normalization and rejection of person names and suffixed or
+substring matches. It grants no template/output acceptance. Agentic identity
+advances to `/5`; old proof approvals cannot be reused. Four additional table
+cases cover both labels and near-match negatives; 14 label checks pass.
+
+The saved real B template also passed a full **offline canonical runner**
+preflight with the short context: selected v1 passed all required gates and
+exited `ready_for_owner_review`, with no model calls. This extends the earlier
+pure renderer/PDF checks through label authorization, common privacy, selection
+and run provenance without a second runner.
+[Preflight output](../../tests/test_results/pytest/20261025T075700Z_saved_runner_preflight.txt)
+and [label regressions](../../tests/test_results/pytest/20261025T075700Z_exact_custom_labels.txt).
+
 Further live evidence follows when executed.

@@ -806,7 +806,8 @@ def _heuristic_presentation_labels(catalog: list[PresentationLabel]) -> list[Pre
     return [
         label.model_copy(update={"status": "approved"})
         for label in catalog
-        if _section_source_hint(label.text)[0] != "additional_section"
+        if (_section_source_hint(label.text)[0] != "additional_section"
+            or " ".join(label.text.upper().split()) in {"PROJECTS", "ADDITIONAL SECTIONS"})
     ]
 
 def _e5_label_semantics(
@@ -3197,7 +3198,7 @@ def run_e5(
         return abort("presentation_label_approval", error)
     approval_provided = presentation_label_approval is not None
     recognition_method = "explicit_owner_input" if approval_provided else (
-        "measured_exact_alias/1" if layout_spec is None else "layout_template_exact_alias/1"
+        "measured_exact_alias/2" if layout_spec is None else "layout_template_exact_alias/1"
     )
     # Only shell-recognized entries are renderable and privacy-excluded. The
     # proposed remainder stays visible in the owner listing but can never be

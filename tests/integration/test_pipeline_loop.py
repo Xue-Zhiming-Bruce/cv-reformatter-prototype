@@ -2171,7 +2171,7 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
     assert not any("agent_messages" in p.name for p in package.iterdir())
     assert run_config["presentation_label_approval"]["provided"] is False
     assert run_config["presentation_label_approval"]["validated"] is False
-    assert run_config["presentation_label_approval"]["recognition_method"] == "measured_exact_alias/1"
+    assert run_config["presentation_label_approval"]["recognition_method"] == "measured_exact_alias/2"
     assert run_config["presentation_label_approval"]["target_sha256"] == record["target_sha256"]
     assert (
         run_config["presentation_label_approval"]["catalog_sha256"]
@@ -2191,7 +2191,7 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
         assert set(entry["referenced_by_lanes"]) <= {"a", "b"}
         assert f"`{entry['label_id']}`" in package_report
     # Automatic recognition must never manufacture a human approval record.
-    assert listing["recognition_method"] == "measured_exact_alias/1"
+    assert listing["recognition_method"] == "measured_exact_alias/2"
     assert listing["approved_label_ids"] == run_config["presentation_label_approval"]["approved_label_ids"]
     assert listing["approval_provided"] is False and listing["approval_validated"] is False
     assert listing["target_sha256"] and listing["catalog_sha256"]
@@ -2929,7 +2929,7 @@ def test_measured_labels_are_recognized_without_fabricating_human_approval(tmp_p
         live=False, lanes=("a", "b"), max_repair_rounds=0,
     )
     listing = json.loads((run_dir / "presentation_labels.json").read_text())
-    assert listing["recognition_method"] == "measured_exact_alias/1"
+    assert listing["recognition_method"] == "measured_exact_alias/2"
     assert listing["approval_provided"] is False
     assert listing["approval_validated"] is False
     assert {row["text"] for row in listing["labels"] if row["status"] == "approved"} == {
@@ -2946,6 +2946,8 @@ def test_measured_labels_are_recognized_without_fabricating_human_approval(tmp_p
 @pytest.mark.parametrize("text,recognized", [
     ("SUMMARY", True), ("Professional Summary", True), (" skills ", True),
     ("Skills Inc", False), ("John Smith", False), ("MIT", False),
+    ("PROJECTS", True), (" additional  sections ", True),
+    ("Projects Inc", False), ("Additional Sections for John", False),
     ("Experience Engineer", False), ("target@example.test", False),
     ("2020 - 2024", False), ("Custom narrative", False),
 ])
