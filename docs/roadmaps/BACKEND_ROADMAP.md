@@ -142,7 +142,10 @@ retained unsupported alignment/font findings; effective material repair and
 exact human output judgment remain open. B→C exposed badge mapping and PDF-anchor
 validation gaps; F→C additionally exposed a colored-image request envelope gap.
 Those bounded fixes now have actual current-build workflow evidence. The
-source/target fact-overlap rejection remains open, with the failed B→C preserved.
+source/target fact-overlap rejection is closed by build `452f73a`, whose actual
+B→C normal preview passes after fresh proofs. Independent inspection of its
+blind preview found a new project GitHub-link disclosure gap; that file remains
+unaccepted and the new gap stays in M3.
 Do not infer broader target acceptance or default cutover.
 
 - [x] Select existing authorized representative candidate/target samples and
@@ -176,11 +179,17 @@ source bullet projection are closed within the measured scope. The latest fresh
 v3 extraction retains the two distinct education entries without repetition.
 Reviewer reliability and material repair effectiveness remain open.
 
-- [ ] Resolve the source/target fact-overlap rejection observed in B→C using
+- [x] Resolve the source/target fact-overlap rejection observed in B→C using
       registered candidate provenance. Preserve target-only leakage controls and
       evidence; shared words/facts must not be treated as proof of target copying
       or excluded through a broad string filter. Recheck this boundary before
       claiming supported-input parity or switching the default.
+- [ ] Apply blind GitHub/portfolio-link disclosure to structured additional-entry
+      links, not only header contacts. Preserve original source/profile links,
+      ordinary output and permitted nonpersonal project links; require explicit
+      portfolio `show` for GitHub/personal portfolio links in blind output.
+      Replace the independently rejected B→C blind sample and verify exported
+      PDF/HTML plus source/proof identity preservation before claiming closure.
 
 - [x] Fix the observed extraction projection that turns physical continuation
       lines into separate description bullets. Keep verbatim source-line coverage

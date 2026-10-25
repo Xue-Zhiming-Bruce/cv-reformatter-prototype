@@ -18,6 +18,12 @@ material repair and common source/target fact-overlap rejection remain open.
 The [main review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T153100Z_agentic_fc_color_review/RESULTS_INDEX.md)
 links both same-build sample sets and their exact identities.
 
+Newer build `452f73a` closes B→C's source-overlap rejection and passes the full
+offline suite. Its normal preview completes, but independent page inspection
+rejects its blind output: a structured project GitHub URL still exposes the
+account. Top-level identity assertions did not cover additional-entry links.
+This newly observed privacy gap remains open; the original failed PDF is kept.
+
 Earlier bounded continuation (15:02 UTC): B→C reached a second measured style
 and structured project content. One source extraction and one Adobe job were
 saved in `matrix_20261025T144615Z_agentic_bc_custom`. Its short proof rejected
@@ -742,3 +748,31 @@ line leaks. It uses the saved phone-hide revision and recompiled measured C
 template, without changing original source/evidence or making provider calls.
 Current-build live reproof, preview and broad regression follow; the old failed
 run remains intact and none of this constitutes human output acceptance.
+
+#### Current-Build Regression And Live B→C Outcome
+
+Frozen build `452f73a` full offline result:
+**829 passed, 35 skipped, 5 warnings**, 781.69s.
+[Canonical terminal log](../../tests/test_results/pytest/20261025T171952Z_candidate_overlap_full_offline.txt).
+The same build completed fresh short/medium/long live proofs and the B→C normal
+API preview (200, 44.339s, two pages, 65 expected content items). The additional
+blind request also returned 200/two pages/62 items; source and proof hashes are
+unchanged. Usage is **19 Agentic requests** (16 canonical + 3 blind), 106,962
+input + 5,562 output tokens, zero new extraction/Adobe calls. No material repair
+was promoted. Six proof-page PNGs match the already inspected C proof pages.
+
+[B→C review and independent privacy rejection](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T171952Z_agentic_bc_candidate_overlap/RESULTS_INDEX.md)
+keeps successful API receipts separate from independent quality findings. The
+blind file still shows a GitHub project URL containing the candidate username.
+`identifying_values_absent` in its workflow record covers top-level profile
+fields only; the appended independent check explicitly rejects broader blind
+privacy. Original PDF and source files are unchanged and no human acceptance
+was recorded. The mapper currently copies additional-entry links without blind
+filtering, so this is a client-context gap, not a source fact-overlap exception.
+It must be fixed and the output re-reviewed before acceptance.
+
+The saved `reviewer_contract_diagnosis.json` also records a separate contract
+limit: findings may describe arbitrary visual warnings, while the request
+schema offers only `role_gap` and `header_vertical_rule_geometry`. Unsupported
+dimensions are therefore forced onto a mismatched metric and remain unmeasured.
+This diagnosis does not establish Reviewer accuracy or a successful repair.
