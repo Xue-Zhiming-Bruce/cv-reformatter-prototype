@@ -909,3 +909,37 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 "/Users/xuezhiming/Desktop/CV converter prototy
 Save output under the timestamped pytest result path as required by the test
 contract. The 18-pass log above predates only the final warning-fixture wording;
 that one case was independently rerun and passed with the same production code.
+
+#### Paired Header Facts For The Observed Reviewer False Claim
+
+Actual model-visible target/render WebP files were inspected: both are complete,
+in the expected order, and show prominent header names. The blind Reviewer's
+claim that Candidate A has the same size/weight as the location line contradicts
+the actual 24 pt Helvetica-Bold name and 9 pt following line. The existing
+context supplied target header-rule geometry and body colors, but no paired
+font facts. This is an input-evidence gap in the observed failure, not a new
+provider evaluation or a restriction to a known image region.
+
+`review-presentation-facts/2` adds content-free actual-PDF header typography and
+bounding positions for both sides. Current candidate-name binding uses the
+already-disclosed leaf, not raw private identity; a failed match is `unbound`.
+The target retains its explicitly labeled tallest-header-line fallback. Image
+order and scoped use of the facts are explicit in the existing reviewer message;
+full-page review and raw observations remain. No new automatic geometry metric,
+wording filter, proposal primitive, candidate edit or renderer is introduced.
+The facts/message version is included in proof identity.
+
+[Old-code negative control](../../tests/test_results/pytest/20261025T182300Z_header_facts_old_negative.txt)
+fails because paired typography is absent. [Focused actual-PDF/API command](../../tests/test_results/pytest/20261025T182500Z_header_facts_focused.txt)
+passes **11 checks**, 191 deselected, including regular/small typography,
+horizontal displacement, exact-name failure without body fallback, content-free
+facts, unchanged header-rule measurements, review-region scope and stale-policy
+rejection before model calls. The mocked old fact test was replaced by these
+actual-PDF cases in the same test file.
+
+A zero-provider replay on the saved real B→C normal/blind outputs confirms both
+header anchors are 24 pt Helvetica-Bold at x=66, with a 9 pt following line and
+exact current-name binding. Local evidence lives in the prior run's
+`offline_diagnosis/reviewer_header_facts_v2/verification.json`.
+This does not establish improved live Reviewer accuracy; fresh proofs and
+ordinary/blind review under the changed context remain pending.

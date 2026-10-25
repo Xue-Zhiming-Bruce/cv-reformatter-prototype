@@ -254,6 +254,12 @@ Confirmed within-tolerance measurements and proven candidate-binding defects do
 not authorize speculative layout repair. Unproven renderer-limit claims remain
 unresolved hypotheses, without preventing safe trials. Compound wording is
 retained; unknown catalog regions/pages still fail validation.
+Reviewer input `review-presentation-facts/2` also includes content-free font
+sizes, font names and bounding positions from both actual PDF headers, with
+explicit name-binding/target-fallback scope. Missing current-name binding stays
+unbound. The paired image order is explicit; this supplements whole-page review
+and never automatically closes model findings. Its version participates in
+proof identity and changes require fresh proofs.
 Every generated page, including continuation pages, receives
 Reviewer review before its PDF fingerprint is recorded as reviewed.
 

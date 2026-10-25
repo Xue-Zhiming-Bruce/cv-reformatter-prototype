@@ -4209,23 +4209,39 @@ def test_e5_reviewer_message_carries_exact_scope_without_candidate_text() -> Non
     assert context["content_comparison_policy"]["value_equality_required"] is False
 
 
-def test_reviewer_receives_existing_deterministic_presentation_facts(monkeypatch) -> None:
-    monkeypatch.setattr(
-        e5, "_header_vertical_rule_target_context",
-        lambda _pdf: {"vertical_rule_count": 2, "preserve_separate_name_gap": True},
-    )
-    monkeypatch.setattr(
-        e5, "_target_body_text_color_context",
-        lambda pdf: {"dominant_color_hex": "#7d92a1" if pdf.name == "target.pdf" else "#111111"},
-    )
-    facts = e5._reviewer_presentation_facts(
-        Path("target.pdf"), Path("render.pdf"),
-        {"sidebar_labels": [{"x1": 153.57}, {"x1": 153.569}]},
-    )
-    assert facts["header_vertical_rule_target_context"]["vertical_rule_count"] == 2
-    assert facts["sidebar_labels"]["alignment"] == "right"
-    assert facts["sidebar_labels"]["max_right_edge_spread_pt"] == pytest.approx(0.001)
-    assert facts["target_ordinary_body_color"]["dominant_color_hex"] == "#7d92a1"
+@pytest.mark.parametrize("case", ["baseline", "small_regular", "shifted", "missing_name"])
+def test_reviewer_receives_existing_deterministic_presentation_facts(tmp_path: Path, case: str) -> None:
+    from tests.helpers.synthetic_pdf import _write_single_page_pdf
+
+    target = _write_single_page_pdf(tmp_path / "target.pdf", [
+        "BT /F2 20 Tf 54 740 Td (Target Person) Tj ET",
+        "BT /F1 9 Tf 54 716 Td (Location line) Tj ET",
+        "BT 0.2 0.254902 0.333333 rg /F1 10 Tf 54 630 Td (Ordinary body copy has enough characters to dominate header text volume.) Tj ET",
+    ], regular_font="Helvetica", bold_font="Helvetica-Bold")
+    font, size, left = ("F1", 9, 54) if case in {"small_regular", "missing_name"} else ("F2", 20, 180 if case == "shifted" else 54)
+    render = _write_single_page_pdf(tmp_path / "render.pdf", [
+        f"BT /{font} {size} Tf {left} 740 Td (Candidate Example) Tj ET",
+        "BT /F1 9 Tf 54 716 Td (Location line) Tj ET",
+        "BT 0.066667 0.066667 0.066667 rg /F1 10 Tf 54 630 Td (Ordinary body copy has enough characters to dominate header text volume.) Tj ET",
+    ], regular_font="Helvetica", bold_font="Helvetica-Bold")
+    kwargs = {} if case == "baseline" else {"current_name_text": "Absent Name" if case == "missing_name" else "Candidate Example"}
+    facts = e5._reviewer_presentation_facts(target, render,
+        {"sidebar_labels": [{"x1": 153.57}, {"x1": 153.569}]}, **kwargs)
+    typography = facts["header_typography"]
+    assert typography["target"]["font_sizes_pt"] == [20]
+    assert typography["target"]["font_names"] == ["Helvetica-Bold"]
+    assert typography["target"]["following_line_font_sizes_pt"] == [9]
+    if case == "missing_name":
+        assert typography["render"]["state"] == "unbound"
+        assert "font_sizes_pt" not in typography["render"]
+    else:
+        assert typography["render"]["font_sizes_pt"] == [size]
+        assert typography["render"]["font_names"] == ["Helvetica" if font == "F1" else "Helvetica-Bold"]
+        assert typography["render"]["region"]["x0"] == left
+        assert typography["render"]["following_line_font_sizes_pt"] == [9]
+    assert "Target Person" not in json.dumps(facts) and "Candidate Example" not in json.dumps(facts)
+    assert facts["sidebar_labels"]["max_right_edge_spread_pt"] == pytest.approx(.001)
+    assert facts["target_ordinary_body_color"]["dominant_color_hex"] == "#334155"
     assert facts["current_render_ordinary_body_color"]["dominant_color_hex"] == "#111111"
 
 

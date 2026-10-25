@@ -31,6 +31,7 @@ E2_IMPROVEMENT_TOLERANCE_PT = 1.0  # measured local-gap tolerance in points
 
 REVIEW_IMAGE_ENCODING_VERSION = "lossless-png-webp/1"
 REVIEW_MEASUREMENT_CONTRACT_VERSION = "review-measurement/2"
+REVIEW_PRESENTATION_FACTS_VERSION = "review-presentation-facts/2"
 
 
 def prepare_review_image(path: Path) -> Path:

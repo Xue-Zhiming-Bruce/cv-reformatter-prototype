@@ -265,3 +265,8 @@ unsupported visual observations remain open without scalar geometry values or
 paid attribution, safe unmeasured trials remain outside BEST, and a changed
 contract rejects stale proof approval before any model call. Both existing
 measurement selectors retain serialized compatibility.
+
+The same reviewer-context regression now uses actual PDFs for paired header
+font/position facts (`review-presentation-facts/2`), including a genuinely small
+regular name, shifted name and missing-name binding. Facts retain their selection
+scope and omit candidate strings; stale context policy invalidates Agentic proofs.

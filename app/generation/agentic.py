@@ -60,6 +60,7 @@ def agentic_renderer_version() -> str:
         "review_image_encoding": review.REVIEW_IMAGE_ENCODING_VERSION,
         "measurement_policy": service.HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
         "review_measurement_contract": review.REVIEW_MEASUREMENT_CONTRACT_VERSION,
+        "review_presentation_facts": review.REVIEW_PRESENTATION_FACTS_VERSION,
         "pdf_structure_checks": quality.PDF_STRUCTURE_VALIDATION_VERSION,
         "candidate_fact_privacy": authored_template.PRIVACY_GATE_VERSION,
         "client_disclosure": template_mapper.CLIENT_DISCLOSURE_VERSION,

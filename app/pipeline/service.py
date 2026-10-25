@@ -61,6 +61,7 @@ from app.pipeline.evidence import (
 )
 from app.pipeline.review import (
     E2_IMPROVEMENT_TOLERANCE_PT,
+    REVIEW_PRESENTATION_FACTS_VERSION,
     MeasureController,
     SCRIPTED_OBSERVATION_BY_TARGET,
     SCRIPTED_REGION_BY_TARGET,
@@ -2348,12 +2349,43 @@ def _e5_region_catalog(state: Any, derived: dict[str, Any]) -> list[dict[str, An
         })
     return catalog
 
+def _header_typography_context(pdf: Path, *, name_text: str | None = None) -> dict[str, Any]:
+    """Content-free font facts over the existing final-PDF header anchor."""
+    import pdfplumber
+
+    evidence = _header_vertical_rule_evidence(pdf, 1, name_text=name_text)
+    if evidence is None or (name_text and evidence["name_anchor_source"] != "candidate_name_text"):
+        return {"state": "unbound", "reason": "the requested header name did not bind to final-PDF text"}
+    region = evidence["name_region"]
+    with pdfplumber.open(pdf) as document:
+        chars = [char for char in document.pages[0].chars if str(char.get("text") or "").strip()]
+        selected = [char for char in chars
+            if region["x0"] - .5 <= (char["x0"] + char["x1"]) / 2 <= region["x1"] + .5
+            and region["top"] - .5 <= (char["top"] + char["bottom"]) / 2 <= region["bottom"] + .5]
+        following = [char for char in chars if char["top"] > region["bottom"] + .5]
+        next_top = min((char["top"] for char in following), default=None)
+        return {
+            "state": "measured", "source": "final_pdf_characters", "page": 1,
+            "selection": evidence["name_anchor_source"], "region": region,
+            "font_sizes_pt": sorted({round(float(char["size"]), 3) for char in selected}),
+            "font_names": sorted({re.sub(r"^[A-Z]{6}\+", "", str(char["fontname"])) for char in selected}),
+            "following_line_font_sizes_pt": sorted({round(float(char["size"]), 3) for char in following
+                if next_top is not None and abs(char["top"] - next_top) < 1.5}),
+        }
+
+
 def _reviewer_presentation_facts(
-    target_pdf: Path, current_pdf: Path, derived: dict[str, Any]
+    target_pdf: Path, current_pdf: Path, derived: dict[str, Any],
+    *, current_name_text: str | None = None,
 ) -> dict[str, Any]:
     labels = derived.get("sidebar_labels") or []
     right_edges = [round(float(item["x1"]), 3) for item in labels if item.get("x1") is not None]
     return {
+        "schema_version": REVIEW_PRESENTATION_FACTS_VERSION,
+        "header_typography": {
+            "target": _header_typography_context(target_pdf),
+            "render": _header_typography_context(current_pdf, name_text=current_name_text),
+        },
         "header_vertical_rule_target_context": _header_vertical_rule_target_context(target_pdf),
         "sidebar_labels": {
             "alignment": "right",
@@ -2398,6 +2430,14 @@ def _e5_reviewer_message(
             "target page as a style reference; page-count differences alone are not defects."
         )
     return (
+        "The first attached image is TARGET; the second is RENDER. "
+        "The deterministic facts come from the actual final PDFs. Header font "
+        "sizes, font names and coordinates describe only their selected anchor; "
+        "a tallest-header-line fallback is not a confirmed semantic name binding. "
+        "Do not report a font/size/position difference contradicted by matching "
+        "measured facts. The following-line size is a separate line, not the name. "
+        "Report visible differences, not questions asking to verify matching styling. "
+        "Continue reviewing the whole page across all regions. "
         "Compare the TARGET and RENDER images for exactly this page. Use one "
         "region_id from region_catalog per finding and exactly one suspected "
         "dimension. Carry the exact target_version, render_version, and page "
@@ -4500,7 +4540,7 @@ def run_e5(
                         )
                         region_catalog = _e5_region_catalog(state, derived)
                         presentation_facts = _reviewer_presentation_facts(
-                            target_pdf, current_pdf, derived
+                            target_pdf, current_pdf, derived, current_name_text=candidate_name_text
                         )
                         counter["finding"] += 1
                         node_inventory = json.dumps(

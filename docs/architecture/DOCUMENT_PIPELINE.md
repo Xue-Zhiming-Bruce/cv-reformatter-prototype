@@ -621,6 +621,16 @@ or the target yields more than two matching rows, this bounded two-head metric
 returns `ambiguous`; it cannot select the first two matching rows as proof of
 semantic identity. Unsupported role styling stays unmeasured. Measurement and
 attribution retain the same shell-issued request ID even when binding fails.
+Reviewer context `review-presentation-facts/2` includes content-free header font
+sizes, subset-normalized font names, bounding coordinates and the following
+text line's sizes from both actual PDFs. Current-render anchoring uses the
+already-disclosed candidate-name leaf; a missing match is explicit `unbound`
+evidence rather than a fallback to a larger body line. Target anchoring retains
+the declared tallest-header-line fallback, without claiming semantic name
+verification. This context does not create a new automatic measurement or close
+findings. Image order is explicit, full-page review remains in force, and all
+raw observations survive. The facts/message version is bound to Agentic proof
+identity and requires fresh proofs after a change.
 Reviewer findings remain bound to real catalog regions/pages and exact versions;
 compound wording or mentions of other sections do not silently discard them.
 Compound dimensions stay unmeasured instead of treating one scalar as proof
