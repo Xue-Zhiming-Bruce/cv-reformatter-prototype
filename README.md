@@ -100,8 +100,7 @@ structured `additional_sections` as candidate-owned sections with distinct
 headings, entries, URL metadata and description lists. Hidden sections stay out
 of the projection. These sections are appended using the existing overflow
 policy; supported explicit custom-section selectors also retain their declared
-styles. See the API support table for limits. B/paired runs explicitly reject
-this new input shape.
+styles. See the API support table for limits.
 The CLI does not extract candidate facts,
 produce the initial structure draft, or retrieve historical run caches.
 See [the implementation boundary](docs/architecture/DOCUMENT_PIPELINE.md#retained-pipeline-implementation)
@@ -123,9 +122,10 @@ the implementation boundary for limitations.
 This mode does not approve a template or switch the API renderer.
 
 The default is an offline scripted Lane A run, following the owner's October
-22, 2026 selection of A as the initial mainline. `--lane b` or `--lane both`
-explicitly selects a comparison run. This direction does not certify arbitrary
-target fidelity or switch the existing API renderer. Measured conventional heading labels are recognized automatically
+22, 2026 selection of A as the initial mainline. Authored B execution is retired;
+`--lane b` and `--lane both` fail explicitly. Historical comparison source and
+evidence remain recoverable from Git. This direction does not certify arbitrary
+target fidelity. Measured conventional heading labels are recognized automatically
 through exact product aliases; unknowns remain unrenderable. The legacy
 `--presentation-label-approval path/to/approval.json` supplies an explicit
 override bound to target and label-catalog checksums. Recognition is not human
@@ -133,11 +133,11 @@ output acceptance. `--live` enables the
 existing bounded model adapters.
 
 Use `--max-model-requests N` for a global HTTP-attempt cap, including failures
-and SDK retries; each selected lane receives an equal share. Optional
+and SDK retries, for the selected A lane. Optional
 `--max-request-bytes N` also bounds each request to eight images and 16,384
 output tokens. `--max-repair-rounds 0` permits a matched initial-build review.
 Actual limits are frozen before calls; successful token accounting does not
-charge the request counter again. Both builders use non-thinking mode.
+charge the request counter again. The selected Builder uses non-thinking mode.
 
 Outputs include HTML/PDF, frozen input/source identities, state and trace
 records, measurement/gate reports, and an owner review package. Unrequested

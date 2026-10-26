@@ -52,7 +52,7 @@ A fixed business workflow and a bounded Agentic review/repair loop coexist.
 | No-target preview | `/api/generate` uses native `built-in-3` through `app.pipeline.html_renderer.render_layout_template`: shared deterministic A compilation, binding and rendering, then Chrome and product validation. |
 | Uploaded-target proofs and preview, default | `app/template_analysis/layout_proof_service.py` selects `agentic`; `app/generation/agentic.py` adapts the existing A loop for both uploaded and approved measured designer templates. Native output remains deterministic. |
 | Retained uploaded-target baseline | Explicit `GENERATION_STRATEGY=standard` temporarily retains `product-html/1` for migration comparisons. It is not a runtime fallback; M5 removes the replaced path after verified cutover. |
-| Diagnostic CLI/service | `python -m app.pipeline` and `run_e5` default to A. B and paired comparisons require explicit selection. Product-template runs are A-only; the CLI does not perform extraction or establish human acceptance. |
+| Diagnostic CLI/service | `python -m app.pipeline` and `run_e5` accept A only; B/paired execution is retired and rejected before I/O. The CLI does not perform extraction or establish human acceptance. |
 | Final output acceptance | `POST /api/artifacts/{artifact_id}/final-acceptance`; only the exact current preview can become client-ready. |
 
 Shared A implementation: `lane-a-product-subset/17`. Default Agentic identity:
@@ -106,7 +106,7 @@ completes B0/B1 or approves a final document.
 | --- | --- | --- |
 | Original accepted baseline/build | Replacement parity and reproducibility have not been accepted. | Preserve recoverable source/evidence and prove the selected replacement plus explicit build rollback (M4–M6). |
 | Standard uploaded-target `product-html/1` orchestration | Explicit retained comparison during M4 verification; Agentic is now the source default. | M4 passes full regression and explicit rollback checks; delete replaced code in M5. |
-| B authored HTML/CSS | Explicit historical comparison; six representative A candidate snapshots are now owner-accepted. It is not an API runtime fallback. | M4 is verified; remove B/exclusive checks in M5 and preserve history in Git. |
+| B authored HTML/CSS | Retired: execution and exclusive checks removed; shared privacy/identity/repair contracts retained. | Historical source/evidence remains recoverable from Git. Focused retirement check: 155 passed, 7 skipped; the broad run has one recorded Chrome timeout, isolated rerun passed. |
 
 There is no silent fallback from an uploaded target or failed Agentic run to a
 built-in template, B or the standard renderer. Retention is transitional; it is
@@ -237,7 +237,7 @@ environment-variable flip nor a compatible DOM constitutes cutover acceptance.
 
 ### M5 — Delete Replaced Paths And Merge Redundant Tests
 
-Status: [~] M4 is verified. Retire B execution first, preserving the shared candidate-fact privacy policy and current A lifecycle/independent PDF checks; then remove replaced standard rendering and redundant tests.
+Status: [~] B execution/exclusive checks are retired; shared candidate-fact privacy, identity and actual-PDF repair contracts are retained. Final focused checks pass 155, with 7 skipped; six accepted snapshots recompile identically. The broad run retains one Chrome timeout (isolated rerun passed). Standard rendering and remaining redundant orchestration/tests still require removal.
 
 - [ ] Remove B authored-template execution, replaced uploaded-target rendering
       and duplicate orchestration/helpers whose responsibility now has one

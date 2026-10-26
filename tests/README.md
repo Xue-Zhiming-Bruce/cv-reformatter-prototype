@@ -21,8 +21,9 @@ live in `unit/` and `integration/`. Claude adapter request, timeout, strict-outp
 and live-gate checks live in `unit/test_design_provider.py`.
 Existing local results remain archival evidence, not a source of new runs.
 
-The CLI and service default to the selected A mainline. B and paired runs
-remain explicit comparisons; their regression checks remain until retirement.
+The CLI and service execute only the selected A mainline. Retired B/paired
+selections fail before I/O. Historical B comparisons remain in Git; shared
+privacy, provenance, lifecycle and actual-PDF repair contracts remain covered.
 
 The canonical `scripts/run_abc_live_matrix.py` now saves `/profiles/revisions`
 and writes the existing `resume-matrix-review-1.0` manifest, CSV, failed-result
@@ -37,7 +38,7 @@ structured projects. B/C share example facts and cannot independently establish
 cross-person target-contamination safety. Explicit
 source provenance is checked separately: `test_pipeline_loop.py` covers shared
 names/languages/composed rows versus target-only and hidden content, using real
-PDFs and the common A/B gate. Source overlap does not expand label exclusions.
+PDFs and the shared candidate-fact privacy gate. Source overlap does not expand label exclusions.
 Explicit
 `--target-evidence <artifact-directory>` validates the selected target's checksum
 before any source API call, reuses saved Adobe/normalized evidence and recompiles
@@ -120,8 +121,7 @@ into historical runs. These internal regression fixtures still pass a
 internal projection. CLI PDF checks cover the core fields, ordinary/blind custom
 sections, hidden-section filtering, title-only/link-only/description-only entries,
 and empty candidate history. The A content gate and independent product PDF
-validator both check the output. B/paired runs reject structured custom sections
-until that representation supports them. The regression target must have a
+validator both check the output. Retired B/paired execution is rejected. The regression target must have a
 measured two-column sidebar layout and multiple work entries for the role-gap/repair assertions;
 these cases do not claim support for an arbitrary target. The candidate is
 the retained public/fictional Resume E fixture. Missing bundles are skipped;

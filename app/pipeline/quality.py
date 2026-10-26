@@ -8,6 +8,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from app.ingestion.pdf_reader import read_pdf_text
+from app.pipeline.candidate_content import CandidateDocument
 from app.pipeline.rendering import _sha256, _line_stability, _html_text, _hyphen_free
 from app.pipeline.layout_state import C2LayoutState, Column
 from app.pipeline.layout_compiler import _below_heading_rule, _resolve_above_heading_rule
@@ -20,6 +21,107 @@ PDF_STRUCTURE_VALIDATION_VERSION = "pdf_structure/2"
 def _norm(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace(":", " ")).strip().casefold()
 
+
+PRIVACY_GATE_VERSION = "candidate_fact_privacy/2"
+
+
+def _candidate_fact_support(line: str, candidate: CandidateDocument) -> list[str]:
+    """Account for a target line using whole disclosed source values, not words."""
+    from urllib.parse import urlsplit
+
+    covered: set[int] = set()
+    sources: set[str] = set()
+    boundary = r"[\w@.+/#-]"
+    text = _norm(line)
+    fragment = re.sub(r"^(?:[•▪◦]|[-–—])\s+", "", text)
+
+    def cover(value: str, source: str) -> None:
+        value = _norm(value)
+        if value:
+            for match in re.finditer(rf"(?<!{boundary}){re.escape(value)}(?!{boundary})", text):
+                covered.update(range(match.start(), match.end()))
+                sources.add(source)
+
+    for leaf in candidate.leaves:
+        values = [leaf.text or ""]
+        if leaf.contact_item is not None:
+            values.append(leaf.contact_item.value)
+        if leaf.skill_group is not None:
+            values.extend([leaf.skill_group.label, *leaf.skill_group.skills])
+        for value in values:
+            cover(value, leaf.leaf_id)
+        link = leaf.contact_item.value if leaf.contact_item is not None and leaf.contact_item.field in {
+            "linkedin_url", "portfolio_url"
+        } else leaf.text if leaf.content_field == "link" else None
+        if link:
+            try:
+                parts = urlsplit(link)
+            except ValueError:
+                parts = None
+            if (
+                parts is not None and parts.scheme.lower() in {"http", "https"}
+                and parts.netloc and parts.path in {"", "/"}
+                and not parts.query and not parts.fragment
+                and link.endswith(parts.netloc + parts.path)
+            ):
+                alias = link[:-1] if parts.path else link + "/"
+                cover(alias, leaf.leaf_id)  # An HTTP origin's empty path and '/' are equivalent.
+                if leaf.text and leaf.text.endswith(link):
+                    cover(leaf.text[:-len(link)] + alias, leaf.leaf_id)
+        # Wrapped prose may occupy only part of its original source leaf.
+        if fragment and leaf.kind in {"summary_paragraph", "work_bullet", "additional_item"} and re.search(
+            rf"(?<!{boundary}){re.escape(fragment)}(?!{boundary})", _norm(leaf.text or "")
+        ):
+            return [leaf.leaf_id]
+    for index, item in enumerate(candidate.unroutable):
+        if item.disposition == "render":
+            cover(item.text, f"unroutable.{index}")
+    return sorted(sources) if sources and all(
+        index in covered or character in " ,;:|•▪◦–—-"
+        for index, character in enumerate(text)
+    ) else []
+
+
+def candidate_privacy_gate(
+    html: str, pdf: Path, target_pdf: Path, *, labels: set[str],
+    candidate: CandidateDocument | None = None,
+) -> dict[str, Any]:
+    """Block target-only facts; record disclosed candidate overlap separately.
+
+    Candidate input must be the registered, already-disclosed document, never
+    the target, output plan, or raw profile containing hidden values.
+    """
+    from app.ingestion.pdf_reader import read_pdf_text
+    from app.pipeline.rendering import _html_text
+
+    html_text, _ = _html_text(html)
+    normalized_html = _norm(html_text)
+    normalized_pdf = _norm(read_pdf_text(pdf))
+    excluded = {_norm(label) for label in labels}
+    target_lines = [
+        line.strip()
+        for line in read_pdf_text(target_pdf).splitlines()
+        if line.strip() and any(character.isalnum() for character in line)
+    ]
+    leaked: list[str] = []
+    checked: list[dict[str, Any]] = []
+    for line in target_lines:
+        token = _norm(line)
+        if token in excluded:
+            continue
+        hit = token in normalized_html or token in normalized_pdf
+        support = _candidate_fact_support(line, candidate) if hit and candidate is not None else []
+        checked.append({"line": line, "hit": hit, "candidate_content_ids": support})
+        if hit and not support:
+            leaked.append(line)
+    return {
+        "passed": not leaked,
+        "leaked_target_lines": leaked,
+        "checked_target_lines": checked,
+        "excluded_labels": sorted(excluded),
+        "policy_version": PRIVACY_GATE_VERSION,
+        "candidate_id": candidate.candidate_id if candidate is not None else None,
+    }
 
 def _pdf_flow_text(pdf: Path, column: Column | None = None) -> str:
     import pdfplumber

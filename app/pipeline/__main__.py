@@ -28,8 +28,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="measured LayoutTemplateSpec JSON; deterministic A preview or bounded --live A loop")
     parser.add_argument("--presentation-label-approval", type=Path)
     parser.add_argument("--out", type=Path)
-    parser.add_argument("--lane", choices=["a", "b", "both"], default="a",
-                        help="A is the selected mainline (default); B/both require explicit comparison selection")
+    parser.add_argument("--lane", choices=["a"], default="a",
+                        help="selected A implementation; authored B execution is retired")
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--max-model-requests", type=int,
                         help="global HTTP request cap including failures/retries, split equally across lanes")
@@ -45,14 +45,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("request limits must be positive and repair rounds nonnegative")
     if args.builder_reserve_requests < E5_BUILDER_MAX_REQUESTS:
         parser.error(f"builder reserve must be at least {E5_BUILDER_MAX_REQUESTS}")
-    lanes = (args.lane,) if args.lane != "both" else ("a", "b")
+    lanes = (args.lane,)
     try:
         profile = CandidateProfile.model_validate_json(args.candidate.read_text())
         if any(section.review_state == SectionReviewState.PENDING_REVIEW for section in profile.additional_sections):
             parser.error("custom sections pending recruiter review must be reviewed before preview")
         context = build_client_render_context(profile, blind_profile=args.blind_profile)
-        if context.additional_sections and "b" in lanes:
-            parser.error("structured additional sections require Lane A only")
         layout_spec = LayoutTemplateSpec.model_validate_json(args.layout_spec.read_text()) if args.layout_spec else None
         candidate = candidate_document_from_context(
             context, candidate_id=f"candidate-{profile_sha256(profile)[:16]}",

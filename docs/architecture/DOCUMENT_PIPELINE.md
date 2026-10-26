@@ -241,16 +241,19 @@ target and designer-template generation retain the approval-aware product path.
 | Evidence access, measurements, review | `evidence.py`, `measurement.py`, `review.py` |
 | Internal candidate projection and layout state | `candidate_content.py`, `layout_state.py` |
 | Layout compilation and render-plan binding | `layout_compiler.py`, `render_plan.py` |
-| Controlled HTML and authored-template boundaries | `html_renderer.py`, `authored_template.py` |
+| Controlled HTML rendering | `html_renderer.py` |
 | PDF export, fonts, and independent gates | `rendering.py`, `fonts.py`, `quality.py` |
 | Budgets, traces, version identities | `runtime.py` |
 
 Owner decision, October 22, 2026: use Lane A as the initial mainline for
 consolidation. Both `python -m app.pipeline` and `run_e5` default to A only.
-Lane A compiles structured layout state. Lane B's validated authored HTML/CSS
-remains available only through explicit `--lane b` / `--lane both` or service
-lane selection, preserving comparison and rollback evidence. Both consume the
-same reviewed candidate data. This is a development direction, not a universal
+Lane A compiles structured layout state. October 26 M5 retirement removes B
+authored-template execution and its exclusive Builder/repair/slot machinery.
+The CLI rejects `--lane b` / `--lane both`; `run_e5` rejects any selection other
+than exactly `("a",)` before I/O. Historical B source/evidence remain in Git.
+The unchanged shared candidate-fact privacy policy now belongs to `quality.py`
+(`candidate_fact_privacy/2`); historical lane schema values remain readable.
+This is a development direction, not a universal
 fidelity verdict or acceptance of generated output. `layout-state/1` and `CandidateDocument` are retained internal
 representations, not replacements for `LayoutTemplateSpec` or `CandidateProfile`.
 Historical schema names and class descriptions are retained for compatibility
@@ -266,8 +269,7 @@ Integration status, October 22, 2026:
   recruiter-detail rows remain separate. Hidden sections are filtered by the
   shared context mapper. CLI source sections still pending review block preview
   before projection, including hidden pending sections, matching the product
-  source-review requirement. B/paired inputs containing this shape fail before
-  creating a run. Template-specific custom-section placement, typography and
+  source-review requirement. Template-specific custom-section placement, typography and
   continuation still require parity before replacing the API renderer.
 - The internal render plan adds `heading_leaf_id` so candidate-owned headings
   are checked in actual HTML/PDF. An untitled entry is an HTML structure
@@ -558,8 +560,8 @@ Integration status, October 22, 2026:
   leaves still fail ownership closure. Completely empty work/education entries
   create no artificial facts; broader incomplete-profile/reflow parity remains
   part of the pre-cutover checks.
-- The retained `--live` model adapters and Lane B authored HTML are not newly
-  approved for production by this input consolidation or the initial A choice.
+- The retained `--live` model adapters are not newly approved for production
+  by this input consolidation or the initial A choice.
   The reviewed A/B outcomes support the chosen development direction; API
   replacement still requires the applicable contract, parity and output checks.
   The October 24 owner request authorizes the optional A API integration below,
@@ -667,8 +669,8 @@ Findings with unsupported metrics remain open and unmeasured, without paid causa
 attribution for known unsupported metrics. In live A, findings in section-owned
 regions may trigger a bounded typed layout trial despite uncertain measurement
 or attribution. Confirmed candidate-binding contradictions and confirmed
-within-tolerance measurements do not authorize such trials. B and offline
-scheduling retain their existing ownership policy.
+within-tolerance measurements do not authorize such trials. Offline scheduling
+retains its existing ownership policy.
 Attribution receives the exact validated proposal and content-free consumed row
 structure for the current render, including primitive effects and whether entry
 metadata placement is actually consumed. Model claims of renderer/plan limits
@@ -716,7 +718,7 @@ groups and contact values retain their source ownership. HTTP origin
 empty-path/slash equivalence is normalized without authorizing additional URL
 paths. Partial source coverage, unrelated word combinations and hidden/omitted
 values cannot excuse a target-line hit. The approved-label exclusion set stays
-independent and identical for A/B and probes. This preserves the existing
+independent and identical for A renders and probes. This preserves the existing
 line-granularity detection boundary; it is not a claim of universal leakage
 detection or candidate-field relationship validation. The policy is bound into
 proof configuration identity, requiring fresh proofs.

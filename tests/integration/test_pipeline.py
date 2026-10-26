@@ -18,7 +18,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.mark.parametrize("name,blind,lane", [
     ("Candidate Alpha", False, None), ("Candidate Beta", True, None),
-    ("Candidate Alpha", False, "b"), ("Candidate Alpha", False, "both"),
+    ("Candidate Alpha", False, "a"),
 ])
 def test_cli_uses_explicit_content_without_test_dependencies(
     tmp_path: Path, name: str, blind: bool, lane: str | None,
@@ -38,24 +38,23 @@ def test_cli_uses_explicit_content_without_test_dependencies(
         notice_period="30 days", salary_expectation="CONFIDENTIAL_SALARY",
         client_display_rules={"salary_expectation": "hide"},
     )
-    if lane not in {"b", "both"}:
-        additional = [
-            {"source_heading": "Projects", "source_block_id": "candidate-block-001",
-             "section_type": "projects", "entries": [
-                 {"title": "Useful Project", "links": ["https://example.test/project"],
-                  "description": ["Designed a useful component", "Released the component"]},
-                 {"links": ["https://example.test/notes"]},
-                 {"description": ["An entry with only a description"]},
-             ]},
-            {"source_heading": "Awards", "source_block_id": "candidate-block-002",
-             "section_type": "awards", "entries": [{"title": "Community Award"}]},
-            {"source_heading": "Private Projects", "source_block_id": "candidate-block-003",
-             "section_type": "projects", "disposition": "hide",
-             "entries": [{"title": "HIDDEN_PROJECT"}]},
-        ]
-        profile = profile.model_copy(update={
-            "additional_sections": [AdditionalSection.model_validate(section) for section in additional],
-        })
+    additional = [
+        {"source_heading": "Projects", "source_block_id": "candidate-block-001",
+         "section_type": "projects", "entries": [
+             {"title": "Useful Project", "links": ["https://example.test/project"],
+              "description": ["Designed a useful component", "Released the component"]},
+             {"links": ["https://example.test/notes"]},
+             {"description": ["An entry with only a description"]},
+         ]},
+        {"source_heading": "Awards", "source_block_id": "candidate-block-002",
+         "section_type": "awards", "entries": [{"title": "Community Award"}]},
+        {"source_heading": "Private Projects", "source_block_id": "candidate-block-003",
+         "section_type": "projects", "disposition": "hide",
+         "entries": [{"title": "HIDDEN_PROJECT"}]},
+    ]
+    profile = profile.model_copy(update={
+        "additional_sections": [AdditionalSection.model_validate(section) for section in additional],
+    })
     candidate_path.write_text(profile.model_dump_json())
     out_dir = tmp_path / "result"
     # Production must stay independent of repository test fixtures.
@@ -83,7 +82,7 @@ runpy.run_module('app.pipeline', run_name='__main__')
                                    (state_path.read_text() if state_path.exists() else ""))
     state = json.loads((out_dir / "e5_state.json").read_text())
     assert state["summary"]["terminal_state"] == "ready_for_owner_review"
-    selected = {"a", "b"} if lane == "both" else {lane or "a"}
+    selected = {"a"}
     assert set(state["lanes"]) == selected
     for unselected in {"a", "b"} - selected:
         assert not (out_dir / f"lane_{unselected}").exists()
@@ -91,7 +90,7 @@ runpy.run_module('app.pipeline', run_name='__main__')
     assert manifest["pipeline_phase"] == "e5"
     assert manifest["versions"] and all(item["sha256"] for item in manifest["versions"])
     assert manifest["state_history"][-1]["state"] == "ready_for_owner_review"
-    checked_lane = "b" if lane == "b" else "a"
+    checked_lane = "a"
     with pdfplumber.open(out_dir / f"lane_{checked_lane}/render_1.pdf") as pdf:
         text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     assert ("Candidate A" if blind else name) in text
@@ -109,21 +108,18 @@ runpy.run_module('app.pipeline', run_name='__main__')
     assert state["lanes"][checked_lane]["summary"]["probe_mode"] == "not_requested"
     assert state["lanes"][checked_lane]["content_shape_probes_passed"] is False
     gates = json.loads((out_dir / f"lane_{checked_lane}/hard_gates_render-target-lane{checked_lane.upper()}-v1.json").read_text())
-    if checked_lane == "a":
-        assert gates["details"]["content_gate"]["passed"] is True
-        from app.generation.content_validation import validate_generated_content
-        from app.generation.template_mapper import build_client_render_context
+    assert gates["details"]["content_gate"]["passed"] is True
+    from app.generation.content_validation import validate_generated_content
+    from app.generation.template_mapper import build_client_render_context
 
-        context = build_client_render_context(profile, blind_profile=blind)
-        report = validate_generated_content(context, pdf_path=out_dir / "lane_a/render_1.pdf")
-        assert report.passed, report.checks
-        if profile.additional_sections:
-            html = (out_dir / "lane_a/render_1.html").read_text()
-            assert "HIDDEN_PROJECT" not in text and "Private Projects" not in text
-            assert "<article" in html and "<li" in html
-            assert text.index("Projects") < text.index("Useful Project") < text.index("Awards")
-    else:
-        assert gates["details"]["diagnostics"]["pdf_presence"]["passed"] is True
+    context = build_client_render_context(profile, blind_profile=blind)
+    report = validate_generated_content(context, pdf_path=out_dir / "lane_a/render_1.pdf")
+    assert report.passed, report.checks
+    if profile.additional_sections:
+        html = (out_dir / "lane_a/render_1.html").read_text()
+        assert "HIDDEN_PROJECT" not in text and "Private Projects" not in text
+        assert "<article" in html and "<li" in html
+        assert text.index("Projects") < text.index("Useful Project") < text.index("Awards")
 
 
 def test_service_defaults_to_a_without_starting_b(tmp_path: Path) -> None:
@@ -167,7 +163,7 @@ def test_cli_blocks_pending_custom_review_before_output(
 
 
 @pytest.mark.parametrize("lane", ["b", "both"])
-def test_cli_rejects_structured_sections_in_unintegrated_b_lane(
+def test_cli_rejects_retired_authored_lane(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], lane: str,
 ) -> None:
     from app.pipeline.__main__ import main
@@ -184,7 +180,7 @@ def test_cli_rejects_structured_sections_in_unintegrated_b_lane(
               "--adobe-json", "unused.json", "--normalized", "unused.json",
               "--structure-draft", "unused.json", "--out", str(output), "--lane", lane])
     assert exc.value.code == 2
-    assert "structured additional sections require Lane A only" in capsys.readouterr().err
+    assert "invalid choice" in capsys.readouterr().err
     assert not output.exists()
 
 
@@ -200,7 +196,7 @@ def test_malformed_input_aborts_before_building(tmp_path: Path, monkeypatch, fie
     assert record["summary"]["abort"]["operation"] == "pipeline_input"
 
 
-@pytest.mark.parametrize("options", [{"lanes": ("a", "a")}, {"probe_candidates": {"../escape": None}}])
+@pytest.mark.parametrize("options", [{"lanes": ("a", "a")}, {"lanes": ("b",)}, {"lanes": ("a", "b")}, {"probe_candidates": {"../escape": None}}])
 def test_invalid_dispatch_cannot_create_output_files(tmp_path: Path, options: dict) -> None:
     out_dir = tmp_path / "result"
     with pytest.raises(ValueError):
@@ -912,7 +908,7 @@ def test_product_measured_font_palette_and_hidden_summary_reach_pdf(tmp_path: Pa
                    if prop["property"] in {"hidden_summary_heading", "font_face_css"})
 
 
-@pytest.mark.parametrize("repair", ["improve", "noop", "ambiguous", "ambiguous_single", "warning", "unbound", "renderer_claim", "unresolved", "compound", "unsafe_trial", "trial_noop", "dismissed_claim"])
+@pytest.mark.parametrize("repair", ["improve", "noop", "ambiguous", "ambiguous_single", "warning", "unbound", "renderer_claim", "unresolved", "compound", "unsafe_trial", "trial_noop", "dismissed_claim", "invalid_proposal", "accepted_missing"])
 def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repair: str,
 ) -> None:
@@ -928,12 +924,13 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
     for key, filename in (("adobe_json", ADOBE_RAW_FILENAME), ("normalized_evidence", NORMALIZED_LAYOUT_FILENAME)):
         shutil.copy2(inputs[key], tmp_path / filename)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-model-boundary")
-    monkeypatch.setenv("AGENTIC_MAX_REPAIR_ROUNDS", "1")
+    monkeypatch.setenv("AGENTIC_MAX_REPAIR_ROUNDS", "2" if repair == "accepted_missing" else "1")
     monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "12")
     monkeypatch.setenv("AGENTIC_MAX_TOOL_CALLS", "24")
     phases: list[str] = []
     measured_targets: list[float] = []
     captured_contexts: list[dict] = []
+    unmeasured_trial = repair in {"warning", "invalid_proposal"}
     if repair in {"improve", "noop"}:
         with pdfplumber.open(inputs["target_pdf"]) as document:
             first = document.pages[0].search("FirstTargetCompany")[0]["top"]
@@ -942,20 +939,27 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
 
     def builder(_budget, _trace, *, payload, images, proposal_id, audit):
         phases.append(audit.phase)
+        if repair == "invalid_proposal" and audit.phase == "repair":
+            return service.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[
+                service.E5LaneASection(section_node_id="section.99")])
+        if audit.phase == "initial":
+            width = 360 if repair in {"improve", "renderer_claim", "unresolved", "dismissed_claim", "accepted_missing"} else 80
+        elif repair == "accepted_missing":
+            width = 80 if proposal_id.endswith("r2") else 92
+        else:
+            width = 80 if repair in {"improve", "noop", "renderer_claim", "unresolved", "dismissed_claim", "trial_noop"} else 92
         return service.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[
-            service.E5LaneASection(section_node_id="section.02", heading_in_rail=True,
-                rail_label_width_pt=(360 if repair in {"improve", "renderer_claim", "unresolved", "dismissed_claim"} else 80)
-                if audit.phase == "initial" else (80 if repair in {"improve", "noop", "renderer_claim", "unresolved", "dismissed_claim", "trial_noop"} else 92)),
+            service.E5LaneASection(section_node_id="section.02", heading_in_rail=True, rail_label_width_pt=width),
         ])
 
     def reviewer(_images, **kwargs):
         return [service.DefectFinding(
             finding_id=kwargs["finding_id"], target_version=kwargs["target_version"],
             render_version=kwargs["render_version"], page=kwargs["page"], region="section.02.entry",
-            observation="Entry date placement differs from the target." if repair == "warning" else "Entry head spacing differs from the target. About me and contact provide context.",
-            suspected_dimension={"warning": "entry_meta_placement", "compound": "role_spacing and alignment", "trial_noop": "entry_meta_placement"}.get(repair, "role_gap"),
-            requested_measurement=service.MeasurementRequest(request_id="entry-gap", metric="unsupported" if repair == "warning" else "role_gap", page=1,
-                region_id="section.02.entry", intent={"warning": "compare date metadata placement beside the entry title", "unbound": "compare ordinary body color"}.get(repair, "vertical gap between the first two job entry heads")),
+            observation="Entry date placement differs from the target." if unmeasured_trial else "Entry head spacing differs from the target. About me and contact provide context.",
+            suspected_dimension=(f"role_gap::{kwargs["finding_id"]}" if repair == "accepted_missing" else {"warning": "entry_meta_placement", "invalid_proposal": "entry_meta_placement", "compound": "role_spacing and alignment", "trial_noop": "entry_meta_placement"}.get(repair, "role_gap")),
+            requested_measurement=service.MeasurementRequest(request_id="entry-gap", metric="unsupported" if unmeasured_trial else "role_gap", page=1,
+                region_id="section.02.entry", intent={"warning": "compare date metadata placement beside the entry title", "invalid_proposal": "compare date metadata placement beside the entry title", "unbound": "compare ordinary body color"}.get(repair, "vertical gap between the first two job entry heads")),
             severity="high", confidence=.9, reviewer="llm",
         )]
 
@@ -968,7 +972,7 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
                 for index, finding in enumerate(findings)]
         assert results and all(result.status == "confirmed" for result in results), results
         measured_targets.extend(result.target_value_pt for result in results)
-        expected_width = 360 if repair != "noop" and audit.render_version.endswith("v1") else 80
+        expected_width = 360 if repair not in {"noop", "invalid_proposal"} and audit.render_version.endswith("v1") else 80
         assert current_representation.sections[0].rail_label_width_pt == expected_width
         return [service.LiveAttributionHypothesis(finding_id=finding.finding_id,
             attribution={"unresolved": "unresolved", "dismissed_claim": "no_defect"}.get(repair, "template_compilation"),
@@ -1009,6 +1013,24 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
             return result
 
         monkeypatch.setattr(quality, "content_gate", missing_trial_content)
+    if repair == "accepted_missing":
+        original_controller = service.MeasureController
+        counts = {}
+        first_request = []
+        class MissingAcceptedEvidence(original_controller):
+            def execute(self, request, *, current_pdf):
+                if not first_request:
+                    first_request.append(request.request_id)
+                counts[request.request_id] = counts.get(request.request_id, 0) + 1
+                count = counts[request.request_id]
+                values = (30., 25.) if request.request_id == first_request[0] else (20., 15.)
+                if count <= 2:
+                    return service.MeasurementResult(request_id=request.request_id, status="confirmed",
+                        current_value_pt=values[count-1], target_value_pt=0., delta_pt=values[count-1],
+                        method="role_gap/scripted-test")
+                return service.MeasurementResult(request_id=request.request_id, status="evidence_missing",
+                    reason="accepted anchor vanished", method="role_gap/scripted-test")
+        monkeypatch.setattr(service, "MeasureController", MissingAcceptedEvidence)
     try:
         html, pdf, report = render_agentic(context=build_client_render_context(profile), layout_spec=spec,
             target_pdf=inputs["target_pdf"], evidence_dir=tmp_path, output_dir=tmp_path / "run")
@@ -1018,6 +1040,23 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
     lane = json.loads((tmp_path / report["run_directory"] / "e5_state.json").read_text())["lanes"]["a"]
     measurement_ids = {result["request_id"] for result in lane["measurement_results"]}
     assert measurement_ids and all(item["measurement_request_id"] in measurement_ids for item in lane["attributions"]), lane
+    if repair == "invalid_proposal":
+        rejected = lane["builder_candidates"][-1]
+        assert phases == ["initial", "repair"] and len(lane["render_versions"]) == 1
+        assert rejected["outcome"] == "validator_rejected" and rejected["candidate_render_version"] is None
+        assert "section.99" in rejected["validation"]["error"]
+        assert (tmp_path / report["run_directory"] / "lane_a" / rejected["artifact"]).is_file()
+        assert report["selected_version"] == lane["render_versions"][0]["version_id"]
+        assert html.name == "render_1.html" and pdf.name == "render_1.pdf"
+        return
+    if repair == "accepted_missing":
+        assert phases == ["initial", "repair", "repair"]
+        assert len(lane["render_versions"]) == 3 and lane["render_versions"][1]["promoted"]
+        assert not lane["render_versions"][2]["promoted"]
+        assert report["selected_version"] == lane["active_render_version"] == lane["render_versions"][1]["version_id"]
+        assert any("accepted_region_regressed_rolled_back" in item for item in lane["attempted_strategies"])
+        assert html.name == "render_2.html" and pdf.name == "render_2.pdf"
+        return
     assert phases == ["initial", "repair"], lane
     assert len(lane["render_versions"]) == 2 and lane["repair_attempts"]
     initial, attempted = lane["render_versions"]
@@ -1047,8 +1086,14 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
     elif repair in {"improve", "renderer_claim", "unresolved", "dismissed_claim"}:
         before, after = lane["measurement_results"][:2]
         assert abs(before["delta_pt"]) - abs(after["delta_pt"]) > 5
+        assert before["request_id"] == after["request_id"]
         assert attempted["promoted"] and report["selected_version"] == attempted["version_id"], lane
         assert html.name == "render_2.html" and pdf.name == "render_2.pdf"
+        if repair == "improve":
+            trace = json.loads((tmp_path / report["run_directory"] / "lane_a/trace.json").read_text())
+            actual = [item for item in trace if item.get("agent") == "measure_controller" and item.get("action") == "measurement"]
+            assert lane["budget_state"]["calls_by_tool"].get("compare_pdf_geometry", 0) == len(actual) > 0
+            assert not lane["open_findings"]
         if repair in {"renderer_claim", "unresolved"}:
             assert all(item["hypothesis_status"] == "unresolved" for item in lane["attributions"]), lane
         if repair == "renderer_claim":

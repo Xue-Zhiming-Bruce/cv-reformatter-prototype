@@ -16,7 +16,7 @@ from app.pipeline.evidence import EvidenceRef, SelfReportedStatus, StructuralRel
 from app.pipeline.html_renderer import RENDERER_VERSION, render_layout_template
 from app.pipeline.layout_state import C2LayoutState
 from app.pipeline.runtime import RunBudget
-from app.pipeline import authored_template, quality, review, service
+from app.pipeline import quality, review, service
 from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from app.template_analysis.schemas import LayoutTemplateSpec
@@ -64,7 +64,7 @@ def agentic_renderer_version() -> str:
         "review_measurement_contract": review.REVIEW_MEASUREMENT_CONTRACT_VERSION,
         "review_presentation_facts": review.REVIEW_PRESENTATION_FACTS_VERSION,
         "pdf_structure_checks": quality.PDF_STRUCTURE_VALIDATION_VERSION,
-        "candidate_fact_privacy": authored_template.PRIVACY_GATE_VERSION,
+        "candidate_fact_privacy": quality.PRIVACY_GATE_VERSION,
         "client_disclosure": template_mapper.CLIENT_DISCLOSURE_VERSION,
         "renderer": RENDERER_VERSION, "settings": {**_settings(), "max_request_bytes": MAX_REQUEST_BYTES},
         "models": service._model_identity(),

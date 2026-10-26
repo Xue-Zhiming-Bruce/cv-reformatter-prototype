@@ -307,6 +307,12 @@ October 26. This bounded acceptance does not certify every layout class or
 general Reviewer reliability; E short/medium proof-label misses and the
 post-completion SIGBUS remain in the evaluation report.
 
+The diagnostic CLI/service now accepts A only. Authored B execution is retired;
+B/paired selections fail explicitly before input reads or output creation.
+Shared privacy policy and historical serialized lane identities remain intact.
+The explicit standard product renderer is still retained pending the remaining
+M5 migration; it is never a runtime fallback.
+
 ### A template/input support boundary — renderer /17, compiler 10
 
 `LayoutTemplateSpec` schema 2.0 remains provider-neutral. The table separates

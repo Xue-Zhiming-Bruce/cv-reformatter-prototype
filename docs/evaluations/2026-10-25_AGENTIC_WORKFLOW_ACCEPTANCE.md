@@ -1123,3 +1123,93 @@ Actual rollback uses a Git archive of the tracked app at 4766346 (archive SHA-25
 
 
 M4 complete backend verification on a68bc35: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -p no:cacheprovider tests/unit tests/integration -q --tb=short` passes **862, with 35 skipped and five existing warnings**, 788.19s. [Full log](../../tests/test_results/pytest/20261026T090905Z_m4_full_backend.txt). The canonical matrix subsequently reuses the service's `generation_strategy()` for manifest metadata instead of maintaining a contradictory default; [three runner/review checks](../../tests/test_results/pytest/20261026T091220Z_m4_matrix_metadata.txt) pass. No frontend, local secret configuration, deployed service, accepted PDF or source/profile/proof file is changed. M5 remains required; the retained explicit standard/B paths have not yet been removed.
+
+
+#### M5 B Retirement — Coverage Ownership Audit
+
+Production B entry points are only the explicit `run_e5(lanes=...)`/CLI branches; target APIs never select B. Retired owners are `AuthoredTemplateCandidate` validation/fill/HTML/Chrome execution, the B Builder/prompt/repair attribution and slot-accounting repair. A retains the unchanged shared candidate-fact privacy policy in `quality.py`; its three prompt hashes and six accepted HTML/PDF identities are checked across retirement. Shared model-route aliases and historical audit/state schema values are independent compatibility contracts and remain.
+
+Retirement risk/check: preserve current A API proof/reproof/approval/failure/rollback; actual-PDF style/content/shape/continuation tests; exact candidate-provenance/label/privacy cases. Migrate validator rejection, repeated measurement/tool accounting, closed-ledger dedup and missing accepted-region evidence into the existing active `test_agentic_product_template_measures_repairs_and_selects_accepted_version` table. The A-specific version-bound rollback trace case remains. Shared local corpus checks lose only their B selection; they are retained rather than deleted because the bundle is unavailable.
+
+| Declaration in `tests/integration/test_pipeline_loop.py` | Disposition / remaining owner |
+| --- | --- |
+| `test_accounting_repair_maps_missing_skills_to_real_region_and_page` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_authored_accounting_is_complete_and_fails_on_missing_leaves` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_authored_full_page_pdf_keeps_declared_size_and_font` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_authored_rendering_uses_a_network_disabled_chrome_environment` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_authored_shell_uses_full_page_geometry_without_hidden_scale` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_authored_slot_carries_no_token_and_no_free_text` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_authored_template_accepts_known_presentation_label_marker` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_authored_template_rejects_direct_fixed_visible_text` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_authored_template_rejects_unknown_presentation_label_marker` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_builder_entries_receive_identical_initial_payload_and_image_hashes` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_candidate_token_syntax_fails_closed_in_every_slot_region` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_every_lane_b_repair_gets_a_minimal_boundary` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_exact_candidate_accounting_failure_enters_repair_with_gate_evidence` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_hard_gate_repair_inputs_never_convert_uncertain_or_lane_a_gates` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_label_marker_and_candidate_slot_fill_from_their_own_sources` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_lane_b_can_opt_into_thinking_without_changing_other_live_roles` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_lane_b_candidate_facts_come_only_from_the_render_context` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_lane_b_candidate_text_cannot_inject_html` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_lane_b_candidate_values_are_never_rescanned_as_slot_syntax` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_lane_b_metadata_fields_are_restricted_not_free_text` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_lane_b_rejects_target_person_literals` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_lane_b_rejects_unsafe_content_and_undeclared_slots` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_lane_b_routes_confirmed_presentation_residual_directly_to_builder` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_presentation_label_text_is_escaped_and_never_reparsed` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_residual_or_malformed_label_marker_fails_closed` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_reviewer_failure_does_not_starve_shell_confirmed_gate_repair` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_run_e5_accepted_region_recheck_fails_closed_on_missing_evidence` | C — existing active A repair/measurement/rollback/acceptance boundary absorbs the shared invariant; retired B-specific machinery has no supported caller. |
+| `test_run_e5_deduped_repair_does_not_reopen_in_open_findings` | C — existing active A repair/measurement/rollback/acceptance boundary absorbs the shared invariant; retired B-specific machinery has no supported caller. |
+| `test_run_e5_measurement_tool_count_matches_actual_measurements` | C — existing active A repair/measurement/rollback/acceptance boundary absorbs the shared invariant; retired B-specific machinery has no supported caller. |
+| `test_run_e5_offline_lane_b_authored_template_loop` | D — protects retired B-only template/slot/attribution/execution or A/B comparison; no remaining product owner for that behavior. Independent A content/escaping/privacy/lifecycle checks remain. |
+| `test_run_e5_pdf_presence_failure_is_diagnostic_and_owner_reviewable` | C — existing active A repair/measurement/rollback/acceptance boundary absorbs the shared invariant; retired B-specific machinery has no supported caller. |
+| `test_run_e5_promoted_render_becomes_active_and_best_matches_artifact` | C — existing active A repair/measurement/rollback/acceptance boundary absorbs the shared invariant; retired B-specific machinery has no supported caller. |
+| `test_run_e5_rejected_render_stays_in_history_and_next_round_uses_old_active` | C — existing active A repair/measurement/rollback/acceptance boundary absorbs the shared invariant; retired B-specific machinery has no supported caller. |
+| `test_run_e5_repeats_the_identical_measurement_after_repair` | C — existing active A repair/measurement/rollback/acceptance boundary absorbs the shared invariant; retired B-specific machinery has no supported caller. |
+| `test_validator_rejected_builder_candidate_is_auditable_but_never_active` | C — existing active A repair/measurement/rollback/acceptance boundary absorbs the shared invariant; retired B-specific machinery has no supported caller. |
+
+R/F: keep measured-label provenance/approval identity, source drift, audit secrecy/failure/isolation, ledger state, candidate-binding lineage and exact privacy exclusions. Remove only authored-template assertions from mixed tests; retain the shared assertions. `test_lane_b_content_free_shape_and_footprint_contracts` becomes an A Builder input contract because those exact content-free payload fields are still used by A. CLI retired-lane and before-I/O dispatch negatives fail on the old implementation as intended.
+
+
+M5 retirement preserves the candidate-fact privacy policy AST exactly (apart
+from removing its import from its new owning module). Builder/Reviewer/Attribution
+prompt bytes remain unchanged at the three previously recorded hashes.
+[Fresh selected-proposal replay](../../tests/test_results/pytest/20261026T125840Z_m5_accepted_recompile.txt)
+compiles/binds/renders all six saved templates and contexts under /17 and reapplies
+each selected typed proposal: six exact accepted HTML matches and unchanged
+accepted PDF hashes, zero model calls/exports. The local parity record now
+records the exact context, template, proposal-audit and original-state paths.
+This does not create a new proof approval or claim new live-model evidence.
+
+
+B retirement final verification on 269e48f plus the reviewed retirement diff:
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -p no:cacheprovider` over
+`test_pipeline_loop.py`, `test_pipeline.py` and `test_pipeline_evidence.py`
+records [261 passed, 7 skipped, 1 failed](../../tests/test_results/pytest/20261026T125810Z_m5_b_retirement_clean.txt),
+567.67s, with one existing event-loop warning. The only failure is an actual
+120-second pinned-Chrome export timeout in the sidebar contact case, recorded
+as `builder_initial_failed`, with stable source identity. Its
+[isolated rerun](../../tests/test_results/pytest/20261026T130240Z_m5_sidebar_diagnostic.txt)
+passes (1 passed, 90 deselected, 6.09s); no source/test change or retry policy
+was introduced to hide it. This broad command is not a green result.
+
+The [final clean focused command](../../tests/test_results/pytest/20261026T130640Z_m5_b_focused_final.txt)
+passes **155, with 7 skipped and the same existing warning**, 61.59s. It covers
+the complete shared loop module, positive CLI/default/blind/explicit-A, retired
+B/paired and before-I/O dispatch negatives, and the real-PDF `improve`,
+`invalid_proposal` and `accepted_missing` cases. The valid prior
+[accepted-region mutation control](../../tests/test_results/pytest/20261026T094507Z_accepted_hold_negative.txt)
+fails exactly at third-version promotion when the production hold guard is
+disabled. Earlier migration-fixture failures (093122/094248/095058) remain
+historical evidence; they are not relabeled green. The 093122 API subset passes
+18 and the corrected rejected-trial case passes separately at 095340.
+The initial command in this session used an incorrect evidence-test path and
+ran no tests; its saved log is not validation evidence.
+
+B authored execution/exclusive checks are retired. Production deletion and
+privacy relocation: net -1458 lines; canonical regression changes: net -1138
+lines. Runtime model-route aliases and historical schema lane values remain
+compatible. README, architecture, API/test contracts and the active roadmap
+now describe A-only diagnostic execution. M5 still requires standard renderer
+and remaining orchestration/test consolidation; M6/B0/B1 are not closed.

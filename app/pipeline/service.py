@@ -160,55 +160,6 @@ E5_LANE_A_BUILDER_INSTRUCTIONS = (
     "complete replacement proposal. It is null only for the initial build."
 )
 
-E5_LANE_B_BUILDER_INSTRUCTIONS = (
-    "You are the Lane B Builder of a resume-layout experiment.\n"
-    "Representation: a constrained AUTHORED HTML/CSS template with typed\n"
-    "candidate slots. You output ONE typed AuthoredTemplateCandidate:\n"
-    "HTML (slot tokens only, no values), CSS, and typed slots declared by\n"
-    "CATEGORY only (no token strings, no free-text fields).\n"
-    "There are NO free-text metadata fields (no rationale, no region lists,\n"
-    "no pagination prose, no expected measurements, no slot descriptions).\n"
-    "For this E5 lane evidence_refs must be the empty list []. The shell\n"
-    "already persists the evidence package; do not copy its ids here.\n"
-    "Slot vocabulary (exactly these tokens):\n"
-    "{{candidate:name}}, {{candidate:contact}}, and repeating regions\n"
-    "{{each:summary}}/{{each:experience}}/{{each:education}}/{{each:skills}}/"
-    "{{each:languages}}/{{each:certifications}}/{{each:additional}} closed\n"
-    "with {{/each}}; inside a region use {{item}}, {{item_head}},\n"
-    "{{item_detail}}, {{item_meta}}, {{item_bullets}}, {{item_text}}.\n"
-    "`{{item_bullets}}` already expands to <li> nodes whose source text owns\n"
-    "its bullet glyph. Put it directly inside a <ul>, set list-style:none,\n"
-    "and NEVER add a native, background, image, or pseudo-element marker.\n"
-    "For header rules, preserve the measured target topology: separate rule\n"
-    "segments above and below a name must keep the name-height gap. NEVER\n"
-    "merge them into a continuous or page-spanning rail.\n"
-    "When `target_body_text_color_context` is present, use its measured\n"
-    "dominant_color_hex for ordinary body copy only. Do not use it to split\n"
-    "or reinterpret the atomic candidate:name slot, or to overwrite distinct\n"
-    "heading, name, or rule styles.\n"
-    "Missing optional fields must not leave broken visual artifacts (empty\n"
-    "regions render nothing). Long content must not disappear.\n"
-    "The shell REJECTS: JavaScript, event handlers, iframe/object/embed/\n"
-    "form/video/audio/canvas, remote or network URLs, src/href attributes,\n"
-    "CSS imports, url() functions, data: URLs, HTML or CSS comments, the\n"
-    "CSS content: property, any target-person literal, any hardcoded\n"
-    "candidate fact, and any undeclared slot token.\n"
-    "Fixed visible TEXT is not allowed at all: no letter or digit may appear\n"
-    "as a literal text node (HTML tag/class/attribute names and CSS are\n"
-    "fine). The only visible fixed text you may render is a presentation\n"
-    "label, referenced as {{label:<label_id>}} using a label_id from the\n"
-    "shell's presentation_labels catalog in your evidence package; the shell\n"
-    "owns the text and escapes it. An id you were not given is rejected.\n"
-    "You never see or edit candidate values; the shell fills your slots from\n"
-    "the reviewed candidate render context. You never approve delivery.\n"
-    "Base the design on the target page images and the structure draft you\n"
-    "are given. On repair calls, `current_representation` is the exact\n"
-    "validated template that produced the repair-base render; modify it and\n"
-    "return one complete replacement template. Obey any `region_repair_context`:\n"
-    "change only its allowed_changes, and preserve every listed neighboring\n"
-    "property unless a corresponding measurement/evidence authorizes that\n"
-    "change. It is null only for the initial build."
-)
 
 E5_ATTRIBUTION_INSTRUCTIONS = (
     "You are the independent Attribution Investigator of a resume-layout\n"
@@ -260,13 +211,6 @@ E5_LANE_REPAIR_SURFACE: dict[str, str] = {
         "express is a template_compilation defect owned by this Builder; a\n"
         "difference they cannot express is the shell's representation\n"
         "capability gap, owned by nobody the loop can call."
-    ),
-    "b": (
-        "Lane B — constrained authored HTML/CSS template with typed candidate\n"
-        "slots. The Builder owns the whole template, so which candidate leaves\n"
-        "render (and how) is template_compilation owned by this Builder;\n"
-        "no_target_candidate_facts failures are never builder-ownable. Template\n"
-        "safety is enforced before rendering by the authored-template validator."
     ),
 }
 
@@ -347,7 +291,7 @@ def _candidate_review_scope(candidate: Any, labels: list[PresentationLabel]) -> 
     }
 
 def _slot_shape_contract() -> dict[str, Any]:
-    """Content-free description of the authored shell's existing bindings."""
+    """Content-free candidate binding shape supplied to the A Builder."""
     return {
         "candidate:name": {"type": "string", "atomic": True},
         "candidate:contact": {
@@ -949,33 +893,6 @@ def _candidate_compatible_draft(
         "self_reported": draft.self_reported.model_dump(mode="json"),
     }
 
-def _lane_b_repair_boundary(
-    finding: DefectFinding,
-    *,
-    candidate: Any,
-    missing_leaf_ids: list[str] | None = None,
-    body_color_context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    missing = list(missing_leaf_ids or [])
-    by_id = {leaf.leaf_id: leaf for leaf in candidate.leaves}
-    kinds = sorted({by_id[leaf_id].kind for leaf_id in missing if leaf_id in by_id})
-    accounting = finding.suspected_dimension == "hard_gate_content"
-    return {
-        "selected_region": finding.region,
-        "affected_page": finding.page,
-        "allowed_changes": (
-            ["bind the specified missing leaves through the correct existing slot token"]
-            if accounting else [f"repair only {finding.region}:{finding.suspected_dimension}"]
-        ),
-        "preserve_unless_measured": [
-            "typography", "colors", "spacing", "header",
-            "unrelated_sections_and_layout",
-            {"ordinary_body_color": body_color_context} if body_color_context else {},
-        ],
-        "affected_leaf_kinds": kinds,
-        "missing_leaf_ids": missing,
-        "representation_limits": _slot_shape_contract(),
-    }
 
 def _e5_builder_evidence_package(
     *,
@@ -999,16 +916,13 @@ def _e5_builder_evidence_package(
     initial_compact: bool = False,
     candidate_compatible_labels: dict[str, str] | None = None,
     body_color_context: dict[str, Any] | None = None,
-    missing_leaf_ids: list[str] | None = None,
-    compact: bool = False,
 ) -> dict[str, Any]:
     """One representation-neutral Builder evidence package.
 
-    Both lanes receive this exact data shape and the same target images. Only
-    their output schema/instructions differ. Repair calls additionally receive
+    Initial and repair calls share this data shape. Repair calls additionally receive
     the current render images outside this JSON package and the exact validated
     representation that produced them. `presentation_labels` is the SAME
-    shell-owned catalog for both lanes: the only visible fixed text a template
+    shell-owned catalog: the only visible fixed text a template
     may carry, referenceable by `label_id` only.
     """
     package = {
@@ -1055,86 +969,24 @@ def _e5_builder_evidence_package(
         package["candidate_compatible_labels"] = candidate_compatible_labels
     if body_color_context is not None:
         package["target_body_text_color_context"] = body_color_context
-    if not compact:
-        package["structure_draft"] = (
-            _candidate_compatible_draft(draft, candidate_review_scope or {})
-            if initial_compact else draft.model_dump(mode="json")
-        )
-        package["underlying_evidence_summary"] = {
-            "page_size_pt": list(page_size),
-            "state_sections": [
-                {
-                    "node_id": node.node_id,
-                    "kind": node.kind,
-                    "sources": getattr(node.binding, "sources", None) if node.binding else None,
-                }
-                for node in state.nodes
-                if node.kind == "section"
-            ],
-            "sidebar_rules": derived.get("sidebar_rules"),
-            "sidebar_labels": derived.get("sidebar_labels"),
-        }
-    elif findings and findings[0].requested_measurement.metric == "header_vertical_rule_geometry":
-        header_claim = next(
-            (
-                claim for claim in draft.structure
-                if "header" in claim.statement.casefold()
-                and len(re.findall(r"(\d+(?:\.\d+)?)\s*pt[^.;]*?weight\s*(\d+)", claim.statement, re.I)) >= 2
-            ),
-            None,
-        )
-        typography = (
-            [
-                {"line": index, "font_size_pt": float(size), "font_weight": int(weight)}
-                for index, (size, weight) in enumerate(
-                    re.findall(
-                        r"(\d+(?:\.\d+)?)\s*pt[^.;]*?weight\s*(\d+)",
-                        header_claim.statement,
-                        re.I,
-                    )[:2],
-                    1,
-                )
-            ]
-            if header_claim else []
-        )
-        package["region_repair_context"] = {
-            "selected_region": "header_name",
-            "affected_page": findings[0].page,
-            "structure_claim": (
-                {
-                    "claim_id": header_claim.claim_id,
-                    "relation": header_claim.relation,
-                    "evidence_ids": [ref.evidence_id for ref in header_claim.evidence],
-                }
-                if header_claim else None
-            ),
-            "target_name_typography": typography,
-            "region_images": {
-                "target": "target_images",
-                "current_render": "current_render_images",
-                "scope": "page 1 top 25% original-resolution crop",
-            },
-            "allowed_changes": ["header_vertical_rule_dom_css"],
-            "preserve_unless_measured": [
-                "current_name_font_size",
-                "current_name_font_weight",
-                "current_name_color",
-                "current_name_letter_spacing",
-                "unrelated_sections_and_layout",
-                {"ordinary_body_color": body_color_context} if body_color_context else {},
-            ],
-            "affected_leaf_kinds": ["header_field"],
-            "representation_limits": {
-                "candidate:name": (
-                    "one atomic slot; do not simulate separate first/last-name typography"
-                )
-            },
-        }
-    elif compact and findings and candidate is not None:
-        package["region_repair_context"] = _lane_b_repair_boundary(
-            findings[0], candidate=candidate, missing_leaf_ids=missing_leaf_ids,
-            body_color_context=body_color_context,
-        )
+    package["structure_draft"] = (
+        _candidate_compatible_draft(draft, candidate_review_scope or {})
+        if initial_compact else draft.model_dump(mode="json")
+    )
+    package["underlying_evidence_summary"] = {
+        "page_size_pt": list(page_size),
+        "state_sections": [
+            {
+                "node_id": node.node_id,
+                "kind": node.kind,
+                "sources": getattr(node.binding, "sources", None) if node.binding else None,
+            }
+            for node in state.nodes
+            if node.kind == "section"
+        ],
+        "sidebar_rules": derived.get("sidebar_rules"),
+        "sidebar_labels": derived.get("sidebar_labels"),
+    }
     return package
 
 def _e5_gate_classification(
@@ -1179,11 +1031,6 @@ def _e5_gate_classification(
                 "historical ceiling note (rail_heading, rail_label_width_pt, "
                 "rail_label_align, rendered rail geometry) is not verified here"
             )
-    if lane == "b" and not gates.get("no_target_candidate_facts", True):
-        result["privacy_failure"] = (
-            "unresolved" if privacy_labels_symmetric else "gate_false_positive_or_boundary_unresolved"
-        )
-        result["privacy_labels_symmetric"] = privacy_labels_symmetric
     return result
 
 def _e5_hard_gate_record(
@@ -1325,107 +1172,6 @@ def _candidate_role_page(candidate: Any, role: str, current_pdf: Path) -> int:
                 return page_number
     return 1
 
-def _e5_gate_repair_items(
-    lane: str,
-    target_id: str,
-    render_version: str,
-    current_gates: dict[str, Any],
-    *,
-    candidate: Any | None = None,
-    current_pdf: Path | None = None,
-) -> list[tuple[DefectFinding, MeasurementResult, MeasurementRequest, AttributionRecord]]:
-    """Deterministic repair input for exact Lane B slot-accounting failures.
-
-    PDF presence is observational in this route-finding experiment because
-    letter spacing and multi-column reading order make flattened-text matching
-    unreliable. Lane A is NEVER converted: its
-    `content_shapes_match_evidence` failure IS a recorded capability gap (see
-    `_e5_content_shape_capability_gaps`), so a builder input would hand the
-    Builder a property the fixed renderer does not consume — an unreachable
-    repair. That ownerless-by-design state is reported through
-    `_e5_gate_classification`, never fabricated into an owning layer. The Lane
-    B accounting evidence is reused verbatim with an explicit
-    `AttributionRecord` (template_compilation / confirmed / builder) — no second
-    defect, attribution, or state model. Privacy failures and observational
-    quality warnings are never converted automatically."""
-    if lane != "b":
-        return []
-    items: list[tuple[DefectFinding, MeasurementResult, MeasurementRequest, AttributionRecord]] = []
-    # PDF text presence is deliberately observational in E5: letter spacing
-    # and multi-column reading order can split text that is visibly present.
-    # Only the exact authored-slot accounting may create an automatic repair.
-    for gate_name, missing_key in (("candidate_content_accounting", "missing_leaves"),):
-        details = current_gates.get(gate_name) or {}
-        missing = [str(item) for item in (details.get(missing_key) or [])]
-        if details.get("passed") is not False or not missing:
-            continue
-        leaf_by_id = {
-            leaf.leaf_id: leaf for leaf in getattr(candidate, "leaves", [])
-        }
-        roles = {
-            leaf_by_id[leaf_id].source
-            for leaf_id in missing if leaf_id in leaf_by_id and leaf_by_id[leaf_id].source
-        }
-        region = next(iter(roles)) if len(roles) == 1 else gate_name
-        affected_page = (
-            _candidate_role_page(candidate, region, current_pdf)
-            if candidate is not None and current_pdf is not None and len(roles) == 1
-            else 1
-        )
-        request_id = f"gate-{gate_name}-{render_version}"
-        request = MeasurementRequest(
-            request_id=request_id,
-            metric="role_gap",
-            page=affected_page,
-            intent=(
-                f"verbatim presence of the candidate leaves recorded missing by "
-                f"the {gate_name} gate in the final PDF text"
-            ),
-        )
-        finding = DefectFinding(
-            finding_id=f"gate-{gate_name}-{render_version}",
-            target_version=target_id,
-            render_version=render_version,
-            page=affected_page,
-            region=region,
-            observation=(
-                f"{gate_name} failed on this render: {len(missing)} candidate "
-                f"leaves missing from the final PDF ({', '.join(missing[:6])})"
-            ),
-            suspected_dimension="hard_gate_content",
-            requested_measurement=request,
-            severity="high",
-            confidence=1.0,
-            reviewer="scripted",
-        )
-        result = MeasurementResult(
-            request_id=request_id,
-            status="confirmed",
-            target_value_pt=0.0,
-            current_value_pt=float(len(missing)),
-            delta_pt=float(len(missing)),
-            method="candidate_content_accounting_missing/1",
-            warnings=[
-                "repair input derived from the shell's OWN gate record, not from "
-                "a reviewer claim; the same gate is re-measured on any candidate",
-            ],
-        )
-        attribution = AttributionRecord(
-            finding_id=finding.finding_id,
-            render_version=render_version,
-            measurement_request_id=request_id,
-            attribution="template_compilation",
-            hypothesis_status="confirmed",
-            repair_owner="builder",
-            evidence=[request_id],
-            reason=(
-                f"the {gate_name} hard gate failed with recorded missing leaves; "
-                "the authored template owns which leaves render, so the repair "
-                "input is builder-owned WITHOUT live attribution"
-            ),
-        )
-        items.append((finding, result, request, attribution))
-    return items
 
 def _e5_quarantine_eligibility(
     candidate_version: RenderVersion,
@@ -1629,29 +1375,6 @@ def _e5_default_attribution(
         ),
     )
 
-def _e5_lane_b_attribution(
-    finding: DefectFinding,
-    result: MeasurementResult,
-    request: MeasurementRequest,
-) -> AttributionRecord:
-    """Lane B owns its whole presentation template; a confirmed visual
-    mismatch can go straight back to its Builder."""
-    if (
-        result.status == "confirmed"
-        and result.delta_pt is not None
-        and abs(result.delta_pt) > E2_IMPROVEMENT_TOLERANCE_PT
-    ):
-        return AttributionRecord(
-            finding_id=finding.finding_id,
-            render_version=finding.render_version,
-            measurement_request_id=request.request_id,
-            attribution="template_compilation",
-            hypothesis_status="confirmed",
-            repair_owner="builder",
-            evidence=[result.request_id],
-            reason="Lane B's Builder owns the complete authored presentation template.",
-        )
-    return _e5_default_attribution(finding, result, request)
 
 class LiveAttributionBindingError(ValueError):
     """The live attribution batch did not return exactly ONE hypothesis per
@@ -2338,25 +2061,7 @@ def _scripted_lane_a_proposal(state: Any, derived: dict[str, Any]) -> LaneAStruc
         agent="scripted",
     )
 
-def _scripted_lane_b_template(base: AuthoredTemplateCandidate, finding: DefectFinding, result: MeasurementResult) -> AuthoredTemplateCandidate:
-    """Offline verification-path Lane B Builder: one bounded deterministic
-    template mutation for the measured defect class (entry-gap compression)."""
-    css = base.css
-    if result.delta_pt is not None and result.delta_pt > 0 and "margin-top: 6pt" in css:
-        css = css.replace("margin-top: 6pt", f"margin-top: {max(1.0, 6.0 - abs(result.delta_pt) / 2):.1f}pt")
-    return base.model_copy(update={"template_id": base.template_id + "-r", "css": css})
 
-def _header_crop_from_overview_source(overview: Path, output: Path) -> Path:
-    """Crop the header from the original 2x page PNG behind an overview."""
-    from PIL import Image
-
-    source_stem = overview.stem.split("_overview_", 1)[-1]
-    source = overview.with_name(f"{source_stem}.png")
-    if not source.exists():
-        raise FileNotFoundError(f"full-resolution page behind overview is missing: {source}")
-    with Image.open(source) as image:
-        image.crop((0, 0, image.width, round(image.height * 0.25))).save(output)
-    return output
 
 def _review_scope_payload(
     round_no: int,
@@ -2798,67 +2503,6 @@ def _live_lane_a_builder(
     proposal = run_result.output
     return proposal.model_copy(update={"proposal_id": proposal_id, "agent": "llm"})
 
-def _live_lane_b_builder(
-    budget: RunBudget,
-    trace: RunTrace,
-    *,
-    payload: dict[str, Any],
-    images: list[Any],
-    template_id: str,
-    audit: E5AgentAuditSpec | None = None,
-) -> AuthoredTemplateCandidate:
-    """The LIVE Lane B Builder: one bounded request over target + current
-    render images that authors the constrained HTML/CSS template candidate.
-    The shell validates the safety boundary and fills typed slots — the agent
-    never touches candidate values or the filesystem. ``audit`` records the
-    full model-visible message history (owner decision 2026-09-22)."""
-    from pydantic_ai import Agent, BinaryContent, PromptedOutput, capture_run_messages
-
-    from app.pipeline.runtime import _live_model
-    from app.pipeline.authored_template import AuthoredTemplateCandidate
-
-    if budget.remaining_model_requests() < 1:
-        raise CheckpointBudgetExceeded("budget exhausted before lane B builder")
-    agent = Agent(
-        _live_model(budget, trace, "lane_b_builder"),
-        # Prompted JSON avoids the forced final-result tool choice that
-        # DeepSeek Chat Completions rejects while thinking is enabled.
-        output_type=PromptedOutput(AuthoredTemplateCandidate),
-        name="lane_b_builder",
-        instructions=E5_LANE_B_BUILDER_INSTRUCTIONS,
-    )
-    user_messages = [
-        json.dumps(payload, ensure_ascii=False, indent=1),
-        *[BinaryContent(data=image.read_bytes(), media_type="image/png") for image in images],
-    ]
-    model_name = getattr(getattr(agent, "model", None), "model_name", None)
-    captured_messages: list[Any] = []
-    try:
-        with capture_run_messages() as captured_messages:
-            run_result = _with_connection_retry(
-                lambda: agent.run_sync(
-                    user_messages,
-                    usage_limits=_call_limits(budget, E5_BUILDER_MAX_REQUESTS),
-                    model_settings=_live_model_settings(),
-                ),
-                trace=trace, what="lane B builder",
-            )
-    except Exception as error:
-        if audit is not None:
-            _e5_agent_audit_record(
-                trace, audit, input_messages=captured_messages or user_messages,
-                run_result=None, error=f"{type(error).__name__}: {error}",
-                model_name=model_name,
-            )
-        raise
-    if audit is not None:
-        _e5_agent_audit_record(
-            trace, audit, input_messages=user_messages, run_result=run_result, error=None,
-            model_name=model_name,
-        )
-    _record_usage(budget, trace, "lane_b_builder", "build", run_result)
-    template = run_result.output
-    return template.model_copy(update={"template_id": template_id})
 
 def _lane_a_attribution_layout(plan: Any, state: Any, findings: list[DefectFinding]) -> dict[str, Any]:
     """Describe consumed A structure and primitive effects without candidate values."""
@@ -2993,7 +2637,6 @@ E5_SOURCE_FILES = (
     'app/pipeline/assets/fonts/roboto-bolditalic.woff2',
     'app/pipeline/assets/fonts/roboto-regular.woff2',
     'app/pipeline/assets/fonts/roboto-regularitalic.woff2',
-    'app/pipeline/authored_template.py',
     'app/pipeline/candidate_content.py',
     'app/pipeline/evidence.py',
     'app/pipeline/fonts.py',
@@ -3173,12 +2816,6 @@ def _freeze_e5_config(
             "candidate_content_accounting", "content_shapes_match_evidence",
             "content_gate",
         ],
-        "lane_b_gates": [
-            "no_target_candidate_facts", "candidate_content_accounting",
-        ],
-        "lane_b_diagnostics": [
-            "pdf_presence", "no_blank_page",
-        ],
         "evaluation_rubric_reference": {**rubric_reference, "not_given_to_agents": True},
         "starting_commit": commit,
         "source_hashes": {
@@ -3226,8 +2863,8 @@ def run_e5(
 ) -> tuple[Path, str, dict[str, Any]]:
     """Run the selected Lane A mainline on explicit inputs by default.
 
-    Lane B authored-template and paired comparison execution remain explicit
-    choices; selecting A is not product output acceptance or API cutover.
+    Authored-template and paired execution are retired. Selecting A never
+    grants product output acceptance.
 
     A safety-valid PDF exits ``ready_for_owner_review`` even when exploratory
     quality checks report warnings; ``budget_exhausted`` means no safety-valid
@@ -3248,22 +2885,11 @@ def run_e5(
     from app.pipeline import quality as c2r
     from app.pipeline.layout_state import state_bytes
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
-    from app.pipeline.authored_template import (
-        authored_network_disabled_environment,
-        authored_pdf_presence_gate,
-        authored_privacy_gate,
-        build_authored_document,
-        fill_authored_template,
-        presentation_label_markers,
-        validate_authored_template,
-    )
 
-    if not lanes or set(lanes) - {"a", "b"} or len(lanes) != len(set(lanes)):
-        raise ValueError("lanes must contain a, b, or both exactly once")
+    if lanes != ("a",):
+        raise ValueError("Only Lane A is supported; authored B execution is retired")
     if layout_spec is not None and (lanes != ("a",) or (not live and max_repair_rounds != 0)):
         raise ValueError("LayoutTemplateSpec requires Lane A; offline previews require zero repair rounds")
-    if "b" in lanes and any(leaf.kind == "additional_entry" for leaf in candidate.leaves):
-        raise ValueError("structured additional sections require Lane A only")
     if any(not re.fullmatch(r"[a-z0-9_]+", name) for name in (probe_candidates or {})):
         raise ValueError("probe names must contain lowercase letters, digits, or underscores")
     started = time.time()
@@ -3355,11 +2981,7 @@ def run_e5(
             state, derived = template_state, {}
     except Exception as error:
         return abort("compile_two_column_state", error)
-    # ONE shell-owned presentation-label catalog for BOTH lanes (owner decision
-    # 2026-09-21): built from the same measured sidebar-label evidence the two
-    # lanes already share. Lane A renders those labels from the render plan,
-    # Lane B can only reference `{{label:<label_id>}}`; both privacy gates and
-    # the owner listing reference THIS catalog, never a lane-local set.
+    # Rendering, privacy and owner review share the same evidence-bound label catalog.
     try:
         label_catalog = _presentation_label_catalog(derived) if template_label_catalog is None else template_label_catalog
     except Exception as error:
@@ -3413,23 +3035,6 @@ def run_e5(
     page_height = _page_pt_size(target_pdf, 1)[1]
     region_spans = _region_spans_from_draft(draft, page_height)
 
-    def _known_evidence_ids() -> set[str]:
-        """The evidence ids the shell ACTUALLY issued (pod access records +
-        the shared draft's cited refs). Authored-template evidence_refs must
-        be members of this set — string shape alone is never enough."""
-        ids: set[str] = set()
-        for record in getattr(pod, "records", []) or []:
-            record_id = (
-                record.get("evidence_id")
-                if isinstance(record, dict)
-                else getattr(record, "evidence_id", None)
-            )
-            if record_id:
-                ids.add(record_id)
-        for claim in draft.structure:
-            for ref in claim.evidence:
-                ids.add(ref.evidence_id)
-        return ids
 
     def _e5_image_refs(
         paths: list[Any], role: str, *, first_page: int = 1
@@ -3483,7 +3088,6 @@ def run_e5(
         prompts={
             "visual_reviewer": E5_REVIEWER_INSTRUCTIONS,
             "lane_a_builder": E5_LANE_A_BUILDER_INSTRUCTIONS,
-            "lane_b_builder": E5_LANE_B_BUILDER_INSTRUCTIONS,
             "attribution_investigator": E5_ATTRIBUTION_INSTRUCTIONS,
         },
         rubric_reference=rubric_reference,
@@ -3640,7 +3244,7 @@ def run_e5(
         # ledger, never from the target document.
         binding_lineage_by_version: dict[str, CandidateBindingLineage] = {}
         # Presentation labels THIS lane actually referenced (Lane A: rendered
-        # plan labels; Lane B: template label markers).
+        # plan labels).
         referenced_labels: set[str] = set()
         # The region of the last PROMOTED repair (the only state that scopes
         # the next review round; rejected attempts never do).
@@ -3766,19 +3370,13 @@ def run_e5(
             }
             for profile, fixture in (probe_candidates or {}).items():
                 probe_candidate = _probe_candidate_with_text(fixture)
-                if lane == "a":
-                    probe_candidate = _sectioned_probe_candidate(probe_candidate)
+                probe_candidate = _sectioned_probe_candidate(probe_candidate)
                 entry: dict[str, Any] = {
                     "passed": False,
                     "diagnostic": diagnostic_probes,
                     "representation": (
                         selected_representation.proposal_id
-                        if lane == "a" and selected_representation is not None
-                        else (
-                            selected_representation.template_id
-                            if selected_representation is not None
-                            else ("initial_compiled_plan" if lane == "a" else None)
-                        )
+                        if selected_representation is not None else "initial_compiled_plan"
                     ),
                 }
                 probe_report[profile] = entry
@@ -3789,83 +3387,50 @@ def run_e5(
                     probe_html_path = lane_dir / f"probe_{profile}.html"
                     probe_pdf_path = lane_dir / f"probe_{profile}.pdf"
                     probe_pdf_second = lane_dir / f"probe_{profile}_second.pdf"
-                    if lane == "a":
-                        # Real chain with the SELECTED proposal: candidate
-                        # binding (incl. the shared header-overflow shell
-                        # transition) -> compile -> HTML -> Chrome PDF -> gates.
-                        probe_plan_candidate = _apply_header_overflow_disposition(
-                            probe_candidate, state
-                        )
-                        if layout_spec is not None:
-                            _, plan, _ = render_layout_template(layout_spec, probe_plan_candidate,
-                                target_sha256=target_sha256, page_count=state.page.page_count)
-                            plan = _apply_lane_a_structure(plan, selected_representation)
-                            html = render_html(state, plan)
-                        else:
-                            plan = _apply_lane_a_structure(
-                                compile_render_plan(state, probe_plan_candidate), selected_representation
-                            )
-                            if plan.status == "failed":
-                                raise RuntimeError(f"probe plan failed: {plan.failures[:3]}")
-                            html = render_html(state, plan)
-                        probe_html_path.write_text(html, encoding="utf-8")
-                        _export_pinned_html_to_pdf(probe_html_path, probe_pdf_path, environment)
-                        _export_pinned_html_to_pdf(probe_html_path, probe_pdf_second, environment)
-                        pages = _render_pages(probe_pdf_path, lane_dir, f"probe_{profile}")
-                        second_pages = _render_pages(probe_pdf_second, lane_dir, f"probe_{profile}_second")
-                        content = c2r.content_gate(plan, html, probe_pdf_path)
-                        gates = {
-                            "content_gate": content["passed"],
-                            "candidate_content_accounting": c2r.candidate_accounting_gate(
-                                plan, content
-                            )["passed"],
-                            # The same COMMON privacy gate with the same
-                            # shell-recognized label set as the main renders.
-                            "privacy_gate": authored_privacy_gate(
-                                html, probe_pdf_path, target_pdf,
-                                labels=approved_label_texts, candidate=probe_candidate,
-                            )["passed"],
-                            "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
-                            "deterministic_render": (
-                                all(
-                                    c2r._sha256(left) == c2r._sha256(right)
-                                    for left, right in zip(pages, second_pages)
-                                )
-                                and c2r._line_stability(probe_pdf_path, probe_pdf_second)["passed"]
-                            ),
-                        }
+                    # Real chain with the SELECTED proposal: candidate
+                    # binding (incl. the shared header-overflow shell
+                    # transition) -> compile -> HTML -> Chrome PDF -> gates.
+                    probe_plan_candidate = _apply_header_overflow_disposition(
+                        probe_candidate, state
+                    )
+                    if layout_spec is not None:
+                        _, plan, _ = render_layout_template(layout_spec, probe_plan_candidate,
+                            target_sha256=target_sha256, page_count=state.page.page_count)
+                        plan = _apply_lane_a_structure(plan, selected_representation)
+                        html = render_html(state, plan)
                     else:
-                        if selected_representation is None:
-                            raise RuntimeError("no selected authored template to probe")
-                        # Real chain with the SELECTED template: validation ->
-                        # fill -> document -> network-disabled Chrome -> gates.
-                        validate_authored_template(
-                            selected_representation,
-                            target_pdf=target_pdf,
-                            render_candidate=probe_candidate,
-                            known_evidence_ids=_known_evidence_ids(),
-                            labels=approved_label_catalog,
+                        plan = _apply_lane_a_structure(
+                            compile_render_plan(state, probe_plan_candidate), selected_representation
                         )
-                        fill = fill_authored_template(
-                            selected_representation, probe_candidate,
-                            labels=approved_label_catalog,
-                        )
-                        doc = build_authored_document(selected_representation, fill, page_size)
-                        probe_html_path.write_text(doc, encoding="utf-8")
-                        net_env = authored_network_disabled_environment()
-                        _export_pinned_html_to_pdf(probe_html_path, probe_pdf_path, net_env)
-                        pages = _render_pages(probe_pdf_path, lane_dir, f"probe_{profile}")
-                        gates = {
-                            "candidate_content_accounting": not fill.missing_leaves,
-                            "pdf_presence": authored_pdf_presence_gate(
-                                fill, probe_candidate, probe_pdf_path
-                            )["passed"],
-                            "privacy_gate": authored_privacy_gate(
-                                doc, probe_pdf_path, target_pdf,
-                                labels=approved_label_texts, candidate=probe_candidate,
-                            )["passed"],
-                            "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
-                        }
+                        if plan.status == "failed":
+                            raise RuntimeError(f"probe plan failed: {plan.failures[:3]}")
+                        html = render_html(state, plan)
+                    probe_html_path.write_text(html, encoding="utf-8")
+                    _export_pinned_html_to_pdf(probe_html_path, probe_pdf_path, environment)
+                    _export_pinned_html_to_pdf(probe_html_path, probe_pdf_second, environment)
+                    pages = _render_pages(probe_pdf_path, lane_dir, f"probe_{profile}")
+                    second_pages = _render_pages(probe_pdf_second, lane_dir, f"probe_{profile}_second")
+                    content = c2r.content_gate(plan, html, probe_pdf_path)
+                    gates = {
+                        "content_gate": content["passed"],
+                        "candidate_content_accounting": c2r.candidate_accounting_gate(
+                            plan, content
+                        )["passed"],
+                        # The same COMMON privacy gate with the same
+                        # shell-recognized label set as the main renders.
+                        "privacy_gate": c2r.candidate_privacy_gate(
+                            html, probe_pdf_path, target_pdf,
+                            labels=approved_label_texts, candidate=probe_candidate,
+                        )["passed"],
+                        "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
+                        "deterministic_render": (
+                            all(
+                                c2r._sha256(left) == c2r._sha256(right)
+                                for left, right in zip(pages, second_pages)
+                            )
+                            and c2r._line_stability(probe_pdf_path, probe_pdf_second)["passed"]
+                        ),
+                    }
                     entry["gates"] = gates
                     entry["pages"] = len(pages)
                     entry["html"] = probe_html_path.name
@@ -3902,8 +3467,6 @@ def run_e5(
                 lane=lane_id,
                 representation=(
                     "provider-neutral structured layout + fixed renderer (Lane A)"
-                    if lane_id == "a"
-                    else "constrained authored HTML/CSS template + typed slots (Lane B)"
                 ),
                 render_versions=versions,
                 best_render_version=best_version_id,
@@ -3978,238 +3541,138 @@ def run_e5(
             return record
 
         # --- render plumbing ---------------------------------------------
-        if lane == "a":
-            def render_version(
-                note: str, proposal: LaneAStructureProposal | None = None
-            ) -> tuple[RenderVersion, Path, dict[str, Any]]:
-                lane_budget.spend_tool("render_and_checkpoint")
-                if template_render is not None:
-                    _, plan, html = template_render
-                    if proposal is not None:
-                        plan = _apply_lane_a_structure(plan, proposal)
-                        html = render_html(state, plan)
-                else:
-                    plan = _apply_lane_a_structure(compile_render_plan(state, candidate), proposal)
-                    if plan.status == "failed":
-                        raise RuntimeError(f"refusing to render a failed plan: {plan.failures[:3]}")
+        def render_version(
+            note: str, proposal: LaneAStructureProposal | None = None
+        ) -> tuple[RenderVersion, Path, dict[str, Any]]:
+            lane_budget.spend_tool("render_and_checkpoint")
+            if template_render is not None:
+                _, plan, html = template_render
+                if proposal is not None:
+                    plan = _apply_lane_a_structure(plan, proposal)
                     html = render_html(state, plan)
-                index = len(versions) + 1
-                html_path = lane_dir / f"render_{index}.html"
-                html_path.write_text(html, encoding="utf-8")
-                pdf_path = lane_dir / f"render_{index}.pdf"
-                _export_pinned_html_to_pdf(html_path, pdf_path, environment)
-                second = lane_dir / f"render_{index}_second.pdf"
-                _export_pinned_html_to_pdf(html_path, second, environment)
-                pages = _render_pages(pdf_path, lane_dir, f"render_{index}")
-                second_pages = _render_pages(second, lane_dir, f"render_{index}_second")
-                stability = c2r._line_stability(pdf_path, second)
-                content = c2r.content_gate(plan, html, pdf_path)
-                # DIAGNOSTIC ONLY (see gate_details): the renderer gate keeps
-                # excluding plan-derived labels; the privacy DECISION is the
-                # common gate below.
-                privacy = c2r.privacy_gate(plan, target_pdf, html, pdf_path)
-                # The ONE common privacy gate: identical function and identical
-                # shell-recognized label set for BOTH lanes, so the two lanes'
-                # privacy decisions are directly comparable.
-                common_privacy = authored_privacy_gate(
-                    html, pdf_path, target_pdf, labels=approved_label_texts, candidate=candidate
-                )
-                structure_gate = c2r.structure_gate(plan, state, html, pdf_path)
-                blank = c2r.blank_page_gate(pdf_path)
-                accounting = c2r.candidate_accounting_gate(plan, content)
-                shape = c2r.content_shape_verification(
-                    state, plan, body_scaffold, bullet_tiers, html, summary, pdf_path
-                )
-                if layout_spec is not None:
-                    shape["basis"] = "layout_template_spec; consumption checks only, not visual parity"
-                gates = {
-                    "deterministic_render": all(
-                        c2r._sha256(left) == c2r._sha256(right)
-                        for left, right in zip(pages, second_pages)
-                    ) and stability["passed"],
-                    # The COMMON privacy decision: the same gate function and
-                    # the same shell-recognized label set Lane B uses.
-                    "no_target_candidate_facts": common_privacy["passed"],
-                    "section_order_matches_state": structure_gate["section_order_matches_state"],
-                    "no_blank_page": blank["passed"],
-                    "candidate_content_accounting": accounting["passed"],
-                    "content_shapes_match_evidence": shape["passed"],
-                    "content_gate": content["passed"],
+            else:
+                plan = _apply_lane_a_structure(compile_render_plan(state, candidate), proposal)
+                if plan.status == "failed":
+                    raise RuntimeError(f"refusing to render a failed plan: {plan.failures[:3]}")
+                html = render_html(state, plan)
+            index = len(versions) + 1
+            html_path = lane_dir / f"render_{index}.html"
+            html_path.write_text(html, encoding="utf-8")
+            pdf_path = lane_dir / f"render_{index}.pdf"
+            _export_pinned_html_to_pdf(html_path, pdf_path, environment)
+            second = lane_dir / f"render_{index}_second.pdf"
+            _export_pinned_html_to_pdf(html_path, second, environment)
+            pages = _render_pages(pdf_path, lane_dir, f"render_{index}")
+            second_pages = _render_pages(second, lane_dir, f"render_{index}_second")
+            stability = c2r._line_stability(pdf_path, second)
+            content = c2r.content_gate(plan, html, pdf_path)
+            # DIAGNOSTIC ONLY (see gate_details): the renderer gate keeps
+            # excluding plan-derived labels; the privacy DECISION is the
+            # common gate below.
+            privacy = c2r.privacy_gate(plan, target_pdf, html, pdf_path)
+            # The ONE common privacy gate: identical function and identical
+            # shell-recognized label set for BOTH lanes, so the two lanes'
+            # privacy decisions are directly comparable.
+            common_privacy = c2r.candidate_privacy_gate(
+                html, pdf_path, target_pdf, labels=approved_label_texts, candidate=candidate
+            )
+            structure_gate = c2r.structure_gate(plan, state, html, pdf_path)
+            blank = c2r.blank_page_gate(pdf_path)
+            accounting = c2r.candidate_accounting_gate(plan, content)
+            shape = c2r.content_shape_verification(
+                state, plan, body_scaffold, bullet_tiers, html, summary, pdf_path
+            )
+            if layout_spec is not None:
+                shape["basis"] = "layout_template_spec; consumption checks only, not visual parity"
+            gates = {
+                "deterministic_render": all(
+                    c2r._sha256(left) == c2r._sha256(right)
+                    for left, right in zip(pages, second_pages)
+                ) and stability["passed"],
+                # The COMMON privacy decision: the same gate function and
+                # the same shell-recognized label set as owner review.
+                "no_target_candidate_facts": common_privacy["passed"],
+                "section_order_matches_state": structure_gate["section_order_matches_state"],
+                "no_blank_page": blank["passed"],
+                "candidate_content_accounting": accounting["passed"],
+                "content_shapes_match_evidence": shape["passed"],
+                "content_gate": content["passed"],
+            }
+            label_semantics = _e5_label_semantics(
+                common_privacy, approved_label_catalog
+            )
+            label_symmetry_by_version[f"render-{target_pdf.stem}-laneA-v{index}"] = bool(
+                label_semantics["symmetric"]
+            )
+            referenced_labels.update(
+                label.label_id
+                for label in label_catalog
+                if c2r._norm(label.text)
+                in {
+                    c2r._norm(section.label)
+                    for section in [*plan.sections, *plan.appended_sections]
                 }
-                label_semantics = _e5_label_semantics(
-                    common_privacy, approved_label_catalog
-                )
-                label_symmetry_by_version[f"render-{target_pdf.stem}-laneA-v{index}"] = bool(
-                    label_semantics["symmetric"]
-                )
-                referenced_labels.update(
-                    label.label_id
-                    for label in label_catalog
-                    if c2r._norm(label.text)
-                    in {
-                        c2r._norm(section.label)
-                        for section in [*plan.sections, *plan.appended_sections]
-                    }
-                )
-                gate_details = {
-                    "deterministic_render": {
-                        "passed": gates["deterministic_render"],
-                        "first_page_hashes": [c2r._sha256(page) for page in pages],
-                        "second_page_hashes": [c2r._sha256(page) for page in second_pages],
-                        "line_stability": stability,
-                    },
-                    "no_target_candidate_facts": {
-                        **common_privacy,
-                        "label_semantics": label_semantics,
-                        # DIAGNOSTIC ONLY: the renderer gate keeps excluding
-                        # plan-derived labels; it is no longer the privacy
-                        # decision and never used to claim symmetry.
-                        "plan_derived_privacy_gate": privacy,
-                    },
-                    "section_order_matches_state": structure_gate,
-                    "no_blank_page": blank,
-                    "candidate_content_accounting": accounting,
-                    "content_shapes_match_evidence": shape,
-                    "content_gate": content,
-                }
-                version = RenderVersion(
-                    version_id=f"render-{target_pdf.stem}-laneA-v{index}",
-                    html_sha256=_sha256_file(html_path),
-                    pdf_sha256=_sha256_file(pdf_path),
-                    page_count=len(pages),
-                    hard_gates_passed=_e5_blocking_gates_passed("a", gates),
-                    note=note,
-                )
-                versions.append(version)
-                pdf_by_version[version.version_id] = pdf_path
-                representation_by_version[version.version_id] = proposal
-                plan_by_version[version.version_id] = plan
-                gates_by_version[version.version_id] = gates
-                gate_details_by_version[version.version_id] = gate_details
-                binding_lineage_by_version[version.version_id] = _e5_candidate_binding_lineage(
-                    candidate,
-                    version.version_id,
-                    content.get("leaf_records") or {},
-                    representation_ceiling_gates=[
-                        name for name in E5_REPRESENTATION_CEILING_GATES
-                        if gates.get(name) is False
-                    ],
-                )
-                store.register_version(version.version_id, pdf_path, note)
-                (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
-                    json.dumps(
-                        _e5_hard_gate_record(
-                            version.version_id,
-                            gates,
-                            gate_details,
-                            blocking_gates=_e5_blocking_gates("a"),
-                        ),
-                        indent=2,
-                        sort_keys=True,
-                    ) + "\n",
-                    encoding="utf-8",
-                )
-                trace.add(agent="shell", phase="render", action="render_version", output=version.model_dump(mode="json"), note=note)
-                return version, pdf_path, gates
-        else:
-            def render_version(
-                note: str, template: AuthoredTemplateCandidate | None = None
-            ) -> tuple[RenderVersion, Path, dict[str, Any]]:
-                lane_budget.spend_tool("render_and_checkpoint")
-                template = template or lane_state["template"]
-                validate_authored_template(
-                    template,
-                    target_pdf=target_pdf,
-                    render_candidate=candidate,
-                    known_evidence_ids=_known_evidence_ids(),
-                    labels=approved_label_catalog,
-                )
-                fill = fill_authored_template(
-                    template, candidate, labels=approved_label_catalog
-                )
-                index = len(versions) + 1
-                doc = build_authored_document(template, fill, page_size)
-                html_path = lane_dir / f"render_{index}.html"
-                html_path.write_text(doc, encoding="utf-8")
-                pdf_path = lane_dir / f"render_{index}.pdf"
-                net_env = authored_network_disabled_environment()
-                _export_pinned_html_to_pdf(html_path, pdf_path, net_env)
-                pages = _render_pages(pdf_path, lane_dir, f"render_{index}")
-                presence = authored_pdf_presence_gate(fill, candidate, pdf_path)
-                # The SAME common gate Lane A runs: identical gate function and
-                # identical shell-recognized label set, so both lanes' privacy
-                # decisions are directly comparable.
-                common_privacy = authored_privacy_gate(
-                    doc, pdf_path, target_pdf, labels=approved_label_texts, candidate=candidate
-                )
-                label_semantics = _e5_label_semantics(
-                    common_privacy, approved_label_catalog
-                )
-                referenced_labels.update(presentation_label_markers(template.html))
-                # DIAGNOSTIC ONLY: the frozen-target copy gate under the same
-                # approved label set (not the privacy decision).
-                privacy_baseline_gate = authored_privacy_gate(
-                    doc, pdf_path, target_pdf, labels=approved_label_texts
-                )
-                blank = c2r.blank_page_gate(pdf_path)
-                gates = {
-                    "no_target_candidate_facts": common_privacy["passed"],
-                    "candidate_content_accounting": not fill.missing_leaves,
-                }
-                gate_details = {
-                    "no_target_candidate_facts": {
-                        **common_privacy,
-                        "label_semantics": label_semantics,
-                        "target_privacy_diagnostic": privacy_baseline_gate,
-                    },
-                    "no_blank_page": blank,
-                    "candidate_content_accounting": {
-                        "passed": not fill.missing_leaves,
-                        "missing_leaves": fill.missing_leaves,
-                        "leaf_counts": fill.leaf_counts,
-                    },
-                    "diagnostics": {
-                        "pdf_presence": presence,
-                        "no_blank_page": blank,
-                    },
-                }
-                version = RenderVersion(
-                    version_id=f"render-{target_pdf.stem}-laneB-v{index}",
-                    html_sha256=_sha256_file(html_path),
-                    pdf_sha256=_sha256_file(pdf_path),
-                    page_count=len(pages),
-                    hard_gates_passed=_e5_blocking_gates_passed("b", gates),
-                    note=note,
-                )
-                versions.append(version)
-                pdf_by_version[version.version_id] = pdf_path
-                representation_by_version[version.version_id] = template
-                gates_by_version[version.version_id] = gates
-                gate_details_by_version[version.version_id] = gate_details
-                binding_lineage_by_version[version.version_id] = _e5_candidate_binding_lineage(
-                    candidate,
-                    version.version_id,
-                    {leaf_id: {} for leaf_id in fill.leaf_counts},
-                )
-                label_symmetry_by_version[version.version_id] = bool(
-                    label_semantics["symmetric"]
-                )
-                store.register_version(version.version_id, pdf_path, note)
-                (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
-                    json.dumps(
-                        _e5_hard_gate_record(
-                            version.version_id,
-                            gates,
-                            gate_details,
-                            blocking_gates=_e5_blocking_gates("b"),
-                        ),
-                        indent=2,
-                        sort_keys=True,
-                    ) + "\n",
-                    encoding="utf-8",
-                )
-                trace.add(agent="shell", phase="render", action="render_version", output=version.model_dump(mode="json"), note=note)
-                return version, pdf_path, gates
+            )
+            gate_details = {
+                "deterministic_render": {
+                    "passed": gates["deterministic_render"],
+                    "first_page_hashes": [c2r._sha256(page) for page in pages],
+                    "second_page_hashes": [c2r._sha256(page) for page in second_pages],
+                    "line_stability": stability,
+                },
+                "no_target_candidate_facts": {
+                    **common_privacy,
+                    "label_semantics": label_semantics,
+                    # DIAGNOSTIC ONLY: the renderer gate keeps excluding
+                    # plan-derived labels; it is no longer the privacy
+                    # decision and never used to claim symmetry.
+                    "plan_derived_privacy_gate": privacy,
+                },
+                "section_order_matches_state": structure_gate,
+                "no_blank_page": blank,
+                "candidate_content_accounting": accounting,
+                "content_shapes_match_evidence": shape,
+                "content_gate": content,
+            }
+            version = RenderVersion(
+                version_id=f"render-{target_pdf.stem}-laneA-v{index}",
+                html_sha256=_sha256_file(html_path),
+                pdf_sha256=_sha256_file(pdf_path),
+                page_count=len(pages),
+                hard_gates_passed=_e5_blocking_gates_passed("a", gates),
+                note=note,
+            )
+            versions.append(version)
+            pdf_by_version[version.version_id] = pdf_path
+            representation_by_version[version.version_id] = proposal
+            plan_by_version[version.version_id] = plan
+            gates_by_version[version.version_id] = gates
+            gate_details_by_version[version.version_id] = gate_details
+            binding_lineage_by_version[version.version_id] = _e5_candidate_binding_lineage(
+                candidate,
+                version.version_id,
+                content.get("leaf_records") or {},
+                representation_ceiling_gates=[
+                    name for name in E5_REPRESENTATION_CEILING_GATES
+                    if gates.get(name) is False
+                ],
+            )
+            store.register_version(version.version_id, pdf_path, note)
+            (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
+                json.dumps(
+                    _e5_hard_gate_record(
+                        version.version_id,
+                        gates,
+                        gate_details,
+                        blocking_gates=_e5_blocking_gates("a"),
+                    ),
+                    indent=2,
+                    sort_keys=True,
+                ) + "\n",
+                encoding="utf-8",
+            )
+            trace.add(agent="shell", phase="render", action="render_version", output=version.model_dump(mode="json"), note=note)
+            return version, pdf_path, gates
 
         def render_entry_texts(region_id: str | None, plan: Any = None) -> tuple[list[str], list[str]]:
             # The plan is always the version-bound plan of the render being
@@ -4217,7 +3680,7 @@ def run_e5(
             # candidate's own plan for the identical re-measurement) — never
             # a mutable lane-wide variable that a rejected render could
             # overwrite.
-            if lane == "a" and plan is not None:
+            if plan is not None:
                 plan_section = next(
                     (s for s in [*plan.sections, *plan.appended_sections] if s.node_id == _owning_section_id(state, region_id)),
                     None,
@@ -4455,95 +3918,41 @@ def run_e5(
             residual_tmp.replace(residual_path)
 
         # --- 3. Initial Builder output (representation under test) ---------
-        initial_note = f"lane {lane} initial render ({'authored template' if lane == 'b' else 'structured layout'})"
+        initial_note = f"lane {lane} initial render ({'structured layout'})"
         candidate_audit_index: int | None = None
         try:
-            if lane == "a":
-                proposal = None
-                if live:
-                    proposal = _live_lane_a_builder(
-                        lane_budget,
-                        trace,
-                        payload=initial_builder_evidence,
-                        images=shared_target_images,
-                        proposal_id="lane-a-r1",
-                        audit=_e5_audit(
-                            agent="lane_a_builder",
-                            phase="initial",
-                            round_no=0,
-                            render_version=None,
-                            instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
-                            image_refs=_e5_image_refs(shared_target_images, "target"),
-                        ),
-                    )
-                    validation_error = _validate_lane_a_proposal(proposal, state)
-                    candidate_audit_index = record_builder_candidate(
-                        proposal,
-                        stage="initial",
-                        input_render_version=None,
-                        validation={"passed": validation_error is None, "error": validation_error},
-                        outcome="validator_rejected" if validation_error else "validated",
-                        reason=validation_error or "typed proposal accepted by the shell validator",
-                    )
-                    if validation_error:
-                        raise ValueError(validation_error)
-                lane_state["proposal"] = proposal
-                lane_state["active_proposal"] = proposal
-                version, pdf, gates = render_version(initial_note, proposal)
-                if candidate_audit_index is not None:
-                    update_builder_candidate(
-                        candidate_audit_index,
-                        candidate_render_version=version.version_id,
-                        outcome="active_unpromoted",
-                        reason="initial validated candidate rendered and became the active version",
-                    )
-            else:
-                template = None
-                if live:
-                    template = _live_lane_b_builder(
-                        lane_budget,
-                        trace,
-                        payload=initial_builder_evidence,
-                        images=shared_target_images,
-                        template_id="lane-b-r1",
-                        audit=_e5_audit(
-                            agent="lane_b_builder",
-                            phase="initial",
-                            round_no=0,
-                            render_version=None,
-                            instructions=E5_LANE_B_BUILDER_INSTRUCTIONS,
-                            image_refs=_e5_image_refs(shared_target_images, "target"),
-                        ),
-                    )
-                else:
-                    from app.pipeline.authored_template import SCRIPTED_AUTHORED_TEMPLATE
-
-                    template = SCRIPTED_AUTHORED_TEMPLATE
-                try:
-                    validation = validate_authored_template(
-                        template,
-                        target_pdf=target_pdf,
-                        render_candidate=candidate,
-                        known_evidence_ids=_known_evidence_ids(),
-                        labels=approved_label_catalog,
-                    )
-                    validation_error = None
-                except ValueError as error:
-                    validation = {"passed": False, "error": str(error)}
-                    validation_error = str(error)
+            proposal = None
+            if live:
+                proposal = _live_lane_a_builder(
+                    lane_budget,
+                    trace,
+                    payload=initial_builder_evidence,
+                    images=shared_target_images,
+                    proposal_id="lane-a-r1",
+                    audit=_e5_audit(
+                        agent="lane_a_builder",
+                        phase="initial",
+                        round_no=0,
+                        render_version=None,
+                        instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
+                        image_refs=_e5_image_refs(shared_target_images, "target"),
+                    ),
+                )
+                validation_error = _validate_lane_a_proposal(proposal, state)
                 candidate_audit_index = record_builder_candidate(
-                    template,
+                    proposal,
                     stage="initial",
                     input_render_version=None,
-                    validation=validation,
+                    validation={"passed": validation_error is None, "error": validation_error},
                     outcome="validator_rejected" if validation_error else "validated",
-                    reason=validation_error or "typed template accepted by the shell validator",
+                    reason=validation_error or "typed proposal accepted by the shell validator",
                 )
                 if validation_error:
                     raise ValueError(validation_error)
-                lane_state["template"] = template
-                lane_state["active_template"] = template
-                version, pdf, gates = render_version(initial_note, template)
+            lane_state["proposal"] = proposal
+            lane_state["active_proposal"] = proposal
+            version, pdf, gates = render_version(initial_note, proposal)
+            if candidate_audit_index is not None:
                 update_builder_candidate(
                     candidate_audit_index,
                     candidate_render_version=version.version_id,
@@ -4573,7 +3982,7 @@ def run_e5(
 
         layout_trial_regions = {
             node.node_id for node in state.nodes
-            if live and lane == "a" and _owning_section_id(state, node.node_id) is not None
+            if live and _owning_section_id(state, node.node_id) is not None
         }
         # --- 4. See -> Measure -> Attribute -> Repair -> Re-render loop -----
         # Scheduling state (repair-starvation fix, 2026-09-21 owner work order):
@@ -4587,7 +3996,6 @@ def run_e5(
         # hash do not re-review, and the SAME version_id can never map to a
         # different PDF (conflict fails closed).
         version_pdf_hashes: dict[str, str] = {}
-        gate_repair_versions_seen: set[str] = set()
         findings_by_id: dict[str, DefectFinding] = {}
         # finding_id -> (finding, result, bound) for every measurement taken on
         # any version; the repair scan filters by the ACTIVE version.
@@ -4805,37 +4213,6 @@ def run_e5(
                 for finding in findings_new:
                     findings_by_id[finding.finding_id] = finding
 
-                # Hard-gate-derived builder-owned repair inputs: recorded ONCE
-                # per render version, from the shell's OWN gate evidence, and
-                # pre-attributed (no live attribution needed). A
-                # candidate-accounting/content failure enters repair BEFORE
-                # any visual attribution backlog (owner work order §四).
-                gate_items: list[
-                    tuple[DefectFinding, MeasurementResult, MeasurementRequest, AttributionRecord]
-                ] = []
-                if repair_base_version.version_id not in gate_repair_versions_seen:
-                    gate_repair_versions_seen.add(repair_base_version.version_id)
-                    gate_items = _e5_gate_repair_items(
-                        lane, target_id, repair_base_version.version_id, repair_base_details,
-                        candidate=candidate,
-                        current_pdf=pdf_by_version[repair_base_version.version_id],
-                    )
-                for gate_finding, gate_result, gate_request, gate_attribution in gate_items:
-                    findings_by_id[gate_finding.finding_id] = gate_finding
-                    findings.append(gate_finding)
-                    measured_by_finding[gate_finding.finding_id] = (
-                        gate_finding, gate_result, gate_request,
-                    )
-                    entry, action = ledger.observe(gate_finding)
-                    trace.add(
-                        agent="shell", phase="ledger", action=action,
-                        output={"key": entry.ledger_key, "finding": gate_finding.finding_id},
-                    )
-                    attributions.append(gate_attribution)
-                    _record_ledger_attribution(
-                        ledger, gate_finding, gate_attribution, gate_request.request_id,
-                    )
-
                 # Ledger dedup BEFORE attribution (Phase 0).
                 actionable: list[DefectFinding] = []
                 carried_open_used = False
@@ -4933,7 +4310,7 @@ def run_e5(
                     measured_by_finding[finding.finding_id] = (finding, result, bound)
                     ledger.entries[_ledger_key(finding)].last_measured_version = current_version.version_id
                 batches = _e5_attribution_batches(selected, measured)
-                if live and lane != "b" and batches and _builder_reserve_intact(lane_budget, builder_reserve_requests):
+                if live and batches and _builder_reserve_intact(lane_budget, builder_reserve_requests):
                     pod.render_pdf = current_pdf
                     for group in batches:
                         try:
@@ -4997,22 +4374,6 @@ def run_e5(
                             )
                         except Exception as error:
                             escalate(f"attribution_live_call_failed:{type(error).__name__}: {str(error)[:150]}")
-                if lane == "b":
-                    for finding in _e5_findings_needing_fallback_attribution(
-                        selected, measured, attributions
-                    ):
-                        result, bound = measured[finding.finding_id]
-                        attribution = _e5_lane_b_attribution(finding, result, bound)
-                        attributions.append(attribution)
-                        _record_ledger_attribution(
-                            ledger, finding, attribution, bound.request_id,
-                        )
-                        trace.add(
-                            agent="shell",
-                            phase="attribute",
-                            action="lane_b_direct_attribution",
-                            output=attribution.model_dump(mode="json"),
-                        )
                 for finding in _e5_findings_needing_fallback_attribution(
                     selected, measured, attributions
                 ):
@@ -5065,7 +4426,7 @@ def run_e5(
                     # Termination (no infinite no-op rounds): with no new
                     # render, no review, and no pending backlog work, another
                     # round would deterministically repeat this state.
-                    work_this_round = bool(findings_new) or bool(selected) or bool(gate_items)
+                    work_this_round = bool(findings_new) or bool(selected)
                     if not work_this_round:
                         escalate(f"round{round_no}:no_new_render_no_pending_work")
                         stop_state, stop_reason = "stalled_no_new_action", "no_new_render_no_pending_work"
@@ -5089,31 +4450,14 @@ def run_e5(
                 )
                 repair_target_images = shared_target_images
                 repair_render_images = current_render_images
-                if (
-                    lane == "b"
-                    and finding.requested_measurement.metric
-                    == "header_vertical_rule_geometry"
-                ):
-                    repair_target_images = [
-                        _header_crop_from_overview_source(
-                            shared_target_images[0],
-                            lane_dir / f"builder_target_header_r{round_no}.png",
-                        )
-                    ]
-                    repair_render_images = [
-                        _header_crop_from_overview_source(
-                            current_render_images[0],
-                            lane_dir / f"builder_render_header_r{round_no}.png",
-                        )
-                    ]
                 repair_builder_evidence = _e5_builder_evidence_package(
                     draft=draft,
                     state=state,
                     derived=derived,
                     page_size=page_size,
                     current_render_version=repair_base_version.version_id,
-                    findings=[finding] if lane == "b" else scan_candidates,
-                    measurements=[result] if lane == "b" else [
+                    findings=scan_candidates,
+                    measurements=[
                         scan_measured[item.finding_id][0] for item in scan_candidates
                     ],
                     current_gates=repair_base_gates,
@@ -5129,20 +4473,12 @@ def run_e5(
                     candidate_review_scope=candidate_review_scope,
                     candidate=candidate,
                     body_color_context=body_color_context,
-                    missing_leaf_ids=list(
-                        repair_base_details.get("candidate_content_accounting", {}).get(
-                            "missing_leaves"
-                        )
-                        or []
-                    ),
-                    compact=lane == "b",
                 )
-                if lane == "a":
-                    repair_builder_evidence["repair_policy"] = {
-                        "mode": "bounded_layout_trial",
-                        "instruction": "Attribution is a hypothesis, not permission. Try only existing typed layout primitives; preserve candidate facts. Unmeasured changes require human comparison and cannot be automatically selected.",
-                        "compiled_layout": _lane_a_attribution_layout(current_plan, state, [finding]),
-                    }
+                repair_builder_evidence["repair_policy"] = {
+                    "mode": "bounded_layout_trial",
+                    "instruction": "Attribution is a hypothesis, not permission. Try only existing typed layout primitives; preserve candidate facts. Unmeasured changes require human comparison and cannot be automatically selected.",
+                    "compiled_layout": _lane_a_attribution_layout(current_plan, state, [finding]),
+                }
                 (lane_dir / f"builder_evidence_round_{round_no:02d}.json").write_text(
                     json.dumps(
                         repair_builder_evidence,
@@ -5154,127 +4490,51 @@ def run_e5(
                 )
                 candidate_audit_index = None
                 try:
-                    if lane == "a":
-                        if live:
-                            proposal = _live_lane_a_builder(
-                                lane_budget,
-                                trace,
-                                payload=repair_builder_evidence,
-                                images=[*shared_target_images, *current_render_images],
-                                proposal_id=f"lane-a-r{round_no + 1}",
-                                audit=_e5_audit(
-                                    agent="lane_a_builder",
-                                    phase="repair",
-                                    round_no=round_no,
-                                    render_version=repair_base_version.version_id,
-                                    finding_ids=(finding.finding_id,),
-                                    measurement_ids=(bound.request_id,),
-                                    instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
-                                    image_refs=(
-                                        _e5_image_refs(shared_target_images, "target")
-                                        + _e5_image_refs(current_render_images, "render")
-                                    ),
+                    if live:
+                        proposal = _live_lane_a_builder(
+                            lane_budget,
+                            trace,
+                            payload=repair_builder_evidence,
+                            images=[*shared_target_images, *current_render_images],
+                            proposal_id=f"lane-a-r{round_no + 1}",
+                            audit=_e5_audit(
+                                agent="lane_a_builder",
+                                phase="repair",
+                                round_no=round_no,
+                                render_version=repair_base_version.version_id,
+                                finding_ids=(finding.finding_id,),
+                                measurement_ids=(bound.request_id,),
+                                instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
+                                image_refs=(
+                                    _e5_image_refs(shared_target_images, "target")
+                                    + _e5_image_refs(current_render_images, "render")
                                 ),
-                            )
-                        else:
-                            proposal = _scripted_lane_a_proposal(state, derived)
-                        validation_error = _validate_lane_a_proposal(proposal, state)
-                        candidate_audit_index = record_builder_candidate(
-                            proposal,
-                            stage="repair",
-                            input_render_version=repair_base_version.version_id,
-                            validation={"passed": validation_error is None, "error": validation_error},
-                            outcome="validator_rejected" if validation_error else "validated",
-                            reason=validation_error or "typed proposal accepted by the shell validator",
-                            attribution=attribution,
-                            action_fingerprint=fingerprint,
-                        )
-                        if validation_error:
-                            repair_attempts.append({"finding": finding.finding_id, "region": finding.region, "rejected": validation_error, "round": round_no})
-                            trace.add(agent="shell", phase="repair", action="rejected", note=validation_error)
-                            continue
-                        repair_attempts.append(
-                            {"finding": finding.finding_id, "region": finding.region, "round": round_no,
-                             "agent": proposal.agent, "sections": len(proposal.sections)}
-                        )
-                        candidate_version, candidate_pdf, candidate_gates = render_version(
-                            f"lane A repair round {round_no} for {finding.finding_id}", proposal
+                            ),
                         )
                     else:
-                        if live:
-                            template = _live_lane_b_builder(
-                                lane_budget, trace, payload=repair_builder_evidence,
-                                images=[*repair_target_images, *repair_render_images],
-                                template_id=f"lane-b-r{round_no + 1}",
-                                audit=_e5_audit(
-                                    agent="lane_b_builder",
-                                    phase="repair",
-                                    round_no=round_no,
-                                    render_version=repair_base_version.version_id,
-                                    finding_ids=(finding.finding_id,),
-                                    measurement_ids=(bound.request_id,),
-                                    instructions=E5_LANE_B_BUILDER_INSTRUCTIONS,
-                                    image_refs=(
-                                        _e5_image_refs(repair_target_images, "target")
-                                        + _e5_image_refs(repair_render_images, "render")
-                                    ),
-                                ),
-                            )
-                        else:
-                            from app.pipeline.authored_template import SCRIPTED_AUTHORED_TEMPLATE as _base_template
-
-                            # The offline Builder continues from the REPAIR BASE's
-                            # own representation (the quarantined candidate when
-                            # one exists), never from a fixed fixture.
-                            template = _scripted_lane_b_template(
-                                representation_by_version.get(
-                                    repair_base_version.version_id
-                                )
-                                or _base_template,
-                                finding,
-                                result,
-                            )
-                        try:
-                            validation = validate_authored_template(
-                                template,
-                                target_pdf=target_pdf,
-                                render_candidate=candidate,
-                                known_evidence_ids=_known_evidence_ids(),
-                                labels=approved_label_catalog,
-                            )
-                        except ValueError as error:
-                            validation = {"passed": False, "error": str(error)}
-                            candidate_audit_index = record_builder_candidate(
-                                template,
-                                stage="repair",
-                                input_render_version=repair_base_version.version_id,
-                                validation=validation,
-                                outcome="validator_rejected",
-                                reason=str(error),
-                                attribution=attribution,
-                                action_fingerprint=fingerprint,
-                            )
-                            lane_state["last_rejection"] = str(error)[:280]
-                            repair_attempts.append({"finding": finding.finding_id, "region": finding.region, "rejected": str(error)[:300], "round": round_no})
-                            trace.add(agent="shell", phase="repair", action="rejected", note=str(error)[:300])
-                            continue
-                        candidate_audit_index = record_builder_candidate(
-                            template,
-                            stage="repair",
-                            input_render_version=repair_base_version.version_id,
-                            validation=validation,
-                            outcome="validated",
-                            reason="typed template accepted by the shell validator",
-                            attribution=attribution,
-                            action_fingerprint=fingerprint,
-                        )
-                        repair_attempts.append(
-                            {"finding": finding.finding_id, "region": finding.region,
-                             "round": round_no, "template": template.template_id}
-                        )
-                        candidate_version, candidate_pdf, candidate_gates = render_version(
-                            f"lane B repair round {round_no} for {finding.finding_id}", template
-                        )
+                        proposal = _scripted_lane_a_proposal(state, derived)
+                    validation_error = _validate_lane_a_proposal(proposal, state)
+                    candidate_audit_index = record_builder_candidate(
+                        proposal,
+                        stage="repair",
+                        input_render_version=repair_base_version.version_id,
+                        validation={"passed": validation_error is None, "error": validation_error},
+                        outcome="validator_rejected" if validation_error else "validated",
+                        reason=validation_error or "typed proposal accepted by the shell validator",
+                        attribution=attribution,
+                        action_fingerprint=fingerprint,
+                    )
+                    if validation_error:
+                        repair_attempts.append({"finding": finding.finding_id, "region": finding.region, "rejected": validation_error, "round": round_no})
+                        trace.add(agent="shell", phase="repair", action="rejected", note=validation_error)
+                        continue
+                    repair_attempts.append(
+                        {"finding": finding.finding_id, "region": finding.region, "round": round_no,
+                         "agent": proposal.agent, "sections": len(proposal.sections)}
+                    )
+                    candidate_version, candidate_pdf, candidate_gates = render_version(
+                        f"lane A repair round {round_no} for {finding.finding_id}", proposal
+                    )
                     assert candidate_audit_index is not None
                     update_builder_candidate(
                         candidate_audit_index,
@@ -5349,12 +4609,12 @@ def run_e5(
                 improved, improvement_reason = _measurement_improvement(result, repeat_result)
                 if not improved:
                     unmeasured_trial = (
-                        lane == "a" and result.status in {"ambiguous", "evidence_missing", "not_measurable"}
+                        result.status in {"ambiguous", "evidence_missing", "not_measurable"}
                         and all(candidate_gates.get(name) is True for name in LANE_A_OUTPUT_GATES)
                         and not binding_lineage_by_version[candidate_version.version_id].proofs
                         and candidate_version.html_sha256 != repair_base_version.html_sha256
                     )
-                    if lane == "a" and result.status != "confirmed":
+                    if result.status != "confirmed":
                         failed = [name for name in LANE_A_OUTPUT_GATES if candidate_gates.get(name) is not True]
                         if failed:
                             improvement_reason = f"unmeasured trial failed output gate(s): {failed}"
@@ -5493,10 +4753,7 @@ def run_e5(
                 active_index = candidate_index
                 last_promoted_region = finding.region
                 last_promoted_page = finding.page
-                if lane == "a":
-                    lane_state["active_proposal"] = proposal
-                else:
-                    lane_state["active_template"] = template
+                lane_state["active_proposal"] = proposal
                 resolved_measurements[finding.finding_id] = (bound, repeat_result)
                 repaired_entry = ledger.entries[_ledger_key(finding)]
                 repaired_entry.status = "repaired"
@@ -5791,8 +5048,8 @@ def _write_e5_comparison(
                 "target_specific_code": None,
                 "target_specific_code_status": "not_evaluated",
                 "shared_backend_code": {
-                    "lane_a": "c2_plan.SectionPlan rail fields + c2_html rail branch",
-                    "lane_b": "app/pipeline/authored_template.py",
+                    "lane_a": "app/pipeline/render_plan.py + app/pipeline/html_renderer.py",
+                    "lane_b": "archived authored-template source (recorded Git revision)",
                 }.get("lane_a" if lane_id == "a" else "lane_b"),
             }
         )
@@ -6061,7 +5318,7 @@ def _write_e5_owner_package(
 
 ## Contents
 
-- `comparison_page_N.png` — TARGET | Lane A | Lane B, per page;
+- `comparison_page_N.png` — TARGET | selected renders, per page;
   a column labeled LANE X LATEST ATTEMPT is NOT a best-valid render;
 - `lane_*_visual/` — selected-output previews, difference images, and the
   existing visual-comparison report. Extra pages are previewed and shown in

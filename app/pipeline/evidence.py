@@ -1275,20 +1275,13 @@ def _call_limits(budget: RunBudget, max_requests: int) -> Any:
         tool_calls_limit=max(1, min(E4_PER_CALL_MAX_TOOL_CALLS, budget.max_tool_calls - budget.tool_calls)),
     )
 
-def _live_model_settings(*, thinking: bool = False) -> dict[str, Any]:
-    """Frozen live sampling settings; thinking stays opt-in because most E
-    roles still return typed output through a forced tool call."""
-    settings: dict[str, Any] = {
+def _live_model_settings() -> dict[str, Any]:
+    """Frozen sampling for the selected typed Builder/Reviewer roles."""
+    return {
         "temperature": E4_TEMPERATURE,
-        "max_tokens": 16384,  # the provider default output cap truncated typed outputs
-        # (and the authored-template lane needs more still — Phase 0 E5)
-        "extra_body": {"thinking": {"type": "enabled" if thinking else "disabled"}},
+        "max_tokens": 16384,
+        "extra_body": {"thinking": {"type": "disabled"}},
     }
-    if thinking:
-        # Keep enough of the shared output budget for the complete HTML/CSS
-        # JSON; the first high-effort trial exhausted both output retries.
-        settings["openai_reasoning_effort"] = "low"
-    return settings
 
 def _live_visual_model(budget: RunBudget, trace: RunTrace, agent: str) -> Any:
     """PydanticAI OpenAI-compatible model for image-bearing roles. Uses the
