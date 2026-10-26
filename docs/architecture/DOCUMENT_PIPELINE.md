@@ -2,7 +2,7 @@
 
 Status: `Active contract`
 
-Last reviewed: October 26, 2026 (local generation provenance)
+Last reviewed: October 27, 2026 (local structured workflow records)
 
 This document defines the provider-neutral boundaries of the CV Reformatter
 backend. The [Product Specification](../product/PRODUCT_SPEC.md) remains the

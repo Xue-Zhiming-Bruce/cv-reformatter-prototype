@@ -4,7 +4,7 @@ Status: `Active contract`
 
 Owner: Backend
 
-Last reviewed: October 25, 2026 (bounded layout trials and mandatory output checks)
+Last reviewed: October 27, 2026 (local PostgreSQL revisions, provenance and acceptance)
 
 This document records the current MVP-compatible backend interface used by the
 frontend. It is not a complete versioned OpenAPI replacement; the FastAPI

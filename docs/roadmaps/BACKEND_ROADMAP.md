@@ -443,6 +443,15 @@ currentness assertion without changing tracked source:
 `tests/test_results/pytest/20261026T182106Z_p1_acceptance_pointer_negative_validated.txt`.
 No paid provider calls or new human fidelity acceptance.
 
+Full structured-foundation regression on committed `27e5871` passes **849**, with
+23 skips, five existing warnings and exit 0 (788.07s). Command:
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TEST_DATABASE_URL=<isolated-local-test-url>
+python -B -m pytest -p no:cacheprovider tests/unit tests/integration -x -q --tb=short`.
+Log: `tests/test_results/pytest/20261026T182322Z_p1_structured_full_backend.txt`.
+The repeated read-only audit retains all 75 frozen references, six accepted
+outputs and three current blind acceptances:
+`tests/test_results/pytest/20261026T182422Z_p1_structured_preserved_baseline.txt`.
+
 P1 remains open: design/proof lifecycle persistence, workflow/job transactions,
 file-publication ownership/isolation, explicit import/data-preserving rollback
 and idempotency are still required. The initial downgrade drops the structured tables; its empty-DB

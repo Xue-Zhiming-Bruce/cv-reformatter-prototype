@@ -101,6 +101,15 @@ The pointer guard's validated in-memory negative control fails at the intended
 New provider calls: zero. This is persistence evidence, not new human fidelity
 acceptance or a claim of atomic output publication.
 
+On clean committed source `27e5871`, the full canonical backend command
+(`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, explicit `TEST_DATABASE_URL`,
+`python -B -m pytest -p no:cacheprovider tests/unit tests/integration -x -q --tb=short`)
+passes **849**, with 23 skips, five existing warnings and exit 0 (788.07s):
+`tests/test_results/pytest/20261026T182322Z_p1_structured_full_backend.txt`.
+The post-change baseline audit again verifies 75 frozen file references, six
+accepted outputs and three current blind acceptances without exports/provider calls:
+`tests/test_results/pytest/20261026T182422Z_p1_structured_preserved_baseline.txt`.
+
 Design/proof lifecycle versions still use the filesystem store; migration/import,
 full workflow transactions, file-publication isolation and idempotency remain P1/B1A/P2
 work in the [active roadmap](../roadmaps/BACKEND_ROADMAP.md). No production
