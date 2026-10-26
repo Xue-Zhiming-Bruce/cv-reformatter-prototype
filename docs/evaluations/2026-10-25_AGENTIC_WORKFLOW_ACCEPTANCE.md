@@ -1321,3 +1321,52 @@ no longer dispatch by a retired renderer, while historical serialized identities
 and marker-count interpretation remain readable and cannot authorize A.
 No supported source caller imports either deleted renderer. M5 is complete;
 M6 source/artifact freeze remains the next gate.
+
+
+#### M6 — Bounded Integrated Baseline And Support Freeze
+
+The accepted baseline is frozen as an evidence chain, not relabeled as a fresh
+live run. Local annotated tag `cv-agentic-reviewed-20261026` resolves to
+**4766346e0fc8a3f28f50c45787c3494519819918**, the actual original live generation
+source. `cv-agentic-integrated-20261026` resolves to
+**08832ede11ba3fa7c62c2ca20cf5179d8df382bb**, the clean A-only implementation
+validated by the 837-pass suite. No tags or commits were pushed.
+
+On that clean committed source, [six selected-proposal recompilations](../../tests/test_results/pytest/20261026T133705Z_m6_committed_snapshot_replay.txt)
+again reproduce every accepted HTML byte, with unchanged accepted PDF hashes.
+[Freeze binding](../../tests/test_results/pytest/20261026T133852Z_m6_frozen_baseline_binding.txt)
+verifies source/context/template/proposal/check/output identities, original font
+asset hashes and six embedded font faces/program hashes per accepted PDF. The
+additive `integrated_baseline_freeze` in the existing
+[canonical manifest](../../tests/local_datasets/resume_matrix/runs/matrix_20261026T031910Z_agentic_bc_builder_wire/run_manifest.json)
+binds all three original runs, six exact owner dispositions, original settings,
+input/evidence/proof paths, latencies, usage and the current replay/validation.
+It never overwrites the original `source_revision` or transfers /16 proof approval.
+
+[Canonical package validation](../../tests/test_results/pytest/20261026T134121Z_m6_canonical_package_validation.txt)
+passes all three manifests, unchanged CSV columns/result-row counts, review links
+and six accepted file identities. This is an additive freeze of the existing
+workflow; there is no new runner, corpus or result schema. The combined
+[review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261026T031910Z_agentic_bc_builder_wire/RESULTS_INDEX.md)
+and its `RUN_README.md` describe original live reproduction versus current
+offline compilation replay and the need for new proof/output approval on a new run.
+No provider call, PDF export, output acceptance or current proof approval was
+created for M6. Original measured usage remains **95 requests, 611082 input /
+29447 output tokens; billed cost unknown**. Original per-step latency and the
+SIGBUS/fresh-process-validation distinction remain unchanged.
+
+| Exit concern | Frozen evidence and limit |
+| --- | --- |
+| B0 source and reproducible workflow | Original full live canonical runs at reviewed tag 4766346, saved source/target evidence and full request/configuration history; integrated tag 08832ed, real API/runner/Chrome offline checks and six exact current compiler replays. A new model run is nondeterministic and must create new approvals; current byte parity is not new model-quality evidence. |
+| B0 reviewable outcomes and rollback | Six immutable accepted ordinary/blind PDFs/HTML, target/evidence/comparison pages, exact revision/template/output identities, current blind acceptance and old-proof rejection. M4 verified actual prior-build archive rollback; no runtime fallback survives. |
+| B1 reusable representation and provenance | Provider-neutral `LayoutTemplateSpec/2.0`, measured compiler 10, A renderer /17; frozen source/target evidence and existing API support table. Candidate facts remain in `CandidateProfile` and disclosed context. No target-person facts or page backgrounds are introduced. |
+| B1 accepted scope and tolerances | Owner-reviewed fidelity is limited to these six exact B→C/E→B/F→C ordinary/blind one-column outcomes. Existing 0.25pt typography / 1pt rule tolerances remain diagnostics linked to actual comparison records, not human-acceptance thresholds. Sidebar/other implemented properties have automated coverage only; new fidelity classes require review. |
+
+This closes B0/B1 **for the frozen bounded baseline and versioned support
+contract**. It does not certify arbitrary templates, every proof, general
+Reviewer discovery/repair quality, synchronous-job reliability, provider
+production controls or hosted candidate-data safety. E→B short/medium proof-label
+errors (36.385/88.074pt), the post-COMPLETE E blind SIGBUS and remaining findings
+stay open. The next roadmap work is production foundations (B1A/P1 and subsequent
+security/operations gates); no persistence migration or deployment was performed
+by this freeze.

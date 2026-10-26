@@ -392,6 +392,24 @@ records `renderer_version`. Current uploaded-target rendering uses
 identifies historical records only. The six identity fields used for final-output
 acceptance remain unchanged.
 
+### Bounded support evidence freeze — October 26, 2026
+
+The renderer /17, measured compiler 10 and provider-neutral schema-2 support
+statement above are frozen against the six exact owner-accepted ordinary/blind
+B→C, E→B and F→C outcomes. Original live source is 4766346; integrated A-only
+source is 08832ed. Current selected-proposal compilation reproduces their exact
+HTML bytes and preserves original PDF identities. This is not fresh live output
+or approval of old proofs under a new configuration.
+
+Human-reviewed fidelity covers those one-column B/C-target examples. Sidebar
+and other implemented properties have automated coverage, without general human
+fidelity acceptance. The existing 0.25pt typography and 1pt rule comparisons are
+diagnostics bound to those records, not automatic acceptance criteria. Known
+E short/medium proof-label mismatches and SIGBUS remain open. New layout classes
+require review before expanding the fidelity claim; exact-output acceptance and
+all existing safety/identity gates remain mandatory. See the October 25–26
+evaluation report for source tags, immutable outcomes and reproduction evidence.
+
 ### Generated-profile artifact and draft preservation
 
 Generation never overwrites the extraction draft: `candidate_profile.json`

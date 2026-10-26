@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 26, 2026 (M5 single-renderer retirement verified; integrated freeze in progress)
+Last reviewed: October 26, 2026 (M5 verified; bounded M6/B0/B1 source and outcome freeze complete)
 
 This is the sole implementation checklist. Product behavior belongs in the
 [Product Specification](../product/PRODUCT_SPEC.md), approved decisions in
@@ -20,8 +20,9 @@ there is no experiment tree, parallel runner, or second planning system.
 The MVP and target-PDF demo accepted on July 26, 2026 remain the functional
 baseline. The owner selected A, structured layout with controlled rendering,
 on October 22. Its bounded representative outputs are accepted, the default is
-A and replaced execution paths are retired. M6 now binds the integrated source
-and accepted artifacts; B0/B1 remain incomplete until that freeze meets its exits.
+A and replaced execution paths are retired. M6 binds the integrated source
+and accepted artifacts; B0/B1 are complete for that bounded baseline/support
+contract. General fidelity, reliability and production readiness remain open.
 
 The product flow remains:
 
@@ -256,16 +257,16 @@ Rollback is explicit deployment of a recoverable build, not a hidden runtime pat
 
 ### M6 — Freeze The Integrated Baseline And Close B0/B1 By Their Actual Gates
 
-Status: `[~]` M5 is verified; exact artifact/input/prompt/font inventory and identity audits pass. Source tagging and the bounded B0/B1 evidence freeze are in progress; neither stage is completed yet.
+Status: `[x]` Bounded freeze complete. Reviewed source 4766346 and integrated source 08832ed have local annotated tags; the three canonical run manifests, six exact owner-accepted outputs, inputs/evidence/configuration/font hashes, comparisons, original usage/latency and failures are bound in the existing manifest. A clean committed /17 replay yields six identical HTMLs and unchanged accepted PDFs. Current /17 old-proof rejection and exact blind acceptance remain independently verified. This is not a new live run, current proof approval or general Reviewer/fidelity acceptance. See the owning October 25–26 report's M6 exit table.
 
-Stage B0 — reproducible accepted baseline (`[~]`):
+Stage B0 — reproducible accepted baseline (`[x]`, bounded freeze):
 
-- [ ] Identify/tag the reviewed source revision and record one reproducible
+- [x] Identify/tag the reviewed source revision and record one reproducible
       end-to-end run using the existing versioned samples/workflow. Record input
       checksums, candidate revision, target/evidence/template identities,
       provider/prompt/model/budget settings, compiler/renderer/font versions,
       output checksums, independent gate results and human review disposition.
-- [ ] Preserve directly reviewable target-analysis, HTML/PDF and comparison
+- [x] Preserve directly reviewable target-analysis, HTML/PDF and comparison
       artifacts plus measured latency, cost and failure/rollback behavior. Keep
       raw files local/ignored and retain only intentional safe summaries in Git.
       Compare with the original baseline before claiming replacement parity.
@@ -274,13 +275,13 @@ B0 exit: the accepted integrated build can be rerun and compared with later
 changes from its recorded inputs/settings. Historical accepted source remains
 recoverable. DOCX output and new provider selection are not B0 prerequisites.
 
-Stage B1 — versioned fidelity/support contract (`[~]`):
+Stage B1 — versioned fidelity/support contract (`[x]`, bounded freeze):
 
-- [ ] Freeze the supported `LayoutTemplateSpec` coverage and unsupported-feature
+- [x] Freeze the supported `LayoutTemplateSpec` coverage and unsupported-feature
       behavior demonstrated in M2–M4. Trace measured/inferred fields to evidence;
       verify geometry, content reflow/continuation and reviewed branding where
       supported. Unsupported assets/features must remain explicit, never guessed.
-- [ ] Bind the support statement and layout-class tolerances to outcome PDFs,
+- [x] Bind the support statement and layout-class tolerances to outcome PDFs,
       independent content/privacy/structure checks, visual comparisons and owner
       decisions. Record remaining limits without generalizing from the bounded
       sidebar repair, historical matrix scores or native-template regressions.
@@ -298,9 +299,9 @@ integration work is owned by M2–M6 above.
 
 | Stage | Current status | Completion authority |
 | --- | --- | --- |
-| B0 baseline | Open; accepted MVP exists, integrated freeze incomplete. | M6 B0 evidence and exit. |
-| B1 fidelity contract | Strict models/compiler and bounded mappings exist; accepted support boundary incomplete. | M2–M4 outcomes, M6 B1 exit. |
-| B3 HTML/PDF renderer | HTML/Chrome selected (ADR 0006); DOCX/LibreOffice output retired. Full supported A migration and continuation acceptance remain open. | M2–M5 output/migration evidence, M6 version freeze. Historical Chrome tolerances remain in ADR 0006, not a fresh acceptance claim. |
+| B0 baseline | Complete for the frozen six-output baseline, with original live and current integrated identities kept distinct. | M6 B0 exit table and canonical freeze manifest. |
+| B1 fidelity contract | Complete for versioned /17/compiler-10 support and six accepted one-column outputs. Broader layout fidelity remains unaccepted. | M2–M4 outcomes and M6 B1 exit table. |
+| B3 HTML/PDF renderer | HTML/Chrome and A-only ownership integrated/frozen. Representative continuation is accepted; arbitrary layout/continuation quality remains outside the frozen fidelity claim. | M2–M6 outputs/migration/freeze. Historical Chrome tolerances remain in ADR 0006. |
 | B4 semantic/visual layer | LLM-first segmentation and deterministic coverage established (ADR 0005); ordinary Reviewer discovery and general repair quality unaccepted. | M2/M3 real workflow evidence; no new extraction/provider choice. |
 | B5 reliability/acceptance | Canonical tests and independent checks exist; supported-corpus product acceptance and production reliability remain open. | M6 corpus evidence; B1A/P2–P5 operational checks below. |
 
@@ -310,7 +311,7 @@ Historical Adobe/Chrome measurements and A/B comparisons remain evidence under
 ADRs and [the October 22 A/B review](../evaluations/2026-10-22_AB_MAINLINE_REVIEW.md).
 They do not override the current acceptance sequence.
 
-## After M6 — Production Foundations (Not The Current Work)
+## Next — Production Foundations
 
 ### B1A — Provider Execution And Reproducibility
 
