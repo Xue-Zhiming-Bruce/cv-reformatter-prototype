@@ -564,6 +564,15 @@ def test_header_contact_label_geometry_uses_actual_scoped_prefixes(tmp_path: Pat
     result = service._measure_header_contact_label_geometry(request, target_pdf=inputs["target_pdf"],
         current_pdf=pdf, state=state, plan=plan, current_name_text=context.candidate_heading)
     assert result.status == status, result
+    facts = service._reviewer_presentation_facts(inputs["target_pdf"], pdf, {},
+        current_name_text=context.candidate_heading, state=state, plan=plan)
+    labels_fact = facts["header_contact_labels"]
+    assert labels_fact["region_id"] == "header.product_contact"
+    assert labels_fact["status"] == status
+    assert labels_fact["target_evidence"] == result.target_evidence
+    assert labels_fact["current_evidence"] == result.current_evidence
+    assert labels_fact["delta_pt"] == result.delta_pt
+    assert "alpha@example.test" not in json.dumps(facts) and "Office: West" not in json.dumps(facts)
     if status != "confirmed":
         assert result.target_value_pt is result.current_value_pt is result.delta_pt is None
         return
@@ -608,6 +617,13 @@ def test_agentic_header_label_repair_requires_scoped_measured_improvement(tmp_pa
         return service.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[],
             header_contact_labels=False if audit.phase == "repair" else None)
     def reviewer(_images, **kwargs):
+        message = kwargs["message"]
+        facts = json.loads(message[message.index("{"):])["deterministic_presentation_facts"]
+        labels_fact = facts["header_contact_labels"]
+        assert labels_fact["status"] == "confirmed"
+        assert labels_fact["target_evidence"][0]["label_mode"] is False
+        assert labels_fact["current_evidence"][0]["label_mode"] is kwargs["render_version"].endswith("v1")
+        assert "alpha@example.test" not in json.dumps(facts) and "Office: West" not in json.dumps(facts)
         if not kwargs["render_version"].endswith("v1"):
             return []
         return [service.DefectFinding(finding_id=kwargs["finding_id"], target_version=kwargs["target_version"],

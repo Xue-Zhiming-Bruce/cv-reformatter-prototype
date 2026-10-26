@@ -219,6 +219,12 @@ and effective material repair plus exact human acceptance remain open.
       Canonical proof contexts now carry typed contacts, and their checksum
       binds that metadata, invalidating old proof evidence. Focused checks pass;
       fresh live proof/preview evidence is still required before closure.
+      Build `965038f` completes fresh typed-contact proofs and ordinary/blind
+      previews, but blind output retains a 36.527pt label mismatch. Reviewer
+      reverses its direction and mixes hidden target-person fields. Paired
+      content-free label evidence now reaches whole-page review under
+      `review-presentation-facts/3`; 19 focused checks pass. Its fresh live
+      discovery/repair outcome remains pending.
 - [ ] Fix demonstrated default-Reviewer discovery, evidence/binding or Builder
       effectiveness failures that prevent acceptance of the declared samples.
       Recheck the affected PDF and previously verified regions using the existing

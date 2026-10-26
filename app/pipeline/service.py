@@ -2466,12 +2466,25 @@ def _header_typography_context(pdf: Path, *, name_text: str | None = None) -> di
 
 def _reviewer_presentation_facts(
     target_pdf: Path, current_pdf: Path, derived: dict[str, Any],
-    *, current_name_text: str | None = None,
+    *, current_name_text: str | None = None, state: Any = None, plan: Any = None,
 ) -> dict[str, Any]:
     labels = derived.get("sidebar_labels") or []
     right_edges = [round(float(item["x1"]), 3) for item in labels if item.get("x1") is not None]
+    contacts: dict[str, Any] = {"status": "not_measurable", "reason": "structured header plan unavailable"}
+    if state is not None and plan is not None:
+        nodes = [node for node in state.nodes if node.kind == "header_row"
+                 and any(field.slot in CONTACT_FIELD_SLOTS.values() for field in node.fields)]
+        region_id = nodes[0].node_id if len(nodes) == 1 else None
+        measurement = _measure_header_contact_label_geometry(MeasurementRequest(
+            request_id="review-header-contact-labels", metric="header_contact_label_geometry", page=1,
+            region_id=region_id, intent="compare only generated header contact label presence"),
+            target_pdf=target_pdf, current_pdf=current_pdf, state=state, plan=plan,
+            current_name_text=current_name_text)
+        contacts = {"region_id": region_id, "page": 1,
+                    **measurement.model_dump(mode="json", exclude={"request_id"})}
     return {
         "schema_version": REVIEW_PRESENTATION_FACTS_VERSION,
+        "header_contact_labels": contacts,
         "header_typography": {
             "target": _header_typography_context(target_pdf),
             "render": _header_typography_context(current_pdf, name_text=current_name_text),
@@ -2527,6 +2540,11 @@ def _e5_reviewer_message(
         "Do not report a font/size/position difference contradicted by matching "
         "measured facts. The following-line size is a separate line, not the name. "
         "Report visible differences, not questions asking to verify matching styling. "
+        "header_contact_labels describes generated label prefixes only: "
+        "target_evidence is TARGET and current_evidence is RENDER. label_mode=false "
+        "means values only; true means generated prefixes are present. Use confirmed "
+        "evidence for the direction of a label mismatch; it says nothing about missing "
+        "contact fields or their values. Never request restoration of hidden fields. "
         "Continue reviewing the whole page across all regions. "
         "Compare the TARGET and RENDER images for exactly this page. Use one "
         "region_id from region_catalog per finding and exactly one suspected "
@@ -4648,7 +4666,8 @@ def run_e5(
                         )
                         region_catalog = _e5_region_catalog(state, derived)
                         presentation_facts = _reviewer_presentation_facts(
-                            target_pdf, current_pdf, derived, current_name_text=candidate_name_text
+                            target_pdf, current_pdf, derived, current_name_text=candidate_name_text,
+                            state=state, plan=current_plan,
                         )
                         counter["finding"] += 1
                         node_inventory = json.dumps(

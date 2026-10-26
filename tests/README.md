@@ -75,6 +75,9 @@ proof-to-render-context bridge supplies typed contacts while retaining original
 lines; canonical checksums bind the derived metadata. Approval rejects legacy
 line-only checksums. The API loop regression hides labels through all three
 proofs, and damaged contact spans still fail the content gate.
+The existing actual-PDF label table also checks paired content-free Reviewer
+facts for matched/mismatched/mixed/unknown/missing evidence; the controlled
+API/runner loop checks that those facts follow both initial and repaired PDFs.
 The same integration table covers uniform role/company typography with one or
 two target entries, retained unsupported-dimension warnings, failed-binding
 request-ID continuity, and unverified renderer-limit claims. Live A cases also cover bounded trials
