@@ -1,13 +1,14 @@
-"""PostgreSQL artifact metadata repository; schema changes belong to Alembic."""
+"""PostgreSQL workflow repositories; schema changes belong to Alembic."""
 
 from collections.abc import Mapping
 from functools import lru_cache
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 import uuid
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, DateTime, ForeignKey, ForeignKeyConstraint, Identity, Index, Integer, MetaData, Select, Table, Text, create_engine, func, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.engine import Engine, URL, make_url
@@ -19,6 +20,15 @@ from app.final_acceptance import FinalOutputAcceptance, FinalOutputIdentity
 from app.generation.artifact_manifest import ArtifactManifest
 from app.generation.render_plan import layout_spec_sha256
 from app.template_analysis.schemas import LayoutTemplateSpec
+from app.template_analysis.layout_proof_schemas import LayoutProofApproval
+
+
+class StoredLayoutSource(BaseModel):
+    """Preserve template JSON numbers exactly across JSONB round trips."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    storage_schema_version: Literal["layout-source/1"] = "layout-source/1"
+    json_source: str
 
 
 metadata = MetaData()
@@ -92,6 +102,23 @@ final_output_acceptances = Table(
     CheckConstraint("jsonb_typeof(body) = 'object'", name="ck_acceptance_body_object"),
 )
 Index("ix_final_acceptance_artifact", final_output_acceptances.c.artifact_id, final_output_acceptances.c.acceptance_id)
+layout_proof_approvals = Table(
+    "layout_proof_approvals", metadata,
+    Column("artifact_id", Text, ForeignKey("artifact_sessions.artifact_id", ondelete="CASCADE"), primary_key=True),
+    Column("approval_id", Text, primary_key=True),
+    Column("ordinal", BigInteger, Identity(), nullable=False),
+    Column("target_sha256", Text, nullable=False),
+    Column("layout_sha256", Text, nullable=False),
+    Column("renderer_version", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("body_sha256", Text, nullable=False),
+    Column("body", Text, nullable=False),
+    Column("recorded_at", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
+    CheckConstraint("state IN ('pending', 'approved', 'rejected')", name="ck_proof_approval_state"),
+    CheckConstraint("target_sha256 ~ '^[0-9a-f]{64}$' AND layout_sha256 ~ '^[0-9a-f]{64}$' AND body_sha256 ~ '^[0-9a-f]{64}$'", name="ck_proof_approval_checksums"),
+    CheckConstraint("jsonb_typeof(body::jsonb) = 'object'", name="ck_proof_approval_body"),
+)
+Index("ix_proof_approval_current", layout_proof_approvals.c.artifact_id, layout_proof_approvals.c.ordinal)
 
 
 def postgres_url(value: str) -> URL:
@@ -228,17 +255,33 @@ def _json_sha256(body: dict[str, Any]) -> str:
 def _generation_manifest(row: Mapping[str, Any]) -> ArtifactManifest:
     try:
         manifest = ArtifactManifest.model_validate_json(json.dumps(row["manifest"]))
-        layout = LayoutTemplateSpec.model_validate_json(json.dumps(row["layout_spec"]))
+        stored_layout = row["layout_spec"]
+        layout_body = (json.loads(StoredLayoutSource.model_validate(stored_layout).json_source)
+                       if "storage_schema_version" in stored_layout else stored_layout)
+        layout = LayoutTemplateSpec.model_validate_json(json.dumps(layout_body))
         if (manifest.artifact_id != row["artifact_id"]
                 or manifest.output_identity.profile_revision_id != row["profile_revision_id"]
                 or _json_sha256(row["manifest"]) != row["manifest_sha256"]
                 # Revalidation normalizes legacy separator whitespace; hash the saved JSON, not a rewritten model.
-                or _json_sha256(row["layout_spec"]) != manifest.output_identity.layout_spec_sha256
+                or _json_sha256(layout_body) != manifest.output_identity.layout_spec_sha256
                 or layout.template_version != manifest.output_identity.layout_template_version):
             raise ValueError("Stored generation identity mismatch")
         return manifest
     except ValueError as exc:
         raise ArtifactStoreError("Stored generation failed schema or identity validation.") from exc
+
+
+def _proof_approval(row: Mapping[str, Any]) -> LayoutProofApproval:
+    try:
+        approval = LayoutProofApproval.model_validate_json(row["body"])
+        if (approval.artifact_id != row["artifact_id"] or approval.approval_id != row["approval_id"]
+                or approval.target_checksum != row["target_sha256"] or approval.layout_spec_checksum != row["layout_sha256"]
+                or approval.renderer_version != row["renderer_version"] or approval.state != row["state"]
+                or hashlib.sha256(row["body"].encode()).hexdigest() != row["body_sha256"]):
+            raise ValueError("Stored proof approval identity mismatch")
+        return approval
+    except ValueError as exc:
+        raise ArtifactStoreError("Stored proof approval failed schema or identity validation.") from exc
 
 
 class PostgresGenerationRepository:
@@ -265,10 +308,24 @@ class PostgresGenerationRepository:
                         or revision["profile_sha256"] != manifest.output_identity.profile_sha256
                         or revision["source_draft_sha256"] != manifest.inputs["source_draft"].sha256):
                     raise ArtifactStoreConflict("The saved profile changed before generation was recorded; generate the current revision.")
+                approval_ref = manifest.inputs.get("layout_proof_approval")
+                if approval_ref is not None:
+                    proof_row = connection.execute(select(layout_proof_approvals).where(
+                        layout_proof_approvals.c.artifact_id == manifest.artifact_id,
+                    ).order_by(layout_proof_approvals.c.ordinal.desc()).limit(1)).mappings().first()
+                    approval = _proof_approval(proof_row) if proof_row is not None else None
+                    target_ref = manifest.inputs.get("target_document")
+                    if (approval is None or not approval.is_approved or target_ref is None
+                            or approval.layout_spec_checksum != manifest.output_identity.layout_spec_sha256
+                            or approval.target_checksum != target_ref.sha256
+                            or approval.renderer_version != manifest.renderer_version
+                            or hashlib.sha256(proof_row["body"].encode()).hexdigest() != approval_ref.sha256):
+                        raise ArtifactStoreConflict("The layout proof approval changed before generation was recorded; review the current proof set.")
                 connection.execute(insert(generation_versions).values(
                     artifact_id=manifest.artifact_id, generation_id=generation_id,
                     profile_revision_id=manifest.output_identity.profile_revision_id,
-                    manifest_sha256=_json_sha256(body), manifest=body, layout_spec=layout_spec.model_dump(mode="json"),
+                    manifest_sha256=_json_sha256(body), manifest=body,
+                    layout_spec=StoredLayoutSource(json_source=layout_spec.model_dump_json()).model_dump(mode="json"),
                 ))
                 connection.execute(update(artifact_sessions).where(
                     artifact_sessions.c.artifact_id == manifest.artifact_id,
@@ -338,3 +395,38 @@ class PostgresFinalAcceptanceRepository:
             return acceptance
         except ValueError as exc:
             raise ArtifactStoreError("Stored final acceptance failed schema or identity validation.") from exc
+
+
+class PostgresLayoutProofRepository:
+    def __init__(self, engine: Engine) -> None:
+        self.engine = engine
+
+    def save(self, approval: LayoutProofApproval) -> None:
+        body = json.dumps(approval.model_dump(mode="json"), indent=2, ensure_ascii=False, sort_keys=True)
+        try:
+            with self.engine.begin() as connection:
+                artifact = connection.execute(select(artifact_sessions.c.artifact_id).where(
+                    artifact_sessions.c.artifact_id == approval.artifact_id,
+                ).with_for_update()).first()
+                if artifact is None:
+                    raise ArtifactStoreConflict("Proof approval requires an existing artifact record.")
+                connection.execute(insert(layout_proof_approvals).values(
+                    artifact_id=approval.artifact_id, approval_id=approval.approval_id,
+                    target_sha256=approval.target_checksum, layout_sha256=approval.layout_spec_checksum,
+                    renderer_version=approval.renderer_version, state=approval.state,
+                    body_sha256=hashlib.sha256(body.encode()).hexdigest(), body=body,
+                ))
+        except SQLAlchemyError as exc:
+            raise ArtifactStoreError("Proof approval could not be saved to PostgreSQL; no filesystem fallback was used.") from exc
+
+    def current(self, artifact_id: str) -> LayoutProofApproval | None:
+        try:
+            with self.engine.connect() as connection:
+                row = connection.execute(select(layout_proof_approvals).where(
+                    layout_proof_approvals.c.artifact_id == artifact_id,
+                ).order_by(layout_proof_approvals.c.ordinal.desc()).limit(1)).mappings().first()
+        except SQLAlchemyError as exc:
+            raise ArtifactStoreError("Proof approval could not be read from PostgreSQL; verify availability and migrations.") from exc
+        if row is None:
+            return None
+        return _proof_approval(row)

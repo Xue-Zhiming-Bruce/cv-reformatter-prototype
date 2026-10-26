@@ -49,6 +49,24 @@ acceptance mirrors are not authoritative in PostgreSQL mode. Saved template
 JSON is schema-validated but hashed without reserializing the validated model,
 because existing separator defaults normalize whitespace on a second validation.
 
+`layout_proof_approvals` appends immutable approval/rejection aggregates, serialized
+by the artifact row lock and read by artifact-scoped sequence order. Target,
+layout, renderer and body checksums remain explicit. Database reads still invoke
+the existing actual-proof-file and active-renderer checks; storing a record does
+not transfer or grant approval to a changed file/configuration. Missing local
+audit copies can be rebuilt, conflicting copies fail closed, and intact old
+files cannot replace missing records or undo a saved rejection.
+Generation commit rechecks that latest proof state and target/layout/renderer/
+audit identity under the same artifact lock. Rejection after rendering and file
+checks produces 409 instead of inserting a stale successful generation.
+
+New template snapshots use the strict internal `layout-source/1` envelope to
+retain original product JSON text inside JSONB. Valid `-0.0` geometry otherwise
+round-trips as `0.0` and changes the saved template checksum. Earlier raw-JSONB
+layout records retain their read/identity path without invented provenance or
+changed hashes. New proof bodies use canonical JSON text and a byte checksum.
+The public `LayoutTemplateSpec` schema and renderer contract are unchanged.
+
 ## Evidence And Rollout Boundary
 
 The canonical integration checks use synthetic data on local PostgreSQL 17:
@@ -110,7 +128,32 @@ The post-change baseline audit again verifies 75 frozen file references, six
 accepted outputs and three current blind acceptances without exports/provider calls:
 `tests/test_results/pytest/20261026T182422Z_p1_structured_preserved_baseline.txt`.
 
-Design/proof lifecycle versions still use the filesystem store; migration/import,
+The proof-storage rollout passes **176** checks in the existing proof content/
+schema/validation, render/approval/API, PostgreSQL and design-API modules (450.91s,
+exit 0): `tests/test_results/pytest/20261026T184415Z_p1_proof_storage_regression.txt`.
+After closing the separately demonstrated JSON-number and approval-commit gaps,
+all **9** PostgreSQL cases pass, with 19 unrelated API cases deselected (130.76s,
+exit 0): `tests/test_results/pytest/20261026T190245Z_p1_proof_commit_final.txt`.
+Command: the same pytest flags, `test_postgres_storage.py test_layout_proof_api.py
+-k postgres`. Both uploaded/designer cases use actual runner/Chrome/gates and
+stub only model calls. They verify new-process proof reads, exact audit-copy
+reconstruction, rejection history, absent-record no-fallback and commit-time
+rejection without changing the previous generation record/pointer.
+
+The signed-zero and late-rejection regressions first fail on the unfixed source
+for the intended identity/200-instead-of-409 reasons:
+`tests/test_results/pytest/20261026T185749Z_p1_signed_zero_negative.txt` and
+`tests/test_results/pytest/20261026T185749Z_p1_proof_commit_negative.txt`.
+The migration case now preserves actual native generation/acceptance, profile
+history, metadata and earlier raw-JSONB layout records across the CLI upgrade.
+The earlier proof run's designer rejection failed because the new test omitted
+`design_id`; that correctly rejected request was fixed before the green runs.
+No provider calls, automatic output approval or production-readiness acceptance.
+The final read-only audit again verifies all 75 frozen references, six original
+accepted outputs and three current legacy acceptances:
+`tests/test_results/pytest/20261026T190556Z_p1_proof_preserved_baseline.txt`.
+
+Design lifecycle and unapproved proof state still use the filesystem store; migration/import,
 full workflow transactions, file-publication isolation and idempotency remain P1/B1A/P2
 work in the [active roadmap](../roadmaps/BACKEND_ROADMAP.md). No production
 PostgreSQL image/version, cloud configuration or job implementation is selected

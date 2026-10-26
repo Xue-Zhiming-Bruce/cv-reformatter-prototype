@@ -83,7 +83,7 @@ from app.profile_approval import (
 )
 from app.storage.artifact_store import ArtifactStore, ArtifactStoreConflict, ArtifactStoreError
 from app.storage.local_db import DEFAULT_DATABASE_PATH
-from app.storage.repository import artifact_store, final_acceptance_repository, generation_repository, profile_revision_repository
+from app.storage.repository import artifact_store, final_acceptance_repository, generation_repository, layout_proof_repository, profile_revision_repository
 from app.template_analysis.docx_style_analyzer import (
     TargetDocxAnalysisError,
     analyze_target_docx,
@@ -1109,6 +1109,7 @@ def approve_layout_proofs(
                 target_pdf=target_pdf,
                 reviewer_id=body.reviewer_id,
                 reviewer_note=body.reviewer_note,
+                repository=layout_proof_repository(DATABASE_URL),
             )
         else:
             reject_layout_proof(
@@ -1119,6 +1120,7 @@ def approve_layout_proofs(
                 target_pdf=target_pdf,
                 reviewer_id=body.reviewer_id,
                 reviewer_note=body.reviewer_note,
+                repository=layout_proof_repository(DATABASE_URL),
             )
     except LayoutProofIncompleteError as exc:
         raise HTTPException(
@@ -2398,7 +2400,7 @@ def _layout_proof_status(
     artifact_id: str, artifact_dir: Path
 ) -> LayoutProofStatusResponse:
     try:
-        approval = load_layout_proof_approval(artifact_dir)
+        approval = load_layout_proof_approval(artifact_dir, repository=layout_proof_repository(DATABASE_URL))
     except (LayoutProofMismatchError, LayoutProofValidationError):
         approval = None
     target_checksum = ""
@@ -2461,7 +2463,7 @@ def _require_layout_proof_approval(
     structured error code. Never falls back to an unapproved template.
     """
     try:
-        approval = load_layout_proof_approval(artifact_dir)
+        approval = load_layout_proof_approval(artifact_dir, repository=layout_proof_repository(DATABASE_URL))
     except LayoutProofMismatchError as exc:
         raise HTTPException(
             status_code=409,

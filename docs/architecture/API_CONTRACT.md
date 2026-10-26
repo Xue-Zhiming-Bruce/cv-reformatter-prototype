@@ -496,7 +496,15 @@ restoring old loose files cannot override the database's newer generation pointe
 A profile/generation changed between request validation and database commit
 returns 409 with a safe explanatory detail; no acceptance is inserted. This adds
 transactional structured records, not atomic file publication or durable jobs.
-Design/proof lifecycle records and document files remain filesystem-backed.
+Proof approval/rejection history is database-backed too. Reads retain the existing
+proof-file checksums, scope and active-renderer checks. A missing audit copy is
+rebuilt byte-for-byte; a conflicting copy blocks use. Missing database approvals
+cannot fall back to intact local approval files, and an older file cannot undo a
+saved rejection. Design lifecycle, unapproved proof records and document files
+remain filesystem-backed.
+The generation commit also rechecks the latest proof state and its exact
+target/layout/renderer/audit identity under the artifact lock. A proof rejected
+after rendering and file checks cannot be recorded as a successful generation.
 This is not private hosted artifact access.
 
 Metadata and list entries include additive `artifact_manifest_current`: true only

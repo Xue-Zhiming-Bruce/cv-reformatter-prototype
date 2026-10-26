@@ -6,6 +6,36 @@ from app import main
 from tests.helpers.adobe_evidence import mock_run_adobe_layout
 
 
+@pytest.fixture
+def postgres_database():
+    """Own one random schema in an explicitly selected local synthetic database."""
+    import os
+    import uuid
+    from sqlalchemy import create_engine
+    from sqlalchemy.schema import CreateSchema, DropSchema
+    from app.storage.postgres import postgres_engine, postgres_url
+
+    configured = os.getenv("TEST_DATABASE_URL")
+    if configured is None:
+        pytest.skip("Set TEST_DATABASE_URL to an isolated local PostgreSQL test database")
+    url = postgres_url(configured)
+    if url.host not in {"localhost", "127.0.0.1", "::1"} or not url.database.startswith("cv_reformatter_test"):
+        pytest.fail("PostgreSQL integration tests require a local cv_reformatter_test database")
+    admin = create_engine(url, hide_parameters=True, connect_args={"connect_timeout": 5})
+    schema = "cv_test_" + uuid.uuid4().hex
+    with admin.begin() as connection:
+        connection.execute(CreateSchema(schema))
+    scoped_url = url.update_query_dict({"options": f"-csearch_path={schema}"}).render_as_string(hide_password=False)
+    engine = postgres_engine(scoped_url)
+    try:
+        yield scoped_url, engine
+    finally:
+        engine.dispose()
+        with admin.begin() as connection:
+            connection.execute(DropSchema(schema, cascade=True))
+        admin.dispose()
+
+
 @pytest.fixture(autouse=True)
 def _offline_storage_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """An inherited developer DATABASE_URL must never redirect ordinary tests."""

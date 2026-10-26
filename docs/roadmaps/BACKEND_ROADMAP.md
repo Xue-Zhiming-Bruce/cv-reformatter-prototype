@@ -452,7 +452,30 @@ The repeated read-only audit retains all 75 frozen references, six accepted
 outputs and three current blind acceptances:
 `tests/test_results/pytest/20261026T182422Z_p1_structured_preserved_baseline.txt`.
 
-P1 remains open: design/proof lifecycle persistence, workflow/job transactions,
+October 27 proof progress: Alembic `0004_layout_proof_approvals` adds immutable
+approval/rejection history, scoped by artifact and bound to target/layout/renderer
+identity. API reads still verify actual files and active renderer configuration;
+old proof files cannot replace missing database records or undo rejection.
+Missing canonical audit copies can be rebuilt; conflicting copies fail closed.
+Generation commit rechecks the current proof state and full target/layout/renderer/
+audit identity under the artifact lock, closing rejection after render/file checks.
+Versioned raw layout JSON preserves signed-zero numeric identity through JSONB;
+earlier raw-JSONB records keep their checksum-verified read path.
+Validation: the first proof-focused command passes **176** (450.91s, exit 0),
+`tests/test_results/pytest/20261026T184415Z_p1_proof_storage_regression.txt`.
+After the separately demonstrated signed-zero and late-rejection fixes, all
+**9** PostgreSQL cases pass (19 unrelated API cases deselected, 130.76s, exit 0):
+`tests/test_results/pytest/20261026T190245Z_p1_proof_commit_final.txt`.
+The latter covers actual uploaded/designer loops with model calls stubbed,
+new-process reads, absent-record no-fallback, audit recovery, rejection history,
+commit races and profile/generation/acceptance-preserving CLI upgrade, including
+earlier raw-JSONB layout records. Both new regressions fail on the unfixed source
+at their intended boundaries; references are recorded in ADR 0007. No paid calls.
+The final baseline audit retains all 75 frozen references, six accepted outputs
+and three current legacy acceptances:
+`tests/test_results/pytest/20261026T190556Z_p1_proof_preserved_baseline.txt`.
+
+P1 remains open: design lifecycle and unapproved proof-state persistence, workflow/job transactions,
 file-publication ownership/isolation, explicit import/data-preserving rollback
 and idempotency are still required. The initial downgrade drops the structured tables; its empty-DB
 reversibility is not production backup/restore evidence. No deployment or hosted

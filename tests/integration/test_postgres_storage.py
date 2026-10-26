@@ -5,20 +5,16 @@ import json
 import os
 import subprocess
 import sys
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from alembic import command
 from alembic.autogenerate import compare_metadata
-from alembic.config import Config
 from alembic.migration import MigrationContext
 from docx import Document
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, inspect, select, update
+from sqlalchemy import inspect, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.schema import CreateSchema, DropSchema
 
 from app import main
 from app.extraction.candidate_schema import CandidateProfile, MissingField
@@ -26,41 +22,12 @@ from app.final_acceptance import FinalOutputAcceptance
 from app.generation.artifact_manifest import ArtifactManifest
 from app.profile_approval import draft_sha256, save_approved_profile
 from app.storage.artifact_store import ArtifactStoreError
-from app.storage.postgres import PostgresArtifactStore, PostgresFinalAcceptanceRepository, PostgresGenerationRepository, PostgresProfileRevisionRepository, artifact_sessions, final_output_acceptances, generation_versions, metadata, postgres_engine, postgres_url, profile_revisions
+from app.storage.postgres import PostgresArtifactStore, PostgresFinalAcceptanceRepository, PostgresGenerationRepository, PostgresProfileRevisionRepository, artifact_sessions, final_output_acceptances, generation_versions, metadata, profile_revisions
+from tests.helpers.postgres import migrate_database as _migrate
 
 
 ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture
-def postgres_database():
-    configured = os.getenv("TEST_DATABASE_URL")
-    if configured is None:
-        pytest.skip("Set TEST_DATABASE_URL to an isolated local PostgreSQL test database")
-    url = postgres_url(configured)
-    if url.host not in {"localhost", "127.0.0.1", "::1"} or not url.database.startswith("cv_reformatter_test"):
-        pytest.fail("PostgreSQL integration tests require a local cv_reformatter_test database")
-    admin = create_engine(url, hide_parameters=True, connect_args={"connect_timeout": 5})
-    schema = "cv_test_" + uuid.uuid4().hex
-    with admin.begin() as connection:
-        connection.execute(CreateSchema(schema))
-    scoped_url = url.update_query_dict({"options": f"-csearch_path={schema}"}).render_as_string(hide_password=False)
-    engine = postgres_engine(scoped_url)
-    try:
-        yield scoped_url, engine
-    finally:
-        engine.dispose()
-        with admin.begin() as connection:
-            connection.execute(DropSchema(schema, cascade=True))
-        admin.dispose()
-
-
-def _migrate(engine, revision: str = "head", *, downgrade: bool = False) -> None:
-    config = Config(str(ROOT / "alembic.ini"))
-    with engine.begin() as connection:
-        config.attributes["connection"] = connection
-        (command.downgrade if downgrade else command.upgrade)(config, revision)
 
 
 def test_postgres_migrations_are_explicit_reversible_and_match_repository(
@@ -68,6 +35,7 @@ def test_postgres_migrations_are_explicit_reversible_and_match_repository(
 ) -> None:
     url, engine = postgres_database
     monkeypatch.setattr(main, "DATABASE_URL", url)
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
     sqlite_path = tmp_path / "unused.sqlite3"
     monkeypatch.setattr(main, "LOCAL_DATABASE_PATH", sqlite_path)
     client = TestClient(main.app)
@@ -86,23 +54,43 @@ def test_postgres_migrations_are_explicit_reversible_and_match_repository(
             debug_artifacts={"original_text": "extracted_text.txt"},
         ))
     _migrate(engine, "0002_profile_revisions")
-    profile = CandidateProfile(full_name="Synthetic Upgrade Candidate")
+    profile = CandidateProfile(full_name="Synthetic Upgrade Candidate", skills=["Python"])
     (existing_directory / "candidate_profile.json").write_text(profile.model_dump_json())
     existing_revision = save_approved_profile(existing_directory, artifact_id="synthetic_upgrade", profile=profile,
         source_draft_sha256=draft_sha256(existing_directory), repository=PostgresProfileRevisionRepository(engine))
+    _migrate(engine, "0003_generations_acceptance")
+    generated = client.post("/api/generate", json={"artifact_id": "synthetic_upgrade",
+        "profile_revision_id": existing_revision.profile_revision_id})
+    assert generated.status_code == 200, generated.text
+    identity_fields = ("profile_revision_id", "profile_sha256", "layout_template_version", "layout_spec_sha256", "html_sha256", "pdf_sha256")
+    accepted = client.post("/api/artifacts/synthetic_upgrade/final-acceptance",
+        json={key: generated.json()[key] for key in identity_fields})
+    assert accepted.status_code == 200, accepted.text
+    # Reproduce the earlier raw-JSONB layout representation without rewriting history.
+    with engine.begin() as connection:
+        legacy = dict(connection.execute(select(generation_versions)).mappings().one())
+        legacy.update(generation_id="legacy_generation", layout_spec=json.loads((existing_directory / "generation_layout_spec.json").read_text()))
+        connection.execute(generation_versions.insert().values(**legacy))
+        connection.execute(update(artifact_sessions).values(current_generation_id="legacy_generation"))
+    before_upgrade = PostgresArtifactStore(engine).get_artifact("synthetic_upgrade")
+    before_generation = PostgresGenerationRepository(engine).current("synthetic_upgrade")
+    before_acceptance = PostgresFinalAcceptanceRepository(engine).load("synthetic_upgrade")
     upgraded = subprocess.run([sys.executable, "-B", "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "upgrade", "head"],
         cwd=tmp_path, env={**os.environ, "DATABASE_URL": url, "PYTHONPATH": ""},
         capture_output=True, text=True, timeout=30)
     assert upgraded.returncode == 0, upgraded.stderr
     preserved = PostgresArtifactStore(engine).get_artifact("synthetic_upgrade")
-    assert preserved["status"] == "processed" and preserved["debug_artifacts"] == {"original_text": "extracted_text.txt"}
+    assert preserved == before_upgrade
+    assert preserved["status"] == "generated" and preserved["debug_artifacts"]["original_text"] == "extracted_text.txt"
     assert preserved["current_profile_revision_id"] == existing_revision.profile_revision_id
     assert PostgresProfileRevisionRepository(engine).current("synthetic_upgrade") == existing_revision
-    assert preserved["current_generation_id"] is None
+    assert PostgresGenerationRepository(engine).current("synthetic_upgrade") == before_generation
+    assert PostgresFinalAcceptanceRepository(engine).load("synthetic_upgrade") == before_acceptance
+    assert client.get("/api/artifacts/synthetic_upgrade/metadata").json()["client_ready"]
     cli = subprocess.run([sys.executable, "-B", "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "current"],
         cwd=tmp_path, env={**os.environ, "DATABASE_URL": url, "PYTHONPATH": ""},
         capture_output=True, text=True, timeout=30)
-    assert cli.returncode == 0 and "0003_generations_acceptance" in cli.stdout, cli.stderr
+    assert cli.returncode == 0 and "0004_layout_proof_approvals" in cli.stdout, cli.stderr
     with engine.connect() as connection:
         assert compare_metadata(MigrationContext.configure(connection), metadata) == []
     _migrate(engine, "base", downgrade=True)
@@ -121,6 +109,14 @@ def test_postgres_api_process_generate_and_fresh_process_preserve_artifact_ident
     monkeypatch.setattr(main, "LOCAL_DATABASE_PATH", tmp_path / "unused.sqlite3")
     monkeypatch.setenv("API_LLM_PROVIDER", "mock")
     monkeypatch.setenv("LLM_PROVIDER", "mock")
+    native_template = main.built_in_layout_template_spec
+
+    def signed_zero_template():
+        spec = native_template()
+        spec.page.margin_right_pt = -0.0  # Valid geometry whose JSON spelling JSONB would change.
+        return spec
+
+    monkeypatch.setattr(main, "built_in_layout_template_spec", signed_zero_template)
     resume = Document()
     for line in ("Synthetic Candidate", "candidate@example.test", "Location: Singapore", "Skills: Python, SQL"):
         resume.add_paragraph(line)
@@ -170,7 +166,7 @@ print(json.dumps(response.json()))
     after = json.loads(restarted.stdout)["artifacts"]
     assert len(after) == 1 and after[0] == before
     # The database holds metadata references; document bytes remain in the artifact store.
-    assert set(inspect(engine).get_table_names()) == {"artifact_sessions", "candidate_profile_revisions", "generation_versions", "final_output_acceptances", "alembic_version"}
+    assert set(inspect(engine).get_table_names()) == {"artifact_sessions", "candidate_profile_revisions", "generation_versions", "final_output_acceptances", "layout_proof_approvals", "alembic_version"}
     assert (tmp_path / artifact_id / "source_resume.docx").read_bytes() == source.getvalue()
     directory = tmp_path / artifact_id
     original_outputs = {name: (directory / name).read_bytes() for name in (

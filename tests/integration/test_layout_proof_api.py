@@ -84,11 +84,18 @@ def _generate_with_target(artifact_id: str, target_format: dict[str, object], ve
 
 
 @pytest.mark.parametrize("design_scope", [False, True], ids=["uploaded", "designer"])
+@pytest.mark.parametrize("storage_backend", ["legacy", "postgres"])
 def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     tmp_path: Path, monkeypatch: MonkeyPatch, design_scope: bool, a_generation_without_model_loop,
+    storage_backend: str, request: pytest.FixtureRequest,
 ) -> None:
     """Mock model calls only: API, runner, Chrome, gates and approvals are real."""
     import shutil
+    if storage_backend == "postgres":
+        database_url, engine = request.getfixturevalue("postgres_database")
+        from tests.helpers.postgres import migrate_database
+        migrate_database(engine)
+        monkeypatch.setattr(main, "DATABASE_URL", database_url)
     from app.pipeline import quality, review, service
     from app.generation import agentic
     monkeypatch.setattr(agentic, "render_agentic", a_generation_without_model_loop)
@@ -198,6 +205,42 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     _create_and_approve(client, artifact_id, directory, design_id=design_id)
     assert calls.count("builder") == 3 and calls.count("reviewer") >= 3
     assert max(reviewed_pages) > 1  # Long proof reflows; extra output pages are reviewed.
+    if storage_backend == "postgres":
+        import os
+        import subprocess
+        import sys
+        from sqlalchemy import delete
+        from app.storage.postgres import PostgresLayoutProofRepository, layout_proof_approvals
+        proof_repository = PostgresLayoutProofRepository(engine)
+        saved_approval = proof_repository.current(artifact_id)
+        assert saved_approval.is_approved
+        approval_path = directory / "layout_proofs" / "approval.json"
+        approval_bytes = approval_path.read_bytes()
+        status_url = f"/api/artifacts/{artifact_id}/layout-proofs"
+        original_status = client.get(status_url).json()
+        approval_path.unlink()
+        assert client.get(status_url).json() == original_status
+        assert approval_path.read_bytes() == approval_bytes
+        # An intact filesystem approval cannot replace a missing database record.
+        with engine.begin() as connection:
+            connection.execute(delete(layout_proof_approvals).where(layout_proof_approvals.c.artifact_id == artifact_id))
+        model_calls_before = list(calls)
+        assert client.post("/api/generate", json=request).status_code == 409
+        assert calls == model_calls_before
+        proof_repository.save(saved_approval)
+        code = """import json
+from fastapi.testclient import TestClient
+from app.main import app
+response=TestClient(app).get('/api/artifacts/artifact_agentic_api/layout-proofs')
+assert response.status_code == 200, response.text
+print(json.dumps(response.json()))
+"""
+        restarted = subprocess.run([sys.executable, "-B", "-c", code],
+            cwd=Path(__file__).resolve().parents[2], env={**os.environ,
+                "DATABASE_URL": database_url, "GENERATED_OUTPUTS_DIR": str(tmp_path)},
+            capture_output=True, text=True, timeout=30)
+        assert restarted.returncode == 0, restarted.stderr
+        assert json.loads(restarted.stdout) == original_status
     proof_paths = list((directory / "layout_proofs").glob("layout_proof_*/proof-*.pdf"))
     proof_bytes = {path: path.read_bytes() for path in proof_paths}
     assert len(proof_bytes) == 3
@@ -324,7 +367,7 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     assert stale.status_code == 409 and calls == [], stale.text
     monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "12")
 
-    if not design_scope:
+    if not design_scope and storage_backend == "legacy":
         from app.final_acceptance import is_final_acceptance_current
         proof_root = directory / "layout_proofs"
         old_records = {path: path.read_bytes() for path in proof_root.rglob("*.json")}
@@ -374,6 +417,48 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     missing = client.post("/api/generate", json=request)
     assert missing.status_code == 500 and "evidence" in missing.text and calls == [], missing.text
     assert {path: path.read_bytes() for path in published} == published
+    if storage_backend == "postgres":
+        from sqlalchemy import select, update
+        from sqlalchemy.exc import IntegrityError
+        rejected = client.post(f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+            json={"state": "rejected", "reviewer_id": "synthetic-reviewer", "design_id": design_id})
+        assert rejected.status_code == 200 and rejected.json()["state"] == "rejected", rejected.text
+        assert proof_repository.current(artifact_id).state == "rejected"
+        with engine.connect() as connection:
+            history = connection.execute(select(layout_proof_approvals).where(
+                layout_proof_approvals.c.artifact_id == artifact_id).order_by(layout_proof_approvals.c.ordinal)).mappings().all()
+        assert [row["state"] for row in history] == ["approved", "rejected"]
+        assert json.loads(history[0]["body"]) == saved_approval.model_dump(mode="json")
+        with pytest.raises(IntegrityError):
+            with engine.begin() as connection:
+                connection.execute(update(layout_proof_approvals).values(state="approved"))
+        approval_path.write_bytes(approval_bytes)  # Old approval files cannot undo the saved rejection.
+        blocked = client.post("/api/generate", json=request)
+        assert blocked.status_code == 409 and calls == [], blocked.text
+        # Revoke approval after all file checks but before the generation transaction.
+        shutil.copy2(inputs["normalized_evidence"], directory / NORMALIZED_LAYOUT_FILENAME)
+        reapproved = client.post(f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+            json={"state": "approved", "reviewer_id": "synthetic-race-reviewer", "design_id": design_id})
+        assert reapproved.status_code == 200, reapproved.text
+        from app.storage.postgres import PostgresGenerationRepository, generation_versions
+        generation_repository = PostgresGenerationRepository(engine)
+        previous_generation = generation_repository.current(artifact_id)
+        original_save = PostgresGenerationRepository.save
+
+        def revoke_before_commit(self, manifest, layout_spec):
+            revoked = client.post(f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+                json={"state": "rejected", "reviewer_id": "synthetic-race-reviewer", "design_id": design_id})
+            assert revoked.status_code == 200, revoked.text
+            return original_save(self, manifest, layout_spec)
+
+        with monkeypatch.context() as race:
+            race.setattr(service, "_live_reviewer_findings", reviewer)
+            race.setattr(PostgresGenerationRepository, "save", revoke_before_commit)
+            conflicted = client.post("/api/generate", json=request)
+        assert conflicted.status_code == 409 and "approval" in conflicted.text, conflicted.text
+        assert generation_repository.current(artifact_id) == previous_generation
+        with engine.connect() as connection:
+            assert len(connection.execute(select(generation_versions)).all()) == 2
 
 
 # -- scenarios 1-2: gate and built-in path -------------------------------------

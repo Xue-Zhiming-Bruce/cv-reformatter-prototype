@@ -187,7 +187,10 @@ and full `ArtifactManifest` in immutable database records. Exact human acceptanc
 is bound to that recorded generation; deleting or forging its local JSON mirror
 cannot change `client_ready`. A transaction rejects generation/acceptance if the
 profile changed after request validation. Document bytes stay on disk.
-Design/proof lifecycle persistence, durable jobs, transactional file publication,
+Proof approval/rejection history is also persisted; each read still verifies the
+actual proof files and renderer identity. Missing approval audit copies can be
+rebuilt, while conflicting copies fail closed. Design lifecycle and unapproved
+proof state, durable jobs, transactional file publication,
 idempotency and explicit import remain P1/P2 work. See
 [ADR 0007](docs/decisions/0007-postgresql-structured-persistence.md) for the owner-selected
 stack and rollout boundary. `alembic downgrade base` removes the structured tables

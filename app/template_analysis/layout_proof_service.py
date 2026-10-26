@@ -40,6 +40,7 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Protocol
 
 from app.generation.template_mapper import ClientFacingRenderContext
 from app.template_analysis.layout_proof_content import (
@@ -71,6 +72,12 @@ class LayoutProofRenderError(RuntimeError):
 
 class LayoutProofNotApprovedError(RuntimeError):
     """Raised when final candidate generation lacks an approved layout proof."""
+
+
+class LayoutProofRepository(Protocol):
+    def save(self, approval: LayoutProofApproval) -> None: ...
+
+    def current(self, artifact_id: str) -> LayoutProofApproval | None: ...
 
 
 class LayoutProofMismatchError(RuntimeError):
@@ -360,12 +367,12 @@ def approval_path_for(artifact_dir: str | Path) -> Path:
     return layout_proofs_dir_for(artifact_dir) / "approval.json"
 
 
-def _write_json_atomic(path: Path, payload: object) -> None:
+def _write_json_atomic(path: Path, payload: object, *, canonical: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2, ensure_ascii=False)
+            json.dump(payload, fh, indent=2, ensure_ascii=False, sort_keys=canonical)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp_name, path)
@@ -433,13 +440,17 @@ def load_variant_evidence(
 def save_layout_proof_approval(
     artifact_dir: str | Path,
     approval: LayoutProofApproval,
+    *, repository: LayoutProofRepository | None = None,
 ) -> None:
     """Persist the approval aggregate (strict JSON, atomic write)."""
-    _write_json_atomic(approval_path_for(artifact_dir), approval.model_dump(mode="json"))
+    if repository is not None:
+        repository.save(approval)
+    _write_json_atomic(approval_path_for(artifact_dir), approval.model_dump(mode="json"), canonical=repository is not None)
 
 
 def load_layout_proof_approval(
     artifact_dir: str | Path,
+    *, repository: LayoutProofRepository | None = None,
 ) -> LayoutProofApproval | None:
     """Load, revalidate, and verify an approval against the actual proof files.
 
@@ -448,6 +459,21 @@ def load_layout_proof_approval(
     is invalidated with ``LayoutProofMismatchError``.
     """
     path = approval_path_for(artifact_dir)
+    if repository is not None:
+        approval = repository.current(Path(artifact_dir).name)
+        if approval is None:
+            return None
+        verify_approval_files(artifact_dir, approval)
+        payload = approval.model_dump(mode="json")
+        expected = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True)
+        try:
+            if not path.exists():
+                _write_json_atomic(path, payload, canonical=True)
+            if path.read_text(encoding="utf-8") != expected:
+                raise LayoutProofValidationError("Proof approval audit copy disagrees with its saved database record.")
+        except OSError as exc:
+            raise LayoutProofValidationError("Proof approval audit copy could not be verified.") from exc
+        return approval
     if not path.exists():
         return None
     approval = _load_json_model(path, LayoutProofApproval)
@@ -575,6 +601,7 @@ def approve_layout_proof(
     target_pdf: str | Path,
     reviewer_id: str,
     reviewer_note: str | None = None,
+    repository: LayoutProofRepository | None = None,
 ) -> LayoutProofApproval:
     """Approve a complete three-variant proof set by recomputing evidence.
 
@@ -619,7 +646,7 @@ def approve_layout_proof(
         reviewer_note=reviewer_note,
     )
     verify_approval_files(artifact_dir, approval)
-    save_layout_proof_approval(artifact_dir, approval)
+    save_layout_proof_approval(artifact_dir, approval, repository=repository)
     return approval
 
 
@@ -737,6 +764,7 @@ def reject_layout_proof(
     target_pdf: str | Path,
     reviewer_id: str | None = None,
     reviewer_note: str | None = None,
+    repository: LayoutProofRepository | None = None,
 ) -> LayoutProofApproval:
     """Persist an explicit rejection of the completed proof set.
 
@@ -769,7 +797,7 @@ def reject_layout_proof(
         reviewer_id=reviewer_id,
         reviewer_note=reviewer_note,
     )
-    save_layout_proof_approval(artifact_dir, approval)
+    save_layout_proof_approval(artifact_dir, approval, repository=repository)
     return approval
 
 

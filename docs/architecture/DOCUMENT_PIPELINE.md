@@ -877,7 +877,23 @@ so loose files cannot grant acceptance or supersede the current generation.
 Template JSON is validated on read but checksummed in its saved representation:
 legacy model revalidation normalizes some separator whitespace and must not
 silently redefine a previously saved template identity.
-Design/proof lifecycle state and documents/debug files remain outside the DB.
+New layout storage uses `layout-source/1`, a strict internal envelope containing
+the original `LayoutTemplateSpec` JSON string. JSONB would otherwise normalize
+valid numeric spellings such as `-0.0`, invalidating an existing template checksum.
+Earlier raw-JSONB layout records remain readable and are verified against their
+original recorded checksum; no hash is silently rewritten. Proof approval bodies
+use canonical JSON text with a byte checksum for the same reason.
+`layout_proof_approvals` appends approval/rejection aggregates with target/layout/
+renderer identity and a body checksum under the artifact lock. Latest state is
+artifact-scoped; database triggers reject updates. Reads strictly validate the
+record and verify all actual proof files with the existing active-renderer guard.
+Missing database records cannot fall back to local approval files. Canonical JSON
+audit copies can be rebuilt when missing; conflicting copies block generation.
+The generation transaction rechecks the current approval and exact target/layout/
+renderer/audit identity under the artifact lock, so a rejection between rendering
+and commit cannot be recorded as a successful generation.
+Design lifecycle, unapproved proof state and documents/debug files remain outside
+the DB.
 File publication still uses the existing single-writer local workflow and is
 not atomic with these database transactions; job ownership and concurrent file
 writers remain P1/P2 work.
