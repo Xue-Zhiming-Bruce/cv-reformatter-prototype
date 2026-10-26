@@ -122,9 +122,9 @@ regressions; passing them cannot substitute for owner review of generated files.
 
 ### M2 — Accept The Complete Agentic Workflow On Existing Representative Samples
 
-Status: [~] Build 4766346 completes same-build B→C, E→B and F→C with fresh short/medium/long live proofs, saved synthetic disclosure revisions and ordinary/blind previews. All six candidate PDFs pass content/structure/privacy checks; blind identity/personal links are absent, and source/profile/proof identities are preserved. E retains 12 logical bullets and two distinct degrees/GPAs; F retains two structured projects. Saved v3 extraction and target evidence are reused with zero new extraction/Adobe calls.
+Status: [x] The owner accepted the six exact ordinary/blind candidate snapshots on October 26 ("我感觉OK，继续goal"). Acceptance is bound to revision/template/HTML/PDF identities; the three current blind artifacts also passed the final-acceptance API. Build 4766346 completes same-build B→C, E→B and F→C with fresh short/medium/long live proofs, saved synthetic disclosure revisions and ordinary/blind previews. All six candidate PDFs pass content/structure/privacy checks; blind identity/personal links are absent, and source/profile/proof identities are preserved. E retains 12 logical bullets and two distinct degrees/GPAs; F retains two structured projects. Saved v3 extraction and target evidence are reused with zero new extraction/Adobe calls.
 
-Natural default whole-page discovery and effective material repair are demonstrated in the C-target short/medium/long proofs: actual label errors 36.527/90.057/126.584 → 0pt, reviewed v2 selected, body pixels unchanged. The long request-envelope gap is fixed using lossless Builder attachments under the unchanged cap. All candidate outputs match label presence. Reviewer reliability remains open: E→B short/medium proof labels still mismatch at 36.385/88.074pt, and other proof/blind warnings remain. E blind subprocess exits with SIGBUS after successful COMPLETE; independent artifact/PDF validation exits 0, cause unestablished. M2 remains unaccepted pending owner judgment of these exact files and remaining gaps.
+Natural default whole-page discovery and effective material repair are demonstrated in the C-target short/medium/long proofs: actual label errors 36.527/90.057/126.584 → 0pt, reviewed v2 selected, body pixels unchanged. The long request-envelope gap is fixed using lossless Builder attachments under the unchanged cap. All candidate outputs match label presence. Reviewer reliability remains open: E→B short/medium proof labels still mismatch at 36.385/88.074pt, and other proof/blind warnings remain. E blind subprocess exits with SIGBUS after successful COMPLETE; independent artifact/PDF validation exits 0, cause unestablished. The owner accepted these candidate outputs with the disclosed proof/reliability limits retained. This accepts the demonstrated workflow and six snapshots, not general Reviewer reliability or the two mismatched proof layouts.
 
 The [October 25–26 report](../evaluations/2026-10-25_AGENTIC_WORKFLOW_ACCEPTANCE.md) links the single combined review index, before/after PDFs, exact identities, raw observations and actual usage (95 same-build Agentic requests; cost unavailable). Full offline backend checks pass 859, with 35 skipped and five existing warnings. These checks do not authorize default cutover or retirement.
 
@@ -133,7 +133,7 @@ The [October 25–26 report](../evaluations/2026-10-25_AGENTIC_WORKFLOW_ACCEPTAN
       source/configuration identities. Reuse the canonical API/matrix workflow;
       follow [Test Result Format](../testing/TEST_RESULT_FORMAT.md) for a matrix
       run. Do not add a runner, corpus or result schema.
-- [ ] Exercise target analysis → short/medium/long template proofs and approval
+- [x] Exercise target analysis → short/medium/long template proofs and approval
       → candidate edit/save → preview → default whole-page Reviewer and bounded
       Builder repair/review → exact-output human acceptance. Include normal/blind
       disclosure, structured custom content and long-content continuation within
@@ -156,7 +156,7 @@ No agent may fabricate human acceptance through the API.
 
 Status: [~] Source projection, blind structured links, fact-overlap provenance and the demonstrated target/template/render boundary gaps are closed within their measured scope. Typed generated header-label control, structured proof contact metadata, paired content-free PDF facts and smaller lossless Builder attachments now have current same-build live evidence and focused/full regressions. Natural material repair succeeds in all three C-target proof lengths, with safe no-op rollback.
 
-Remaining gaps are explicit: E→B short/medium proof label mismatches, unsupported or content-shape Reviewer warnings, exact owner output judgment, and the post-completion E blind SIGBUS diagnostic. No renderer/provider change, blanket warning suppression or fabricated acceptance is implied.
+Remaining gaps are explicit: E→B short/medium proof label mismatches, unsupported or content-shape Reviewer warnings, the post-completion E blind SIGBUS diagnostic. Exact owner output judgment is now recorded for all six candidate snapshots. No renderer/provider change, blanket warning suppression or fabricated acceptance is implied.
 
 - [x] Resolve the source/target fact-overlap rejection observed in B→C using
       registered candidate provenance. Preserve target-only leakage controls and
