@@ -7,23 +7,11 @@ This is an outcome report, not another implementation checklist.
 
 ## Outcome
 
-Build `2d6fa38` completes B→C with fresh configuration-bound short/medium/long
-proofs and ordinary/blind previews. The independently discovered structured
-project GitHub leak is absent from the replacement blind HTML/PDF; public demo
-links remain, with original source/proof identities preserved. Both outputs
-have two pages and pass content/structure validation. No human final acceptance
-has been submitted. Reviewer reliability and effective material repair remain
-open. The [current review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261025T182543Z_agentic_bc_header_facts/RESULTS_INDEX.md)
-links exact files and historical companion samples.
+Build 4766346 completes same-build B→C, E→B and F→C through fresh configuration-bound short/medium/long proofs, saved candidate revisions and ordinary/blind previews. All six candidate PDFs pass content/structure/privacy checks and source/revision/proof identities remain unchanged by blind generation. The [current combined review index](../../tests/local_datasets/resume_matrix/runs/matrix_20261026T031910Z_agentic_bc_builder_wire/RESULTS_INDEX.md) links exact files, natural before/after repairs, remaining issues and earlier failures.
 
-Earlier integrated build `4f081ae` completes E→B and F→C through the actual
-Agentic API. E outputs each have one page, 12 logical work bullets and two
-distinct degrees with both GPAs; F outputs each have two pages and two structured
-projects. Their normal/blind checks and preserved source/proof identities remain
-historical evidence under their own configuration; approvals are not reused by
-newer builds. Build `452f73a` subsequently closed source/target fact-overlap
-rejection, with 829 full offline tests passing. Its independently rejected blind
-PDF remains intact as failure evidence; the replacement does not erase it.
+Natural whole-page Reviewer discovery and effective Builder repair are now demonstrated: B→C short/medium/long label errors improve 36.527/90.057/126.584 → 0pt, selecting reviewed v2 PDFs with unchanged body pixels. Candidate outputs all match label presence. This does not establish general Reviewer reliability: E→B short/medium proofs still have measured 36.385/88.074pt label mismatches; other proof and blind warnings remain. E blind subprocess exits with SIGBUS after successful COMPLETE; independent package and actual-PDF revalidation exit 0, root cause unestablished. No human acceptance or final-acceptance API call has occurred. Default remains standard; M2/M3 and B0/B1 remain incomplete.
+
+The current build passes 859 offline backend tests, 35 skipped, five existing warnings. Same-build real usage is 95 Agentic requests, 611,082 input + 29,447 output tokens; zero new extraction/Adobe calls, billed cost unavailable. Earlier runs and rejected files below remain historical evidence under their own configurations; old approvals are not reused.
 
 Earlier bounded continuation (15:02 UTC): B→C reached a second measured style
 and structured project content. One source extraction and one Adobe job were
@@ -1090,3 +1078,22 @@ The shared A Builder call now uses the existing smaller lossless image preparati
 The [old-function negative](../../tests/test_results/pytest/20261026T031600Z_builder_images_old_negative.txt) fails before provider I/O at the actual frozen envelope. [Five boundary/API checks](../../tests/test_results/pytest/20261026T031700Z_builder_images_regression.txt) pass (41 deselected, one existing event-loop warning): RGB/grayscale preservation, actual Reviewer and five-image Builder SDK/MIME/audit requests, and the complete mocked-model API/proof/preview boundary. Existing synthetic fixture and request tests are extended; no new runner/corpus/schema is introduced.
 
 An [exact saved long-request offline preflight](../../tests/test_results/pytest/20261026T031800Z_actual_long_builder_wire_preflight.txt) runs the real Builder/SDK/budget hook against a stub transport: 252,880 serialized bytes under 512,000, all five attachments pixel-identical, original PNG hashes unchanged. It uses the failed long proof's actual payload and images; the stub response is not live repair evidence. Verification and audited messages are under that run's offline_diagnosis/builder_wire_preflight/. Fresh live proof/preview work remains required.
+
+
+#### October 26 — Current Same-Build Representative Handoff
+
+Build 4766346 replaces the long Builder attachment failure with smaller lossless images and exact MIME/path/hash audit references under the unchanged frozen cap. Actual natural C-target short/medium/long repairs select v2 after measured improvement and whole-page re-review. Their section choices are identical before/after, body below y=120pt on page one and every subsequent page are pixel-identical. Medium/long each roll back a later unchanged unsupported trial and retain v2. [B→C package](../../tests/local_datasets/resume_matrix/runs/matrix_20261026T031910Z_agentic_bc_builder_wire/RESULTS_INDEX.md), [actual repair records](../../tests/local_datasets/resume_matrix/runs/matrix_20261026T031910Z_agentic_bc_builder_wire/live_material_repairs.json). Raw live wire lengths are not retained by the existing trace; successful HTTP reservations enforce the 512,000-byte cap. The 252,880-byte observation belongs to the exact prior-payload offline preflight, not these live requests.
+
+| Same build | Ordinary / blind pages | Expected content items | Open ordinary / blind findings | Actual Agentic requests |
+| --- | --- | --- | --- | --- |
+| B→C | 2 / 2 | 65 / 61 | 0 / 3 | 35 |
+| E→B | 1 / 1 | 53 / 50 | 0 / 1 | 31 |
+| F→C | 2 / 2 | 58 / 55 | 0 / 0 | 29 |
+
+[E→B](../../tests/local_datasets/resume_matrix/runs/matrix_20261026T032706Z_agentic_eb_builder_wire/RESULTS_INDEX.md) retains 12 logical work bullets (3/4/3/2), two distinct degrees and both GPAs. [F→C](../../tests/local_datasets/resume_matrix/runs/matrix_20261026T032706Z_agentic_fc_builder_wire/RESULTS_INDEX.md) retains two work entries, two degrees and two structured projects. Both use the same renderer/configuration identity as B→C; all source inputs are the existing authorized PDFs, and source/target saved evidence is reused without new extraction/Adobe calls. All six candidate outputs have measured header-label error zero. E ordinary and blind outputs also obtain natural material label repairs. Selected output hashes, approval/revision identities, raw findings and usage are linked in each index. Remaining E short/medium proof mismatches 36.385/88.074pt are explicit, so header-label discovery is not generally accepted despite successful C-target repair.
+
+All 18 selected proof pages and ten candidate output pages are inspected directly or by exact image identity against an inspected same-build page. F's three proof contact sheets are byte-identical to B→C; E's proofs and both E/F ordinary/blind outputs were viewed directly. [Package checks](../../tests/test_results/pytest/20261026T034200Z_same_build_acceptance_package.txt) verify all three manifests/CSVs/review rows, portable links, six checked outputs and one renderer identity. Audit references: B/C 120 (96 unique local files), E/B 88 (72), F/C 100 (80); 14 pathless SDK references in total resolve by exact SHA. These are image-reference counts, not model-request counts.
+
+The E blind API returns 200, all privacy/content/structure checks pass and the driver prints COMPLETE, then its process exits 138. The local crash report confirms SIGBUS/EXC_BAD_ACCESS during native/Python deallocation, with _pydantic_core frames; cause is not established. The ignored per-run diagnosis records the report identity. Fresh independent package checks exit 0, and [actual-PDF revalidation](../../tests/test_results/pytest/20261026T033700Z_ef_independent_pdf_revalidation.txt) also exits 0 for all four E/F PDFs. The anomaly is retained; it is not a clean end-to-end process-exit claim or a claim of corrupted deliverables. No paid call was repeated just to hide the exit.
+
+Full offline command: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -p no:cacheprovider tests/unit tests/integration -q --tb=short. [Saved log](../../tests/test_results/pytest/20261026T031910Z_agentic_header_full_offline.txt): 859 passed, 35 skipped, five existing fixture-serialization/event-loop warnings, 933.96s. Focused old-implementation controls and positive checks remain linked above. [B/C validation](../../tests/test_results/pytest/20261026T032800Z_builder_wire_package_validation.txt), [E/B validation](../../tests/test_results/pytest/20261026T033500Z_e_b_package_validation.txt), [F/C validation](../../tests/test_results/pytest/20261026T033500Z_f_c_package_validation.txt) retain exact same-build usage: 95 requests, 611,082 input + 29,447 output tokens, zero new extraction/Adobe calls, billed cost unavailable. No owner acceptance, default cutover, B retirement or B0/B1 closure follows from these checks.

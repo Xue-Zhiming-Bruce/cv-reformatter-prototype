@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 25, 2026 (live E→B evidence and blocking gaps; M2 acceptance open)
+Last reviewed: October 26, 2026 (same-build representative files, natural repairs and full offline checks; owner acceptance open)
 
 This is the sole implementation checklist. Product behavior belongs in the
 [Product Specification](../product/PRODUCT_SPEC.md), approved decisions in
@@ -122,33 +122,11 @@ regressions; passing them cannot substitute for owner review of generated files.
 
 ### M2 — Accept The Complete Agentic Workflow On Existing Representative Samples
 
-Status: `[~]` Committed build `4f081ae` completes both E→B and F→C with fresh
-configuration-bound short/medium/long live proofs, saved synthetic disclosure
-revisions and ordinary/blind previews. E outputs each have one page, 12 logical
-work bullets and two distinct degrees with both GPAs; F outputs each have two
-pages, two work entries/degrees and two structured projects. Content/structure
-checks pass; hidden identity/contact values are absent from blind outputs.
-Source evidence and proof approvals remain unchanged. These runs reuse prior
-audited v3 extraction and target evidence, with zero new extraction/Adobe calls.
-Earlier workflow evidence verifies superseded-revision generation returns 409
-before model calls; that check is not reported as rerun in these live artifacts.
-The [October 25 report](../evaluations/2026-10-25_AGENTIC_WORKFLOW_ACCEPTANCE.md)
-and its current review index preserve initial/edited outcomes, rejected attempts,
-independent inspection and actual usage (15 Agentic calls per same-build sample,
-30 total, zero new extraction/Adobe calls). Raw target comparisons are owner-review diagnostics beside
-actual API results. Adapter /6 and the updated prompt digest bind these proofs.
-M2 remains unaccepted: Reviewer previously missed source-projection defects and
-retained unsupported alignment/font findings; effective material repair and
-exact human output judgment remain open. B→C exposed badge mapping and PDF-anchor
-validation gaps; F→C additionally exposed a colored-image request envelope gap.
-Those bounded fixes now have actual current-build workflow evidence. The
-source/target fact-overlap rejection is closed by build `452f73a`, whose actual
-B→C normal preview passes after fresh proofs. Independent inspection of its
-blind preview found a project GitHub-link disclosure gap. Build `3f0fc59`
-replaces it with fresh proofs and ordinary/blind previews: the identity link is
-absent from blind HTML/PDF, public project URLs remain, and source/proof identities
-are preserved. The earlier leaking file remains unaccepted failure evidence.
-Do not infer broader target acceptance or default cutover.
+Status: [~] Build 4766346 completes same-build B→C, E→B and F→C with fresh short/medium/long live proofs, saved synthetic disclosure revisions and ordinary/blind previews. All six candidate PDFs pass content/structure/privacy checks; blind identity/personal links are absent, and source/profile/proof identities are preserved. E retains 12 logical bullets and two distinct degrees/GPAs; F retains two structured projects. Saved v3 extraction and target evidence are reused with zero new extraction/Adobe calls.
+
+Natural default whole-page discovery and effective material repair are demonstrated in the C-target short/medium/long proofs: actual label errors 36.527/90.057/126.584 → 0pt, reviewed v2 selected, body pixels unchanged. The long request-envelope gap is fixed using lossless Builder attachments under the unchanged cap. All candidate outputs match label presence. Reviewer reliability remains open: E→B short/medium proof labels still mismatch at 36.385/88.074pt, and other proof/blind warnings remain. E blind subprocess exits with SIGBUS after successful COMPLETE; independent artifact/PDF validation exits 0, cause unestablished. M2 remains unaccepted pending owner judgment of these exact files and remaining gaps.
+
+The [October 25–26 report](../evaluations/2026-10-25_AGENTIC_WORKFLOW_ACCEPTANCE.md) links the single combined review index, before/after PDFs, exact identities, raw observations and actual usage (95 same-build Agentic requests; cost unavailable). Full offline backend checks pass 859, with 35 skipped and five existing warnings. These checks do not authorize default cutover or retirement.
 
 - [x] Select existing authorized representative candidate/target samples and
       record their actual source formats, supported layout features and current
@@ -176,20 +154,9 @@ No agent may fabricate human acceptance through the API.
 
 ### M3 — Close Only Critical Gaps Found In M2
 
-Status: `[~]` Template consumption, reflow validation, PDF word gaps and logical
-source bullet projection are closed within the measured scope. The latest fresh
-v3 extraction retains the two distinct education entries without repetition.
-Reviewer reliability and material repair effectiveness remain open. The observed
-measurement-schema mismatch now has an explicit version-bound `unsupported`
-selector: warnings remain open without fabricated role-gap values. Eighteen
-focused actual-PDF/API checks pass. Build `43a4514` completes fresh live proofs
-and ordinary/blind B→C previews, retaining disclosure and source/proof identities.
-Explicit unsupported findings carry no scalar measurements. A real unchanged
-short-proof trial rolls back to its initial selected PDF. Build `2d6fa38` supplies paired content-free PDF header typography to the
-Reviewer. Its ordinary preview retains one real contact-label finding and its
-blind preview returns zero findings; the previous name-size/weight false claim
-does not recur in this run. Synthetic proofs still have content-shape warnings,
-and effective material repair plus exact human acceptance remain open.
+Status: [~] Source projection, blind structured links, fact-overlap provenance and the demonstrated target/template/render boundary gaps are closed within their measured scope. Typed generated header-label control, structured proof contact metadata, paired content-free PDF facts and smaller lossless Builder attachments now have current same-build live evidence and focused/full regressions. Natural material repair succeeds in all three C-target proof lengths, with safe no-op rollback.
+
+Remaining gaps are explicit: E→B short/medium proof label mismatches, unsupported or content-shape Reviewer warnings, exact owner output judgment, and the post-completion E blind SIGBUS diagnostic. No renderer/provider change, blanket warning suppression or fabricated acceptance is implied.
 
 - [x] Resolve the source/target fact-overlap rejection observed in B→C using
       registered candidate provenance. Preserve target-only leakage controls and
@@ -210,31 +177,13 @@ and effective material repair plus exact human acceptance remain open.
       Fresh E→B v3 evidence demonstrates 3/4/3/2 bullets with audited original
       lines and two degrees; prior synthetic recruiter correction stays separate.
 - [ ] Resolve the observed header contact-label presentation gap through a
-      typed, bounded A choice over generated labels. Preserve disclosed contact
-      values/order/delimiter, source/revision identity and independent body
-      contact styling. Ambiguous or unstructured evidence must remain explicit;
-      actual-PDF measurement and improvement are required for promotion.
-      The October 26 live attempt exposed a synthetic-proof bridge gap:
-      hidden generated labels were still required by product content validation.
-      Canonical proof contexts now carry typed contacts, and their checksum
-      binds that metadata, invalidating old proof evidence. Focused checks pass;
-      fresh live proof/preview evidence is still required before closure.
-      Build `965038f` completes fresh typed-contact proofs and ordinary/blind
-      previews, but blind output retains a 36.527pt label mismatch. Reviewer
-      reverses its direction and mixes hidden target-person fields. Paired
-      content-free label evidence now reaches whole-page review under
-      `review-presentation-facts/3`; 19 focused checks pass. Its fresh live
-      discovery/repair outcome remains pending.
-      Build `ce51ee7` demonstrates natural whole-page discovery and promoted
-      material repair in the short proof (36.527 → 0pt, unchanged body). Both
-      candidate previews now match header label presence. Long-proof repair
-      remains blocked by the frozen request envelope; preserve its confirmed
-      126.584pt mismatch and safe selected output while fixing transport.
-      Builder now uses the existing lossless attachment preparation with
-      matching MIME/path/hash audit references. The unchanged 512,000-byte
-      envelope admits the exact failed five-image payload at 252,880 bytes in
-      offline replay; five focused boundary/API checks pass. Fresh live long
-      repair remains required before closing this transport gap.
+      typed, bounded A choice over generated labels. The primitive preserves
+      disclosed values/order/delimiter, source/revision identity and independent
+      body styling. Ambiguous/unstructured evidence stays explicit. Build
+      4766346 demonstrates measured live C-target short/medium/long repair to
+      zero and all six candidate outputs match. E→B short/medium proofs still
+      retain measured label mismatches (36.385/88.074pt); this discovery gap
+      remains open rather than being hidden by successful repairs elsewhere.
 - [ ] Fix demonstrated default-Reviewer discovery, evidence/binding or Builder
       effectiveness failures that prevent acceptance of the declared samples.
       Recheck the affected PDF and previously verified regions using the existing
