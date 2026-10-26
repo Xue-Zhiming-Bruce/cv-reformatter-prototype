@@ -189,8 +189,10 @@ cannot change `client_ready`. A transaction rejects generation/acceptance if the
 profile changed after request validation. Document bytes stay on disk.
 Proof approval/rejection history is also persisted; each read still verifies the
 actual proof files and renderer identity. Missing approval audit copies can be
-rebuilt, while conflicting copies fail closed. Design lifecycle and unapproved
-proof state, durable jobs, transactional file publication,
+rebuilt, while conflicting copies fail closed. Design requests, approvals and
+superseding append immutable history too. Concurrent approvals serialize under
+the artifact lock, and generation rechecks the selected design at commit.
+Unapproved proof state, durable jobs, transactional file publication,
 idempotency and explicit import remain P1/P2 work. See
 [ADR 0007](docs/decisions/0007-postgresql-structured-persistence.md) for the owner-selected
 stack and rollout boundary. `alembic downgrade base` removes the structured tables

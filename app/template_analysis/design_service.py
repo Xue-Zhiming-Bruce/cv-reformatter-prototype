@@ -1,9 +1,9 @@
 """Design lifecycle service.
 
 Chooses the configured designer, runs strict validation and deterministic
-compilation, persists design artifacts under the existing artifact-store
-boundary (filesystem; SQLite is not expanded), and manages approval and
-superseding. Live Claude use stays disabled by default because ``ProviderPolicy``
+compilation, persists design history through the selected repository and local
+audit copies, and manages approval and superseding. SQLite is not expanded.
+Live Claude use stays disabled by default because ``ProviderPolicy``
 does not exist yet.
 """
 
@@ -13,9 +13,11 @@ import json
 import os
 import time
 import uuid
+import tempfile
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import ValidationError
 
@@ -84,6 +86,12 @@ class DesignServiceError(RuntimeError):
     """Raised for invalid design workflow operations."""
 
 
+class DesignRepository(Protocol):
+    def save(self, state: DesignArtifactState) -> AbstractContextManager[list[DesignArtifactState]]: ...
+
+    def current(self, artifact_id: str, design_id: str) -> DesignArtifactState | None: ...
+
+
 def get_design_strategy() -> str:
     value = os.getenv("TEMPLATE_DESIGN_STRATEGY", DESIGN_STRATEGY_MEASURED).strip().lower()
     return value if value in SUPPORTED_STRATEGIES else DESIGN_STRATEGY_MEASURED
@@ -98,12 +106,14 @@ class DesignService:
         designer: TemplateDesigner | None = None,
         claude_designer: AnthropicClaudeDesigner | None = None,
         openai_designer: OpenAITemplateDesigner | None = None,
+        repository: DesignRepository | None = None,
     ) -> None:
         self.strategy = strategy or get_design_strategy()
         self.cache = cache or DesignCache(default_cache_dir())
         self._designer_override = designer
         self._claude_designer = claude_designer or AnthropicClaudeDesigner()
         self._openai_designer = openai_designer or OpenAITemplateDesigner()
+        self.repository = repository
 
     # -- public API -----------------------------------------------------------
 
@@ -307,7 +317,7 @@ class DesignService:
         artifact_dir: str | Path,
         reviewer_note: str | None = None,
     ) -> DesignArtifactState:
-        state = load_design_state(design_dir)
+        state = load_design_state(design_dir, repository=self.repository)
         if state.state not in APPROVABLE_DESIGN_STATES:
             raise DesignServiceError(
                 f"Design '{state.design_id}' is in state '{state.state}' and cannot be approved. "
@@ -326,7 +336,8 @@ class DesignService:
             }
         )
         self._persist(design_dir, approved)
-        _supersede_previous(Path(artifact_dir), approved)
+        if self.repository is None:
+            _supersede_previous(Path(artifact_dir), approved)
         return approved
 
     def is_approved(self, state: DesignArtifactState) -> bool:
@@ -425,39 +436,63 @@ class DesignService:
 
     def _persist(self, design_dir: str | Path, state: DesignArtifactState) -> None:
         directory = Path(design_dir)
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / "design_state.json").write_text(
-            json.dumps(state.model_dump(mode="json"), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        (directory / "design_request.json").write_text(
-            json.dumps(state.request.model_dump(mode="json"), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        if state.proposal is not None:
-            (directory / "design_proposal.json").write_text(
-                json.dumps(state.proposal.model_dump(mode="json"), indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-        if state.trace is not None:
-            (directory / "design_trace.json").write_text(
-                json.dumps(state.trace.model_dump(mode="json"), indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-        if state.layout_spec_json is not None:
-            (directory / "layout_template_spec.json").write_text(
-                json.dumps(state.layout_spec_json, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-        if state.mapping_plan_json is not None:
-            (directory / "mapping_plan.json").write_text(
-                json.dumps(state.mapping_plan_json, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+        if self.repository is not None:
+            if (directory.name != state.design_id or directory.parent.name != "designs"
+                    or directory.parent.parent.name != state.artifact_id):
+                raise DesignServiceError("Design artifact scope mismatch.")
+            # Keep the artifact lock until all derived heads match the committed history.
+            with self.repository.save(state) as superseded:
+                for previous in [*superseded, state]:
+                    _write_design_snapshots(design_dir_for(directory.parent.parent, previous.design_id), previous, canonical=True)
+        else:
+            _write_design_snapshots(directory, state)
 
 
-def load_design_state(design_dir: str | Path) -> DesignArtifactState:
-    path = Path(design_dir) / "design_state.json"
+def _design_snapshot_contents(state: DesignArtifactState, *, canonical: bool) -> dict[str, str]:
+    payloads = {
+        "design_state.json": state.model_dump(mode="json"),
+        "design_request.json": state.request.model_dump(mode="json"),
+        "design_proposal.json": state.proposal.model_dump(mode="json") if state.proposal is not None else None,
+        "design_trace.json": state.trace.model_dump(mode="json") if state.trace is not None else None,
+        "layout_template_spec.json": state.layout_spec_json,
+        "mapping_plan.json": state.mapping_plan_json,
+    }
+    return {name: json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=canonical)
+            for name, payload in payloads.items() if payload is not None}
+
+
+def _write_design_snapshots(directory: Path, state: DesignArtifactState, *, canonical: bool = False) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    for name, content in _design_snapshot_contents(state, canonical=canonical).items():
+        (directory / name).write_text(content, encoding="utf-8")
+
+
+def load_design_state(
+    design_dir: str | Path, *, repository: DesignRepository | None = None,
+) -> DesignArtifactState:
+    directory = Path(design_dir)
+    if repository is not None:
+        state = repository.current(directory.parent.parent.name, directory.name)
+        if state is None:
+            raise DesignServiceError("No saved design exists for this artifact; local files are not imported automatically.")
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            for name, content in _design_snapshot_contents(state, canonical=True).items():
+                path = directory / name
+                if not path.exists():
+                    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory) as snapshot:
+                        snapshot.write(content)
+                        snapshot.flush()
+                        try:
+                            os.link(snapshot.name, path)
+                        except FileExistsError:
+                            pass
+                if path.read_text(encoding="utf-8") != content:
+                    raise DesignServiceError("Design audit copy disagrees with its saved database record.")
+        except OSError as exc:
+            raise DesignServiceError("Design audit copies could not be verified.") from exc
+        return state
+    path = directory / "design_state.json"
     if not path.exists():
         raise DesignServiceError(f"No design artifact found at {design_dir}")
     try:

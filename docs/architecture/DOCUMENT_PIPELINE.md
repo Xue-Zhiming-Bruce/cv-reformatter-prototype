@@ -892,8 +892,19 @@ audit copies can be rebuilt when missing; conflicting copies block generation.
 The generation transaction rechecks the current approval and exact target/layout/
 renderer/audit identity under the artifact lock, so a rejection between rendering
 and commit cannot be recorded as a successful generation.
-Design lifecycle, unapproved proof state and documents/debug files remain outside
-the DB.
+`template_design_versions` appends strict design state, source revision, target/
+inventory identities, compiled product template and safe operational metadata.
+The source JSON and checksum retain numeric/format identity. Approval checks the
+current profile and approvable state under the artifact lock, appending superseded
+events for earlier approved designs in the same target/inventory scope. The lock
+stays held while derived head copies are written, preventing later filesystem
+writes from restoring an older head after a competing approval. Snapshot-write
+failure rolls back the structured changes, but partially changed derived files
+can require repair; this is not an atomic DB/filesystem transaction.
+API design/detail/download reads use scoped database heads, rebuilding missing
+canonical copies and rejecting conflicting/unimported files. Generation commit
+rechecks the current approved design, source/target/template and audit identities.
+Unapproved proof state and document/debug files remain outside the DB.
 File publication still uses the existing single-writer local workflow and is
 not atomic with these database transactions; job ownership and concurrent file
 writers remain P1/P2 work.

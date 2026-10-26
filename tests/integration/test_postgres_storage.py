@@ -90,7 +90,7 @@ def test_postgres_migrations_are_explicit_reversible_and_match_repository(
     cli = subprocess.run([sys.executable, "-B", "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "current"],
         cwd=tmp_path, env={**os.environ, "DATABASE_URL": url, "PYTHONPATH": ""},
         capture_output=True, text=True, timeout=30)
-    assert cli.returncode == 0 and "0004_layout_proof_approvals" in cli.stdout, cli.stderr
+    assert cli.returncode == 0 and "0005_template_design_versions" in cli.stdout, cli.stderr
     with engine.connect() as connection:
         assert compare_metadata(MigrationContext.configure(connection), metadata) == []
     _migrate(engine, "base", downgrade=True)
@@ -166,7 +166,7 @@ print(json.dumps(response.json()))
     after = json.loads(restarted.stdout)["artifacts"]
     assert len(after) == 1 and after[0] == before
     # The database holds metadata references; document bytes remain in the artifact store.
-    assert set(inspect(engine).get_table_names()) == {"artifact_sessions", "candidate_profile_revisions", "generation_versions", "final_output_acceptances", "layout_proof_approvals", "alembic_version"}
+    assert set(inspect(engine).get_table_names()) == {"artifact_sessions", "candidate_profile_revisions", "generation_versions", "final_output_acceptances", "layout_proof_approvals", "template_design_versions", "alembic_version"}
     assert (tmp_path / artifact_id / "source_resume.docx").read_bytes() == source.getvalue()
     directory = tmp_path / artifact_id
     original_outputs = {name: (directory / name).read_bytes() for name in (

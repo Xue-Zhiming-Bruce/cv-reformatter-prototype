@@ -1,6 +1,7 @@
 """PostgreSQL workflow repositories; schema changes belong to Alembic."""
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from functools import lru_cache
 import hashlib
 import json
@@ -11,7 +12,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, DateTime, ForeignKey, ForeignKeyConstraint, Identity, Index, Integer, MetaData, Select, Table, Text, create_engine, func, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB, insert
-from sqlalchemy.engine import Engine, URL, make_url
+from sqlalchemy.engine import Connection, Engine, URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.storage.artifact_store import ArtifactStore, ArtifactStoreConflict, ArtifactStoreError
@@ -21,6 +22,7 @@ from app.generation.artifact_manifest import ArtifactManifest
 from app.generation.render_plan import layout_spec_sha256
 from app.template_analysis.schemas import LayoutTemplateSpec
 from app.template_analysis.layout_proof_schemas import LayoutProofApproval
+from app.template_analysis.design_schemas import APPROVABLE_DESIGN_STATES, DesignArtifactState
 
 
 class StoredLayoutSource(BaseModel):
@@ -119,6 +121,27 @@ layout_proof_approvals = Table(
     CheckConstraint("jsonb_typeof(body::jsonb) = 'object'", name="ck_proof_approval_body"),
 )
 Index("ix_proof_approval_current", layout_proof_approvals.c.artifact_id, layout_proof_approvals.c.ordinal)
+template_design_versions = Table(
+    "template_design_versions", metadata,
+    Column("event_id", BigInteger, Identity(), primary_key=True),
+    Column("artifact_id", Text, nullable=False),
+    Column("design_id", Text, nullable=False),
+    Column("profile_revision_id", Text, nullable=False),
+    Column("profile_sha256", Text, nullable=False),
+    Column("target_sha256", Text, nullable=False),
+    Column("inventory_sha256", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("body_sha256", Text, nullable=False),
+    Column("body", Text, nullable=False),
+    Column("recorded_at", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
+    ForeignKeyConstraint(["artifact_id", "profile_revision_id"],
+        ["candidate_profile_revisions.artifact_id", "candidate_profile_revisions.profile_revision_id"], ondelete="CASCADE"),
+    CheckConstraint("state IN ('draft', 'ready', 'ready_with_review', 'unsupported', 'provider_failed', 'invalid_proposal', 'fallback_requires_approval', 'approved', 'superseded')", name="ck_design_version_state"),
+    CheckConstraint("profile_sha256 ~ '^[0-9a-f]{64}$' AND target_sha256 ~ '^[0-9a-f]{64}$' AND inventory_sha256 ~ '^[0-9a-f]{64}$' AND body_sha256 ~ '^[0-9a-f]{64}$'", name="ck_design_version_checksums"),
+    CheckConstraint("jsonb_typeof(body::jsonb) = 'object'", name="ck_design_version_body"),
+    CheckConstraint("state NOT IN ('approved', 'superseded') OR (body::jsonb->>'approved_at' IS NOT NULL AND body::jsonb->>'layout_spec_json' IS NOT NULL)", name="ck_design_version_approval"),
+)
+Index("ix_design_version_current", template_design_versions.c.artifact_id, template_design_versions.c.design_id, template_design_versions.c.event_id)
 
 
 def postgres_url(value: str) -> URL:
@@ -284,6 +307,19 @@ def _proof_approval(row: Mapping[str, Any]) -> LayoutProofApproval:
         raise ArtifactStoreError("Stored proof approval failed schema or identity validation.") from exc
 
 
+def _design_state(row: Mapping[str, Any]) -> DesignArtifactState:
+    try:
+        state = DesignArtifactState.model_validate_json(row["body"])
+        if (state.artifact_id != row["artifact_id"] or state.design_id != row["design_id"]
+                or state.approved_profile_version_id != row["profile_revision_id"] or state.profile_sha256 != row["profile_sha256"]
+                or state.request.target_checksum != row["target_sha256"] or state.inventory_sha256 != row["inventory_sha256"]
+                or state.state != row["state"] or hashlib.sha256(row["body"].encode()).hexdigest() != row["body_sha256"]):
+            raise ValueError("Stored design identity mismatch")
+        return state
+    except ValueError as exc:
+        raise ArtifactStoreError("Stored design failed schema or identity validation.") from exc
+
+
 class PostgresGenerationRepository:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
@@ -308,6 +344,24 @@ class PostgresGenerationRepository:
                         or revision["profile_sha256"] != manifest.output_identity.profile_sha256
                         or revision["source_draft_sha256"] != manifest.inputs["source_draft"].sha256):
                     raise ArtifactStoreConflict("The saved profile changed before generation was recorded; generate the current revision.")
+                design_ref = manifest.inputs.get("approved_design_state")
+                if design_ref is not None:
+                    design_id = Path(design_ref.path).parent.name
+                    design_row = connection.execute(select(template_design_versions).where(
+                        template_design_versions.c.artifact_id == manifest.artifact_id,
+                        template_design_versions.c.design_id == design_id,
+                    ).order_by(template_design_versions.c.event_id.desc()).limit(1)).mappings().first()
+                    design = _design_state(design_row) if design_row is not None else None
+                    layout_ref = manifest.inputs.get("approved_layout")
+                    target_ref = manifest.inputs.get("target_document")
+                    if (design is None or design.state != "approved" or layout_ref is None or target_ref is None
+                            or design.approved_profile_version_id != manifest.output_identity.profile_revision_id
+                            or design.profile_sha256 != manifest.output_identity.profile_sha256
+                            or design.request.target_checksum != target_ref.sha256
+                            or design.template_version != manifest.output_identity.layout_template_version
+                            or hashlib.sha256(design_row["body"].encode()).hexdigest() != design_ref.sha256
+                            or hashlib.sha256(json.dumps(design.layout_spec_json, indent=2, ensure_ascii=False, sort_keys=True).encode()).hexdigest() != layout_ref.sha256):
+                        raise ArtifactStoreConflict("The approved design changed before generation was recorded; review the current design.")
                 approval_ref = manifest.inputs.get("layout_proof_approval")
                 if approval_ref is not None:
                     proof_row = connection.execute(select(layout_proof_approvals).where(
@@ -430,3 +484,68 @@ class PostgresLayoutProofRepository:
         if row is None:
             return None
         return _proof_approval(row)
+
+
+def _insert_design_version(connection: Connection, state: DesignArtifactState) -> None:
+    body = json.dumps(state.model_dump(mode="json"), indent=2, ensure_ascii=False, sort_keys=True)
+    connection.execute(insert(template_design_versions).values(
+        artifact_id=state.artifact_id, design_id=state.design_id,
+        profile_revision_id=state.approved_profile_version_id, profile_sha256=state.profile_sha256,
+        target_sha256=state.request.target_checksum, inventory_sha256=state.inventory_sha256, state=state.state,
+        body=body, body_sha256=hashlib.sha256(body.encode()).hexdigest(),
+    ))
+
+
+class PostgresDesignRepository:
+    def __init__(self, engine: Engine) -> None:
+        self.engine = engine
+
+    @contextmanager
+    def save(self, state: DesignArtifactState) -> Iterator[list[DesignArtifactState]]:
+        try:
+            with self.engine.begin() as connection:
+                artifact = connection.execute(select(artifact_sessions).where(
+                    artifact_sessions.c.artifact_id == state.artifact_id,
+                ).with_for_update()).mappings().first()
+                revision = connection.execute(select(profile_revisions).where(
+                    profile_revisions.c.artifact_id == state.artifact_id,
+                    profile_revisions.c.profile_revision_id == state.approved_profile_version_id,
+                )).mappings().first()
+                if artifact is None or revision is None or revision["profile_sha256"] != state.profile_sha256:
+                    raise ArtifactStoreConflict("Design requires a saved artifact-scoped profile revision.")
+                rows = connection.execute(select(template_design_versions).where(
+                    template_design_versions.c.artifact_id == state.artifact_id,
+                ).distinct(template_design_versions.c.design_id).order_by(
+                    template_design_versions.c.design_id, template_design_versions.c.event_id.desc(),
+                )).mappings().all()
+                heads = [_design_state(row) for row in rows]
+                previous = next((head for head in heads if head.design_id == state.design_id), None)
+                superseded: list[DesignArtifactState] = []
+                if state.state == "approved":
+                    if (previous is None or previous.state not in APPROVABLE_DESIGN_STATES
+                            or artifact["current_profile_revision_id"] != state.approved_profile_version_id):
+                        raise ArtifactStoreConflict("The saved profile or design state changed; request or review the current design.")
+                    for head in heads:
+                        if (head.design_id != state.design_id and head.state == "approved"
+                                and head.request.target_checksum == state.request.target_checksum
+                                and head.inventory_sha256 == state.inventory_sha256):
+                            old = head.model_copy(update={"state": "superseded", "updated_at": state.updated_at})
+                            _insert_design_version(connection, old)
+                            superseded.append(old)
+                elif previous is not None:
+                    raise ArtifactStoreConflict("Design source already exists; request a new design instead of replacing it.")
+                _insert_design_version(connection, state)
+                yield superseded
+        except (SQLAlchemyError, OSError) as exc:
+            raise ArtifactStoreError("Design state and audit copies could not be saved; no filesystem fallback was used.") from exc
+
+    def current(self, artifact_id: str, design_id: str) -> DesignArtifactState | None:
+        try:
+            with self.engine.connect() as connection:
+                row = connection.execute(select(template_design_versions).where(
+                    template_design_versions.c.artifact_id == artifact_id,
+                    template_design_versions.c.design_id == design_id,
+                ).order_by(template_design_versions.c.event_id.desc()).limit(1)).mappings().first()
+        except SQLAlchemyError as exc:
+            raise ArtifactStoreError("Design could not be read from PostgreSQL; verify availability and migrations.") from exc
+        return _design_state(row) if row is not None else None

@@ -8,6 +8,7 @@ from app.profile_approval import ProfileRevisionRepository
 from app.final_acceptance import FinalAcceptanceRepository
 from app.generation.artifact_manifest import GenerationRepository
 from app.template_analysis.layout_proof_service import LayoutProofRepository
+from app.template_analysis.design_service import DesignRepository
 
 
 def artifact_store(*, database_url: str | None, local_database_path: Path) -> ArtifactStore:
@@ -48,3 +49,11 @@ def layout_proof_repository(database_url: str | None) -> LayoutProofRepository |
     from app.storage.postgres import PostgresLayoutProofRepository, postgres_engine
 
     return PostgresLayoutProofRepository(postgres_engine(database_url))
+
+
+def design_repository(database_url: str | None) -> DesignRepository | None:
+    if database_url is None:
+        return None
+    from app.storage.postgres import PostgresDesignRepository, postgres_engine
+
+    return PostgresDesignRepository(postgres_engine(database_url))

@@ -500,11 +500,20 @@ Proof approval/rejection history is database-backed too. Reads retain the existi
 proof-file checksums, scope and active-renderer checks. A missing audit copy is
 rebuilt byte-for-byte; a conflicting copy blocks use. Missing database approvals
 cannot fall back to intact local approval files, and an older file cannot undo a
-saved rejection. Design lifecycle, unapproved proof records and document files
-remain filesystem-backed.
+saved rejection. Unapproved proof records and document files remain filesystem-backed.
 The generation commit also rechecks the latest proof state and its exact
 target/layout/renderer/audit identity under the artifact lock. A proof rejected
 after rendering and file checks cannot be recorded as a successful generation.
+Design lifecycle state is also database-backed: request/failure, approval and
+superseding append immutable versions. Approving the same ready design twice or
+approving it against a superseded profile returns 409. Approvals serialize by
+artifact, so only one design remains approved for the same target and candidate
+section inventory. Generation commit rechecks the exact current design and audit
+identity; a concurrently superseded design cannot be recorded as successful.
+Design detail/download reads rebuild missing canonical copies and reject
+conflicting or unimported local files. Structured history rolls back on snapshot
+write failure; partial derived head files may still need repair. Atomic filesystem
+publication/recovery remains P1/P2 work.
 This is not private hosted artifact access.
 
 Metadata and list entries include additive `artifact_manifest_current`: true only

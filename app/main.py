@@ -83,7 +83,7 @@ from app.profile_approval import (
 )
 from app.storage.artifact_store import ArtifactStore, ArtifactStoreConflict, ArtifactStoreError
 from app.storage.local_db import DEFAULT_DATABASE_PATH
-from app.storage.repository import artifact_store, final_acceptance_repository, generation_repository, layout_proof_repository, profile_revision_repository
+from app.storage.repository import artifact_store, design_repository, final_acceptance_repository, generation_repository, layout_proof_repository, profile_revision_repository
 from app.template_analysis.docx_style_analyzer import (
     TargetDocxAnalysisError,
     analyze_target_docx,
@@ -947,7 +947,7 @@ def request_template_design(body: DesignRequestCreate) -> DesignResponse:
         )
     sections = candidate_sections_from_profile(revision.profile)
     try:
-        state = DesignService().create_design(
+        state = DesignService(repository=design_repository(DATABASE_URL)).create_design(
             artifact_id=body.artifact_id,
             artifact_dir=artifact_dir,
             evidence=evidence,
@@ -974,7 +974,7 @@ def get_template_design(artifact_id: str, design_id: str) -> DesignDetailRespons
     if not artifact_dir.exists():
         raise HTTPException(status_code=404, detail="Design not found.")
     try:
-        state = load_design_state(design_dir_for(artifact_dir, design_id))
+        state = load_design_state(design_dir_for(artifact_dir, design_id), repository=design_repository(DATABASE_URL))
     except DesignServiceError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if state.artifact_id != artifact_id:
@@ -1003,6 +1003,11 @@ def download_design_artifact(
         raise HTTPException(status_code=404, detail="Design artifact not found.")
     if not resolved_path.is_relative_to(resolved_dir):
         raise HTTPException(status_code=404, detail="Design artifact not found.")
+    if DATABASE_URL is not None:
+        try:
+            load_design_state(expected_dir, repository=design_repository(DATABASE_URL))
+        except DesignServiceError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not artifact_path.exists() or not artifact_path.is_file():
         raise HTTPException(status_code=404, detail="Design artifact not found.")
     return FileResponse(
@@ -1028,7 +1033,7 @@ def approve_template_design(
     if not artifact_dir.exists():
         raise HTTPException(status_code=404, detail="Design not found.")
     try:
-        approved = DesignService().approve_design(
+        approved = DesignService(repository=design_repository(DATABASE_URL)).approve_design(
             design_dir=design_dir_for(artifact_dir, design_id),
             artifact_dir=artifact_dir,
             reviewer_note=body.reviewer_note,
@@ -2028,7 +2033,7 @@ def _load_approved_design(
     if not _is_safe_design_id(design_id):
         raise HTTPException(status_code=404, detail="Design not found.")
     try:
-        state = load_design_state(design_dir_for(artifact_dir, design_id))
+        state = load_design_state(design_dir_for(artifact_dir, design_id), repository=design_repository(DATABASE_URL))
     except DesignServiceError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if state.artifact_id != artifact_id:
@@ -2333,7 +2338,7 @@ def _load_design_layout_spec(artifact_dir: Path, design_id: str) -> LayoutTempla
     if not _is_safe_design_id(design_id):
         raise HTTPException(status_code=404, detail="Design not found.")
     try:
-        state = load_design_state(design_dir_for(artifact_dir, design_id))
+        state = load_design_state(design_dir_for(artifact_dir, design_id), repository=design_repository(DATABASE_URL))
     except DesignServiceError as exc:
         raise HTTPException(status_code=404, detail="Design not found.") from exc
     if state.layout_spec_json is None:

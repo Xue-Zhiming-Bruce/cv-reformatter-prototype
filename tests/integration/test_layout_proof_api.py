@@ -459,6 +459,30 @@ print(json.dumps(response.json()))
         assert generation_repository.current(artifact_id) == previous_generation
         with engine.connect() as connection:
             assert len(connection.execute(select(generation_versions)).all()) == 2
+        if design_scope:
+            restored = client.post(f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+                json={"state": "approved", "reviewer_id": "synthetic-design-race", "design_id": design_id})
+            assert restored.status_code == 200, restored.text
+            created = client.post("/api/designs/request", json={"artifact_id": artifact_id,
+                "profile_revision_id": request["profile_revision_id"], "designer": "deterministic"})
+            assert created.status_code == 200, created.text
+            newer_design = created.json()["design_id"]
+
+            def supersede_before_commit(self, manifest, layout_spec):
+                approved = client.post(f"/api/artifacts/{artifact_id}/designs/{newer_design}/approve", json={})
+                assert approved.status_code == 200, approved.text
+                return original_save(self, manifest, layout_spec)
+
+            with monkeypatch.context() as design_race:
+                design_race.setattr(service, "_live_reviewer_findings", reviewer)
+                design_race.setattr(PostgresGenerationRepository, "save", supersede_before_commit)
+                conflicted = client.post("/api/generate", json=request)
+            assert conflicted.status_code == 409 and "design" in conflicted.text, conflicted.text
+            assert generation_repository.current(artifact_id) == previous_generation
+            from app.storage.postgres import PostgresDesignRepository
+            designs = PostgresDesignRepository(engine)
+            assert designs.current(artifact_id, design_id).state == "superseded"
+            assert designs.current(artifact_id, newer_design).state == "approved"
 
 
 # -- scenarios 1-2: gate and built-in path -------------------------------------

@@ -36,8 +36,8 @@ verify unavailable/invalid databases cannot fall back or expose credentials.
 Generation history retains templates/manifests and exact human acceptance across
 a new process, preserves profiles through schema upgrade, rejects revision races
 at commit and rejects loose-file attempts to override current generation or
-acceptance. Database triggers protect immutable histories. Design lifecycle,
-unapproved proof state and document bytes remain local; these checks do not claim atomic file
+acceptance. Database triggers protect immutable histories. Unapproved proof state
+and document bytes remain local; these checks do not claim atomic file
 publication, full workflow persistence or production readiness. Terminal output
 stays under `test_results/pytest/`.
 
@@ -50,6 +50,11 @@ They also revoke approval after file validation but before generation commit,
 requiring 409 without adding a generation. Native storage coverage retains valid
 signed-zero geometry and earlier raw-JSONB layout records through upgrade/restart.
 Database cases skip when `TEST_DATABASE_URL` is unset; legacy cases still run.
+The design-API PostgreSQL case also checks concurrent approval/superseding,
+immutable history, restart, missing/conflicting copies, stale-profile rejection,
+unimported files, zero-call provider failure and database rollback after audit-copy
+write failure. The real designer-loop case supersedes the selected design just
+before generation commit, requiring 409 with the previous generation unchanged.
 
 The CLI and service execute only the selected A mainline. Retired B/paired
 selections fail before I/O. Historical B comparisons remain in Git; shared

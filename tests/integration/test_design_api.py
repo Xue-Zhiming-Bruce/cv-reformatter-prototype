@@ -134,6 +134,124 @@ def _make_artifact(tmp_path: Path) -> tuple[str, Path, str]:
     return artifact_id, artifact_dir, version_id
 
 
+def test_postgres_design_history_supersedes_atomically_and_preserves_source(
+    postgres_database, tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    import os
+    import subprocess
+    import sys
+    from concurrent.futures import ThreadPoolExecutor
+    from sqlalchemy import select, update
+    from sqlalchemy.exc import IntegrityError
+    from app.storage.postgres import PostgresDesignRepository, template_design_versions
+    from tests.helpers.postgres import migrate_database
+
+    database_url, engine = postgres_database
+    migrate_database(engine)
+    monkeypatch.setattr(main, "DATABASE_URL", database_url)
+    artifact_id, directory, revision_id = _make_artifact(tmp_path)
+    source_bytes = (directory / "candidate_profile.json").read_bytes()
+
+    def create_design() -> str:
+        response = client.post("/api/designs/request", json={"artifact_id": artifact_id,
+            "profile_revision_id": revision_id, "designer": "deterministic"})
+        assert response.status_code == 200 and response.json()["state"] in {"ready", "ready_with_review"}, response.text
+        return response.json()["design_id"]
+
+    designs = [create_design(), create_design()]
+
+    def approve(design_id: str) -> int:
+        response = TestClient(app).post(f"/api/artifacts/{artifact_id}/designs/{design_id}/approve", json={})
+        assert response.status_code in {200, 409}, response.text
+        return response.status_code
+
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        results = list(workers.map(approve, [*designs, *designs]))
+    assert results.count(200) == 2 and results.count(409) == 2
+    repository = PostgresDesignRepository(engine)
+    heads = [repository.current(artifact_id, design_id) for design_id in designs]
+    assert sorted(head.state for head in heads) == ["approved", "superseded"]
+    with engine.connect() as connection:
+        history = connection.execute(select(template_design_versions).order_by(template_design_versions.c.event_id)).mappings().all()
+    assert len(history) == 5 and [row["state"] for row in history].count("approved") == 2
+    for design_id in designs:
+        response = client.get(f"/api/artifacts/{artifact_id}/designs/{design_id}")
+        assert response.status_code == 200 and response.json()["state"] == repository.current(artifact_id, design_id).state
+    current = next(head for head in heads if head.state == "approved")
+    detail_url = f"/api/artifacts/{artifact_id}/designs/{current.design_id}"
+    layout_path = directory / "designs" / current.design_id / "layout_template_spec.json"
+    layout_bytes = layout_path.read_bytes()
+    layout_path.unlink()
+    before = client.get(detail_url)
+    assert before.status_code == 200 and layout_path.read_bytes() == layout_bytes
+    layout_path.write_bytes(layout_bytes + b" ")
+    assert client.get(detail_url).status_code == 404
+    assert layout_path.read_bytes() == layout_bytes + b" "
+    layout_path.write_bytes(layout_bytes)
+    code = f"""import json
+from fastapi.testclient import TestClient
+from app.main import app
+response=TestClient(app).get({detail_url!r})
+assert response.status_code == 200, response.text
+print(json.dumps(response.json()))
+"""
+    restarted = subprocess.run([sys.executable, "-B", "-c", code], cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "DATABASE_URL": database_url, "GENERATED_OUTPUTS_DIR": str(main.GENERATED_OUTPUTS_DIR),
+             "PYDANTIC_AI_NO_BANNER": "1"}, capture_output=True, text=True, timeout=30)
+    assert restarted.returncode == 0 and json.loads(restarted.stdout) == before.json(), restarted.stderr
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            connection.execute(update(template_design_versions).values(state="ready"))
+
+    from app.template_analysis import design_service
+    failed_publish_design = create_design()
+    state_path = directory / "designs" / current.design_id / "design_state.json"
+    state_bytes = state_path.read_bytes()
+    original_writer = design_service._write_design_snapshots
+
+    def failed_publish(path, state, **kwargs):
+        if state.state == "approved":
+            raise OSError("Synthetic audit-copy write failure")
+        return original_writer(path, state, **kwargs)
+
+    with monkeypatch.context() as storage_failure:
+        storage_failure.setattr(design_service, "_write_design_snapshots", failed_publish)
+        response = client.post(f"/api/artifacts/{artifact_id}/designs/{failed_publish_design}/approve", json={})
+    assert response.status_code == 500 and "audit copies" in response.text, response.text
+    assert repository.current(artifact_id, current.design_id).state == "approved"
+    assert repository.current(artifact_id, failed_publish_design).state in {"ready", "ready_with_review"}
+    with engine.connect() as connection:
+        assert len(connection.execute(select(template_design_versions)).all()) == 6
+    state_path.write_bytes(state_bytes)  # Repair the derived head after the failed filesystem publication.
+    assert client.get(detail_url).status_code == 200
+
+    stale_design = create_design()
+    edited = client.post(f"/api/artifacts/{artifact_id}/profiles/revisions", json={"profile": {
+        **_profile().model_dump(mode="json"), "full_name": "Synthetic Edited Candidate",
+    }})
+    assert edited.status_code == 200, edited.text
+    stale = client.post(f"/api/artifacts/{artifact_id}/designs/{stale_design}/approve", json={})
+    assert stale.status_code == 409 and repository.current(artifact_id, stale_design).state in {"ready", "ready_with_review"}
+    assert (directory / "candidate_profile.json").read_bytes() == source_bytes
+    # Valid-looking legacy files cannot manufacture a database-backed design.
+    fake_id = "design_unimported"
+    fake_dir = directory / "designs" / fake_id
+    fake_dir.mkdir()
+    fake = current.model_copy(update={"design_id": fake_id})
+    (fake_dir / "design_state.json").write_text(fake.model_dump_json())
+    assert client.get(f"/api/artifacts/{artifact_id}/designs/{fake_id}").status_code == 404
+    failed = client.post("/api/designs/request", json={"artifact_id": artifact_id,
+        "profile_revision_id": edited.json()["profile_revision_id"], "designer": "claude"})
+    assert failed.status_code == 200 and failed.json()["state"] == "provider_failed", failed.text
+    failed_id = failed.json()["design_id"]
+    failure = repository.current(artifact_id, failed_id)
+    assert failure.trace.safe_error_code == "live_design_disabled"
+    assert failure.trace.usage["provider_request_count"] == 0
+    assert failure.layout_spec_json is None and not (directory / "designs" / failed_id / "layout_template_spec.json").exists()
+    assert client.post(f"/api/artifacts/{artifact_id}/designs/{failed_id}/approve", json={}).status_code == 409
+    assert not (tmp_path / "local.sqlite3").exists()
+
+
 @pytest.mark.parametrize("reference_field", ["approved_profile_version_id", "profile_revision_id"])
 def test_design_lifecycle_request_inspect_approve_generate(
     tmp_path: Path, reference_field: str

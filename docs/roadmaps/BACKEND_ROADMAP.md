@@ -475,7 +475,26 @@ The final baseline audit retains all 75 frozen references, six accepted outputs
 and three current legacy acceptances:
 `tests/test_results/pytest/20261026T190556Z_p1_proof_preserved_baseline.txt`.
 
-P1 remains open: design lifecycle and unapproved proof-state persistence, workflow/job transactions,
+October 27 design progress: Alembic `0005_template_design_versions` adds immutable
+request/failure, approval and superseding history. Approvals validate current
+profile/state and serialize superseding by target/inventory under the artifact
+lock, held through derived-head writes. API read/download paths use database heads,
+recover missing copies and reject conflicting/unimported files. Generation commit
+rechecks exact selected-design identity. Snapshot write failure rolls back database
+state, while partial derived files may need repair; atomic publication remains open.
+Validation: **46 passed**, 18 unrelated cases deselected, exit 0 (212.41s),
+`tests/test_results/pytest/20261026T191844Z_p1_design_lifecycle_regression.txt`.
+The strengthened PostgreSQL design case passes provider failure and database
+rollback on audit-copy write failure (1.78s, exit 0):
+`tests/test_results/pytest/20261026T192749Z_p1_design_publication_rollback.txt`.
+The selected-design commit guard's in-memory negative control fails at the
+intended 200-instead-of-409 boundary:
+`tests/test_results/pytest/20261026T192330Z_p1_design_commit_negative.txt`.
+The final read-only baseline check retains all 75 frozen references, six accepted
+outputs and three current legacy acceptances:
+`tests/test_results/pytest/20261026T193430Z_p1_design_preserved_baseline.txt`.
+
+P1 remains open: unapproved proof-state persistence, workflow/job transactions,
 file-publication ownership/isolation, explicit import/data-preserving rollback
 and idempotency are still required. The initial downgrade drops the structured tables; its empty-DB
 reversibility is not production backup/restore evidence. No deployment or hosted

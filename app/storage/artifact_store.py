@@ -106,8 +106,8 @@ class ArtifactStore(ABC):
     ) -> None:
         """Record a design artifact reference without adding metadata columns.
 
-        Design lifecycle state lives on the filesystem under the artifact
-        store boundary; this index entry is metadata only.
+        The design version store owns lifecycle state; this index entry is
+        metadata only.
         """
         self._upsert_artifact(
             artifact_id=artifact_id,

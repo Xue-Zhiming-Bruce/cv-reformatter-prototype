@@ -67,6 +67,19 @@ layout records retain their read/identity path without invented provenance or
 changed hashes. New proof bodies use canonical JSON text and a byte checksum.
 The public `LayoutTemplateSpec` schema and renderer contract are unchanged.
 
+`template_design_versions` appends request/failure, approval and superseding
+states with source/target/inventory identity, compiled product template and safe
+structured operational metadata. Body JSON text and checksum preserve exact
+serialization. Approval checks the current profile/state and supersedes earlier
+approved designs in the same target/inventory scope within one transaction.
+The artifact lock remains held while derived heads are written, preventing
+competing approvals from restoring stale head files. File-write failure rolls
+back structured changes; partially changed derived files may need repair.
+Generation commit separately rechecks the selected design and its exact audit
+and template identities. Missing snapshots are recoverable; conflicting or
+unimported files cannot become authoritative. Raw provider responses, document
+bytes and diagnostic images remain outside PostgreSQL.
+
 ## Evidence And Rollout Boundary
 
 The canonical integration checks use synthetic data on local PostgreSQL 17:
@@ -153,7 +166,27 @@ The final read-only audit again verifies all 75 frozen references, six original
 accepted outputs and three current legacy acceptances:
 `tests/test_results/pytest/20261026T190556Z_p1_proof_preserved_baseline.txt`.
 
-Design lifecycle and unapproved proof state still use the filesystem store; migration/import,
+The design slice passes **46**, with 18 unrelated cases deselected, exit 0 and
+212.41s: `tests/test_results/pytest/20261026T191844Z_p1_design_lifecycle_regression.txt`.
+The command uses the same flags and isolated database across `test_design_service`,
+`test_design_api`, `test_postgres_storage` and `test_layout_proof_api`, selecting
+`design or postgres`. It includes both real PostgreSQL uploaded/designer loops,
+legacy designer execution, restart, immutable/superseding history, concurrent
+duplicate/different-design approvals, source preservation and stale-profile checks.
+The strengthened PostgreSQL design case additionally passes zero-call provider
+failure and filesystem-failure database rollback (1.78s, exit 0):
+`tests/test_results/pytest/20261026T192749Z_p1_design_publication_rollback.txt`.
+Its partial derived-head repair is explicit and does not claim atomic publication.
+The validated in-memory design-commit negative control fails at the intended
+200-instead-of-409 assertion (73.09s), without editing tracked source:
+`tests/test_results/pytest/20261026T192330Z_p1_design_commit_negative.txt`.
+The original frozen baseline remains unchanged; no new provider calls or human
+fidelity acceptance.
+The final read-only check verifies all 75 frozen references, six original
+accepted outputs and three current legacy acceptances:
+`tests/test_results/pytest/20261026T193430Z_p1_design_preserved_baseline.txt`.
+
+Unapproved proof state still uses the filesystem store; migration/import,
 full workflow transactions, file-publication isolation and idempotency remain P1/B1A/P2
 work in the [active roadmap](../roadmaps/BACKEND_ROADMAP.md). No production
 PostgreSQL image/version, cloud configuration or job implementation is selected
