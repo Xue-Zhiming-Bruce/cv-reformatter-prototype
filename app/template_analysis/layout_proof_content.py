@@ -177,9 +177,11 @@ def build_all_variants() -> dict[LengthVariant, SyntheticPlaceholderRenderContex
 
 
 def synthetic_context_checksum(context: SyntheticPlaceholderRenderContext) -> str:
-    """Deterministic sha256 of a synthetic context's canonical JSON."""
+    """Bind canonical synthetic text and its derived typed contact metadata."""
     payload = json.dumps(
-        context.model_dump(mode="json", exclude={"schema_version"}),
+        context.model_dump(mode="json", exclude={"schema_version"}) | {
+            "contact_items": [item.model_dump(mode="json") for item in context.to_render_context().contact_items],
+        },
         sort_keys=True,
         separators=(",", ":"),
     )

@@ -214,6 +214,11 @@ and effective material repair plus exact human acceptance remain open.
       values/order/delimiter, source/revision identity and independent body
       contact styling. Ambiguous or unstructured evidence must remain explicit;
       actual-PDF measurement and improvement are required for promotion.
+      The October 26 live attempt exposed a synthetic-proof bridge gap:
+      hidden generated labels were still required by product content validation.
+      Canonical proof contexts now carry typed contacts, and their checksum
+      binds that metadata, invalidating old proof evidence. Focused checks pass;
+      fresh live proof/preview evidence is still required before closure.
 - [ ] Fix demonstrated default-Reviewer discovery, evidence/binding or Builder
       effectiveness failures that prevent acceptance of the declared samples.
       Recheck the affected PDF and previously verified regions using the existing

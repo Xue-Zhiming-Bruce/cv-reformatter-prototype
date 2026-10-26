@@ -274,6 +274,14 @@ def test_synthetic_context_converts_to_render_context() -> None:
     render_context = context.to_render_context()
     assert render_context.candidate_heading == "SYNTHETIC_CANDIDATE_NAME"
     assert render_context.work_experience[0].company == "SYNTHETIC_COMPANY_1"
+    assert [(item.field, item.label, item.value) for item in render_context.contact_items] == [
+        ("location", "Location", "SYNTHETIC_CITY_1"),
+        ("email", "Email", "synthetic.candidate@example.invalid"),
+    ]
+    assert render_context.contact_lines == context.contact_lines
+    mixed = context.model_copy(update={"contact_lines": [*context.contact_lines, "SYNTHETIC_CONTACT_1"]})
+    assert mixed.to_render_context().contact_lines == mixed.contact_lines
+    assert mixed.to_render_context().contact_items == []
     assert not hasattr(render_context, "variant")
 
 

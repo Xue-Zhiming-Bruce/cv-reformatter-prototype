@@ -41,6 +41,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.generation.template_mapper import (
+    CONTACT_LABEL_FIELDS,
     ClientFacingRenderContext,
     RenderDetail,
     RenderEducation,
@@ -191,9 +192,15 @@ class SyntheticPlaceholderRenderContext(LayoutProofModel):
         proof-only fields (``schema_version``, ``variant``) are excluded so
         strict validation of the render contract succeeds.
         """
-        return ClientFacingRenderContext.model_validate(
-            self.model_dump(mode="json", exclude={"schema_version", "variant"})
-        )
+        payload = self.model_dump(mode="json", exclude={"schema_version", "variant"})
+        # Keep generated labels separate from facts, as in candidate previews.
+        # Preserve legacy unstructured lines together rather than dropping any.
+        if all(_CONTACT_LINE.fullmatch(line) for line in self.contact_lines):
+            payload["contact_items"] = [
+                {"field": CONTACT_LABEL_FIELDS[label.casefold()], "label": label, "value": value}
+                for label, _, value in (line.partition(": ") for line in self.contact_lines)
+            ]
+        return ClientFacingRenderContext.model_validate(payload)
 
 
 class LayoutProofRenderRequest(LayoutProofModel):

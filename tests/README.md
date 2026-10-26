@@ -70,6 +70,11 @@ company-row PDF geometry, protecting against header or adjacent title/company
 misbinding. An opted-in real repair smoke extends the same fixture and runner;
 its scripted initial fault and live-model limitations are documented in
 [`live/README.md`](live/README.md).
+Canonical proof rendering checks both default and hidden contact labels. The
+proof-to-render-context bridge supplies typed contacts while retaining original
+lines; canonical checksums bind the derived metadata. Approval rejects legacy
+line-only checksums. The API loop regression hides labels through all three
+proofs, and damaged contact spans still fail the content gate.
 The same integration table covers uniform role/company typography with one or
 two target entries, retained unsupported-dimension warnings, failed-binding
 request-ID continuity, and unverified renderer-limit claims. Live A cases also cover bounded trials

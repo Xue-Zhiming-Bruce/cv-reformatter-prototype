@@ -492,8 +492,9 @@ def _forge_stored_visual(artifact_dir: Path, variant: LengthVariant) -> None:
     visual_path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+@pytest.mark.parametrize("legacy_contacts", [False, True])
 def test_approve_refuses_forged_context_checksum(
-    tmp_path: Path, fake_pdf: None
+    tmp_path: Path, fake_pdf: None, legacy_contacts: bool,
 ) -> None:
     """A render result whose synthetic-context checksum does not match the
     canonical context for its variant cannot be approved."""
@@ -503,6 +504,11 @@ def test_approve_refuses_forged_context_checksum(
     render_result_path = long_dir / "render_result.json"
     payload = json.loads(render_result_path.read_text(encoding="utf-8"))
     payload["context_checksum"] = "forged-context"
+    if legacy_contacts:
+        import hashlib
+        from app.template_analysis.layout_proof_content import build_synthetic_context
+        legacy = build_synthetic_context(LengthVariant.LONG).model_dump(mode="json", exclude={"schema_version"})
+        payload["context_checksum"] = hashlib.sha256(json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     render_result_path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(LayoutProofMismatchError, match="synthetic-context checksum"):
         approve_layout_proof(
