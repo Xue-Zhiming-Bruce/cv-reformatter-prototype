@@ -62,6 +62,8 @@ def _profile() -> CandidateProfile:
     )
 
 
+pytestmark = pytest.mark.usefixtures("legacy_standard_generation")
+
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")

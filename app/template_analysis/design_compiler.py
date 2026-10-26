@@ -347,7 +347,8 @@ def _compile_measured_sections(
         for measured in evidence.section_structure
         if measured.source_hint != "additional_section"
     }
-    if evidence.header_structure and evidence.header_structure.contact_fields:
+    # An empty header selector retains the product default contact order.
+    if evidence.header_structure is not None:
         represented.add("contact")
     for mapping in proposal.mappings:
         source = mapping.source_role

@@ -28,6 +28,8 @@ from tests.helpers.synthetic_pdf import build_styled_target_pdf
 client = TestClient(app)
 
 
+pytestmark = pytest.mark.usefixtures("legacy_standard_generation")
+
 @pytest.fixture(autouse=True)
 def _tmp_storage(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(main, "LOCAL_DATABASE_PATH", tmp_path / "local.sqlite3")

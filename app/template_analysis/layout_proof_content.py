@@ -289,7 +289,7 @@ def source_content_values(source: str, context: SyntheticPlaceholderRenderContex
     return []
 
 
-def rendered_content_values(layout_spec, variant: LengthVariant) -> list[str]:
+def rendered_content_values(layout_spec, variant: LengthVariant, *, include_unmapped_sections: bool = False) -> list[str]:
     """The exact non-empty content strings the renderer would emit for the
     given template and the canonical synthetic context.
 
@@ -298,7 +298,9 @@ def rendered_content_values(layout_spec, variant: LengthVariant) -> list[str]:
     section's source content and, when no explicit contact section exists,
     falls back to rendering the contact lines; the legacy ``TemplateStyleSpec``
     path renders every non-empty source in the accepted order. Sections bound
-    more than once repeat their content, matching the renderer.
+    more than once repeat their content, matching the renderer. Agentic proofs
+    additionally preserve unmapped candidate sources when requested by their
+    persisted renderer identity.
     """
     context = build_synthetic_context(variant)
     values: list[str] = []
@@ -309,6 +311,7 @@ def rendered_content_values(layout_spec, variant: LengthVariant) -> list[str]:
     sections = list(getattr(layout_spec, "sections", None) or [])
     if sections:
         sources = [section.source for section in sections]
+        rendered_sources = set()
         for section in sections:
             # Target-measured custom sections bind by their exact source
             # heading. The canonical proof context intentionally has no
@@ -320,6 +323,11 @@ def rendered_content_values(layout_spec, variant: LengthVariant) -> list[str]:
             ):
                 continue
             values.extend(source_content_values(section.source, context))
+            rendered_sources.add(section.source)
+        if include_unmapped_sections:
+            for source in _ALL_RENDER_SOURCES:
+                if source != "contact" and source not in rendered_sources:
+                    values.extend(source_content_values(source, context))
         # Contact fallback: the renderer emits the contact lines full-width when
         # no explicit contact section exists.
         if "contact" not in sources and context.contact_lines:
@@ -330,7 +338,7 @@ def rendered_content_values(layout_spec, variant: LengthVariant) -> list[str]:
     return values
 
 
-def expected_rendered_marker_counts(layout_spec, variant: LengthVariant) -> dict[str, int]:
+def expected_rendered_marker_counts(layout_spec, variant: LengthVariant, *, include_unmapped_sections: bool = False) -> dict[str, int]:
     """Template-aware expected marker counts for a rendered proof.
 
     Derives expectations from the canonical synthetic context AND the exact
@@ -339,7 +347,7 @@ def expected_rendered_marker_counts(layout_spec, variant: LengthVariant) -> dict
     never required and content the renderer does not bind is never expected.
     """
     counts: dict[str, int] = {}
-    for value in rendered_content_values(layout_spec, variant):
+    for value in rendered_content_values(layout_spec, variant, include_unmapped_sections=include_unmapped_sections):
         for token in _SYNTHETIC_TOKEN_RE.findall(value):
             counts[token] = counts.get(token, 0) + 1
     return counts

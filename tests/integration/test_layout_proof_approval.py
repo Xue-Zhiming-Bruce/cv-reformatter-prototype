@@ -62,6 +62,8 @@ def _request(
     )
 
 
+pytestmark = pytest.mark.usefixtures("legacy_standard_generation")
+
 @pytest.fixture()
 def fake_pdf(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(

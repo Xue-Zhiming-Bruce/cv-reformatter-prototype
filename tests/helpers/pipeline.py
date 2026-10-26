@@ -178,24 +178,32 @@ def _pipeline_e_semantic_findings() -> dict[str, list[str]]:
 
 
 
-def synthetic_pipeline_inputs(tmp_path: Path, *, one_column: bool = False,
+def synthetic_pipeline_inputs(tmp_path: Path, *, one_column: bool = False, with_structure_rules: bool = False,
                               page_size: tuple[float, float] = (612, 792),
                               entry_headings: tuple[str, str] | None = None) -> dict:
     width, height = page_size
     body_x = 54 if one_column else 180
+    target_body = ("Target facts only " * 6).strip() if with_structure_rules else "Target facts only"
+    rule_end = body_x + stringWidth(target_body, "Helvetica", 10) if with_structure_rules else 560
     operations = [f"BT /F2 20 Tf {body_x} 740 Td (Target Person) Tj ET"]
     rules = []
+    if with_structure_rules:
+        operations.append(f"0.5 w {body_x} 700 m {rule_end} 700 l S")
+        rules.append(NormalizedRule(element_id="rule.header", page_number=1,
+            bbox=NormalizedBox(x0=body_x / width, x1=rule_end / width, top=(height - 700) / height, bottom=(height - 700) / height),
+            stroke_width_pt=0.5, color_hex="#000000",
+            provenance=MeasurementProvenance(source="local_pdf", provider="synthetic", method="fixture")))
     for heading, y in (("SUMMARY", 650), ("SKILLS" if one_column else "EXPERIENCE", 550)):
         x = body_x if one_column else 140 - stringWidth(heading, "Helvetica-Bold", 12)
         operations.extend([
             f"BT /F2 12 Tf {x} {y} Td ({heading}) Tj ET",
-            f"BT /F1 10 Tf {body_x} {y - 25} Td (Target facts only) Tj ET",
-            *([] if one_column else [f"0.5 w 180 {y - 5} m 560 {y - 5} l S"]),
+            f"BT /F1 10 Tf {body_x} {y - 25} Td ({target_body}) Tj ET",
+            *([] if one_column and not with_structure_rules else [f"0.5 w {body_x} {y - 5} m {rule_end} {y - 5} l S"]),
         ])
-        if not one_column:
+        if not one_column or with_structure_rules:
             rules.append(NormalizedRule(
                 element_id=f"rule.{heading.lower()}", page_number=1,
-                bbox=NormalizedBox(x0=180 / width, x1=560 / width,
+                bbox=NormalizedBox(x0=body_x / width, x1=rule_end / width,
                                    top=(height - y + 5) / height, bottom=(height - y + 5) / height),
                 stroke_width_pt=0.5, color_hex="#000000",
                 provenance=MeasurementProvenance(source="local_pdf", provider="synthetic", method="fixture"),

@@ -61,6 +61,10 @@ def build_design_evidence_from_normalized(
                 f"element '{block.element_id}' lacks measured {', '.join(missing)}"
             )
 
+    figure_warnings = [
+        f"Target reports {normalized.figure_count} figure asset(s). Figure assets are not reproduced as images; "
+        "only measured text/rules/badges are supported. Review target branding before template approval."
+    ] if normalized.figure_count else []
     body = _dominant_body(measured)
     title = max(measured, key=lambda item: item.font_size_pt or 0)
     heading_candidates = derive_heading_candidates(measured)
@@ -200,6 +204,7 @@ def build_design_evidence_from_normalized(
             "Typography and page geometry compiled from measured normalized evidence.",
             *decoration_warnings,
             *structure_warnings,
+            *figure_warnings,
         ],
     )
     evidence = TargetLayoutEvidence(
@@ -218,7 +223,7 @@ def build_design_evidence_from_normalized(
         entry_title_style_role_ref=(
             f"element.{entry_title.element_id}" if entry_title is not None else None
         ),
-        warnings=[*normalized.warnings, *decoration_warnings, *structure_warnings],
+        warnings=[*normalized.warnings, *decoration_warnings, *structure_warnings, *figure_warnings],
         local_candidate_texts=[
             block.text for block in measured
             if block.structural_role != "heading_candidate" and block.text.strip()

@@ -60,14 +60,18 @@ def test_normalized_models_are_strict() -> None:
         NormalizedPage(page_number=1, width_pt=612, height_pt=792, vendor_payload={})
 
 
-def test_bridge_keeps_measured_heading_gap_out_of_global_spacing() -> None:
+@pytest.mark.parametrize("figure_count", [0, 1])
+def test_bridge_keeps_measured_heading_gap_out_of_global_spacing(figure_count: int) -> None:
+    normalized = _normalized().model_copy(update={"figure_count": figure_count})
     evidence, style = build_design_evidence_from_normalized(
-        _normalized(), target_checksum="sha"
+        normalized, target_checksum="sha"
     )
 
     heading = next(region for region in evidence.regions if region.region_id == "heading")
     assert heading.spacing_before_pt == 8
     assert style.spacing.section_before_pt == 0.0
+    for warnings in (evidence.warnings, style.warnings):
+        assert any("figure asset" in warning and "not reproduced" in warning for warning in warnings) is bool(figure_count)
 
 
 def test_target_derived_default_fill_signature_is_rejected() -> None:

@@ -15,11 +15,13 @@ from app.main import app
 from app.template_analysis import layout_proof_service
 from app.template_analysis.layout_proof_schemas import LengthVariant
 from app.template_analysis.layout_proof_service import load_variant_evidence
-from tests.helpers.layout_proof import make_proof_pdf_exporter
+from tests.helpers.layout_proof import make_proof_pdf_exporter, create_and_approve_proofs as _create_and_approve
 from tests.helpers.synthetic_pdf import build_styled_target_pdf
 
 client = TestClient(app)
 
+
+pytestmark = pytest.mark.usefixtures("legacy_standard_generation")
 
 @pytest.fixture(autouse=True)
 def _tmp_storage(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -70,22 +72,6 @@ def _upload_target(tmp_path: Path, artifact_id: str) -> dict[str, object]:
     return response.json()["target_format"]
 
 
-def _create_and_approve(client, artifact_id: str, artifact_dir: Path) -> None:
-    """Create all three proofs via the API and approve the completed set.
-
-    Approval succeeds only because the test PDF exporter emits a genuinely
-    valid text-bearing proof PDF; the approval endpoint recomputes evidence
-    from the actual PDFs and would reject forged or tampered evidence.
-    """
-    response = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})
-    assert response.status_code == 200, response.text
-    response = client.post(
-        f"/api/artifacts/{artifact_id}/layout-proofs/approve",
-        json={"state": "approved", "reviewer_id": "reviewer-1"},
-    )
-    assert response.status_code == 200, response.text
-
-
 def _generate_with_target(artifact_id: str, target_format: dict[str, object], version_id: str):
     return client.post(
         "/api/generate",
@@ -97,8 +83,9 @@ def _generate_with_target(artifact_id: str, target_format: dict[str, object], ve
     )
 
 
+@pytest.mark.parametrize("design_scope", [False, True], ids=["uploaded", "designer"])
 def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
-    tmp_path: Path, monkeypatch: MonkeyPatch,
+    tmp_path: Path, monkeypatch: MonkeyPatch, design_scope: bool,
 ) -> None:
     """Mock model calls only: API, runner, Chrome, gates and approvals are real."""
     import shutil
@@ -110,7 +97,22 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     from tests.helpers.pipeline import synthetic_pipeline_inputs
     from tests.helpers.pipeline_layout import product_template
 
-    inputs = synthetic_pipeline_inputs(tmp_path, one_column=True)
+    inputs = synthetic_pipeline_inputs(tmp_path, one_column=True, with_structure_rules=design_scope)
+    if design_scope:
+        # Designer privacy validates whole extracted blocks; this PDF fixture's
+        # diagnostic bundle otherwise splits every word into a separate block.
+        from app.template_analysis.commercial.models import NormalizedLayoutEvidence
+        normalized = NormalizedLayoutEvidence.model_validate_json(inputs["normalized_evidence"].read_text())
+        lines = {}
+        for block in normalized.text_blocks:
+            key = (block.page_number, round(block.bbox.top, 4), block.font_size_pt)
+            lines.setdefault(key, []).append(block)
+        normalized.text_blocks = [blocks[0].model_copy(update={
+            "text": " ".join(block.text for block in blocks),
+            "structural_role": "title" if blocks[0].font_size_pt == 20 else "heading_candidate" if blocks[0].bold else "body",
+            "bbox": blocks[0].bbox.model_copy(update={"x1": blocks[-1].bbox.x1}),
+        }) for blocks in lines.values()]
+        inputs["normalized_evidence"].write_text(normalized.model_dump_json())
     artifact_id = "artifact_agentic_api"
     directory = tmp_path / artifact_id
     directory.mkdir()
@@ -128,14 +130,39 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     spec_path = directory / LAYOUT_SPEC_FILENAME
     spec_path.write_text(spec.model_dump_json())
     original_spec = spec_path.read_bytes()
-    (directory / "candidate_profile.json").write_text(_profile().model_dump_json())
+    profile = _profile()
+    if design_scope:
+        profile = CandidateProfile.model_validate({**profile.model_dump(), "languages": [{"name": "English"}]})
+    (directory / "candidate_profile.json").write_text(profile.model_dump_json())
     (directory / "raw_extracted_text.txt").write_text("SYNTHETIC SOURCE PRESERVED")
     source_bytes = {name: (directory / name).read_bytes() for name in ("candidate_profile.json", "raw_extracted_text.txt")}
-    revision = client.post(f"/api/artifacts/{artifact_id}/profiles/revisions", json={"profile": _profile_payload()})
+    revision = client.post(f"/api/artifacts/{artifact_id}/profiles/revisions", json={"profile": profile.model_dump(mode="json")})
     assert revision.status_code == 200, revision.text
     request = {"artifact_id": artifact_id, "profile_revision_id": revision.json()["profile_revision_id"],
                "target_format": metadata.model_dump(mode="json")}
-    monkeypatch.setenv("GENERATION_STRATEGY", "agentic")
+    monkeypatch.delenv("GENERATION_STRATEGY", raising=False)
+    assert layout_proof_service.active_renderer_version().startswith("agentic-a/")
+    design_id = None
+    scope_dir = directory
+    if design_scope:
+        created = client.post("/api/designs/request", json={
+            "artifact_id": artifact_id, "profile_revision_id": request["profile_revision_id"],
+            "designer": "deterministic",
+        })
+        assert created.status_code == 200, created.text
+        design_id = created.json()["design_id"]
+        assert created.json()["state"] in {"ready", "ready_with_review"}, client.get(f"/api/artifacts/{artifact_id}/designs/{design_id}").text
+        approved = client.post(f"/api/artifacts/{artifact_id}/designs/{design_id}/approve", json={})
+        assert approved.status_code == 200, approved.text
+        scope_dir = directory / "designs" / design_id
+        spec_path = scope_dir / LAYOUT_SPEC_FILENAME
+        from app.template_analysis.schemas import LayoutTemplateSpec
+        spec = LayoutTemplateSpec.model_validate_json(spec_path.read_text())
+        original_spec = spec_path.read_bytes()
+        assert any(section.mapping_action == "preserve_as_additional" for section in spec.sections)
+        assert not any(section.source == "contact" for section in spec.sections)
+        request.pop("target_format")
+        request["design_id"] = design_id
     monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-model-boundary")
     monkeypatch.setenv("A_PIPELINE_MODEL", "offline-boundary")
     monkeypatch.setenv("AGENTIC_MAX_REPAIR_ROUNDS", "1")
@@ -150,7 +177,7 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
         assert "Jane Candidate" not in json.dumps(payload)
         calls.append("builder")
         return service.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", header_contact_labels=False, sections=[
-            service.E5LaneASection(section_node_id=f"section.{index:02d}", heading_in_rail=True, rail_label_width_pt=62)
+            service.E5LaneASection(section_node_id=f"section.{index:02d}", heading_in_rail=not design_scope, rail_label_width_pt=None if design_scope else 62)
             for index in range(1, len(spec.sections) + 1)
         ])
 
@@ -164,7 +191,7 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
 
     monkeypatch.setattr(service, "_live_lane_a_builder", builder)
     monkeypatch.setattr(service, "_live_reviewer_findings", reviewer)
-    _create_and_approve(client, artifact_id, directory)
+    _create_and_approve(client, artifact_id, directory, design_id=design_id)
     assert calls.count("builder") == 3 and calls.count("reviewer") >= 3
     assert max(reviewed_pages) > 1  # Long proof reflows; extra output pages are reviewed.
     proof_paths = list((directory / "layout_proofs").glob("layout_proof_*/proof-*.pdf"))
@@ -183,7 +210,13 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     identity = response.json()
     assert identity["client_ready"] is False and calls == ["builder", "reviewer"]
     html_path, pdf_path = directory / "candidate_profile.html", directory / "candidate_profile.pdf"
-    assert 'class="c2-rail"' in html_path.read_text()
+    if not design_scope:
+        assert 'class="c2-rail"' in html_path.read_text()
+    if design_scope:
+        import pdfplumber
+        with pdfplumber.open(pdf_path) as pdf:
+            text = " ".join(page.extract_text() or "" for page in pdf.pages)
+        assert text.count("jane@example.org") == 1 and "English" in text
     report = json.loads((directory / "agentic_generation.json").read_text())
     assert report["generation_strategy"] == "agentic" and report["client_ready"] is False
     assert report["renderer_version"] == agentic_renderer_version()
@@ -258,6 +291,38 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     stale = client.post("/api/generate", json=request)
     assert stale.status_code == 409 and calls == [], stale.text
     monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "12")
+
+    if not design_scope:
+        from app.final_acceptance import is_final_acceptance_current
+        proof_root = directory / "layout_proofs"
+        old_records = {path: path.read_bytes() for path in proof_root.rglob("*.json")}
+        old_preview = {path: path.read_bytes() for path in (
+            html_path, pdf_path, directory / "agentic_generation.json",
+            directory / "generation_metadata.json", directory / "final_acceptance.json",
+        )}
+        old_ids = set(path.parent.name for path in proof_bytes)
+        monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "13")
+        recreated = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})
+        assert recreated.status_code == 200 and recreated.json()["state"] == "none", recreated.text
+        assert old_ids.isdisjoint(item["proof_id"] for item in recreated.json()["variants"])
+        assert {path: path.read_bytes() for path in proof_bytes} == proof_bytes
+        calls.clear()
+        assert client.post("/api/generate", json=request).status_code == 409 and calls == []
+        approved = client.post(f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+            json={"state": "approved", "reviewer_id": "migration-reviewer"})
+        assert approved.status_code == 200, approved.text
+        regenerated = client.post("/api/generate", json=request)
+        assert regenerated.status_code == 200, regenerated.text
+        monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "12")
+        calls.clear()
+        assert client.post("/api/generate", json=request).status_code == 409 and calls == []
+        # Explicit deployment rollback restores its matching records and files.
+        for path, contents in {**old_records, **old_preview}.items():
+            path.write_bytes(contents)
+        assert is_final_acceptance_current(directory)
+        rolled_back = client.post("/api/generate", json=request)
+        assert rolled_back.status_code == 200, rolled_back.text
+        published = {path: path.read_bytes() for path in published}
 
     # Reviewer failure cannot publish a render-only result or use standard fallback.
     def failed_reviewer(*_args, **_kwargs):

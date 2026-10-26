@@ -557,6 +557,7 @@ def _recompute_variant_evidence(
         measurements=measurements,
         expected_headings=_expected_heading_labels(layout_spec, variant),
         variant=variant,
+        include_unmapped_sections=result.renderer_version.startswith("agentic-a/"),
     )
     visual = build_visual_comparison_evidence(
         target_pdf=target_pdf,
@@ -716,6 +717,7 @@ def create_proof_variants(
             measurements=measurements,
             expected_headings=_expected_heading_labels(layout_spec, variant),
             variant=variant,
+            include_unmapped_sections=result.renderer_version.startswith("agentic-a/"),
         )
         visual = build_visual_comparison_evidence(
             target_pdf=target_pdf,

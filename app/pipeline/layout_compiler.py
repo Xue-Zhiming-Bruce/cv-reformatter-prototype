@@ -1223,7 +1223,7 @@ def state_from_layout_template(
         body_contact = section.source == "contact" or contact_details
         entry_source = section.source in {"work_experience", "education", "additional_details"} and not contact_details
         fields = {
-            "section_id", "source", "label", "layout", "placement", "optional",
+            "section_id", "source", "label", "layout", "placement", "optional", "mapping_action",
             "heading_style", "body_style", "spacing", "bullet_indent_pt", "page_break_before", "show_heading",
         }
         if section.source in {"skills", "languages", "certifications"}:
@@ -1375,7 +1375,7 @@ def state_from_layout_template(
     def product_rule(rule_id: str, prefix: str, next_style: StyleToken, x0: float, x1: float) -> RuleDecoration:
         decoration = spec.decoration
         length = getattr(decoration, f"{prefix}_rule_length_pt") or (x1-x0)
-        if length > x1-x0:
+        if length > x1-x0 + 1e-6:
             raise ValueError(f"{prefix}_rule_length_pt exceeds the content width")
         gap_below = _gap_compensated(getattr(decoration, f"{prefix}_rule_gap_below_pt"),
             next_style.line_height_pt or line_height, next_style.font_size_pt,

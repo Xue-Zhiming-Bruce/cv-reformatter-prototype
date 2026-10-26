@@ -125,6 +125,7 @@ def validate_proof_structure(
     expected_page_count: int | None = None,
     expected_headings: list[str] | None = None,
     variant: LengthVariant | None = None,
+    include_unmapped_sections: bool = False,
     dimension_tolerance_pt: float = 2.0,
     margin_tolerance_pt: float = 3.0,
     allow_empty_pages: bool = False,
@@ -490,7 +491,7 @@ def validate_proof_structure(
         # Template-aware expectations: markers the current template actually
         # binds (sections + contact fallback + repeated bindings), derived from
         # the canonical synthetic context — never the full unfiltered context.
-        expected = expected_rendered_marker_counts(layout_spec, variant)
+        expected = expected_rendered_marker_counts(layout_spec, variant, include_unmapped_sections=include_unmapped_sections)
         # PDF text extraction may insert whitespace at a visual line wrap
         # inside one marker (for example ``SYNTHETIC_LANGUAG\nE_1``). Count
         # canonical expected tokens in a whitespace-free view while retaining

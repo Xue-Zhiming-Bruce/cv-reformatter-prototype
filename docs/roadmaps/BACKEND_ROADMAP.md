@@ -43,20 +43,21 @@ output acceptance. Final acceptance binds the profile revision/checksum, layout
 version/checksum and HTML/PDF checksums; changed identities invalidate it.
 A fixed business workflow and a bounded Agentic review/repair loop coexist.
 
-### Actual Entrances (Verified At `ff4b16e`)
+### Actual Entrances (M4 migration, October 26)
 
 | Entrance | Current behavior and owner |
 | --- | --- |
 | Candidate processing and revision saving | `POST /api/process` and `POST /api/artifacts/{artifact_id}/profiles/revisions` in `app/main.py`; preserve extraction evidence and save immutable revisions. |
 | Target analysis | `POST /api/target-format`; presentation-only DOCX/PDF analysis into the existing evidence/template contracts. Adobe remains the sole target-PDF analyzer (ADR 0002), with no analyzer fallback. |
 | No-target preview | `/api/generate` uses native `built-in-3` through `app.pipeline.html_renderer.render_layout_template`: shared deterministic A compilation, binding and rendering, then Chrome and product validation. |
-| Uploaded-target proofs and preview, default | `app/template_analysis/layout_proof_service.py` selects `standard`; `app/generation/html_renderer.py` supplies `product-html/1`. This remains the default uploaded-target path. |
-| Uploaded-target proofs and preview, explicit Agentic | Server configuration `GENERATION_STRATEGY=agentic` selects `app/generation/agentic.py`, adapting artifact-scoped inputs to the existing `app.pipeline.service.run_e5` A loop. It currently requires a measured target PDF and saved Adobe/normalized evidence. Native generation stays deterministic. |
+| Uploaded-target proofs and preview, default | `app/template_analysis/layout_proof_service.py` selects `agentic`; `app/generation/agentic.py` adapts the existing A loop for both uploaded and approved measured designer templates. Native output remains deterministic. |
+| Retained uploaded-target baseline | Explicit `GENERATION_STRATEGY=standard` temporarily retains `product-html/1` for migration comparisons. It is not a runtime fallback; M5 removes the replaced path after verified cutover. |
 | Diagnostic CLI/service | `python -m app.pipeline` and `run_e5` default to A. B and paired comparisons require explicit selection. Product-template runs are A-only; the CLI does not perform extraction or establish human acceptance. |
 | Final output acceptance | `POST /api/artifacts/{artifact_id}/final-acceptance`; only the exact current preview can become client-ready. |
 
-Shared A implementation: `lane-a-product-subset/16`. Optional Agentic identity:
-`agentic-a/6+lane-a-product-subset/16+<configuration digest>`. Proofs bind the
+Shared A implementation: `lane-a-product-subset/17`. Default Agentic identity:
+`agentic-a/6+lane-a-product-subset/17+<configuration digest>`. Compiler 10 avoids
+duplicating default-header contacts in designer templates. Proofs bind the
 implementation, prompts, model routing and budgets as well as target/template
 identities. Changing that configuration requires fresh short/medium/long proofs
 and explicit proof approval; old records do not acquire a new identity on read.
@@ -68,7 +69,7 @@ and explicit proof approval; old records do not acquire a new identity on read.
   includes measured typography, contact placement, inline skills, rules/badges,
   explicit columns/sidebars and continuation/page-break behavior. These are
   implemented subsets, not acceptance of every template property or layout.
-- Optional Agentic API integration covers short/medium/long proofs and
+- Default Agentic API integration covers short/medium/long proofs and
   saved-revision previews through the existing runner. Typed model repairs
   change compiled plans, never candidate facts or the stored template.
   Independent checks and completed Reviewer review of the exact selected PDF
@@ -104,8 +105,8 @@ completes B0/B1 or approves a final document.
 | Retained path | Reason for retention | Removal condition |
 | --- | --- | --- |
 | Original accepted baseline/build | Replacement parity and reproducibility have not been accepted. | Preserve recoverable source/evidence and prove the selected replacement plus explicit build rollback (M4–M6). |
-| Standard uploaded-target `product-html/1` orchestration | Current default; existing supported API behavior has not completed A migration. | Supported-input parity, exact-output review, identity-bound reproof and rollback verified before default cutover (M4); delete replaced code in M5. |
-| B authored HTML/CSS | Explicit historical comparison; A was selected, but replacement acceptance is incomplete. It is not an API runtime fallback. | A acceptance and migration conditions met; retain history in Git, then remove B and exclusive checks (M5). |
+| Standard uploaded-target `product-html/1` orchestration | Explicit retained comparison during M4 verification; Agentic is now the source default. | Focused migration checks pass; complete full regression, then delete replaced code in M5. |
+| B authored HTML/CSS | Explicit historical comparison; six representative A candidate snapshots are now owner-accepted. It is not an API runtime fallback. | Complete M4 regression and remove B/exclusive checks in M5; preserve history in Git. |
 
 There is no silent fallback from an uploaded target or failed Agentic run to a
 built-in template, B or the standard renderer. Retention is transitional; it is
@@ -154,7 +155,7 @@ No agent may fabricate human acceptance through the API.
 
 ### M3 — Close Only Critical Gaps Found In M2
 
-Status: [~] Source projection, blind structured links, fact-overlap provenance and the demonstrated target/template/render boundary gaps are closed within their measured scope. Typed generated header-label control, structured proof contact metadata, paired content-free PDF facts and smaller lossless Builder attachments now have current same-build live evidence and focused/full regressions. Natural material repair succeeds in all three C-target proof lengths, with safe no-op rollback.
+Status: [x] Critical blockers to the six declared candidate outputs are closed; the owner accepted those exact outputs with disclosed limits. Source projection, blind structured links, fact-overlap provenance and the demonstrated target/template/render boundary gaps are closed within their measured scope. Typed generated header-label control, structured proof contact metadata, paired content-free PDF facts and smaller lossless Builder attachments now have current same-build live evidence and focused/full regressions. Natural material repair succeeds in all three C-target proof lengths, with safe no-op rollback.
 
 Remaining gaps are explicit: E→B short/medium proof label mismatches, unsupported or content-shape Reviewer warnings, the post-completion E blind SIGBUS diagnostic. Exact owner output judgment is now recorded for all six candidate snapshots. No renderer/provider change, blanket warning suppression or fabricated acceptance is implied.
 
@@ -176,7 +177,7 @@ Remaining gaps are explicit: E→B short/medium proof label mismatches, unsuppor
       versioned extraction instructions and a fresh audited draft to verify it.
       Fresh E→B v3 evidence demonstrates 3/4/3/2 bullets with audited original
       lines and two degrees; prior synthetic recruiter correction stays separate.
-- [ ] Resolve the observed header contact-label presentation gap through a
+- [x] Resolve the observed header contact-label presentation gap through a
       typed, bounded A choice over generated labels. The primitive preserves
       disclosed values/order/delimiter, source/revision identity and independent
       body styling. Ambiguous/unstructured evidence stays explicit. Build
@@ -184,16 +185,16 @@ Remaining gaps are explicit: E→B short/medium proof label mismatches, unsuppor
       zero and all six candidate outputs match. E→B short/medium proofs still
       retain measured label mismatches (36.385/88.074pt); this discovery gap
       remains open rather than being hidden by successful repairs elsewhere.
-- [ ] Fix demonstrated default-Reviewer discovery, evidence/binding or Builder
+- [x] Fix demonstrated default-Reviewer discovery, evidence/binding or Builder
       effectiveness failures that prevent acceptance of the declared samples.
       Recheck the affected PDF and previously verified regions using the existing
       runner. Automatic repair selection must prove improvement; safe unmeasured
       attempts stay available for human comparison outside BEST.
-- [ ] Verify safe failure on model/measurement/export failure, exhausted budgets
+- [x] Verify safe failure on model/measurement/export failure, exhausted budgets
       and non-improving/unsafe repairs: retain the last safe HTML/PDF, expose the
       failure/open findings and keep acceptance identities consistent. Do not
       publish an unreviewed attempt or silently select another renderer.
-- [ ] Add or consolidate focused regressions only for the observed core behavior
+- [x] Add or consolidate focused regressions only for the observed core behavior
       gaps, rerun affected existing checks and return corrected outcomes for
       owner review. Stop tuning when the declared acceptance gap is closed;
       document unsupported behavior instead of accumulating speculative gates.
@@ -206,22 +207,22 @@ M2 demonstrates a blocking local workflow failure.
 
 ### M4 — Unify Uploaded-Target Generation, Then Switch The Default
 
-Status: `[ ]` Dependent on M2/M3 acceptance; default remains unchanged today.
+Status: [~] Source default is Agentic; measured uploaded/designer API, exact accepted-snapshot replay, stale-proof rejection and actual prior-build artifact validation pass. Full backend regression is pending before M4 closure/M5 deletion. Known E proof-label misses and post-completion SIGBUS remain visible limits, not general quality acceptance.
 
-- [ ] Publish the supported A template/input boundary against existing API
+- [x] Publish the supported A template/input boundary against existing API
       behavior: measured properties, custom/contact combinations, columns,
       pagination, headers/footers and branding assets. Missing provenance,
       impossible geometry and unimplemented properties must have explicit
-      validation/support states. Current Agentic PDF-only evidence requirements
-      do not cover API-supported DOCX targets or every designer-template route;
-      resolve those integration boundaries without silently losing supported
-      capabilities or introducing a parallel loop.
-- [ ] Route proofs and candidate generation through the same selected A
+      validation/support states. DOCX target analysis stays available; proof creation already required PDF
+      under both strategies. Approved measured designer templates now exercise
+      the same A loop. Figure inventory produces an explicit asset-reproduction
+      warning; arbitrary logos/footer content remain outside the contract.
+- [x] Route proofs and candidate generation through the same selected A
       implementation/contracts, retaining native deterministic generation and
       current revision/disclosure/source-review behavior. Compare supported
       outcomes with the retained baseline; similarity scores alone cannot
       authorize migration.
-- [ ] Verify stale proof/configuration rejection, fresh complete reproof and
+- [x] Verify stale proof/configuration rejection, fresh complete reproof and
       explicit approval, unchanged final-acceptance identities, preserved prior
       files on failure, and rollback with the matching prior build, approval and
       checksum-verified artifacts. Preserve old evidence without treating an old

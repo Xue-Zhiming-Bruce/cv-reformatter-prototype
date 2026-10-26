@@ -31,8 +31,8 @@ Historical experiment runners and commercial comparison tools are retired.
 The retained CLI accepts saved `CandidateProfile` JSON and prepared target
 evidence. It derives the same `ClientFacingRenderContext` as the API, then
 creates an internal `CandidateDocument` projection. `--blind-profile` applies
-client-facing identifier filtering before that projection. It is not wired into the
-FastAPI generation route. `CandidateProfile` remains the authoritative source
+client-facing identifier filtering before that projection. The artifact-scoped Agentic adapter connects this same A loop to uploaded-target
+FastAPI proofs and previews. Native no-target previews remain deterministic A. `CandidateProfile` remains the authoritative source
 of candidate facts, and `LayoutTemplateSpec` remains the product template
 contract. Moving the retained implementation into `app/pipeline/` does not
 approve a new product schema, provider, or renderer.
@@ -66,6 +66,14 @@ configuration in [runtime.py](app/pipeline/runtime.py), including
 `DEEPSEEK_API_KEY` and optional `DEEPSEEK_BASE_URL`; extraction configuration
 is separate. Provider access still follows the product and ADR boundaries.
 
+Uploaded measured-PDF proofs and previews default to `GENERATION_STRATEGY=agentic`
+and require configured Builder/Reviewer credentials plus fresh approved proofs.
+An existing `.env` explicitly setting `standard` continues to select the retained
+baseline during migration; changing it invalidates that strategy's proof approval.
+There is no automatic fallback on provider or validation failure. DOCX target
+upload/style analysis remains available, but proof creation requires a PDF.
+See the [versioned API support boundary](docs/architecture/API_CONTRACT.md#a-templateinput-support-boundary--renderer-17-compiler-10).
+
 Never commit `.env`, credentials, private candidate documents, or generated
 candidate data. Existing authorized local fixtures stay Git-ignored.
 
@@ -91,8 +99,9 @@ API mapper; add `--blind-profile` for a blind preview. Lane A preserves
 structured `additional_sections` as candidate-owned sections with distinct
 headings, entries, URL metadata and description lists. Hidden sections stay out
 of the projection. These sections are appended using the existing overflow
-policy; template-specific custom-section mapping and styling still need parity
-before API cutover. B/paired runs explicitly reject this new input shape.
+policy; supported explicit custom-section selectors also retain their declared
+styles. See the API support table for limits. B/paired runs explicitly reject
+this new input shape.
 The CLI does not extract candidate facts,
 produce the initial structure draft, or retrieve historical run caches.
 See [the implementation boundary](docs/architecture/DOCUMENT_PIPELINE.md#retained-pipeline-implementation)

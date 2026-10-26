@@ -28,7 +28,7 @@ DESIGN_PROPOSAL_SCHEMA_VERSION = "design/proposal/1"
 DESIGN_TRACE_SCHEMA_VERSION = "design/trace/1"
 DESIGN_EVIDENCE_SCHEMA_VERSION = "layout/evidence/1"
 DESIGN_PROMPT_VERSION = "designer/system-v3"
-DESIGN_COMPILER_VERSION = "9"
+DESIGN_COMPILER_VERSION = "10"
 
 # Supported product vocabulary. Claude may choose only from these sets.
 SUPPORTED_LAYOUT_CLASSES = ("one_column", "two_column", "sidebar")

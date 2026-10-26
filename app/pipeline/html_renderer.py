@@ -13,7 +13,7 @@ from app.template_analysis.schemas import LayoutTemplateSpec
 from app.generation.html_renderer import _inline_separator
 
 # Bump when product compilation, HTML or bundled font behavior changes.
-RENDERER_VERSION = "lane-a-product-subset/16"
+RENDERER_VERSION = "lane-a-product-subset/17"
 
 
 def render_layout_template(

@@ -452,7 +452,7 @@ Integration status, October 22, 2026:
   PDFs pass the shared product validators and their HTML matches the CLI bytes.
   Native `built-in-3` API generation now calls this renderer with the saved
   revision's disclosed context projection. Its metadata records the shared A
-  renderer version (`lane-a-product-subset/16`, also used by CLI provenance).
+  renderer version (`lane-a-product-subset/17`, also used by CLI provenance).
   Product-template HTML uses the public page title `Candidate profile`;
   evidence-only diagnostics retain their existing title.
   It keeps the API's content/structure reports and exact final-output identities;
@@ -461,8 +461,8 @@ Integration status, October 22, 2026:
   immutable source files, shared A ownership checks, preview acceptance and
   invalidation after disclosure changes. Same-input retained-renderer PDFs
   remain reviewable as content/structure references. This is a bounded native
-  cutover. Uploaded-target/proof rendering defaults to its retained path;
-  the optional agentic integration below also uses this compiler.
+  cutover. Uploaded-target/proof rendering now defaults to the approval-bound Agentic
+  adapter using this same compiler (see the M4 boundary below).
 - The A context projection now recognizes the retained product renderer's exact
   contact labels (`Email`, `Phone`, `Location`, `LinkedIn`, `Portfolio`) in legacy
   `contact_lines`, including the same case/label-whitespace normalization.
@@ -473,8 +473,8 @@ Integration status, October 22, 2026:
   contacts, without changing their stored schema, values or checksums.
   Real Chrome cases pass independent product content/structure and A ownership
   checks. This closes a projection prerequisite, not uploaded-target proof
-  migration or fidelity acceptance; the approval-aware proof service defaults
-  to `product-html/1` and offers the bounded agentic path below.
+  migration or fidelity acceptance; the approval-aware proof service now defaults to the bounded Agentic path
+  below; historical `product-html/1` approval remains a separate identity.
 - Dedicated product `source=contact` sections now bind their explicit
   `contact_fields`, in order, to the original disclosed contact leaves. Their
   `full_width` layout joins labeled source text using the header contact
@@ -512,8 +512,8 @@ Integration status, October 22, 2026:
   that loses a distinct URL, title or description now fails those checks.
   No automatic source-fact deduplication or uploaded-target cutover is introduced.
 - API proof results and approval aggregates now bind `renderer_version` in
-  addition to target, layout and file checksums. The current product renderer
-  declares `product-html/1`; update its implementation version when layout,
+  addition to target, layout and file checksums. The retained baseline renderer
+  declares `product-html/1`; update implementation identity when layout,
   export binding or font policy changes. Missing fields in historical records
   always mean `product-html/1`, independently of the active implementation.
   Approval recomputation, persisted approval loading and candidate rendering
@@ -543,8 +543,8 @@ Integration status, October 22, 2026:
   Unroutable header values fail rather than gaining automatic overflow.
   Candidate-only body sections retain the existing append policy, without a
   claim of product-template styling parity. Native API rendering uses the same
-  deterministic call. Uploaded-target API generation defaults to its prior
-  path and can select the bounded agentic strategy on the server.
+  deterministic call. Uploaded-target API generation defaults to the shared bounded Agentic
+  adapter on the server.
 - Internal header nodes may carry an explicit `flow_gap_above_pt` instead of
   measured absolute `top_pt`; the two forms cannot coexist. Empty header rows
   preserve accumulated flow gaps. `NodeSpacing.gap_basis="flow"` preserves
@@ -582,7 +582,7 @@ checksums. Geometry or substring matches alone cannot authorize arbitrary
 target text; template and exact-output acceptance remain separate gates.
 Source evidence and candidate values retain separate ownership.
 
-Renderer `lane-a-product-subset/16` constrains rail labels to their own grid
+Renderer `lane-a-product-subset/17` constrains rail labels to their own grid
 cell and permits word reflow instead of overflow into candidate content.
 Single-column PDF heading anchors reconstruct wrapped label characters from the
 PDF text flow, then use actual page/top coordinates for section order. Labels
@@ -694,9 +694,10 @@ binding defect. Rechecks inspect the generated PDF, not a layout probe alone.
 same runner; it is not another orchestration loop. It projects only uniquely
 measured template headings into evidence-bound region claims, records missing
 or ambiguous measurements, and keeps the supplied template authoritative.
-`GENERATION_STRATEGY=agentic` applies to measured uploaded-target PDFs in both
-proof and candidate rendering. Native no-target output stays deterministic.
-Default `standard` retains the prior uploaded-target renderer. The adapter
+`GENERATION_STRATEGY` defaults to `agentic` for measured uploaded-target PDF
+proofs and candidate rendering, including approved measured designer templates.
+Native no-target output stays deterministic. Explicit `standard` temporarily
+retains the prior renderer during migration, with separate proof identity. The adapter
 requires selected BEST output to pass content accounting, privacy, content,
 section order, blank-page and template-consumption gates plus independent product
 validation. Repeat-render determinism remains a visible diagnostic, not an API
@@ -735,8 +736,13 @@ and bounded budgets; changes require new complete proof approval. Unique
 agentic attempt directories preserve previous proof files. Candidate runs and
 their `agentic_generation.json` report stay under the owning artifact, with no
 silent renderer fallback. See the API contract for configuration and limits.
-Only existing A rail/metadata primitives are model-editable; full layout
-coverage, asynchronous API execution and fidelity acceptance remain open.
+Only existing typed A rail/metadata/header-label primitives are model-editable.
+The API contract publishes renderer /17 support: `preserve_as_additional`
+sections retain their specified order/content/style; compiler 10 treats a
+default-contact header as already owning contacts. Rule-width geometry tolerates
+only 1e-6pt arithmetic rounding. Broader layout fidelity and asynchronous API
+execution remain open. Six exact representative candidate outputs were accepted
+by the owner; known proof-label misses and SIGBUS remain documented.
 
 The runner emits HTML/PDF, frozen configuration and source identities, trace
 and version manifests, lane state, gate/measurement reports, and an owner review

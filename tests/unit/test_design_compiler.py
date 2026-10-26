@@ -70,8 +70,8 @@ def test_compile_is_deterministic() -> None:
     assert spec_a.template_version == spec_b.template_version
 
 
-def test_measured_contact_slots_invalidate_pre_v8_compiler_cache() -> None:
-    assert int(compiler_version()) >= 9
+def test_default_contact_ownership_invalidates_pre_v10_compiler_cache() -> None:
+    assert int(compiler_version()) >= 10
 
 
 def test_proposal_checksum_is_stable() -> None:

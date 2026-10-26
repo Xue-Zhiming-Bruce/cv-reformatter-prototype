@@ -22,6 +22,8 @@ from tests.helpers.synthetic_pdf import build_styled_target_pdf
 client = TestClient(app)
 
 
+pytestmark = pytest.mark.usefixtures("legacy_standard_generation")
+
 @pytest.fixture(autouse=True)
 def _use_tmp_local_database(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(main, "LOCAL_DATABASE_PATH", tmp_path / "local.sqlite3")
@@ -96,7 +98,7 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
     body = response.json()
     assert body["artifact_id"] == artifact_id
     assert body["layout_template_version"] == "built-in-3"
-    assert json.loads((artifact_dir / "generation_metadata.json").read_text())["renderer_version"] == "lane-a-product-subset/16"
+    assert json.loads((artifact_dir / "generation_metadata.json").read_text())["renderer_version"] == "lane-a-product-subset/17"
     assert "Boston" not in (artifact_dir / "candidate_profile.html").read_text().partition("</header>")[2]
     assert (artifact_dir / "raw_extracted_text.txt").read_bytes() == raw_text_before
     assert (artifact_dir / "raw_extracted_text.txt").read_text(encoding="utf-8") == draft_raw_text
@@ -160,6 +162,8 @@ def test_builtin_api_shared_a_preserves_real_pdf_and_acceptance_identity(
     from app.template_analysis.schemas import built_in_layout_template_spec
     from tests.helpers.pipeline_layout import product_entry_profile
 
+    monkeypatch.delenv("GENERATION_STRATEGY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
     profile = product_entry_profile()
     profile = CandidateProfile.model_validate({**profile.model_dump(), "skills": ["Python", "SQL"],
@@ -180,7 +184,7 @@ def test_builtin_api_shared_a_preserves_real_pdf_and_acceptance_identity(
     assert response.status_code == 200, response.text
     identity = response.json()
     assert identity["client_ready"] is False
-    assert json.loads((directory / "generation_metadata.json").read_text())["renderer_version"] == "lane-a-product-subset/16"
+    assert json.loads((directory / "generation_metadata.json").read_text())["renderer_version"] == "lane-a-product-subset/17"
     context = ClientFacingRenderContext.model_validate_json((directory / "client_render_context.json").read_text())
     spec = built_in_layout_template_spec()
     _, plan, html = render_layout_template(spec, candidate_document_from_context(context, candidate_id="synthetic-api-reference"))
@@ -224,6 +228,8 @@ def test_builtin_api_rejects_unsupported_a_contract_without_replacing_outputs(
 ) -> None:
     from app.template_analysis.schemas import built_in_layout_template_spec
 
+    monkeypatch.delenv("GENERATION_STRATEGY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
     artifact_id = "artifact_native_unsupported"
     directory = tmp_path / artifact_id
@@ -542,9 +548,11 @@ def test_target_format_upload_accepts_docx_templates_and_pdf_references(
     assert metadata["target_format_filename"] == "target-reference.pdf"
 
 
+@pytest.mark.parametrize("strategy", ["standard", "agentic"])
 def test_generate_applies_uploaded_docx_style_spec(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
+    strategy: str,
 ) -> None:
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
     monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
@@ -559,6 +567,7 @@ def test_generate_applies_uploaded_docx_style_spec(
         return original_render_html(*args, **kwargs)
 
     monkeypatch.setattr(layout_proof_service, "render_html", capture_render_html)
+    monkeypatch.setenv("GENERATION_STRATEGY", strategy)
     target_path = tmp_path / "target.docx"
     target_document = Document()
     target_document.styles["Normal"].font.name = "Times New Roman"

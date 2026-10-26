@@ -194,16 +194,15 @@ URLs, descriptions or entry structure. Retained-renderer output that loses
 those facts now fails the existing generation gates.
 
 No-target generation uses native `built-in-3` through the shared deterministic
-A template compiler/binder/HTML renderer (`lane-a-product-subset/16`). It projects
+A template compiler/binder/HTML renderer (`lane-a-product-subset/17`). It projects
 the saved revision's disclosed `ClientFacingRenderContext`, without a synthetic
 target PDF, provider call or diagnostic CLI run. The existing content/structure
 gates, preview/final-acceptance identities and immutable source files remain in
 force. Unsupported native-template features fail before HTML/PDF replacement;
 there is no automatic return to the older renderer. Generation metadata records
 the actual renderer identity. Uploaded-target and designer-template generation
-use the approval-bound `product-html/1` path by default. The server can opt into
-the existing A agentic loop for measured target PDFs as described below;
-unsupported requests cannot fall back to another renderer.
+use the approval-bound A Agentic loop for measured target PDFs by default,
+as described below; unsupported requests cannot fall back to another renderer.
 
 ### Agentic generation configuration
 
@@ -213,10 +212,11 @@ A means typed layout proposals interpreted by the controlled renderer; B means
 constrained authored HTML/CSS and remains an explicit CLI comparison option.
 Neither is an API request parameter or an end-user choice.
 
-Set `GENERATION_STRATEGY=agentic` on the server to use
-`app.generation.agentic` with the existing `app.pipeline.service.run_e5`.
-The default is `standard`, preserving the accepted baseline. Native no-target
-generation remains deterministic A under either setting. Agentic execution
+`GENERATION_STRATEGY` defaults to `agentic`: `app.generation.agentic` adapts
+the existing `app.pipeline.service.run_e5` A loop. Explicit `standard` temporarily
+selects the retained `product-html/1` baseline during migration; it never acts
+as a failure fallback and its proof approval cannot authorize Agentic execution.
+Native no-target generation remains deterministic A under either setting. Agentic execution
 requires an uploaded measured target PDF, its saved Adobe/normalized evidence,
 and a supported `LayoutTemplateSpec`; it does not rerun target analysis or
 construct a fake target for native generation. Configure `DEEPSEEK_API_KEY`, or
@@ -263,7 +263,7 @@ Confirmed within-tolerance measurements and proven candidate-binding defects do
 not authorize speculative layout repair. Unproven renderer-limit claims remain
 unresolved hypotheses, without preventing safe trials. Compound wording is
 retained; unknown catalog regions/pages still fail validation.
-Reviewer input `review-presentation-facts/2` also includes content-free font
+Reviewer input `review-presentation-facts/3` also includes content-free font
 sizes, font names and bounding positions from both actual PDF headers, with
 explicit name-binding/target-fallback scope. Missing current-name binding stays
 unbound. The paired image order is explicit; this supplements whole-page review
@@ -302,7 +302,43 @@ listed in `debug_artifacts.agentic_generation`; it records the selected version,
 budget, open findings and artifact-relative run directory. Detailed run state
 stays local in the owning artifact's `pipeline_runs/` directory. A reviewable
 agentic output remains `client_ready=false` until exact final-output acceptance.
-This opt-in integration is not general target-fidelity or provider acceptance.
+The owner accepted six exact B→C/E→B/F→C ordinary/blind output snapshots on
+October 26. This bounded acceptance does not certify every layout class or
+general Reviewer reliability; E short/medium proof-label misses and the
+post-completion SIGBUS remain in the evaluation report.
+
+### A template/input support boundary — renderer /17, compiler 10
+
+`LayoutTemplateSpec` schema 2.0 remains provider-neutral. The table separates
+implemented rendering coverage from owner-reviewed fidelity. Compiler/renderer
+checks run before replacing any preview. An uploaded target never silently
+selects the native template or drops a non-default unsupported property.
+
+| Input/property | Current behavior and limits |
+| --- | --- |
+| Candidate input | Existing DOCX/text-PDF extraction into a saved current `CandidateProfile` revision; original text, source coverage and disclosure checks remain authoritative. |
+| Uploaded PDF target | Requires measured schema-2 template, target checksum/page count and saved raw/normalized evidence. Legacy/limited templates, unsupported features, missing provenance and contradictory geometry fail explicitly. |
+| Uploaded DOCX target | Upload/style analysis remains available. Proof creation already returns HTTP 400 `pdf_target_required_for_layout_proof` under both strategies: the retired target-to-PDF conversion is not restored. DOCX target fidelity/export is not in this cutover scope. |
+| Designer templates | Approved measured PDF designs use the same A proof and candidate loop, in their existing design scope. Limited/unmeasured designs remain explicit failures; design approval alone never grants proof approval. Preserved candidate sections render in their declared order/style as ordinary owned sections. A default-contact header is already the contact owner, so compiler 10 does not append a second generic contact section. |
+| Page/columns | Measured page dimensions/margins, one column or two explicit main/sidebar regions, gutter, sidebar side/background and per-section placement. Missing placements, nonpositive usable width or impossible margins fail. Automated PDF coverage includes left/right/empty blind sidebars; owner-reviewed representative outputs are one-column targets. |
+| Typography/spacing | Font roles, supplied PostScript face, size, weight, italic, color, character/word spacing, line height and section/paragraph/entry rhythm. Horizontal scaling and independent unmatched legacy palette roles fail. Equal rule/content widths allow only 1e-6pt numerical rounding. |
+| Header/body contacts | Disclosed name/subheading plus ordered typed contacts and delimiter; explicit header/body contact partition, styled Contact or Additional Details rows. Duplicate ownership/overlap, missing explicit body fields and ambiguous unstructured fields fail. Generated header labels have the bounded show/hide choice documented above. |
+| Body/custom content | Summary, work/education rows and tiers, skills/languages/certifications, inline skill groups, lists/badges, structured additional/custom entries and explicit custom-heading selectors. Exact presentation-label aliases remain required. Candidate-only content uses the existing append policy; no target-person facts are inferred. |
+| Pagination | Natural content reflow/continuation, section-head protection and explicit section page breaks. Every generated page is reviewed; page count need not equal the target. A hidden heading is supported only for full-width summary without an explicit page break. |
+| Rules/branding | Measured header/heading rules, declared colors and supported badge/sidebar decoration. Arbitrary logos, image assets, floating graphics, repeating header/footer content and header/footer section placements are unsupported. Reported figure counts generate an explicit asset-reproduction/review warning in target evidence and style metadata; this is not a complete logo detector. No target page becomes a background image or invented asset. |
+| Reviewer/repair | Whole-page review and bounded typed trials; only measured improvement with safety/rechecks can promote automatically. Warnings and unmeasured safe trials remain reviewable. The accepted samples demonstrate natural material correction but also missed proof-label findings. |
+
+The owning implementation is `state_from_layout_template` plus the shared A
+binder/renderer. Existing canonical API tests exercise both uploaded and
+actual compiled designer templates, fresh three-length proofs, explicit approval,
+final-output identity, failure preservation and configuration-bound rollback.
+Agentic proof marker validation includes canonical candidate-only sections appended
+by A, with exact marker multiplicity; historical standard proofs retain their
+bound-section expectation. Approval recomputes this from the persisted renderer
+identity, rather than trusting saved diagnostic scores.
+Actual-PDF compiler tests cover the broader implemented property combinations;
+they do not expand human-accepted layout classes. Source, proposal and output
+identity changes require the corresponding fresh proof/review workflow.
 
 ### Revision and validation errors
 
@@ -346,7 +382,7 @@ matching implementation, approval record and original checksum-verified proof
 files; no automatic fallback grants an older approval. Generation metadata also
 records `renderer_version`. Standard uploaded-target rendering uses
 `product-html/1`; agentic mode uses
-`agentic-a/6+lane-a-product-subset/16+<configuration digest>`. Neither mode
+`agentic-a/6+lane-a-product-subset/17+<configuration digest>`. Neither mode
 changes the six identity fields used for final-output acceptance.
 
 ### Generated-profile artifact and draft preservation

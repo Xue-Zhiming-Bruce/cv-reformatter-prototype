@@ -13,3 +13,9 @@ def _offline_adobe_target_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(main, "enrich_colors_from_local_pdf", lambda evidence, _path: evidence)
     monkeypatch.setattr(main, "enrich_badges_from_local_pdf", lambda evidence, _path: evidence)
     monkeypatch.setattr(main, "enrich_rules_from_local_pdf", lambda evidence, _path: evidence)
+
+
+@pytest.fixture
+def legacy_standard_generation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retained baseline contracts during M4; current-default API case clears it."""
+    monkeypatch.setenv("GENERATION_STRATEGY", "standard")
