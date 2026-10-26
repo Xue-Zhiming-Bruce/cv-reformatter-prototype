@@ -488,8 +488,16 @@ disclosure choices) and their current pointer. Preview, design and acceptance
 checks use that pointer; a stale filesystem index cannot override it. Missing
 immutable audit JSON copies are rebuilt from the stored revision; conflicting
 copies fail validation. Existing filesystem revisions are not imported implicitly
-and cannot be used in PostgreSQL mode. Template and final-acceptance records and
-document files remain filesystem-backed. This is not private hosted artifact access.
+and cannot be used in PostgreSQL mode. Successful generation records retain the
+manifest and exact saved template JSON; final acceptance is persisted against a
+recorded generation and checked against its six-field identity. Deleting or
+forging `final_acceptance.json` cannot remove or grant database acceptance, and
+restoring old loose files cannot override the database's newer generation pointer.
+A profile/generation changed between request validation and database commit
+returns 409 with a safe explanatory detail; no acceptance is inserted. This adds
+transactional structured records, not atomic file publication or durable jobs.
+Design/proof lifecycle records and document files remain filesystem-backed.
+This is not private hosted artifact access.
 
 Metadata and list entries include additive `artifact_manifest_current`: true only
 when the versioned manifest is valid, belongs to this artifact, references the

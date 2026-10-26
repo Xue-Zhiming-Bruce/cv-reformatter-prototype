@@ -182,8 +182,13 @@ artifact-scoped current pointer; database constraints prevent cross-artifact
 references and updates to saved revisions. JSON files remain immutable audit
 copies and are rebuilt when missing. A stale local profile index cannot override
 the database, and existing local revisions require an explicit import before use.
-Templates, acceptance records and document files still use the filesystem;
-their migration and workflow transactions remain P1 work. See
+Successful generations additionally retain their validated `LayoutTemplateSpec`
+and full `ArtifactManifest` in immutable database records. Exact human acceptance
+is bound to that recorded generation; deleting or forging its local JSON mirror
+cannot change `client_ready`. A transaction rejects generation/acceptance if the
+profile changed after request validation. Document bytes stay on disk.
+Design/proof lifecycle persistence, durable jobs, transactional file publication,
+idempotency and explicit import remain P1/P2 work. See
 [ADR 0007](docs/decisions/0007-postgresql-structured-persistence.md) for the owner-selected
 stack and rollout boundary. `alembic downgrade base` removes the structured tables
 and their rows; use it only on disposable databases or with a tested backup/restore

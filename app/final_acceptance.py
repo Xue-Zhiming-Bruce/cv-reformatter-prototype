@@ -6,7 +6,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -38,6 +38,12 @@ class FinalOutputAcceptance(FinalOutputIdentity):
     reviewer_note: str | None = None
 
 
+class FinalAcceptanceRepository(Protocol):
+    def save(self, artifact_id: str, acceptance: FinalOutputAcceptance) -> None: ...
+
+    def load(self, artifact_id: str) -> FinalOutputAcceptance | None: ...
+
+
 def file_sha256(path: str | Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -61,12 +67,15 @@ def save_final_acceptance(
     artifact_dir: str | Path,
     identity: FinalOutputIdentity,
     reviewer_note: str | None = None,
+    *, repository: FinalAcceptanceRepository | None = None,
 ) -> FinalOutputAcceptance:
     acceptance = FinalOutputAcceptance(
         **identity.model_dump(),
         accepted_at=datetime.now(UTC).isoformat(),
         reviewer_note=reviewer_note,
     )
+    if repository is not None:
+        repository.save(Path(artifact_dir).name, acceptance)
     (Path(artifact_dir) / FINAL_ACCEPTANCE_FILENAME).write_text(
         acceptance.model_dump_json(indent=2), encoding="utf-8"
     )
@@ -75,7 +84,10 @@ def save_final_acceptance(
 
 def load_final_acceptance(
     artifact_dir: str | Path,
+    *, repository: FinalAcceptanceRepository | None = None,
 ) -> FinalOutputAcceptance | None:
+    if repository is not None:
+        return repository.load(Path(artifact_dir).name)
     path = Path(artifact_dir) / FINAL_ACCEPTANCE_FILENAME
     if not path.exists():
         return None
@@ -84,8 +96,9 @@ def load_final_acceptance(
 
 def is_final_acceptance_current(
     artifact_dir: str | Path, *, profile_repository: ProfileRevisionRepository | None = None,
+    repository: FinalAcceptanceRepository | None = None,
 ) -> bool:
-    acceptance = load_final_acceptance(artifact_dir)
+    acceptance = load_final_acceptance(artifact_dir, repository=repository)
     if acceptance is None:
         return False
     try:

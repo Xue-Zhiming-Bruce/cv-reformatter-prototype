@@ -867,8 +867,20 @@ Database reads validate the schema and stored checksums. Immutable audit JSON
 copies use canonical key order for JSONB round trips and can be rebuilt when
 missing; conflicting copies fail closed. PostgreSQL mode ignores the legacy
 profile index and never reads unimported local versions as a fallback.
-Templates and acceptance remain filesystem-backed; documents/debug files stay
-outside the DB.
+`generation_versions` retains each successful manifest and its exact validated
+template JSON. Insertion and its artifact-scoped current pointer commit under
+the same row lock after checking the saved revision/source identity again.
+`final_output_acceptances` appends human dispositions referencing a generation;
+the transaction verifies the current profile and exact output identity. Database
+triggers reject updates to both histories. API currentness uses these records,
+so loose files cannot grant acceptance or supersede the current generation.
+Template JSON is validated on read but checksummed in its saved representation:
+legacy model revalidation normalizes some separator whitespace and must not
+silently redefine a previously saved template identity.
+Design/proof lifecycle state and documents/debug files remain outside the DB.
+File publication still uses the existing single-writer local workflow and is
+not atomic with these database transactions; job ownership and concurrent file
+writers remain P1/P2 work.
 Actual process/generate/acceptance and new-process reads pass on local PostgreSQL,
 but full structured persistence, transactional publication, idempotency and
 production security gates remain open. [ADR 0007](../decisions/0007-postgresql-structured-persistence.md)

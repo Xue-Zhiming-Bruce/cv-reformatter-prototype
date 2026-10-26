@@ -33,9 +33,13 @@ An upgrade preserves existing metadata; a failed revision insert rolls back its
 current pointer. Ordinary tests
 ignore an inherited `DATABASE_URL`; API configuration regressions explicitly
 verify unavailable/invalid databases cannot fall back or expose credentials.
-Templates and final acceptance remain filesystem-backed; these checks do not
-claim full workflow persistence or production readiness. Terminal output stays
-under `test_results/pytest/`.
+Generation history retains templates/manifests and exact human acceptance across
+a new process, preserves profiles through schema upgrade, rejects revision races
+at commit and rejects loose-file attempts to override current generation or
+acceptance. Database triggers protect immutable histories. Design/proof lifecycle
+state and document bytes remain local; these checks do not claim atomic file
+publication, full workflow persistence or production readiness. Terminal output
+stays under `test_results/pytest/`.
 
 The CLI and service execute only the selected A mainline. Retired B/paired
 selections fail before I/O. Historical B comparisons remain in Git; shared

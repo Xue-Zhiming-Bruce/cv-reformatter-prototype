@@ -39,6 +39,16 @@ stored revisions. Reads validate schema/checksums; local JSON copies are immutab
 audit artifacts, recoverable from the database. PostgreSQL never uses the legacy
 filesystem index or silently imports its revisions.
 
+`generation_versions` retains successful manifests and exact saved template JSON;
+an artifact-scoped current generation pointer commits with the inserted record.
+`final_output_acceptances` appends exact human acceptance referencing a recorded
+generation. Both transactions lock the artifact row and recheck the current
+profile before commit. Acceptance additionally checks the current generation's
+six-field identity; histories reject updates at the database boundary. Local
+acceptance mirrors are not authoritative in PostgreSQL mode. Saved template
+JSON is schema-validated but hashed without reserializing the validated model,
+because existing separator defaults normalize whitespace on a second validation.
+
 ## Evidence And Rollout Boundary
 
 The canonical integration checks use synthetic data on local PostgreSQL 17:
@@ -76,8 +86,23 @@ frozen baseline, six accepted HTML/PDF identities and three current blind
 acceptances, with zero exports/provider calls:
 `tests/test_results/pytest/20261026T181050Z_p1_profile_preserved_baseline.txt`.
 
-Template versions and acceptance still use the filesystem store; migration/import,
-full workflow transactions, concurrency control and idempotency remain P1/B1A/P2
+The generation/acceptance slice passes **52 focused checks**, four existing
+fixture warnings and exit 0 (57.16s):
+`tests/test_results/pytest/20261026T182132Z_p1_generation_acceptance_focused.txt`.
+The command covers `test_postgres_storage.py`, `test_api_generate.py` and
+`test_generate_approval.py`, with the same pytest flags and isolated local test
+database. It verifies migration/model agreement and profile-preserving upgrade,
+three retained generation versions, fresh-process currentness, immutable records,
+cross-artifact generation constraints, forged/deleted local acceptance mirrors,
+restored old output files and profile races before generation/acceptance commit.
+The pointer guard's validated in-memory negative control fails at the intended
+`client_ready` assertion (true instead of false), with tracked source unchanged:
+`tests/test_results/pytest/20261026T182106Z_p1_acceptance_pointer_negative_validated.txt`.
+New provider calls: zero. This is persistence evidence, not new human fidelity
+acceptance or a claim of atomic output publication.
+
+Design/proof lifecycle versions still use the filesystem store; migration/import,
+full workflow transactions, file-publication isolation and idempotency remain P1/B1A/P2
 work in the [active roadmap](../roadmaps/BACKEND_ROADMAP.md). No production
 PostgreSQL image/version, cloud configuration or job implementation is selected
 by the local test environment.

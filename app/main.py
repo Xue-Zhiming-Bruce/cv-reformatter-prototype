@@ -81,9 +81,9 @@ from app.profile_approval import (
     save_approved_profile,
     save_profile_revision,
 )
-from app.storage.artifact_store import ArtifactStore, ArtifactStoreError
+from app.storage.artifact_store import ArtifactStore, ArtifactStoreConflict, ArtifactStoreError
 from app.storage.local_db import DEFAULT_DATABASE_PATH
-from app.storage.repository import artifact_store, profile_revision_repository
+from app.storage.repository import artifact_store, final_acceptance_repository, generation_repository, profile_revision_repository
 from app.template_analysis.docx_style_analyzer import (
     TargetDocxAnalysisError,
     analyze_target_docx,
@@ -195,7 +195,7 @@ app = FastAPI(title="CV Reformatter MVP", lifespan=_app_lifespan)
 
 @app.exception_handler(ArtifactStoreError)
 async def artifact_store_error_handler(_request: Request, error: ArtifactStoreError) -> JSONResponse:
-    return JSONResponse(status_code=500, content={"detail": str(error)})
+    return JSONResponse(status_code=409 if isinstance(error, ArtifactStoreConflict) else 500, content={"detail": str(error)})
 
 GENERATED_OUTPUTS_DIR = Path(
     os.getenv("GENERATED_OUTPUTS_DIR", "data/generated_outputs")
@@ -1549,6 +1549,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
             blind_profile=request.blind_profile,
             disclosure_rules=reviewed_profile.client_display_rules,
             uses_agentic=bool(uses_uploaded_target),
+            repository=generation_repository(DATABASE_URL),
             visual_status=("diagnostic" if visual_comparison is not None else
                            "unavailable" if target_format is not None and target_format.role == "pdf_reference" else "not_run"),
         )
@@ -1575,7 +1576,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     output_identity = current_output_identity(artifact_dir)
-    client_ready = is_final_acceptance_current(artifact_dir, profile_repository=_profile_repository())
+    client_ready = is_final_acceptance_current(artifact_dir, profile_repository=_profile_repository(), repository=final_acceptance_repository(DATABASE_URL))
 
     return GenerateResponse(
         artifact_id=artifact_id,
@@ -1638,7 +1639,7 @@ def accept_final_output(
             },
         )
     acceptance = save_final_acceptance(
-        artifact_dir, current, reviewer_note=body.reviewer_note
+        artifact_dir, current, reviewer_note=body.reviewer_note, repository=final_acceptance_repository(DATABASE_URL),
     )
     return FinalAcceptanceResponse(**acceptance.model_dump(), client_ready=True)
 
@@ -1660,8 +1661,8 @@ def list_artifact_metadata(limit: int = 50) -> ArtifactListResponse:
     return ArtifactListResponse(artifacts=[
         ArtifactMetadataResponse.model_validate({
             **item,
-            "client_ready": is_final_acceptance_current(item["artifact_dir"], profile_repository=_profile_repository()),
-            "artifact_manifest_current": is_artifact_manifest_current(item["artifact_dir"], profile_repository=_profile_repository()),
+            "client_ready": is_final_acceptance_current(item["artifact_dir"], profile_repository=_profile_repository(), repository=final_acceptance_repository(DATABASE_URL)),
+            "artifact_manifest_current": is_artifact_manifest_current(item["artifact_dir"], profile_repository=_profile_repository(), repository=generation_repository(DATABASE_URL)),
         })
         for item in artifacts
     ])
@@ -1679,8 +1680,8 @@ def get_artifact_metadata(artifact_id: str) -> ArtifactMetadataResponse:
         raise HTTPException(status_code=404, detail="Artifact metadata not found.")
     return ArtifactMetadataResponse.model_validate({
         **artifact,
-        "client_ready": is_final_acceptance_current(artifact["artifact_dir"], profile_repository=_profile_repository()),
-        "artifact_manifest_current": is_artifact_manifest_current(artifact["artifact_dir"], profile_repository=_profile_repository()),
+        "client_ready": is_final_acceptance_current(artifact["artifact_dir"], profile_repository=_profile_repository(), repository=final_acceptance_repository(DATABASE_URL)),
+        "artifact_manifest_current": is_artifact_manifest_current(artifact["artifact_dir"], profile_repository=_profile_repository(), repository=generation_repository(DATABASE_URL)),
     })
 
 

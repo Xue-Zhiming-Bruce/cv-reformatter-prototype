@@ -428,10 +428,24 @@ The read-only baseline audit verifies 75 frozen checksum/size references, six
 accepted outputs and three current blind acceptances without export/provider use:
 `tests/test_results/pytest/20261026T181050Z_p1_profile_preserved_baseline.txt`.
 
-P1 remains open: template/reproducibility versions
-and final acceptance have not moved from the filesystem store into PostgreSQL;
-workflow/job transactions, import/data-preserving rollback and idempotency are
-still required. The initial downgrade drops the new metadata table; its empty-DB
+October 27 generation progress: Alembic `0003_generations_acceptance` stores
+immutable successful manifests, exact template snapshots and human acceptance
+referencing a recorded generation. Current generation pointers are artifact-scoped;
+save transactions lock the artifact and recheck profile/output identities before
+commit. API currentness uses the database; deleted/forged local acceptance or
+restored old output files cannot override these records. Design/proof lifecycle
+state remains local, and file publication is not atomic with these transactions.
+The focused storage/generation/acceptance command passes **52**, with four
+existing fixture warnings and exit 0 (57.16s):
+`tests/test_results/pytest/20261026T182132Z_p1_generation_acceptance_focused.txt`.
+Its validated in-memory pointer-guard negative control fails at the intended
+currentness assertion without changing tracked source:
+`tests/test_results/pytest/20261026T182106Z_p1_acceptance_pointer_negative_validated.txt`.
+No paid provider calls or new human fidelity acceptance.
+
+P1 remains open: design/proof lifecycle persistence, workflow/job transactions,
+file-publication ownership/isolation, explicit import/data-preserving rollback
+and idempotency are still required. The initial downgrade drops the structured tables; its empty-DB
 reversibility is not production backup/restore evidence. No deployment or hosted
 candidate-data gate is complete.
 

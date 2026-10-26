@@ -12,6 +12,10 @@ class ArtifactStoreError(RuntimeError):
     """Safe storage error suitable for API responses, without credentials or SQL."""
 
 
+class ArtifactStoreConflict(ArtifactStoreError):
+    """A saved revision or output changed before the transaction committed."""
+
+
 class ArtifactStore(ABC):
     def record_processed_resume(
         self,

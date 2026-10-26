@@ -5,6 +5,8 @@ from pathlib import Path
 from app.storage.artifact_store import ArtifactStore
 from app.storage.local_db import LocalArtifactStore
 from app.profile_approval import ProfileRevisionRepository
+from app.final_acceptance import FinalAcceptanceRepository
+from app.generation.artifact_manifest import GenerationRepository
 
 
 def artifact_store(*, database_url: str | None, local_database_path: Path) -> ArtifactStore:
@@ -21,3 +23,19 @@ def profile_revision_repository(database_url: str | None) -> ProfileRevisionRepo
     from app.storage.postgres import PostgresProfileRevisionRepository, postgres_engine
 
     return PostgresProfileRevisionRepository(postgres_engine(database_url))
+
+
+def generation_repository(database_url: str | None) -> GenerationRepository | None:
+    if database_url is None:
+        return None
+    from app.storage.postgres import PostgresGenerationRepository, postgres_engine
+
+    return PostgresGenerationRepository(postgres_engine(database_url))
+
+
+def final_acceptance_repository(database_url: str | None) -> FinalAcceptanceRepository | None:
+    if database_url is None:
+        return None
+    from app.storage.postgres import PostgresFinalAcceptanceRepository, postgres_engine
+
+    return PostgresFinalAcceptanceRepository(postgres_engine(database_url))

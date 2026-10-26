@@ -6,7 +6,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pypdf import PdfReader
@@ -118,6 +118,12 @@ class ArtifactManifest(ManifestModel):
         return self
 
 
+class GenerationRepository(Protocol):
+    def save(self, manifest: ArtifactManifest, layout_spec: LayoutTemplateSpec) -> None: ...
+
+    def current(self, artifact_id: str) -> ArtifactManifest | None: ...
+
+
 def identify_file(directory: Path, path: Path) -> FileIdentity:
     root, resolved = directory.resolve(), path.resolve()
     relative = resolved.relative_to(root).as_posix()
@@ -185,6 +191,7 @@ def write_artifact_manifest(
     directory: Path, *, artifact_id: str, inputs: dict[str, FileIdentity],
     layout_spec: LayoutTemplateSpec, blind_profile: bool, disclosure_rules: dict[str, DisplayRule],
     uses_agentic: bool, visual_status: Literal["diagnostic", "unavailable", "not_run"],
+    repository: GenerationRepository | None = None,
 ) -> ArtifactManifest:
     if not all(_matches(directory, reference) for reference in inputs.values()):
         raise ValueError("Generation inputs changed while rendering; no new manifest was published")
@@ -255,6 +262,8 @@ def write_artifact_manifest(
         execution=execution, analysis=analysis, disclosure_version=CLIENT_DISCLOSURE_VERSION,
         blind_profile=blind_profile, disclosure_rules=disclosure_rules,
         pdf_producer=producer, fonts=fonts, checks=checks)
+    if repository is not None:
+        repository.save(manifest, layout_spec)
     # shortcut: single-writer local publication; replace with P1/P2 job-owned publication.
     temporary = directory / f".{MANIFEST_FILENAME}.tmp"
     temporary.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
@@ -264,10 +273,13 @@ def write_artifact_manifest(
 
 def is_artifact_manifest_current(
     directory: str | Path, *, profile_repository: ProfileRevisionRepository | None = None,
+    repository: GenerationRepository | None = None,
 ) -> bool:
     directory = Path(directory)
     try:
         manifest = ArtifactManifest.model_validate_json((directory / MANIFEST_FILENAME).read_text())
+        if repository is not None and repository.current(directory.name) != manifest:
+            return False
         revision = load_current_approved_profile(directory, repository=profile_repository)
         if (manifest.artifact_id != directory.name or revision is None
                 or revision.profile_revision_id != manifest.output_identity.profile_revision_id
