@@ -1,18 +1,20 @@
-"""Immutable candidate revisions in the existing filesystem version store.
+"""Immutable candidate revisions with PostgreSQL or legacy filesystem storage.
 
 Legacy approved-profile names and endpoints remain compatible. Saving a revision
 permits a preview, but only exact final-output acceptance makes it client-ready.
-Source drafts and version files stay immutable; superseding uses a separate index.
+Source drafts and audit copies stay immutable; the store owns the current pointer.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -52,6 +54,14 @@ class ApprovedProfileVersion(BaseModel):
     def created_at(self) -> str:
         """Creation time stored in the legacy ``approved_at`` field."""
         return self.approved_at
+
+
+class ProfileRevisionRepository(Protocol):
+    def save(self, artifact_dir: Path, version: ApprovedProfileVersion) -> None: ...
+
+    def load(self, artifact_id: str, revision_id: str) -> ApprovedProfileVersion | None: ...
+
+    def current(self, artifact_id: str) -> ApprovedProfileVersion | None: ...
 
 
 def profile_sha256(profile: CandidateProfile) -> str:
@@ -95,6 +105,7 @@ def save_approved_profile(
     profile: CandidateProfile,
     source_draft_sha256: str,
     reviewer_note: str | None = None,
+    repository: ProfileRevisionRepository | None = None,
 ) -> ApprovedProfileVersion:
     """Create a new immutable approved profile version. The previously current
     version is marked superseded in the index only; version files themselves
@@ -110,10 +121,11 @@ def save_approved_profile(
         approved_at=_now_iso(),
         reviewer_note=reviewer_note,
     )
-    _version_path(artifact_dir, version.profile_version_id).write_text(
-        json.dumps(version.model_dump(mode="json"), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    if repository is not None:
+        repository.save(Path(artifact_dir), version)
+    _write_version_snapshot(artifact_dir, version, canonical=repository is not None)
+    if repository is not None:
+        return version  # PostgreSQL owns the current pointer; no filesystem index fallback.
     index = _load_index(artifact_dir)
     previous = index.get("current")
     versions = index.setdefault("versions", {})
@@ -137,6 +149,7 @@ def save_profile_revision(
     artifact_id: str,
     profile: CandidateProfile,
     source_draft_sha256: str,
+    repository: ProfileRevisionRepository | None = None,
 ) -> ApprovedProfileVersion:
     """Save an immutable revision in the existing profile-version store.
 
@@ -148,13 +161,20 @@ def save_profile_revision(
         artifact_id=artifact_id,
         profile=profile,
         source_draft_sha256=source_draft_sha256,
+        repository=repository,
     )
 
 
 def load_approved_profile_version(
-    artifact_dir: str | Path, version_id: str
+    artifact_dir: str | Path, version_id: str, *,
+    repository: ProfileRevisionRepository | None = None,
 ) -> ApprovedProfileVersion | None:
     """Load one approved profile version; None when missing or invalid."""
+    if repository is not None:
+        version = repository.load(Path(artifact_dir).name, version_id)
+        if version is not None:
+            _write_version_snapshot(artifact_dir, version, canonical=True)
+        return version
     path = _version_path(artifact_dir, version_id)
     if not path.exists():
         return None
@@ -166,16 +186,23 @@ def load_approved_profile_version(
 
 
 def load_profile_revision(
-    artifact_dir: str | Path, revision_id: str
+    artifact_dir: str | Path, revision_id: str, *,
+    repository: ProfileRevisionRepository | None = None,
 ) -> ApprovedProfileVersion | None:
     """Transitional reader over the existing immutable version files."""
-    return load_approved_profile_version(artifact_dir, revision_id)
+    return load_approved_profile_version(artifact_dir, revision_id, repository=repository)
 
 
 def load_current_approved_profile(
     artifact_dir: str | Path,
+    *, repository: ProfileRevisionRepository | None = None,
 ) -> ApprovedProfileVersion | None:
     """Load the current (non-superseded) approved profile version, if any."""
+    if repository is not None:
+        version = repository.current(Path(artifact_dir).name)
+        if version is not None:
+            _write_version_snapshot(artifact_dir, version, canonical=True)
+        return version
     index = _load_index(artifact_dir)
     current = index.get("current")
     if not current:
@@ -183,10 +210,31 @@ def load_current_approved_profile(
     return load_approved_profile_version(artifact_dir, current)
 
 
-def is_current_approved_profile(artifact_dir: str | Path, version_id: str) -> bool:
-    return load_current_approved_profile(artifact_dir) is not None and (
-        load_current_approved_profile(artifact_dir).profile_version_id == version_id
-    )
+def is_current_approved_profile(
+    artifact_dir: str | Path, version_id: str, *, repository: ProfileRevisionRepository | None = None,
+) -> bool:
+    current = load_current_approved_profile(artifact_dir, repository=repository)
+    return current is not None and current.profile_version_id == version_id
+
+
+def _write_version_snapshot(
+    artifact_dir: str | Path, version: ApprovedProfileVersion, *, canonical: bool = False,
+) -> None:
+    """Publish an immutable audit copy; missing PostgreSQL copies can be rebuilt."""
+    path = _version_path(artifact_dir, version.profile_version_id)
+    # JSONB reorders object keys; database-backed audit copies need stable bytes.
+    content = json.dumps(version.model_dump(mode="json"), indent=2, ensure_ascii=False, sort_keys=canonical)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent) as snapshot:
+            snapshot.write(content)
+            snapshot.flush()
+            try:
+                os.link(snapshot.name, path)  # Publish complete bytes without overwriting an existing revision.
+            except FileExistsError:
+                pass
+    if path.read_text(encoding="utf-8") != content:
+        raise ProfileApprovalError("Immutable profile revision artifact disagrees with the saved revision.")
 
 
 def _load_index(artifact_dir: str | Path) -> dict[str, object]:

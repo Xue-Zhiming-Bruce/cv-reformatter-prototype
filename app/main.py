@@ -9,9 +9,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, model_validator
 import httpx
@@ -72,6 +72,7 @@ from app.ingestion.pdf_reader import CorruptedPdfError, EmptyPdfTextError, Unsup
 from app.profile_approval import (
     ApprovedProfileVersion,
     ProfileApprovalError,
+    ProfileRevisionRepository,
     draft_sha256,
     is_current_approved_profile,
     load_current_approved_profile,
@@ -82,7 +83,7 @@ from app.profile_approval import (
 )
 from app.storage.artifact_store import ArtifactStore, ArtifactStoreError
 from app.storage.local_db import DEFAULT_DATABASE_PATH
-from app.storage.repository import artifact_store
+from app.storage.repository import artifact_store, profile_revision_repository
 from app.template_analysis.docx_style_analyzer import (
     TargetDocxAnalysisError,
     analyze_target_docx,
@@ -190,6 +191,11 @@ async def _app_lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CV Reformatter MVP", lifespan=_app_lifespan)
+
+
+@app.exception_handler(ArtifactStoreError)
+async def artifact_store_error_handler(_request: Request, error: ArtifactStoreError) -> JSONResponse:
+    return JSONResponse(status_code=500, content={"detail": str(error)})
 
 GENERATED_OUTPUTS_DIR = Path(
     os.getenv("GENERATED_OUTPUTS_DIR", "data/generated_outputs")
@@ -636,6 +642,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
         artifact_id=artifact_id,
         profile=profile,
         source_draft_sha256=draft_sha256(artifact_dir),
+        repository=_profile_repository(),
     )
 
     try:
@@ -857,6 +864,7 @@ def approve_profile(artifact_id: str, body: ProfileApproveRequest) -> ProfileApp
             profile=body.profile,
             source_draft_sha256=source_draft_sha256,
             reviewer_note=body.reviewer_note,
+            repository=_profile_repository(),
         )
     except ProfileApprovalError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1567,7 +1575,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     output_identity = current_output_identity(artifact_dir)
-    client_ready = is_final_acceptance_current(artifact_dir)
+    client_ready = is_final_acceptance_current(artifact_dir, profile_repository=_profile_repository())
 
     return GenerateResponse(
         artifact_id=artifact_id,
@@ -1652,8 +1660,8 @@ def list_artifact_metadata(limit: int = 50) -> ArtifactListResponse:
     return ArtifactListResponse(artifacts=[
         ArtifactMetadataResponse.model_validate({
             **item,
-            "client_ready": is_final_acceptance_current(item["artifact_dir"]),
-            "artifact_manifest_current": is_artifact_manifest_current(item["artifact_dir"]),
+            "client_ready": is_final_acceptance_current(item["artifact_dir"], profile_repository=_profile_repository()),
+            "artifact_manifest_current": is_artifact_manifest_current(item["artifact_dir"], profile_repository=_profile_repository()),
         })
         for item in artifacts
     ])
@@ -1671,8 +1679,8 @@ def get_artifact_metadata(artifact_id: str) -> ArtifactMetadataResponse:
         raise HTTPException(status_code=404, detail="Artifact metadata not found.")
     return ArtifactMetadataResponse.model_validate({
         **artifact,
-        "client_ready": is_final_acceptance_current(artifact["artifact_dir"]),
-        "artifact_manifest_current": is_artifact_manifest_current(artifact["artifact_dir"]),
+        "client_ready": is_final_acceptance_current(artifact["artifact_dir"], profile_repository=_profile_repository()),
+        "artifact_manifest_current": is_artifact_manifest_current(artifact["artifact_dir"], profile_repository=_profile_repository()),
     })
 
 
@@ -1966,6 +1974,10 @@ def _artifact_store() -> ArtifactStore:
     return artifact_store(database_url=DATABASE_URL, local_database_path=LOCAL_DATABASE_PATH)
 
 
+def _profile_repository() -> ProfileRevisionRepository | None:
+    return profile_revision_repository(DATABASE_URL)
+
+
 def _is_safe_artifact_id(artifact_id: str) -> bool:
     return bool(artifact_id) and all(character.isalnum() or character in {"_", "-"} for character in artifact_id)
 
@@ -2027,7 +2039,7 @@ def _load_approved_design(
                 "message": "The referenced design is not approved.",
             },
         )
-    current_approved = load_current_approved_profile(artifact_dir)
+    current_approved = load_current_approved_profile(artifact_dir, repository=_profile_repository())
     if current_approved is None:
         raise HTTPException(
             status_code=409,
@@ -2235,7 +2247,7 @@ def _require_profile_revision(
         )
     try:
         approved = load_profile_revision(
-            artifact_dir, profile_revision_id
+            artifact_dir, profile_revision_id, repository=_profile_repository(),
         )
     except ProfileApprovalError as exc:
         raise HTTPException(
@@ -2290,7 +2302,7 @@ def _require_profile_revision(
                 "options": ["approve_profile"],
             },
         )
-    if not is_current_approved_profile(artifact_dir, approved.profile_version_id):
+    if not is_current_approved_profile(artifact_dir, approved.profile_version_id, repository=_profile_repository()):
         raise HTTPException(
             status_code=409,
             detail={

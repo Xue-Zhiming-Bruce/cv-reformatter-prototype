@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.profile_approval import (
     ProfileApprovalError,
+    ProfileRevisionRepository,
     draft_sha256,
     load_current_approved_profile,
 )
@@ -81,13 +82,15 @@ def load_final_acceptance(
     return FinalOutputAcceptance.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def is_final_acceptance_current(artifact_dir: str | Path) -> bool:
+def is_final_acceptance_current(
+    artifact_dir: str | Path, *, profile_repository: ProfileRevisionRepository | None = None,
+) -> bool:
     acceptance = load_final_acceptance(artifact_dir)
     if acceptance is None:
         return False
     try:
         current = current_output_identity(artifact_dir)
-        revision = load_current_approved_profile(artifact_dir)
+        revision = load_current_approved_profile(artifact_dir, repository=profile_repository)
         if revision is None or (
             revision.profile_revision_id != current.profile_revision_id
             or revision.profile_sha256 != current.profile_sha256

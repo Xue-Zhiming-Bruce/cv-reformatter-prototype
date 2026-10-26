@@ -482,9 +482,14 @@ access in the later storage stage.
 Metadata responses retain the same shape with either configured metadata store.
 `DATABASE_URL` selects the PostgreSQL index; an unavailable or unmigrated database
 returns an explicit storage error instead of reading/writing a SQLite fallback.
-An unset variable retains the transitional local index. Files, saved candidate
-revisions and final-acceptance records remain in the existing filesystem store
-during this first P1 slice. This is not private hosted artifact access.
+An unset variable retains the transitional local index and profile files.
+When configured, PostgreSQL also owns saved candidate revisions (including
+disclosure choices) and their current pointer. Preview, design and acceptance
+checks use that pointer; a stale filesystem index cannot override it. Missing
+immutable audit JSON copies are rebuilt from the stored revision; conflicting
+copies fail validation. Existing filesystem revisions are not imported implicitly
+and cannot be used in PostgreSQL mode. Template and final-acceptance records and
+document files remain filesystem-backed. This is not private hosted artifact access.
 
 Metadata and list entries include additive `artifact_manifest_current`: true only
 when the versioned manifest is valid, belongs to this artifact, references the

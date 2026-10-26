@@ -412,7 +412,23 @@ The README's actual CLI upgrade/current path is also verified from a different
 working directory: all three PostgreSQL cases pass without warnings (5.85s),
 `tests/test_results/pytest/20261026T175519Z_p1_postgres_cli_upgrade.txt`.
 
-P1 remains open: candidate revisions, disclosure/template/reproducibility versions
+October 27 profile progress: Alembic `0002_profile_revisions` adds immutable
+profile bodies (including saved disclosure settings) and a transactionally updated,
+artifact-scoped current pointer. API generation/design/acceptance and manifest
+checks read the database version. Local JSON copies remain immutable audit
+artifacts; missing copies can be rebuilt, but stale indexes and unimported local
+revisions cannot override PostgreSQL. The 12 focused checks pass in 4.42s:
+`tests/test_results/pytest/20261026T180856Z_p1_profile_revisions_atomic.txt`.
+They verify concurrent history, scope/immutability constraints, rollback on failed
+insertion, metadata-preserving upgrade, fresh-process reads and no file fallback.
+The same wider affected API/storage command above now passes **106**, with four
+existing warnings and exit 0 (287.91s):
+`tests/test_results/pytest/20261026T180938Z_p1_profile_api_regression.txt`.
+The read-only baseline audit verifies 75 frozen checksum/size references, six
+accepted outputs and three current blind acceptances without export/provider use:
+`tests/test_results/pytest/20261026T181050Z_p1_profile_preserved_baseline.txt`.
+
+P1 remains open: template/reproducibility versions
 and final acceptance have not moved from the filesystem store into PostgreSQL;
 workflow/job transactions, import/data-preserving rollback and idempotency are
 still required. The initial downgrade drops the new metadata table; its empty-DB

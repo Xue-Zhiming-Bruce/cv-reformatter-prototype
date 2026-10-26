@@ -13,7 +13,7 @@ from pypdf import PdfReader
 
 from app.extraction.candidate_schema import CandidateProfile, DisplayRule
 from app.final_acceptance import FinalOutputIdentity, current_output_identity, file_sha256
-from app.profile_approval import ProfileApprovalError, load_current_approved_profile
+from app.profile_approval import ProfileApprovalError, ProfileRevisionRepository, load_current_approved_profile
 from app.generation.template_mapper import CLIENT_DISCLOSURE_VERSION
 from app.template_analysis.schemas import LayoutTemplateSpec
 
@@ -262,11 +262,13 @@ def write_artifact_manifest(
     return manifest
 
 
-def is_artifact_manifest_current(directory: str | Path) -> bool:
+def is_artifact_manifest_current(
+    directory: str | Path, *, profile_repository: ProfileRevisionRepository | None = None,
+) -> bool:
     directory = Path(directory)
     try:
         manifest = ArtifactManifest.model_validate_json((directory / MANIFEST_FILENAME).read_text())
-        revision = load_current_approved_profile(directory)
+        revision = load_current_approved_profile(directory, repository=profile_repository)
         if (manifest.artifact_id != directory.name or revision is None
                 or revision.profile_revision_id != manifest.output_identity.profile_revision_id
                 or revision.profile_sha256 != manifest.output_identity.profile_sha256

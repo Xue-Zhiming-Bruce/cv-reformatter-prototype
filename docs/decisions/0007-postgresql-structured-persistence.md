@@ -31,6 +31,14 @@ An atomic upsert merges JSONB debug references and updates only the lifecycle
 fields supplied by that operation. It is an artifact index, not a durable job
 queue, transactionally published workflow or organization authorization model.
 
+The next slice stores immutable candidate revisions and their disclosure choices
+in `candidate_profile_revisions`. A row lock serializes revision insertion and
+the artifact's current pointer within one transaction. Composite foreign keys
+prevent adopting another artifact's revision, and a trigger rejects updates to
+stored revisions. Reads validate schema/checksums; local JSON copies are immutable
+audit artifacts, recoverable from the database. PostgreSQL never uses the legacy
+filesystem index or silently imports its revisions.
+
 ## Evidence And Rollout Boundary
 
 The canonical integration checks use synthetic data on local PostgreSQL 17:
@@ -52,9 +60,24 @@ The strengthened CLI upgrade/current check also passes all three PostgreSQL
 cases (5.85s, no warnings):
 `tests/test_results/pytest/20261026T175519Z_p1_postgres_cli_upgrade.txt`.
 
-This proves the metadata slice only. Candidate revisions, disclosure, template
-versions and acceptance still use the filesystem store; migration/import,
-workflow transactions, concurrency control and idempotency remain P1/B1A/P2
+Profile/disclosure persistence additionally passes 12 focused checks (4.42s):
+`tests/test_results/pytest/20261026T180856Z_p1_profile_revisions_atomic.txt`.
+They cover 12 concurrent saves, complete history, current-pointer scope, update
+rejection, rollback on failed insertion, metadata-preserving schema upgrade,
+fresh-process recovery, missing audit-copy reconstruction, stale local indexes
+and rejection of implicit imports or filesystem fallback on schema failure.
+An earlier generation check failed because JSONB reordered object keys; stable
+serialization fixed the audit-copy mismatch without relaxing identity validation.
+The wider affected API/storage command listed in P1 passes **106 checks**, with
+four existing fixture warnings and exit 0 (287.91s):
+`tests/test_results/pytest/20261026T180938Z_p1_profile_api_regression.txt`.
+An independent read-only audit verifies all 75 checksum/size references in the
+frozen baseline, six accepted HTML/PDF identities and three current blind
+acceptances, with zero exports/provider calls:
+`tests/test_results/pytest/20261026T181050Z_p1_profile_preserved_baseline.txt`.
+
+Template versions and acceptance still use the filesystem store; migration/import,
+full workflow transactions, concurrency control and idempotency remain P1/B1A/P2
 work in the [active roadmap](../roadmaps/BACKEND_ROADMAP.md). No production
 PostgreSQL image/version, cloud configuration or job implementation is selected
 by the local test environment.

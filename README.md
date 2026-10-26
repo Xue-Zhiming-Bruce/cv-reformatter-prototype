@@ -160,7 +160,7 @@ behavior. Frontend code is maintained by the co-founder. The separate
 [frontend mock](docs/development/MOCK_API.md) retains a legacy collaboration
 interface and does not establish the production acceptance workflow.
 
-PostgreSQL metadata storage is opt-in. First create an empty PostgreSQL database
+PostgreSQL structured storage is opt-in. First create an empty PostgreSQL database
 and export its `DATABASE_URL` (either `postgresql://` or `postgresql+psycopg://`;
 both use Psycopg 3). Apply the versioned schema before starting the API:
 
@@ -176,12 +176,17 @@ database failure returns an error; it cannot silently select SQLite. Omitting
 `DATABASE_URL` retains the accepted transitional SQLite index. This does not
 copy existing SQLite records into PostgreSQL or move document files.
 
-This first PostgreSQL slice stores the artifact metadata index. Candidate
-revisions, templates and acceptance records still live in the filesystem store;
-their database migration and workflow transactions remain P1 work. See
+PostgreSQL stores the artifact index and immutable candidate revisions, including
+saved disclosure choices. A transaction appends each revision and changes its
+artifact-scoped current pointer; database constraints prevent cross-artifact
+references and updates to saved revisions. JSON files remain immutable audit
+copies and are rebuilt when missing. A stale local profile index cannot override
+the database, and existing local revisions require an explicit import before use.
+Templates, acceptance records and document files still use the filesystem;
+their migration and workflow transactions remain P1 work. See
 [ADR 0007](docs/decisions/0007-postgresql-structured-persistence.md) for the owner-selected
-stack and rollout boundary. `alembic downgrade base` removes the metadata table
-and its rows; use it only on disposable databases or with a tested backup/restore
+stack and rollout boundary. `alembic downgrade base` removes the structured tables
+and their rows; use it only on disposable databases or with a tested backup/restore
 plan. No hosted candidate-data readiness is implied.
 
 ## Validate Changes

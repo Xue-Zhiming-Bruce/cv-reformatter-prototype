@@ -859,8 +859,16 @@ preserves unrelated lifecycle fields. The accepted SQLite schema remains
 transitional and unchanged.
 
 The `artifact_sessions` table is an index, not durable workflow/job state.
-Candidate revisions, disclosure/template and acceptance versions remain in the
-filesystem store at this stage; documents/debug files stay outside the DB.
+`candidate_profile_revisions` stores immutable validated profile bodies and saved
+disclosure settings. Revision insertion and the artifact-scoped current pointer
+commit in one transaction under a row lock. Composite foreign keys prevent
+cross-artifact pointers, and a database trigger rejects revision updates.
+Database reads validate the schema and stored checksums. Immutable audit JSON
+copies use canonical key order for JSONB round trips and can be rebuilt when
+missing; conflicting copies fail closed. PostgreSQL mode ignores the legacy
+profile index and never reads unimported local versions as a fallback.
+Templates and acceptance remain filesystem-backed; documents/debug files stay
+outside the DB.
 Actual process/generate/acceptance and new-process reads pass on local PostgreSQL,
 but full structured persistence, transactional publication, idempotency and
 production security gates remain open. [ADR 0007](../decisions/0007-postgresql-structured-persistence.md)
