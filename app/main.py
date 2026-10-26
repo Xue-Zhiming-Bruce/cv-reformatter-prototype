@@ -80,7 +80,9 @@ from app.profile_approval import (
     save_approved_profile,
     save_profile_revision,
 )
-from app.storage.local_db import DEFAULT_DATABASE_PATH, LocalArtifactStore, LocalDatabaseError
+from app.storage.artifact_store import ArtifactStore, ArtifactStoreError
+from app.storage.local_db import DEFAULT_DATABASE_PATH
+from app.storage.repository import artifact_store
 from app.template_analysis.docx_style_analyzer import (
     TargetDocxAnalysisError,
     analyze_target_docx,
@@ -193,6 +195,7 @@ GENERATED_OUTPUTS_DIR = Path(
     os.getenv("GENERATED_OUTPUTS_DIR", "data/generated_outputs")
 )
 LOCAL_DATABASE_PATH = Path(os.getenv("LOCAL_DATABASE_PATH", str(DEFAULT_DATABASE_PATH)))
+DATABASE_URL = os.getenv("DATABASE_URL")
 DOWNLOADABLE_ARTIFACT_FILENAMES = {
     "candidate_profile.html",
     "candidate_profile.pdf",
@@ -636,7 +639,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
     )
 
     try:
-        _local_artifact_store().record_processed_resume(
+        _artifact_store().record_processed_resume(
             artifact_id=artifact_id,
             artifact_dir=artifact_dir,
             source_filename=file.filename,
@@ -646,7 +649,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
             missing_fields=profile.missing_fields,
             debug_artifacts=debug_artifacts,
         )
-    except LocalDatabaseError as exc:
+    except ArtifactStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return ProcessResponse(
@@ -810,7 +813,7 @@ async def upload_target_format(
         )
 
     try:
-        _local_artifact_store().record_target_format(
+        _artifact_store().record_target_format(
             artifact_id=resolved_artifact_id,
             artifact_dir=artifact_dir,
             target_format_role=target_format.role,
@@ -818,7 +821,7 @@ async def upload_target_format(
             target_format_download_url=target_format.download_url,
             debug_artifacts=debug_artifacts,
         )
-    except LocalDatabaseError as exc:
+    except ArtifactStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return TargetFormatUploadResponse(
@@ -1549,7 +1552,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     debug_artifacts["artifact_manifest"] = str(artifact_dir / MANIFEST_FILENAME)
 
     try:
-        _local_artifact_store().record_generated_outputs(
+        _artifact_store().record_generated_outputs(
             artifact_id=artifact_id,
             artifact_dir=artifact_dir,
             template_name=request.template_name,
@@ -1560,7 +1563,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
             missing_fields=reviewed_profile.missing_fields,
             debug_artifacts=debug_artifacts,
         )
-    except LocalDatabaseError as exc:
+    except ArtifactStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     output_identity = current_output_identity(artifact_dir)
@@ -1643,8 +1646,8 @@ def get_followup_message(request: FollowupRequest) -> FollowupResponse:
 @app.get("/api/artifacts", response_model=ArtifactListResponse)
 def list_artifact_metadata(limit: int = 50) -> ArtifactListResponse:
     try:
-        artifacts = _local_artifact_store().list_artifacts(limit=limit)
-    except LocalDatabaseError as exc:
+        artifacts = _artifact_store().list_artifacts(limit=limit)
+    except ArtifactStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return ArtifactListResponse(artifacts=[
         ArtifactMetadataResponse.model_validate({
@@ -1661,8 +1664,8 @@ def get_artifact_metadata(artifact_id: str) -> ArtifactMetadataResponse:
     if not _is_safe_artifact_id(artifact_id):
         raise HTTPException(status_code=404, detail="Artifact metadata not found.")
     try:
-        artifact = _local_artifact_store().get_artifact(artifact_id)
-    except LocalDatabaseError as exc:
+        artifact = _artifact_store().get_artifact(artifact_id)
+    except ArtifactStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if artifact is None:
         raise HTTPException(status_code=404, detail="Artifact metadata not found.")
@@ -1959,8 +1962,8 @@ def _artifact_metadata_url(artifact_id: str) -> str:
     return f"/api/artifacts/{artifact_id}/metadata"
 
 
-def _local_artifact_store() -> LocalArtifactStore:
-    return LocalArtifactStore(LOCAL_DATABASE_PATH)
+def _artifact_store() -> ArtifactStore:
+    return artifact_store(database_url=DATABASE_URL, local_database_path=LOCAL_DATABASE_PATH)
 
 
 def _is_safe_artifact_id(artifact_id: str) -> bool:
@@ -2069,7 +2072,7 @@ def _load_approved_design(
 
 def _record_design_reference(artifact_dir: Path, state: DesignArtifactState) -> None:
     try:
-        _local_artifact_store().record_design_reference(
+        _artifact_store().record_design_reference(
             artifact_id=state.artifact_id,
             artifact_dir=artifact_dir,
             design_id=state.design_id,
@@ -2079,7 +2082,7 @@ def _record_design_reference(artifact_dir: Path, state: DesignArtifactState) -> 
                 "design_state": state.state,
             },
         )
-    except LocalDatabaseError as exc:
+    except ArtifactStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

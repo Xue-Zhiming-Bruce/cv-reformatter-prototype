@@ -160,6 +160,30 @@ behavior. Frontend code is maintained by the co-founder. The separate
 [frontend mock](docs/development/MOCK_API.md) retains a legacy collaboration
 interface and does not establish the production acceptance workflow.
 
+PostgreSQL metadata storage is opt-in. First create an empty PostgreSQL database
+and export its `DATABASE_URL` (either `postgresql://` or `postgresql+psycopg://`;
+both use Psycopg 3). Apply the versioned schema before starting the API:
+
+```bash
+python -m alembic upgrade head
+API_LLM_PROVIDER=mock python -m uvicorn app.main:app --reload
+```
+
+The repository uses SQLAlchemy 2 and an atomic PostgreSQL upsert to preserve
+unrelated lifecycle fields and merge debug-artifact references under concurrent
+writes. Requests never create or migrate PostgreSQL tables. A configured
+database failure returns an error; it cannot silently select SQLite. Omitting
+`DATABASE_URL` retains the accepted transitional SQLite index. This does not
+copy existing SQLite records into PostgreSQL or move document files.
+
+This first PostgreSQL slice stores the artifact metadata index. Candidate
+revisions, templates and acceptance records still live in the filesystem store;
+their database migration and workflow transactions remain P1 work. See
+[ADR 0007](docs/decisions/0007-postgresql-structured-persistence.md) for the owner-selected
+stack and rollout boundary. `alembic downgrade base` removes the metadata table
+and its rows; use it only on disposable databases or with a tested backup/restore
+plan. No hosted candidate-data readiness is implied.
+
 ## Validate Changes
 
 Run the canonical offline checks:
@@ -173,6 +197,16 @@ local-corpus and live lanes, and [tests/README.md](tests/README.md) for the
 explicit local inputs used by retained pipeline regressions. Pytest terminal
 output belongs under `tests/test_results/pytest/` and remains uncommitted.
 
+Local PostgreSQL integration checks extend the same pytest lane. Set
+`TEST_DATABASE_URL` to a separate local database named `cv_reformatter_test*`;
+the fixture creates and drops only its own random schemas. Without that variable,
+these checks skip. They cover migrations, real process/generate/acceptance APIs,
+a fresh-process read and concurrent reference updates:
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -p no:cacheprovider tests/integration/test_postgres_storage.py -q
+```
+
 ## Documentation And Remaining Work
 
 [docs/README.md](docs/README.md) indexes the product contract, architecture,
@@ -180,8 +214,9 @@ accepted ADRs, and the sole active [backend roadmap](docs/roadmaps/BACKEND_ROADM
 Historical runners, plans, and obsolete inventories are recoverable from Git;
 they are not current entry points or a second development checklist.
 
-Local files and a transitional SQLite index remain the implemented storage.
-PostgreSQL, durable jobs, private storage, organization-level authorization,
-retention/deletion, and recovery are roadmap work. DigitalOcean is the selected
+Local files remain the document store. The metadata index can use PostgreSQL
+through `DATABASE_URL`, or the transitional SQLite index when unset. Complete
+structured-workflow persistence, durable jobs, private storage, organization-level
+authorization, retention/deletion and recovery remain roadmap work. DigitalOcean is the selected
 initial hosting direction after the required quality and security gates;
 these are not deployed capabilities of this repository.

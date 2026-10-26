@@ -479,6 +479,13 @@ These endpoints support local debugging, preview, and download behavior in the
 accepted baseline. Private signed object access replaces direct local artifact
 access in the later storage stage.
 
+Metadata responses retain the same shape with either configured metadata store.
+`DATABASE_URL` selects the PostgreSQL index; an unavailable or unmigrated database
+returns an explicit storage error instead of reading/writing a SQLite fallback.
+An unset variable retains the transitional local index. Files, saved candidate
+revisions and final-acceptance records remain in the existing filesystem store
+during this first P1 slice. This is not private hosted artifact access.
+
 Metadata and list entries include additive `artifact_manifest_current`: true only
 when the versioned manifest is valid, belongs to this artifact, references the
 current saved revision/output identity, and every referenced artifact still has

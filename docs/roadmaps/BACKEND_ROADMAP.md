@@ -388,6 +388,37 @@ Status: `[ ]` First post-MVP structured-persistence foundation.
 Exit: the accepted workflow survives restart/migration without losing revisions,
 identities or artifact references.
 
+October 27 progress: the first PostgreSQL metadata slice is implemented behind
+`DATABASE_URL`, through the shared `ArtifactStore` interface, SQLAlchemy 2 and
+Psycopg 3. Alembic revision `0001_artifact_sessions` owns its schema; requests do
+not create/migrate tables or fall back from a configured database to SQLite.
+Atomic JSONB upserts preserve unrelated lifecycle fields and concurrent debug
+references. The SQLite schema remains unchanged. [ADR 0007](../decisions/0007-postgresql-structured-persistence.md)
+records the existing owner-selected technology direction and the partial rollout.
+
+Canonical checks with an isolated local PostgreSQL 17 service pass **104**, with
+four existing Pydantic fixture warnings and process exit 0 (285.94s):
+`tests/test_results/pytest/20261026T142914Z_p1_storage_api_regression.txt`.
+The command covers `test_local_db.py` plus integration `test_postgres_storage.py`,
+`test_api_process.py`, `test_api_generate.py`, `test_design_api.py`,
+`test_draft_preservation.py`, `test_generate_approval.py`, `test_layout_proof_api.py`
+and `test_profile_approval.py`, using `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`,
+`-B -m pytest -p no:cacheprovider -x -q --tb=short` and explicit `TEST_DATABASE_URL`.
+It verifies synthetic process/generate/final acceptance, independent new-process
+identity/reference recovery, migration/model agreement, reversible empty-database
+DDL, 24 concurrent lifecycle updates, and unavailable/invalid-store failure with
+no SQLite fallback. New paid provider calls: zero.
+The README's actual CLI upgrade/current path is also verified from a different
+working directory: all three PostgreSQL cases pass without warnings (5.85s),
+`tests/test_results/pytest/20261026T175519Z_p1_postgres_cli_upgrade.txt`.
+
+P1 remains open: candidate revisions, disclosure/template/reproducibility versions
+and final acceptance have not moved from the filesystem store into PostgreSQL;
+workflow/job transactions, import/data-preserving rollback and idempotency are
+still required. The initial downgrade drops the new metadata table; its empty-DB
+reversibility is not production backup/restore evidence. No deployment or hosted
+candidate-data gate is complete.
+
 ### P2 — Jobs, Storage And API Hardening
 
 Status: `[ ]` Builds on B1A and P1.

@@ -21,6 +21,17 @@ live in `unit/` and `integration/`. Claude adapter request, timeout, strict-outp
 and live-gate checks live in `unit/test_design_provider.py`.
 Existing local results remain archival evidence, not a source of new runs.
 
+`integration/test_postgres_storage.py` extends the existing pytest lane with
+explicit local PostgreSQL checks. Set `TEST_DATABASE_URL` to a separate local
+`cv_reformatter_test*` database; tests create/drop only their own random schemas
+and skip when unset. They exercise real migrations (including the CLI from an
+unrelated working directory), model/schema agreement, process/generate/acceptance,
+independent new-process reads and concurrent reference merging. Ordinary tests
+ignore an inherited `DATABASE_URL`; API configuration regressions explicitly
+verify unavailable/invalid databases cannot fall back or expose credentials.
+These checks do not claim database-backed candidate revisions or production
+readiness. Terminal output stays under `test_results/pytest/`.
+
 The CLI and service execute only the selected A mainline. Retired B/paired
 selections fail before I/O. Historical B comparisons remain in Git; shared
 privacy, provenance, lifecycle and actual-PDF repair contracts remain covered.

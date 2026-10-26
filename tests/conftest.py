@@ -7,6 +7,12 @@ from tests.helpers.adobe_evidence import mock_run_adobe_layout
 
 
 @pytest.fixture(autouse=True)
+def _offline_storage_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An inherited developer DATABASE_URL must never redirect ordinary tests."""
+    monkeypatch.setattr(main, "DATABASE_URL", None)
+
+
+@pytest.fixture(autouse=True)
 def _offline_adobe_target_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
     """API tests exercise Adobe-shaped evidence without external calls."""
     monkeypatch.setattr(main, "run_adobe_layout", mock_run_adobe_layout)

@@ -713,6 +713,27 @@ def test_artifact_metadata_list_returns_recent_jobs(tmp_path: Path, monkeypatch:
     assert artifacts[0]["status"] == "target_format_uploaded"
 
 
+@pytest.mark.parametrize("configuration", ["empty", "sqlite", "malformed", "unavailable"])
+def test_configured_database_failure_never_falls_back_or_exposes_credentials(
+    tmp_path: Path, monkeypatch: MonkeyPatch, configuration: str,
+) -> None:
+    import socket
+
+    sqlite_path = tmp_path / "must_not_exist.sqlite3"
+    monkeypatch.setattr(main, "LOCAL_DATABASE_PATH", sqlite_path)
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))  # Reserve a port that cannot accept connections.
+        url = {
+            "empty": "", "sqlite": "sqlite:///must-not-open.sqlite3", "malformed": "not-a-database-url",
+            "unavailable": f"postgresql://synthetic:DO_NOT_EXPOSE_PASSWORD@127.0.0.1:{reserved.getsockname()[1]}/cv_reformatter_test",
+        }[configuration]
+        monkeypatch.setattr(main, "DATABASE_URL", url)
+        response = client.get("/api/artifacts")
+    assert response.status_code == 500, response.text
+    assert "DO_NOT_EXPOSE_PASSWORD" not in response.text
+    assert not sqlite_path.exists()
+
+
 def test_target_format_upload_rejects_unsupported_files(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
 

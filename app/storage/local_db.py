@@ -5,17 +5,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.extraction.candidate_schema import MissingField
+from app.storage.artifact_store import ArtifactStore, ArtifactStoreError
 
 
 DEFAULT_DATABASE_PATH = Path("data/local/cv_reformatter.sqlite3")
 
 
-class LocalDatabaseError(RuntimeError):
+class LocalDatabaseError(ArtifactStoreError):
     """Raised when local SQLite artifact metadata cannot be read or written."""
 
 
-class LocalArtifactStore:
+class LocalArtifactStore(ArtifactStore):
     """SQLite-backed metadata index for local demo artifact sessions."""
 
     def __init__(self, database_path: str | Path = DEFAULT_DATABASE_PATH) -> None:
@@ -61,110 +61,6 @@ class LocalArtifactStore:
         except sqlite3.Error as exc:
             raise LocalDatabaseError(f"Local database schema could not be initialized: {exc}") from exc
 
-    def record_processed_resume(
-        self,
-        *,
-        artifact_id: str,
-        artifact_dir: str | Path,
-        source_filename: str,
-        source_file_type: str,
-        original_pdf_preview_url: str | None,
-        original_preview_error: str | None,
-        missing_fields: list[MissingField],
-        debug_artifacts: Mapping[str, str],
-    ) -> None:
-        self._upsert_artifact(
-            artifact_id=artifact_id,
-            artifact_dir=artifact_dir,
-            status="processed",
-            updates={
-                "source_filename": source_filename,
-                "source_file_type": source_file_type,
-                "original_pdf_preview_url": original_pdf_preview_url,
-                "original_preview_error": original_preview_error,
-                "needs_review_count": len(missing_fields),
-                "missing_field_labels_json": _missing_field_labels_json(missing_fields),
-            },
-            debug_artifacts=debug_artifacts,
-        )
-
-    def record_target_format(
-        self,
-        *,
-        artifact_id: str,
-        artifact_dir: str | Path,
-        target_format_role: str,
-        target_format_filename: str,
-        target_format_download_url: str,
-        debug_artifacts: Mapping[str, str],
-    ) -> None:
-        self._upsert_artifact(
-            artifact_id=artifact_id,
-            artifact_dir=artifact_dir,
-            status="target_format_uploaded",
-            updates={
-                "target_format_role": target_format_role,
-                "target_format_filename": target_format_filename,
-                "target_format_download_url": target_format_download_url,
-            },
-            debug_artifacts=debug_artifacts,
-        )
-
-    def record_generated_outputs(
-        self,
-        *,
-        artifact_id: str,
-        artifact_dir: str | Path,
-        template_name: str,
-        blind_profile: bool,
-        html_surface_url: str,
-        pdf_download_url: str,
-        pdf_preview_url: str,
-        missing_fields: list[MissingField],
-        debug_artifacts: Mapping[str, str],
-    ) -> None:
-        self._upsert_artifact(
-            artifact_id=artifact_id,
-            artifact_dir=artifact_dir,
-            status="generated",
-            updates={
-                "template_name": template_name,
-                "blind_profile": int(blind_profile),
-                "html_surface_url": html_surface_url,
-                "pdf_download_url": pdf_download_url,
-                "pdf_preview_url": pdf_preview_url,
-                "needs_review_count": len(missing_fields),
-                "missing_field_labels_json": _missing_field_labels_json(missing_fields),
-            },
-            debug_artifacts=debug_artifacts,
-        )
-
-    def record_design_reference(
-        self,
-        *,
-        artifact_id: str,
-        artifact_dir: str | Path,
-        design_id: str,
-        design_state: str,
-        debug_artifacts: Mapping[str, str],
-    ) -> None:
-        """Record a design artifact reference without adding SQLite columns.
-
-        Design lifecycle state lives on the filesystem under the artifact
-        store boundary; this index entry is metadata only.
-        """
-        self._upsert_artifact(
-            artifact_id=artifact_id,
-            artifact_dir=artifact_dir,
-            status="design_created",
-            updates={},
-            debug_artifacts={
-                **debug_artifacts,
-                "design_id": design_id,
-                "design_state": design_state,
-            },
-        )
-
     def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
         self.initialize_schema()
         try:
@@ -207,6 +103,12 @@ class LocalArtifactStore:
         now = _utc_now()
         merged_debug_artifacts = self._merged_debug_artifacts(artifact_id, debug_artifacts)
 
+        encoded_updates = dict(updates)
+        if "missing_field_labels" in encoded_updates:
+            encoded_updates["missing_field_labels_json"] = json.dumps(
+                encoded_updates.pop("missing_field_labels"), ensure_ascii=False
+            )
+
         columns: dict[str, object] = {
             "artifact_id": artifact_id,
             "created_at": now,
@@ -214,7 +116,7 @@ class LocalArtifactStore:
             "status": status,
             "artifact_dir": str(artifact_dir),
             "debug_artifacts_json": json.dumps(merged_debug_artifacts, sort_keys=True),
-            **updates,
+            **encoded_updates,
         }
         update_columns = [column for column in columns if column not in {"artifact_id", "created_at"}]
         placeholders = ", ".join("?" for _ in columns)
@@ -257,11 +159,6 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     payload["missing_field_labels"] = json.loads(payload.pop("missing_field_labels_json") or "[]")
     payload["debug_artifacts"] = json.loads(payload.pop("debug_artifacts_json") or "{}")
     return payload
-
-
-def _missing_field_labels_json(missing_fields: list[MissingField]) -> str:
-    labels = [field.label for field in missing_fields]
-    return json.dumps(labels, ensure_ascii=False)
 
 
 def _utc_now() -> str:

@@ -850,6 +850,22 @@ provide transactional output publication, concurrent-writer isolation, durable
 jobs, provider policy enforcement or workflow support-state routing. Those
 production boundaries remain B1A/P1/P2 work.
 
+P1's metadata slice now implements `ArtifactStore` with shared lifecycle
+operations and separate SQLite/PostgreSQL persistence adapters. `DATABASE_URL`
+selects PostgreSQL through SQLAlchemy 2/Psycopg 3; Alembic owns the schema.
+Requests never migrate or create PostgreSQL tables, and a configured PostgreSQL
+error cannot select SQLite. Its atomic upsert merges debug references and
+preserves unrelated lifecycle fields. The accepted SQLite schema remains
+transitional and unchanged.
+
+The `artifact_sessions` table is an index, not durable workflow/job state.
+Candidate revisions, disclosure/template and acceptance versions remain in the
+filesystem store at this stage; documents/debug files stay outside the DB.
+Actual process/generate/acceptance and new-process reads pass on local PostgreSQL,
+but full structured persistence, transactional publication, idempotency and
+production security gates remain open. [ADR 0007](../decisions/0007-postgresql-structured-persistence.md)
+records the owner-selected stack and this rollout limit.
+
 ## Independent Quality Gates
 
 - **Content gate:** output text and structured values match the approved render
