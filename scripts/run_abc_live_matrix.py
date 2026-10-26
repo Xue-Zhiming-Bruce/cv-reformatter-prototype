@@ -26,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.main import GENERATED_OUTPUTS_DIR, app  # noqa: E402
+from app.generation.agentic import generation_strategy  # noqa: E402
 from app.template_analysis.commercial import (  # noqa: E402
     NormalizedLayoutEvidence,
     enrich_badges_from_local_pdf,
@@ -1060,7 +1061,7 @@ def main() -> int:
         "started_at": datetime.now(timezone.utc).isoformat(),
         "source_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, text=True).strip(),
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        "generation_strategy": os.getenv("GENERATION_STRATEGY", "standard"),
+        "generation_strategy": generation_strategy(),
         "execution_settings": {key: os.getenv(key) for key in ("AGENTIC_MAX_MODEL_REQUESTS", "AGENTIC_MAX_TOOL_CALLS", "AGENTIC_MAX_REPAIR_ROUNDS")},
         "llm_provider": provider,
         "pairs_requested": pairs,

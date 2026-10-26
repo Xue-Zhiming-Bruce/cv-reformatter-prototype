@@ -105,8 +105,8 @@ completes B0/B1 or approves a final document.
 | Retained path | Reason for retention | Removal condition |
 | --- | --- | --- |
 | Original accepted baseline/build | Replacement parity and reproducibility have not been accepted. | Preserve recoverable source/evidence and prove the selected replacement plus explicit build rollback (M4–M6). |
-| Standard uploaded-target `product-html/1` orchestration | Explicit retained comparison during M4 verification; Agentic is now the source default. | Focused migration checks pass; complete full regression, then delete replaced code in M5. |
-| B authored HTML/CSS | Explicit historical comparison; six representative A candidate snapshots are now owner-accepted. It is not an API runtime fallback. | Complete M4 regression and remove B/exclusive checks in M5; preserve history in Git. |
+| Standard uploaded-target `product-html/1` orchestration | Explicit retained comparison during M4 verification; Agentic is now the source default. | M4 passes full regression and explicit rollback checks; delete replaced code in M5. |
+| B authored HTML/CSS | Explicit historical comparison; six representative A candidate snapshots are now owner-accepted. It is not an API runtime fallback. | M4 is verified; remove B/exclusive checks in M5 and preserve history in Git. |
 
 There is no silent fallback from an uploaded target or failed Agentic run to a
 built-in template, B or the standard renderer. Retention is transitional; it is
@@ -207,7 +207,7 @@ M2 demonstrates a blocking local workflow failure.
 
 ### M4 — Unify Uploaded-Target Generation, Then Switch The Default
 
-Status: [~] Source default is Agentic; measured uploaded/designer API, exact accepted-snapshot replay, stale-proof rejection and actual prior-build artifact validation pass. Full backend regression is pending before M4 closure/M5 deletion. Known E proof-label misses and post-completion SIGBUS remain visible limits, not general quality acceptance.
+Status: [x] Source default is Agentic; measured uploaded/designer API, exact accepted-snapshot replay, stale-proof rejection and actual prior-build artifact validation pass. Full backend regression: 862 passed, 35 skipped, five existing warnings (788.19s). The canonical matrix now records the actual service strategy. Known E proof-label misses and post-completion SIGBUS remain visible limits, not general quality acceptance.
 
 - [x] Publish the supported A template/input boundary against existing API
       behavior: measured properties, custom/contact combinations, columns,
@@ -227,7 +227,7 @@ Status: [~] Source default is Agentic; measured uploaded/designer API, exact acc
       files on failure, and rollback with the matching prior build, approval and
       checksum-verified artifacts. Preserve old evidence without treating an old
       approval as approval of the new implementation.
-- [ ] Switch the uploaded-target default only after the scope, outcome review,
+- [x] Switch the uploaded-target default only after the scope, outcome review,
       identity and rollback conditions above pass. Update the owning architecture
       and API documents with the actual behavior in the same milestone.
 
@@ -237,7 +237,7 @@ environment-variable flip nor a compatible DOM constitutes cutover acceptance.
 
 ### M5 — Delete Replaced Paths And Merge Redundant Tests
 
-Status: `[ ]` Dependent on verified M4 cutover.
+Status: [~] M4 is verified. Retire B execution first, preserving the shared candidate-fact privacy policy and current A lifecycle/independent PDF checks; then remove replaced standard rendering and redundant tests.
 
 - [ ] Remove B authored-template execution, replaced uploaded-target rendering
       and duplicate orchestration/helpers whose responsibility now has one

@@ -1,8 +1,8 @@
 # Agentic Workflow Acceptance — October 25, 2026
 
-Status: `Dated evidence; six candidate snapshots owner-accepted; migration checks in progress`
+Status: `Dated evidence; six candidate snapshots owner-accepted; M4 migration verified`
 
-Scope: M2 in the [sole backend roadmap](../roadmaps/BACKEND_ROADMAP.md).
+Scope: M2–M4 in the [sole backend roadmap](../roadmaps/BACKEND_ROADMAP.md).
 This is an outcome report, not another implementation checklist.
 
 ## Outcome
@@ -1120,3 +1120,6 @@ M4 focused results: [API/contracts run](../../tests/test_results/pytest/20261026
 [Asset-notice negative](../../tests/test_results/pytest/20261026T090633Z_asset_notice_old_negative.txt) fails exactly when a reported figure lacks an explicit reproduction notice; [65 bridge/compiler/designer checks](../../tests/test_results/pytest/20261026T090704Z_m4_asset_notice_verified.txt) pass after adding that notice to both evidence and compiled-style warnings. The normalized figure inventory is not a complete logo detector; text/rules/badges can still be represented as measured primitives. Arbitrary images have no stored template binding.
 
 Actual rollback uses a Git archive of the tracked app at 4766346 (archive SHA-256 `6faf4e281069d0ff8164f778bb37725b8e0d50fb252f51e780373086c85488f1`), imported in a separate process. It validates all three original approval/proof sets and current accepted artifacts under exactly `agentic-a/6+lane-a-product-subset/16+8200221398c4bdda`, without changing files. [Prior-build log](../../tests/test_results/pytest/20261026T090137Z_m4_prior_build_rollback.txt). The [current-build API check](../../tests/test_results/pytest/20261026T090205Z_m4_current_build_stale_proofs.txt) rejects all three old approvals with HTTP 409 `layout_proof_mismatch` before rendering, retaining every artifact file and current exact-output acceptance. [Combined rollback record](../../tests/local_datasets/resume_matrix/runs/matrix_20261026T031910Z_agentic_bc_builder_wire/offline_diagnosis/m4_actual_build_rollback.json). Zero provider calls or rerender; default selection is changed in source, not deployment or local secret configuration.
+
+
+M4 complete backend verification on a68bc35: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -p no:cacheprovider tests/unit tests/integration -q --tb=short` passes **862, with 35 skipped and five existing warnings**, 788.19s. [Full log](../../tests/test_results/pytest/20261026T090905Z_m4_full_backend.txt). The canonical matrix subsequently reuses the service's `generation_strategy()` for manifest metadata instead of maintaining a contradictory default; [three runner/review checks](../../tests/test_results/pytest/20261026T091220Z_m4_matrix_metadata.txt) pass. No frontend, local secret configuration, deployed service, accepted PDF or source/profile/proof file is changed. M5 remains required; the retained explicit standard/B paths have not yet been removed.
