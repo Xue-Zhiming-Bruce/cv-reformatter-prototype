@@ -230,6 +230,11 @@ and effective material repair plus exact human acceptance remain open.
       candidate previews now match header label presence. Long-proof repair
       remains blocked by the frozen request envelope; preserve its confirmed
       126.584pt mismatch and safe selected output while fixing transport.
+      Builder now uses the existing lossless attachment preparation with
+      matching MIME/path/hash audit references. The unchanged 512,000-byte
+      envelope admits the exact failed five-image payload at 252,880 bytes in
+      offline replay; five focused boundary/API checks pass. Fresh live long
+      repair remains required before closing this transport gap.
 - [ ] Fix demonstrated default-Reviewer discovery, evidence/binding or Builder
       effectiveness failures that prevent acceptance of the declared samples.
       Recheck the affected PDF and previously verified regions using the existing

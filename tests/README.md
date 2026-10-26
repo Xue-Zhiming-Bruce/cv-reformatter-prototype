@@ -50,6 +50,8 @@ proof approvals or final acceptance, and reports zero new extraction calls.
 Dense RGB Reviewer attachments use smaller lossless WebP with unchanged pixels
 and dimensions; diagnostic PNGs remain. `test_pipeline_evidence.py` covers the
 actual bounded PydanticAI request, MIME and audited image path/hash offline.
+The same request check covers five lossless Builder repair attachments through
+the real SDK and wire-budget hook, retaining pixels and original diagnostic PNGs.
 The mapper's unit table and existing native/CLI/retained-renderer PDF test also
 cover blind additional-entry link disclosure, explicit portfolio `show`, retained
 public URLs, empty filtered entries and unchanged source data. API coverage

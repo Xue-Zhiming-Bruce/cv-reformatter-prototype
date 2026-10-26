@@ -58,6 +58,7 @@ def agentic_renderer_version() -> str:
     contract = {
         "image_encoding": "lossless-grayscale-png/1",
         "review_image_encoding": review.REVIEW_IMAGE_ENCODING_VERSION,
+        "builder_image_encoding": review.REVIEW_IMAGE_ENCODING_VERSION,
         "measurement_policy": service.HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
         "header_contact_label_policy": service.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
         "review_measurement_contract": review.REVIEW_MEASUREMENT_CONTRACT_VERSION,

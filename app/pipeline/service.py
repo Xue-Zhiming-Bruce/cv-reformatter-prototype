@@ -2754,6 +2754,13 @@ def _live_lane_a_builder(
 
     if budget.remaining_model_requests() < 1:
         raise CheckpointBudgetExceeded("budget exhausted before lane A builder")
+    images = [prepare_review_image(Path(image)) for image in images]
+    if audit is not None:
+        audit = audit._replace(image_refs=tuple(
+            {**ref, "path": Path(ref["path"]).with_suffix(image.suffix).as_posix(),
+             "sha256": _sha256_file(image)}
+            for ref, image in zip(audit.image_refs, images, strict=True)
+        ))
     agent = Agent(
         _live_model(budget, trace, "lane_a_builder"),
         output_type=LaneAStructureProposal,
@@ -2762,7 +2769,7 @@ def _live_lane_a_builder(
     )
     user_messages = [
         json.dumps(payload, ensure_ascii=False, indent=1),
-        *[BinaryContent(data=image.read_bytes(), media_type="image/png") for image in images],
+        *[BinaryContent(data=image.read_bytes(), media_type="image/webp" if image.suffix == ".webp" else "image/png") for image in images],
     ]
     model_name = getattr(getattr(agent, "model", None), "model_name", None)
     try:
