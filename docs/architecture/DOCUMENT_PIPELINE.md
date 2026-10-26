@@ -2,7 +2,7 @@
 
 Status: `Active contract`
 
-Last reviewed: October 25, 2026 (bounded layout trials and output-gate separation)
+Last reviewed: October 26, 2026 (local generation provenance)
 
 This document defines the provider-neutral boundaries of the CV Reformatter
 backend. The [Product Specification](../product/PRODUCT_SPEC.md) remains the
@@ -821,6 +821,34 @@ durable, idempotent job boundary rather than relying on a single HTTP request.
 `ProviderPolicy` controls which organization may send each artifact type to
 which provider, region, and deployment mode, including retention, deletion,
 and cost boundaries.
+
+October 26 implementation slice: successful `/api/generate` previews now write
+`artifact_manifest.json` (`artifact-manifest/1`) through
+`app/generation/artifact_manifest.py`. It binds the existing six-field output
+identity, artifact-relative file checksums and sizes, the immutable saved
+revision, available source/evidence artifacts, and the actual effective template
+snapshot (`generation_layout_spec.json`). Inputs are hashed before rendering and
+checked again before publishing the manifest with an atomic file replacement.
+The compiler/renderer/disclosure source checksums describe selected components,
+not a complete deployment or transitive dependency snapshot.
+
+The manifest records disclosure/blind settings, schema identities (a JSON-schema
+checksum for the unversioned `CandidateProfile`), actual PDF producer metadata,
+page-resource font names and embedded font-program checksums. Content and
+structure reports remain independent checksum-bound checks; visual-comparison
+metrics are diagnostics. Recorded Agentic runs also bind the existing frozen
+run configuration, prompt hashes/text artifact, configured model names, selected
+version and output-gate report. Missing legacy execution/evidence metadata stays
+explicitly absent; no current model or compiler configuration is retroactively
+assigned to an old artifact.
+
+Metadata/list endpoints compute manifest currentness from referenced files and
+the current saved revision/output identity. Old previews need no migration and
+report false when no valid manifest exists. Manifest currentness neither grants
+nor revokes human final-output acceptance. This local implementation does not
+provide transactional output publication, concurrent-writer isolation, durable
+jobs, provider policy enforcement or workflow support-state routing. Those
+production boundaries remain B1A/P1/P2 work.
 
 ## Independent Quality Gates
 

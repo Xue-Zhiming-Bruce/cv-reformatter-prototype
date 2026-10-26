@@ -209,6 +209,15 @@ continues to remove semantic roles while retaining content. Uploaded-target API
 tests use the approval-bound A adapter. Historical missing renderer identities
 remain `product-html/1`, read-only and invalid for current A approvals.
 
+Generation-manifest coverage stays in `integration/test_api_generate.py` and
+`integration/test_layout_proof_api.py`: real native/Agentic PDFs bind source,
+revision, template, execution and output checksums; changed inputs, validation
+reports, outputs, saved revisions and incomplete/corrupt manifests invalidate
+currentness. Source changes during rendering cannot publish a successful
+manifest. The generic lifecycle fixture stubs uploaded execution provenance;
+the complete-loop API cases restore the real manifest writer. Legacy accepted
+previews require no fabricated manifest or new acceptance.
+
 Canonical synthetic proof contexts also render directly through A in
 `integration/test_layout_proof_render.py`: short/medium/long real Chrome PDFs
 preserve labeled fallback contacts once and pass independent product content,

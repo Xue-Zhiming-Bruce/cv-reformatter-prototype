@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, model_validator
 import httpx
+from pypdf.errors import PyPdfError
 
 from app.extraction.candidate_document_analyzer import (
     CandidateFieldEvidenceLedger,
@@ -43,6 +44,12 @@ from app.extraction.llm_segmentation import (
     segmentation_output_line_evidence,
 )
 from app.generation.chrome_html_to_pdf import HtmlToPdfExportError, export_html_to_pdf
+from app.generation.artifact_manifest import (
+    MANIFEST_FILENAME,
+    capture_generation_inputs,
+    is_artifact_manifest_current,
+    write_artifact_manifest,
+)
 from app.generation.content_validation import (
     validate_generated_content,
     validate_output_structure,
@@ -200,6 +207,7 @@ DOWNLOADABLE_ARTIFACT_FILENAMES = {
     COMPARISON_FILENAME,
     "generation_metadata.json",
     "agentic_generation.json",
+    MANIFEST_FILENAME,
 }
 DOWNLOADABLE_DIAGNOSTIC_PNG_PATTERN = re.compile(
     r"^(?:target_page_\d{3}(?:_overlay)?|comparison_target_page_\d{3}|"
@@ -343,6 +351,7 @@ class ArtifactMetadataResponse(BaseModel):
     missing_field_labels: list[str] = Field(default_factory=list)
     debug_artifacts: dict[str, str] = Field(default_factory=dict)
     client_ready: bool = False
+    artifact_manifest_current: bool = False
 
 
 class ArtifactListResponse(BaseModel):
@@ -1302,6 +1311,21 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
 
     html_path = artifact_dir / "candidate_profile.html"
     pdf_path = artifact_dir / "candidate_profile.pdf"
+    try:
+        manifest_inputs = capture_generation_inputs(
+            artifact_dir,
+            revision_id=profile_revision.profile_revision_id,
+            layout_path=(
+                design_dir_for(artifact_dir, design_id) / LAYOUT_SPEC_FILENAME
+                if design_id is not None else artifact_dir / LAYOUT_SPEC_FILENAME
+            ) if uses_uploaded_target else None,
+            target_filename=target_format.stored_filename if target_format else None,
+        )
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail={
+            "error_code": "artifact_manifest_unavailable",
+            "message": "Generation inputs could not be verified.",
+        }) from exc
 
     debug_artifacts = _write_debug_artifacts(
         artifact_dir=artifact_dir,
@@ -1508,6 +1532,23 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
                 )
 
     try:
+        write_artifact_manifest(
+            artifact_dir, artifact_id=artifact_id, inputs=manifest_inputs,
+            layout_spec=effective_layout_spec,
+            blind_profile=request.blind_profile,
+            disclosure_rules=reviewed_profile.client_display_rules,
+            uses_agentic=bool(uses_uploaded_target),
+            visual_status=("diagnostic" if visual_comparison is not None else
+                           "unavailable" if target_format is not None and target_format.role == "pdf_reference" else "not_run"),
+        )
+    except (OSError, ValueError, PyPdfError) as exc:
+        raise HTTPException(status_code=500, detail={
+            "error_code": "artifact_manifest_unavailable",
+            "message": "Generation provenance could not be verified or saved.",
+        }) from exc
+    debug_artifacts["artifact_manifest"] = str(artifact_dir / MANIFEST_FILENAME)
+
+    try:
         _local_artifact_store().record_generated_outputs(
             artifact_id=artifact_id,
             artifact_dir=artifact_dir,
@@ -1609,6 +1650,7 @@ def list_artifact_metadata(limit: int = 50) -> ArtifactListResponse:
         ArtifactMetadataResponse.model_validate({
             **item,
             "client_ready": is_final_acceptance_current(item["artifact_dir"]),
+            "artifact_manifest_current": is_artifact_manifest_current(item["artifact_dir"]),
         })
         for item in artifacts
     ])
@@ -1627,6 +1669,7 @@ def get_artifact_metadata(artifact_id: str) -> ArtifactMetadataResponse:
     return ArtifactMetadataResponse.model_validate({
         **artifact,
         "client_ready": is_final_acceptance_current(artifact["artifact_dir"]),
+        "artifact_manifest_current": is_artifact_manifest_current(artifact["artifact_dir"]),
     })
 
 

@@ -315,7 +315,8 @@ They do not override the current acceptance sequence.
 
 ### B1A — Provider Execution And Reproducibility
 
-Status: `[ ]` Required before production provider integration.
+Status: `[ ]` Required before production provider integration. The local
+generation manifest slice is implemented; the production exit remains open.
 
 - [ ] Add organization/artifact/provider/region/deployment/retention/deletion/cost
       `ProviderPolicy`, separate from adapters, and structured capability routing.
@@ -329,6 +330,35 @@ Status: `[ ]` Required before production provider integration.
 
 Exit: provider failure/retry preserves state, provenance and policy boundaries.
 Current opt-in local integration is not acceptance of these production controls.
+
+October 26 progress: `/api/generate` now publishes `artifact-manifest/1` after
+successful output checks. It binds existing saved revision/output identities,
+source/evidence/template and approval references, effective template snapshot,
+recorded model/prompt configuration, compiler/renderer/disclosure source hashes,
+PDF font programs and independent validation reports. Inputs are checked before
+and after rendering; metadata/list responses compute manifest currentness.
+Historical previews remain readable without invented provenance or changed
+acceptance. Native, uploaded-target and approved-design workflows are covered
+through the existing API tests; the real Agentic loop tests retain actual
+Chrome/gates/staging and stub only model calls. Generic lifecycle fixtures do
+not claim execution provenance. This does not close the combined manifest and
+support-state checklist item: workflow-wide support-state validation,
+analysis/job manifests, provider policy, durable jobs and transaction/concurrency
+controls remain unimplemented.
+
+Validation: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -p
+no:cacheprovider tests/unit tests/integration -x -q --tb=short` passes **838**, with
+23 skips and five existing warnings (777.11s; process exit 0). Terminal output:
+`tests/test_results/pytest/20261026T140138Z_b1a_manifest_full_backend.txt`.
+The new source-drift API regression fails on the prior `764af5c` implementation
+for the intended reason (200 instead of 500), with that original implementation
+loaded only in memory:
+`tests/test_results/pytest/20261026T135859Z_b1a_source_drift_old_negative.txt`.
+An independent checksum audit verifies 72 frozen file references, all six accepted
+HTML/PDF snapshots and source font hashes; three existing blind final acceptances
+remain valid without retroactive manifests:
+`tests/test_results/pytest/20261026T140311Z_b1a_preserved_baseline.txt`.
+New paid provider calls: zero. No new fidelity or production-readiness acceptance.
 
 ### B2 — Analyzer Operational Readiness
 

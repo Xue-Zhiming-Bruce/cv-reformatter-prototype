@@ -92,6 +92,8 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     from app.pipeline import quality, review, service
     from app.generation import agentic
     monkeypatch.setattr(agentic, "render_agentic", a_generation_without_model_loop)
+    from app.generation.artifact_manifest import write_artifact_manifest
+    monkeypatch.setattr(main, "write_artifact_manifest", write_artifact_manifest)
     from app.generation.agentic import agentic_renderer_version
     from app.generation import template_mapper
     from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME, LAYOUT_SPEC_FILENAME
@@ -226,6 +228,33 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     assert report["selected_version"] and report["summary"]["reviewed_pdf_sha256"]
     assert identity["debug_artifacts"]["agentic_generation"] == str(directory / "agentic_generation.json")
     assert client.get(main._artifact_url(artifact_id, "agentic_generation.json")).status_code == 200
+    import hashlib
+    manifest_path = directory / "artifact_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    execution = manifest["execution"]
+    assert execution["mode"] == "recorded_agentic"
+    assert execution["selected_version"] == report["selected_version"]
+    run_config = json.loads((directory / report["run_directory"] / "run_config.json").read_text())
+    assert execution["models"]["text_model"] == run_config["model_configuration"]["text_model"]
+    frozen_prompts = json.loads((directory / report["run_directory"] / "prompts.json").read_text())
+    assert execution["prompt_sha256"] == {name: hashlib.sha256(prompt.encode()).hexdigest() for name, prompt in frozen_prompts.items()}
+    assert manifest["renderer_version"] == report["renderer_version"]
+    assert manifest["checks"]["agentic_output_gates"]["status"] == "passed"
+    assert manifest["checks"]["target_candidate_facts"]["status"] == "passed"
+    assert manifest["analysis"]["target"]["provider"] == "synthetic"
+    assert manifest["checks"]["visual_comparison"]["status"] == "diagnostic"
+    assert manifest["inputs"]["target_document"]["sha256"] == hashlib.sha256((directory / metadata.stored_filename).read_bytes()).hexdigest()
+    assert manifest["inputs"]["approved_layout"]["path"] == (
+        f"designs/{design_id}/layout_template_spec.json" if design_scope else "layout_template_spec.json"
+    )
+    metadata_url = f"/api/artifacts/{artifact_id}/metadata"
+    assert client.get(metadata_url).json()["artifact_manifest_current"] is True
+    config_path = directory / manifest["outputs"]["run_configuration"]["path"]
+    original_config = config_path.read_bytes()
+    config_path.write_bytes(original_config + b" ")
+    assert client.get(metadata_url).json()["artifact_manifest_current"] is False
+    config_path.write_bytes(original_config)
+    assert client.get(metadata_url).json()["artifact_manifest_current"] is True
     # Repeat-export variability is visible without withholding a safe preview.
     from app.pipeline import quality
     with monkeypatch.context() as diagnostic:
@@ -241,7 +270,7 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     fields = ("profile_revision_id", "profile_sha256", "layout_template_version", "layout_spec_sha256", "html_sha256", "pdf_sha256")
     accepted = client.post(f"/api/artifacts/{artifact_id}/final-acceptance", json={key: identity[key] for key in fields})
     assert accepted.status_code == 200 and accepted.json()["client_ready"], accepted.text
-    published = {path: path.read_bytes() for path in (html_path, pdf_path, directory / "agentic_generation.json")}
+    published = {path: path.read_bytes() for path in (html_path, pdf_path, directory / "agentic_generation.json", manifest_path)}
 
     # Output correctness still blocks publication, even if the CLI can show diagnostics.
     for function_name, failed_field in (("content_shape_verification", "passed"),
@@ -254,6 +283,7 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
             failed = client.post("/api/generate", json=request)
         assert failed.status_code == 500, (function_name, failed.text)
         assert {path: path.read_bytes() for path in published} == published
+        assert client.get(metadata_url).json()["artifact_manifest_current"] is True
 
     # Changing the execution contract invalidates proof approval before model calls.
     calls.clear()

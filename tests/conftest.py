@@ -20,7 +20,8 @@ def a_generation_without_model_loop(monkeypatch: pytest.MonkeyPatch):
     """Lifecycle checks use real A HTML; complete-loop tests restore the adapter.
 
     Approval/revision/checksum validation and production file staging stay real.
-    These cases do not assert model-loop behavior or exported layout fidelity.
+    These cases do not assert model-loop behavior, execution provenance or
+    exported layout fidelity. Native manifests still use the production writer.
     """
     from app.generation import agentic, chrome_html_to_pdf
     from app.pipeline.candidate_content import candidate_document_from_context
@@ -30,6 +31,9 @@ def a_generation_without_model_loop(monkeypatch: pytest.MonkeyPatch):
     from pypdf import PdfReader
 
     original = agentic.render_agentic
+    original_manifest_writer = main.write_artifact_manifest
+    monkeypatch.setattr(main, "write_artifact_manifest", lambda *args, **kwargs:
+        None if kwargs["uses_agentic"] else original_manifest_writer(*args, **kwargs))
     monkeypatch.setenv("GENERATION_STRATEGY", "agentic")
 
     def render(*, context, layout_spec, target_pdf, evidence_dir, output_dir):

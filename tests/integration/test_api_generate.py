@@ -73,6 +73,11 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
     artifact_dir.mkdir()
     draft_raw_text = "Jane Candidate\nSkills: Python, SQL"
     version_id = _approve_profile_via_api(artifact_dir, profile, artifact_id)
+    from app.extraction.llm_segmentation import SegmentationRunMetadata
+    (artifact_dir / "candidate_segmentation.json").write_text(SegmentationRunMetadata(
+        requested_mode="llm_first", selected_mode="llm_first", provider="synthetic-provider",
+        model="frozen-extraction-model", prompt_version="frozen-extraction/1", elapsed_seconds=0,
+    ).model_dump_json())
     draft_bytes_before = (artifact_dir / "candidate_profile.json").read_bytes()
     raw_text_before = (artifact_dir / "raw_extracted_text.txt").read_bytes()
 
@@ -98,6 +103,12 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
     body = response.json()
     assert body["artifact_id"] == artifact_id
     assert body["layout_template_version"] == "built-in-3"
+    manifest = json.loads((artifact_dir / "artifact_manifest.json").read_text())
+    assert manifest["analysis"]["candidate"] == {
+        "provider": "synthetic-provider", "provider_version": None,
+        "model": "frozen-extraction-model", "prompt_version": "frozen-extraction/1",
+    }
+    assert manifest["schemas"]["candidate_segmentation"] == "candidate-segmentation-run/1"
     assert json.loads((artifact_dir / "generation_metadata.json").read_text())["renderer_version"] == "lane-a-product-subset/17"
     assert "Boston" not in (artifact_dir / "candidate_profile.html").read_text().partition("</header>")[2]
     assert (artifact_dir / "raw_extracted_text.txt").read_bytes() == raw_text_before
@@ -183,6 +194,34 @@ def test_builtin_api_shared_a_preserves_real_pdf_and_acceptance_identity(
     assert response.status_code == 200, response.text
     identity = response.json()
     assert identity["client_ready"] is False
+    import hashlib
+    manifest_path = directory / "artifact_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["schema_version"] == "artifact-manifest/1"
+    assert manifest["artifact_id"] == artifact_id
+    assert manifest["output_identity"]["pdf_sha256"] == hashlib.sha256((directory / "candidate_profile.pdf").read_bytes()).hexdigest()
+    assert manifest["output_identity"]["profile_revision_id"] == request["profile_revision_id"]
+    assert manifest["blind_profile"] is blind
+    assert manifest["execution"] == {"mode": "deterministic", "models": {}, "prompt_sha256": {}, "selected_version": None}
+    assert manifest["schemas"]["target_evidence"] is None
+    assert manifest["schemas"]["profile_revision"] == "approved-profile/1"
+    assert len(manifest["schemas"]["candidate_profile_json_schema_sha256"]) == 64
+    assert manifest["analysis"]["candidate"]["provider"] is None
+    assert manifest["checks"]["target_candidate_facts"]["status"] == "not_run"
+    assert manifest["checks"]["content"]["status"] == manifest["checks"]["structure"]["status"] == "passed"
+    assert manifest["checks"]["visual_comparison"]["status"] == "not_run"
+    assert manifest["fonts"] and all(font["embedded_sha256"] for font in manifest["fonts"])
+    assert manifest["pdf_producer"]
+    for reference in (*manifest["inputs"].values(), *manifest["outputs"].values()):
+        content = (directory / reference["path"]).read_bytes()
+        assert reference["sha256"] == hashlib.sha256(content).hexdigest()
+        assert reference["size_bytes"] == len(content)
+    assert json.loads((directory / manifest["inputs"]["effective_layout"]["path"]).read_text())["template_version"] == "built-in-3"
+    assert identity["debug_artifacts"]["artifact_manifest"] == str(manifest_path)
+    manifest_url = f"/api/artifacts/{artifact_id}/artifact_manifest.json"
+    assert client.get(manifest_url).json() == manifest
+    metadata_url = f"/api/artifacts/{artifact_id}/metadata"
+    assert client.get(metadata_url).json()["artifact_manifest_current"] is True
     assert json.loads((directory / "generation_metadata.json").read_text())["renderer_version"] == "lane-a-product-subset/17"
     context = ClientFacingRenderContext.model_validate_json((directory / "client_render_context.json").read_text())
     spec = built_in_layout_template_spec()
@@ -218,6 +257,67 @@ def test_builtin_api_shared_a_preserves_real_pdf_and_acceptance_identity(
     stale = client.post(f"/api/artifacts/{artifact_id}/final-acceptance", json={key: identity[key] for key in fields})
     assert stale.status_code == 409
     assert stale.json()["detail"]["error_code"] == "final_acceptance_identity_mismatch"
+    latest_manifest = json.loads(manifest_path.read_text())
+    assert latest_manifest["blind_profile"] is not blind
+    assert latest_manifest["output_identity"]["pdf_sha256"] == regenerated.json()["pdf_sha256"]
+    # Currentness is computed from evidence, never trusted from stored status.
+    for filename in ("candidate_profile.pdf", "content_validation.json", "generation_layout_spec.json",
+                     "client_render_context.json", "raw_extracted_text.txt"):
+        path = directory / filename
+        before = path.read_bytes()
+        path.write_bytes(before + b"\nCHANGED")
+        assert client.get(metadata_url).json()["artifact_manifest_current"] is False, filename
+        path.write_bytes(before)
+        assert client.get(metadata_url).json()["artifact_manifest_current"] is True, filename
+    latest_bytes = manifest_path.read_bytes()
+    del latest_manifest["checks"]["content"]
+    manifest_path.write_text(json.dumps(latest_manifest))
+    assert client.get(metadata_url).json()["artifact_manifest_current"] is False
+    latest_manifest = json.loads(latest_bytes)
+    del latest_manifest["outputs"]["candidate_profile.pdf"]
+    manifest_path.write_text(json.dumps(latest_manifest))
+    assert client.get(metadata_url).json()["artifact_manifest_current"] is False
+    latest_manifest = json.loads(latest_bytes)
+    latest_manifest["inputs"]["source_draft"]["path"] = "../outside.json"
+    manifest_path.write_text(json.dumps(latest_manifest))
+    assert client.get(metadata_url).json()["artifact_manifest_current"] is False
+    manifest_path.write_text("{corrupt")
+    assert client.get(metadata_url).json()["artifact_manifest_current"] is False
+    manifest_path.write_bytes(latest_bytes)
+    profile_index_path = directory / "profiles" / "index.json"
+    original_index = profile_index_path.read_bytes()
+    profile_index_path.write_text("{corrupt")
+    assert client.get(metadata_url).json()["artifact_manifest_current"] is False
+    profile_index_path.write_bytes(original_index)
+    saved = client.post(f"/api/artifacts/{artifact_id}/profiles/revisions",
+                        json={"profile": {**profile.model_dump(mode="json"), "full_name": "Revised Candidate"}})
+    assert saved.status_code == 200, saved.text
+    assert client.get(metadata_url).json()["artifact_manifest_current"] is False
+    manifest_path.unlink()  # Legacy artifacts do not acquire fabricated provenance.
+    assert client.get(metadata_url).status_code == 200
+    assert client.get(metadata_url).json()["artifact_manifest_current"] is False
+    listed = client.get("/api/artifacts").json()["artifacts"]
+    assert next(item for item in listed if item["artifact_id"] == artifact_id)["artifact_manifest_current"] is False
+
+
+def test_generation_rejects_source_drift_without_publishing_manifest(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    directory = tmp_path / "artifact_source_drift"
+    directory.mkdir()
+    revision_id = _approve_profile_via_api(directory, CandidateProfile(full_name="Synthetic Candidate"), directory.name)
+
+    def drifting_export(html_path, pdf_path):
+        result = _fake_pdf_export(html_path, pdf_path)
+        (directory / "raw_extracted_text.txt").write_text("Changed during rendering")
+        return result
+
+    monkeypatch.setattr(main, "export_html_to_pdf", drifting_export)
+    response = client.post("/api/generate", json={"artifact_id": directory.name, "profile_revision_id": revision_id})
+    assert response.status_code == 500, response.text
+    assert response.json()["detail"]["error_code"] == "artifact_manifest_unavailable"
+    assert not (directory / "artifact_manifest.json").exists()
 
 
 @pytest.mark.parametrize("problem", ["layout", "standard", "unknown"])

@@ -182,6 +182,17 @@ Successful generation is a preview, with `client_ready=false` until that exact
 output has a current final acceptance. Responses also include
 `profile_revision_id`, `profile_sha256`, `layout_template_version`,
 `layout_spec_sha256`, `html_sha256`, and `pdf_sha256`.
+Successful generation also exposes `debug_artifacts.artifact_manifest`, the local
+path to downloadable `artifact_manifest.json` (`artifact-manifest/1`). The manifest
+binds those output identities to source/revision/evidence checksums, the effective
+layout snapshot, execution provenance, disclosure/blind settings, PDF font
+identities and independent validation reports. Visual metrics remain diagnostics;
+the manifest does not mark an output accepted. Missing historical metadata is
+not filled from current configuration. Source changes during generation or a
+manifest write/verification failure return 500 `artifact_manifest_unavailable`;
+no new successful manifest is published. This does not promise rollback of
+every generated file or transactional/concurrent publication.
+
 Every successful generation persists `content_validation.json`. If approved
 source-owned content is absent from the PDF, generation returns HTTP 500 with
 `error_code=generated_content_incomplete` and the missing items.
@@ -467,6 +478,16 @@ GET /api/artifacts/{artifact_id}/{filename}
 These endpoints support local debugging, preview, and download behavior in the
 accepted baseline. Private signed object access replaces direct local artifact
 access in the later storage stage.
+
+Metadata and list entries include additive `artifact_manifest_current`: true only
+when the versioned manifest is valid, belongs to this artifact, references the
+current saved revision/output identity, and every referenced artifact still has
+the recorded checksum and size. Missing, malformed or stale manifests report
+false without hiding historical previews. Changing output bytes, bound evidence,
+validation reports or the saved revision invalidates currentness. This field is
+independent of `client_ready`, which continues to reflect exact human acceptance.
+`GET /api/artifacts/{artifact_id}/artifact_manifest.json` returns the stored
+manifest for inspection, including when it is stale.
 
 ## Compatibility Rules
 
