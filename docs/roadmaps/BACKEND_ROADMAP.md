@@ -494,6 +494,21 @@ The final read-only baseline check retains all 75 frozen references, six accepte
 outputs and three current legacy acceptances:
 `tests/test_results/pytest/20261026T193430Z_p1_design_preserved_baseline.txt`.
 
+Final full-backend validation on committed `85f21a0` passes **852**, with 23
+skips, five existing warnings and exit 0 (906.38s):
+`tests/test_results/pytest/20261026T193647Z_p1_workflow_versions_full_backend.txt`.
+It uses the canonical unit/integration command and isolated `TEST_DATABASE_URL`
+above. All 75 frozen references, six accepted outputs and three current legacy
+acceptances remain unchanged after the suite:
+`tests/test_results/pytest/20261026T195526Z_p1_final_preserved_baseline.txt`.
+No new paid calls or hosted-data readiness claim.
+
+The next queue/publication implementation choice is documented in
+[ADR 0008](../decisions/0008-durable-jobs-and-generation-publication.md), currently
+`Proposed` and awaiting owner approval under the ADR process. Its PostgreSQL lease
+worker and immutable bundle architecture have not been implemented or selected
+by the existing database-stack approval.
+
 P1 remains open: unapproved proof-state persistence, workflow/job transactions,
 file-publication ownership/isolation, explicit import/data-preserving rollback
 and idempotency are still required. The initial downgrade drops the structured tables; its empty-DB

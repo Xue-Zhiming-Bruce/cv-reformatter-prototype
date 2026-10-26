@@ -186,6 +186,18 @@ The final read-only check verifies all 75 frozen references, six original
 accepted outputs and three current legacy acceptances:
 `tests/test_results/pytest/20261026T193430Z_p1_design_preserved_baseline.txt`.
 
+On clean committed source `85f21a0`, the full canonical backend command passes
+**852**, with 23 skips, five existing warnings and exit 0 (906.38s):
+`tests/test_results/pytest/20261026T193647Z_p1_workflow_versions_full_backend.txt`.
+Command: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TEST_DATABASE_URL=<isolated-local-url>
+python -B -m pytest -p no:cacheprovider tests/unit tests/integration -x -q --tb=short`.
+The final post-suite audit retains all 75 frozen references, six exact accepted
+outputs and three current legacy acceptances, with no exports/provider calls:
+`tests/test_results/pytest/20261026T195526Z_p1_final_preserved_baseline.txt`.
+The next durable-job/immutable-publication implementation is a separate
+[proposed decision](0008-durable-jobs-and-generation-publication.md), pending
+owner approval. This record does not select that architecture or close P1.
+
 Unapproved proof state still uses the filesystem store; migration/import,
 full workflow transactions, file-publication isolation and idempotency remain P1/B1A/P2
 work in the [active roadmap](../roadmaps/BACKEND_ROADMAP.md). No production
