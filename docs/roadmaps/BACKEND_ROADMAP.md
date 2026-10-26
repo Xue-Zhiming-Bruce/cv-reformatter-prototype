@@ -225,6 +225,11 @@ and effective material repair plus exact human acceptance remain open.
       content-free label evidence now reaches whole-page review under
       `review-presentation-facts/3`; 19 focused checks pass. Its fresh live
       discovery/repair outcome remains pending.
+      Build `ce51ee7` demonstrates natural whole-page discovery and promoted
+      material repair in the short proof (36.527 → 0pt, unchanged body). Both
+      candidate previews now match header label presence. Long-proof repair
+      remains blocked by the frozen request envelope; preserve its confirmed
+      126.584pt mismatch and safe selected output while fixing transport.
 - [ ] Fix demonstrated default-Reviewer discovery, evidence/binding or Builder
       effectiveness failures that prevent acceptance of the declared samples.
       Recheck the affected PDF and previously verified regions using the existing
