@@ -28,7 +28,7 @@ from tests.helpers.synthetic_pdf import build_styled_target_pdf
 client = TestClient(app)
 
 
-pytestmark = pytest.mark.usefixtures("legacy_standard_generation")
+pytestmark = pytest.mark.usefixtures("a_generation_without_model_loop")
 
 @pytest.fixture(autouse=True)
 def _tmp_storage(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -36,7 +36,7 @@ def _tmp_storage(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")
     exporter = make_proof_pdf_exporter()
     monkeypatch.setattr(main, "export_html_to_pdf", exporter)
-    monkeypatch.setattr(layout_proof_service, "export_html_to_pdf", exporter)
+    monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", exporter)
 
 
 def _profile(*, full_name: str = "Jane Candidate") -> CandidateProfile:

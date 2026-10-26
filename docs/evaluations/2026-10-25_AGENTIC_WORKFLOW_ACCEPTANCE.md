@@ -1208,8 +1208,116 @@ The initial command in this session used an incorrect evidence-test path and
 ran no tests; its saved log is not validation evidence.
 
 B authored execution/exclusive checks are retired. Production deletion and
-privacy relocation: net -1458 lines; canonical regression changes: net -1138
+privacy relocation: net -1464 lines; canonical regression changes: net -1138
 lines. Runtime model-route aliases and historical schema lane values remain
 compatible. README, architecture, API/test contracts and the active roadmap
 now describe A-only diagnostic execution. M5 still requires standard renderer
 and remaining orchestration/test consolidation; M6/B0/B1 are not closed.
+
+
+#### M5 Standard Retirement — Ownership Audit Before Removal
+
+The only non-test callers of `app/generation/html_renderer.py` are the standard
+branch in `layout_proof_service._render_generation` and three A helper imports.
+Move `_inline_separator` unchanged to A's render-plan owner and
+`_gap_compensated` unchanged to A's layout compiler before deleting the old
+renderer. API proof approval/loading, checksums, current revision/disclosure,
+source preservation, staging and failed-output retention remain production-owned.
+Explicit `GENERATION_STRATEGY=standard` must fail before generation side effects;
+it cannot silently select A. Historical missing renderer identities still mean
+`product-html/1`, remain read-only and cannot authorize current A output.
+
+Seven integration modules using `legacy_standard_generation` retain their
+independent business contracts: draft preservation; saved revision and final
+acceptance; designer authorization/scope/staleness; proof API identity/tampering;
+proof approval recomputation/diagnostic recovery; canonical synthetic proof
+rendering; generation/download/target-replay behavior. Generic lifecycle cases
+will use actual deterministic A compilation with the model loop/export boundary
+stubbed; complete uploaded/designer API cases continue to stub only model calls
+and exercise the real runner, Chrome, staging and gates. Remove the standard
+fixture rather than preserving an inactive renderer for tests.
+
+| Declaration in `tests/unit/test_html_renderer.py` | Disposition / remaining owner |
+| --- | --- |
+| `test_html_product_renderer_renders_contract_badges_offline` (line 21) | D — old renderer CSS/DOM implementation only; A actual-PDF template typography/rules/badges/entry/contact/skill/custom-rhythm checks and mutation cases in test_pipeline.py retain independent product contracts. |
+| `test_html_product_renderer_renders_contract_badges_offline` (line 68) | D — old renderer CSS/DOM implementation only; A actual-PDF template typography/rules/badges/entry/contact/skill/custom-rhythm checks and mutation cases in test_pipeline.py retain independent product contracts. |
+| `test_html_renderer_emits_contract_font_sizes_and_no_inline_families` (line 115) | D — old renderer CSS/DOM implementation only; A actual-PDF template typography/rules/badges/entry/contact/skill/custom-rhythm checks and mutation cases in test_pipeline.py retain independent product contracts. |
+| `test_html_renderer_emits_rules_for_header_and_headings` (line 200) | D — old renderer CSS/DOM implementation only; A actual-PDF template typography/rules/badges/entry/contact/skill/custom-rhythm checks and mutation cases in test_pipeline.py retain independent product contracts. |
+| `test_html_renderer_compensates_rule_gaps_from_actual_text_tiers` (line 259) | C — surviving helper has an independent following-text-tier compensation contract; migrate explicit 8.695/2.625pt expectations to `test_product_rule_gaps_use_actual_following_text_tiers` in the existing layout compiler unit module. |
+| `test_html_renderer_rejects_analysis_only_target_text` (line 326) | D — old renderer Mapping API only; typed A context/projection rejects analysis-only fields at the existing strict model boundary. No non-test caller of that Mapping API remains. |
+| `test_structure_gate_uses_semantic_boundary_when_title_equals_heading` (line 349) | C — migrate independent same-heading entry/title semantic-boundary check to existing A rendering integration module. |
+| `test_html_renderer_consumes_entry_skill_education_and_portfolio_structure` (line 391) | D — old renderer CSS/DOM implementation only; A actual-PDF template typography/rules/badges/entry/contact/skill/custom-rhythm checks and mutation cases in test_pipeline.py retain independent product contracts. |
+| `test_html_renderer_consumes_additional_entry_and_link_rhythm` (line 482) | D — old renderer CSS/DOM implementation only; A actual-PDF template typography/rules/badges/entry/contact/skill/custom-rhythm checks and mutation cases in test_pipeline.py retain independent product contracts. |
+
+R/F: local-DOCX extraction/render smoke is retargeted to A, not deleted because
+it is skipped locally. A CLI/API tests drop only obsolete reference exports;
+independent content/style/shape/geometry/privacy checks stay. Inline/group
+spacing comparisons become explicit measured contract bounds, retaining gap
+regressions without a retired reference implementation. Generic proof tests
+use native `built-in-3`, real target checksum binding and A's source-retention
+policy for unmapped sections. Historical schema reading remains independent.
+Risk: lost approval/identity/error contracts or output drift. Focused validation
+will cover these existing modules, followed by full canonical backend regression
+and six accepted-snapshot recompilations. This audit is a work order, not a
+claim that the migration or checks are already complete.
+
+
+Standard-retirement preservation findings: the generic synthetic Adobe header
+fixture lacked LinkedIn/portfolio slots required by the long canonical proof.
+It now explicitly measures all five test contact fields. A's fail-closed
+unroutable-header behavior is retained; this does not authorize arbitrary
+header overflow. A copied pending/rejected approval must now explicitly carry
+the current renderer identity to remain internally consistent. Retired renderer
+spies are removed in favor of persisted measured-spec/checksum and no-proof-output
+assertions. The PDF fixture now reads actual A HTML text, so it cannot restore
+missing content from its expected-marker list.
+
+[Surviving owners](../../tests/test_results/pytest/20261026T131801Z_standard_surviving_owners.txt):
+**71 passed, 1 skipped**, 50.32s, covering the compiler, same-heading semantic
+boundary, inline/group spacing, real entry PDFs and retained local-corpus smoke.
+The isolated [next-tier compensation mutation](../../tests/test_results/pytest/20261026T131929Z_rule_tier_negative.txt)
+fails at 9.57 versus the independently fixed 8.695pt expectation when half-leading
+is omitted, with no source file mutation. [API lifecycle migration](../../tests/test_results/pytest/20261026T131831Z_standard_api_lifecycle.txt):
+**77 passed, 2 deselected**, four existing fixture-serialization warnings, 156.21s.
+The deselected complete-loop cases remain in the full suite; these generic
+fixtures do not claim model-loop or PDF-fidelity validation.
+
+The [retired-standard old negative](../../tests/test_results/pytest/20261026T130900Z_retired_standard_old_negative.txt)
+fails exactly because the old implementation returns 200 and replaces a native
+preview despite `GENERATION_STRATEGY=standard`. The updated existing table checks
+retired/unknown configuration errors and retained preview bytes. Earlier migration
+logs remain non-green: 131233 was interrupted after 30 pass / 2 fixture failures;
+131417 stopped with 34 pass / 1 missing-slot fixture failure; 131718 stopped
+with 70 pass / 1 fixture failure; 131742 stopped with 9 pass / 1 obsolete-spy
+assertion. No production safety guard was relaxed for these migrations.
+
+[Post-standard selected-proposal replay](../../tests/test_results/pytest/20261026T132115Z_m5_standard_snapshot_parity.txt)
+again yields six exact accepted HTMLs and unchanged PDF hashes, zero model calls
+or exports. Both moved helpers retain their exact original AST. The current
+[artifact identity audit](../../tests/test_results/pytest/20261026T133000Z_m6_preserved_identity_audit.txt)
+verifies all three saved source/target replay identities, checksum-valid old
+proofs and current exact blind acceptance. Current generation returns 409
+`layout_proof_mismatch` before rendering for all three /16 proof sets, with
+every artifact file unchanged. This is identity/read compatibility, not fresh
+/17 proof approval or new live-model evidence.
+
+
+M5 final canonical validation: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m
+pytest -p no:cacheprovider tests/unit tests/integration -x -q --tb=short` passes
+**837, with 23 skipped and five existing warnings**, 816.42s, process exit 0.
+[Full backend log](../../tests/test_results/pytest/20261026T132043Z_m5_standard_full_backend.txt).
+This includes both uploaded/designer default-A complete API/runner/Chrome cases
+with model calls stubbed, the migrated proof-render/approval modules, historical
+read/no-grandfather checks, fresh reproof/approval/config rollback, real-PDF
+content/style/shape/privacy/continuation and failed-output preservation.
+No external provider was called. The earlier B-batch Chrome timeout and its
+isolated green rerun remain recorded; this clean full run does not establish
+production reliability or resolve the historical SIGBUS.
+
+The standard renderer/module and legacy generation fixture are deleted.
+Native and uploaded execution share A's compiler/binding/HTML owner; the API
+retains its staging and exact approval guards. Current-only writer branches
+no longer dispatch by a retired renderer, while historical serialized identities
+and marker-count interpretation remain readable and cannot authorize A.
+No supported source caller imports either deleted renderer. M5 is complete;
+M6 source/artifact freeze remains the next gate.

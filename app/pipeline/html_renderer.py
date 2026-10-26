@@ -10,7 +10,7 @@ from app.pipeline.rendering import _inject_local_fonts
 from app.pipeline.layout_state import BadgeDecoration, C2LayoutState, PageState, StyleToken
 from app.pipeline.render_plan import C2RenderPlan, EntryPlan, LeafText, OVERFLOW_POLICY, SectionPlan, compile_render_plan, section_groups
 from app.template_analysis.schemas import LayoutTemplateSpec
-from app.generation.html_renderer import _inline_separator
+from app.pipeline.render_plan import _inline_separator
 
 # Bump when product compilation, HTML or bundled font behavior changes.
 RENDERER_VERSION = "lane-a-product-subset/17"

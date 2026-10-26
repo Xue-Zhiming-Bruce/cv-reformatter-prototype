@@ -22,7 +22,7 @@ from tests.helpers.synthetic_pdf import build_styled_target_pdf
 client = TestClient(app)
 
 
-pytestmark = pytest.mark.usefixtures("legacy_standard_generation")
+pytestmark = pytest.mark.usefixtures("a_generation_without_model_loop")
 
 @pytest.fixture(autouse=True)
 def _use_tmp_local_database(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -154,7 +154,6 @@ def test_builtin_api_shared_a_preserves_real_pdf_and_acceptance_identity(
     import pdfplumber
     from app.generation.chrome_html_to_pdf import export_html_to_pdf
     from app.generation.content_validation import validate_generated_content, validate_output_structure
-    from app.generation.html_renderer import render_html as render_reference
     from app.generation.template_mapper import ClientFacingRenderContext
     from app.pipeline.candidate_content import candidate_document_from_context
     from app.pipeline.html_renderer import render_layout_template
@@ -194,9 +193,7 @@ def test_builtin_api_shared_a_preserves_real_pdf_and_acceptance_identity(
     content = content_gate(plan, html, pdf_path)
     assert content["passed"] and candidate_accounting_gate(plan, content)["passed"]
     assert blank_page_gate(pdf_path)["passed"]
-    reference = render_reference(context, spec, directory / "reference.html")
-    reference_pdf = export_html_to_pdf(reference, directory / "reference.pdf")
-    for output_html, output_pdf in ((html_path, pdf_path), (reference, reference_pdf)):
+    for output_html, output_pdf in ((html_path, pdf_path),):
         assert validate_generated_content(context, pdf_path=output_pdf, layout_spec=spec).passed
         assert validate_output_structure(context, html_path=output_html, pdf_path=output_pdf, layout_spec=spec).passed
         with pdfplumber.open(output_pdf) as document:
@@ -223,8 +220,9 @@ def test_builtin_api_shared_a_preserves_real_pdf_and_acceptance_identity(
     assert stale.json()["detail"]["error_code"] == "final_acceptance_identity_mismatch"
 
 
+@pytest.mark.parametrize("problem", ["layout", "standard", "unknown"])
 def test_builtin_api_rejects_unsupported_a_contract_without_replacing_outputs(
-    tmp_path: Path, monkeypatch: MonkeyPatch,
+    tmp_path: Path, monkeypatch: MonkeyPatch, problem: str,
 ) -> None:
     from app.template_analysis.schemas import built_in_layout_template_spec
 
@@ -235,15 +233,18 @@ def test_builtin_api_rejects_unsupported_a_contract_without_replacing_outputs(
     directory = tmp_path / artifact_id
     directory.mkdir()
     version_id = _approve_profile_via_api(directory, CandidateProfile(full_name="Candidate Alpha", skills=["Python"]), artifact_id)
-    spec = built_in_layout_template_spec()
-    next(section for section in spec.sections if section.source == "skills").placement = "footer"
-    monkeypatch.setattr(main, "built_in_layout_template_spec", lambda: spec)
+    if problem == "layout":
+        spec = built_in_layout_template_spec()
+        next(section for section in spec.sections if section.source == "skills").placement = "footer"
+        monkeypatch.setattr(main, "built_in_layout_template_spec", lambda: spec)
+    else:
+        monkeypatch.setenv("GENERATION_STRATEGY", problem)
     outputs = {directory / "candidate_profile.html": b"PREVIOUS HTML", directory / "candidate_profile.pdf": b"PREVIOUS PDF"}
     for path, contents in outputs.items():
         path.write_bytes(contents)
     response = client.post("/api/generate", json={"artifact_id": artifact_id, "approved_profile_version_id": version_id})
     assert response.status_code == 500, response.text
-    assert "unsupported placement/layout" in response.json()["detail"]
+    assert ("unsupported placement/layout" if problem == "layout" else "GENERATION_STRATEGY") in response.json()["detail"]
     assert {path: path.read_bytes() for path in outputs} == outputs
 
 
@@ -359,16 +360,8 @@ def test_generate_outputs_can_reuse_process_artifact_with_target_format(
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
     monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
     monkeypatch.setattr(
-        layout_proof_service, "export_html_to_pdf", _fake_pdf_export
+        "app.generation.chrome_html_to_pdf.export_html_to_pdf", _fake_pdf_export
     )
-    original_render_html = layout_proof_service.render_html
-    captured_style_spec = {}
-
-    def capture_render_html(*args, **kwargs):
-        captured_style_spec["value"] = args[1]
-        return original_render_html(*args, **kwargs)
-
-    monkeypatch.setattr(layout_proof_service, "render_html", capture_render_html)
     artifact_id = "artifact_existing_session"
     artifact_dir = tmp_path / artifact_id
     artifact_dir.mkdir()
@@ -420,15 +413,15 @@ def test_generate_outputs_can_reuse_process_artifact_with_target_format(
     assert (artifact_dir / "normalized_layout_evidence.json").exists()
     assert (artifact_dir / "candidate_profile.html").exists()
     assert (artifact_dir / "candidate_profile.pdf").exists()
-    assert captured_style_spec["value"].source_type == "pdf_analysis"
-    assert captured_style_spec["value"].schema_version == "2.0"
-    assert captured_style_spec["value"].structure_contract == "measured"
     render_plan = json.loads(
         (artifact_dir / "production_render_plan.json").read_text(encoding="utf-8")
     )
     artifact_spec = load_layout_template_spec(
         artifact_dir / "layout_template_spec.json"
     )
+    assert artifact_spec.source_type == "pdf_analysis"
+    assert artifact_spec.schema_version == "2.0"
+    assert artifact_spec.structure_contract == "measured"
     assert render_plan["layout_spec_sha256"] == layout_spec_sha256(artifact_spec)
     generation_metadata = json.loads(
         (artifact_dir / "generation_metadata.json").read_text(encoding="utf-8")
@@ -548,26 +541,15 @@ def test_target_format_upload_accepts_docx_templates_and_pdf_references(
     assert metadata["target_format_filename"] == "target-reference.pdf"
 
 
-@pytest.mark.parametrize("strategy", ["standard", "agentic"])
 def test_generate_applies_uploaded_docx_style_spec(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
-    strategy: str,
 ) -> None:
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
     monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
     monkeypatch.setattr(
-        layout_proof_service, "export_html_to_pdf", _fake_pdf_export
+        "app.generation.chrome_html_to_pdf.export_html_to_pdf", _fake_pdf_export
     )
-    original_render_html = layout_proof_service.render_html
-    captured_style_spec = {}
-
-    def capture_render_html(*args, **kwargs):
-        captured_style_spec["value"] = args[1]
-        return original_render_html(*args, **kwargs)
-
-    monkeypatch.setattr(layout_proof_service, "render_html", capture_render_html)
-    monkeypatch.setenv("GENERATION_STRATEGY", strategy)
     target_path = tmp_path / "target.docx"
     target_document = Document()
     target_document.styles["Normal"].font.name = "Times New Roman"
@@ -608,7 +590,7 @@ def test_generate_applies_uploaded_docx_style_spec(
     assert upload_body["target_format"]["unsupported_features"] == []
     assert response.status_code == 400, response.text
     assert response.json()["detail"]["error_code"] == "pdf_target_required_for_layout_proof"
-    assert captured_style_spec == {}
+    assert not (artifact_dir / "layout_proofs").exists()
 
 
 def test_artifact_metadata_list_returns_recent_jobs(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -702,7 +684,6 @@ def test_replayed_target_urls_belong_to_current_artifact(tmp_path: Path, monkeyp
     from scripts.run_abc_live_matrix import _replay_target_analysis
 
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
-    monkeypatch.setenv("GENERATION_STRATEGY", "standard")
     target = build_styled_target_pdf(tmp_path / "target.pdf")
     uploaded = client.post("/api/target-format", data={"artifact_id": "artifact_cached_target"},
         files={"file": (target.name, target.read_bytes(), "application/pdf")})

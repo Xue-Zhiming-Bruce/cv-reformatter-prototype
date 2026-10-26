@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 26, 2026 (same-build representative files, natural repairs and full offline checks; owner acceptance open)
+Last reviewed: October 26, 2026 (M5 single-renderer retirement verified; integrated freeze in progress)
 
 This is the sole implementation checklist. Product behavior belongs in the
 [Product Specification](../product/PRODUCT_SPEC.md), approved decisions in
@@ -19,8 +19,9 @@ there is no experiment tree, parallel runner, or second planning system.
 
 The MVP and target-PDF demo accepted on July 26, 2026 remain the functional
 baseline. The owner selected A, structured layout with controlled rendering,
-on October 22. The present task is to integrate and accept that path before
-retiring its alternatives. B0/B1 remain incomplete.
+on October 22. Its bounded representative outputs are accepted, the default is
+A and replaced execution paths are retired. M6 now binds the integrated source
+and accepted artifacts; B0/B1 remain incomplete until that freeze meets its exits.
 
 The product flow remains:
 
@@ -43,7 +44,7 @@ output acceptance. Final acceptance binds the profile revision/checksum, layout
 version/checksum and HTML/PDF checksums; changed identities invalidate it.
 A fixed business workflow and a bounded Agentic review/repair loop coexist.
 
-### Actual Entrances (M4 migration, October 26)
+### Actual Entrances (M5 single-renderer ownership, October 26)
 
 | Entrance | Current behavior and owner |
 | --- | --- |
@@ -51,7 +52,7 @@ A fixed business workflow and a bounded Agentic review/repair loop coexist.
 | Target analysis | `POST /api/target-format`; presentation-only DOCX/PDF analysis into the existing evidence/template contracts. Adobe remains the sole target-PDF analyzer (ADR 0002), with no analyzer fallback. |
 | No-target preview | `/api/generate` uses native `built-in-3` through `app.pipeline.html_renderer.render_layout_template`: shared deterministic A compilation, binding and rendering, then Chrome and product validation. |
 | Uploaded-target proofs and preview, default | `app/template_analysis/layout_proof_service.py` selects `agentic`; `app/generation/agentic.py` adapts the existing A loop for both uploaded and approved measured designer templates. Native output remains deterministic. |
-| Retained uploaded-target baseline | Explicit `GENERATION_STRATEGY=standard` temporarily retains `product-html/1` for migration comparisons. It is not a runtime fallback; M5 removes the replaced path after verified cutover. |
+| Historical uploaded-target baseline | Standard execution is retired; `GENERATION_STRATEGY=standard` fails explicitly. Recover `product-html/1` through its matching historical build and artifacts. |
 | Diagnostic CLI/service | `python -m app.pipeline` and `run_e5` accept A only; B/paired execution is retired and rejected before I/O. The CLI does not perform extraction or establish human acceptance. |
 | Final output acceptance | `POST /api/artifacts/{artifact_id}/final-acceptance`; only the exact current preview can become client-ready. |
 
@@ -100,17 +101,17 @@ quality, general target fidelity, automatic repair selection across representati
 samples and asynchronous execution remain unaccepted. No live test or score
 completes B0/B1 or approves a final document.
 
-### Why Old Paths Still Exist
+### Historical Paths And Recovery
 
 | Retained path | Reason for retention | Removal condition |
 | --- | --- | --- |
-| Original accepted baseline/build | Replacement parity and reproducibility have not been accepted. | Preserve recoverable source/evidence and prove the selected replacement plus explicit build rollback (M4–M6). |
-| Standard uploaded-target `product-html/1` orchestration | Explicit retained comparison during M4 verification; Agentic is now the source default. | M4 passes full regression and explicit rollback checks; delete replaced code in M5. |
+| Original accepted baseline/build | Preserve the exact reviewed output provenance and explicit rollback evidence. | Recoverable source/evidence remains in Git/local accepted snapshots; M6 binds the final integrated freeze. |
+| Standard uploaded-target `product-html/1` orchestration | Retired in M5; surviving helpers moved unchanged to A. Canonical full regression passes 837, with 23 skipped. | Historical source/evidence remains recoverable from Git; no current supported caller executes it. |
 | B authored HTML/CSS | Retired: execution and exclusive checks removed; shared privacy/identity/repair contracts retained. | Historical source/evidence remains recoverable from Git. Focused retirement check: 155 passed, 7 skipped; the broad run has one recorded Chrome timeout, isolated rerun passed. |
 
 There is no silent fallback from an uploaded target or failed Agentic run to a
-built-in template, B or the standard renderer. Retention is transitional; it is
-not a second development track.
+built-in template, B or the standard renderer. Rollback deploys the matching
+recoverable build and artifacts; it is not an alternative current execution path.
 
 ## Ordered Remaining Mainline Work
 
@@ -237,13 +238,13 @@ environment-variable flip nor a compatible DOM constitutes cutover acceptance.
 
 ### M5 — Delete Replaced Paths And Merge Redundant Tests
 
-Status: [~] B execution/exclusive checks are retired; shared candidate-fact privacy, identity and actual-PDF repair contracts are retained. Final focused checks pass 155, with 7 skipped; six accepted snapshots recompile identically. The broad run retains one Chrome timeout (isolated rerun passed). Standard rendering and remaining redundant orchestration/tests still require removal.
+Status: [x] B and standard execution are retired. API and CLI retain one A compilation/binding/HTML owner; native generation stays deterministic and uploaded generation keeps the bounded Agentic loop. Shared helper/policy AST and all three A prompt hashes are unchanged. Full canonical offline regression passes **837, with 23 skipped and five existing warnings**, 816.42s. Six accepted snapshots recompile byte-identically and retain their PDF hashes. Known proof/Reviewer/SIGBUS limits remain explicit. See the owning October 25–26 evidence report.
 
-- [ ] Remove B authored-template execution, replaced uploaded-target rendering
+- [x] Remove B authored-template execution, replaced uploaded-target rendering
       and duplicate orchestration/helpers whose responsibility now has one
       verified owner. Recover historical comparisons from Git; do not maintain
       experiments or an inactive alternative development framework.
-- [ ] Merge tests that protect the same observable behavior. Keep independent
+- [x] Merge tests that protect the same observable behavior. Keep independent
       candidate-content, disclosure/privacy, unsupported-input, error, identity,
       repair/rollback and actual-PDF regressions. Remove checks exclusive to
       retired implementations, and update commands/imports/document references.
@@ -255,7 +256,7 @@ Rollback is explicit deployment of a recoverable build, not a hidden runtime pat
 
 ### M6 — Freeze The Integrated Baseline And Close B0/B1 By Their Actual Gates
 
-Status: `[ ]` Dependent on M5; neither stage is completed by this document.
+Status: `[~]` M5 is verified; exact artifact/input/prompt/font inventory and identity audits pass. Source tagging and the bounded B0/B1 evidence freeze are in progress; neither stage is completed yet.
 
 Stage B0 — reproducible accepted baseline (`[~]`):
 

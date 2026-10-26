@@ -16,6 +16,34 @@ def _offline_adobe_target_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def legacy_standard_generation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Retained baseline contracts during M4; current-default API case clears it."""
-    monkeypatch.setenv("GENERATION_STRATEGY", "standard")
+def a_generation_without_model_loop(monkeypatch: pytest.MonkeyPatch):
+    """Lifecycle checks use real A HTML; complete-loop tests restore the adapter.
+
+    Approval/revision/checksum validation and production file staging stay real.
+    These cases do not assert model-loop behavior or exported layout fidelity.
+    """
+    from app.generation import agentic, chrome_html_to_pdf
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.html_renderer import render_layout_template
+    from pathlib import Path
+    import hashlib
+    from pypdf import PdfReader
+
+    original = agentic.render_agentic
+    monkeypatch.setenv("GENERATION_STRATEGY", "agentic")
+
+    def render(*, context, layout_spec, target_pdf, evidence_dir, output_dir):
+        _, _, html = render_layout_template(layout_spec,
+            candidate_document_from_context(context, candidate_id="offline-lifecycle",
+                include_subheading=layout_spec.header.show_candidate_subheading),
+            target_sha256=hashlib.sha256(target_pdf.read_bytes()).hexdigest(),
+            page_count=len(PdfReader(target_pdf).pages))
+        directory = Path(output_dir)
+        directory.mkdir(parents=True, exist_ok=False)
+        source = directory / "render.html"
+        source.write_text(html, encoding="utf-8")
+        pdf = chrome_html_to_pdf.export_html_to_pdf(source, directory / "render.pdf")
+        return source, pdf, {"test_scope": "A compilation/export; model loop stubbed"}
+
+    monkeypatch.setattr(agentic, "render_agentic", render)
+    return original

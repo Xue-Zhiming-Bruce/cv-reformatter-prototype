@@ -190,8 +190,8 @@ Details/Links sections as well as header selections. A body-only field cannot
 escape the PDF content check because it is absent from the header selection.
 Source blocks are also checked when their heading matches a contact section
 such as Links. A matching heading does not exempt their independent titles,
-URLs, descriptions or entry structure. Retained-renderer output that loses
-those facts now fails the existing generation gates.
+URLs, descriptions or entry structure. Output that loses those facts fails the
+existing generation gates.
 
 No-target generation uses native `built-in-3` through the shared deterministic
 A template compiler/binder/HTML renderer (`lane-a-product-subset/17`). It projects
@@ -208,15 +208,16 @@ as described below; unsupported requests cannot fall back to another renderer.
 
 Owner direction, October 24, 2026: connect the existing A Builder -> render ->
 Reviewer -> measurement/attribution -> bounded repair loop to the current API.
-A means typed layout proposals interpreted by the controlled renderer; B means
-constrained authored HTML/CSS and remains an explicit CLI comparison option.
-Neither is an API request parameter or an end-user choice.
+A means typed layout proposals interpreted by the controlled renderer. B authored
+HTML/CSS execution is retired and remains historical evidence in Git. Renderer
+selection is not an API request parameter or an end-user choice.
 
 `GENERATION_STRATEGY` defaults to `agentic`: `app.generation.agentic` adapts
-the existing `app.pipeline.service.run_e5` A loop. Explicit `standard` temporarily
-selects the retained `product-html/1` baseline during migration; it never acts
-as a failure fallback and its proof approval cannot authorize Agentic execution.
-Native no-target generation remains deterministic A under either setting. Agentic execution
+the existing `app.pipeline.service.run_e5` A loop. This is the only accepted
+configuration value; retired `standard` and unknown values return a clear
+configuration error before `/api/generate` writes artifacts or replaces previews.
+Historical `product-html/1` approval cannot authorize A execution. Native no-target
+generation remains deterministic A. Agentic execution
 requires an uploaded measured target PDF, its saved Adobe/normalized evidence,
 and a supported `LayoutTemplateSpec`; it does not rerun target analysis or
 construct a fake target for native generation. Configure `DEEPSEEK_API_KEY`, or
@@ -310,8 +311,8 @@ post-completion SIGBUS remain in the evaluation report.
 The diagnostic CLI/service now accepts A only. Authored B execution is retired;
 B/paired selections fail explicitly before input reads or output creation.
 Shared privacy policy and historical serialized lane identities remain intact.
-The explicit standard product renderer is still retained pending the remaining
-M5 migration; it is never a runtime fallback.
+The standard product renderer and its orchestration branch are retired. Rollback
+requires the matching recoverable build, approval and original proof files.
 
 ### A template/input support boundary — renderer /17, compiler 10
 
@@ -324,7 +325,7 @@ selects the native template or drops a non-default unsupported property.
 | --- | --- |
 | Candidate input | Existing DOCX/text-PDF extraction into a saved current `CandidateProfile` revision; original text, source coverage and disclosure checks remain authoritative. |
 | Uploaded PDF target | Requires measured schema-2 template, target checksum/page count and saved raw/normalized evidence. Legacy/limited templates, unsupported features, missing provenance and contradictory geometry fail explicitly. |
-| Uploaded DOCX target | Upload/style analysis remains available. Proof creation already returns HTTP 400 `pdf_target_required_for_layout_proof` under both strategies: the retired target-to-PDF conversion is not restored. DOCX target fidelity/export is not in this cutover scope. |
+| Uploaded DOCX target | Upload/style analysis remains available. Proof creation already returns HTTP 400 `pdf_target_required_for_layout_proof` before and after retirement: the retired target-to-PDF conversion is not restored. DOCX target fidelity/export is not in this cutover scope. |
 | Designer templates | Approved measured PDF designs use the same A proof and candidate loop, in their existing design scope. Limited/unmeasured designs remain explicit failures; design approval alone never grants proof approval. Preserved candidate sections render in their declared order/style as ordinary owned sections. A default-contact header is already the contact owner, so compiler 10 does not append a second generic contact section. |
 | Page/columns | Measured page dimensions/margins, one column or two explicit main/sidebar regions, gutter, sidebar side/background and per-section placement. Missing placements, nonpositive usable width or impossible margins fail. Automated PDF coverage includes left/right/empty blind sidebars; owner-reviewed representative outputs are one-column targets. |
 | Typography/spacing | Font roles, supplied PostScript face, size, weight, italic, color, character/word spacing, line height and section/paragraph/entry rhythm. Horizontal scaling and independent unmatched legacy palette roles fail. Equal rule/content widths allow only 1e-6pt numerical rounding. |
@@ -386,10 +387,10 @@ rewritten on read. New proof IDs include renderer and canonical-context identity
 so a version change preserves earlier proof files. Rolling back requires the
 matching implementation, approval record and original checksum-verified proof
 files; no automatic fallback grants an older approval. Generation metadata also
-records `renderer_version`. Standard uploaded-target rendering uses
-`product-html/1`; agentic mode uses
-`agentic-a/6+lane-a-product-subset/17+<configuration digest>`. Neither mode
-changes the six identity fields used for final-output acceptance.
+records `renderer_version`. Current uploaded-target rendering uses
+`agentic-a/6+lane-a-product-subset/17+<configuration digest>`; `product-html/1`
+identifies historical records only. The six identity fields used for final-output
+acceptance remain unchanged.
 
 ### Generated-profile artifact and draft preservation
 

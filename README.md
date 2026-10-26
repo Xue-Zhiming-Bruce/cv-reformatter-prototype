@@ -68,8 +68,9 @@ is separate. Provider access still follows the product and ADR boundaries.
 
 Uploaded measured-PDF proofs and previews default to `GENERATION_STRATEGY=agentic`
 and require configured Builder/Reviewer credentials plus fresh approved proofs.
-An existing `.env` explicitly setting `standard` continues to select the retained
-baseline during migration; changing it invalidates that strategy's proof approval.
+`GENERATION_STRATEGY` accepts only `agentic`; retired `standard` and unknown
+values fail explicitly before generation changes any files. Historical rollback
+requires deploying the matching recoverable build and proof artifacts.
 There is no automatic fallback on provider or validation failure. DOCX target
 upload/style analysis remains available, but proof creation requires a PDF.
 See the [versioned API support boundary](docs/architecture/API_CONTRACT.md#a-templateinput-support-boundary--renderer-17-compiler-10).

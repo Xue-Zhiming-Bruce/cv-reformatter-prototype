@@ -1,14 +1,9 @@
-"""Shared API-level helpers for layout-proof integration tests.
+"""Shared API-level layout-proof fixtures.
 
-The offline test suite does not call Adobe, so a deterministic, text-bearing
-synthetic PDF stands in for the rendered proof output. The fake exporter
-resolves the exact layout spec from the artifact directory (the same resolution
-the production proof-creation path uses) and emits a real single-page text PDF
-whose page size and text placement match that spec's geometry, containing the
-expected heading labels and canonical synthetic markers for the variant. This
-means approval-time recomputation (reopen PDF -> measure -> validate -> compare)
-passes for genuinely valid proofs and fails for forged or tampered ones — tests
-never rewrite failed evidence into passed evidence.
+The exporter reads visible text from actual A HTML and writes a text-bearing
+synthetic PDF at the resolved template geometry. Approval recomputation still
+reopens and validates real files; missing HTML content is never supplied from
+an expected-marker list. These fixtures test lifecycle/integrity, not fidelity.
 """
 
 from __future__ import annotations
@@ -28,16 +23,12 @@ from tests.helpers.synthetic_pdf import build_text_pdf_pages
 
 
 def expected_proof_text(spec, variant: LengthVariant) -> list[str]:
-    """The deterministic text a valid proof of ``variant`` must contain: the
-    heading labels of the sections that variant populates, plus exactly the
-    content strings the renderer emits for this template (rendered_content_values
-    mirrors the renderer's section bindings and contact fallback). This keeps
-    the fake proof PDF aligned with what a real render would produce, so
-    approval-time recomputation — geometry, headings, and the template-aware
-    synthetic_content_complete marker check — passes for a valid proof.
+    """Source-owned markers for deliberate incomplete/forged PDF fixtures.
+
+    The exporter itself extracts the actual HTML rather than using this list.
     """
     return list(_expected_heading_labels(spec, variant)) + rendered_content_values(
-        spec, variant
+        spec, variant, include_unmapped_sections=True
     )
 
 
@@ -60,12 +51,9 @@ def _resolve_spec(artifact_dir: Path):
 
 
 def make_proof_pdf_exporter():
-    """Factory for a deterministic text-bearing PDF export stand-in.
+    """Export actual HTML text to synthetic pages at the owning spec's margins.
 
-    Writes a real single-page PDF whose geometry is derived from the layout
-    spec resolved from ``{artifact_dir}/layout_proofs/{proof_id}`` (falling
-    back to the built-in A4 spec). The ``candidate_profile.html`` renders use
-    a generic valid page (their content is not structurally validated).
+    The default is the native A4 spec. No Chrome layout fidelity is claimed.
     """
 
     def _export(html_path, output_path, **_kwargs):
@@ -75,29 +63,25 @@ def make_proof_pdf_exporter():
         out_dir = pdf_path.parent
         out_dir.mkdir(parents=True, exist_ok=True)
         spec = _resolve_spec(out_dir)
-        stem = html_path.stem
-        if stem.startswith("proof-"):
-            lines = expected_proof_text(spec, LengthVariant(stem[len("proof-") :]))
-        else:
-            class TextCollector(HTMLParser):
-                def __init__(self):
-                    super().__init__()
-                    self.values = []
+        class TextCollector(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.values = []
+                self.in_style = False
+            def handle_starttag(self, tag, attrs):
+                if tag == "style":
+                    self.in_style = True
+            def handle_endtag(self, tag):
+                if tag == "style":
                     self.in_style = False
-                def handle_starttag(self, tag, attrs):
-                    if tag == "style":
-                        self.in_style = True
-                def handle_endtag(self, tag):
-                    if tag == "style":
-                        self.in_style = False
-                def handle_data(self, data):
-                    if data.strip() and not self.in_style:
-                        self.values.extend(
-                            value.strip() for value in data.split("•") if value.strip()
-                        )
-            collector = TextCollector()
-            collector.feed(html_path.read_text(encoding="utf-8"))
-            lines = collector.values
+            def handle_data(self, data):
+                if data.strip() and not self.in_style:
+                    self.values.extend(
+                        value.strip() for value in data.split("•") if value.strip()
+                    )
+        collector = TextCollector()
+        collector.feed(html_path.read_text(encoding="utf-8"))
+        lines = collector.values
         build_text_pdf_pages(
             pdf_path,
             lines,

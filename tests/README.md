@@ -53,7 +53,7 @@ and dimensions; diagnostic PNGs remain. `test_pipeline_evidence.py` covers the
 actual bounded PydanticAI request, MIME and audited image path/hash offline.
 The same request check covers five lossless Builder repair attachments through
 the real SDK and wire-budget hook, retaining pixels and original diagnostic PNGs.
-The mapper's unit table and existing native/CLI/retained-renderer PDF test also
+The mapper's unit table and existing native/CLI PDF test also
 cover blind additional-entry link disclosure, explicit portfolio `show`, retained
 public URLs, empty filtered entries and unchanged source data. API coverage
 rejects a changed client-disclosure policy before model calls.
@@ -64,9 +64,9 @@ canonical runner, Chrome and approval gates, mocking only
 the model-call boundaries. Coverage includes all three canonical proofs,
 continuation-page review, saved-revision preview, exact final acceptance,
 configuration-bound proof invalidation and preserved preview files after
-Reviewer failure. Baseline-specific API fixtures explicitly select `standard`
-until M5 retires the replaced renderer; the current-default cases remove that
-setting and cannot pass by exercising the baseline. `integration/test_pipeline.py` exercises measured product
+Reviewer failure. Generic approval/revision/error checks use real deterministic A
+HTML and stub the model loop/export boundary; they do not claim loop/fidelity
+coverage. Complete-loop cases restore the real adapter and stub model calls only. `integration/test_pipeline.py` exercises measured product
 template repair and rollback through the same runner with real PDFs and
 measurements. These are offline integration checks, not external model quality
 or provider evidence; no second runner or output schema is introduced.
@@ -144,22 +144,20 @@ changes for name, heading, body and a section override, against zero-spacing
 output with character spacing retained. Normal/blind variants preserve content
 and source files. Removed spacing declarations, later zero overrides and a
 missing title style fail the HTML consumption gate while content still passes.
-The retained product renderer ignores word spacing and is not this reference.
 
 Inline-skill cases in the same file preserve typed groups and separate flat
 skill identities. They cover default/custom delimiters and label styles,
 normal/blind output, sidebar wrapping and flat/empty content. Single-column
-reference PDFs use identical context/spec and compare heading-to-first-group
-and group gaps. HTML delimiter/style/gap mutations fail the consumption check
+heading-to-first-group and group gaps use frozen fixture geometry measured before
+retiring the reference renderer. HTML delimiter/style/gap mutations fail the consumption check
 while content remains present; removing a skill from the actual PDF fails both
 content validators. This does not certify arbitrary uploaded-template parity.
 
 Dedicated body-contact cases in the same CLI file use existing contact leaves
 through explicit template selections. Real PDFs cover body field order, font
 size, default-header remainder, all-body placement, sidebar bounds, blind links
-explicitly allowed for disclosure, and omission of hidden empty blocks. A split
-header/body reference PDF checks the same facts through the retained renderer;
-it is not a visual-parity assertion. Swapped HTML fields or a changed delimiter
+explicitly allowed for disclosure, and omission of hidden empty blocks.
+Swapped HTML fields or a changed delimiter
 fail shape checks while content remains present. Deleting a body-only email
 from the PDF fails both A ownership/content and the shared product validator.
 Compiler rejection cases cover overlap, duplicate fields, unspecified body
@@ -174,18 +172,14 @@ roles; removing a role class or spacing declaration fails the shape gate, and
 removing a portfolio value from the PDF fails both content validators. Generic
 additional details can coexist with contact slots. A same-heading Links source
 block retains its independent URL, title and description, including product
-structure checks for the appended entries. Its retained-renderer reference loses
-those facts and must now fail shared content/structure validation rather than
-benefiting from a heading-based exemption. Structured-contact metadata cannot
+structure checks for the appended entries. Those source facts must occur once;
+a heading-based exemption cannot excuse omission. Structured-contact metadata cannot
 override source text or field identity. Contact slots combined with a custom
 selector or an entry title style remain explicitly unsupported.
 
-The same entry cases export a reference PDF through the retained product
-renderer using the identical context and template. Generic custom-group
-headings must preserve its distinct default size/weight, heading-to-entry gaps
-and within-group entry gaps. This compatibility check does not certify target
-reconstruction or other differences between the two renderers.
-Both outputs also pass the existing API structure validator using semantic
+The same entry cases directly check generic custom-group heading size/weight,
+heading-to-entry gaps and within-group entry gaps against frozen contract bounds.
+The generated A output also passes the existing API structure validator using semantic
 sections, entries, title/link roles, split work rows and institution markers.
 Cases include absent employers/institutions and non-bold institution styles.
 Removing a title role while preserving all facts must fail the shared structure
@@ -193,7 +187,7 @@ validator and still pass A's content check. These are compatibility regressions;
 the CLI service and API generation routes retain their existing orchestration.
 
 Native built-in cases use `built-in-3` at its actual A4 dimensions through the
-same CLI. Normal/blind PDFs from A and the product renderer preserve facts and
+same CLI. Normal/blind A PDFs preserve facts and
 show email/phone once (or omit them when blind). The API default-template case
 checks the new version and absence of a repeated contact body block. Existing
 synthetic PDF/evidence builders accept explicit page dimensions; their Letter
@@ -206,19 +200,19 @@ Uploaded templates still reject absent, partial or invalid target identity;
 measured evidence states cannot adopt the native null identity.
 Native API regressions in `integration/test_api_generate.py` use real Chrome
 exports of saved revisions, with normal/blind custom entries and all core
-sections, and compare the actual HTML with the shared A call. Both A and retained
-renderer reference PDFs pass product content/structure checks; A ownership and
+sections, and compare the actual HTML with the shared A call. Actual A PDFs
+pass product content/structure checks; A ownership and
 blank-page gates also pass. The same cases preserve source files and exercise
 final acceptance followed by disclosure-change invalidation. Unsupported native
 features must preserve existing HTML/PDF; the structure-mutation API regression
 continues to remove semantic roles while retaining content. Uploaded-target API
-tests keep their approval-bound retained renderer and existing proof identity.
+tests use the approval-bound A adapter. Historical missing renderer identities
+remain `product-html/1`, read-only and invalid for current A approvals.
 
 Canonical synthetic proof contexts also render directly through A in
 `integration/test_layout_proof_render.py`: short/medium/long real Chrome PDFs
 preserve labeled fallback contacts once and pass independent product content,
-structure and A ownership/blank-page checks. This does not switch the proof
-service. `integration/test_pipeline_rendering.py` covers exact-label fallback,
+structure and A ownership/blank-page checks. `integration/test_pipeline_rendering.py` covers exact-label fallback,
 unknown/malformed/duplicate contact rejection and typed-contact precedence.
 
 Decoration cases in the same CLI workflow exercise header/heading rules and
@@ -237,8 +231,6 @@ ordinary/blind profiles and an empty sidebar. Actual PDF coordinates and
 region-scoped content checks enforce widths/gutters and prevent silent collapse
 to one column. Exporting a displaced column while retaining correct HTML must
 fail the region/shape gates even when the independent content check still passes.
-The existing API renderer currently ignores body placement, so its output is a
-content comparison rather than a column-fidelity reference.
 
 Pagination cases in the same file cover natural single-column continuation,
 explicit section breaks with local spacing overrides, left/right column-group

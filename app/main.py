@@ -1126,6 +1126,12 @@ def approve_layout_proofs(
 
 @app.post("/api/generate")
 def generate_outputs(request: GenerateRequest) -> GenerateResponse:
+    from app.generation.agentic import AgenticGenerationError, generation_strategy
+
+    try:
+        generation_strategy()
+    except AgenticGenerationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     target_format = request.target_format
     artifact_id = request.artifact_id or (target_format.artifact_id if target_format else None) or _new_artifact_id()
     artifact_dir = _prepare_artifact_dir(
@@ -1345,8 +1351,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
                 layout_spec=style_spec,
                 render_context=render_context,
                 output_dir=artifact_dir,
-                **({"target_pdf": artifact_dir / target_format.stored_filename}
-                   if active_renderer_version().startswith("agentic-a/") else {}),
+                target_pdf=artifact_dir / target_format.stored_filename,
             )
         else:
             _, _, html = render_layout_template(
@@ -1368,7 +1373,7 @@ def generate_outputs(request: GenerateRequest) -> GenerateResponse:
 
     if exported_pdf_path != pdf_path and exported_pdf_path.exists():
         exported_pdf_path.replace(pdf_path)
-    if uses_uploaded_target and active_renderer_version().startswith("agentic-a/"):
+    if uses_uploaded_target:
         debug_artifacts["agentic_generation"] = str(artifact_dir / "agentic_generation.json")
 
     try:

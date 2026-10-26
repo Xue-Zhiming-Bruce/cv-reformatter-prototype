@@ -13,6 +13,11 @@ from app.pipeline.layout_state import PageState, SectionContent, StateModel
 from app.pipeline.candidate_content import UnroutableContent
 from app.pipeline.layout_compiler import own_leaf
 
+def _inline_separator(value: str) -> str:
+    bare = value.strip()
+    return f" {bare} " if bare == "|" else f"{bare} "
+
+
 OVERFLOW_POLICY = "append_after_template_with_source_heading"
 
 PlanStatus = str  # fully_materialized | materialized_with_gaps | failed

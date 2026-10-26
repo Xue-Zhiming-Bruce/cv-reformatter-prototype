@@ -37,6 +37,27 @@ from app.pipeline.layout_state import (
     ContactDetailLayout,
 )
 
+def _gap_compensated(
+    gap_pt: float | None,
+    line_height_pt: float,
+    font_size_pt: float,
+    rule_width_pt: float,
+    *,
+    below: bool = False,
+) -> float:
+    """Return CSS padding/margin that produces the measured contract gap.
+
+    Below a rule, compensate for the actual next text tier's half-leading plus
+    half the border width. Above a rule only the border residual applies.
+    """
+    if gap_pt is None:
+        return 0.0
+    residual = rule_width_pt / 2.0
+    if below:
+        residual += max(0.0, (line_height_pt - font_size_pt) / 2.0)
+    return max(0.0, gap_pt - residual)
+
+
 def _label_case(label: str) -> Literal["upper", "title", "mixed"]:
     letters = [char for char in label if char.isalpha()]
     if not letters:
@@ -1368,8 +1389,6 @@ def state_from_layout_template(
                           Column(slot="right", x0_pt=(x0+x1+section.column_gap_pt)/2, x1_pt=x1)] if two_item_columns else [])
     if body_columns and not any(node.column_slot for node in nodes):
         raise ValueError("two-column template has no column placements")
-    from app.generation.html_renderer import _gap_compensated
-
     tokens = {token.style_id: token for token in styles}
 
     def product_rule(rule_id: str, prefix: str, next_style: StyleToken, x0: float, x1: float) -> RuleDecoration:

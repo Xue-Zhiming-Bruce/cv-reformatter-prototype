@@ -2,7 +2,8 @@ from pathlib import Path
 import pytest
 
 from app.extraction.llm_extractor import MockLLMClient, extract_candidate_profile
-from app.generation.html_renderer import render_html
+from app.pipeline.html_renderer import render_layout_template
+from app.pipeline.candidate_content import candidate_document_from_context
 from app.generation.template_mapper import build_client_render_context
 from app.ingestion.docx_reader import read_docx
 from app.template_analysis.schemas import built_in_layout_template_spec
@@ -28,7 +29,10 @@ def test_local_docx_dataset_runs_through_backend_render_chain(tmp_path: Path) ->
                 raise AssertionError("empty extracted text")
             profile = extract_candidate_profile(extracted_text, client)
             context = build_client_render_context(profile, blind_profile=True)
-            output_path = render_html(context, built_in_layout_template_spec(), tmp_path / f"{path.stem}.html")
+            _, _, html = render_layout_template(built_in_layout_template_spec(),
+                candidate_document_from_context(context, candidate_id="local-docx-smoke"))
+            output_path = tmp_path / f"{path.stem}.html"
+            output_path.write_text(html, encoding="utf-8")
             if not output_path.exists() or output_path.stat().st_size == 0:
                 raise AssertionError("generated HTML missing or empty")
         except Exception as exc:

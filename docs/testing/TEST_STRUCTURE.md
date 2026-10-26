@@ -57,6 +57,10 @@ were retired on October 19, 2026; its source remains in Git.
 | Resume transformation matrix | `scripts/run_abc_live_matrix.py` (API-driven; supersedes the retired `run_block_aware_matrix.py` offline runner) | authorized `tests/local_datasets/resume_matrix/` inputs | versioned matrix run defined by `TEST_RESULT_FORMAT.md`; run reports under `data/generated_outputs/abc_live_matrix/` |
 | Selected E5 pipeline (A only; B execution retired) | `python -m app.pipeline` | saved `CandidateProfile` JSON (shared disclosure/blind mapper; internal projection), target PDF, Adobe JSON, normalized evidence, structure draft, and optional identity-bound label approval | `data/generated_outputs/pipeline/` by default or explicit `--out`; regressions in `tests/unit/test_pipeline_*.py` and `tests/integration/test_pipeline*.py`; synthetic fixtures in `tests/helpers/pipeline*.py`; optional explicit local bundle documented in `tests/README.md`; no automatic historical-run lookup or synthetic probes |
 
+API and CLI now share the selected A compilation/rendering owner. Authored B
+and the standard renderer are retired; their history is read through explicit
+identity checks or recovered from Git, not executed as a fallback.
+
 Historical A-D, C2/DOCX, and E1-E4 experiment runners and their compatibility
 entry points were removed on October 19, 2026. Shared runtime behavior and its
 regressions remain under `app/pipeline/` and the canonical pytest directories.

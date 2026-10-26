@@ -14,7 +14,7 @@ from app.pipeline.layout_state import C2LayoutState, Column
 from app.pipeline.layout_compiler import _below_heading_rule, _resolve_above_heading_rule
 from app.pipeline.render_plan import C2RenderPlan, section_groups
 from app.pipeline.html_renderer import _pt, _class_for
-from app.generation.html_renderer import _inline_separator
+from app.pipeline.render_plan import _inline_separator
 
 PDF_STRUCTURE_VALIDATION_VERSION = "pdf_structure/2"
 

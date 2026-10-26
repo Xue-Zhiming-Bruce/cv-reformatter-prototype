@@ -477,3 +477,59 @@ def test_measured_state_cannot_drop_target_identity(patch) -> None:
         payload[field].update(values)
     with pytest.raises(ValidationError, match="target evidence requires both"):
         C2LayoutState.model_validate(payload)
+
+
+def test_product_rule_gaps_use_actual_following_text_tiers() -> None:
+    from app.pipeline.layout_compiler import state_from_layout_template
+    from app.template_analysis.schemas import (
+        LayoutTemplateSpec, PageStyle, TextStyle, SpacingStyle,
+        HeaderLayoutStyle, DecorationStyle, SectionLayoutSpec,
+    )
+
+    spec = LayoutTemplateSpec(
+        source_type="built_in",
+        page=PageStyle(
+            width_pt=612,
+            height_pt=792,
+            orientation="portrait",
+            margin_top_pt=60,
+            margin_right_pt=54,
+            margin_bottom_pt=72,
+            margin_left_pt=54,
+        ),
+        structure_contract="measured",
+        body=TextStyle(font_size_pt=10, color_hex="#222222"),
+        spacing=SpacingStyle(line_height_pt=13),
+        header=HeaderLayoutStyle(
+            contact_fields=["email"],
+            contact_style=TextStyle(font_size_pt=9, color_hex="#555555"),
+            contact_line_height_pt=10.75,
+        ),
+        decoration=DecorationStyle(
+            header_rule=True,
+            heading_rule=True,
+            rule_width_pt=0.75,
+            header_rule_gap_below_pt=10.07,
+            heading_rule_gap_below_pt=4.0,
+        ),
+        sections=[
+            SectionLayoutSpec(
+                section_id="experience",
+                source="work_experience",
+                label="EXPERIENCE",
+                entry_title_style=TextStyle(
+                    font_size_pt=11,
+                    line_height_pt=13,
+                    bold=True,
+                    color_hex="#111111",
+                ),
+            )
+        ],
+    )
+
+    state = state_from_layout_template(spec)
+    rules = {rule.rule_id: rule for rule in state.rules}
+    # Contact half-leading .875pt, border residual .375pt, header correction .125pt.
+    assert rules["rule.header"].gap_below_pt == pytest.approx(8.695)
+    # The following entry title is 11pt on a 13pt line, not the 10pt body tier.
+    assert rules["rule.section.01"].gap_below_pt == pytest.approx(2.625)

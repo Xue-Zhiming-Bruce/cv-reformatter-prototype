@@ -31,8 +31,8 @@ class AgenticGenerationError(RuntimeError):
 
 def generation_strategy() -> str:
     strategy = os.getenv("GENERATION_STRATEGY", "agentic").strip().lower()
-    if strategy not in {"standard", "agentic"}:
-        raise AgenticGenerationError("GENERATION_STRATEGY must be standard or agentic")
+    if strategy != "agentic":
+        raise AgenticGenerationError("GENERATION_STRATEGY supports only agentic; standard rendering is retired")
     return strategy
 
 

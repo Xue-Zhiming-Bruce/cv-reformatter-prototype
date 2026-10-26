@@ -24,21 +24,24 @@ from app.template_analysis.layout_proof_service import (
     render_layout_proof,
 )
 from app.template_analysis.schemas import (
-    built_in_template_style_spec,
-    migrate_template_style_spec,
+    built_in_layout_template_spec,
 )
 
 
 def _layout_spec():
-    return migrate_template_style_spec(built_in_template_style_spec())
+    return built_in_layout_template_spec()
 
 
-def _request(variant: LengthVariant = LengthVariant.MEDIUM) -> LayoutProofRenderRequest:
+def _request(tmp_path: Path, variant: LengthVariant = LengthVariant.MEDIUM) -> LayoutProofRenderRequest:
+    from tests.helpers.synthetic_pdf import build_styled_target_pdf
+    target_pdf = tmp_path / "target.pdf"
+    if not target_pdf.exists():
+        build_styled_target_pdf(target_pdf)
     return LayoutProofRenderRequest(
         artifact_id="artifact-1",
         layout_spec=_layout_spec(),
         variant=variant,
-        target_checksum="target-abc",
+        target_checksum=file_sha256(target_pdf),
     )
 
 
@@ -55,12 +58,12 @@ def _fake_pdf_export(html_path, output_path, **_kwargs):
     return pdf_path
 
 
-pytestmark = pytest.mark.usefixtures("legacy_standard_generation")
+pytestmark = pytest.mark.usefixtures("a_generation_without_model_loop")
 
 @pytest.fixture()
 def fake_pdf(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        layout_proof_service, "export_html_to_pdf", _fake_pdf_export
+        "app.generation.chrome_html_to_pdf.export_html_to_pdf", _fake_pdf_export
     )
 
 
@@ -68,13 +71,13 @@ def test_renders_all_variants_to_designated_dir(
     tmp_path: Path, fake_pdf: None
 ) -> None:
     for variant in LengthVariant:
-        request = _request(variant)
-        result = render_layout_proof(request, output_dir=tmp_path)
-        assert result.proof_id == proof_id_for(request)
+        request = _request(tmp_path, variant)
+        result = render_layout_proof(request, output_dir=tmp_path, target_pdf=tmp_path / "target.pdf")
+        assert result.proof_id != proof_id_for(request)
         assert result.variant is variant
         assert result.artifact_id == "artifact-1"
         assert result.layout_spec_checksum == layout_spec_checksum(request.layout_spec)
-        assert result.target_checksum == "target-abc"
+        assert result.target_checksum == file_sha256(tmp_path / "target.pdf")
         assert result.context_checksum == canonical_context_checksum(variant)
         assert result.page_count == 1
         proof_dir = tmp_path / result.proof_id
@@ -90,7 +93,7 @@ def test_default_output_dir_is_approved_artifact_location() -> None:
 
 
 def test_proof_html_contains_synthetic_content(tmp_path: Path, fake_pdf: None) -> None:
-    result = render_layout_proof(_request(), output_dir=tmp_path)
+    result = render_layout_proof(_request(tmp_path), output_dir=tmp_path, target_pdf=tmp_path / "target.pdf")
     text = (tmp_path / result.proof_id / result.html_filename).read_text(encoding="utf-8")
     assert "SYNTHETIC_CANDIDATE_NAME" in text
     assert "SYNTHETIC_COMPANY_1" in text
@@ -101,26 +104,26 @@ def test_proof_html_contains_synthetic_content(tmp_path: Path, fake_pdf: None) -
 
 
 def test_proof_html_has_no_images_or_background(tmp_path: Path, fake_pdf: None) -> None:
-    result = render_layout_proof(_request(), output_dir=tmp_path)
+    result = render_layout_proof(_request(tmp_path), output_dir=tmp_path, target_pdf=tmp_path / "target.pdf")
     html = (tmp_path / result.proof_id / result.html_filename).read_text(encoding="utf-8")
     # The target page image must never be used as a background or embedded.
     assert "background-image" not in html
     assert "<img" not in html
 
 
-def test_proof_id_and_checksum_are_deterministic() -> None:
-    first = proof_id_for(_request(LengthVariant.MEDIUM))
-    second = proof_id_for(_request(LengthVariant.MEDIUM))
-    assert first == second
-    assert proof_id_for(_request(LengthVariant.LONG)) != first
-    assert layout_spec_checksum(_layout_spec()) == layout_spec_checksum(_layout_spec())
+def test_proof_attempt_identity_preserves_previous_attempts(tmp_path: Path) -> None:
+    first = proof_id_for(_request(tmp_path, LengthVariant.MEDIUM))
+    second = proof_id_for(_request(tmp_path, LengthVariant.MEDIUM))
+    assert first != second
+    assert proof_id_for(_request(tmp_path, LengthVariant.LONG)) != first
+    assert first.startswith("layout_proof_medium_") and second.startswith("layout_proof_medium_")
 
 
 def test_public_render_rejects_context_argument(
     tmp_path: Path, fake_pdf: None
 ) -> None:
     """The public API must not accept caller-supplied proof content."""
-    request = _request(LengthVariant.MEDIUM)
+    request = _request(tmp_path, LengthVariant.MEDIUM)
     with pytest.raises(TypeError):
         render_layout_proof(request, context=build_synthetic_context(LengthVariant.MEDIUM))  # type: ignore[call-arg]
 
@@ -135,14 +138,14 @@ def test_private_seam_rejects_non_canonical_context(
         synthetic_context_checksum,
     )
 
-    request = _request(LengthVariant.MEDIUM)
+    request = _request(tmp_path, LengthVariant.MEDIUM)
     # A canonical context for a DIFFERENT variant must be rejected.
     other = build_synthetic_context(LengthVariant.SHORT)
     assert synthetic_context_checksum(other) != canonical_context_checksum(
         LengthVariant.MEDIUM
     )
     with pytest.raises(LayoutProofRenderError, match="not the canonical synthetic context"):
-        _render_layout_proof_with_context(request, other, output_dir=tmp_path)
+        _render_layout_proof_with_context(request, other, output_dir=tmp_path, target_pdf=tmp_path / "target.pdf")
 
 
 def test_render_failure_wrapped(
@@ -151,17 +154,19 @@ def test_render_failure_wrapped(
     def boom(*_args, **_kwargs):
         raise HtmlToPdfExportError("Chrome exploded")
 
-    monkeypatch.setattr(layout_proof_service, "export_html_to_pdf", boom)
+    monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", boom)
     with pytest.raises(LayoutProofRenderError, match="could not be rendered"):
-        render_layout_proof(_request(), output_dir=tmp_path)
+        render_layout_proof(_request(tmp_path), output_dir=tmp_path, target_pdf=tmp_path / "target.pdf")
 
 
 def test_artifacts_confined_to_output_dir(tmp_path: Path, fake_pdf: None) -> None:
-    result = render_layout_proof(_request(LengthVariant.LONG), output_dir=tmp_path)
+    result = render_layout_proof(_request(tmp_path, LengthVariant.LONG), output_dir=tmp_path, target_pdf=tmp_path / "target.pdf")
     proof_dir = tmp_path / result.proof_id
     files = sorted(path.name for path in proof_dir.iterdir())
     assert files == [
+        "agentic_generation.json",
         "layout_template_spec.json",
+        "pipeline_runs",
         result.html_filename,
         result.pdf_filename,
     ]

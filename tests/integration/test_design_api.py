@@ -62,14 +62,14 @@ def _profile() -> CandidateProfile:
     )
 
 
-pytestmark = pytest.mark.usefixtures("legacy_standard_generation")
+pytestmark = pytest.mark.usefixtures("a_generation_without_model_loop")
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")
     monkeypatch.setattr(main, "LOCAL_DATABASE_PATH", tmp_path / "local.sqlite3")
     monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
-    monkeypatch.setattr(layout_proof_service, "export_html_to_pdf", _fake_pdf_export)
+    monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", _fake_pdf_export)
     monkeypatch.delenv("TEMPLATE_DESIGN_STRATEGY", raising=False)
     # Hard guarantee: no live Claude call can occur during offline pytest,
     # regardless of the host environment, the repository .env file, or any

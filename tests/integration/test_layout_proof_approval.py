@@ -33,8 +33,7 @@ from app.template_analysis.layout_proof_service import (
     render_layout_proof,
 )
 from app.template_analysis.schemas import (
-    built_in_template_style_spec,
-    migrate_template_style_spec,
+    built_in_layout_template_spec,
 )
 from tests.helpers.layout_proof import (
     expected_proof_text,
@@ -44,30 +43,15 @@ from tests.helpers.synthetic_pdf import build_styled_target_pdf, build_text_pdf
 
 
 def _spec():
-    return migrate_template_style_spec(built_in_template_style_spec())
+    return built_in_layout_template_spec()
 
 
-def _request(
-    variant: LengthVariant,
-    *,
-    artifact_id: str = "artifact-1",
-    spec=None,
-    target_checksum: str = "target-abc",
-) -> LayoutProofRenderRequest:
-    return LayoutProofRenderRequest(
-        artifact_id=artifact_id,
-        layout_spec=spec if spec is not None else _spec(),
-        variant=variant,
-        target_checksum=target_checksum,
-    )
-
-
-pytestmark = pytest.mark.usefixtures("legacy_standard_generation")
+pytestmark = pytest.mark.usefixtures("a_generation_without_model_loop")
 
 @pytest.fixture()
 def fake_pdf(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        layout_proof_service, "export_html_to_pdf", make_proof_pdf_exporter()
+        "app.generation.chrome_html_to_pdf.export_html_to_pdf", make_proof_pdf_exporter()
     )
 
 
@@ -77,7 +61,7 @@ def _render_all_variants(
     target_pdf: Path,
     spec=None,
     artifact_id: str = "artifact-1",
-    target_checksum: str = "target-abc",
+    target_checksum: str | None = None,
 ) -> dict[LengthVariant, object]:
     """Render, validate, compare, and persist all three variants through the
     real proof-creation path (no forged evidence)."""
@@ -86,7 +70,7 @@ def _render_all_variants(
         artifact_id=artifact_id,
         layout_spec=spec if spec is not None else _spec(),
         target_pdf=target_pdf,
-        target_checksum=target_checksum,
+        target_checksum=target_checksum or file_sha256(target_pdf),
     )
 
 
@@ -179,9 +163,10 @@ def test_non_approved_state_blocks_final_render(
     unapproved = layout_proof_service.LayoutProofApproval(
         approval_id="approval-pending",
         artifact_id="artifact-1",
-        target_checksum="target-abc",
+        target_checksum=file_sha256(target_pdf),
         layout_spec_checksum=layout_spec_checksum(_spec()),
         state=state,
+        renderer_version=layout_proof_service.active_renderer_version(),
         variants=outcomes,  # type: ignore[arg-type]
     )
     with pytest.raises(LayoutProofNotApprovedError, match="approved layout proof"):
@@ -191,7 +176,8 @@ def test_non_approved_state_blocks_final_render(
             layout_spec=_spec(),
             render_context=_candidate_context(),
             output_dir=tmp_path,
-        )
+            target_pdf=target_pdf,
+    )
 
 
 def test_approval_for_other_artifact_blocks_final_render(
@@ -202,7 +188,7 @@ def test_approval_for_other_artifact_blocks_final_render(
     approval = approve_layout_proof(
         artifact_dir=tmp_path,
         artifact_id="artifact-1",
-        target_checksum="target-abc",
+        target_checksum=file_sha256(target_pdf),
         layout_spec=_spec(),
         target_pdf=target_pdf,
         reviewer_id="reviewer-1",
@@ -214,7 +200,8 @@ def test_approval_for_other_artifact_blocks_final_render(
             layout_spec=_spec(),
             render_context=_candidate_context(),
             output_dir=tmp_path,
-        )
+            target_pdf=target_pdf,
+    )
 
 
 def test_approval_for_different_spec_blocks_final_render(
@@ -225,7 +212,7 @@ def test_approval_for_different_spec_blocks_final_render(
     approval = approve_layout_proof(
         artifact_dir=tmp_path,
         artifact_id="artifact-1",
-        target_checksum="target-abc",
+        target_checksum=file_sha256(target_pdf),
         layout_spec=_spec(),
         target_pdf=target_pdf,
         reviewer_id="reviewer-1",
@@ -238,7 +225,8 @@ def test_approval_for_different_spec_blocks_final_render(
             layout_spec=other_spec,
             render_context=_candidate_context(),
             output_dir=tmp_path,
-        )
+            target_pdf=target_pdf,
+    )
 
 
 # -- full workflow: render -> evidence -> approve -> load -> generate ----------
@@ -252,7 +240,7 @@ def test_approved_proof_set_allows_final_generation(
     approval = approve_layout_proof(
         artifact_dir=tmp_path,
         artifact_id="artifact-1",
-        target_checksum="target-abc",
+        target_checksum=file_sha256(target_pdf),
         layout_spec=_spec(),
         target_pdf=target_pdf,
         reviewer_id="reviewer-1",
@@ -272,6 +260,7 @@ def test_approved_proof_set_allows_final_generation(
         layout_spec=_spec(),
         render_context=_candidate_context(),
         output_dir=tmp_path / "candidate",
+        target_pdf=target_pdf,
     )
     assert html_path.exists()
     assert pdf_path.exists()
@@ -289,7 +278,7 @@ def test_missing_candidate_fields_do_not_invent_data(
     approval = approve_layout_proof(
         artifact_dir=tmp_path,
         artifact_id="artifact-1",
-        target_checksum="target-abc",
+        target_checksum=file_sha256(target_pdf),
         layout_spec=_spec(),
         target_pdf=target_pdf,
         reviewer_id="reviewer-1",
@@ -305,6 +294,7 @@ def test_missing_candidate_fields_do_not_invent_data(
         layout_spec=_spec(),
         render_context=build_client_render_context(minimal_profile),
         output_dir=tmp_path / "candidate",
+        target_pdf=target_pdf,
     )
     text = _html_text(html_path)
     assert "Pat Minimal" in text
@@ -320,19 +310,20 @@ def test_missing_candidate_fields_do_not_invent_data(
 def test_preloaded_approval_cannot_render_with_another_renderer(
     tmp_path: Path, fake_pdf: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.generation import html_renderer
+    from app.generation import agentic
 
     target_pdf = build_styled_target_pdf(tmp_path / "target.pdf")
     _render_all_variants(tmp_path, target_pdf=target_pdf)
     approval = approve_layout_proof(
-        artifact_dir=tmp_path, artifact_id="artifact-1", target_checksum="target-abc",
+        artifact_dir=tmp_path, artifact_id="artifact-1", target_checksum=file_sha256(target_pdf),
         layout_spec=_spec(), target_pdf=target_pdf, reviewer_id="reviewer-1",
     )
-    monkeypatch.setattr(html_renderer, "RENDERER_VERSION", "product-html/2")
+    version = layout_proof_service.active_renderer_version()
+    monkeypatch.setattr(agentic, "agentic_renderer_version", lambda: version + "/changed")
     output = tmp_path / "candidate"
     with pytest.raises(LayoutProofMismatchError, match="renderer version mismatch"):
         render_candidate_document(approval=approval, artifact_id="artifact-1", layout_spec=_spec(),
-                                  render_context=_candidate_context(), output_dir=output)
+                                  render_context=_candidate_context(), output_dir=output, target_pdf=target_pdf)
     assert not output.exists()
 
 
@@ -346,7 +337,7 @@ def test_approve_refuses_missing_render_result(tmp_path: Path, fake_pdf: None) -
         approve_layout_proof(
             artifact_dir=tmp_path,
             artifact_id="artifact-1",
-            target_checksum="target-abc",
+            target_checksum=file_sha256(target_pdf),
             layout_spec=_spec(),
             target_pdf=target_pdf,
             reviewer_id="reviewer-1",
@@ -366,7 +357,7 @@ def test_approve_refuses_fabricated_proof_id(tmp_path: Path, fake_pdf: None) -> 
         approve_layout_proof(
             artifact_dir=tmp_path,
             artifact_id="artifact-1",
-            target_checksum="target-abc",
+            target_checksum=file_sha256(target_pdf),
             layout_spec=_spec(),
             target_pdf=target_pdf,
             reviewer_id="reviewer-1",
@@ -388,7 +379,7 @@ def test_approve_refuses_recomputed_structural_failure(
         approve_layout_proof(
             artifact_dir=tmp_path,
             artifact_id="artifact-1",
-            target_checksum="target-abc",
+            target_checksum=file_sha256(target_pdf),
             layout_spec=_spec(),
             target_pdf=target_pdf,
             reviewer_id="reviewer-1",
@@ -424,7 +415,7 @@ def test_altering_proof_pdf_invalidates_approval(
         approve_layout_proof(
             artifact_dir=tmp_path,
             artifact_id="artifact-1",
-            target_checksum="target-abc",
+            target_checksum=file_sha256(target_pdf),
             layout_spec=_spec(),
             target_pdf=target_pdf,
             reviewer_id="reviewer-1",
@@ -439,7 +430,7 @@ def test_altering_proof_pdf_after_approval_invalidates_load(
     approve_layout_proof(
         artifact_dir=tmp_path,
         artifact_id="artifact-1",
-        target_checksum="target-abc",
+        target_checksum=file_sha256(target_pdf),
         layout_spec=_spec(),
         target_pdf=target_pdf,
         reviewer_id="reviewer-1",
@@ -460,7 +451,7 @@ def test_corrupt_approval_json_is_rejected(tmp_path: Path, fake_pdf: None) -> No
     approve_layout_proof(
         artifact_dir=tmp_path,
         artifact_id="artifact-1",
-        target_checksum="target-abc",
+        target_checksum=file_sha256(target_pdf),
         layout_spec=_spec(),
         target_pdf=target_pdf,
         reviewer_id="reviewer-1",
@@ -516,7 +507,7 @@ def test_approve_refuses_forged_context_checksum(
         approve_layout_proof(
             artifact_dir=tmp_path,
             artifact_id="artifact-1",
-            target_checksum="target-abc",
+            target_checksum=file_sha256(target_pdf),
             layout_spec=_spec(),
             target_pdf=target_pdf,
             reviewer_id="reviewer-1",
@@ -549,7 +540,7 @@ def test_approve_refuses_incomplete_content(
         approve_layout_proof(
             artifact_dir=tmp_path,
             artifact_id="artifact-1",
-            target_checksum="target-abc",
+            target_checksum=file_sha256(target_pdf),
             layout_spec=spec,
             target_pdf=target_pdf,
             reviewer_id="reviewer-1",
@@ -559,9 +550,7 @@ def test_approve_refuses_incomplete_content(
 def test_partial_section_template_renders_and_validates(
     tmp_path: Path, fake_pdf: None
 ) -> None:
-    """A real DOCX/PDF render using a summary-and-experience-only
-    LayoutTemplateSpec passes deterministic template-aware validation (no
-    skills/education/languages/certification markers are required)."""
+    """A partial A template retains unmapped candidate content in its proof."""
     from app.template_analysis.layout_proof_validation import (
         measure_pdf_geometry,
         validate_proof_structure,
@@ -590,15 +579,15 @@ def test_partial_section_template_renders_and_validates(
     (tmp_path / "layout_template_spec.json").write_text(
         json.dumps(partial.model_dump(mode="json")), encoding="utf-8"
     )
-    request = _request(
-        LengthVariant.MEDIUM, spec=partial
-    )
-    result = render_layout_proof(request, output_dir=tmp_path / "layout_proofs")
+    target_pdf = build_styled_target_pdf(tmp_path / "target.pdf")
+    request = LayoutProofRenderRequest(artifact_id="artifact-1", layout_spec=partial,
+        variant=LengthVariant.MEDIUM, target_checksum=file_sha256(target_pdf))
+    result = render_layout_proof(request, output_dir=tmp_path / "layout_proofs", target_pdf=target_pdf)
     proof_pdf = tmp_path / "layout_proofs" / result.proof_id / result.pdf_filename
-    # The real DOCX must NOT contain markers from omitted sections.
+    # A preserves unmapped source sections instead of dropping candidate facts.
     docx_text = (tmp_path / "layout_proofs" / result.proof_id / result.html_filename).read_text(encoding="utf-8")
-    assert "SYNTHETIC_SKILL_1" not in docx_text
-    assert "SYNTHETIC_UNIVERSITY_1" not in docx_text
+    assert "SYNTHETIC_SKILL_1" in docx_text
+    assert "SYNTHETIC_UNIVERSITY_1" in docx_text
 
     measurements = measure_pdf_geometry(proof_pdf)
     from app.template_analysis.layout_proof_service import _expected_heading_labels
@@ -608,6 +597,7 @@ def test_partial_section_template_renders_and_validates(
         measurements=measurements,
         expected_headings=_expected_heading_labels(partial, LengthVariant.MEDIUM),
         variant=LengthVariant.MEDIUM,
+        include_unmapped_sections=True,
     )
     assert structural.passed is True, structural.errors
     completeness = next(
@@ -632,7 +622,7 @@ def test_approval_regenerates_missing_and_corrupt_diagnostics(
     approval = approve_layout_proof(
         artifact_dir=tmp_path,
         artifact_id="artifact-1",
-        target_checksum="target-abc",
+        target_checksum=file_sha256(target_pdf),
         layout_spec=_spec(),
         target_pdf=target_pdf,
         reviewer_id="reviewer-1",
@@ -663,7 +653,7 @@ def test_approval_regenerates_corrupt_structural_and_visual(
     approval = approve_layout_proof(
         artifact_dir=tmp_path,
         artifact_id="artifact-1",
-        target_checksum="target-abc",
+        target_checksum=file_sha256(target_pdf),
         layout_spec=_spec(),
         target_pdf=target_pdf,
         reviewer_id="reviewer-1",
@@ -691,7 +681,7 @@ def test_forged_structural_json_cannot_enable_approval(
         approve_layout_proof(
             artifact_dir=tmp_path,
             artifact_id="artifact-1",
-            target_checksum="target-abc",
+            target_checksum=file_sha256(target_pdf),
             layout_spec=_spec(),
             target_pdf=target_pdf,
             reviewer_id="reviewer-1",
@@ -714,7 +704,7 @@ def test_forged_visual_json_cannot_rescue_failed_proof(
         approve_layout_proof(
             artifact_dir=tmp_path,
             artifact_id="artifact-1",
-            target_checksum="target-abc",
+            target_checksum=file_sha256(target_pdf),
             layout_spec=_spec(),
             target_pdf=target_pdf,
             reviewer_id="reviewer-1",
@@ -735,7 +725,7 @@ def test_approval_replaces_forged_stored_evidence_with_recomputed(
     approval = approve_layout_proof(
         artifact_dir=tmp_path,
         artifact_id="artifact-1",
-        target_checksum="target-abc",
+        target_checksum=file_sha256(target_pdf),
         layout_spec=_spec(),
         target_pdf=target_pdf,
         reviewer_id="reviewer-1",
@@ -792,7 +782,7 @@ def test_partial_section_template_can_be_approved(
     approval = approve_layout_proof(
         artifact_dir=tmp_path,
         artifact_id="artifact-1",
-        target_checksum="target-abc",
+        target_checksum=file_sha256(target_pdf),
         layout_spec=partial,
         target_pdf=target_pdf,
         reviewer_id="reviewer-1",

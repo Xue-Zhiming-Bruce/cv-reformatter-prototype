@@ -273,7 +273,6 @@ def test_product_inline_skills_preserve_groups_and_pdf_layout(tmp_path: Path, mo
     import re
     from app.generation.chrome_html_to_pdf import export_html_to_pdf
     from app.generation.content_validation import validate_generated_content, validate_output_structure
-    from app.generation.html_renderer import render_html as render_reference
     from app.generation.template_mapper import build_client_render_context
     from app.pipeline.candidate_content import candidate_document_from_context
     from app.pipeline.layout_state import C2LayoutState
@@ -343,18 +342,13 @@ def test_product_inline_skills_preserve_groups_and_pdf_layout(tmp_path: Path, mo
         if mode == "sidebar":
             skill_words = [word for word in words if word["text"] in {"Data", "Python;", "Kubernetes;", "Terraform"}]
             assert skill_words and all(word["x1"] < 260 for word in skill_words)
-    if mode != "sidebar":
-        reference = render_reference(context, spec, tmp_path / "reference.html")
-        reference_pdf = export_html_to_pdf(reference, tmp_path / "reference.pdf")
-        assert validate_generated_content(context, pdf_path=reference_pdf, layout_spec=spec).passed
-        with pdfplumber.open(reference_pdf) as pdf:
-            reference_words = [word for page in pdf.pages for word in page.extract_words()]
-        if context.skill_groups:
-            def distances(items):
-                by_text = {word["text"].rstrip(",;|"): word for word in items}
-                return (by_text["Data"]["top"] - by_text["SKILLS"]["bottom"],
-                        by_text["Engineering:"]["top"] - by_text["Python"]["bottom"])
-            assert all(abs(a - b) < 1 for a, b in zip(distances(words), distances(reference_words)))
+    if mode != "sidebar" and context.skill_groups:
+        by_text = {word["text"].rstrip(",;|"): word for word in words}
+        measured = (by_text["Data"]["top"] - by_text["SKILLS"]["bottom"],
+                    by_text["Engineering:"]["top"] - by_text["Python"]["bottom"])
+        # Frozen fixture geometry measured before retiring the reference renderer.
+        expected = (2.25, 12.46) if mode == "custom_blind" else (5.29, 8.0)
+        assert all(abs(actual - wanted) < 1 for actual, wanted in zip(measured, expected))
     if mode == "custom_blind":
         mutations = [
             html.replace("</span> | <span", "</span> ; <span"),
@@ -380,7 +374,6 @@ def test_product_body_contacts_preserve_ownership_order_and_pdf_content(tmp_path
     import re
     from app.generation.chrome_html_to_pdf import export_html_to_pdf
     from app.generation.content_validation import validate_generated_content, validate_output_structure
-    from app.generation.html_renderer import render_html as render_reference
     from app.generation.template_mapper import build_client_render_context
     from app.pipeline.candidate_content import candidate_document_from_context
     from app.pipeline.layout_state import C2LayoutState
@@ -447,9 +440,6 @@ def test_product_body_contacts_preserve_ownership_order_and_pdf_content(tmp_path
     elif mode != "blind":
         assert text.index("5550101") < text.index("CONTACT") < text.index("https://example.test/p")
     if mode == "split":
-        reference = render_reference(context, spec, tmp_path / "reference.html")
-        reference_pdf = export_html_to_pdf(reference, tmp_path / "reference.pdf")
-        assert validate_generated_content(context, pdf_path=reference_pdf, layout_spec=spec).passed
         for changed in [html.replace("</span> / <span", "</span> ; <span"),
                         re.sub(r'(<span[^>]*data-node-id="section.01.contact.portfolio"[^>]*>.*?</span>)( / )(<span[^>]*data-node-id="section.01.contact.envelope"[^>]*>.*?</span>)',
                                r'\3\2\1', html)]:
@@ -665,7 +655,6 @@ def test_product_contact_details_preserve_roles_and_source_sections(tmp_path: Pa
     import re
     from app.generation.chrome_html_to_pdf import export_html_to_pdf
     from app.generation.content_validation import validate_generated_content, validate_output_structure
-    from app.generation.html_renderer import render_html as render_reference
     from app.generation.template_mapper import build_client_render_context
     from app.pipeline.candidate_content import candidate_document_from_context
     from app.pipeline.layout_state import C2LayoutState
@@ -747,24 +736,16 @@ def test_product_contact_details_preserve_roles_and_source_sections(tmp_path: Pa
             assert text.count(source) == 1
     if mode == "partitioned":
         assert "30 days" in text and text.index("5550101") < text.index("LINKS")
-    if mode in {"basic", "collision"}:
-        reference = render_reference(context, spec, tmp_path / "reference.html")
-        reference_pdf = export_html_to_pdf(reference, tmp_path / "reference.pdf")
-        reference_check = validate_generated_content(context, pdf_path=reference_pdf, layout_spec=spec)
-        assert reference_check.passed == (mode == "basic")
-        if mode == "collision":
-            assert "Preserve this source description" in reference_check.checks[0].missing_items
-            assert not validate_output_structure(context, html_path=reference, pdf_path=reference_pdf, layout_spec=spec).passed
-        else:
-            for changed in [re.sub(r'class="[^"]*\bcontact-detail-label\b[^"]*"', 'class="contact-detail-label"', html),
-                            html.replace("margin-bottom:7pt;", "margin-bottom:0pt;")]:
-                assert changed != html and content_gate(plan, changed, pdf_path)["passed"]
-                assert not content_shape_verification(state, plan, None, {}, changed, {}, pdf_path)["passed"]
-            missing = tmp_path / "missing_portfolio.html"
-            missing.write_text(html.replace("https://example.test/p", "GONE"))
-            damaged_pdf = export_html_to_pdf(missing, tmp_path / "missing_portfolio.pdf")
-            assert not content_gate(plan, html, damaged_pdf)["passed"]
-            assert not validate_generated_content(context, pdf_path=damaged_pdf, layout_spec=spec).passed
+    if mode == "basic":
+        for changed in [re.sub(r'class="[^"]*\bcontact-detail-label\b[^"]*"', 'class="contact-detail-label"', html),
+                        html.replace("margin-bottom:7pt;", "margin-bottom:0pt;")]:
+            assert changed != html and content_gate(plan, changed, pdf_path)["passed"]
+            assert not content_shape_verification(state, plan, None, {}, changed, {}, pdf_path)["passed"]
+        missing = tmp_path / "missing_portfolio.html"
+        missing.write_text(html.replace("https://example.test/p", "GONE"))
+        damaged_pdf = export_html_to_pdf(missing, tmp_path / "missing_portfolio.pdf")
+        assert not content_gate(plan, html, damaged_pdf)["passed"]
+        assert not validate_generated_content(context, pdf_path=damaged_pdf, layout_spec=spec).passed
 
 
 @pytest.mark.parametrize("blind,spacing", [(False, 2.5), (True, -1.0)])
@@ -1156,7 +1137,6 @@ def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, s
     from app.extraction.candidate_schema import AdditionalSectionEntry
     from app.generation.chrome_html_to_pdf import export_html_to_pdf
     from app.generation.content_validation import validate_generated_content, validate_output_structure
-    from app.generation.html_renderer import render_html as render_product_html
     from app.generation.template_mapper import build_client_render_context
     from tests.helpers.pipeline_layout import product_entry_template, product_entry_profile
 
@@ -1188,14 +1168,8 @@ def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, s
     context = build_client_render_context(profile, blind_profile=blind)
     report = validate_generated_content(context, layout_spec=spec, pdf_path=pdf_path)
     assert report.passed, report
-    reference_pdf = export_html_to_pdf(render_product_html(context, spec, tmp_path / "reference.html"), tmp_path / "reference.pdf")
-    assert validate_generated_content(context, layout_spec=spec, pdf_path=reference_pdf).passed
-    for output_html, output_pdf in ((output / "lane_a/render_1.html", pdf_path), (tmp_path / "reference.html", reference_pdf)):
-        structure = validate_output_structure(context, html_path=output_html, pdf_path=output_pdf, layout_spec=spec)
-        assert structure.passed, structure
-    with pdfplumber.open(reference_pdf) as reference:
-        reference_words = [word for page in reference.pages
-                           for word in page.extract_words(extra_attrs=["fontname", "size"])]
+    structure = validate_output_structure(context, html_path=output / "lane_a/render_1.html", pdf_path=pdf_path, layout_spec=spec)
+    assert structure.passed, structure
     with pdfplumber.open(pdf_path) as pdf:
         if map_custom and not blind:
             headings = [(index, hit) for index, page in enumerate(pdf.pages)
@@ -1231,17 +1205,12 @@ def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, s
         for label, first_title in [("Awards", "CommunityAward"), *([] if map_custom else [("Projects", "UsefulComponent")])]:
             heading = next(word for word in words if word["text"] == label)
             first = next(word for word in words if word["text"] == first_title)
-            ref_heading = next(word for word in reference_words if word["text"] == label)
-            ref_first = next(word for word in reference_words if word["text"] == first_title)
-            assert abs(heading["size"]-ref_heading["size"]) < .1
+            assert abs(heading["size"] - spec.body.font_size_pt * 1.17) < .1
             assert "bold" in heading["fontname"].casefold()
-            assert abs((first["top"]-heading["bottom"])-(ref_first["top"]-ref_heading["bottom"])) < 1
+            assert 12.5 < first["top"] - heading["bottom"] < 14.6
         first_award, second_award = [next(word for word in words if word["text"] == title)
                                      for title in ("CommunityAward", "TeamAward")]
-        ref_first_award, ref_second_award = [next(word for word in reference_words if word["text"] == title)
-                                             for title in ("CommunityAward", "TeamAward")]
-        assert abs((second_award["top"]-first_award["bottom"])
-                   -(ref_second_award["top"]-ref_first_award["bottom"])) < 1
+        assert 9.5 < second_award["top"] - first_award["bottom"] < 11.5
     gates = json.loads(next((output / "lane_a").glob("hard_gates_*.json")).read_text())
     assert gates["details"]["content_shapes_match_evidence"]["passed"], gates
     assert json.loads(candidate.read_text()) == profile.model_dump(mode="json")
@@ -1375,7 +1344,6 @@ def test_cli_product_decorations_survive_pdf_export(tmp_path: Path, blind: bool,
 def test_cli_native_builtin_preserves_facts_without_repeating_contacts(tmp_path: Path, blind: bool) -> None:
     from app.generation.chrome_html_to_pdf import export_html_to_pdf
     from app.generation.content_validation import validate_generated_content, validate_output_structure
-    from app.generation.html_renderer import render_html as render_product_html
     from app.generation.template_mapper import build_client_render_context
     from app.pipeline.candidate_content import candidate_document_from_context
     from app.pipeline.html_renderer import render_layout_template
@@ -1415,9 +1383,7 @@ def test_cli_native_builtin_preserves_facts_without_repeating_contacts(tmp_path:
     result = subprocess.run(command, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (output / "lane_a/render_1.html").read_text() == native_html
-    reference = render_product_html(context, spec, tmp_path / "reference.html")
-    reference_pdf = export_html_to_pdf(reference, tmp_path / "reference.pdf")
-    for html, pdf in ((native_path, native_pdf), (output / "lane_a/render_1.html", output / "lane_a/render_1.pdf"), (reference, reference_pdf)):
+    for html, pdf in ((native_path, native_pdf), (output / "lane_a/render_1.html", output / "lane_a/render_1.pdf")):
         assert validate_generated_content(context, layout_spec=spec, pdf_path=pdf).passed
         structure = validate_output_structure(context, layout_spec=spec, html_path=html, pdf_path=pdf)
         assert structure.passed, structure

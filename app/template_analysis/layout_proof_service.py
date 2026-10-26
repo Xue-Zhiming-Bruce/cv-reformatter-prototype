@@ -41,9 +41,6 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.generation import html_renderer
-from app.generation.chrome_html_to_pdf import export_html_to_pdf
-from app.generation.html_renderer import render_html
 from app.generation.template_mapper import ClientFacingRenderContext
 from app.template_analysis.layout_proof_content import (
     build_synthetic_context,
@@ -96,7 +93,8 @@ _SAFE_PROOF_FILENAME = re.compile(r"^proof-(short|medium|long)\.(html|pdf)$")
 def active_renderer_version() -> str:
     from app.generation.agentic import agentic_renderer_version, generation_strategy
 
-    return agentic_renderer_version() if generation_strategy() == "agentic" else html_renderer.RENDERER_VERSION
+    generation_strategy()
+    return agentic_renderer_version()
 
 
 def _render_generation(
@@ -104,13 +102,9 @@ def _render_generation(
     html_path: Path, pdf_path: Path, target_pdf: Path | None,
     *, renderer_version: str,
 ) -> tuple[Path, Path]:
-    from app.generation.agentic import AgenticGenerationError, generation_strategy, render_agentic
+    from app.generation.agentic import AgenticGenerationError, render_agentic
 
-    strategy = generation_strategy()
     _require_current_renderer(renderer_version)
-    if strategy == "standard":
-        render_html(context, spec, html_path)
-        return html_path, export_html_to_pdf(html_path, pdf_path)
     if target_pdf is None or not isinstance(spec, LayoutTemplateSpec):
         raise AgenticGenerationError("Agentic generation requires a measured LayoutTemplateSpec and target PDF")
     source_html, source_pdf, report = render_agentic(
@@ -220,7 +214,7 @@ def proof_id_for(request: LayoutProofRenderRequest) -> str:
                 "target_checksum": request.target_checksum,
                 "renderer_version": renderer_version,
                 "context_checksum": canonical_context_checksum(request.variant),
-                **({"attempt": uuid.uuid4().hex} if renderer_version.startswith("agentic-a/") else {}),
+                "attempt": uuid.uuid4().hex,
             },
             sort_keys=True,
         ).encode("utf-8")
@@ -266,7 +260,7 @@ def _render_layout_proof_with_context(
         )
 
     renderer_version = active_renderer_version()
-    if renderer_version.startswith("agentic-a/") and (target_pdf is None or file_sha256(target_pdf) != request.target_checksum):
+    if target_pdf is None or file_sha256(target_pdf) != request.target_checksum:
         raise LayoutProofRenderError("Agentic proof target checksum does not match the uploaded target")
     proof_id = proof_id_for(request)
     proof_dir = Path(output_dir) / proof_id
@@ -709,7 +703,7 @@ def create_proof_variants(
             target_checksum=target_checksum,
         )
         result = render_layout_proof(request, output_dir=proofs_dir,
-            **({"target_pdf": Path(target_pdf)} if active_renderer_version().startswith("agentic-a/") else {}))
+            target_pdf=Path(target_pdf))
         proof_pdf = proofs_dir / result.proof_id / result.pdf_filename
         measurements = measure_pdf_geometry(proof_pdf)
         structural = validate_proof_structure(
@@ -811,7 +805,7 @@ def render_candidate_document(
     _require_current_renderer(approval.renderer_version)
 
     out_dir = Path(output_dir)
-    if approval.renderer_version.startswith("agentic-a/") and (target_pdf is None or file_sha256(target_pdf) != approval.target_checksum):
+    if target_pdf is None or file_sha256(target_pdf) != approval.target_checksum:
         raise LayoutProofMismatchError("Agentic generation target checksum does not match the approved target")
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / "candidate_profile.html"

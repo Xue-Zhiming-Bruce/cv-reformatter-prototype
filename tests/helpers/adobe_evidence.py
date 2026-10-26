@@ -32,7 +32,7 @@ from app.template_analysis.schemas import (
 def measured_adobe_evidence() -> NormalizedLayoutEvidence:
     rows = [
         ("title", "Synthetic Target", 16.0, True, "#17365D", 0.08, 0.55, 0.003),
-        ("body", "jane@example.test | +1 555 0100 | Boston", 9.5, False, "#252525", 0.08, 0.92, 0.08),
+        ("body", "jane@example.test | +1 555 0100 | Boston | linkedin.com/in/x | https://github.com/x", 9.5, False, "#252525", 0.08, 0.92, 0.08),
         ("body", "Measured summary", 10.5, False, "#252525", 0.08, 0.92, 0.14),
         ("heading_candidate", "SKILLS", 13.0, True, "#1F4E79", 0.08, 0.92, 0.20),
         ("body", "Alex Example", 10.5, False, "#252525", 0.08, 0.92, 0.27),

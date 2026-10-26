@@ -1361,3 +1361,54 @@ def test_unbound_same_slot_records_cannot_share_a_synthetic_identity() -> None:
         "unroutable.tagline" in failure and "consumed more than once" in failure
         for failure in plan.failures
     ), plan.failures
+
+
+def test_structure_gate_uses_semantic_boundary_when_title_equals_heading(tmp_path: Path) -> None:
+    from app.extraction.candidate_schema import CandidateProfile
+    from app.generation.template_mapper import build_client_render_context
+    from app.generation.content_validation import validate_output_structure
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.html_renderer import render_layout_template
+    from app.template_analysis.schemas import LayoutTemplateSpec, PageStyle, SectionLayoutSpec
+
+    profile = CandidateProfile.model_validate(
+        {
+            "full_name": "Jane Candidate",
+            "additional_sections": [
+                {
+                    "section_type": "other",
+                    "source_heading": "ADDITIONAL SECTIONS",
+                    "source_block_id": "block-additional",
+                    "entries": [
+                        {
+                            "title": "ADDITIONAL SECTIONS",
+                            "description": ["One", "Two", "Three", "Four"],
+                            "source_block_ids": ["block-additional"],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    context = build_client_render_context(profile)
+    spec = LayoutTemplateSpec(
+        source_type="built_in",
+        page=PageStyle(
+            width_pt=612, height_pt=792, orientation="portrait",
+            margin_top_pt=36, margin_right_pt=36, margin_bottom_pt=36, margin_left_pt=36,
+        ),
+        structure_contract="measured",
+        sections=[
+            SectionLayoutSpec(
+                section_id="additional",
+                source="additional_details",
+                label="ADDITIONAL SECTIONS",
+                additional_section_heading="ADDITIONAL SECTIONS",
+            )
+        ],
+    )
+    _, _, html = render_layout_template(spec, candidate_document_from_context(context, candidate_id="same-heading"))
+    html_path = tmp_path / "candidate_profile.html"
+    html_path.write_text(html, encoding="utf-8")
+    report = validate_output_structure(context, html_path=html_path, layout_spec=spec)
+    assert report.passed, report.model_dump()

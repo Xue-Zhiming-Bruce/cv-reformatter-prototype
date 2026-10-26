@@ -260,7 +260,7 @@ Historical schema names and class descriptions are retained for compatibility
 with stored artifacts and generated model schemas; they do not authorize a
 return to experiment workflows.
 
-Integration status, October 22, 2026:
+Integrated A capabilities (updated October 26, M5):
 
 - A now projects visible structured custom sections into owned headings and
   `additional_entry` containers, with URL metadata and description children.
@@ -270,7 +270,7 @@ Integration status, October 22, 2026:
   shared context mapper. CLI source sections still pending review block preview
   before projection, including hidden pending sections, matching the product
   source-review requirement. Template-specific custom-section placement, typography and
-  continuation still require parity before replacing the API renderer.
+  broader fidelity and continuation remain bounded by the published support contract.
 - The internal render plan adds `heading_leaf_id` so candidate-owned headings
   are checked in actual HTML/PDF. An untitled entry is an HTML structure
   container (`pdf_present: null`, explicitly not a PDF-text claim); every
@@ -331,8 +331,6 @@ Integration status, October 22, 2026:
   heading/list positions and sidebar fills are verified independently. The
   independent product content validator also uses reading-flow extraction for
   declared column layouts, avoiding false omissions from interleaved lines.
-  The existing API renderer does not implement these body placements; it is
-  retained as a content/typography comparison, not a column-fidelity reference.
 - Inline skills now carry a bounded internal `InlineSkillLayout` with the
   product delimiter, label style, group gap and first-row adjustment. Typed
   groups remain attached to their existing content leaves; flat skills keep
@@ -341,8 +339,8 @@ Integration status, October 22, 2026:
   alternate delimiters do not excuse missing or changed skill facts. Ordinary
   non-inline HTML is unchanged. Real CLI PDFs cover default/custom styles,
   blind output, flat/empty content and wrapping inside a sidebar. Single-column
-  output is compared with the retained renderer for heading/group spacing;
-  label size/weight are checked against the template in the PDF.
+  output retains frozen heading/group spacing bounds; label size/weight are
+  checked against the template in the PDF.
   HTML consumption checks reject changed flat delimiters,
   missing label style ownership and missing group gaps; independent content
   checks reject a missing PDF skill. Inline skills cannot request badges or
@@ -356,8 +354,7 @@ Integration status, October 22, 2026:
   cases measure positive/negative PDF word-gap changes against zero-spacing
   output, with character spacing retained and a section override checked.
   This gate checks HTML consumption; the PDF measurements are regression
-  evidence, not a new general PDF typography validator. The retained product
-  renderer still ignores word spacing and is not its fidelity reference.
+  evidence, not a new general PDF typography validator.
 - Product decorations map header/contact and section-heading rules into the
   existing rule state, preserving color, stroke, length and compensated gaps.
   Rules wider than the content area fail before output creation. A header rule
@@ -412,19 +409,20 @@ Integration status, October 22, 2026:
   vertical margins), independently of the target section-heading style.
   This is a compatibility fallback: `LayoutTemplateSpec` has no separate
   generic-group heading style field, so it is not a measured target-style claim.
-  Same-input PDF regressions compare group-heading typography, heading-to-entry
-  gaps and within-group entry gaps against the retained product renderer.
+  PDF regressions check group-heading typography, heading-to-entry gaps and
+  within-group entry gaps against explicit frozen contract bounds.
 - Product-template A HTML now exposes the product renderer's semantic section,
   additional-entry, title/link, split-work-row, institution and skill-chip
   markers alongside its internal node/leaf identities. Typed plan roles supply
   these markers; candidate text and leaf-ID spelling do not determine them.
-  The existing API `validate_output_structure` accepts both renderers in the
+  The existing API `validate_output_structure` checks A output in the
   canonical CLI regressions, including missing employers/institutions, ordinary
   institution weight and title/link/description-only entries. Removing a title
   role while retaining its facts fails that shared structure check. The A
   diagnostics tokenize ancestor classes so added semantic classes cannot turn
   entry headers into body text for typography checks.
-  Uploaded-target API/proof generation still uses the retained product renderer. The native built-in
+  Uploaded-target API/proof generation now uses the same A implementation through
+  the approval-aware Agentic adapter. The native built-in
   template is now `built-in-3`: contacts belong to the header, without a second
   contact body section or the unused legacy document-title flag. This removes
   duplicate contact output and lets the native A4 template compile through A.
@@ -461,8 +459,8 @@ Integration status, October 22, 2026:
   unsupported native properties fail before HTML/PDF replacement without a
   fallback. Real Chrome API cases cover normal/blind output, custom entries,
   immutable source files, shared A ownership checks, preview acceptance and
-  invalidation after disclosure changes. Same-input retained-renderer PDFs
-  remain reviewable as content/structure references. This is a bounded native
+  invalidation after disclosure changes. Historical comparison PDFs remain
+  local evidence; no retired renderer is executed by current checks. This is a bounded native
   cutover. Uploaded-target/proof rendering now defaults to the approval-bound Agentic
   adapter using this same compiler (see the M4 boundary below).
 - The A context projection now recognizes the retained product renderer's exact
@@ -493,8 +491,8 @@ Integration status, October 22, 2026:
   HTML order/delimiter mutations and missing PDF contacts fail independent gates.
   The shared product content validator now includes fields selected in body
   Contact and Additional Details/Links sections, rather than checking only
-  header selections. Retained-renderer comparisons cover facts, not visual
-  parity: A preserves source labels and avoids default-header/body repetition.
+  header selections. A preserves source labels and avoids default-header/body
+  repetition; these checks do not claim arbitrary visual parity.
 - Additional Details/Links sections with explicit `contact_fields` now use the
   same contact binding and ownership path. Internally they consume `contact`
   leaves, with an explicit field partition, while product HTML retains
@@ -510,11 +508,11 @@ Integration status, October 22, 2026:
   Appended custom entries use the shared product entry rows with body typography
   as an explicit fallback, without claiming target-specific styling.
   Product content/structure validators no longer exclude source blocks merely
-  because their heading matches a contact-slot label. A retained-renderer output
-  that loses a distinct URL, title or description now fails those checks.
+  because their heading matches a contact-slot label. Losing a distinct URL,
+  title or description fails those checks.
   No automatic source-fact deduplication or uploaded-target cutover is introduced.
 - API proof results and approval aggregates now bind `renderer_version` in
-  addition to target, layout and file checksums. The retained baseline renderer
+  addition to target, layout and file checksums. The historical baseline renderer
   declares `product-html/1`; update implementation identity when layout,
   export binding or font policy changes. Missing fields in historical records
   always mean `product-html/1`, independently of the active implementation.
@@ -528,8 +526,9 @@ Integration status, October 22, 2026:
   and generation metadata records the implementation. Canonical API regressions
   cover legacy reads without rewrites, stale-version rejection, reproof and
   explicit reapproval, retained old files and identity-bound rollback. The
-  version-change test retains the existing renderer and simulates its version;
-  it does not certify A cutover or A/product output parity.
+  version-change test uses A and simulates its configuration version. Separate
+  legacy-record checks preserve fixed default identity, read-only behavior and
+  rejection before current output; M4 records actual prior-build rollback.
 - Core presentation labels use the existing product exact-alias helper rather
   than substring source binding. Every supplied template heading must be
   recognized or covered by the existing identity-bound explicit label input
@@ -698,8 +697,10 @@ measured template headings into evidence-bound region claims, records missing
 or ambiguous measurements, and keeps the supplied template authoritative.
 `GENERATION_STRATEGY` defaults to `agentic` for measured uploaded-target PDF
 proofs and candidate rendering, including approved measured designer templates.
-Native no-target output stays deterministic. Explicit `standard` temporarily
-retains the prior renderer during migration, with separate proof identity. The adapter
+Native no-target output stays deterministic. The standard renderer and its
+orchestration branch are retired. `GENERATION_STRATEGY` accepts only `agentic`;
+retired/unknown values fail before `/api/generate` writes files. Historical
+rollback requires the matching recoverable build and proof artifacts. The adapter
 requires selected BEST output to pass content accounting, privacy, content,
 section order, blank-page and template-consumption gates plus independent product
 validation. Repeat-render determinism remains a visible diagnostic, not an API
