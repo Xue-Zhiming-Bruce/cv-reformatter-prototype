@@ -543,6 +543,16 @@ open, so P1/B1A/P2 stay unchecked.
 
 ### P2 — Jobs, Storage And API Hardening
 
+October 27 ADR 0008 queue foundation: migration `0006_workflow_jobs` and the
+strict native job repository implement idempotent submissions, fenced short
+claims, cancellation/deadlines, bounded native recovery and transactional
+completion. All **12** canonical PostgreSQL checks pass (13.36s, exit 0):
+`tests/test_results/pytest/20261027T102308Z_adr8_job_queue_milestone.txt`.
+Concurrency/restart/history/rollback evidence and limits are recorded in ADR
+0008. The publication callback is a transaction boundary; actual generation
+worker/bundle publication, job endpoints and crash/recovery evidence remain
+required. B1A/P1/P2 remain unchecked.
+
 Status: `[ ]` Builds on B1A and P1.
 
 - [ ] Productionize durable queues/workers, progress, bounded retries,

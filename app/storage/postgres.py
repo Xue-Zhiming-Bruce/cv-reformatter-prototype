@@ -10,7 +10,7 @@ from typing import Any, Literal
 import uuid
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, DateTime, ForeignKey, ForeignKeyConstraint, Identity, Index, Integer, MetaData, Select, Table, Text, create_engine, func, select, text, update
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, DateTime, ForeignKey, ForeignKeyConstraint, Identity, Index, Integer, MetaData, Select, Table, Text, UniqueConstraint, create_engine, func, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.engine import Connection, Engine, URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
@@ -142,6 +142,55 @@ template_design_versions = Table(
     CheckConstraint("state NOT IN ('approved', 'superseded') OR (body::jsonb->>'approved_at' IS NOT NULL AND body::jsonb->>'layout_spec_json' IS NOT NULL)", name="ck_design_version_approval"),
 )
 Index("ix_design_version_current", template_design_versions.c.artifact_id, template_design_versions.c.design_id, template_design_versions.c.event_id)
+workflow_jobs = Table(
+    "workflow_jobs", metadata,
+    Column("job_id", Text, primary_key=True),
+    Column("artifact_id", Text, nullable=False),
+    Column("profile_revision_id", Text, nullable=False),
+    Column("scope_id", Text, nullable=False),
+    Column("operation", Text, nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("request_sha256", Text, nullable=False),
+    Column("payload", JSONB, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("progress", Integer, nullable=False, server_default="0"),
+    Column("attempt_count", Integer, nullable=False, server_default="0"),
+    Column("max_attempts", Integer, nullable=False),
+    Column("cancel_requested", Boolean, nullable=False, server_default=text("false")),
+    Column("lease_token", Text),
+    Column("lease_expires_at", DateTime(timezone=True)),
+    Column("error_code", Text),
+    Column("result_generation_id", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
+    Column("deadline_at", DateTime(timezone=True), nullable=False),
+    ForeignKeyConstraint(["artifact_id", "profile_revision_id"],
+        ["candidate_profile_revisions.artifact_id", "candidate_profile_revisions.profile_revision_id"], ondelete="CASCADE"),
+    ForeignKeyConstraint(["artifact_id", "result_generation_id"],
+        ["generation_versions.artifact_id", "generation_versions.generation_id"]),
+    UniqueConstraint("scope_id", "artifact_id", "operation", "idempotency_key", name="uq_workflow_job_request"),
+    CheckConstraint("scope_id = 'local-synthetic' AND operation = 'generate'", name="ck_job_local_scope"),
+    CheckConstraint("state IN ('queued', 'running', 'succeeded', 'failed', 'cancelled', 'needs_attention')", name="ck_job_state"),
+    CheckConstraint("progress BETWEEN 0 AND 100 AND max_attempts BETWEEN 1 AND 3 AND attempt_count BETWEEN 0 AND max_attempts", name="ck_job_bounds"),
+    CheckConstraint("(state = 'running') = (lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)", name="ck_job_lease"),
+    CheckConstraint("(state = 'succeeded') = (result_generation_id IS NOT NULL) AND (state != 'succeeded' OR progress = 100)", name="ck_job_result"),
+    CheckConstraint("request_sha256 ~ '^[0-9a-f]{64}$' AND jsonb_typeof(payload) = 'object'", name="ck_job_payload"),
+)
+Index("ix_workflow_job_claim", workflow_jobs.c.state, workflow_jobs.c.created_at, workflow_jobs.c.job_id)
+job_attempts = Table(
+    "job_attempts", metadata,
+    Column("job_id", Text, ForeignKey("workflow_jobs.job_id", ondelete="CASCADE"), primary_key=True),
+    Column("attempt_number", Integer, primary_key=True),
+    Column("lease_token", Text, nullable=False, unique=True),
+    Column("bundle_path", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("error_code", Text),
+    Column("started_at", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
+    Column("finished_at", DateTime(timezone=True)),
+    CheckConstraint("attempt_number BETWEEN 1 AND 3", name="ck_attempt_number"),
+    CheckConstraint("state IN ('running', 'abandoned', 'succeeded', 'failed', 'cancelled', 'needs_attention')", name="ck_attempt_state"),
+    CheckConstraint("(state = 'running') = (finished_at IS NULL)", name="ck_attempt_finished"),
+)
 
 
 def postgres_url(value: str) -> URL:

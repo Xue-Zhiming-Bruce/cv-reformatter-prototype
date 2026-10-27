@@ -29,6 +29,12 @@ unrelated working directory), model/schema agreement, process/generate/acceptanc
 independent new-process reads, concurrent reference merging, immutable profile
 history, concurrent revision saves, artifact-scoped current pointers, missing
 audit-copy recovery and explicit rejection of unimported filesystem revisions.
+The same module owns the ADR 0008 queue-foundation checks: scoped idempotency,
+competing/locked-row claims, fenced expiry/recovery, bounded native retries,
+durable cancellation/deadlines and publication-transaction rollback. These use
+real PostgreSQL and retained attempts. SQL callbacks exercise the transaction
+boundary; actual generation workers and immutable bundles require their own
+workflow verification through this canonical lane.
 An upgrade preserves existing metadata; a failed revision insert rolls back its
 current pointer. Ordinary tests
 ignore an inherited `DATABASE_URL`; API configuration regressions explicitly

@@ -45,6 +45,10 @@ def test_postgres_migrations_are_explicit_reversible_and_match_repository(
     assert "migrations" in unavailable.json()["detail"]
     assert not sqlite_path.exists()
     assert inspect(engine).get_table_names() == []  # Requests never create/repair schema.
+    from app.storage.job_queue import PostgresJobQueue
+    with pytest.raises(ArtifactStoreError, match="Job storage failed"):
+        PostgresJobQueue(engine).get("synthetic", "job_" + "0" * 32)
+    assert inspect(engine).get_table_names() == []
     _migrate(engine, "0001_artifact_sessions")
     existing_directory = tmp_path / "synthetic_upgrade"
     existing_directory.mkdir()
@@ -90,7 +94,7 @@ def test_postgres_migrations_are_explicit_reversible_and_match_repository(
     cli = subprocess.run([sys.executable, "-B", "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "current"],
         cwd=tmp_path, env={**os.environ, "DATABASE_URL": url, "PYTHONPATH": ""},
         capture_output=True, text=True, timeout=30)
-    assert cli.returncode == 0 and "0005_template_design_versions" in cli.stdout, cli.stderr
+    assert cli.returncode == 0 and "0006_workflow_jobs" in cli.stdout, cli.stderr
     with engine.connect() as connection:
         assert compare_metadata(MigrationContext.configure(connection), metadata) == []
     _migrate(engine, "base", downgrade=True)
@@ -166,7 +170,7 @@ print(json.dumps(response.json()))
     after = json.loads(restarted.stdout)["artifacts"]
     assert len(after) == 1 and after[0] == before
     # The database holds metadata references; document bytes remain in the artifact store.
-    assert set(inspect(engine).get_table_names()) == {"artifact_sessions", "candidate_profile_revisions", "generation_versions", "final_output_acceptances", "layout_proof_approvals", "template_design_versions", "alembic_version"}
+    assert set(inspect(engine).get_table_names()) == {"artifact_sessions", "candidate_profile_revisions", "generation_versions", "final_output_acceptances", "layout_proof_approvals", "template_design_versions", "workflow_jobs", "job_attempts", "alembic_version"}
     assert (tmp_path / artifact_id / "source_resume.docx").read_bytes() == source.getvalue()
     directory = tmp_path / artifact_id
     original_outputs = {name: (directory / name).read_bytes() for name in (
@@ -398,3 +402,208 @@ def test_postgres_concurrent_lifecycle_updates_merge_references_without_lost_fie
     assert result["debug_artifacts"] == {"source": "source_resume.docx", "design_id": "synthetic_design", "design_state": "approved",
         **{f"reference_{index}": f"synthetic-{index}.json" for index in range(24)}}
     assert store.list_artifacts(limit=0) == [result]
+
+
+def _job_submission(engine, tmp_path: Path, *, key: str = "native-1", **settings):
+    from app.generation.artifact_manifest import identify_file
+    from app.jobs import JobSubmission, NativeGenerationPayload
+    directory = tmp_path / "artifact_jobs"
+    directory.mkdir(exist_ok=True)
+    repository = PostgresProfileRevisionRepository(engine)
+    revision = repository.current(directory.name)
+    if revision is None:
+        profile = CandidateProfile(full_name="Synthetic Job Candidate", skills=["Python"])
+        (directory / "candidate_profile.json").write_text(profile.model_dump_json())
+        revision = save_approved_profile(directory, artifact_id=directory.name, profile=profile,
+            source_draft_sha256=draft_sha256(directory), repository=repository)
+    return JobSubmission(idempotency_key=key, payload=NativeGenerationPayload(
+        artifact_id=directory.name, profile_revision_id=revision.profile_revision_id,
+        profile_sha256=revision.profile_sha256, source_draft_sha256=revision.source_draft_sha256,
+        inputs={"source_draft": identify_file(directory, directory / "candidate_profile.json"),
+                "profile_revision": identify_file(directory, directory / "profiles" / f"approved_profile_{revision.profile_revision_id}.json")},
+        layout_sha256="1" * 64, component_source_sha256={"synthetic-test-component": "2" * 64}, **settings,
+    ))
+
+
+def test_postgres_job_submissions_are_idempotent_scoped_and_immutable(postgres_database, tmp_path: Path) -> None:
+    from pydantic import ValidationError
+    from app.jobs import JobSubmission, NativeGenerationPayload
+    from app.storage.artifact_store import ArtifactStoreConflict
+    from app.storage.job_queue import PostgresJobQueue
+    from app.storage.postgres import workflow_jobs
+    url, engine = postgres_database
+    _migrate(engine)
+    submission = _job_submission(engine, tmp_path)
+    queue = PostgresJobQueue(engine)
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        jobs = list(workers.map(lambda _: queue.submit(submission), range(8)))
+    assert len({job.job_id for job in jobs}) == 1 and all(job.state == "queued" for job in jobs)
+    assert queue.get("another_artifact", jobs[0].job_id) is None
+    different = JobSubmission(idempotency_key=submission.idempotency_key,
+        payload=submission.payload.model_copy(update={"blind_profile": True}))
+    with pytest.raises(ArtifactStoreConflict, match="idempotency"):
+        queue.submit(different)
+    with pytest.raises(ValidationError):
+        NativeGenerationPayload.model_validate({**submission.payload.model_dump(), "execution": "paid-provider"})
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            connection.execute(update(workflow_jobs).values(payload={"secret": "must-not-be-stored"}))
+    code = """import os
+from app.storage.job_queue import PostgresJobQueue
+from app.storage.postgres import postgres_engine
+print(PostgresJobQueue(postgres_engine(os.environ['DATABASE_URL'])).get('artifact_jobs', os.environ['JOB_ID']).model_dump_json())
+"""
+    restarted = subprocess.run([sys.executable, "-B", "-c", code], cwd=ROOT,
+        env={**os.environ, "DATABASE_URL": url, "JOB_ID": jobs[0].job_id}, capture_output=True, text=True, timeout=30)
+    assert restarted.returncode == 0, restarted.stderr
+    assert json.loads(restarted.stdout) == jobs[0].model_dump(mode="json")
+
+
+def test_postgres_job_claims_compete_without_duplicates_or_waiting_for_locked_rows(postgres_database, tmp_path: Path) -> None:
+    from app.storage.job_queue import PostgresJobQueue
+    from app.storage.postgres import workflow_jobs
+    _, engine = postgres_database
+    _migrate(engine)
+    queue = PostgresJobQueue(engine)
+    jobs = [queue.submit(_job_submission(engine, tmp_path, key=f"native-{index}")) for index in range(8)]
+    with engine.connect() as blocker:
+        blocker.execute(select(workflow_jobs).where(workflow_jobs.c.job_id == jobs[0].job_id).with_for_update()).one()
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            future = workers.submit(queue.claim)
+            try:
+                skipped = future.result(timeout=3)
+            finally:
+                blocker.rollback()
+    assert skipped.job.job_id == jobs[1].job_id
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        claims = list(workers.map(lambda _: queue.claim(), range(7)))
+    assert {claim.job.job_id for claim in claims} == {job.job_id for job in jobs} - {skipped.job.job_id}
+    assert len({claim.lease_token for claim in [skipped, *claims]}) == 8
+    assert queue.claim() is None
+
+
+def test_postgres_job_expiry_fences_stale_attempts_and_bounds_retries(postgres_database, tmp_path: Path) -> None:
+    from sqlalchemy import func, text
+    from app.storage.job_queue import JobLeaseLost, PostgresJobQueue
+    from app.storage.postgres import job_attempts, workflow_jobs
+    _, engine = postgres_database
+    _migrate(engine)
+    queue = PostgresJobQueue(engine)
+    job = queue.submit(_job_submission(engine, tmp_path))
+    first = queue.claim()
+    with engine.begin() as connection:
+        connection.execute(update(workflow_jobs).where(workflow_jobs.c.job_id == job.job_id)
+            .values(lease_expires_at=func.clock_timestamp() - text("interval '1 second'")))
+    second = queue.claim()
+    assert second.job.job_id == first.job.job_id and second.job.attempt_count == 2
+    assert second.lease_token != first.lease_token and second.bundle_path != first.bundle_path
+    for stale_action in (
+        lambda: queue.heartbeat(first, progress=80),
+        lambda: queue.fail(first, error="execution_failed"),
+        lambda: queue.complete(first, lambda _: pytest.fail("A stale worker must not publish")),
+    ):
+        with pytest.raises(JobLeaseLost):
+            stale_action()
+    assert queue.heartbeat(second, progress=70)
+    assert queue.heartbeat(second, progress=20)
+    assert queue.get(job.artifact_id, job.job_id).progress == 70
+    with engine.begin() as connection:
+        connection.execute(update(workflow_jobs).where(workflow_jobs.c.job_id == job.job_id)
+            .values(lease_expires_at=func.clock_timestamp() - text("interval '1 second'")))
+    assert queue.claim() is None
+    exhausted = queue.get(job.artifact_id, job.job_id)
+    assert exhausted.state == "failed" and exhausted.error_code == "attempts_exhausted"
+    assert queue.submit(_job_submission(engine, tmp_path)).job_id == job.job_id  # No implicit terminal retry.
+    with engine.connect() as connection:
+        attempts = connection.execute(select(job_attempts).order_by(job_attempts.c.attempt_number)).mappings().all()
+    assert [attempt["state"] for attempt in attempts] == ["abandoned", "abandoned"]
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            connection.execute(update(job_attempts).values(state="failed"))
+
+
+def test_postgres_job_cancellation_deadlines_and_unknown_outcomes_are_terminal(postgres_database, tmp_path: Path) -> None:
+    import time
+    from app.storage.job_queue import PostgresJobQueue
+    _, engine = postgres_database
+    _migrate(engine)
+    queue = PostgresJobQueue(engine)
+    queued = queue.submit(_job_submission(engine, tmp_path, key="cancel-queued"))
+    assert queue.cancel("other", queued.job_id) is None
+    cancelled = queue.cancel(queued.artifact_id, queued.job_id)
+    assert cancelled.state == "cancelled" and cancelled.attempt_count == 0
+    assert queue.cancel(queued.artifact_id, queued.job_id) == cancelled
+    running = queue.submit(_job_submission(engine, tmp_path, key="cancel-running"))
+    claim = queue.claim()
+    assert claim.job.job_id == running.job_id
+    assert queue.cancel(running.artifact_id, running.job_id).state == "running"
+    assert not queue.heartbeat(claim, progress=50)
+    assert queue.get(running.artifact_id, running.job_id).state == "cancelled"
+    completion = queue.submit(_job_submission(engine, tmp_path, key="cancel-at-publication"))
+    claim = queue.claim()
+    queue.cancel(completion.artifact_id, completion.job_id)
+    assert queue.complete(claim, lambda _: pytest.fail("Cancelled work must not publish")).state == "cancelled"
+    unknown = queue.submit(_job_submission(engine, tmp_path, key="unknown-outcome"))
+    claim = queue.claim()
+    assert queue.fail(claim, state="needs_attention", error="worker_exit").state == "needs_attention"
+    assert queue.claim() is None
+    expired = queue.submit(_job_submission(engine, tmp_path, key="deadline", timeout_seconds=1))
+    time.sleep(1.05)
+    assert queue.claim() is None
+    assert queue.get(expired.artifact_id, expired.job_id).error_code == "deadline_exceeded"
+    assert queue.get(unknown.artifact_id, unknown.job_id).attempt_count == 1
+
+
+def test_postgres_job_completion_and_publication_share_one_fenced_transaction(
+    postgres_database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy import func, text
+    from app.storage.artifact_store import ArtifactStoreConflict
+    from app.storage.job_queue import JobLeaseLost, PostgresJobQueue
+    from app.storage.postgres import workflow_jobs
+    url, engine = postgres_database
+    _migrate(engine)
+    submission = _job_submission(engine, tmp_path)
+    monkeypatch.setattr(main, "DATABASE_URL", url)
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    generated = TestClient(main.app).post("/api/generate", json={"artifact_id": submission.payload.artifact_id,
+        "profile_revision_id": submission.payload.profile_revision_id})
+    assert generated.status_code == 200, generated.text
+    with engine.connect() as connection:
+        previous = dict(connection.execute(select(generation_versions)).mappings().one())
+    queue = PostgresJobQueue(engine)
+    job = queue.submit(submission)
+    claim = queue.claim()
+
+    def publish(connection):
+        new = {**previous, "generation_id": "synthetic_job_generation"}
+        connection.execute(generation_versions.insert().values(**new))
+        connection.execute(update(artifact_sessions).where(artifact_sessions.c.artifact_id == job.artifact_id)
+            .values(current_generation_id=new["generation_id"]))
+        return new["generation_id"]
+
+    def fail_after_insert(connection):
+        publish(connection)
+        raise ArtifactStoreConflict("Synthetic publication conflict")
+
+    def expire_after_insert(connection):
+        generation_id = publish(connection)
+        connection.execute(update(workflow_jobs).where(workflow_jobs.c.job_id == job.job_id)
+            .values(lease_expires_at=func.clock_timestamp() - text("interval '1 second'")))
+        return generation_id
+
+    for callback, error in ((fail_after_insert, ArtifactStoreConflict), (expire_after_insert, JobLeaseLost)):
+        with pytest.raises(error):
+            queue.complete(claim, callback)
+        assert queue.get(job.artifact_id, job.job_id).state == "running"
+        with engine.connect() as connection:
+            assert len(connection.execute(select(generation_versions)).all()) == 1
+            assert connection.scalar(select(artifact_sessions.c.current_generation_id)) == previous["generation_id"]
+    completed = queue.complete(claim, publish)
+    assert completed.state == "succeeded" and completed.progress == 100
+    assert completed.result_generation_id == "synthetic_job_generation"
+    with engine.connect() as connection:
+        assert connection.scalar(select(artifact_sessions.c.current_generation_id)) == completed.result_generation_id
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            connection.execute(update(workflow_jobs).where(workflow_jobs.c.job_id == job.job_id).values(state="queued"))

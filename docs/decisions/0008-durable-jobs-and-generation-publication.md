@@ -115,6 +115,32 @@ queue/DB load and cost remain unmeasured until those checks exist.
 
 ## Privacy And Operations
 
+October 27 queue foundation: Alembic `0006_workflow_jobs` adds scoped jobs and
+retained attempt history; strict `native-generation-job/1` payloads reference
+saved inputs and permit only deterministic local execution. Immutable request/
+terminal-history triggers and scoped generation foreign keys protect records.
+The repository implements idempotent submission, short `SKIP LOCKED` claims,
+renewal, cancellation, deadlines, bounded native lease recovery and terminal
+attention states. Completion invokes publication inside the same transaction,
+with lease checks before and after; this is the transaction seam for the worker,
+not an implemented generation publisher or API.
+
+Canonical `tests/integration/test_postgres_storage.py` passes **12**, exit 0,
+13.36s: `tests/test_results/pytest/20261027T102308Z_adr8_job_queue_milestone.txt`.
+Command: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TEST_DATABASE_URL=<isolated-local-url>
+python -B -m pytest -p no:cacheprovider tests/integration/test_postgres_storage.py
+-x -q --tb=short`.
+Checks include migrations/model agreement and prior workflow preservation, eight
+concurrent same-key submissions and distinct claims, skipping an actively locked
+row, fresh-process reads, immutable payload/finished history, stale-attempt
+heartbeat/failure/publication rejection, bounded recovery, cancellation at
+publication, deadline expiry and no retry after `needs_attention`. SQL publication
+callbacks verify rollback and a lease expiring inside the transaction; they do
+not stand in for actual worker/PDF/publication verification. Two initial runs
+exposed stale test table inventory and a trigger SQLSTATE classification; the
+final run corrects both. Worker execution, bundles, endpoints and crash recovery
+remain open. No new provider calls or hosted-data approval.
+
 The first implementation is local synthetic development. No region or cloud
 service is provisioned by this ADR. Credentials stay in server/worker secret
 configuration, and audit/error output excludes document content and secrets.
