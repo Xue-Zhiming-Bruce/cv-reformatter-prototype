@@ -1,14 +1,15 @@
 # ADR 0008: Durable Jobs And Immutable Generation Publication
 
-Status: `Proposed` — implementation choice awaiting product-owner approval.
+Status: `Accepted` — implementation approved; rollout and validation incomplete.
 
 Date: 2026-10-27
 
 Owner: Backend maintainer
 
-Approver: Pending product owner
+Approver: Product owner, explicitly in this chat on October 27, 2026: “批准adr”.
+The referenced decision was ADR 0008, presented immediately before approval.
 
-Review date: Before adopting the worker/queue implementation
+Review date: Before enabling hosted or external-provider execution
 
 ## Context
 
@@ -19,12 +20,12 @@ before a later database conflict, and filesystem failure can leave stale derived
 heads even when structured changes roll back. These are open B1A/P1/P2 concerns.
 
 The owner selected PostgreSQL, SQLAlchemy, Psycopg and Alembic for structured
-persistence. A durable worker/queue mechanism has not been approved. The
+persistence. The owner has now approved the durable worker/queue mechanism below. The
 [ADR process](README.md) calls for product approval of consequential durable-job
 and artifact-storage choices. This proposal separates that new choice from the
 already approved database technology direction; it grants no deployment approval.
 
-## Proposed Decision
+## Decision
 
 Use PostgreSQL lease-based jobs and a backend worker process, with immutable
 per-attempt artifact bundles and database-owned publication. Execute the existing
@@ -64,7 +65,7 @@ own roadmap gates.
 
 PostgreSQL documents this locking option for queue consumers and cautions that
 it provides an inconsistent view, so it belongs in work claiming rather than
-ordinary product reads. This supports the proposed claim primitive, not a tested
+ordinary product reads. This supports the selected claim primitive, not a tested
 queue implementation or throughput claim. [PostgreSQL SELECT locking](https://www.postgresql.org/docs/17/sql-select.html).
 
 ### Artifact And Publication Contract
@@ -97,7 +98,7 @@ Existing persistence evidence is recorded in [ADR 0007](0007-postgresql-structur
 real local PostgreSQL migrations/restarts, immutable histories, concurrent saves/
 approvals, actual runner/Chrome checks, late profile/proof/design rejection and
 filesystem-failure database rollback. These establish the current boundaries.
-They do not benchmark this proposed queue or prove worker crash recovery.
+They do not benchmark the selected queue or prove worker crash recovery.
 
 The frozen six exact owner-accepted outputs remain the bounded document-quality
 baseline. The known post-COMPLETE E blind SIGBUS remains unresolved. A worker
@@ -129,7 +130,7 @@ provider or renderer is selected here.
 
 | Option | Relevant behavior | Assessment for this scope |
 | --- | --- | --- |
-| PostgreSQL leases plus existing application services | Shares the selected persistence foundation; queue/recovery semantics require implementation and tests. | Proposed for the first bounded local workflow. It adds responsibility to this backend and needs measured DB-load/recovery evidence. |
+| PostgreSQL leases plus existing application services | Shares the selected persistence foundation; queue/recovery semantics require implementation and tests. | Selected for the first bounded local workflow. It adds responsibility to this backend and needs measured DB-load/recovery evidence. |
 | Celery plus a supported broker | Offers task/broker machinery. Late acknowledgement still requires idempotent tasks and has worker-loss caveats. | A credible alternative if worker complexity/scale justifies another service. It still needs product identity checks and immutable publication. |
 | RQ plus Redis | Offers Python jobs, workers, failure handling and retry controls. | A credible simpler broker alternative; Redis operations and product-level recovery/publication remain additional work. |
 | Synchronous HTTP execution | Current accepted local behavior. | Retained during rollout; it does not satisfy durable-job recovery requirements. |
@@ -155,4 +156,5 @@ Owner approval selects this implementation approach only. The sole active
 implementation checklist remains [B1A/P1/P2 in the backend roadmap](../roadmaps/BACKEND_ROADMAP.md).
 Native bundle publication and job recovery must pass canonical checks before
 gated Agentic execution; real provider use and hosting retain their independent
-approvals. Keep this record `Proposed` until approval is explicit.
+approvals. This approval selects the architecture; it does not assert that the
+implementation, recovery checks or deployment gates have passed.

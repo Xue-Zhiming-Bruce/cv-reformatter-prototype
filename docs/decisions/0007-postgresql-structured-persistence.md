@@ -195,8 +195,9 @@ The final post-suite audit retains all 75 frozen references, six exact accepted
 outputs and three current legacy acceptances, with no exports/provider calls:
 `tests/test_results/pytest/20261026T195526Z_p1_final_preserved_baseline.txt`.
 The next durable-job/immutable-publication implementation is a separate
-[proposed decision](0008-durable-jobs-and-generation-publication.md), pending
-owner approval. This record does not select that architecture or close P1.
+[separate decision](0008-durable-jobs-and-generation-publication.md), explicitly
+approved by the owner on October 27. Its implementation and validation remain
+open; this foundation record does not close P1.
 
 Partial proof-render state still uses the filesystem store; migration/import,
 full workflow transactions, file-publication isolation and idempotency remain P1/B1A/P2

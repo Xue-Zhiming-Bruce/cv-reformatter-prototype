@@ -503,11 +503,11 @@ acceptances remain unchanged after the suite:
 `tests/test_results/pytest/20261026T195526Z_p1_final_preserved_baseline.txt`.
 No new paid calls or hosted-data readiness claim.
 
-The next queue/publication implementation choice is documented in
-[ADR 0008](../decisions/0008-durable-jobs-and-generation-publication.md), currently
-`Proposed` and awaiting owner approval under the ADR process. Its PostgreSQL lease
-worker and immutable bundle architecture have not been implemented or selected
-by the existing database-stack approval.
+The owner explicitly approved
+[ADR 0008](../decisions/0008-durable-jobs-and-generation-publication.md) on October
+27: PostgreSQL lease jobs and immutable generation bundles are selected for local
+implementation. Queue/publication validation and provider/security/hosting gates
+remain open; the approval does not complete a checklist item.
 
 P1 remains open: partial proof-render persistence, workflow/job transactions,
 file-publication ownership/isolation, explicit import/data-preserving rollback
