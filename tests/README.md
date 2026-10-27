@@ -56,6 +56,17 @@ unimported files, zero-call provider failure and database rollback after audit-c
 write failure. The real designer-loop case supersedes the selected design just
 before generation commit, requiring 409 with the previous generation unchanged.
 
+`postgres-restore-designer` extends that same real-loop API scenario with a
+destructive recovery check of its own disposable data. It additionally requires
+`TEST_POSTGRES_CONTAINER`, whose published loopback port must match
+`TEST_DATABASE_URL`. It uses that container's PostgreSQL client tools to dump only
+the random fixture schema, archives the temporary artifact tree, deletes both and
+restores them. All rows, migration/sequence state, constraints, triggers, functions,
+indexes and file hashes must match. API/fresh-process reads retain exact acceptance
+and history without repeating model calls. Without the container setting this
+one case skips; ordinary PostgreSQL cases still run. This is a quiescent local
+recovery check, not cloud backup or concurrent-publication acceptance.
+
 The CLI and service execute only the selected A mainline. Retired B/paired
 selections fail before I/O. Historical B comparisons remain in Git; shared
 privacy, provenance, lifecycle and actual-PDF repair contracts remain covered.

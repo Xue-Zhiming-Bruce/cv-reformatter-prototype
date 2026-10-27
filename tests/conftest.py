@@ -32,8 +32,44 @@ def postgres_database():
     finally:
         engine.dispose()
         with admin.begin() as connection:
-            connection.execute(DropSchema(schema, cascade=True))
+            connection.execute(DropSchema(schema, cascade=True, if_exists=True))
         admin.dispose()
+
+
+@pytest.fixture
+def postgres_restore_commands(postgres_database):
+    """Use matching tools in an explicitly selected loopback test container."""
+    import json
+    import os
+    import re
+    import subprocess
+    from sqlalchemy import text
+    from app.storage.postgres import postgres_url
+
+    container = os.getenv("TEST_POSTGRES_CONTAINER")
+    if not container:
+        pytest.skip("Set TEST_POSTGRES_CONTAINER for the isolated PostgreSQL backup/restore case")
+    database_url, engine = postgres_database
+    url = postgres_url(database_url)
+    inspected = subprocess.run(["docker", "inspect", container], capture_output=True, text=True, timeout=10)
+    assert inspected.returncode == 0, inspected.stderr
+    info = json.loads(inspected.stdout)[0]
+    assert info["State"]["Running"]
+    bindings = info["NetworkSettings"]["Ports"].get("5432/tcp") or []
+    assert any(item["HostIp"] in {"127.0.0.1", "::1"} and item["HostPort"] == str(url.port or 5432)
+               for item in bindings), "Restore tools must belong to the TEST_DATABASE_URL loopback service"
+    assert url.username, "Restore checks require an explicit test database username"
+    with engine.connect() as connection:
+        schema = connection.execute(text("SELECT current_schema()")).scalar_one()
+    assert re.fullmatch(r"cv_test_[0-9a-f]{32}", schema), "Only this fixture's disposable schema may be restored"
+    connection_args = ["--host=127.0.0.1", "--port=5432", "--username", url.username,
+                       "--dbname", url.database, "--no-password"]
+    return {
+        "dump": ["docker", "exec", container, "pg_dump", *connection_args,
+                 "--schema", schema, "--format=custom", "--no-owner", "--no-acl"],
+        "restore": ["docker", "exec", "-i", container, "pg_restore", *connection_args,
+                    "--clean", "--if-exists", "--single-transaction", "--exit-on-error", "--no-owner", "--no-acl"],
+    }
 
 
 @pytest.fixture(autouse=True)

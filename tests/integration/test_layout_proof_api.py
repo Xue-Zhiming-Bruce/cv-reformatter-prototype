@@ -83,16 +83,24 @@ def _generate_with_target(artifact_id: str, target_format: dict[str, object], ve
     )
 
 
-@pytest.mark.parametrize("design_scope", [False, True], ids=["uploaded", "designer"])
-@pytest.mark.parametrize("storage_backend", ["legacy", "postgres"])
+@pytest.mark.parametrize("storage_backend,design_scope", [
+    pytest.param("legacy", False, id="legacy-uploaded"),
+    pytest.param("legacy", True, id="legacy-designer"),
+    pytest.param("postgres", False, id="postgres-uploaded"),
+    pytest.param("postgres", True, id="postgres-designer"),
+    pytest.param("postgres_restore", True, id="postgres-restore-designer"),
+])
 def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     tmp_path: Path, monkeypatch: MonkeyPatch, design_scope: bool, a_generation_without_model_loop,
     storage_backend: str, request: pytest.FixtureRequest,
 ) -> None:
     """Mock model calls only: API, runner, Chrome, gates and approvals are real."""
     import shutil
-    if storage_backend == "postgres":
+    uses_postgres = storage_backend != "legacy"
+    if uses_postgres:
         database_url, engine = request.getfixturevalue("postgres_database")
+        if storage_backend == "postgres_restore":
+            restore_commands = request.getfixturevalue("postgres_restore_commands")
         from tests.helpers.postgres import migrate_database
         migrate_database(engine)
         monkeypatch.setattr(main, "DATABASE_URL", database_url)
@@ -205,7 +213,7 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     _create_and_approve(client, artifact_id, directory, design_id=design_id)
     assert calls.count("builder") == 3 and calls.count("reviewer") >= 3
     assert max(reviewed_pages) > 1  # Long proof reflows; extra output pages are reviewed.
-    if storage_backend == "postgres":
+    if uses_postgres:
         import os
         import subprocess
         import sys
@@ -417,7 +425,7 @@ print(json.dumps(response.json()))
     missing = client.post("/api/generate", json=request)
     assert missing.status_code == 500 and "evidence" in missing.text and calls == [], missing.text
     assert {path: path.read_bytes() for path in published} == published
-    if storage_backend == "postgres":
+    if uses_postgres:
         from sqlalchemy import select, update
         from sqlalchemy.exc import IntegrityError
         rejected = client.post(f"/api/artifacts/{artifact_id}/layout-proofs/approve",
@@ -483,6 +491,36 @@ print(json.dumps(response.json()))
             designs = PostgresDesignRepository(engine)
             assert designs.current(artifact_id, design_id).state == "superseded"
             assert designs.current(artifact_id, newer_design).state == "approved"
+    if storage_backend == "postgres_restore":
+        from tests.helpers.postgres import assert_local_backup_restore
+        # Restore the exact accepted output pair before testing disaster recovery.
+        for path, contents in published.items():
+            path.write_bytes(contents)
+        before_restore = client.get(metadata_url)
+        assert before_restore.status_code == 200 and before_restore.json()["client_ready"], before_restore.text
+        proof_status_url = f"/api/artifacts/{artifact_id}/layout-proofs"
+        before_proof = client.get(proof_status_url).json()
+        before_designs = {item: client.get(f"/api/artifacts/{artifact_id}/designs/{item}").json()
+                          for item in (design_id, newer_design)}
+        model_calls = list(calls)
+        assert_local_backup_restore(engine, directory, tmp_path / "restore_backup", restore_commands)
+        assert client.get(metadata_url).json() == before_restore.json()
+        assert client.get(proof_status_url).json() == before_proof
+        assert {item: client.get(f"/api/artifacts/{artifact_id}/designs/{item}").json()
+                for item in (design_id, newer_design)} == before_designs
+        assert calls == model_calls  # Recovery reads saved outputs; it does not rerun the model loop.
+        code = """import json
+from fastapi.testclient import TestClient
+from app.main import app
+response=TestClient(app).get('/api/artifacts/artifact_agentic_api/metadata')
+assert response.status_code == 200, response.text
+print(json.dumps(response.json()))
+"""
+        restarted = subprocess.run([sys.executable, "-B", "-c", code],
+            cwd=Path(__file__).resolve().parents[2], env={**os.environ,
+                "DATABASE_URL": database_url, "GENERATED_OUTPUTS_DIR": str(tmp_path), "PYDANTIC_AI_NO_BANNER": "1"},
+            capture_output=True, text=True, timeout=30)
+        assert restarted.returncode == 0 and json.loads(restarted.stdout) == before_restore.json(), restarted.stderr
 
 
 # -- scenarios 1-2: gate and built-in path -------------------------------------

@@ -515,6 +515,18 @@ and idempotency are still required. The initial downgrade drops the structured t
 reversibility is not production backup/restore evidence. No deployment or hosted
 candidate-data gate is complete.
 
+October 27 local recovery progress: the opted-in `postgres-restore-designer`
+scenario backs up, deletes and restores its own random schema and temporary
+artifact tree using matching local container tools. It preserves all 15 rows,
+625 files, migration/sequences, 30 constraints, five triggers, two functions and
+11 indexes, with API/fresh-process acceptance/history checks and no model rerun.
+Result: **1 passed / 21 deselected**, 76.72s, exit 0,
+`tests/test_results/pytest/20261027T025222Z_p1_backup_restore_definitions.txt`.
+Seven existing PostgreSQL checks pass; the new case skips without its explicit
+container setting (logs recorded in ADR 0007). This establishes same-build,
+same-path, quiescent local recovery. Concurrent publication/snapshots and cloud
+backup/restore remain required; P1/P4 are not closed by this check.
+
 ### P2 — Jobs, Storage And API Hardening
 
 Status: `[ ]` Builds on B1A and P1.

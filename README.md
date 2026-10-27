@@ -222,6 +222,24 @@ a fresh-process read and concurrent reference updates:
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -p no:cacheprovider tests/integration/test_postgres_storage.py -q
 ```
 
+The optional recovery case uses `pg_dump`/`pg_restore` in a matching local Docker
+container. Export `TEST_POSTGRES_CONTAINER` as that container's name, alongside
+`TEST_DATABASE_URL`, then select the existing API scenario:
+
+```bash
+mkdir -p tests/test_results/pytest
+restore_log="tests/test_results/pytest/$(date -u +%Y%m%dT%H%M%SZ)_postgres_restore.txt"
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -p no:cacheprovider tests/integration/test_layout_proof_api.py -k restore -q -s > "$restore_log" 2>&1
+```
+
+It backs up and deletes its own random test schema and temporary artifact tree,
+then verifies restored rows, schema definitions, file bytes and accepted output
+state in a fresh process. The fixture verifies the matching loopback port before
+using container tools. The case skips when either test setting is absent. Save
+terminal output under the same timestamped pytest log path. This covers local
+recovery while writes are stopped; concurrent snapshots and cloud recovery remain
+operational gates.
+
 ## Documentation And Remaining Work
 
 [docs/README.md](docs/README.md) indexes the product contract, architecture,

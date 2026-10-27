@@ -206,6 +206,31 @@ by the local test environment.
 
 ## Privacy, Failure And Rollback
 
+The optional `postgres-restore-designer` case now verifies local recovery after
+actual schema and artifact-tree deletion. It reuses the existing real A API
+scenario with synthetic data, actual Chrome/gates and model-call stubs. Explicit
+`TEST_POSTGRES_CONTAINER` selects tools from the same loopback service as the
+guarded local test URL. The dump contains only the fixture's random schema; all
+deletion/restoration is limited to that schema and its temporary artifact tree.
+
+`tests/test_results/pytest/20261027T025222Z_p1_backup_restore_definitions.txt`
+records **1 passed / 21 deselected**, 76.72s, exit 0: 625 files and all 15 structured
+rows recover unchanged, including one saved profile, two generations, exact
+acceptance, five proof dispositions and five design events. Migration/sequence
+state, 30 constraints, five triggers, two functions and 11 indexes also match.
+API and independent fresh-process reads preserve the pre-backup state and exact
+accepted output without new model calls. The log records archive sizes/checksums;
+binary backups stay in the temporary test directory and are not committed.
+The existing seven PostgreSQL checks still pass (11.22s, exit 0):
+`tests/test_results/pytest/20261027T025405Z_p1_restore_fixture_regression.txt`.
+With the container setting absent, the recovery case explicitly skips:
+`tests/test_results/pytest/20261027T025405Z_p1_restore_opt_in_gate.txt`.
+
+This is same-build, same-path, quiescent local recovery. Concurrent snapshot
+consistency, immutable publication, managed-PostgreSQL/PITR and private-object
+recovery, backup encryption/retention and deployment rollback remain open.
+Destructive downgrade still loses data unless a matching tested backup is restored.
+
 Tests use an isolated loopback PostgreSQL service and random schemas in a
 dedicated synthetic test database. No candidate or target documents are sent to
 an external provider. This does not satisfy authentication, organization
