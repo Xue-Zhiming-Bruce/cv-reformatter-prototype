@@ -33,8 +33,18 @@ The same module owns the ADR 0008 queue-foundation checks: scoped idempotency,
 competing/locked-row claims, fenced expiry/recovery, bounded native retries,
 durable cancellation/deadlines and publication-transaction rollback. These use
 real PostgreSQL and retained attempts. SQL callbacks exercise the transaction
-boundary; actual generation workers and immutable bundles require their own
-workflow verification through this canonical lane.
+boundary; actual worker/bundle verification is owned by the module below.
+
+`integration/test_job_worker.py` owns actual native child/Chrome and publication
+checks: API opt-in/idempotency/target rejection, immutable download selection,
+exact acceptance, normal exit, abnormal exit evidence, source/output drift,
+cancellation/deadlines and late profile/transaction conflicts. It kills an actual
+worker while its render child finishes, then verifies a distinct attempt recovers
+without publishing the abandoned bundle. Its explicit `restore` case reuses the
+shared guarded local backup/restore fixture to delete and restore completed jobs,
+attempts and their published files. Set `TEST_POSTGRES_CONTAINER` to opt in; other
+worker cases still run without it. These are synthetic local controls; provider
+policy, hosted authentication/security and production load remain unverified.
 An upgrade preserves existing metadata; a failed revision insert rolls back its
 current pointer. Ordinary tests
 ignore an inherited `DATABASE_URL`; API configuration regressions explicitly

@@ -193,12 +193,36 @@ actual proof files and renderer identity. Missing approval audit copies can be
 rebuilt, while conflicting copies fail closed. Design requests, approvals and
 superseding append immutable history too. Concurrent approvals serialize under
 the artifact lock, and generation rechecks the selected design at commit.
-Partial proof-render state, durable jobs, transactional file publication,
-idempotency and explicit import remain P1/P2 work. See
+Partial proof-render state, provider-backed jobs, publication beyond the native
+job path, workflow-wide idempotency and explicit import remain P1/P2 work. See
 [ADR 0007](docs/decisions/0007-postgresql-structured-persistence.md) for the owner-selected
-stack and rollout boundary. `alembic downgrade base` removes the structured tables
-and their rows; use it only on disposable databases or with a tested backup/restore
-plan. No hosted candidate-data readiness is implied.
+stack and rollout boundary. Downgrading disposable legacy databases removes
+structured tables and rows; published bundle references now block downgrade.
+Data-preserving rollback requires a tested matching backup/restore plan.
+No hosted candidate-data readiness is implied.
+
+## Local Synthetic Jobs
+
+Local synthetic generation jobs are opt-in under
+[ADR 0008](docs/decisions/0008-durable-jobs-and-generation-publication.md).
+After configuring and migrating PostgreSQL, set `LOCAL_JOBS_ENABLED=1` in both
+API and POSIX worker environments and run `python -B -m app.job_worker` (or `--once`).
+Submit `POST /api/artifacts/{artifact_id}/generation-jobs` with
+`local_synthetic: true`, a saved `profile_revision_id`, `idempotency_key` and
+optional `blind_profile`. Read `/api/artifacts/{artifact_id}/jobs/{job_id}`;
+append `/cancel` with POST to request cancellation. Jobs accept native no-target
+artifacts only. Uploaded targets and external provider execution retain their
+separate gates; the synchronous API stays available.
+
+The worker snapshots inputs into a stable attempt directory, runs the existing
+generation service in a database-free child and checks its exit and file hashes.
+One fenced database transaction selects that bundle and completes the job.
+Preview/download URLs resolve the selected bundle; loose-file changes cannot
+replace it. Job success means preview availability; exact human output acceptance
+is still separate. Current local jobs have a 180-second deadline, two attempts
+and native lease-expiry recovery. Unknown child exits require attention.
+Migration downgrade refuses to discard published bundle references; use a tested
+matching application/database/artifact backup for rollback.
 
 ## Validate Changes
 

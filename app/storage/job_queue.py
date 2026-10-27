@@ -111,34 +111,43 @@ class PostgresJobQueue:
                 workflow_jobs.c.job_id == job_id).values(**values).returning(workflow_jobs)).mappings().one()
             return _record(updated)
 
+    def recover_expired(self) -> int:
+        """Reap expired work without accidentally claiming the next job."""
+        with self._transaction() as connection:
+            return self._recover_expired(connection, connection.scalar(select(func.clock_timestamp())))
+
+    def _recover_expired(self, connection: Connection, now) -> int:
+        expired = connection.execute(select(workflow_jobs).where(
+            workflow_jobs.c.state.in_(["queued", "running"]),
+            (workflow_jobs.c.deadline_at <= now)
+            | ((workflow_jobs.c.state == "running") & (workflow_jobs.c.lease_expires_at <= now)),
+        ).order_by(workflow_jobs.c.created_at).limit(100).with_for_update(skip_locked=True)).mappings().all()
+        for row in expired:
+            _payload(row)  # Recovery only permits the explicitly safe native execution contract.
+            if row["cancel_requested"]:
+                state, error = "cancelled", "cancelled"
+            elif row["deadline_at"] <= now:
+                state, error = "failed", "deadline_exceeded"
+            elif row["attempt_count"] >= row["max_attempts"]:
+                state, error = "failed", "attempts_exhausted"
+            else:
+                state, error = "queued", None
+            if row["state"] == "running":
+                connection.execute(update(job_attempts).where(
+                    job_attempts.c.job_id == row["job_id"],
+                    job_attempts.c.attempt_number == row["attempt_count"],
+                ).values(state="abandoned", error_code=error, finished_at=now))
+            connection.execute(update(workflow_jobs).where(workflow_jobs.c.job_id == row["job_id"]).values(
+                state=state, error_code=error, lease_token=None, lease_expires_at=None,
+                progress=0 if state == "queued" else row["progress"], updated_at=now))
+        return len(expired)
+
     def claim(self, *, lease_seconds: int = 30) -> JobClaim | None:
         if not 1 <= lease_seconds <= 60:
             raise ValueError("Lease duration must be between 1 and 60 seconds")
         with self._transaction() as connection:
             now = connection.scalar(select(func.clock_timestamp()))
-            expired = connection.execute(select(workflow_jobs).where(
-                workflow_jobs.c.state.in_(["queued", "running"]),
-                (workflow_jobs.c.deadline_at <= now)
-                | ((workflow_jobs.c.state == "running") & (workflow_jobs.c.lease_expires_at <= now)),
-            ).order_by(workflow_jobs.c.created_at).limit(100).with_for_update(skip_locked=True)).mappings().all()
-            for row in expired:
-                _payload(row)  # Recovery only permits the explicitly safe native execution contract.
-                if row["cancel_requested"]:
-                    state, error = "cancelled", "cancelled"
-                elif row["deadline_at"] <= now:
-                    state, error = "failed", "deadline_exceeded"
-                elif row["attempt_count"] >= row["max_attempts"]:
-                    state, error = "failed", "attempts_exhausted"
-                else:
-                    state, error = "queued", None
-                if row["state"] == "running":
-                    connection.execute(update(job_attempts).where(
-                        job_attempts.c.job_id == row["job_id"],
-                        job_attempts.c.attempt_number == row["attempt_count"],
-                    ).values(state="abandoned", error_code=error, finished_at=now))
-                connection.execute(update(workflow_jobs).where(workflow_jobs.c.job_id == row["job_id"]).values(
-                    state=state, error_code=error, lease_token=None, lease_expires_at=None,
-                    progress=0 if state == "queued" else row["progress"], updated_at=now))
+            self._recover_expired(connection, now)
             row = connection.execute(select(workflow_jobs).where(
                 workflow_jobs.c.state == "queued", workflow_jobs.c.deadline_at > now,
             ).order_by(workflow_jobs.c.created_at, workflow_jobs.c.job_id).limit(1)

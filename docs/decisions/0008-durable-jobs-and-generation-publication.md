@@ -113,6 +113,67 @@ workers around publication, previous-preview preservation, restart and restorati
 No parallel runner/corpus or new output-report schema is proposed. Performance,
 queue/DB load and cost remain unmeasured until those checks exist.
 
+## Native Worker And Publication Evidence
+
+The opt-in local POSIX worker now executes native no-target jobs. Migration
+`0007_generation_bundles` adds stable attempt references to successful generations;
+older rows retain null references and their explicit legacy output path. The
+worker snapshots checked source/revision files, freezes application/font/runtime
+identity and invokes the existing rendering/gate service in a database-free child.
+The child's SQLite metadata is execution scratch only. Strict exit evidence,
+request identity, template/source and every manifest-bound file are checked.
+One fenced transaction records the generation, switches its pointer, updates
+generation metadata references and completes the job. Cancellation, expiry,
+input/output drift or transaction failure preserves the previous publication.
+Abnormal child exits retain their exact return code and require attention.
+The historical E blind SIGBUS root cause remains unresolved; this gate does not
+claim to diagnose or fix it.
+
+API/worker enablement requires `LOCAL_JOBS_ENABLED=1` and PostgreSQL. The strict
+request requires boolean `local_synthetic: true`; uploaded-target metadata is
+explicitly rejected without provider calls or built-in fallback. The initial
+native policy permits two lease-expiry attempts within 180 seconds. Job success
+does not imply human acceptance. Existing download/currentness/acceptance paths
+resolve the selected immutable output, rejecting changed or missing bundles.
+After a bundle has been recorded, downgrade refuses to discard its references;
+rollback requires a matching application/database/artifact backup.
+
+`tests/test_results/pytest/20261027T105011Z_adr8_native_publication_final.txt`
+records **25 passed**, 45.62s, exit 0. Command: existing pytest flags with explicit
+local `TEST_DATABASE_URL` and matching `TEST_POSTGRES_CONTAINER`,
+`tests/integration/test_postgres_storage.py tests/integration/test_job_worker.py
+-x -q -s --tb=short`. The actual child/Chrome success case also checks strict
+opt-in, idempotency, source/config drift, corrupt output, late profile change,
+in-flight cancellation/deadlines, child signals and failure after insertion.
+An actual parent worker is stopped/killed while its child finishes; a new lease
+attempt publishes from a distinct directory and preserves the abandoned bundle.
+A new worker process after success performs no additional generation.
+
+The shared restore check actually backs up, deletes and restores the fixture's
+schema and artifact tree: 33 files and all eight structured rows, including the
+completed job/attempt, both generations and both exact acceptances. Migration/
+sequence state, 47 constraints, seven triggers, three functions and 16 indexes
+match; API/download/job reads retain the recorded state. Earlier restoration
+failed because PostgreSQL reparsed compound `BETWEEN` grouping into equivalent
+but different constraint text. Migration 0007 uses the same explicit bounds,
+with invalid-bound checks, preserving exact definition comparison on restore.
+The earlier native publication run also caught separator-default normalization;
+the worker validates raw template JSON and retains the frozen native factory's
+original values instead of silently changing its checksum.
+
+The migration fixture is portable: it renders/gates actual native outputs through
+an explicitly configured temporary execution store, then seeds those verified
+records into reflected pre-bundle DDL. It never operates the current PostgreSQL
+repository against missing migrations or depends on a particular Git object.
+The updated upgrade/CLI/legacy-record case passes independently (4.01s, exit 0):
+`tests/test_results/pytest/20261027T171559Z_adr8_portable_upgrade.txt`.
+
+These are local synthetic correctness and quiescent recovery checks. Full backend
+regression on the integrated source, provider-policy integration, uploaded-target
+jobs, broader crash/load/cost evidence, monitoring, retention/private hosting and
+production rollback remain separate work. No new provider requests, new renderer
+selection or production-readiness acceptance.
+
 ## Privacy And Operations
 
 October 27 queue foundation: Alembic `0006_workflow_jobs` adds scoped jobs and

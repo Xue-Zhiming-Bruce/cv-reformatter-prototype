@@ -86,7 +86,12 @@ def assert_local_backup_restore(
     with tarfile.open(objects_path, "r:gz") as archive:
         archive.extractall(artifact_dir.parent, filter="data")
     engine.dispose()
-    assert database_snapshot() == before_database
+    after_database = database_snapshot()
+    assert after_database == before_database, {
+        "changed_sections": [name for name in before_database if before_database[name] != after_database[name]],
+        "constraints_removed": [tuple(row) for row in before_database["constraints"] if row not in after_database["constraints"]],
+        "constraints_added": [tuple(row) for row in after_database["constraints"] if row not in before_database["constraints"]],
+    }
     assert files() == before_files
     print(f"RESTORE VERIFIED: {len(before_files)} files; all structured rows, schema version and sequences preserved")
     print("Restored rows: " + ", ".join(f"{table.name}={len(before_database[table.name])}" for table in metadata.tables.values()))

@@ -43,6 +43,8 @@ class FinalAcceptanceRepository(Protocol):
 
     def load(self, artifact_id: str) -> FinalOutputAcceptance | None: ...
 
+    def output_directory(self, artifact_dir: Path) -> Path: ...
+
 
 def file_sha256(path: str | Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -102,7 +104,8 @@ def is_final_acceptance_current(
     if acceptance is None:
         return False
     try:
-        current = current_output_identity(artifact_dir)
+        output_dir = repository.output_directory(Path(artifact_dir)) if repository is not None else artifact_dir
+        current = current_output_identity(output_dir)
         revision = load_current_approved_profile(artifact_dir, repository=profile_repository)
         if revision is None or (
             revision.profile_revision_id != current.profile_revision_id

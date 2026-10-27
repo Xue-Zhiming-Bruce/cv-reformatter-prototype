@@ -45,6 +45,7 @@ from app.extraction.llm_segmentation import (
 )
 from app.generation.chrome_html_to_pdf import HtmlToPdfExportError, export_html_to_pdf
 from app.generation.artifact_manifest import (
+    ArtifactManifest,
     MANIFEST_FILENAME,
     capture_generation_inputs,
     is_artifact_manifest_current,
@@ -63,6 +64,7 @@ from app.final_acceptance import (
     FinalOutputAcceptance,
     FinalOutputIdentity,
     current_output_identity,
+    file_sha256,
     is_final_acceptance_current,
     save_final_acceptance,
 )
@@ -84,6 +86,7 @@ from app.profile_approval import (
 from app.storage.artifact_store import ArtifactStore, ArtifactStoreConflict, ArtifactStoreError
 from app.storage.local_db import DEFAULT_DATABASE_PATH
 from app.storage.repository import artifact_store, design_repository, final_acceptance_repository, generation_repository, layout_proof_repository, profile_revision_repository
+from app.jobs import JobRecord, NativeJobCreate
 from app.template_analysis.docx_style_analyzer import (
     TargetDocxAnalysisError,
     analyze_target_docx,
@@ -1152,6 +1155,51 @@ def approve_layout_proofs(
     return _layout_proof_status(artifact_id, artifact_dir)
 
 
+def _local_job_queue():
+    if os.getenv("LOCAL_JOBS_ENABLED") != "1" or DATABASE_URL is None:
+        raise HTTPException(status_code=503, detail={"error_code": "jobs_unavailable",
+            "message": "Local synthetic jobs require explicit enablement and PostgreSQL."})
+    from app.storage.job_queue import PostgresJobQueue
+    from app.storage.postgres import postgres_engine
+    return PostgresJobQueue(postgres_engine(DATABASE_URL))
+
+
+@app.post("/api/artifacts/{artifact_id}/generation-jobs", response_model=JobRecord, status_code=202)
+def submit_generation_job(artifact_id: str, request: NativeJobCreate) -> JobRecord:
+    queue = _local_job_queue()
+    _require_artifact(artifact_id)
+    directory = GENERATED_OUTPUTS_DIR / artifact_id
+    revision = _require_profile_revision(artifact_dir=directory, artifact_id=artifact_id,
+                                         profile_revision_id=request.profile_revision_id)
+    from app.job_worker import native_submission
+    try:
+        submission = native_submission(directory, revision, request)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=409, detail={"error_code": "job_inputs_unavailable",
+            "message": "The native job inputs could not be frozen."}) from exc
+    return queue.submit(submission)
+
+
+@app.get("/api/artifacts/{artifact_id}/jobs/{job_id}", response_model=JobRecord)
+def get_generation_job(artifact_id: str, job_id: str) -> JobRecord:
+    queue = _local_job_queue()
+    _require_artifact(artifact_id)
+    job = queue.get(artifact_id, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found for this artifact.")
+    return job
+
+
+@app.post("/api/artifacts/{artifact_id}/jobs/{job_id}/cancel", response_model=JobRecord)
+def cancel_generation_job(artifact_id: str, job_id: str) -> JobRecord:
+    queue = _local_job_queue()
+    _require_artifact(artifact_id)
+    job = queue.cancel(artifact_id, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found for this artifact.")
+    return job
+
+
 @app.post("/api/generate")
 def generate_outputs(request: GenerateRequest) -> GenerateResponse:
     from app.generation.agentic import AgenticGenerationError, generation_strategy
@@ -1620,7 +1668,9 @@ def accept_final_output(
     _require_artifact(artifact_id)
     artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
     try:
-        current = current_output_identity(artifact_dir)
+        generations = generation_repository(DATABASE_URL)
+        output_dir = generations.output_directory(artifact_dir) if generations is not None else artifact_dir
+        current = current_output_identity(output_dir)
     except (OSError, KeyError, json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(
             status_code=409,
@@ -1965,9 +2015,31 @@ def _resolve_download_artifact(artifact_id: str, filename: str) -> Path:
     )
     if not _is_safe_artifact_id(artifact_id) or not is_allowed_filename:
         raise HTTPException(status_code=404, detail="Generated artifact not found.")
-    artifact_path = GENERATED_OUTPUTS_DIR / artifact_id / filename
+    directory = GENERATED_OUTPUTS_DIR / artifact_id
+    generations = generation_repository(DATABASE_URL)
+    manifest = None
+    if generations is not None and filename in {
+        "candidate_profile.html", "candidate_profile.pdf", "generation_metadata.json",
+        "agentic_generation.json", MANIFEST_FILENAME, COMPARISON_FILENAME,
+    }:
+        directory, manifest = generations.selected_output(directory)
+    artifact_path = directory / filename
     if not artifact_path.exists() or not artifact_path.is_file():
         raise HTTPException(status_code=404, detail="Generated artifact not found.")
+    if directory != GENERATED_OUTPUTS_DIR / artifact_id and generations is not None:
+        if manifest is None:
+            raise ArtifactStoreError("Published generation identity is missing.")
+        if filename == MANIFEST_FILENAME:
+            try:
+                matches = ArtifactManifest.model_validate_json(artifact_path.read_text()) == manifest
+            except (ValueError, OSError) as exc:
+                raise ArtifactStoreError("Published generation manifest could not be verified.") from exc
+            if not matches:
+                raise ArtifactStoreError("Published generation manifest changed.")
+        else:
+            reference = next((item for item in manifest.outputs.values() if item.path == filename), None)
+            if reference is None or file_sha256(artifact_path) != reference.sha256:
+                raise ArtifactStoreError("Published generation file changed; no loose-file fallback was used.")
     return artifact_path
 
 

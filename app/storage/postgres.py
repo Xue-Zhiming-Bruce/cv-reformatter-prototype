@@ -81,11 +81,13 @@ generation_versions = Table(
     Column("manifest_sha256", Text, nullable=False),
     Column("manifest", JSONB, nullable=False),
     Column("layout_spec", JSONB, nullable=False),
+    Column("bundle_path", Text),
     Column("recorded_at", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
     ForeignKeyConstraint(["artifact_id", "profile_revision_id"],
         ["candidate_profile_revisions.artifact_id", "candidate_profile_revisions.profile_revision_id"], ondelete="CASCADE"),
     CheckConstraint("manifest_sha256 ~ '^[0-9a-f]{64}$'", name="ck_generation_manifest_sha256"),
     CheckConstraint("jsonb_typeof(manifest) = 'object' AND jsonb_typeof(layout_spec) = 'object'", name="ck_generation_objects"),
+    CheckConstraint("bundle_path IS NULL OR bundle_path ~ '^jobs/job_[0-9a-f]{32}/attempt_[0-9]{4}/[a-zA-Z0-9_-]{1,100}$'", name="ck_generation_bundle_path"),
 )
 artifact_sessions.append_column(Column("current_generation_id", Text))
 artifact_sessions.append_constraint(ForeignKeyConstraint(
@@ -171,7 +173,7 @@ workflow_jobs = Table(
     UniqueConstraint("scope_id", "artifact_id", "operation", "idempotency_key", name="uq_workflow_job_request"),
     CheckConstraint("scope_id = 'local-synthetic' AND operation = 'generate'", name="ck_job_local_scope"),
     CheckConstraint("state IN ('queued', 'running', 'succeeded', 'failed', 'cancelled', 'needs_attention')", name="ck_job_state"),
-    CheckConstraint("progress BETWEEN 0 AND 100 AND max_attempts BETWEEN 1 AND 3 AND attempt_count BETWEEN 0 AND max_attempts", name="ck_job_bounds"),
+    CheckConstraint("progress >= 0 AND progress <= 100 AND max_attempts >= 1 AND max_attempts <= 3 AND attempt_count >= 0 AND attempt_count <= max_attempts", name="ck_job_bounds"),
     CheckConstraint("(state = 'running') = (lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)", name="ck_job_lease"),
     CheckConstraint("(state = 'succeeded') = (result_generation_id IS NOT NULL) AND (state != 'succeeded' OR progress = 100)", name="ck_job_result"),
     CheckConstraint("request_sha256 ~ '^[0-9a-f]{64}$' AND jsonb_typeof(payload) = 'object'", name="ck_job_payload"),
@@ -374,67 +376,74 @@ class PostgresGenerationRepository:
         self.engine = engine
 
     def save(self, manifest: ArtifactManifest, layout_spec: LayoutTemplateSpec) -> None:
+        try:
+            with self.engine.begin() as connection:
+                self.publish(connection, manifest, layout_spec)
+        except SQLAlchemyError as exc:
+            raise ArtifactStoreError("Generation could not be saved to PostgreSQL; no filesystem fallback was used.") from exc
+
+    def publish(self, connection: Connection, manifest: ArtifactManifest,
+                layout_spec: LayoutTemplateSpec, *, bundle_path: str | None = None) -> str:
+        """Use the caller's transaction for job-owned generation publication."""
         if (layout_spec_sha256(layout_spec) != manifest.output_identity.layout_spec_sha256
                 or layout_spec.template_version != manifest.output_identity.layout_template_version):
             raise ArtifactStoreError("Generation template does not match its output identity.")
         generation_id = "generation_" + uuid.uuid4().hex
         body = manifest.model_dump(mode="json")
-        try:
-            with self.engine.begin() as connection:
-                artifact = connection.execute(select(artifact_sessions).where(
-                    artifact_sessions.c.artifact_id == manifest.artifact_id,
-                ).with_for_update()).mappings().first()
-                revision = connection.execute(select(profile_revisions).where(
-                    profile_revisions.c.artifact_id == manifest.artifact_id,
-                    profile_revisions.c.profile_revision_id == manifest.output_identity.profile_revision_id,
-                )).mappings().first()
-                if (artifact is None or revision is None
-                        or artifact["current_profile_revision_id"] != manifest.output_identity.profile_revision_id
-                        or revision["profile_sha256"] != manifest.output_identity.profile_sha256
-                        or revision["source_draft_sha256"] != manifest.inputs["source_draft"].sha256):
-                    raise ArtifactStoreConflict("The saved profile changed before generation was recorded; generate the current revision.")
-                design_ref = manifest.inputs.get("approved_design_state")
-                if design_ref is not None:
-                    design_id = Path(design_ref.path).parent.name
-                    design_row = connection.execute(select(template_design_versions).where(
-                        template_design_versions.c.artifact_id == manifest.artifact_id,
-                        template_design_versions.c.design_id == design_id,
-                    ).order_by(template_design_versions.c.event_id.desc()).limit(1)).mappings().first()
-                    design = _design_state(design_row) if design_row is not None else None
-                    layout_ref = manifest.inputs.get("approved_layout")
-                    target_ref = manifest.inputs.get("target_document")
-                    if (design is None or design.state != "approved" or layout_ref is None or target_ref is None
-                            or design.approved_profile_version_id != manifest.output_identity.profile_revision_id
-                            or design.profile_sha256 != manifest.output_identity.profile_sha256
-                            or design.request.target_checksum != target_ref.sha256
-                            or design.template_version != manifest.output_identity.layout_template_version
-                            or hashlib.sha256(design_row["body"].encode()).hexdigest() != design_ref.sha256
-                            or hashlib.sha256(json.dumps(design.layout_spec_json, indent=2, ensure_ascii=False, sort_keys=True).encode()).hexdigest() != layout_ref.sha256):
-                        raise ArtifactStoreConflict("The approved design changed before generation was recorded; review the current design.")
-                approval_ref = manifest.inputs.get("layout_proof_approval")
-                if approval_ref is not None:
-                    proof_row = connection.execute(select(layout_proof_approvals).where(
-                        layout_proof_approvals.c.artifact_id == manifest.artifact_id,
-                    ).order_by(layout_proof_approvals.c.ordinal.desc()).limit(1)).mappings().first()
-                    approval = _proof_approval(proof_row) if proof_row is not None else None
-                    target_ref = manifest.inputs.get("target_document")
-                    if (approval is None or not approval.is_approved or target_ref is None
-                            or approval.layout_spec_checksum != manifest.output_identity.layout_spec_sha256
-                            or approval.target_checksum != target_ref.sha256
-                            or approval.renderer_version != manifest.renderer_version
-                            or hashlib.sha256(proof_row["body"].encode()).hexdigest() != approval_ref.sha256):
-                        raise ArtifactStoreConflict("The layout proof approval changed before generation was recorded; review the current proof set.")
-                connection.execute(insert(generation_versions).values(
-                    artifact_id=manifest.artifact_id, generation_id=generation_id,
-                    profile_revision_id=manifest.output_identity.profile_revision_id,
-                    manifest_sha256=_json_sha256(body), manifest=body,
-                    layout_spec=StoredLayoutSource(json_source=layout_spec.model_dump_json()).model_dump(mode="json"),
-                ))
-                connection.execute(update(artifact_sessions).where(
-                    artifact_sessions.c.artifact_id == manifest.artifact_id,
-                ).values(current_generation_id=generation_id, updated_at=func.clock_timestamp()))
-        except SQLAlchemyError as exc:
-            raise ArtifactStoreError("Generation could not be saved to PostgreSQL; no filesystem fallback was used.") from exc
+        artifact = connection.execute(select(artifact_sessions).where(
+            artifact_sessions.c.artifact_id == manifest.artifact_id,
+        ).with_for_update()).mappings().first()
+        revision = connection.execute(select(profile_revisions).where(
+            profile_revisions.c.artifact_id == manifest.artifact_id,
+            profile_revisions.c.profile_revision_id == manifest.output_identity.profile_revision_id,
+        )).mappings().first()
+        if (artifact is None or revision is None
+                or artifact["current_profile_revision_id"] != manifest.output_identity.profile_revision_id
+                or revision["profile_sha256"] != manifest.output_identity.profile_sha256
+                or revision["source_draft_sha256"] != manifest.inputs["source_draft"].sha256):
+            raise ArtifactStoreConflict("The saved profile changed before generation was recorded; generate the current revision.")
+        design_ref = manifest.inputs.get("approved_design_state")
+        if design_ref is not None:
+            design_id = Path(design_ref.path).parent.name
+            design_row = connection.execute(select(template_design_versions).where(
+                template_design_versions.c.artifact_id == manifest.artifact_id,
+                template_design_versions.c.design_id == design_id,
+            ).order_by(template_design_versions.c.event_id.desc()).limit(1)).mappings().first()
+            design = _design_state(design_row) if design_row is not None else None
+            layout_ref = manifest.inputs.get("approved_layout")
+            target_ref = manifest.inputs.get("target_document")
+            if (design is None or design.state != "approved" or layout_ref is None or target_ref is None
+                    or design.approved_profile_version_id != manifest.output_identity.profile_revision_id
+                    or design.profile_sha256 != manifest.output_identity.profile_sha256
+                    or design.request.target_checksum != target_ref.sha256
+                    or design.template_version != manifest.output_identity.layout_template_version
+                    or hashlib.sha256(design_row["body"].encode()).hexdigest() != design_ref.sha256
+                    or hashlib.sha256(json.dumps(design.layout_spec_json, indent=2, ensure_ascii=False, sort_keys=True).encode()).hexdigest() != layout_ref.sha256):
+                raise ArtifactStoreConflict("The approved design changed before generation was recorded; review the current design.")
+        approval_ref = manifest.inputs.get("layout_proof_approval")
+        if approval_ref is not None:
+            proof_row = connection.execute(select(layout_proof_approvals).where(
+                layout_proof_approvals.c.artifact_id == manifest.artifact_id,
+            ).order_by(layout_proof_approvals.c.ordinal.desc()).limit(1)).mappings().first()
+            approval = _proof_approval(proof_row) if proof_row is not None else None
+            target_ref = manifest.inputs.get("target_document")
+            if (approval is None or not approval.is_approved or target_ref is None
+                    or approval.layout_spec_checksum != manifest.output_identity.layout_spec_sha256
+                    or approval.target_checksum != target_ref.sha256
+                    or approval.renderer_version != manifest.renderer_version
+                    or hashlib.sha256(proof_row["body"].encode()).hexdigest() != approval_ref.sha256):
+                raise ArtifactStoreConflict("The layout proof approval changed before generation was recorded; review the current proof set.")
+        connection.execute(insert(generation_versions).values(
+            artifact_id=manifest.artifact_id, generation_id=generation_id,
+            profile_revision_id=manifest.output_identity.profile_revision_id,
+            manifest_sha256=_json_sha256(body), manifest=body,
+            bundle_path=bundle_path,
+            layout_spec=StoredLayoutSource(json_source=layout_spec.model_dump_json()).model_dump(mode="json"),
+        ))
+        connection.execute(update(artifact_sessions).where(
+            artifact_sessions.c.artifact_id == manifest.artifact_id,
+        ).values(current_generation_id=generation_id, updated_at=func.clock_timestamp()))
+        return generation_id
 
     def current(self, artifact_id: str) -> ArtifactManifest | None:
         try:
@@ -447,10 +456,41 @@ class PostgresGenerationRepository:
             raise ArtifactStoreError("Generation could not be read from PostgreSQL; verify availability and migrations.") from exc
         return _generation_manifest(row) if row is not None else None
 
+    def output_directory(self, artifact_dir: Path) -> Path:
+        return self.selected_output(artifact_dir)[0]
+
+    def selected_output(self, artifact_dir: Path) -> tuple[Path, ArtifactManifest | None]:
+        try:
+            with self.engine.connect() as connection:
+                row = connection.execute(select(generation_versions).join(artifact_sessions,
+                    (generation_versions.c.artifact_id == artifact_sessions.c.artifact_id)
+                    & (generation_versions.c.generation_id == artifact_sessions.c.current_generation_id),
+                ).where(artifact_sessions.c.artifact_id == artifact_dir.name)).mappings().first()
+            if row is None:
+                return artifact_dir, None
+            manifest = _generation_manifest(row)
+            if row["bundle_path"] is None:
+                return artifact_dir, manifest
+            parts = Path(row["bundle_path"]).parts
+            if (len(parts) != 4 or parts[0] != "jobs" or parts[-1] != artifact_dir.name
+                    or any(part in {".", ".."} for part in parts)):
+                raise ValueError("Unsafe generation bundle reference")
+            directory = (artifact_dir / row["bundle_path"]).resolve()
+            directory.relative_to(artifact_dir.resolve())
+            if not directory.is_dir():
+                raise ValueError("Missing published generation bundle")
+            return directory, manifest
+        except (SQLAlchemyError, ValueError, OSError) as exc:
+            raise ArtifactStoreError("The selected generation bundle could not be verified; no loose-file fallback was used.") from exc
+
 
 class PostgresFinalAcceptanceRepository:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
+
+    def output_directory(self, artifact_dir: Path) -> Path:
+        return PostgresGenerationRepository(self.engine).output_directory(artifact_dir)
+
 
     def save(self, artifact_id: str, acceptance: FinalOutputAcceptance) -> None:
         try:

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.generation.artifact_manifest import Digest, FileIdentity
 
@@ -46,6 +46,20 @@ class JobSubmission(JobModel):
     payload: NativeGenerationPayload
 
 
+class NativeJobCreate(JobModel):
+    local_synthetic: Literal[True]
+    profile_revision_id: str = Field(min_length=1, max_length=100)
+    idempotency_key: str = Field(pattern=r"^[a-zA-Z0-9_.:-]{1,128}$")
+    blind_profile: bool = False
+
+    @field_validator("local_synthetic", mode="before")
+    @classmethod
+    def explicit_synthetic_confirmation(cls, value):
+        if value is not True:
+            raise ValueError("Local synthetic execution requires the boolean true")
+        return value
+
+
 class JobRecord(JobModel):
     schema_version: Literal["job/1"] = "job/1"
     job_id: JobId
@@ -67,3 +81,11 @@ class JobClaim(JobModel):
     lease_token: str
     lease_expires_at: datetime
     bundle_path: str
+
+
+class NativeChildExit(JobModel):
+    schema_version: Literal["native-child-exit/1"] = "native-child-exit/1"
+    job_id: JobId
+    attempt_number: int = Field(ge=1, le=3)
+    returncode: int
+    finished_at: datetime

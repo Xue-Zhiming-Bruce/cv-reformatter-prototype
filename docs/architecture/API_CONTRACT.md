@@ -495,7 +495,8 @@ forging `final_acceptance.json` cannot remove or grant database acceptance, and
 restoring old loose files cannot override the database's newer generation pointer.
 A profile/generation changed between request validation and database commit
 returns 409 with a safe explanatory detail; no acceptance is inserted. This adds
-transactional structured records, not atomic file publication or durable jobs.
+transactional structured records to the synchronous path; the opt-in job path
+described below separately owns native bundle publication.
 Proof approval/rejection history is database-backed too. Reads retain the existing
 proof-file checksums, scope and active-renderer checks. A missing audit copy is
 rebuilt byte-for-byte; a conflicting copy blocks use. Missing database approvals
@@ -521,6 +522,35 @@ conflicting or unimported local files. Structured history rolls back on snapshot
 write failure; partial derived head files may still need repair. Atomic filesystem
 publication/recovery remains P1/P2 work.
 This is not private hosted artifact access.
+
+ADR 0008 adds explicitly enabled local synthetic jobs. Both API and worker need
+`LOCAL_JOBS_ENABLED=1` and migrated PostgreSQL; otherwise job routes return 503
+`jobs_unavailable`. This does not add authentication or organization isolation.
+
+| Operation | Route | Behavior |
+| --- | --- | --- |
+| Submit native generation | `POST /api/artifacts/{artifact_id}/generation-jobs` | 202 with `job/1`; strict body requires boolean `local_synthetic: true`, saved `profile_revision_id`, `idempotency_key`, optional `blind_profile`. |
+| Read job | `GET /api/artifacts/{artifact_id}/jobs/{job_id}` | Artifact-scoped status, progress, attempts, deadline, safe error code and result generation reference; no lease token or physical path. |
+| Request cancellation | `POST /api/artifacts/{artifact_id}/jobs/{job_id}/cancel` | Queued jobs cancel immediately; running workers check cancellation before publication. Completed work remains completed. |
+
+States are `queued`, `running`, `succeeded`, `failed`, `cancelled` and
+`needs_attention`. An idempotency key binds the artifact, operation and frozen
+input/configuration checksum; differing reuse returns 409. Local jobs permit
+deterministic native no-target generation only; any uploaded-target metadata
+returns an explicit conflict, without provider calls or template fallback.
+The server currently freezes a 180-second overall deadline and two attempts.
+An expired native lease may retry within those bounds; abnormal child exits
+retain their exit code and require attention without automatic retry.
+
+Every attempt snapshots saved inputs and runs the existing service in an isolated
+child. A clean exit, independent file checks and current profile/template identity
+are required before the transaction selects an immutable bundle and completes the
+job. Generation success does not grant human final acceptance. Existing generated
+HTML/PDF/manifest URLs resolve the database-selected bundle and reject changed
+files; missing bundles cannot fall back to loose files. Older rows without bundle
+references retain their explicit legacy path. Final-acceptance/currentness checks
+use the selected output and the current saved candidate revision. This is local
+job publication, not atomic filesystem writes or production artifact security.
 
 Metadata and list entries include additive `artifact_manifest_current`: true only
 when the versioned manifest is valid, belongs to this artifact, references the

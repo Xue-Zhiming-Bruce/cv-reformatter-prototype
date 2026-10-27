@@ -13,7 +13,7 @@ from pypdf import PdfReader
 
 from app.extraction.candidate_schema import CandidateProfile, DisplayRule
 from app.final_acceptance import FinalOutputIdentity, current_output_identity, file_sha256
-from app.profile_approval import ProfileApprovalError, ProfileRevisionRepository, load_current_approved_profile
+from app.profile_approval import ProfileApprovalError, ProfileRevisionRepository, draft_sha256, load_current_approved_profile
 from app.generation.template_mapper import CLIENT_DISCLOSURE_VERSION
 from app.template_analysis.schemas import LayoutTemplateSpec
 
@@ -122,6 +122,10 @@ class GenerationRepository(Protocol):
     def save(self, manifest: ArtifactManifest, layout_spec: LayoutTemplateSpec) -> None: ...
 
     def current(self, artifact_id: str) -> ArtifactManifest | None: ...
+
+    def output_directory(self, artifact_dir: Path) -> Path: ...
+
+    def selected_output(self, artifact_dir: Path) -> tuple[Path, ArtifactManifest | None]: ...
 
 
 def identify_file(directory: Path, path: Path) -> FileIdentity:
@@ -277,18 +281,20 @@ def is_artifact_manifest_current(
 ) -> bool:
     directory = Path(directory)
     try:
-        manifest = ArtifactManifest.model_validate_json((directory / MANIFEST_FILENAME).read_text())
+        output_dir = repository.output_directory(directory) if repository is not None else directory
+        manifest = ArtifactManifest.model_validate_json((output_dir / MANIFEST_FILENAME).read_text())
         if repository is not None and repository.current(directory.name) != manifest:
             return False
         revision = load_current_approved_profile(directory, repository=profile_repository)
         if (manifest.artifact_id != directory.name or revision is None
                 or revision.profile_revision_id != manifest.output_identity.profile_revision_id
                 or revision.profile_sha256 != manifest.output_identity.profile_sha256
-                or revision.source_draft_sha256 != manifest.inputs["source_draft"].sha256):
+                or revision.source_draft_sha256 != manifest.inputs["source_draft"].sha256
+                or draft_sha256(directory) != manifest.inputs["source_draft"].sha256):
             return False
         references = [*manifest.inputs.values(), *manifest.outputs.values(),
                       *(check.report for check in manifest.checks.values() if check.report is not None)]
-        return (manifest.output_identity == current_output_identity(directory)
-                and all(_matches(directory, reference) for reference in references))
+        return (manifest.output_identity == current_output_identity(output_dir)
+                and all(_matches(output_dir, reference) for reference in references))
     except (OSError, ValueError, KeyError, ProfileApprovalError):
         return False

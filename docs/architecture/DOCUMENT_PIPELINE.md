@@ -845,10 +845,10 @@ assigned to an old artifact.
 Metadata/list endpoints compute manifest currentness from referenced files and
 the current saved revision/output identity. Old previews need no migration and
 report false when no valid manifest exists. Manifest currentness neither grants
-nor revokes human final-output acceptance. This local implementation does not
-provide transactional output publication, concurrent-writer isolation, durable
-jobs, provider policy enforcement or workflow support-state routing. Those
-production boundaries remain B1A/P1/P2 work.
+nor revokes human final-output acceptance. The synchronous path retains local
+file publication; opt-in native jobs add fenced bundle selection below. Provider
+policy enforcement, workflow-wide support-state routing and production controls
+remain B1A/P1/P2 work.
 
 P1's metadata slice now implements `ArtifactStore` with shared lifecycle
 operations and separate SQLite/PostgreSQL persistence adapters. `DATABASE_URL`
@@ -904,14 +904,31 @@ can require repair; this is not an atomic DB/filesystem transaction.
 API design/detail/download reads use scoped database heads, rebuilding missing
 canonical copies and rejecting conflicting/unimported files. Generation commit
 rechecks the current approved design, source/target/template and audit identities.
-Unapproved proof state and document/debug files remain outside the DB.
-File publication still uses the existing single-writer local workflow and is
-not atomic with these database transactions; job ownership and concurrent file
-writers remain P1/P2 work.
+Complete pending proof sets also append immutable aggregates in PostgreSQL;
+partial proof-render state and document/debug files remain outside the DB.
+Synchronous file publication still uses the existing local workflow and is not
+atomic with its database transaction; the opt-in native job path below isolates
+its file writers and owns publication separately.
 Actual process/generate/acceptance and new-process reads pass on local PostgreSQL,
 but full structured persistence, transactional publication, idempotency and
 production security gates remain open. [ADR 0007](../decisions/0007-postgresql-structured-persistence.md)
 records the owner-selected stack and this rollout limit.
+
+ADR 0008's local native job path adds `workflow_jobs` and `job_attempts` with
+immutable requests/terminal history, idempotency, short fenced leases and bounded
+native recovery. `NativeGenerationPayload` stores only saved input/configuration
+references. Opt-in job routes do not accept candidate facts or uploaded targets.
+The worker snapshots the current saved inputs into a unique stable attempt path,
+then executes the existing generation service in a database-free child. Its
+transitional SQLite index is derived execution scratch, never the product store.
+Exit codes and logs remain with the attempt. A normal exit and checked manifest
+are required before one transaction rechecks current facts and lease ownership,
+inserts the generation/bundle reference, switches its pointer and completes the
+job. Files never move after rendering; publication selects an immutable reference.
+Current output reads and final acceptance resolve that reference. Legacy rows
+with no bundle use their original path; a missing bundle is an explicit failure.
+Provider execution/policy, production isolation, retention, observability and
+broader recovery/scale checks remain separate roadmap requirements.
 
 ## Independent Quality Gates
 

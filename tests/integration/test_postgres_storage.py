@@ -1,6 +1,7 @@
 """Real local PostgreSQL checks in the canonical integration lane."""
 
 import io
+import hashlib
 import json
 import os
 import subprocess
@@ -63,22 +64,48 @@ def test_postgres_migrations_are_explicit_reversible_and_match_repository(
     existing_revision = save_approved_profile(existing_directory, artifact_id="synthetic_upgrade", profile=profile,
         source_draft_sha256=draft_sha256(existing_directory), repository=PostgresProfileRevisionRepository(engine))
     _migrate(engine, "0003_generations_acceptance")
-    generated = client.post("/api/generate", json={"artifact_id": "synthetic_upgrade",
-        "profile_revision_id": existing_revision.profile_revision_id})
-    assert generated.status_code == 200, generated.text
-    identity_fields = ("profile_revision_id", "profile_sha256", "layout_template_version", "layout_spec_sha256", "html_sha256", "pdf_sha256")
-    accepted = client.post("/api/artifacts/synthetic_upgrade/final-acceptance",
-        json={key: generated.json()[key] for key in identity_fields})
-    assert accepted.status_code == 200, accepted.text
-    # Reproduce the earlier raw-JSONB layout representation without rewriting history.
+    # Actual rendering uses an explicitly configured execution store; only the
+    # verified records are seeded into reflected old DDL for the upgrade check.
+    from sqlalchemy import MetaData, Table
+    from app.storage.postgres import StoredLayoutSource
+    (existing_directory / "profiles" / "index.json").write_text(json.dumps({
+        "current": existing_revision.profile_revision_id,
+        "versions": {existing_revision.profile_revision_id: {"superseded": False}},
+    }))
+    with monkeypatch.context() as execution:
+        execution.setattr(main, "DATABASE_URL", None)
+        execution.setattr(main, "LOCAL_DATABASE_PATH", tmp_path / "render_execution.sqlite3")
+        execution.setenv("LLM_PROVIDER", "mock")
+        generated = client.post("/api/generate", json={"artifact_id": "synthetic_upgrade",
+            "profile_revision_id": existing_revision.profile_revision_id})
+        assert generated.status_code == 200, generated.text
+        fields = ("profile_revision_id", "profile_sha256", "layout_template_version", "layout_spec_sha256", "html_sha256", "pdf_sha256")
+        accepted = client.post("/api/artifacts/synthetic_upgrade/final-acceptance",
+            json={key: generated.json()[key] for key in fields})
+        assert accepted.status_code == 200, accepted.text
+    before_generation = ArtifactManifest.model_validate_json((existing_directory / "artifact_manifest.json").read_text())
+    before_acceptance = FinalOutputAcceptance.model_validate_json((existing_directory / "final_acceptance.json").read_text())
+    PostgresArtifactStore(engine).record_generated_outputs(artifact_id="synthetic_upgrade", artifact_dir=existing_directory,
+        template_name=main.DEFAULT_TEMPLATE_NAME, blind_profile=False,
+        html_surface_url=generated.json()["html_surface_url"], pdf_download_url=generated.json()["pdf_download_url"],
+        pdf_preview_url=generated.json()["pdf_preview_url"], missing_fields=[MissingField.model_validate(item) for item in generated.json()["missing_fields"]],
+        debug_artifacts=generated.json()["debug_artifacts"])
+    legacy_table = Table("generation_versions", MetaData(), autoload_with=engine)
+    acceptance_table = Table("final_output_acceptances", MetaData(), autoload_with=engine)
+    manifest_body = before_generation.model_dump(mode="json")
     with engine.begin() as connection:
-        legacy = dict(connection.execute(select(generation_versions)).mappings().one())
+        connection.execute(legacy_table.insert().values(artifact_id="synthetic_upgrade", generation_id="generation_prebundle",
+            profile_revision_id=existing_revision.profile_revision_id, manifest=manifest_body,
+            manifest_sha256=hashlib.sha256(json.dumps(manifest_body, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest(),
+            layout_spec=StoredLayoutSource(json_source=(existing_directory / "generation_layout_spec.json").read_text()).model_dump(mode="json")))
+        connection.execute(acceptance_table.insert().values(artifact_id="synthetic_upgrade", generation_id="generation_prebundle",
+            body=before_acceptance.model_dump(mode="json")))
+        # Reproduce the earlier raw-JSONB layout representation without rewriting history.
+        legacy = dict(connection.execute(select(legacy_table)).mappings().one())
         legacy.update(generation_id="legacy_generation", layout_spec=json.loads((existing_directory / "generation_layout_spec.json").read_text()))
-        connection.execute(generation_versions.insert().values(**legacy))
+        connection.execute(legacy_table.insert().values(**legacy))
         connection.execute(update(artifact_sessions).values(current_generation_id="legacy_generation"))
     before_upgrade = PostgresArtifactStore(engine).get_artifact("synthetic_upgrade")
-    before_generation = PostgresGenerationRepository(engine).current("synthetic_upgrade")
-    before_acceptance = PostgresFinalAcceptanceRepository(engine).load("synthetic_upgrade")
     upgraded = subprocess.run([sys.executable, "-B", "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "upgrade", "head"],
         cwd=tmp_path, env={**os.environ, "DATABASE_URL": url, "PYTHONPATH": ""},
         capture_output=True, text=True, timeout=30)
@@ -94,7 +121,7 @@ def test_postgres_migrations_are_explicit_reversible_and_match_repository(
     cli = subprocess.run([sys.executable, "-B", "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "current"],
         cwd=tmp_path, env={**os.environ, "DATABASE_URL": url, "PYTHONPATH": ""},
         capture_output=True, text=True, timeout=30)
-    assert cli.returncode == 0 and "0006_workflow_jobs" in cli.stdout, cli.stderr
+    assert cli.returncode == 0 and "0007_generation_bundles" in cli.stdout, cli.stderr
     with engine.connect() as connection:
         assert compare_metadata(MigrationContext.configure(connection), metadata) == []
     _migrate(engine, "base", downgrade=True)
@@ -448,6 +475,10 @@ def test_postgres_job_submissions_are_idempotent_scoped_and_immutable(postgres_d
     with pytest.raises(IntegrityError):
         with engine.begin() as connection:
             connection.execute(update(workflow_jobs).values(payload={"secret": "must-not-be-stored"}))
+    for invalid in ({"progress": -1}, {"progress": 101}, {"attempt_count": 3}, {"state": "running"}):
+        with pytest.raises(IntegrityError):
+            with engine.begin() as connection:
+                connection.execute(update(workflow_jobs).values(**invalid))
     code = """import os
 from app.storage.job_queue import PostgresJobQueue
 from app.storage.postgres import postgres_engine

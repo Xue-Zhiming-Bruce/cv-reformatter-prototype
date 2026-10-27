@@ -568,6 +568,25 @@ Status: `[ ]` Builds on B1A and P1.
 Exit: bounded jobs and private artifacts remain safe under retry, concurrency
 and malformed inputs, with actionable API errors and reproducible outputs.
 
+ADR 0008 native job progress: the opt-in POSIX worker and artifact-scoped job
+routes now execute existing native generation in a database-free child, retain
+exit evidence and publish a stable attempt bundle in the same fenced transaction
+as job completion. Output/currentness/exact-acceptance reads select that bundle;
+loose files cannot override it. Migration 0007 retains old null-reference rows
+and blocks downgrade once bundle references exist. The old-schema fixture uses
+actual current rendering plus reflected pre-bundle records, with no historical
+Git-object dependency or runtime schema fallback.
+The canonical PostgreSQL/worker command passes **25**, 45.62s, exit 0:
+`tests/test_results/pytest/20261027T105011Z_adr8_native_publication_final.txt`.
+It includes actual child/Chrome execution, cancellation/deadlines, failed/stale
+publication, a killed parent with a completed orphan child, distinct-attempt
+recovery and real DB/file deletion/restoration (33 files, eight structured rows,
+47 constraints/seven triggers/three functions/16 indexes). The portable upgrade
+case additionally passes in 4.01s, exit 0. ADR 0008 records commands, initial
+failure causes and scope. Full integrated regression, provider/target jobs,
+workflow-wide import/rollback/policy, private storage and production reliability
+remain open; B1A/P1/P2 stay unchecked. No paid provider calls or hosted-data claim.
+
 ### P3 — Authentication, Organizations And Candidate Privacy
 
 Status: `[ ]` Required before real hosted candidate data.
