@@ -509,7 +509,7 @@ The next queue/publication implementation choice is documented in
 worker and immutable bundle architecture have not been implemented or selected
 by the existing database-stack approval.
 
-P1 remains open: unapproved proof-state persistence, workflow/job transactions,
+P1 remains open: partial proof-render persistence, workflow/job transactions,
 file-publication ownership/isolation, explicit import/data-preserving rollback
 and idempotency are still required. The initial downgrade drops the structured tables; its empty-DB
 reversibility is not production backup/restore evidence. No deployment or hosted
@@ -526,6 +526,20 @@ Seven existing PostgreSQL checks pass; the new case skips without its explicit
 container setting (logs recorded in ADR 0007). This establishes same-build,
 same-path, quiescent local recovery. Concurrent publication/snapshots and cloud
 backup/restore remain required; P1/P4 are not closed by this check.
+
+October 27 pending-proof progress: complete three-variant sets now append an
+immutable `pending` aggregate using the existing PostgreSQL table/model. A fresh
+process reconstructs its missing audit copy. Generation remains blocked before
+explicit approval; re-creation appends a new pending event requiring approval
+again. Legacy behavior and partial-render storage remain unchanged. The existing
+creation case fails on the earlier implementation at the intended state assertion,
+then passes for both stores. The broader canonical proof/storage command passes
+**159**, one recovery case deselected, 476.85s, exit 0:
+`tests/test_results/pytest/20261027T031442Z_p1_pending_proof_regression.txt`.
+The 75-reference/six-output/three-acceptance read-only baseline audit passes;
+focused/baseline evidence is linked in ADR 0007. No new provider calls, migration
+or fidelity acceptance. Partial render persistence, jobs and publication remain
+open, so P1/B1A/P2 stay unchecked.
 
 ### P2 — Jobs, Storage And API Hardening
 

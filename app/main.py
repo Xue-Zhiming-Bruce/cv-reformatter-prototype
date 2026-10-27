@@ -1070,6 +1070,7 @@ def create_layout_proofs(
             layout_spec=style_spec,
             target_pdf=target_pdf,
             target_checksum=target_checksum,
+            repository=layout_proof_repository(DATABASE_URL),
         )
     except LayoutProofRenderError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

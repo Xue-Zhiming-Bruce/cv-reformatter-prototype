@@ -619,7 +619,15 @@ def test_approval_for_other_layout_checksum_is_rejected(tmp_path: Path) -> None:
 # -- proof lifecycle endpoints -------------------------------------------------
 
 
-def test_create_layout_proofs_returns_all_variants(tmp_path: Path) -> None:
+@pytest.mark.parametrize("storage_backend", ["legacy", "postgres"])
+def test_create_layout_proofs_returns_all_variants(
+    tmp_path: Path, monkeypatch: MonkeyPatch, request: pytest.FixtureRequest, storage_backend: str,
+) -> None:
+    if storage_backend == "postgres":
+        database_url, engine = request.getfixturevalue("postgres_database")
+        from tests.helpers.postgres import migrate_database
+        migrate_database(engine)
+        monkeypatch.setattr(main, "DATABASE_URL", database_url)
     artifact_id = "artifact_create"
     target_format = _upload_target(tmp_path, artifact_id)
     response = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})
@@ -638,8 +646,50 @@ def test_create_layout_proofs_returns_all_variants(tmp_path: Path) -> None:
         assert variant["pdf_filename"].endswith(".pdf")
     # No absolute filesystem paths may leak into the response.
     assert "generated_outputs" not in response.text
-    assert body["state"] == "none"
+    assert body["state"] == ("pending" if storage_backend == "postgres" else "none")
     assert target_format["artifact_id"] == artifact_id
+    if storage_backend == "postgres":
+        import os
+        import subprocess
+        import sys
+        from sqlalchemy import select
+        from app.storage.postgres import PostgresLayoutProofRepository, layout_proof_approvals
+        repository = PostgresLayoutProofRepository(engine)
+        pending = repository.current(artifact_id)
+        assert pending.state == "pending" and not pending.is_approved
+        assert pending.approved_at is None and pending.reviewer_id is None
+        directory = tmp_path / artifact_id
+        audit = directory / "layout_proofs" / "approval.json"
+        audit_bytes = audit.read_bytes()
+        audit.unlink()
+        code = """import json
+from fastapi.testclient import TestClient
+from app.main import app
+response=TestClient(app).get('/api/artifacts/artifact_create/layout-proofs')
+assert response.status_code == 200, response.text
+print(json.dumps(response.json()))
+"""
+        restarted = subprocess.run([sys.executable, "-B", "-c", code],
+            cwd=Path(__file__).resolve().parents[2], env={**os.environ,
+                "DATABASE_URL": database_url, "GENERATED_OUTPUTS_DIR": str(tmp_path)},
+            capture_output=True, text=True, timeout=30)
+        assert restarted.returncode == 0, restarted.stderr
+        assert json.loads(restarted.stdout) == body and audit.read_bytes() == audit_bytes
+        version_id = _approve_profile(artifact_id, directory)
+        blocked = _generate_with_target(artifact_id, target_format, version_id)
+        assert blocked.status_code == 409 and blocked.json()["detail"]["error_code"] == "layout_proof_approval_required", blocked.text
+        approved = client.post(f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+            json={"state": "approved", "reviewer_id": "synthetic-reviewer"})
+        assert approved.status_code == 200, approved.text
+        recreated = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})
+        assert recreated.status_code == 200 and recreated.json()["state"] == "pending", recreated.text
+        assert recreated.json()["approval_id"] != approved.json()["approval_id"]
+        blocked = _generate_with_target(artifact_id, target_format, version_id)
+        assert blocked.status_code == 409 and blocked.json()["detail"]["error_code"] == "layout_proof_approval_required", blocked.text
+        with engine.connect() as connection:
+            states = connection.execute(select(layout_proof_approvals.c.state).where(
+                layout_proof_approvals.c.artifact_id == artifact_id).order_by(layout_proof_approvals.c.ordinal)).scalars().all()
+        assert states == ["pending", "approved", "pending"]
 
 
 def test_renderer_change_requires_new_proofs_and_explicit_reapproval(

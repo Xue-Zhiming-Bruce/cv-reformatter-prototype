@@ -711,6 +711,7 @@ def create_proof_variants(
     layout_spec: TemplateStyleSpec | LayoutTemplateSpec,
     target_pdf: str | Path,
     target_checksum: str,
+    repository: LayoutProofRepository | None = None,
 ) -> dict[LengthVariant, VariantProofEvidence]:
     """Render, validate, and compare all three proof variants for an artifact.
 
@@ -752,6 +753,18 @@ def create_proof_variants(
         )
         save_variant_evidence(artifact_dir, evidence)
         outcomes[variant] = evidence
+    if repository is not None:
+        pending = LayoutProofApproval(
+            approval_id=f"approval_{uuid.uuid4().hex[:16]}",
+            artifact_id=artifact_id,
+            target_checksum=target_checksum,
+            layout_spec_checksum=layout_spec_checksum(layout_spec),
+            renderer_version=active_renderer_version(),
+            state="pending",
+            variants=outcomes,
+        )
+        verify_approval_files(artifact_dir, pending)
+        save_layout_proof_approval(artifact_dir, pending, repository=repository)
     return outcomes
 
 

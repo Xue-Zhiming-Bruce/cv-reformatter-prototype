@@ -36,8 +36,11 @@ verify unavailable/invalid databases cannot fall back or expose credentials.
 Generation history retains templates/manifests and exact human acceptance across
 a new process, preserves profiles through schema upgrade, rejects revision races
 at commit and rejects loose-file attempts to override current generation or
-acceptance. Database triggers protect immutable histories. Unapproved proof state
-and document bytes remain local; these checks do not claim atomic file
+acceptance. Database triggers protect immutable histories. Completed proof sets
+append a database-backed `pending` event before any human approval. The creation
+case checks fresh-process recovery of its missing audit copy, the generation gate
+and re-creation requiring approval again. Partial render results and document
+bytes remain local; these checks do not claim atomic file
 publication, full workflow persistence or production readiness. Terminal output
 stays under `test_results/pytest/`.
 

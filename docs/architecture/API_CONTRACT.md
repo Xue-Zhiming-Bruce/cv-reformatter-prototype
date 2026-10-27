@@ -500,7 +500,13 @@ Proof approval/rejection history is database-backed too. Reads retain the existi
 proof-file checksums, scope and active-renderer checks. A missing audit copy is
 rebuilt byte-for-byte; a conflicting copy blocks use. Missing database approvals
 cannot fall back to intact local approval files, and an older file cannot undo a
-saved rejection. Unapproved proof records and document files remain filesystem-backed.
+saved rejection. With PostgreSQL configured, creating all three proof variants
+appends an immutable `pending` aggregate using the existing proof schema. Its
+reviewer and approval timestamp are empty; generation still requires explicit
+approval. Re-creating a completed set appends a new pending event and does not
+reuse prior approval. A missing audit copy can be recovered on a fresh-process
+read. The legacy filesystem path retains its existing `none` state before
+approval. Partial render state and document files remain filesystem-backed.
 The generation commit also rechecks the latest proof state and its exact
 target/layout/renderer/audit identity under the artifact lock. A proof rejected
 after rendering and file checks cannot be recorded as a successful generation.

@@ -198,11 +198,40 @@ The next durable-job/immutable-publication implementation is a separate
 [proposed decision](0008-durable-jobs-and-generation-publication.md), pending
 owner approval. This record does not select that architecture or close P1.
 
-Unapproved proof state still uses the filesystem store; migration/import,
+Partial proof-render state still uses the filesystem store; migration/import,
 full workflow transactions, file-publication isolation and idempotency remain P1/B1A/P2
 work in the [active roadmap](../roadmaps/BACKEND_ROADMAP.md). No production
 PostgreSQL image/version, cloud configuration or job implementation is selected
 by the local test environment.
+
+Completed proof sets now append a `pending` aggregate before human approval,
+using the existing schema/table without a migration. The aggregate retains all
+three variants but no reviewer or approval timestamp. Re-creation appends a new
+pending event; earlier approvals remain history and cannot authorize that set.
+The legacy filesystem workflow retains its existing pre-approval response.
+
+The existing proof-creation API case now runs with both stores. Its PostgreSQL
+case verifies a new-process read, missing audit-copy reconstruction, generation
+rejection before approval, explicit approval and re-creation requiring approval
+again. On the earlier implementation it fails at the intended `none` instead of
+`pending` assertion (3.47s, exit 1):
+`tests/test_results/pytest/20261027T031338Z_p1_pending_proof_before.txt`.
+Both store cases pass (11.71s, exit 0):
+`tests/test_results/pytest/20261027T031352Z_p1_pending_proof_focused.txt`.
+
+The canonical proof unit/render/approval/API and PostgreSQL-storage modules pass
+**159**, with the separately opted-in recovery case deselected, exit 0 (476.85s):
+`tests/test_results/pytest/20261027T031442Z_p1_pending_proof_regression.txt`.
+Command: the existing pytest flags, explicit local `TEST_DATABASE_URL`,
+`tests/unit/test_layout_proof_*.py tests/integration/test_layout_proof_*.py
+tests/integration/test_postgres_storage.py -k 'not restore' -x -q --tb=short`.
+This includes all four actual uploaded/designer loops across both stores,
+with model calls stubbed. No paid provider calls or renderer changes.
+The read-only audit preserves 75 frozen references, six original outputs and
+three current legacy acceptances:
+`tests/test_results/pytest/20261027T031500Z_p1_pending_proof_preserved_baseline.txt`.
+Partial render attempts and document files remain outside PostgreSQL; this
+does not implement durable jobs or atomic publication.
 
 ## Privacy, Failure And Rollback
 
