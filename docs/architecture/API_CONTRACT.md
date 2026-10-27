@@ -4,7 +4,7 @@ Status: `Active contract`
 
 Owner: Backend
 
-Last reviewed: October 27, 2026 (local PostgreSQL revisions, provenance and acceptance)
+Last reviewed: October 28, 2026 (native jobs, bundle publication and exact output reads)
 
 This document records the current MVP-compatible backend interface used by the
 frontend. It is not a complete versioned OpenAPI replacement; the FastAPI
@@ -539,6 +539,8 @@ input/configuration checksum; differing reuse returns 409. Local jobs permit
 deterministic native no-target generation only; any uploaded-target metadata
 returns an explicit conflict, without provider calls or template fallback.
 The server currently freezes a 180-second overall deadline and two attempts.
+Retired or unknown `GENERATION_STRATEGY` configuration is rejected before
+submission/execution, consistent with the synchronous entry point.
 An expired native lease may retry within those bounds; abnormal child exits
 retain their exit code and require attention without automatic retry.
 

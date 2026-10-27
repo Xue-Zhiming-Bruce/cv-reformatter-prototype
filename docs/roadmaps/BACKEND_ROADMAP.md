@@ -583,9 +583,19 @@ publication, a killed parent with a completed orphan child, distinct-attempt
 recovery and real DB/file deletion/restoration (33 files, eight structured rows,
 47 constraints/seven triggers/three functions/16 indexes). The portable upgrade
 case additionally passes in 4.01s, exit 0. ADR 0008 records commands, initial
-failure causes and scope. Full integrated regression, provider/target jobs,
+failure causes and scope. Provider/target jobs,
 workflow-wide import/rollback/policy, private storage and production reliability
 remain open; B1A/P1/P2 stay unchecked. No paid provider calls or hosted-data claim.
+
+Integrated verification on clean `5df422c` passes **872**, with 23 skips, five
+existing warnings and exit 0 (1135.16s):
+`tests/test_results/pytest/20261027T172045Z_adr8_native_full_backend.txt`.
+The subsequent isolated retired-strategy guard first fails at the intended
+202-instead-of-500 job-submission assertion, then passes all **26** storage/
+worker cases including recovery (53.24s, exit 0):
+`tests/test_results/pytest/20261027T174314Z_adr8_retired_job_config_final.txt`.
+Full verification belongs to `5df422c`; it was not repeated after that focused
+guard change. ADR 0008 records both source/validation boundaries.
 
 ### P3 — Authentication, Organizations And Candidate Privacy
 

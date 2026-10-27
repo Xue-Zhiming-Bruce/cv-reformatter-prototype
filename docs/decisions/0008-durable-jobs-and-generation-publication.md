@@ -118,8 +118,9 @@ queue/DB load and cost remain unmeasured until those checks exist.
 The opt-in local POSIX worker now executes native no-target jobs. Migration
 `0007_generation_bundles` adds stable attempt references to successful generations;
 older rows retain null references and their explicit legacy output path. The
-worker snapshots checked source/revision files, freezes application/font/runtime
-identity and invokes the existing rendering/gate service in a database-free child.
+worker snapshots checked source/revision files, fingerprints application/font
+source, Python and Chrome configuration, and invokes the existing rendering/gate
+service in a database-free child.
 The child's SQLite metadata is execution scratch only. Strict exit evidence,
 request identity, template/source and every manifest-bound file are checked.
 One fenced transaction records the generation, switches its pointer, updates
@@ -168,11 +169,31 @@ repository against missing migrations or depends on a particular Git object.
 The updated upgrade/CLI/legacy-record case passes independently (4.01s, exit 0):
 `tests/test_results/pytest/20261027T171559Z_adr8_portable_upgrade.txt`.
 
-These are local synthetic correctness and quiescent recovery checks. Full backend
-regression on the integrated source, provider-policy integration, uploaded-target
-jobs, broader crash/load/cost evidence, monitoring, retention/private hosting and
+These are local synthetic correctness and quiescent recovery checks. Provider-policy
+integration, uploaded-target jobs, broader crash/load/cost evidence, monitoring,
+retention/private hosting and
 production rollback remain separate work. No new provider requests, new renderer
 selection or production-readiness acceptance.
+
+The full canonical backend run on clean source `5df422c` passes **872**, with
+23 skips, five existing warnings and exit 0 (1135.16s):
+`tests/test_results/pytest/20261027T172045Z_adr8_native_full_backend.txt`.
+Command: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, explicit isolated `TEST_DATABASE_URL`
+and `TEST_POSTGRES_CONTAINER`, `python -B -m pytest -p no:cacheprovider
+tests/unit tests/integration -x -q --tb=short`. Both restore cases run with the
+matching local container; no external provider calls.
+
+A subsequent compatibility regression catches the new job entry accepting a
+retired `standard` configuration (202 instead of 500, 3.94s, exit 1):
+`tests/test_results/pytest/20261027T174054Z_adr8_retired_job_config_before.txt`.
+The shared execution fingerprint now invokes the existing generation-strategy
+validator before submission and before/after child execution. Retired/unknown
+configuration cannot be silently reinterpreted by the child environment.
+After this isolated guard change, all **26** storage/worker checks pass, including
+actual recovery again (53.24s, exit 0):
+`tests/test_results/pytest/20261027T174314Z_adr8_retired_job_config_final.txt`.
+The full suite was not repeated after that isolated guard; the broader result
+belongs to `5df422c`, and the later source is covered by the focused command above.
 
 ## Privacy And Operations
 

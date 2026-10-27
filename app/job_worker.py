@@ -30,7 +30,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def execution_fingerprint() -> dict[str, str]:
+    from app.generation.agentic import AgenticGenerationError, generation_strategy
+    try:
+        strategy = generation_strategy()
+    except AgenticGenerationError as exc:
+        raise ValueError("Native jobs reject retired or unknown generation strategies") from exc
     digest = hashlib.sha256()
+    digest.update(strategy.encode() + b"\0")
     for path in sorted((ROOT / "app").rglob("*")):
         if path.is_file() and (path.suffix == ".py" or "assets/fonts" in path.as_posix()):
             digest.update(path.relative_to(ROOT).as_posix().encode() + b"\0" + path.read_bytes())
@@ -44,13 +50,17 @@ def execution_fingerprint() -> dict[str, str]:
 def native_submission(directory: Path, revision: ApprovedProfileVersion, request: NativeJobCreate) -> JobSubmission:
     if (directory / "target_format.json").exists():
         raise ArtifactStoreConflict("Local jobs currently require a native no-target artifact; uploaded targets need gated provider execution.")
+    try:
+        fingerprint = execution_fingerprint()
+    except ValueError as exc:
+        raise ArtifactStoreError("Native jobs reject retired or unknown generation strategies; configure GENERATION_STRATEGY=agentic.") from exc
     inputs = capture_generation_inputs(directory, revision_id=revision.profile_revision_id,
                                        layout_path=None, target_filename=None)
     return JobSubmission(idempotency_key=request.idempotency_key, payload=NativeGenerationPayload(
         artifact_id=directory.name, profile_revision_id=revision.profile_revision_id,
         profile_sha256=revision.profile_sha256, source_draft_sha256=revision.source_draft_sha256,
         inputs=inputs, layout_sha256=layout_spec_sha256(built_in_layout_template_spec()),
-        component_source_sha256=execution_fingerprint(), blind_profile=request.blind_profile,
+        component_source_sha256=fingerprint, blind_profile=request.blind_profile,
     ))
 
 

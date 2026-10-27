@@ -207,6 +207,8 @@ Local synthetic generation jobs are opt-in under
 [ADR 0008](docs/decisions/0008-durable-jobs-and-generation-publication.md).
 After configuring and migrating PostgreSQL, set `LOCAL_JOBS_ENABLED=1` in both
 API and POSIX worker environments and run `python -B -m app.job_worker` (or `--once`).
+Inherited retired or unknown generation strategies are rejected; the supported
+configuration is `GENERATION_STRATEGY=agentic`.
 Submit `POST /api/artifacts/{artifact_id}/generation-jobs` with
 `local_synthetic: true`, a saved `profile_revision_id`, `idempotency_key` and
 optional `blind_profile`. Read `/api/artifacts/{artifact_id}/jobs/{job_id}`;

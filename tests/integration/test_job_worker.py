@@ -120,7 +120,7 @@ def test_native_child_publishes_bundle_and_reads_ignore_loose_files(native_jobs,
     assert not client.get(endpoint + "/metadata").json()["client_ready"]
 
 
-@pytest.mark.parametrize("failure", ["signal_exit", "source_drift", "corrupt_output", "cancel_at_publish", "profile_at_publish", "publication_failure"])
+@pytest.mark.parametrize("failure", ["signal_exit", "source_drift", "retired_configuration", "corrupt_output", "cancel_at_publish", "profile_at_publish", "publication_failure"])
 def test_native_worker_failure_preserves_previous_preview(native_jobs, monkeypatch: pytest.MonkeyPatch, failure: str):
     ctx = native_jobs
     directory, client, worker = ctx["directory"], ctx["client"], ctx["worker"]
@@ -134,6 +134,10 @@ def test_native_worker_failure_preserves_previous_preview(native_jobs, monkeypat
     elif failure == "source_drift":
         import app.job_worker as module
         monkeypatch.setattr(module, "execution_fingerprint", lambda: {"native_application_and_runtime": "0" * 64})
+    elif failure == "retired_configuration":
+        monkeypatch.setenv("GENERATION_STRATEGY", "standard")
+        rejected = client.post(endpoint + "/generation-jobs", json={**ctx["body"], "idempotency_key": "retired"})
+        assert rejected.status_code == 500 and "generation strateg" in rejected.text.lower(), rejected.text
     elif failure in {"corrupt_output", "cancel_at_publish", "profile_at_publish"}:
         original = worker._manifest
 
