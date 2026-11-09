@@ -3,6 +3,7 @@
 import pytest
 
 from app import main
+from app.generation import service as generation_service
 from tests.helpers.adobe_evidence import mock_run_adobe_layout
 
 
@@ -103,8 +104,8 @@ def a_generation_without_model_loop(monkeypatch: pytest.MonkeyPatch):
     from pypdf import PdfReader
 
     original = agentic.render_agentic
-    original_manifest_writer = main.write_artifact_manifest
-    monkeypatch.setattr(main, "write_artifact_manifest", lambda *args, **kwargs:
+    original_manifest_writer = generation_service.write_artifact_manifest
+    monkeypatch.setattr(generation_service, "write_artifact_manifest", lambda *args, **kwargs:
         None if kwargs["uses_agentic"] else original_manifest_writer(*args, **kwargs))
     monkeypatch.setenv("GENERATION_STRATEGY", "agentic")
 

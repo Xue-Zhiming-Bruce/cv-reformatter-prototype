@@ -27,6 +27,7 @@ from app import main
 from app.extraction.candidate_schema import CandidateProfile
 from app.main import app
 from app.template_analysis import layout_proof_service
+from app.generation import service as generation_service
 from tests.helpers.layout_proof import make_proof_pdf_exporter
 
 client = TestClient(app)
@@ -39,7 +40,7 @@ def _tmp_storage(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(main, "LOCAL_DATABASE_PATH", tmp_path / "local.sqlite3")
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")
     exporter = make_proof_pdf_exporter()
-    monkeypatch.setattr(main, "export_html_to_pdf", exporter)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", exporter)
     monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", exporter)
 
 

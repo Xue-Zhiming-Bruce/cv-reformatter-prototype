@@ -2,7 +2,7 @@
 
 Status: `Active contract`
 
-Last reviewed: October 28, 2026 (native jobs and selected output bundles)
+Last reviewed: November 9, 2026 (generation application workflow extraction)
 
 This document defines the provider-neutral boundaries of the CV Reformatter
 backend. The [Product Specification](../product/PRODUCT_SPEC.md) remains the
@@ -253,18 +253,35 @@ their own owner.
 
 ```text
 HTTP route (app/main.py) / native worker child (app/job_worker.py) / CLI (app/pipeline/__main__.py)
-  -> generation application workflow (app/main.py::generate_outputs)
-      -> candidate context + disclosure mapping (app/generation/template_mapper.py)
-      -> template/proof validation (app/template_analysis/*, app/main.py::_require_layout_proof_approval)
-      -> pipeline coordinator (app/pipeline/service.py::run_e5)
-          -> layout state + compilation (layout_state.py, layout_compiler.py)
-          -> deterministic measurements and gates (measurement.py, review.py, quality.py)
-          -> model adapters, prompts, bounded repair (service.py adapters, runtime.py)
-          -> selected version + run artifacts (service.py report writers, runtime.py)
-      -> generation/proof adapters (app/generation/agentic.py, app/template_analysis/layout_proof_service.py)
-      -> controlled HTML + Chrome PDF export (html_renderer.py, rendering.py, fonts.py, chrome_html_to_pdf.py)
-  -> manifest, artifacts, repository/publication (generation/artifact_manifest.py, storage/*)
+  -> generation application workflow (app/generation/service.py::generate_outputs)
+      -> prepare_generation (saved revision + disclosure, template/design/proof selection)
+          -> candidate context + disclosure mapping (app/generation/template_mapper.py)
+          -> revision and source-review validation (app/profile_approval.py)
+          -> template/proof validation (app/template_analysis/*, service.py::require_layout_proof_approval)
+          -> business content binding (app/generation/render_plan.py)
+      -> render_prepared_generation
+          -> pipeline coordinator (app/pipeline/service.py::run_e5)
+              -> layout state + compilation (layout_state.py, layout_compiler.py)
+              -> deterministic measurements and gates (measurement.py, review.py, quality.py)
+              -> model adapters, prompts, bounded repair (service.py adapters, runtime.py)
+              -> selected version + run artifacts (service.py report writers, runtime.py)
+          -> generation/proof adapters (app/generation/agentic.py, app/template_analysis/layout_proof_service.py)
+          -> controlled HTML + Chrome PDF export (html_renderer.py, rendering.py, fonts.py, chrome_html_to_pdf.py)
+      -> validate_generation (independent content and structure gates, fail-closed)
+      -> record_generation
+          -> manifest, artifacts, repository/publication (generation/artifact_manifest.py, storage/*)
+          -> diagnostic visual comparison (app/template_analysis/visual_comparator.py)
+  -> HTTP adapter maps GenerationError to the historical status/detail (app/main.py)
 ```
+
+The workflow takes a `GenerateRequest` plus explicit `GenerationSettings`
+(output root, database URL, local database path). `app/main.py` resolves its
+module configuration into those settings and only validates and maps errors;
+the native child passes its frozen snapshot paths and a database-free local
+store. `app/generation/service.py` imports neither `app.main` nor FastAPI, so
+there is no main→workflow→main cycle and no second generation implementation.
+`GenerationError` carries the status and payload; the HTTP adapter owns the
+framework-specific response.
 
 Runtime roles and development roles are different things and must not be
 conflated in review notes:

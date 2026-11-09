@@ -11,6 +11,7 @@ from app import main
 from app.main import app
 from app.extraction.llm_extractor import LLMExtractionError
 from app.ingestion.pdf_reader import read_pdf_text
+from app.generation import service as generation_service
 
 client = TestClient(app)
 
@@ -82,7 +83,7 @@ def _escape_pdf_text(value: str) -> str:
 def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("API_LLM_PROVIDER", "mock")
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
-    monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
     resume_path = tmp_path / "resume.docx"
     _build_resume_docx(resume_path)
 
@@ -209,7 +210,7 @@ def test_llm_first_unavailable_fails_closed_with_structured_error(
     llm_client = UnavailableClient()
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
     monkeypatch.setattr(main, "build_llm_client", lambda **_kwargs: llm_client)
-    monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
     resume_path = tmp_path / "resume.docx"
     _build_resume_docx(resume_path)
 
@@ -278,7 +279,7 @@ def test_llm_first_missing_line_persists_failed_audit_and_blocks_approval(
     monkeypatch.setattr(
         main, "build_llm_client", lambda **_kwargs: MissingLineClient("SQL")
     )
-    monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
     resume_path = tmp_path / "resume.docx"
     missing_line_docx = Document()
     for line in resume_text.splitlines():

@@ -18,6 +18,7 @@ from app import main
 from app.extraction.candidate_schema import CandidateProfile
 from app.main import app
 from app.template_analysis import layout_proof_service
+from app.generation import service as generation_service
 from tests.helpers.layout_proof import (
     create_and_approve_proofs,
     make_proof_pdf_exporter,
@@ -35,7 +36,7 @@ def _tmp_storage(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(main, "LOCAL_DATABASE_PATH", tmp_path / "local.sqlite3")
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")
     exporter = make_proof_pdf_exporter()
-    monkeypatch.setattr(main, "export_html_to_pdf", exporter)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", exporter)
     monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", exporter)
 
 
@@ -770,7 +771,7 @@ def test_generation_fails_closed_on_structure_gate_failure(
             ],
         )
 
-    monkeypatch.setattr(main, "validate_output_structure", _failing_gate)
+    monkeypatch.setattr(generation_service, "validate_output_structure", _failing_gate)
     response = _generate(artifact_id, version_id)
 
     assert response.status_code == 500
@@ -818,7 +819,7 @@ def test_generation_fails_closed_on_broken_render_output(
         tmp_path, profile=profile
     )
 
-    real_render = main.render_layout_template
+    real_render = generation_service.render_layout_template
 
     def _render_with_broken_entry_semantics(*args, **kwargs):
         state, plan, html = real_render(*args, **kwargs)
@@ -826,7 +827,7 @@ def test_generation_fails_closed_on_broken_render_output(
         html = re.sub(r'(class="[^"]*)\bentry-metadata\b', r'\1broken-metadata', html, count=1)
         return state, plan, html
 
-    monkeypatch.setattr(main, "render_layout_template", _render_with_broken_entry_semantics)
+    monkeypatch.setattr(generation_service, "render_layout_template", _render_with_broken_entry_semantics)
     response = _generate(artifact_id, version_id)
 
     assert response.status_code == 500

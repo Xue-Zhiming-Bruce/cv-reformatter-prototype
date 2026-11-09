@@ -18,9 +18,11 @@ from sqlalchemy import inspect, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app import main
+from app.generation import service as generation_service
 from app.extraction.candidate_schema import CandidateProfile, MissingField
 from app.final_acceptance import FinalOutputAcceptance
 from app.generation.artifact_manifest import ArtifactManifest
+from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME
 from app.profile_approval import draft_sha256, save_approved_profile
 from app.storage.artifact_store import ArtifactStoreError
 from app.storage.postgres import PostgresArtifactStore, PostgresFinalAcceptanceRepository, PostgresGenerationRepository, PostgresProfileRevisionRepository, artifact_sessions, final_output_acceptances, generation_versions, metadata, profile_revisions
@@ -86,7 +88,7 @@ def test_postgres_migrations_are_explicit_reversible_and_match_repository(
     before_generation = ArtifactManifest.model_validate_json((existing_directory / "artifact_manifest.json").read_text())
     before_acceptance = FinalOutputAcceptance.model_validate_json((existing_directory / "final_acceptance.json").read_text())
     PostgresArtifactStore(engine).record_generated_outputs(artifact_id="synthetic_upgrade", artifact_dir=existing_directory,
-        template_name=main.DEFAULT_TEMPLATE_NAME, blind_profile=False,
+        template_name=DEFAULT_TEMPLATE_NAME, blind_profile=False,
         html_surface_url=generated.json()["html_surface_url"], pdf_download_url=generated.json()["pdf_download_url"],
         pdf_preview_url=generated.json()["pdf_preview_url"], missing_fields=[MissingField.model_validate(item) for item in generated.json()["missing_fields"]],
         debug_artifacts=generated.json()["debug_artifacts"])
@@ -140,14 +142,14 @@ def test_postgres_api_process_generate_and_fresh_process_preserve_artifact_ident
     monkeypatch.setattr(main, "LOCAL_DATABASE_PATH", tmp_path / "unused.sqlite3")
     monkeypatch.setenv("API_LLM_PROVIDER", "mock")
     monkeypatch.setenv("LLM_PROVIDER", "mock")
-    native_template = main.built_in_layout_template_spec
+    native_template = generation_service.built_in_layout_template_spec
 
     def signed_zero_template():
         spec = native_template()
         spec.page.margin_right_pt = -0.0  # Valid geometry whose JSON spelling JSONB would change.
         return spec
 
-    monkeypatch.setattr(main, "built_in_layout_template_spec", signed_zero_template)
+    monkeypatch.setattr(generation_service, "built_in_layout_template_spec", signed_zero_template)
     resume = Document()
     for line in ("Synthetic Candidate", "candidate@example.test", "Location: Singapore", "Skills: Python, SQL"):
         resume.add_paragraph(line)
