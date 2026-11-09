@@ -35,6 +35,13 @@ AGENTIC_REPORT_FILENAME = "agentic_generation.json"
 
 DecisionState = Literal["explained", "review_required", "unknown"]
 
+#: A plan record that validates but cannot be projected (a merged heading
+#: without its target presentation) is untraceable, not an error.
+_INCOMPLETE_PLAN_REASON = (
+    "The recorded render plan does not describe a merged candidate heading's "
+    "target presentation; its content arrangement is unknown."
+)
+
 #: ``AdaptationStatus`` -> report state: an adaptation the pipeline marked
 #: ``unsupported`` was not made, so its placement still needs owner judgment.
 _ADAPTATION_STATES: dict[str, DecisionState] = {
@@ -125,22 +132,26 @@ def build_composition_report(
 ) -> CompositionReport:
     """Project the selected version's arrangements from its own recorded facts."""
     if selected.plan is None:
-        return CompositionReport(
+        return _unknown_report(
             artifact_id=artifact_id,
             output_identity=output_identity,
             selected_version=selected.selected_version,
-            state="unknown",
-            summary=selected.untraced_reason
+            reason=selected.untraced_reason
             or (
                 "No render plan exists for the selected version; its content "
                 "arrangement is unknown."
             ),
         )
 
-    decisions = [
-        *(_binding_decisions(production_plan)),
-        *(_plan_decisions(selected.plan)),
-    ]
+    plan_decisions = _plan_decisions(selected.plan)
+    if plan_decisions is None:
+        return _unknown_report(
+            artifact_id=artifact_id,
+            output_identity=output_identity,
+            selected_version=selected.selected_version,
+            reason=_INCOMPLETE_PLAN_REASON,
+        )
+    decisions = [*(_binding_decisions(production_plan)), *plan_decisions]
     arranged = sum(decision.action is not None for decision in decisions)
     review_required = sum(decision.state == "review_required" for decision in decisions)
     if decisions and arranged:
@@ -166,6 +177,23 @@ def build_composition_report(
         state="review_required" if review_required else "explained",
         summary=summary,
         decisions=decisions,
+    )
+
+
+def _unknown_report(
+    *,
+    artifact_id: str,
+    output_identity: FinalOutputIdentity,
+    selected_version: str | None,
+    reason: str,
+) -> CompositionReport:
+    """The documented ``unknown`` result: a reason, and no decisions."""
+    return CompositionReport(
+        artifact_id=artifact_id,
+        output_identity=output_identity,
+        selected_version=selected_version,
+        state="unknown",
+        summary=reason,
     )
 
 
@@ -200,28 +228,39 @@ def _binding_decisions(production_plan: ProductionRenderPlan) -> list[Compositio
     return decisions
 
 
-def _plan_decisions(plan: C2RenderPlan) -> list[CompositionDecision]:
-    """Pipeline-side arrangements of the selected version, in plan order."""
+def _plan_decisions(plan: C2RenderPlan) -> list[CompositionDecision] | None:
+    """Pipeline-side arrangements of the selected version, in plan order.
+
+    ``None`` means a recorded record is incomplete — a merged heading without
+    its section id, heading, destination or reason, or a destination the plan
+    itself does not describe. The arrangement is then untraceable and is
+    reported as ``unknown`` instead of raising or inventing the missing part.
+    """
     decisions: list[CompositionDecision] = []
     labels = {
         section.node_id: section.label
         for section in [*plan.sections, *plan.appended_sections]
     }
     for record in plan.merged_candidate_headings:
-        if record["heading"].casefold() == labels.get(record["destination_node"], "").casefold():
+        section_id, heading = record.get("section_id"), record.get("heading")
+        destination = record.get("destination_node")
+        if not (section_id and heading and "reason" in record) or destination not in labels:
+            return None
+        label = labels[destination]
+        if heading.casefold() == label.casefold():
             # The rendered label already is the source heading: nothing was arranged.
             continue
         decisions.append(
             CompositionDecision(
-                decision_id=f"merge.{record['section_id']}",
-                source_refs=[record["section_id"]],
-                destination_refs=[record["destination_node"]],
+                decision_id=f"merge.{section_id}",
+                source_refs=[section_id],
+                destination_refs=[destination],
                 action="merge_into_compatible_section",
                 state="explained",
                 reason=(
                     f"The target renders its own label "
-                    f"{labels[record['destination_node']]!r} for this section, so the "
-                    f"candidate heading {record['heading']!r} is not printed and its "
+                    f"{label!r} for this section, so the "
+                    f"candidate heading {heading!r} is not printed and its "
                     f"content merges into the mapped section."
                 ),
                 evidence=[

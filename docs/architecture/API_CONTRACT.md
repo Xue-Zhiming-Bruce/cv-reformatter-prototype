@@ -229,7 +229,13 @@ version already recorded — the `production_render_plan.json` section bindings
 (`filled` / `hidden_empty` / `review_required`) and the selected render
 version's own plan (merged headings, appended candidate-only sections, section
 adaptation decisions) — bound to the exact output identity. No mapping or
-provider call is re-run and no candidate text is copied.
+provider call is re-run. No candidate value is copied: `source_refs` and
+`destination_refs` carry ids, and `reason`/`evidence` repeat only the facts and
+static sentences the selected version recorded. The one piece of candidate text
+a report repeats is a section heading — a merge decision's `reason` quotes the
+heading that was not printed beside the target label that replaced it, and an
+appended section's `reason` names the heading or source role the target has no
+section for. Leaf values are never copied.
 
 - `schema_version` — `composition-report/1.0`;
 - `artifact_id`;

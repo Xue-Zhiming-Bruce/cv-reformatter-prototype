@@ -229,6 +229,34 @@ Secret unapproved project text.
     assert "Secret unapproved project text." not in report.model_dump_json()
 
 
+def test_incomplete_plan_record_reports_unknown_instead_of_raising() -> None:
+    _report, production_plan, plan, _html = _selected_output(
+        built_in_layout_template_spec(), FULL_PROFILE
+    )
+    records = plan.merged_candidate_headings
+    assert records and all("destination_node" in record for record in records)
+    # A truncated record (no recorded presentation mapping) and a destination
+    # the plan does not describe both make the arrangement unprojectable.
+    missing_mapping = {
+        key: value for key, value in records[0].items() if key != "destination_node"
+    }
+    unknown_destination = {**records[0], "destination_node": "section.99"}
+
+    for broken in (missing_mapping, unknown_destination):
+        report = build_composition_report(
+            artifact_id="artifact_composition",
+            output_identity=IDENTITY,
+            production_plan=production_plan,
+            selected=SelectedRenderPlan(plan=plan.model_copy(
+                update={"merged_candidate_headings": [broken]}
+            )),
+        )
+
+        assert report.state == "unknown"
+        assert report.decisions == []
+        assert "merged candidate heading" in report.summary
+
+
 def test_untraceable_selection_reports_unknown() -> None:
     report = build_composition_report(
         artifact_id="artifact_composition",
