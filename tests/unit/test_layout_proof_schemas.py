@@ -529,3 +529,14 @@ def test_approval_rejects_scope_mismatch() -> None:
 def test_approval_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError):
         _approval(unexpected="x")
+
+
+def test_legacy_approval_record_without_presentation_labels_still_loads() -> None:
+    """Appended defaulted fields must not break a stored ``approval/2`` record."""
+    legacy = _approval().model_dump(mode="json")
+    legacy.pop("presentation_labels")
+    legacy.pop("presentation_label_catalog_sha256")
+    restored = LayoutProofApproval.model_validate(legacy)
+    assert restored.state == "approved"
+    assert restored.presentation_labels == []
+    assert restored.presentation_label_catalog_sha256 is None

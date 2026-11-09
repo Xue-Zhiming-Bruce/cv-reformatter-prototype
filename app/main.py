@@ -510,6 +510,9 @@ class LayoutProofApproveRequest(BaseModel):
     reviewer_id: str
     reviewer_note: str | None = None
     design_id: str | None = None
+    # The presentation-label catalog the caller believes it is approving; it
+    # must be the catalog the proof runs actually validated.
+    catalog_sha256: str | None = None
 
 
 DESIGN_ARTIFACT_FILENAMES = {
@@ -1156,6 +1159,7 @@ def approve_layout_proofs(
                 target_pdf=target_pdf,
                 reviewer_id=body.reviewer_id,
                 reviewer_note=body.reviewer_note,
+                presentation_label_catalog_sha256=body.catalog_sha256,
                 repository=layout_proof_repository(DATABASE_URL),
             )
         else:

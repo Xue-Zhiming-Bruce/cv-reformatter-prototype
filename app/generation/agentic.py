@@ -205,10 +205,43 @@ def _structure_basis(state: C2LayoutState, normalized: NormalizedLayoutEvidence)
     )
 
 
+def _proof_label_approval(
+    layout_proof_approval: Any, catalog: dict[str, Any],
+    *, target_checksum: str, layout_spec_checksum: str,
+) -> Any:
+    """Reuse the owner's layout-proof approval as this run's label approval.
+
+    The proof approval records that the owner approved exactly these labels for
+    this target, so it carries over ONLY when it is approved, names this exact
+    target and layout spec, and its catalog identity equals the catalog this run
+    just derived. Anything else (no approval, a stale catalog, another target)
+    still needs a new explicit approval. Artifact scope is enforced by
+    ``render_candidate_document`` before the run starts."""
+    if (
+        layout_proof_approval is None
+        or not layout_proof_approval.is_approved
+        or not layout_proof_approval.presentation_labels
+        or layout_proof_approval.target_checksum != target_checksum
+        or layout_proof_approval.layout_spec_checksum != layout_spec_checksum
+        or layout_proof_approval.presentation_label_catalog_sha256 != catalog["catalog_sha256"]
+    ):
+        return None
+    return service.PresentationLabelApproval(
+        target_sha256=target_checksum,
+        catalog_sha256=catalog["catalog_sha256"],
+        approved_label_ids=sorted({
+            label_id
+            for entry in layout_proof_approval.presentation_labels
+            for label_id in entry.approved_label_ids
+        }),
+    )
+
+
 def render_agentic(
     *, context: ClientFacingRenderContext, layout_spec: LayoutTemplateSpec,
     target_pdf: Path, evidence_dir: Path, output_dir: Path,
     presentation_label_approval: Any = None,
+    layout_proof_approval: Any = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
     """Run A's real live loop; return a checked selected version, never the last attempt."""
     identity = agentic_renderer_version()
@@ -233,7 +266,14 @@ def render_agentic(
     if presentation_label_approval is None:
         catalog = service.template_presentation_label_catalog(
             state, normalized, target_sha256=service._sha256_file(target_pdf))
-        if catalog["unrecognized_template_ids"]:
+        from app.template_analysis.layout_proof_service import layout_spec_checksum
+
+        presentation_label_approval = _proof_label_approval(
+            layout_proof_approval, catalog,
+            target_checksum=service._sha256_file(target_pdf),
+            layout_spec_checksum=layout_spec_checksum(layout_spec),
+        )
+        if presentation_label_approval is None and catalog["unrecognized_template_ids"]:
             raise AgenticPresentationLabelError(
                 "unrecognized product-template presentation labels require explicit "
                 f"identity-bound label approval: {catalog['unrecognized_template_ids']}. "

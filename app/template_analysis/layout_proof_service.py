@@ -118,6 +118,7 @@ def _render_generation(
     context: ClientFacingRenderContext, spec: TemplateStyleSpec | LayoutTemplateSpec,
     html_path: Path, pdf_path: Path, target_pdf: Path | None,
     *, renderer_version: str, presentation_label_approval: Any = None,
+    layout_proof_approval: LayoutProofApproval | None = None,
 ) -> tuple[Path, Path]:
     from app.generation.agentic import AgenticGenerationError, render_agentic
 
@@ -128,6 +129,7 @@ def _render_generation(
         context=context, layout_spec=spec, target_pdf=target_pdf,
         evidence_dir=target_pdf.parent, output_dir=html_path.parent/"pipeline_runs"/uuid.uuid4().hex,
         presentation_label_approval=presentation_label_approval,
+        layout_proof_approval=layout_proof_approval,
     )
     _require_current_renderer(renderer_version)
     # Finish every validation and stage both files before replacing a previous preview.
@@ -615,6 +617,65 @@ def _recompute_variant_evidence(
     )
 
 
+def _validated_presentation_labels(
+    artifact_dir: str | Path,
+    variants: dict[LengthVariant, VariantProofEvidence],
+    *,
+    target_checksum: str,
+    caller_catalog_sha256: str | None,
+) -> tuple[list[Any], str | None]:
+    """The presentation-label identity the proof runs actually validated.
+
+    Each proof run writes ``presentation_labels.json`` beside its ``e5_state``;
+    a run that recorded ``approval_validated=true`` proves the exact catalog
+    (``catalog_sha256``) and label ids it rendered with. Approval carries that
+    identity forward so generation reuses it instead of demanding a second
+    approval of the same catalog. All variants must name the same catalog and
+    target, and a caller-supplied checksum must be that same one: any
+    disagreement is refused rather than silently stored. A proof set rendered
+    without a label approval yields no identity (``[]``, ``None``)."""
+    from app.pipeline.service import PresentationLabelApproval
+
+    found: dict[str, set[str]] = {}
+    for evidence in variants.values():
+        runs = layout_proofs_dir_for(artifact_dir) / evidence.render_result.proof_id / "pipeline_runs"
+        for path in sorted(runs.glob("*/pipeline/presentation_labels.json")):
+            listing = json.loads(path.read_text(encoding="utf-8"))
+            if listing.get("approval_validated") is not True:
+                continue
+            if listing.get("target_sha256") != target_checksum:
+                raise LayoutProofMismatchError(
+                    f"{evidence.variant.value}: the proof run's presentation-label "
+                    "approval covers another target"
+                )
+            found.setdefault(listing["catalog_sha256"], set()).update(
+                listing["approved_label_ids"]
+            )
+    if not found:
+        return [], None
+    if len(found) != 1:
+        raise LayoutProofMismatchError(
+            "the proof runs validated different presentation-label catalogs: "
+            + ", ".join(sorted(found))
+        )
+    catalog_sha256, label_ids = next(iter(found.items()))
+    if caller_catalog_sha256 is not None and caller_catalog_sha256 != catalog_sha256:
+        raise LayoutProofMismatchError(
+            f"presentation-label catalog_sha256 {caller_catalog_sha256} does not match "
+            f"the catalog the proof runs validated ({catalog_sha256})"
+        )
+    return (
+        [
+            PresentationLabelApproval(
+                target_sha256=target_checksum,
+                catalog_sha256=catalog_sha256,
+                approved_label_ids=sorted(label_ids),
+            )
+        ],
+        catalog_sha256,
+    )
+
+
 def approve_layout_proof(
     *,
     artifact_dir: str | Path,
@@ -624,6 +685,7 @@ def approve_layout_proof(
     target_pdf: str | Path,
     reviewer_id: str,
     reviewer_note: str | None = None,
+    presentation_label_catalog_sha256: str | None = None,
     repository: LayoutProofRepository | None = None,
 ) -> LayoutProofApproval:
     """Approve a complete three-variant proof set by recomputing evidence.
@@ -656,6 +718,13 @@ def approve_layout_proof(
         save_variant_evidence(artifact_dir, evidence)
         recomputed[variant] = evidence
 
+    presentation_labels, presentation_label_catalog_sha256 = _validated_presentation_labels(
+        artifact_dir,
+        recomputed,
+        target_checksum=target_checksum,
+        caller_catalog_sha256=presentation_label_catalog_sha256,
+    )
+
     approval = LayoutProofApproval(
         approval_id=f"approval_{uuid.uuid4().hex[:16]}",
         artifact_id=artifact_id,
@@ -664,6 +733,8 @@ def approve_layout_proof(
         state="approved",
         renderer_version=active_renderer_version(),
         variants=recomputed,
+        presentation_labels=presentation_labels,
+        presentation_label_catalog_sha256=presentation_label_catalog_sha256,
         approved_at=_now_iso(),
         reviewer_id=reviewer_id,
         reviewer_note=reviewer_note,
@@ -910,7 +981,8 @@ def render_candidate_document(
     html_path = out_dir / "candidate_profile.html"
     try:
         html_path, pdf_path = _render_generation(render_context, layout_spec, html_path,
-            out_dir / "candidate_profile.pdf", target_pdf, renderer_version=approval.renderer_version)
+            out_dir / "candidate_profile.pdf", target_pdf, renderer_version=approval.renderer_version,
+            layout_proof_approval=approval)
     except (RuntimeError, ValueError, OSError) as exc:
         raise LayoutProofRenderError(
             f"final candidate document could not be rendered: {exc}"
