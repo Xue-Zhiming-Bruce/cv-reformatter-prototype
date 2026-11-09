@@ -1,82 +1,63 @@
 # CV Reformatter Agent Instructions
 
-These instructions apply repository-wide. Keep this file focused on how agents
-work; product detail belongs in `docs/`.
+These instructions apply repository-wide. This file routes; the tracked
+documents own the detail. Do not duplicate them here.
 
-## Documentation Authority
+## Read First
 
-Before product, API, workflow, extraction, validation, target-analysis,
-rendering, storage, or deployment changes, read:
+Authority order (resolved by [`docs/README.md`](docs/README.md)):
 
-1. `docs/product/PRODUCT_SPEC.md` — authoritative product contract.
-2. `docs/architecture/DOCUMENT_PIPELINE.md` — accepted component boundaries.
-3. `docs/roadmaps/BACKEND_ROADMAP.md` — sole active implementation checklist.
+| Need | Document |
+| --- | --- |
+| Product behavior, standards, privacy, supported inputs/outputs | [`docs/product/PRODUCT_SPEC.md`](docs/product/PRODUCT_SPEC.md) |
+| Approved technical decisions and the ADR process | [`docs/decisions/`](docs/decisions/) |
+| Sole active implementation checklist and stage status | [`docs/roadmaps/BACKEND_ROADMAP.md`](docs/roadmaps/BACKEND_ROADMAP.md) |
+| Component boundaries, call flow, runtime vs development roles | [`docs/architecture/DOCUMENT_PIPELINE.md`](docs/architecture/DOCUMENT_PIPELINE.md) |
+| Frontend-facing backend behavior | [`docs/architecture/API_CONTRACT.md`](docs/architecture/API_CONTRACT.md) |
+| Tests, fixtures, evaluation runs, artifact locations | [`docs/testing/TEST_STRUCTURE.md`](docs/testing/TEST_STRUCTURE.md), [`tests/README.md`](tests/README.md) |
+| Review-result/report format | [`docs/testing/TEST_RESULT_FORMAT.md`](docs/testing/TEST_RESULT_FORMAT.md) |
+| Engineering practice: Clean Code, task start, checks, reporting, workspace | [`docs/development/ENGINEERING_GUIDE.md`](docs/development/ENGINEERING_GUIDE.md) |
+| Setup and executable entry points | [`README.md`](README.md) |
 
-Read additional documents only when relevant:
+Read dated `docs/evaluations/` evidence before evaluating or integrating a
+commercial document/AI provider, and reverify current vendor capabilities,
+pricing, and terms before contracting. Use `docs/archive/` only for historical
+context or regression investigation.
 
-- `docs/archive/CONTENT_AND_LAYOUT_MODEL_PROPOSED_20260807.md` for the archived
-  proposed block model;
-- `docs/architecture/API_CONTRACT.md` for frontend-facing backend behavior;
-- `docs/testing/TEST_STRUCTURE.md` before adding, moving, running, or cleaning
-  tests, evaluation workflows, fixtures, corpora, or test artifacts;
-- dated provider evidence in `docs/evaluations/` before evaluating or
-  integrating a commercial document or AI provider (reverify current vendor
-  capabilities, pricing, and terms before contracting; the July 2026 research
-  snapshot is in git history);
-- `docs/evaluations/` for dated benchmark evidence;
-- `docs/decisions/` for approved technical decisions;
-- `docs/archive/` only for historical context or regression investigation.
-
-Use `docs/README.md` to resolve document authority. If implementation details
-conflict with the product contract, active roadmap, or an approved ADR, pause
-and clarify before coding.
+If implementation conflicts with the product contract, the roadmap, or an
+approved ADR, pause and clarify before coding.
 
 ## Current Stage
 
-The MVP and target-PDF demo were accepted on July 26, 2026. Current work is:
+The roadmap is the only stage authority. The MVP and target-PDF demo were
+accepted on July 26, 2026. Bounded B0/B1 are complete **only** for the frozen
+six-output baseline and the versioned `/17` + compiler-10 one-column support
+contract (M6 exit tables and the freeze manifest). General fidelity,
+reliability, provider reproducibility, and production/security readiness stay
+open, and accepted snapshots never cover new outputs. Do not reopen historical
+MVP checklist items unless the user reports a regression or returns them to
+scope.
 
-- Stage B0: freeze and measure the accepted synthetic baseline;
-- Stage B1: define the versioned target-format fidelity contract.
-
-Do not reopen historical MVP checklist items as active work unless the user
-reports a regression or explicitly returns them to scope.
+Local `_docs/` notes (process, role prompts, local standards) are an optional
+personal execution layer: untracked, never overriding this file, the product
+contract, an ADR, the roadmap, or the test contract.
 
 ## Ownership Boundary
 
-The user owns the backend. The user's co-founder owns the frontend.
+The user owns the backend; the co-founder owns the frontend. Agents implement
+backend behavior — FastAPI routes, ingestion/extraction, `CandidateProfile`
+validation and evidence, missing-field detection, client render context, target
+analysis and template compilation, DOCX/PDF generation, backend tests and local
+artifacts. Do not edit frontend code unless the user explicitly asks; review
+frontend alignment through `docs/architecture/API_CONTRACT.md`.
 
-Default agent implementation responsibility:
-
-- FastAPI behavior;
-- ingestion and extraction;
-- `CandidateProfile` validation and evidence;
-- missing-field detection;
-- client-facing render context;
-- target-layout analysis and template compilation;
-- DOCX/PDF generation;
-- backend tests and local artifacts.
-
-Do not modify frontend code unless the user explicitly requests frontend edits.
-Frontend alignment issues may be reviewed and documented through the backend
-API contract.
-
-## Non-Negotiable Architecture
-
-Always preserve:
+## Non-Negotiables
 
 ```text
-Candidate resume
--> extracted and normalized source content
--> validated CandidateProfile
--> recruiter review/edit
--> client-facing render context
--> controlled template rendering
--> DOCX/PDF
-```
+Candidate resume -> extracted and normalized source content
+-> validated CandidateProfile -> recruiter review/edit
+-> client-facing render context -> controlled template rendering -> DOCX/PDF
 
-Candidate content and target presentation are separate:
-
-```text
 Target document -> TargetLayoutEvidence -> LayoutTemplateSpec
 Reviewed candidate data -> ClientFacingRenderContext
 LayoutTemplateSpec + ClientFacingRenderContext -> RenderPlan -> output
@@ -91,136 +72,57 @@ Never implement:
 - renderer-specific instructions as the provider-neutral template contract;
 - silent fallback when a recruiter requested an uploaded target format.
 
-`CandidateProfile` is the authoritative source of candidate facts. Never invent
-missing values. Preserve source evidence and recruiter edits separately.
+`CandidateProfile` is the authoritative source of candidate facts: never invent
+missing values, and keep source evidence, recruiter edits, and internal missing
+information separate from client-facing disclosure.
 
-## Product And Privacy Rules
+## Data And Privacy
 
-- Preserve original extracted text for recruiter comparison.
-- Do not claim literal lossless or exact conversion.
-- Use the promise: `Original preserved. Recruiter approved.`
-- Keep internal missing information separate from client-facing disclosure.
-- Apply blind-profile behavior only to client-facing previews and exports.
+- Preserve original extracted text for recruiter comparison. Promise:
+  `Original preserved. Recruiter approved.` Do not claim literal lossless or
+  exact conversion.
 - Never commit real resumes, candidate data, generated personal information,
   `.env` files, API keys, or license credentials.
-- **Local test data clearance (`[maintainer]`, 2026-08-24):** the resume
-  documents and target samples currently used for local development/testing
-  (under `data/input_samples/`, `tests/local_datasets/`, and related folders)
-  were downloaded from public sources or constructed as fiction — they are NOT
-  private data. Agents may use them freely for development and tests without
-  synthetic-substitute workarounds. The prohibitions above apply only to real
-  candidate/target documents received in confidence.
-- Use synthetic or explicitly authorized inputs for tests and evaluations.
+- Use synthetic or explicitly authorized inputs. Local development/test
+  documents under `data/input_samples/`, `tests/local_datasets/`, and related
+  folders are public or fictional (`[maintainer]` clearance, 2026-08-24) and may
+  be used freely; the prohibitions above apply to real candidate/target
+  documents received in confidence.
 - Do not send real candidate or target documents to external providers before
   provider policy, authorization, retention, and deletion controls exist.
 
-## Provider And Architecture Decisions
+## Providers, Persistence, Rendering
 
-Commercial products named in research or roadmaps are candidates only.
+Commercial products named in research or roadmaps are candidates only. Before
+implementing a provider or renderer, define the provider-neutral contract,
+evaluate candidates on the same versioned corpus, record quality/failure/
+privacy/regional/retention/cost/operational evidence, and obtain an approved ADR
+in `docs/decisions/`. Never infer approval from a research document, dependency,
+experiment, or comparison report. Automated scores are documentation; the
+product owner is the final judge of generated files.
 
-Before implementing a provider or renderer:
+PostgreSQL + SQLAlchemy + Psycopg + Alembic is the structured-persistence
+foundation; SQLite is transitional and must not grow into the primary store;
+document/debug artifacts stay outside PostgreSQL. DigitalOcean is the selected
+initial hosting direction only after the product-standard and security gates;
+do not host real candidate data before authentication, organization
+authorization, private object access, retention/deletion, monitoring, and tested
+backup/restore are complete. See the roadmap for what is actually implemented.
 
-1. Define the relevant internal provider-neutral contract.
-2. Evaluate candidates against the same versioned synthetic corpus.
-3. Record quality, failure, privacy, regional, retention, cost, and operational
-   evidence.
-4. Obtain an approved ADR in `docs/decisions/`.
+## Working Rules
 
-Do not infer approval from a research document, dependency, experiment, or
-provider comparison report.
-
-Provider reports and automated scores are documentation only. For fidelity
-decisions, generate directly reviewable outcome PDFs and comparison images as
-required by `docs/testing/TEST_STRUCTURE.md`. The product owner is the final
-judge of generated-file quality; agents must not declare a winner from metrics
-alone.
-
-## Persistence And Hosting Direction
-
-- PostgreSQL is the first post-MVP structured-persistence foundation.
-- Use SQLAlchemy, Psycopg, and Alembic.
-- SQLite is transitional and must not expand into the primary product store.
-- Keep document/debug artifacts outside PostgreSQL.
-- DigitalOcean is the selected initial hosting direction only after the
-  product-standard and required security gates.
-- Do not host real candidate data before authentication, organization-level
-  authorization, private object access, retention/deletion, monitoring, and
-  tested backup/restore behavior are complete.
-
-## Code Quality
-
-- Keep changes modular, typed, and reviewable.
-- Use strict Pydantic validation for external and AI-produced structured data.
-- Keep provider adapters behind internal interfaces.
-- Return clear errors for unsupported, corrupt, scanned, oversized, or unsafe
-  documents.
-- Add or update focused tests for every core behavior change.
-- Preserve the accepted baseline until a measured replacement proves parity and
-  rollback behavior.
-- Do not change a checklist status unless its exit condition is actually met.
-
-## Testing And Artifacts
-
-`docs/testing/TEST_STRUCTURE.md` is the authoritative repository test-structure
-contract. Read it and `tests/README.md` before test work. Extend the listed
-canonical workflow instead of creating a parallel runner, corpus, result
-schema, or output directory. A new top-level test workflow or a second runner
-for an existing responsibility requires explicit user approval and a contract
-update in the same change. Do not add new `tests/test_*.py` files at the test
-root.
-
-Prefer:
-
-- `tests/unit/` for isolated deterministic coverage;
-- `tests/integration/` for API and multi-component coverage;
-- `tests/live/` for explicitly gated external smoke tests;
-- `tests/helpers/` for shared synthetic builders;
-- `data/input_samples/` for synthetic inputs;
-- `data/generated_outputs/` for local generated/debug artifacts;
-- `tests/local_datasets/` only for safe local datasets that remain uncommitted;
-- `docs/evaluations/` only for intentionally curated synthetic summaries.
-
-Cross-format resume fixtures are allowed for backend testing when the report
-states the actual source format and behavior under test. They must not bypass
-the structured pipeline or turn a target PDF into candidate data or an editable
-template.
-
-When running pytest, save terminal output to `tests/test_results/pytest/` with
-a timestamped filename. The commercial comparison harness is retired; provider
-contract checks belong in `tests/unit/` or `tests/integration/`, and opted-in
-external smoke checks in `tests/live/`. Existing output under
-`tests/test_results/commercial_api/` is historical evidence only. Do not commit
-generated test reports unless the user explicitly requests a curated artifact.
-
-For resume-matrix evaluations, follow
-`docs/testing/TEST_RESULT_FORMAT.md`. Every run must use its required directory
-layout, manifest fields, review index, CSV columns, and validation checks so a
-reviewer can inspect different runs in the same way.
-
-After implementation:
-
-1. Run focused tests proportional to risk.
-2. Report the commands and results.
-3. Update the active roadmap only when progress or status materially changed.
-4. Update the product contract or an ADR only when the corresponding decision
-   was explicitly approved.
-
-## Git Mainline Development
-
-- Continue development in the existing mainline implementation. Do not create
-  `tests/experiments/`, a replacement experiment directory, parallel runners,
-  or a second planning system such as `.repo-compass/`.
-- Keep necessary automated regressions in the canonical pytest directories.
-  Historical source, proposals, and run reports are recovered from Git only
-  for investigation; they do not become current operating instructions.
-- Commit each verified milestone: a green focused check, a closed gap, or a
-  documentation revision. Preserve the existing message format:
-  `c1: <what closed/changed> (run <id>)`.
-- Font assets and license texts belong in `app/pipeline/assets/fonts/`.
-  Generated outputs stay local and ignored under the test/artifact contract.
-- Verify module/file identity before editing and keep changes within the
-  authorized scope. Do not overwrite unrelated source or user work.
-- Keep `CandidateProfile` and `LayoutTemplateSpec` as the product contracts.
-  Retained pipeline schema names and prompt bytes are versioned compatibility
-  surfaces; relocation or documentation cleanup is not product adoption or
-  permission to rename them silently.
+- Follow [`docs/development/ENGINEERING_GUIDE.md`](docs/development/ENGINEERING_GUIDE.md)
+  for Clean Code expectations, the task-start checklist, check ownership,
+  reporting, workspace view, and mainline/commit practice.
+- Extend the canonical test workflows in
+  [`docs/testing/TEST_STRUCTURE.md`](docs/testing/TEST_STRUCTURE.md) instead of
+  adding runners, corpora, result schemas, or output directories. A new
+  top-level workflow or a second runner for an existing responsibility needs
+  explicit user approval and a contract update in the same change.
+- Commit each verified milestone as
+  `c1: <what closed/changed> (run <id>)`; update the roadmap only when progress
+  or status materially changed, and the product contract or an ADR only when
+  that decision was explicitly approved.
+- Preserve retained pipeline schema names, prompt bytes, and stored-artifact
+  compatibility surfaces; relocation or documentation cleanup is not permission
+  to rename them.

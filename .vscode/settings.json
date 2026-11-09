@@ -1,4 +1,34 @@
 {
   "python.terminal.useEnvFile": true,
-  "python.envFile": "${workspaceFolder}/.env"
+  "python.envFile": "${workspaceFolder}/.env",
+  "files.exclude": {
+    "**/.venv": true,
+    "**/.venv-*": true,
+    "**/node_modules": true,
+    "**/__pycache__": true,
+    "**/*.egg-info": true,
+    "**/.pytest_cache": true,
+    "**/.mypy_cache": true,
+    "**/.ruff_cache": true,
+    "tmp": true,
+    "data/generated_outputs": true,
+    "data/local": true,
+    "data/design_cache": true,
+    "data/output_samples": true,
+    "output": true,
+    "frontend/dist": true,
+    "tests/test_results": true
+  },
+  "search.exclude": {
+    "**/.venv": true,
+    "**/.venv-*": true,
+    "**/node_modules": true,
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "tmp": true,
+    "data/generated_outputs": true,
+    "data/local": true,
+    "tests/test_results": true,
+    "tests/local_datasets": true
+  }
 }

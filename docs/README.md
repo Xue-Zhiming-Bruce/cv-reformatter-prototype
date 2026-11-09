@@ -21,12 +21,18 @@ inventories; they are not an additional source of operating instructions.
 [project README](../README.md) owns setup and executable entry points.
 Neither replaces the product contract or an approved ADR.
 
+Local `_docs/` files (process notes, role prompts, local standards) are an
+optional personal execution layer. They are untracked, they cannot override a
+shared contract, ADR, roadmap, or test rule, and any rule that must bind other
+agents belongs in the tracked documents listed here.
+
 ## Current Reference
 
 | Need | Document |
 | --- | --- |
 | Candidate facts, recruiter control, privacy, supported outputs | [Product Specification](product/PRODUCT_SPEC.md) |
-| Component boundaries and retained pipeline ownership | [Document Pipeline](architecture/DOCUMENT_PIPELINE.md) |
+| Component boundaries, current call flow, and runtime/development roles | [Document Pipeline](architecture/DOCUMENT_PIPELINE.md) |
+| Clean Code standard, task start, check ownership, reporting, workspace view | [Engineering Guide](development/ENGINEERING_GUIDE.md) |
 | Frontend-facing API behavior | [API Contract](architecture/API_CONTRACT.md) |
 | Bounded template-designer responsibilities | [LLM Designer Workflow](architecture/LLM_DESIGNER_WORKFLOW.md) |
 | Remaining backend work and acceptance gates | [Backend Roadmap](roadmaps/BACKEND_ROADMAP.md) |

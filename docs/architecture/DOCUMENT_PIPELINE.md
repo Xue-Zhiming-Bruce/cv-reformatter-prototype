@@ -245,6 +245,57 @@ target and designer-template generation retain the approval-aware product path.
 | PDF export, fonts, and independent gates | `rendering.py`, `fonts.py`, `quality.py` |
 | Budgets, traces, version identities | `runtime.py` |
 
+### Call Flow And Working Responsibilities
+
+Actual call direction at this revision. Adapters map transport/HTTP concerns;
+workflow, policy, measurement, model I/O, rendering, and persistence each have
+their own owner.
+
+```text
+HTTP route (app/main.py) / native worker child (app/job_worker.py) / CLI (app/pipeline/__main__.py)
+  -> generation application workflow (app/main.py::generate_outputs)
+      -> candidate context + disclosure mapping (app/generation/template_mapper.py)
+      -> template/proof validation (app/template_analysis/*, app/main.py::_require_layout_proof_approval)
+      -> pipeline coordinator (app/pipeline/service.py::run_e5)
+          -> layout state + compilation (layout_state.py, layout_compiler.py)
+          -> deterministic measurements and gates (measurement.py, review.py, quality.py)
+          -> model adapters, prompts, bounded repair (service.py adapters, runtime.py)
+          -> selected version + run artifacts (service.py report writers, runtime.py)
+      -> generation/proof adapters (app/generation/agentic.py, app/template_analysis/layout_proof_service.py)
+      -> controlled HTML + Chrome PDF export (html_renderer.py, rendering.py, fonts.py, chrome_html_to_pdf.py)
+  -> manifest, artifacts, repository/publication (generation/artifact_manifest.py, storage/*)
+```
+
+Runtime roles and development roles are different things and must not be
+conflated in review notes:
+
+| Role | What it means here |
+| --- | --- |
+| Product-runtime Builder | The lane-A candidate renderer/model call that proposes layout-bound rendering changes during a run (`builder` mode calls). It is product code, not a person and not the reviewer of its own output. |
+| Product-runtime Reviewer | The visual reviewer/model call plus the deterministic gates that record findings against a rendered candidate (`reviewer`/attribution calls, `review.py`, `quality.py`). Its findings are technical defect state, not owner acceptance. |
+| Development PM | Issue scoping, stage boundaries, and cross-issue ordering (GitHub issues plus the roadmap). Not a runtime component. |
+| Development Engineer | Implements and verifies a change in the repository and owns call-site scope. |
+| Development QA | Independently checks acceptance criteria and produces its own behavior evidence; it does not rely on the implementer's summary. |
+| Owner | The product owner/reviewer of actual generated files. Only the owner grants visual acceptance. |
+
+The two `render_plan` modules are deliberately separate owners:
+
+| Module | Owns |
+| --- | --- |
+| `app/generation/render_plan.py` | Business content binding: which reviewed candidate blocks/sections fill which product section, the resulting status (`filled`/`hidden_empty`/`review_required`), source references, and client-facing review warnings. |
+| `app/pipeline/render_plan.py` | Internal renderer plan: adaptation/rhythm/overflow decisions for the controlled renderer (spacing, entry and inline layout, leaf identity, merge/append placement notes). |
+
+Neither is a second product schema. `CandidateProfile` and `LayoutTemplateSpec`
+stay authoritative; the renderer plan is a derived, versioned implementation
+record.
+
+Historical names remain in place for compatibility: `run_e5`, `E5LaneRecord`,
+`E5LoopRecord`, `e5_state.json`, and `C2LayoutState` mean the
+current A pipeline run record and its internal layout state. They are kept for
+stored-artifact reads, serialized schema titles, prompt/identity stability, and
+reviewability; the retired B/C2 execution paths they are named after are not
+restored by them. Do not bulk-rename them for cosmetic consistency.
+
 Owner decision, October 22, 2026: use Lane A as the initial mainline for
 consolidation. Both `python -m app.pipeline` and `run_e5` default to A only.
 Lane A compiles structured layout state. October 26 M5 retirement removes B
