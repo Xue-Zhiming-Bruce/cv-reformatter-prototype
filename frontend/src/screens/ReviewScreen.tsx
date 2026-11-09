@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { LogoIcon, PencilIcon } from "../components/icons"
-import type { ProcessResponse } from "../types"
+import type { ProcessResponse, TargetFormatMetadata } from "../types"
 import "./ReviewScreen.css"
 
 // TODO: When API returns per-field confidence scores, set this to true.
@@ -14,6 +14,7 @@ type ReviewScreenProps = {
   resumeFile: File
   resumeFileName: string
   formatName: string
+  targetFormat: TargetFormatMetadata
   onBack: () => void
 }
 
