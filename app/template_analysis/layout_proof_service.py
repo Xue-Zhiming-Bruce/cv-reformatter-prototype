@@ -704,6 +704,36 @@ def _expected_heading_labels(
     return labels
 
 
+def require_compilable_layout_spec(
+    layout_spec: TemplateStyleSpec | LayoutTemplateSpec,
+    *,
+    target_pdf: Path,
+    target_checksum: str,
+) -> None:
+    """Compile the measured spec BEFORE any proof render starts.
+
+    Column placement is a compile-time contract of ``LayoutTemplateSpec ->
+    render``: a stored measured two-column spec whose sections are all
+    full-width can never render, so it must fail here — naming the spec and the
+    property — instead of surfacing as a bare ``ValueError`` from inside the
+    renderer after the run has already started.
+    """
+    if not isinstance(layout_spec, LayoutTemplateSpec):
+        return
+    from app.pipeline.layout_compiler import state_from_layout_template
+
+    try:
+        state_from_layout_template(
+            layout_spec, target_sha256=target_checksum, page_count=_pdf_page_count(target_pdf)
+        )
+    except ValueError as exc:
+        raise LayoutProofRenderError(
+            f"layout template spec '{layout_spec.template_name}' "
+            f"(version {layout_spec.template_version}) cannot be compiled for this "
+            f"target, so no proof render was started: {exc}"
+        ) from exc
+
+
 def create_proof_variants(
     *,
     artifact_dir: str | Path,
@@ -721,6 +751,9 @@ def create_proof_variants(
     that variant actually populates, builds deterministic visual-comparison
     evidence against the target PDF, and persists the immutable evidence.
     """
+    require_compilable_layout_spec(
+        layout_spec, target_pdf=Path(target_pdf), target_checksum=target_checksum
+    )
     proofs_dir = layout_proofs_dir_for(artifact_dir)
     outcomes: dict[LengthVariant, VariantProofEvidence] = {}
     for variant in LengthVariant:
