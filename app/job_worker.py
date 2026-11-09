@@ -218,6 +218,7 @@ class NativeJobWorker:
                 "artifact_manifest": "artifact_manifest.json", "generation_metadata": "generation_metadata.json",
                 "production_render_plan": "production_render_plan.json", "generated_profile": "generated_profile.json",
                 "client_render_context": "client_render_context.json", "missing_fields": "missing_fields.json",
+                "composition_report": "composition_report.json",
                 "content_validation": "content_validation.json", "structure_validation": "structure_validation.json",
             }.items()}
             debug["profile_revision_id"] = claim.payload.profile_revision_id
