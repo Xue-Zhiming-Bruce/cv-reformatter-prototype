@@ -8,6 +8,7 @@ from docx import Document
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import parse_xml
 from docx.oxml.ns import qn
+from pydantic import ValidationError
 
 from app.template_analysis.artifacts import LAYOUT_SPEC_FILENAME
 from app.template_analysis.schemas import (ColumnStyle, DecorationStyle, HeaderLayoutStyle, LayoutTemplateSpec, PageStyle, SectionLayoutSpec, SpacingStyle, TextStyle)
@@ -18,6 +19,8 @@ from app.template_analysis.schemas import (ColumnStyle, DecorationStyle, HeaderL
 _DEFAULT_THEME_FONTS = {"majorHAnsi": "Calibri", "minorHAnsi": "Cambria"}
 _SECTION_ALIASES = {"summary": "summary", "professional summary": "summary", "skills": "skills", "languages": "languages", "experience": "work_experience", "work experience": "work_experience", "education": "education", "certifications": "certifications", "contact": "contact", "additional details": "additional_details"}
 _MEASUREMENT_NOTE = "DOCX target typography and page geometry are applied through the controlled renderer; arbitrary body content and unrecognized template placeholders are not copied."
+_UNMEASURABLE_MESSAGE = "The target DOCX could not be measured safely; its document structure is unsupported or malformed."
+_REASON_LIMIT = 180
 
 class TargetDocxAnalysisError(RuntimeError):
     """Raised when a DOCX target cannot provide a safe renderer style."""
@@ -38,11 +41,27 @@ def analyze_target_docx(docx_path: str | Path, output_dir: str | Path) -> Layout
     except (TargetDocxAnalysisError, FileNotFoundError):
         raise
     except Exception as exc:
-        raise TargetDocxAnalysisError(f"The target DOCX could not be measured safely; its document structure is unsupported or malformed: {exc}") from exc
+        raise TargetDocxAnalysisError(_unmeasurable_message(exc)) from exc
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     (output / LAYOUT_SPEC_FILENAME).write_text(json.dumps(spec.model_dump(mode="json"), indent=2, ensure_ascii=False), encoding="utf-8")
     return spec
+def _unmeasurable_message(exc: Exception) -> str:
+    """Recruiter-readable prose; the raw error stays on the chained traceback."""
+    reason = str(exc)
+    if isinstance(exc, ValidationError):
+        error = exc.errors()[0]
+        reason = error["msg"].removeprefix("Value error, ")
+        if location := ".".join(str(part) for part in error["loc"]):
+            reason = f"{location}: {reason}"
+    reason = reason.strip()
+    if not reason:
+        return _UNMEASURABLE_MESSAGE
+    reason = f"{reason[:1].upper()}{reason[1:]}"
+    if len(reason) > _REASON_LIMIT:
+        return f"{_UNMEASURABLE_MESSAGE} {reason[:_REASON_LIMIT].rstrip()}\u2026"
+    return f"{_UNMEASURABLE_MESSAGE} {reason.rstrip('.')}."
+
 def _load_document(source_path: Path) -> Any:
     try:
         return Document(source_path)

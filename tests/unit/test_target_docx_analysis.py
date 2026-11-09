@@ -223,6 +223,25 @@ def test_target_docx_analysis_rejects_banned_default_fill(tmp_path: Path) -> Non
     assert excinfo.value.error_code == "docx_target_unmeasurable"
     assert "banned" in str(excinfo.value)
 
+def test_target_docx_analysis_banned_default_fill_message_is_prose(tmp_path: Path) -> None:
+    target_path = tmp_path / "banned.docx"
+    document = Document()
+    normal = document.styles["Normal"]
+    normal.font.name = "Arial"
+    normal.font.size = Pt(10)
+    normal.font.color.rgb = RGBColor(0, 0, 0)
+    document.save(target_path)
+
+    with pytest.raises(TargetDocxAnalysisError) as excinfo:
+        analyze_target_docx(target_path, tmp_path / "analysis")
+
+    message = str(excinfo.value)
+    assert excinfo.value.error_code == "docx_target_unmeasurable"
+    assert "could not be measured safely" in message
+    assert "target-derived body typography carries the banned Arial/10pt/#000000".lower() in message.lower()
+    for leak in ("input_value=", "errors.pydantic.dev", "[type=", "input_type="):
+        assert leak not in message
+
 def test_target_docx_analysis_corrupt_error_code_is_unreadable(tmp_path: Path) -> None:
     target_path = tmp_path / "target.docx"
     target_path.write_bytes(b"not a docx")
