@@ -26,7 +26,10 @@ from app.template_analysis.design_schemas import (
 )
 from app.template_analysis.design_validator import validate_design_proposal
 from app.template_analysis.designer import OpenAITemplateDesigner
-from app.template_analysis.design_compiler import compile_layout_template_spec
+from app.template_analysis.design_compiler import (
+    compile_layout_template_spec,
+    compile_measured_layout_template_spec,
+)
 
 
 def _normalized(*, color: str | None = "#102030") -> NormalizedLayoutEvidence:
@@ -321,6 +324,38 @@ def test_bridge_does_not_globalize_partial_heading_rules() -> None:
     assert style.decoration.header_rule is True
     assert style.decoration.heading_rule is False
     assert any("Non-uniform heading-rule" in warning for warning in style.warnings)
+
+
+def test_bridge_rule_width_expands_content_edge_with_warning() -> None:
+    evidence, style = build_design_evidence_from_normalized(
+        _rule_target(ruled_headings={0, 1, 2}), target_checksum="sha"
+    )
+    expected_right = 612 - style.page.margin_left_pt - 489.6
+    assert style.page.margin_right_pt == pytest.approx(expected_right)
+    assert style.decoration.heading_rule_length_pt == pytest.approx(489.6)
+    warning = "the rule width defined the content edge"
+    assert any(warning in item for item in style.warnings)
+    assert any(warning in item for item in evidence.warnings)
+
+    layout = compile_measured_layout_template_spec(evidence, style)
+    content_width = (
+        layout.page.width_pt - layout.page.margin_left_pt - layout.page.margin_right_pt
+    )
+    assert content_width >= layout.decoration.heading_rule_length_pt
+    assert any(warning in item for item in layout.warnings)
+
+
+def test_bridge_rule_wider_than_page_fails_closed() -> None:
+    target = _rule_target(ruled_headings={0, 1, 2})
+    narrow = target.model_copy(update={"text_blocks": [
+        block.model_copy(update={"bbox": block.bbox.model_copy(
+            update={"x0": 0.4, "x1": 0.5}
+        )})
+        for block in target.text_blocks
+    ]})
+
+    with pytest.raises(CompileBridgeEvidenceError, match="cannot fit within the page"):
+        build_design_evidence_from_normalized(narrow, target_checksum="sha")
 
 
 def test_adobe_normalizer_accepts_archived_wrapper() -> None:

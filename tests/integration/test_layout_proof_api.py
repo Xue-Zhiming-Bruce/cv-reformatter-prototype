@@ -13,6 +13,7 @@ from app import main
 from app.extraction.candidate_schema import CandidateProfile
 from app.main import app
 from app.template_analysis import layout_proof_service
+from app.template_analysis.artifacts import LAYOUT_SPEC_FILENAME, load_layout_template_spec
 from app.template_analysis.layout_proof_schemas import LengthVariant
 from app.template_analysis.layout_proof_service import load_variant_evidence
 from tests.helpers.layout_proof import make_proof_pdf_exporter, create_and_approve_proofs as _create_and_approve
@@ -81,6 +82,26 @@ def _generate_with_target(artifact_id: str, target_format: dict[str, object], ve
             "target_format": target_format,
         },
     )
+
+
+def test_layout_proof_render_failure_returns_structured_error(tmp_path: Path) -> None:
+    artifact_id = "artifact_proof_render_failure"
+    _upload_target(tmp_path, artifact_id)
+    artifact_dir = tmp_path / artifact_id
+    spec = load_layout_template_spec(artifact_dir / LAYOUT_SPEC_FILENAME)
+    oversized = spec.model_copy(update={"decoration": spec.decoration.model_copy(update={
+        "heading_rule": True,
+        "heading_rule_length_pt": spec.page.width_pt + 50.0,
+    })})
+    (artifact_dir / LAYOUT_SPEC_FILENAME).write_text(oversized.model_dump_json())
+
+    response = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})
+
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "layout_proof_render_failed"
+    assert "heading_rule_length_pt" in detail["message"]
+    assert detail["options"] == ["reanalyze_target", "upload_new_target"]
 
 
 @pytest.mark.parametrize("storage_backend,design_scope", [

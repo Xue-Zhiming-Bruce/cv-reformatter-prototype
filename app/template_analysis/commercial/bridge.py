@@ -151,6 +151,8 @@ def build_design_evidence_from_normalized(
     page_style = _page_style(
         first_page.width_pt, first_page.height_pt, measured, top_pt=title_top_pt
     )
+    page_style, rule_width_warnings = _fit_page_to_measured_rules(page_style, decoration)
+    normalized.warnings.extend(rule_width_warnings)
     observed_bottom = _observed_bottom_margin(first_page.height_pt, measured)
     if observed_bottom > page_style.margin_bottom_pt + 1.0:
         structure_warnings.append(
@@ -202,6 +204,7 @@ def build_design_evidence_from_normalized(
         confidence=1.0,
         warnings=[
             "Typography and page geometry compiled from measured normalized evidence.",
+            *rule_width_warnings,
             *decoration_warnings,
             *structure_warnings,
             *figure_warnings,
@@ -1149,6 +1152,34 @@ def _page_style(
         margin_bottom_pt=max(0, bottom),
         margin_left_pt=max(0, left),
     )
+
+
+def _fit_page_to_measured_rules(
+    page: PageStyle, decoration: DecorationStyle
+) -> tuple[PageStyle, list[str]]:
+    content = page.width_pt - page.margin_left_pt - page.margin_right_pt
+    available = page.width_pt - page.margin_left_pt
+    rules = [(label, length) for label, enabled, length in (
+        ("header", decoration.header_rule, decoration.header_rule_length_pt),
+        ("heading", decoration.heading_rule, decoration.heading_rule_length_pt),
+    ) if enabled and length is not None]
+    if not rules:
+        return page, []
+    required = max(length for _, length in rules)
+    if required <= content + 1e-6:
+        return page, []
+    if required > available + 1e-6:
+        labels = " and ".join(sorted({label for label, _ in rules}))
+        raise CompileBridgeEvidenceError(
+            f"measured {labels} rule width {required:.2f}pt cannot fit within the "
+            f"page's available width {available:.2f}pt"
+        )
+    right = available - required
+    labels = " and ".join(sorted({label for label, length in rules if length > content + 1e-6}))
+    warning = (f"Measured {labels} rule width ({required:.2f}pt) exceeds the text-derived "
+               f"content width ({content:.2f}pt); the rule width defined the content edge and "
+               f"the effective right margin was reduced from {page.margin_right_pt:.2f}pt to {right:.2f}pt.")
+    return page.model_copy(update={"margin_right_pt": right}), [warning]
 
 
 def _observed_bottom_margin(

@@ -1084,7 +1084,14 @@ def create_layout_proofs(
             repository=layout_proof_repository(DATABASE_URL),
         )
     except LayoutProofRenderError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_code": "layout_proof_render_failed",
+                "message": f"Layout proofs could not be rendered for this target: {exc}",
+                "options": ["reanalyze_target", "upload_new_target"],
+            },
+        ) from exc
     return _layout_proof_status(artifact_id, artifact_dir)
 
 
