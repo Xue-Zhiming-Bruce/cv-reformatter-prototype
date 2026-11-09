@@ -1894,6 +1894,11 @@ def run_e5(
             index = len(versions) + 1
             html_path = lane_dir / f"render_{index}.html"
             html_path.write_text(html, encoding="utf-8")
+            # The version's own arrangement plan, immutable like its HTML/PDF:
+            # traceability for owner-facing explanations, never re-derived later.
+            (lane_dir / f"render_{index}_plan.json").write_text(
+                plan.model_dump_json(indent=2) + "\n", encoding="utf-8"
+            )
             pdf_path = lane_dir / f"render_{index}.pdf"
             _export_pinned_html_to_pdf(html_path, pdf_path, environment)
             second = lane_dir / f"render_{index}_second.pdf"

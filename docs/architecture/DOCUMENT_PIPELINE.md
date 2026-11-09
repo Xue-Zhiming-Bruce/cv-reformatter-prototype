@@ -277,6 +277,7 @@ HTTP route (app/main.py) / native worker child (app/job_worker.py)
       -> validate_generation (independent content and structure gates, fail-closed)
       -> record_generation
           -> manifest, artifacts, repository/publication (generation/artifact_manifest.py, storage/*)
+          -> content-arrangement report bound to this output identity (generation/composition_report.py)
           -> diagnostic visual comparison (app/template_analysis/visual_comparator.py)
   -> HTTP adapter maps GenerationError to the historical status/detail (app/main.py)
 

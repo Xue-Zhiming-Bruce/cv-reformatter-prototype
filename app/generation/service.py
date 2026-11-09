@@ -28,6 +28,13 @@ from app.extraction.llm_extractor import LLMConfigurationError, build_llm_client
 from app.final_acceptance import current_output_identity, is_final_acceptance_current
 from app.generation.agentic import AgenticGenerationError, generation_strategy
 from app.generation.chrome_html_to_pdf import HtmlToPdfExportError, export_html_to_pdf
+from app.generation.composition_report import (
+    COMPOSITION_REPORT_FILENAME,
+    SelectedRenderPlan,
+    build_composition_report,
+    load_selected_render_plan,
+    write_composition_report,
+)
 from app.generation.artifact_manifest import (
     MANIFEST_FILENAME,
     capture_generation_inputs,
@@ -655,6 +662,7 @@ class PreparedGeneration:
 class RenderedGeneration:
     html_path: Path
     pdf_path: Path
+    selected_plan: SelectedRenderPlan
 
 
 @dataclass
@@ -949,8 +957,11 @@ def render_prepared_generation(prepared: PreparedGeneration) -> RenderedGenerati
                     artifact_dir / prepared.target_format.stored_filename
                 ),
             )
+            # Read the arrangement plan of the version that was just published;
+            # a stale or unselected plan is reported as unknown, never used.
+            selected_plan = load_selected_render_plan(artifact_dir)
         else:
-            _, _, html = render_layout_template(
+            _, plan, html = render_layout_template(
                 prepared.effective_layout_spec,
                 candidate_document_from_context(
                     prepared.render_context,
@@ -962,6 +973,7 @@ def render_prepared_generation(prepared: PreparedGeneration) -> RenderedGenerati
                     ),
                 ),
             )
+            selected_plan = SelectedRenderPlan(plan=plan)
             html_path.write_text(html, encoding="utf-8")
             exported_pdf_path = export_html_to_pdf(html_path, pdf_path)
     except (
@@ -978,7 +990,9 @@ def render_prepared_generation(prepared: PreparedGeneration) -> RenderedGenerati
         prepared.debug_artifacts["agentic_generation"] = str(
             artifact_dir / "agentic_generation.json"
         )
-    return RenderedGeneration(html_path=html_path, pdf_path=pdf_path)
+    return RenderedGeneration(
+        html_path=html_path, pdf_path=pdf_path, selected_plan=selected_plan
+    )
 
 
 def validate_generation(
@@ -1135,6 +1149,20 @@ def record_generation(
                     f"visual_comparison_page_{page.page_number:03d}"
                 ] = str(artifact_dir / page.difference_filename)
 
+    # The arrangement report belongs to this exact output: it is written before
+    # the manifest so the published manifest owns its checksum.
+    output_identity = current_output_identity(artifact_dir)
+    composition_report = build_composition_report(
+        artifact_id=artifact_id,
+        output_identity=output_identity,
+        production_plan=prepared.production_render_plan,
+        selected=rendered.selected_plan,
+    )
+    composition_report_path = write_composition_report(
+        artifact_dir, composition_report
+    )
+    debug_artifacts["composition_report"] = str(composition_report_path)
+
     try:
         write_artifact_manifest(
             artifact_dir,
@@ -1178,7 +1206,6 @@ def record_generation(
     except ArtifactStoreError as exc:
         raise GenerationError(500, str(exc)) from exc
 
-    output_identity = current_output_identity(artifact_dir)
     client_ready = is_final_acceptance_current(
         artifact_dir,
         profile_repository=profile_revision_repository(settings.database_url),
@@ -1205,6 +1232,10 @@ def record_generation(
         layout_spec_sha256=output_identity.layout_spec_sha256,
         html_sha256=output_identity.html_sha256,
         pdf_sha256=output_identity.pdf_sha256,
+        composition_report=composition_report,
+        composition_report_url=artifact_url(
+            artifact_id, COMPOSITION_REPORT_FILENAME
+        ),
         client_ready=client_ready,
     )
 

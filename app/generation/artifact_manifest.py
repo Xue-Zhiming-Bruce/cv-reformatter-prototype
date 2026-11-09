@@ -13,6 +13,7 @@ from pypdf import PdfReader
 
 from app.extraction.candidate_schema import CandidateProfile, DisplayRule
 from app.final_acceptance import FinalOutputIdentity, current_output_identity, file_sha256
+from app.generation.composition_report import COMPOSITION_REPORT_FILENAME
 from app.profile_approval import ProfileApprovalError, ProfileRevisionRepository, draft_sha256, load_current_approved_profile
 from app.generation.template_mapper import CLIENT_DISCLOSURE_VERSION
 from app.template_analysis.schemas import LayoutTemplateSpec
@@ -221,6 +222,11 @@ def write_artifact_manifest(
         "candidate_profile.html", "candidate_profile.pdf", "generation_metadata.json",
         "production_render_plan.json", "client_render_context.json", "generated_profile.json",
     )}
+    # Additive: older manifests stay valid, a new one owns the report's checksum.
+    if (directory / COMPOSITION_REPORT_FILENAME).is_file():
+        outputs["composition_report"] = identify_file(
+            directory, directory / COMPOSITION_REPORT_FILENAME
+        )
     checks: dict[str, CheckIdentity] = {}
     for name in ("content", "structure"):
         reference = identify_file(directory, directory / f"{name}_validation.json")

@@ -8,6 +8,7 @@ returns, without importing the web framework or ``app.main``.
 from pydantic import BaseModel, Field
 
 from app.extraction.candidate_schema import CandidateProfile, DisplayRule, MissingField
+from app.generation.composition_report import CompositionReport
 from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME
 from app.template_analysis.schemas import VisualComparisonReport
 
@@ -72,4 +73,8 @@ class GenerateResponse(BaseModel):
     layout_spec_sha256: str
     html_sha256: str
     pdf_sha256: str
+    #: Additive, versioned ``composition-report/1.0``; None only for callers that
+    #: predate the field. Reporting never changes acceptance.
+    composition_report: CompositionReport | None = None
+    composition_report_url: str | None = None
     client_ready: bool = False

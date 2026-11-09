@@ -35,6 +35,7 @@ from app.generation.artifact_manifest import (
     MANIFEST_FILENAME,
     is_artifact_manifest_current,
 )
+from app.generation.composition_report import COMPOSITION_REPORT_FILENAME
 from app.pipeline.run_models import PresentationLabelApproval
 from app.generation.contracts import (
     GenerateRequest,
@@ -249,6 +250,7 @@ DOWNLOADABLE_ARTIFACT_FILENAMES = {
     COMPARISON_FILENAME,
     "generation_metadata.json",
     "agentic_generation.json",
+    COMPOSITION_REPORT_FILENAME,
     MANIFEST_FILENAME,
 }
 DOWNLOADABLE_DIAGNOSTIC_PNG_PATTERN = re.compile(
@@ -1414,6 +1416,7 @@ def _resolve_download_artifact(artifact_id: str, filename: str) -> Path:
     if generations is not None and filename in {
         "candidate_profile.html", "candidate_profile.pdf", "generation_metadata.json",
         "agentic_generation.json", MANIFEST_FILENAME, COMPARISON_FILENAME,
+        COMPOSITION_REPORT_FILENAME,
     }:
         directory, manifest = generations.selected_output(directory)
     artifact_path = directory / filename

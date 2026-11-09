@@ -310,6 +310,20 @@ approval. Reporting keeps each category separate: passing automated checks,
 synthetic proofs, owner preference changes, and owner acceptance of actual
 generated files are different evidence and are never merged into one status.
 
+**Arrangement reports.** Each generated preview carries a content-arrangement
+report bound to that exact HTML/PDF identity, explaining where approved content
+went: which candidate headings a target label replaced, which candidate-only
+sections were appended under the existing overflow policy, and which optional
+sections were left hidden or are pending review. Two rules follow from the
+categories above. A reasonable arrangement is not a proven defect: an
+explained arrangement is not a renderer defect and does not fail an output.
+An owner's choice for one instance — accepting this preview, or rejecting this
+one arrangement — is recorded for that instance only and does not automatically
+become a global rule; a lasting rule still needs this specification or an ADR.
+This increment adds neither a preference engine nor new layout controls. The
+report format is in
+[API Contract](../architecture/API_CONTRACT.md#content-arrangement-report).
+
 Typographic, color, and rule-geometry differences that exceed the configured
 tolerance are recorded as unverified visual findings until the owner verifies
 them on the actual preview; a diagnostic score is never a pass/fail substitute.
@@ -343,6 +357,7 @@ The product must produce:
    - target page PNGs and diagnostic overlays;
    - generated-versus-target comparison JSON and difference images;
    - editable HTML surface and generated PDF;
+   - content-arrangement report bound to that exact output identity;
    - schema, provider, prompt, model, renderer, font, and checksum metadata.
 
 ## Quality Gates

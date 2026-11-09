@@ -337,10 +337,15 @@ def render_agentic(
         raise AgenticGenerationError("Selected agentic output fails product content or structure validation")
     if agentic_renderer_version() != identity:
         raise AgenticGenerationError("Agentic model, prompt or execution configuration changed during generation")
+    selected_plan = run_dir/f"lane_a/{stem}_plan.json"
     report = {"renderer_version": identity, "generation_strategy": "agentic",
         "terminal_state": terminal, "selected_version": version.version_id,
         "open_findings": lane.open_findings, "gate_validation": gate_validation, "budget": record.budget_state,
         "summary": lane.summary, "run_directory": run_dir.resolve().relative_to(evidence_dir.resolve()).as_posix(),
+        # The selected version's own arrangement plan; its absence is reported as
+        # an unknown arrangement, never as a missing-output failure.
+        **({"selected_plan": selected_plan.resolve().relative_to(evidence_dir.resolve()).as_posix()}
+           if selected_plan.is_file() else {}),
         "content_validation": content.model_dump(mode="json"),
         "structure_validation": structure.model_dump(mode="json"), "client_ready": False}
     (output_dir/"agentic_generation.json").write_text(json.dumps(report, indent=2)+"\n")

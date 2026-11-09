@@ -166,6 +166,8 @@ Response fields:
 - `visual_comparison_artifact_urls`;
 - `followup_message`;
 - `missing_fields`;
+- `composition_report` and `composition_report_url` (see
+  [Content Arrangement Report](#content-arrangement-report));
 - `debug_artifacts`.
 
 Every successful preview also persists `production_render_plan.json`. It
@@ -214,6 +216,183 @@ there is no automatic return to the older renderer. Generation metadata records
 the actual renderer identity. Uploaded-target and designer-template generation
 use the approval-bound A Agentic loop for measured target PDFs by default,
 as described below; unsupported requests cannot fall back to another renderer.
+
+### Content Arrangement Report
+
+Every successful generation persists `composition_report.json`
+(`composition-report/1.0`) and returns it as `composition_report`, with
+`composition_report_url`
+(`/api/artifacts/{artifact_id}/composition_report.json`) serving the same file.
+The report answers one question for the owner: why does this exact preview place
+the approved content where it is? It is a projection of facts the selected
+version already recorded — the `production_render_plan.json` section bindings
+(`filled` / `hidden_empty` / `review_required`) and the selected render
+version's own plan (merged headings, appended candidate-only sections, section
+adaptation decisions) — bound to the exact output identity. No mapping or
+provider call is re-run. No candidate value is copied: `source_refs` and
+`destination_refs` carry ids, and `reason`/`evidence` repeat only the facts and
+static sentences the selected version recorded. The one piece of candidate text
+a report repeats is a section heading — a merge decision's `reason` quotes the
+heading that was not printed beside the target label that replaced it, and an
+appended section's `reason` names the heading or source role the target has no
+section for. Leaf values are never copied.
+
+- `schema_version` — `composition-report/1.0`;
+- `artifact_id`;
+- `output_identity` — the same `profile_revision_id`, `profile_sha256`,
+  `layout_template_version`, `layout_spec_sha256`, `html_sha256`, `pdf_sha256`
+  the response reports for this preview;
+- `selected_version` — the selected render version when the artifact records
+  one, else `null`;
+- `state` — `explained` when every recorded arrangement is traced,
+  `review_required` when the selected version asks for review, `unknown` when
+  the selected version's own plan is missing or does not reproduce that
+  version's rendered leaf destinations;
+- `summary` — one display sentence for the UI;
+- `decisions[]` — `decision_id` (stable within one output), `action`
+  (`merge_into_compatible_section`, `append_target_styled_section`, another
+  recorded adaptation action, or `null` for a withholding/pending decision),
+  `state` (`explained` / `review_required` / `unknown`), `source_refs`
+  (candidate block or plan leaf ids), `destination_refs` (target section or
+  region ids), `reason`, `evidence[]` (the recorded facts the reason came
+  from).
+
+A mapped section whose source heading already matches the rendered target label
+records nothing; an ordinary mapped section never acquires an invented
+rationale. `decisions: []` with `state: explained` is the explicit
+"no extra arrangement was applied" result for a successful generation, and
+`state: unknown` is the explicit "this arrangement cannot be traced" result;
+neither is an error. Each new output identity produces its own report, so a
+previous version's explanations are never served for a regenerated preview.
+The report explains arrangements, not quality: it never marks an output
+accepted, `client_ready` and final acceptance still depend on owner acceptance
+of the exact identity, and producing a report never satisfies a required
+review. Reflecting the Product Specification
+[Content Arrangement And Owner Review](../product/PRODUCT_SPEC.md#content-arrangement-and-owner-review),
+a reasonable arrangement is not a proven defect. Identities, block ids and
+destination ids are disclosed, so withheld values stay hidden in blind and
+normal previews.
+
+Synthetic response example (built-in template, two replaced headings and three
+hidden optional sections; identity values shortened for reading):
+
+```json
+{
+  "schema_version": "composition-report/1.0",
+  "artifact_id": "artifact_example",
+  "output_identity": {
+    "profile_revision_id": "profile_revision_7f3c",
+    "profile_sha256": "9b9b…9b",
+    "layout_template_version": "built-in-3",
+    "layout_spec_sha256": "4d4d…4d",
+    "html_sha256": "1c1c…1c",
+    "pdf_sha256": "8e8e…8e"
+  },
+  "selected_version": null,
+  "state": "explained",
+  "summary": "2 content arrangement action(s) were applied by the selected version; 5 arrangement record(s) in total, 0 requiring review.",
+  "decisions": [
+    {
+      "decision_id": "hidden_empty.languages",
+      "source_refs": [],
+      "destination_refs": [
+        "languages"
+      ],
+      "action": null,
+      "state": "explained",
+      "reason": "No approved client-facing content is available; the optional section remains hidden and no value is invented.",
+      "evidence": [
+        "production_render_plan.section_bindings"
+      ]
+    },
+    {
+      "decision_id": "hidden_empty.certifications",
+      "source_refs": [],
+      "destination_refs": [
+        "certifications"
+      ],
+      "action": null,
+      "state": "explained",
+      "reason": "No approved client-facing content is available; the optional section remains hidden and no value is invented.",
+      "evidence": [
+        "production_render_plan.section_bindings"
+      ]
+    },
+    {
+      "decision_id": "hidden_empty.additional_details",
+      "source_refs": [],
+      "destination_refs": [
+        "additional_details"
+      ],
+      "action": null,
+      "state": "explained",
+      "reason": "No approved client-facing content is available; the optional section remains hidden and no value is invented.",
+      "evidence": [
+        "production_render_plan.section_bindings"
+      ]
+    },
+    {
+      "decision_id": "merge.summary",
+      "source_refs": [
+        "summary"
+      ],
+      "destination_refs": [
+        "section.01"
+      ],
+      "action": "merge_into_compatible_section",
+      "state": "explained",
+      "reason": "The target renders its own label 'Professional Summary' for this section, so the candidate heading 'Summary' is not printed and its content merges into the mapped section.",
+      "evidence": [
+        "pipeline_render_plan.merged_candidate_headings",
+        "matched source role renders the target label; candidate leaves merge into the mapped target section in document order"
+      ]
+    },
+    {
+      "decision_id": "merge.work_experience",
+      "source_refs": [
+        "work_experience"
+      ],
+      "destination_refs": [
+        "section.04"
+      ],
+      "action": "merge_into_compatible_section",
+      "state": "explained",
+      "reason": "The target renders its own label 'Work Experience' for this section, so the candidate heading 'Experience' is not printed and its content merges into the mapped section.",
+      "evidence": [
+        "pipeline_render_plan.merged_candidate_headings",
+        "matched source role renders the target label; candidate leaves merge into the mapped target section in document order"
+      ]
+    }
+  ]
+}
+```
+
+The same projection for a candidate-only section the target cannot represent
+(candidate-only overflow policy `append_after_template_with_source_heading`):
+
+```json
+{
+  "decision_id": "append.candidate_only.additional_0",
+  "source_refs": [
+    "additional_0.entry.0",
+    "additional_0.entry.0.bullet.0",
+    "additional_0.heading"
+  ],
+  "destination_refs": [
+    "candidate_only.additional_0"
+  ],
+  "action": "append_target_styled_section",
+  "state": "explained",
+  "reason": "The target has no section for source role 'additional_details'; the content is appended after the template under the existing overflow policy (append_after_template_with_source_heading).",
+  "evidence": [
+    "pipeline_render_plan.appended_sections"
+  ]
+}
+```
+
+An untraceable selection returns the same shape with `state: "unknown"`,
+`decisions: []`, the recorded `selected_version` if any, and a `summary`
+stating that the selected version's arrangement is unknown.
 
 ### Agentic generation configuration
 
