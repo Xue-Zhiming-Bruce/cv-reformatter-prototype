@@ -29,6 +29,73 @@ class AgenticGenerationError(RuntimeError):
     pass
 
 
+class AgenticPresentationLabelError(AgenticGenerationError):
+    """The run stopped on measured presentation labels that no explicit,
+    catalog-bound owner approval admits yet. ``catalog`` carries the exact
+    labels and identity a reviewer must approve."""
+
+    def __init__(self, message: str, *, catalog: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.catalog = catalog
+
+
+def _presentation_label_block(run_dir: Path) -> dict[str, Any] | None:
+    """The catalog a reviewer must approve, when the privacy gate blocked on a
+    proposed label (a conventional target heading the template does not
+    render). Returns None for an unrelated block, so an ordinary target fact
+    leak is never turned into an approval prompt."""
+    listing_path = run_dir / "presentation_labels.json"
+    if not listing_path.is_file():
+        return None
+    listing = json.loads(listing_path.read_text(encoding="utf-8"))
+    proposed = [row for row in listing.get("labels") or [] if row.get("status") != "approved"]
+    if not proposed:
+        return None
+    leaked = {
+        quality._norm(line)
+        for gate_file in sorted((run_dir / "lane_a").glob("hard_gates_*.json"))
+        for line in (
+            json.loads(gate_file.read_text(encoding="utf-8")).get("details", {})
+            .get("no_target_candidate_facts", {}) or {}
+        ).get("leaked_target_lines") or []
+    }
+    actionable = [row for row in proposed if quality._norm(row["text"]) in leaked]
+    if not actionable:
+        return None
+    return {
+        "target_sha256": listing.get("target_sha256"),
+        "catalog_sha256": listing.get("catalog_sha256"),
+        "labels": proposed,
+        "leaked_target_lines": sorted({row["text"] for row in actionable}),
+    }
+
+
+def _no_reviewable_output(
+    run_dir: Path, terminal: str, record: "service.E5LoopRecord",
+) -> AgenticGenerationError:
+    abort = (record.summary or {}).get("abort") or {}
+    if abort.get("operation") == "presentation_label_approval":
+        return AgenticGenerationError(
+            f"presentation-label approval was rejected: {abort.get('error')}"
+        )
+    catalog = _presentation_label_block(run_dir)
+    if catalog is None:
+        return AgenticGenerationError(
+            f"Agentic run did not produce a reviewable output ({terminal}); "
+            f"inspect {run_dir.name}/e5_state.json"
+        )
+    return AgenticPresentationLabelError(
+        "Agentic run did not produce a reviewable output (" + terminal + "): the "
+        "target's conventional section headings "
+        + ", ".join(repr(text) for text in catalog["leaked_target_lines"])
+        + " are counted as leaked target lines because no approval admits them yet. "
+        "Nothing is suppressed case by case: approve this exact catalog "
+        f"(catalog_sha256 {catalog['catalog_sha256']}) and retry, or upload a target "
+        "whose headings the template renders.",
+        catalog=catalog,
+    )
+
+
 def generation_strategy() -> str:
     strategy = os.getenv("GENERATION_STRATEGY", "agentic").strip().lower()
     if strategy != "agentic":
@@ -114,6 +181,7 @@ def _structure_basis(state: C2LayoutState, normalized: NormalizedLayoutEvidence)
 def render_agentic(
     *, context: ClientFacingRenderContext, layout_spec: LayoutTemplateSpec,
     target_pdf: Path, evidence_dir: Path, output_dir: Path,
+    presentation_label_approval: Any = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
     """Run A's real live loop; return a checked selected version, never the last attempt."""
     identity = agentic_renderer_version()
@@ -144,13 +212,14 @@ def render_agentic(
         normalized_evidence=normalized_path, structure_draft=draft_path,
         layout_spec=layout_spec, live=True, lanes=("a",),
         max_repair_rounds=settings["max_repair_rounds"], builder_reserve_requests=4,
+        presentation_label_approval=presentation_label_approval,
         budget=RunBudget(max_model_requests=settings["max_model_requests"],
             max_tool_calls=settings["max_tool_calls"], max_request_bytes=MAX_REQUEST_BYTES),
     )
     record = service.E5LoopRecord.model_validate(raw_record)
     lane = record.lanes.get("a")
     if terminal != "ready_for_owner_review" or lane is None:
-        raise AgenticGenerationError(f"Agentic run did not produce a reviewable output ({terminal}); inspect {run_dir.name}/e5_state.json")
+        raise _no_reviewable_output(run_dir, terminal, record)
     version, stem, selection = service._selected_lane_artifact(lane)
     if version is None or selection != "BEST" or not version.hard_gates_passed:
         raise AgenticGenerationError("Agentic run has no validated selected output")

@@ -1082,3 +1082,83 @@ def test_api_corrupt_diagnostic_is_regenerated_not_500(tmp_path: Path) -> None:
             ).read_text(encoding="utf-8")
         )
         assert structural["passed"] is True
+
+
+# ===========================================================================
+# AC4: presentation-label approval is the only way to admit a conventional
+# target heading the measured template does not render.
+# ===========================================================================
+
+def _held_out_catalog() -> dict[str, object]:
+    return {
+        "target_sha256": "a" * 64,
+        "catalog_sha256": "b" * 64,
+        "labels": [{
+            "label_id": "label.target.p1.adobe.page.1.element.2",
+            "text": "SUMMARY",
+            "kind": "section_heading",
+            "status": "proposed",
+            "evidence_ids": ["local_pdf.adobe.page.1.element.2"],
+        }],
+        "leaked_target_lines": ["SUMMARY"],
+    }
+
+
+def test_unapproved_presentation_label_returns_the_catalog_to_approve(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    from app.pipeline.service import PresentationLabelApproval
+    from app.template_analysis.layout_proof_service import LayoutProofPresentationLabelError
+
+    artifact_id = "artifact_presentation_label_block"
+    _upload_target(tmp_path, artifact_id)
+    approval = PresentationLabelApproval(
+        target_sha256="a" * 64, catalog_sha256="b" * 64,
+        approved_label_ids=["label.target.p1.adobe.page.1.element.2"],
+    )
+    received: dict[str, object] = {}
+
+    def blocked(**kwargs):
+        received.update(kwargs)
+        raise LayoutProofPresentationLabelError(
+            "Agentic run did not produce a reviewable output (budget_exhausted): the "
+            "target's conventional section headings 'SUMMARY' are counted as leaked "
+            "target lines because no approval admits them yet.",
+            catalog=_held_out_catalog(),
+        )
+
+    monkeypatch.setattr(main, "create_proof_variants", blocked)
+
+    response = client.post(
+        f"/api/artifacts/{artifact_id}/layout-proofs",
+        json={"presentation_label_approval": approval.model_dump()},
+    )
+
+    # The retry carries the approval; without it the run stays blocked.
+    assert received["presentation_label_approval"] == approval
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "layout_proof_render_failed"
+    assert "SUMMARY" in detail["message"]
+    assert detail["catalog_sha256"] == "b" * 64
+    assert detail["target_sha256"] == "a" * 64
+    assert detail["leaked_target_lines"] == ["SUMMARY"]
+    assert detail["labels"] == _held_out_catalog()["labels"]
+    assert detail["options"][0] == "approve_presentation_labels"
+
+
+def test_presentation_label_approval_must_be_checksum_shaped(tmp_path: Path) -> None:
+    artifact_id = "artifact_presentation_label_malformed"
+    _upload_target(tmp_path, artifact_id)
+    response = client.post(
+        f"/api/artifacts/{artifact_id}/layout-proofs",
+        json={"presentation_label_approval": {
+            "target_sha256": "not-a-checksum", "catalog_sha256": "b" * 64,
+            "approved_label_ids": ["label.target.p1.adobe.page.1.element.2"],
+        }},
+    )
+    assert response.status_code == 422, response.text
+    assert "target_sha256" in response.text
+
+
+# ===========================================================================

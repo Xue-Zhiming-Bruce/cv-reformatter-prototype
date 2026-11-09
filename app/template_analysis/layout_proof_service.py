@@ -40,7 +40,7 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.generation.template_mapper import ClientFacingRenderContext
 from app.template_analysis.layout_proof_content import (
@@ -68,6 +68,16 @@ from app.template_analysis.schemas import LayoutTemplateSpec, TemplateStyleSpec
 
 class LayoutProofRenderError(RuntimeError):
     """Raised when a synthetic layout proof cannot be rendered."""
+
+
+class LayoutProofPresentationLabelError(LayoutProofRenderError):
+    """Proof creation is blocked by presentation labels that only an explicit,
+    checksum-bound owner approval admits. ``catalog`` is the exact proposed
+    catalog (labels + ``catalog_sha256`` + ``target_sha256``) to approve."""
+
+    def __init__(self, message: str, *, catalog: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.catalog = catalog
 
 
 class LayoutProofNotApprovedError(RuntimeError):
@@ -107,7 +117,7 @@ def active_renderer_version() -> str:
 def _render_generation(
     context: ClientFacingRenderContext, spec: TemplateStyleSpec | LayoutTemplateSpec,
     html_path: Path, pdf_path: Path, target_pdf: Path | None,
-    *, renderer_version: str,
+    *, renderer_version: str, presentation_label_approval: Any = None,
 ) -> tuple[Path, Path]:
     from app.generation.agentic import AgenticGenerationError, render_agentic
 
@@ -117,6 +127,7 @@ def _render_generation(
     source_html, source_pdf, report = render_agentic(
         context=context, layout_spec=spec, target_pdf=target_pdf,
         evidence_dir=target_pdf.parent, output_dir=html_path.parent/"pipeline_runs"/uuid.uuid4().hex,
+        presentation_label_approval=presentation_label_approval,
     )
     _require_current_renderer(renderer_version)
     # Finish every validation and stage both files before replacing a previous preview.
@@ -234,6 +245,7 @@ def render_layout_proof(
     *,
     output_dir: str | Path = DEFAULT_PROOF_OUTPUT_DIR,
     target_pdf: Path | None = None,
+    presentation_label_approval: Any = None,
 ) -> LayoutProofRenderResult:
     """Render one synthetic layout proof through the configured renderer.
 
@@ -243,7 +255,10 @@ def render_layout_proof(
     public entry point.
     """
     context = build_synthetic_context(request.variant)
-    return _render_layout_proof_with_context(request, context, output_dir=output_dir, target_pdf=target_pdf)
+    return _render_layout_proof_with_context(
+        request, context, output_dir=output_dir, target_pdf=target_pdf,
+        presentation_label_approval=presentation_label_approval,
+    )
 
 
 def _render_layout_proof_with_context(
@@ -252,6 +267,7 @@ def _render_layout_proof_with_context(
     *,
     output_dir: str | Path,
     target_pdf: Path | None = None,
+    presentation_label_approval: Any = None,
 ) -> LayoutProofRenderResult:
     """Private test-only seam: render a proof from an explicit context.
 
@@ -286,11 +302,18 @@ def _render_layout_proof_with_context(
         request.layout_spec.model_dump(mode="json"),
     )
 
+    from app.generation.agentic import AgenticPresentationLabelError
+
     html_path = proof_dir / f"proof-{request.variant.value}.html"
     try:
         html_path, pdf_path = _render_generation(context.to_render_context(), request.layout_spec,
             html_path, proof_dir / f"proof-{request.variant.value}.pdf", target_pdf,
-            renderer_version=renderer_version)
+            renderer_version=renderer_version,
+            presentation_label_approval=presentation_label_approval)
+    except AgenticPresentationLabelError as exc:
+        raise LayoutProofPresentationLabelError(
+            str(exc), catalog=exc.catalog
+        ) from exc
     except (RuntimeError, ValueError, OSError) as exc:
         raise LayoutProofRenderError(
             f"layout proof '{proof_id}' could not be rendered: {exc}"
@@ -742,6 +765,7 @@ def create_proof_variants(
     target_pdf: str | Path,
     target_checksum: str,
     repository: LayoutProofRepository | None = None,
+    presentation_label_approval: Any = None,
 ) -> dict[LengthVariant, VariantProofEvidence]:
     """Render, validate, and compare all three proof variants for an artifact.
 
@@ -764,7 +788,8 @@ def create_proof_variants(
             target_checksum=target_checksum,
         )
         result = render_layout_proof(request, output_dir=proofs_dir,
-            target_pdf=Path(target_pdf))
+            target_pdf=Path(target_pdf),
+            presentation_label_approval=presentation_label_approval)
         proof_pdf = proofs_dir / result.proof_id / result.pdf_filename
         measurements = measure_pdf_geometry(proof_pdf)
         structural = validate_proof_structure(

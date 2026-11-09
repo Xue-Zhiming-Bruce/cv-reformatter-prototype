@@ -57,6 +57,7 @@ from app.generation.content_validation import (
 )
 from app.generation.followup_message_generator import generate_followup_message
 from app.pipeline.candidate_content import candidate_document_from_context
+from app.pipeline.service import PresentationLabelApproval
 from app.pipeline.html_renderer import RENDERER_VERSION as PIPELINE_RENDERER_VERSION, render_layout_template
 from app.generation.render_plan import build_production_render_plan
 from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME, build_client_render_context
@@ -95,6 +96,7 @@ from app.template_analysis.layout_proof_schemas import LengthVariant
 from app.template_analysis.layout_proof_service import (
     LayoutProofIncompleteError,
     LayoutProofMismatchError,
+    LayoutProofPresentationLabelError,
     LayoutProofRenderError,
     LayoutProofValidationError,
     approve_layout_proof,
@@ -465,9 +467,15 @@ class DesignApproveResponse(BaseModel):
 
 
 class LayoutProofRequestCreate(BaseModel):
-    """Trigger proof creation for all three content-length variants."""
+    """Trigger proof creation for all three content-length variants.
+
+    ``presentation_label_approval`` is the explicit, checksum-bound owner input
+    that admits a conventional target heading the measured template does not
+    render; without it such a heading stays a blocking leaked target line.
+    """
 
     design_id: str | None = None
+    presentation_label_approval: PresentationLabelApproval | None = None
 
 
 class LayoutProofEvidenceSummary(BaseModel):
@@ -1082,7 +1090,22 @@ def create_layout_proofs(
             target_pdf=target_pdf,
             target_checksum=target_checksum,
             repository=layout_proof_repository(DATABASE_URL),
+            presentation_label_approval=body.presentation_label_approval,
         )
+    except LayoutProofPresentationLabelError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_code": "layout_proof_render_failed",
+                "message": str(exc),
+                "options": [
+                    "approve_presentation_labels",
+                    "reanalyze_target",
+                    "upload_new_target",
+                ],
+                **exc.catalog,
+            },
+        ) from exc
     except LayoutProofRenderError as exc:
         raise HTTPException(
             status_code=422,

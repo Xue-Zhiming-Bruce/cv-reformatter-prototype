@@ -108,7 +108,8 @@ def a_generation_without_model_loop(monkeypatch: pytest.MonkeyPatch):
         None if kwargs["uses_agentic"] else original_manifest_writer(*args, **kwargs))
     monkeypatch.setenv("GENERATION_STRATEGY", "agentic")
 
-    def render(*, context, layout_spec, target_pdf, evidence_dir, output_dir):
+    def render(*, context, layout_spec, target_pdf, evidence_dir, output_dir,
+               presentation_label_approval=None):
         _, _, html = render_layout_template(layout_spec,
             candidate_document_from_context(context, candidate_id="offline-lifecycle",
                 include_subheading=layout_spec.header.show_candidate_subheading),
