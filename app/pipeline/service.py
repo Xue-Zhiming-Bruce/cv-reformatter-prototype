@@ -12,8 +12,7 @@ import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
-from pydantic import Field, model_validator
+from typing import Any
 from app.generation.template_mapper import CONTACT_FIELD_SLOTS, CONTACT_LABEL_FIELDS
 from app.pipeline.candidate_content import CandidateDocument
 from app.pipeline.defect_ledger import (
@@ -4761,7 +4760,6 @@ def _write_e5_owner_package(
     render side by side per page,
     plus probe outputs, costs, the shell-issued presentation-label table,
     remaining differences, and the non-claims."""
-    from app.ingestion.pdf_reader import read_pdf_text
     from app.pipeline import quality as c2r
     from app.template_analysis.visual_comparator import compare_pdf_layouts
 
