@@ -1,6 +1,8 @@
 from pathlib import Path
 
 import json
+import re
+import zipfile
 
 import pytest
 from docx import Document
@@ -651,6 +653,77 @@ def _upload_docx(contents: bytes, artifact_id: str, filename: str = "target.docx
         data={"artifact_id": artifact_id},
         files={"file": (filename, contents, DOCX_MIME)},
     )
+
+
+def _rewrite_docx(source: Path, destination: Path, transform) -> None:
+    with zipfile.ZipFile(source) as source_zip, zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as target_zip:
+        for item in source_zip.infolist():
+            data = transform(item.filename, source_zip.read(item.filename))
+            if data is not None:
+                target_zip.writestr(item, data)
+
+
+def _without_theme(name: str, data: bytes) -> bytes | None:
+    if name == "word/theme/theme1.xml":
+        return None
+    if name == "word/_rels/document.xml.rels":
+        return re.sub(rb'<Relationship[^>]*Type="[^"]*/theme"[^>]*/>', b"", data)
+    return data
+
+
+def _without_section_properties(name: str, data: bytes) -> bytes | None:
+    if name == "word/document.xml":
+        return re.sub(rb"<w:sectPr\b[^>]*/>|<w:sectPr\b.*?</w:sectPr>", b"", data, flags=re.S)
+    return data
+
+
+def test_target_format_upload_rejects_docx_with_unresolvable_theme(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    source = tmp_path / "source.docx"
+    Document().save(source)
+    target_path = tmp_path / "no-theme.docx"
+    _rewrite_docx(source, target_path, _without_theme)
+    artifact_id = "artifact_docx_no_theme"
+
+    response = _upload_docx(target_path.read_bytes(), artifact_id, "no-theme.docx")
+
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert set(detail) == {"error_code", "message", "detail"}
+    assert detail["error_code"] == "docx_target_unmeasurable"
+    assert "theme" in detail["message"].lower()
+    artifact_dir = tmp_path / artifact_id
+    assert not (artifact_dir / "layout_template_spec.json").exists()
+    assert not (artifact_dir / "target_format.json").exists()
+    assert not (artifact_dir / "target_format_template.docx").exists()
+
+
+def test_target_format_upload_rejects_docx_without_page_section(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    source = tmp_path / "source.docx"
+    Document().save(source)
+    target_path = tmp_path / "no-sectpr.docx"
+    _rewrite_docx(source, target_path, _without_section_properties)
+    assert len(Document(target_path).sections) == 0
+    artifact_id = "artifact_docx_no_section"
+
+    response = _upload_docx(target_path.read_bytes(), artifact_id, "no-sectpr.docx")
+
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert set(detail) == {"error_code", "message", "detail"}
+    assert detail["error_code"] == "docx_target_unmeasurable"
+    assert "sectPr" in detail["message"]
+    artifact_dir = tmp_path / artifact_id
+    assert not (artifact_dir / "layout_template_spec.json").exists()
+    assert not (artifact_dir / "target_format.json").exists()
+    assert not (artifact_dir / "target_format_template.docx").exists()
 
 
 def test_target_format_upload_accepts_body_only_docx_sample(

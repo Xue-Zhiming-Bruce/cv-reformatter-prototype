@@ -1,3 +1,5 @@
+import re
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -242,3 +244,52 @@ def test_target_docx_analysis_corrupt_error_code_is_unreadable(tmp_path: Path) -
         analyze_target_docx(target_path, tmp_path / "analysis")
 
     assert excinfo.value.error_code == "docx_target_unreadable"
+
+
+def _rewrite_docx(source: Path, destination: Path, transform) -> None:
+    with zipfile.ZipFile(source) as source_zip, zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as target_zip:
+        for item in source_zip.infolist():
+            data = transform(item.filename, source_zip.read(item.filename))
+            if data is not None:
+                target_zip.writestr(item, data)
+
+
+def _without_theme(name: str, data: bytes) -> bytes | None:
+    if name == "word/theme/theme1.xml":
+        return None
+    if name == "word/_rels/document.xml.rels":
+        return re.sub(rb'<Relationship[^>]*Type="[^"]*/theme"[^>]*/>', b"", data)
+    return data
+
+
+def _without_section_properties(name: str, data: bytes) -> bytes | None:
+    if name == "word/document.xml":
+        return re.sub(rb"<w:sectPr\b[^>]*/>|<w:sectPr\b.*?</w:sectPr>", b"", data, flags=re.S)
+    return data
+
+
+def test_target_docx_analysis_rejects_unresolvable_theme(tmp_path: Path) -> None:
+    source = tmp_path / "source.docx"
+    Document().save(source)
+    target_path = tmp_path / "no-theme.docx"
+    _rewrite_docx(source, target_path, _without_theme)
+
+    with pytest.raises(TargetDocxAnalysisError) as excinfo:
+        analyze_target_docx(target_path, tmp_path / "analysis")
+
+    assert excinfo.value.error_code == "docx_target_unmeasurable"
+    assert "theme" in str(excinfo.value).lower()
+
+
+def test_target_docx_analysis_rejects_missing_page_section(tmp_path: Path) -> None:
+    source = tmp_path / "source.docx"
+    Document().save(source)
+    target_path = tmp_path / "no-sectpr.docx"
+    _rewrite_docx(source, target_path, _without_section_properties)
+    assert len(Document(target_path).sections) == 0
+
+    with pytest.raises(TargetDocxAnalysisError) as excinfo:
+        analyze_target_docx(target_path, tmp_path / "analysis")
+
+    assert excinfo.value.error_code == "docx_target_unmeasurable"
+    assert "sectPr" in str(excinfo.value)

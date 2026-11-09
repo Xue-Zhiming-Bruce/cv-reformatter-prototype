@@ -50,12 +50,16 @@ def _load_document(source_path: Path) -> Any:
         raise TargetDocxAnalysisError("The target DOCX is corrupt or cannot be read as a Word document.", error_code="docx_target_unreadable") from exc
 
 def _build_spec(document: Any) -> LayoutTemplateSpec:
-    roles = _measure_roles(document)
-    section = document.sections[0]
+    allow_default = not any(rel.reltype == RT.STYLES for rel in document.part.rels.values())
+    roles = _measure_roles(document, allow_default)
+    page_sections = document.sections
+    if not page_sections:
+        raise TargetDocxAnalysisError("The target DOCX has no measurable page section (w:sectPr).")
+    section = page_sections[0]
     columns = _column_style(section)
     header_border = _header_border(document)
     heading_border, uniform = _uniform_heading_border(document)
-    sections = _measured_sections(document, roles["heading"], roles["entry_title"])
+    sections = _measured_sections(document, roles["heading"], roles["entry_title"], allow_default)
     limited = _limited_features(sections, columns)
     decoration = _decoration_style(roles["heading"], header_border, heading_border, uniform)
     return LayoutTemplateSpec(source_type="docx_analysis", template_name="analyzed_docx", template_version="docx-measured-1",
@@ -65,32 +69,31 @@ def _build_spec(document: Any) -> LayoutTemplateSpec:
                               header=_measured_header(document), sections=sections, unsupported_features=limited,
                               show_document_title=False, confidence=0.9, warnings=_warnings(columns, heading_border, uniform))
 
-def _measure_roles(document: Any) -> dict[str, Any]:
+def _measure_roles(document: Any, allow_default: bool) -> dict[str, Any]:
     normal = _style_or_none(document, "Normal")
-    body = _body_style(document, normal)
+    body = _body_style(document, normal, allow_default)
     heading_style = _style_or_none(document, "Heading 2")
     return {"normal": normal, "body": body, "heading_style": heading_style,
-            "title": _role_style(document, _style_or_none(document, "Title"), _derive(body, 1.6, True)),
-            "heading": _role_style(document, heading_style, _derive(body, 1.15, True)),
-            "entry_title": _role_style(document, _style_or_none(document, "Heading 3"), body)}
+            "title": _role_style(document, _style_or_none(document, "Title"), _derive(body, 1.6, True), allow_default),
+            "heading": _role_style(document, heading_style, _derive(body, 1.15, True), allow_default),
+            "entry_title": _role_style(document, _style_or_none(document, "Heading 3"), body, allow_default)}
 
 def _style_or_none(document: Any, name: str) -> Any | None:
     try:
         return document.styles[name]
     except KeyError:
         return None
-
-def _body_style(document: Any, style: Any | None) -> TextStyle:
-    p = _effective_props(document, style)
+def _body_style(document: Any, style: Any | None, allow_default: bool) -> TextStyle:
+    p = _effective_props(document, style, allow_default)
     if not p.get("font_family") or p.get("font_size_pt") is None:
         raise TargetDocxAnalysisError("The target DOCX body typography could not be measured from style, docDefaults or theme evidence.")
     return TextStyle(font_family=p["font_family"], font_size_pt=p["font_size_pt"], bold=bool(p.get("bold", False)),
                      italic=bool(p.get("italic", False)), color_hex=p.get("color_hex", "#000000"), character_spacing_pt=_character_spacing(style))
 
-def _role_style(document: Any, style: Any | None, fallback: TextStyle) -> TextStyle:
+def _role_style(document: Any, style: Any | None, fallback: TextStyle, allow_default: bool) -> TextStyle:
     if style is None:
         return fallback
-    p = _effective_props(document, style)
+    p = _effective_props(document, style, allow_default)
     return TextStyle(font_family=p.get("font_family") or fallback.font_family, font_size_pt=p.get("font_size_pt") or fallback.font_size_pt,
                      bold=fallback.bold if p.get("bold") is None else p["bold"], italic=fallback.italic if p.get("italic") is None else p["italic"],
                      color_hex=p.get("color_hex") or fallback.color_hex, character_spacing_pt=_character_spacing(style))
@@ -98,31 +101,32 @@ def _role_style(document: Any, style: Any | None, fallback: TextStyle) -> TextSt
 def _derive(body: TextStyle, factor: float, bold: bool) -> TextStyle:
     return TextStyle(font_family=body.font_family, font_size_pt=max(round(body.font_size_pt * factor, 3), body.font_size_pt), bold=bold,
                      italic=False, color_hex=body.color_hex, character_spacing_pt=body.character_spacing_pt)
-
-def _effective_props(document: Any, style: Any | None) -> dict[str, Any]:
+def _effective_props(document: Any, style: Any | None, allow_default: bool) -> dict[str, Any]:
     properties: dict[str, Any] = {}
-    theme_fonts = _theme_fonts(document)
+    theme_fonts = _theme_fonts(document, allow_default)
     current = style
     while current is not None:
-        _merge_rpr(properties, getattr(current.element, "rPr", None), theme_fonts)
+        _merge_rpr(properties, getattr(current.element, "rPr", None), theme_fonts, not allow_default)
         current = current.base_style
     defaults = document.styles.element.find(qn("w:docDefaults"))
     rpr_default = None if defaults is None else defaults.find(qn("w:rPrDefault"))
-    _merge_rpr(properties, None if rpr_default is None else rpr_default.find(qn("w:rPr")), theme_fonts)
+    _merge_rpr(properties, None if rpr_default is None else rpr_default.find(qn("w:rPr")), theme_fonts, not allow_default)
     return properties
 
-def _merge_rpr(properties: dict[str, Any], rpr: Any | None, theme_fonts: dict[str, str]) -> None:
+def _merge_rpr(properties: dict[str, Any], rpr: Any | None, theme_fonts: dict[str, str], strict: bool) -> None:
     if rpr is None:
         return
     fonts = rpr.find(qn("w:rFonts"))
     if "font_family" not in properties and fonts is not None:
         family = fonts.get(qn("w:ascii")) or fonts.get(qn("w:hAnsi"))
-        if not family:
-            for attribute in ("w:asciiTheme", "w:hAnsiTheme"):
-                slot = fonts.get(qn(attribute))
-                if slot in theme_fonts:
-                    family = theme_fonts[slot]
-                    break
+        for attribute in ("w:asciiTheme", "w:hAnsiTheme"):
+            slot = None if family else fonts.get(qn(attribute))
+            if slot and slot not in theme_fonts:
+                if strict:
+                    raise TargetDocxAnalysisError(f"The target DOCX references theme font '{slot}' but the package theme or its latin typeface could not be resolved.")
+                continue
+            if slot:
+                family = theme_fonts[slot]
         if family:
             properties["font_family"] = family
     if "font_size_pt" not in properties and (size := rpr.find(qn("w:sz"))) is not None:
@@ -139,17 +143,17 @@ def _merge_rpr(properties: dict[str, Any], rpr: Any | None, theme_fonts: dict[st
         if key not in properties and flag is not None:
             properties[key] = flag.get(qn("w:val"), "true").lower() not in {"0", "false", "off"}
 
-def _theme_fonts(document: Any) -> dict[str, str]:
+def _theme_fonts(document: Any, allow_default: bool) -> dict[str, str]:
     try:
         theme = parse_xml(document.part.part_related_by(RT.THEME).blob)
     except Exception:
-        return dict(_DEFAULT_THEME_FONTS)
+        return dict(_DEFAULT_THEME_FONTS) if allow_default else {}
     fonts: dict[str, str] = {}
     for slot in ("major", "minor"):
         node = theme.find(f".//{qn(f'a:{slot}Font')}/{qn('a:latin')}")
         if node is not None and node.get("typeface"):
-            fonts[f"{slot}HAnsi"] = node.get("typeface")
-    return fonts or dict(_DEFAULT_THEME_FONTS)
+            fonts[f"{slot}Ascii"] = fonts[f"{slot}HAnsi"] = node.get("typeface")
+    return fonts or (dict(_DEFAULT_THEME_FONTS) if allow_default else {})
 
 def _character_spacing(style: Any | None) -> float:
     run_properties = None if style is None else style.element.rPr
@@ -161,7 +165,7 @@ def _character_spacing(style: Any | None) -> float:
     except ValueError:
         return 0.0
 
-def _measured_sections(document: Any, heading_style: TextStyle, entry_title_style: TextStyle) -> list[SectionLayoutSpec]:
+def _measured_sections(document: Any, heading_style: TextStyle, entry_title_style: TextStyle, allow_default: bool) -> list[SectionLayoutSpec]:
     sections: list[SectionLayoutSpec] = []
     counts: dict[str, int] = {}
     for paragraph in document.paragraphs:
@@ -172,7 +176,7 @@ def _measured_sections(document: Any, heading_style: TextStyle, entry_title_styl
         source = _SECTION_ALIASES.get(source_key, "additional_details")
         counts[source] = counts.get(source, 0) + 1
         sections.append(SectionLayoutSpec(section_id=f"docx-{source}-{counts[source]}", source=source, label=label, placement="full_width",
-                                          heading_style=_role_style(document, paragraph.style, heading_style),
+                                          heading_style=_role_style(document, paragraph.style, heading_style, allow_default),
                                           entry_title_style=entry_title_style if source == "work_experience" else None,
                                           additional_section_heading=label if source_key not in _SECTION_ALIASES else None))
     return sections
@@ -204,13 +208,11 @@ def _contact_field(value: str) -> str | None:
     if sum(character.isdigit() for character in value) >= 7:
         return "phone"
     return "location" if "," in value else None
-
 def _column_style(section: Any) -> ColumnStyle:
     nodes = section._sectPr.xpath("./w:cols")
     if not nodes or int(nodes[0].get(qn("w:num"), "1")) != 2:
         return ColumnStyle()
     return ColumnStyle(count=2, gutter_pt=max(float(nodes[0].get(qn("w:space"), "360")) / 20, 0), left_column_ratio=0.5, sidebar_side="left")
-
 def _bottom_border(value: Any) -> Any | None:
     properties = value._p.pPr if hasattr(value, "_p") else value.element.pPr
     if properties is not None:
@@ -261,7 +263,6 @@ def _page_style(section: Any) -> PageStyle:
     return PageStyle(width_pt=width, height_pt=height, orientation="portrait" if height >= width else "landscape",
                      margin_top_pt=_points(section.top_margin, 54.0), margin_right_pt=_points(section.right_margin, 54.0),
                      margin_bottom_pt=_points(section.bottom_margin, 54.0), margin_left_pt=_points(section.left_margin, 54.0))
-
 def _spacing_style(normal: Any | None, heading: Any | None) -> SpacingStyle:
     body_format = normal.paragraph_format if normal is not None else None
     heading_format = heading.paragraph_format if heading is not None else None
@@ -269,7 +270,6 @@ def _spacing_style(normal: Any | None, heading: Any | None) -> SpacingStyle:
                         paragraph_after_pt=_points(getattr(body_format, "space_after", None), 4.0),
                         section_before_pt=_points(getattr(heading_format, "space_before", None), 10.0),
                         section_after_pt=_points(getattr(heading_format, "space_after", None), 4.0))
-
 def _decoration_style(heading: TextStyle, header_border: Any | None, heading_border: Any | None, uniform: bool) -> DecorationStyle:
     rule_color, rule_width = _border_style(heading_border if uniform else header_border, heading.color_hex)
     return DecorationStyle(primary_color_hex=heading.color_hex, accent_color_hex=heading.color_hex, rule_color_hex=rule_color,
