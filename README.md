@@ -245,7 +245,7 @@ the same machine stays untouched.
 | Task | Command |
 | --- | --- |
 | Health | `curl -fsS http://127.0.0.1:18000/health` |
-| Migration result | `docker compose logs migrate` (one-shot; must exit 0) |
+| Migration result | `docker compose ps -a migrate` (one-shot; exit `0` = applied) |
 | Logs | `docker compose logs -f api` |
 | Stop, keep state | `docker compose down` |
 | Rebuild after code changes | `docker compose up -d --build` |
@@ -253,7 +253,9 @@ the same machine stays untouched.
 
 The `migrate` service is an explicit dependency step: the API starts only after
 it exits successfully, and the API never creates or migrates tables. An
-unmigrated database returns an attributable `500` instead.
+unmigrated database returns an attributable `500` instead. Its result is the
+container exit status in `docker compose ps -a`, not log output: Alembic logging
+is not configured, so `docker compose logs migrate` shows nothing.
 
 State lives in two volumes: `cv-reformatter-compose_postgres_data` for records
 and `cv-reformatter-compose_artifacts` (mounted at `/app/data/generated_outputs`)
@@ -274,9 +276,10 @@ to Liberation Sans, a metric-compatible substitute.
 
 Chromium runs as unprivileged uid 10001 under the default Docker security
 settings, with no `--no-sandbox`, no `--privileged` and no added capabilities;
-its namespace sandbox needs user namespaces, which the image verifies with
-`unshare --user`. A host that forbids user namespaces fails the PDF export with
-Chrome's sandbox error; do not fix that by disabling the sandbox.
+its namespace sandbox needs unprivileged user namespaces from the host kernel,
+which the image installs Chromium for but does not test. On a host that forbids
+them, the first PDF export fails with Chrome's sandbox error; that is a host
+configuration limit to fix on the host, not by disabling the sandbox.
 
 Provider credentials stay runtime-only and the default stack calls no provider
 (`API_LLM_PROVIDER=mock`). For provider extraction or the native job worker, add

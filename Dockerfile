@@ -1,8 +1,10 @@
 # Local runtime image for the CV Reformatter backend (API, migrations, worker).
-# Verified on 2026-11-09, linux/arm64, base python@sha256:935c3c5b1235:
-#   Python 3.12.12 · Debian bookworm chromium · dependency versions pinned in
-#   docker/constraints.txt · product fonts are the woff2 assets bundled under
-#   app/pipeline/assets/fonts and embedded into the HTML by app/pipeline/rendering.py.
+# Verified on 2026-11-09, linux/arm64, base python:3.12-slim-bookworm (tag only,
+# not digest-pinned; the image reports Python 3.12.16) · Debian bookworm
+# chromium · dependency versions pinned in docker/constraints.txt, frozen from
+# the host virtualenv at Python 3.12.12 · product fonts are the woff2 assets
+# bundled under app/pipeline/assets/fonts and embedded into the HTML by
+# app/pipeline/rendering.py.
 FROM python:3.12-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
