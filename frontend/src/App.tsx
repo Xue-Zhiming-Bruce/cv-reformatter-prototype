@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { formatApiError } from "./apiError"
 import { MainScreen } from "./screens/MainScreen"
 import { ReviewScreen } from "./screens/ReviewScreen"
 import { AuthScreen } from "./screens/AuthScreen"
@@ -40,13 +41,8 @@ export default function App() {
       const res = await fetch("/api/process", { method: "POST", body: formData })
 
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        const detail: string = body.detail ?? "Unknown error"
-        if (res.status === 400) {
-          setState({ status: "error", message: `Unsupported file — ${detail}` })
-        } else {
-          setState({ status: "error", message: `Server error — please try again. (${detail})` })
-        }
+        const prefix = res.status === 400 ? "Unsupported file — " : "Server error — please try again. "
+        setState({ status: "error", message: await formatApiError(res, prefix) })
         return
       }
 
@@ -57,9 +53,7 @@ export default function App() {
       const targetRes = await fetch("/api/target-format", { method: "POST", body: targetFormData })
 
       if (!targetRes.ok) {
-        const body = await targetRes.json().catch(() => ({}))
-        const detail: string = body.detail ?? "Unknown error"
-        setState({ status: "error", message: `Target format error — ${detail}` })
+        setState({ status: "error", message: await formatApiError(targetRes, "Target format error — ") })
         return
       }
 
