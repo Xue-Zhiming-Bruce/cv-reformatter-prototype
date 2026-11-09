@@ -96,6 +96,33 @@ def _no_reviewable_output(
     )
 
 
+def _required_gate_failure(
+    version_id: str, gates: dict[str, Any], details: dict[str, Any],
+) -> AgenticGenerationError:
+    """Name a representation ceiling instead of charging an unrepairable gap to
+    the repair agents or reporting a generic gate failure."""
+    failed = [name for name, passed in gates.items() if passed is not True]
+    ceiling = [
+        name for name in service.E5_REPRESENTATION_CEILING_GATES if gates.get(name) is not True
+    ]
+    gaps = service._e5_content_shape_capability_gaps(
+        details.get("content_shapes_match_evidence") or {}
+    )
+    if ceiling and gaps and set(failed) <= set(service.E5_REPRESENTATION_CEILING_GATES):
+        return AgenticGenerationError(
+            f"Representation ceiling on {version_id}: the measured properties "
+            + ", ".join(gaps)
+            + " are not consumed by the fixed renderer, so no agent can repair them "
+            "(representation capability gap, owned by no repair layer). "
+            "Reanalyze the target or upload a target whose measured properties the "
+            "renderer represents."
+        )
+    return AgenticGenerationError(
+        "Selected agentic output fails required content, privacy, structure or "
+        f"rendering checks: {failed}"
+    )
+
+
 def generation_strategy() -> str:
     strategy = os.getenv("GENERATION_STRATEGY", "agentic").strip().lower()
     if strategy != "agentic":
@@ -235,7 +262,7 @@ def render_agentic(
         blocking_gates=service.LANE_A_OUTPUT_GATES)
     gate_validation.pop("details")  # Detailed evidence stays in the owning run directory.
     if not gate_validation["passed"]:
-        raise AgenticGenerationError("Selected agentic output fails required content, privacy, structure or rendering checks")
+        raise _required_gate_failure(version.version_id, gates["gates"], gates.get("details", {}))
     content = validate_generated_content(context, pdf_path=pdf_path, layout_spec=layout_spec)
     structure = validate_output_structure(context, html_path=html_path, pdf_path=pdf_path,
         layout_spec=layout_spec)

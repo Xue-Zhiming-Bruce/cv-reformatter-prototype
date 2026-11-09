@@ -352,6 +352,26 @@ def test_cli_candidate_truth_and_privacy_are_render_gates() -> None:
     assert e._e5_blocking_gates_passed("a", gates) is False
 
 
+def test_lane_a_gate_sets_stay_frozen_for_the_issue_7_proof_chain() -> None:
+    """AC3: the layout-proof chain cannot reach an approved set by dropping a
+    gate. The blocking set, the output set and the non-quarantinable set are
+    frozen here so any weakening is a deliberate, reviewed contract change."""
+    assert e.LANE_A_OUTPUT_GATES == (
+        "candidate_content_accounting",
+        "no_target_candidate_facts",
+        "content_gate",
+        "section_order_matches_state",
+        "no_blank_page",
+        "content_shapes_match_evidence",
+    )
+    assert e._e5_blocking_gates("a") == (
+        "candidate_content_accounting",
+        "no_target_candidate_facts",
+    )
+    assert "no_target_candidate_facts" in e.E5_NON_QUARANTINABLE_GATES
+    assert e.E5_REPRESENTATION_CEILING_GATES == ("content_shapes_match_evidence",)
+
+
 def test_review_gate_full_review_once_per_render_fingerprint() -> None:
     """Review fingerprint = FINAL-PDF sha256 (owner correction 2026-09-22):
     same version id/hash -> one review; a DIFFERENT version id with the SAME
