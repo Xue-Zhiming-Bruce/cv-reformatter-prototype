@@ -1756,6 +1756,7 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                     {
                         "section_id": candidate_section.section_id,
                         "heading": candidate_section.heading,
+                        "destination_node": mapped_roles[candidate_section.source].node_id,
                         "reason": (
                             "matched source role renders the target label; candidate "
                             "leaves merge into the mapped target section in document order"
