@@ -90,6 +90,20 @@ def test_native_child_publishes_bundle_and_reads_ignore_loose_files(native_jobs,
     assert "Synthetic Worker Candidate" not in (selected / "candidate_profile.html").read_text()
     current = PostgresGenerationRepository(ctx["engine"]).current(directory.name)
     assert "job_request" in current.inputs and "native_application_and_runtime" in current.component_source_sha256
+    # The arrangement report is published inside the same bundle and explains
+    # that exact output; a stale loose file never answers for it.
+    published_report = (selected / "composition_report.json").read_bytes()
+    stored_report = json.loads(published_report)
+    assert stored_report["output_identity"] == current.output_identity.model_dump(mode="json")
+    assert stored_report["schema_version"] == "composition-report/1.0"
+    assert stored_report["decisions"]
+    (directory / "composition_report.json").write_text(
+        json.dumps({**stored_report, "artifact_id": "artifact_stale_loose_report"})
+    )
+    report_download = client.get(endpoint + "/composition_report.json")
+    assert report_download.status_code == 200, report_download.text
+    assert report_download.json() == stored_report
+    assert "Synthetic Worker Candidate" not in json.dumps(stored_report)
     accepted = client.post(endpoint + "/final-acceptance", json=current.output_identity.model_dump(mode="json"))
     assert accepted.status_code == 200 and accepted.json()["client_ready"], accepted.text
     assert client.get(endpoint + "/metadata").json()["client_ready"]

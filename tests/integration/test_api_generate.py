@@ -162,6 +162,83 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
     assert metadata["needs_review_count"] == len(body["missing_fields"])
 
 
+def test_generate_returns_a_composition_report_for_the_exact_output(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    from app.final_acceptance import file_sha256
+
+    monkeypatch.delenv("GENERATION_STRATEGY", raising=False)
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
+    artifact_id = "artifact_composition_report"
+    artifact_dir = tmp_path / artifact_id
+    artifact_dir.mkdir()
+    profile = CandidateProfile(
+        full_name="Jane Candidate",
+        email="jane@example.com",
+        professional_summary="Backend engineer focused on data platforms.",
+        skills=["Python", "SQL"],
+        salary_expectation="250000 USD",
+        work_experience=[
+            WorkExperience(company="DataWorks", title="Senior Engineer", description=["Built pipelines."])
+        ],
+    )
+    version_id = _approve_profile_via_api(artifact_dir, profile, artifact_id)
+
+    def generate(**overrides) -> dict:
+        response = client.post("/api/generate", json={
+            "artifact_id": artifact_id,
+            "approved_profile_version_id": version_id,
+            "template_name": "apex_standard",
+            "client_display_rules": {"salary_expectation": "available_upon_request"},
+            "blind_profile": True,
+            **overrides,
+        })
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    body = generate()
+    report = body["composition_report"]
+    assert report["schema_version"] == "composition-report/1.0"
+    assert report["artifact_id"] == artifact_id
+    assert report["output_identity"]["profile_revision_id"] == version_id
+    assert report["output_identity"]["layout_template_version"] == body["layout_template_version"]
+    assert report["output_identity"]["html_sha256"] == file_sha256(artifact_dir / "candidate_profile.html")
+    assert report["output_identity"]["pdf_sha256"] == file_sha256(artifact_dir / "candidate_profile.pdf")
+    # Real recorded facts: the candidate's own headings were replaced and the
+    # sections the target has no content for are recorded as hidden, not invented.
+    decision_ids = {item["decision_id"] for item in report["decisions"]}
+    assert "merge.summary" in decision_ids
+    assert any(item.startswith("hidden_empty.") for item in decision_ids)
+    assert report["state"] in {"explained", "review_required"}
+    assert body["composition_report_url"] == f"/api/artifacts/{artifact_id}/composition_report.json"
+
+    downloaded = client.get(body["composition_report_url"])
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.json() == report
+    assert json.loads((artifact_dir / "composition_report.json").read_text()) == report
+    manifest = json.loads((artifact_dir / "artifact_manifest.json").read_text())
+    assert manifest["outputs"]["composition_report"]["sha256"] == file_sha256(
+        artifact_dir / "composition_report.json"
+    )
+    # Disclosure safety: the report explains arrangements by identity only.
+    report_text = json.dumps(report)
+    assert "Jane Candidate" not in report_text
+    assert "250000 USD" not in report_text
+
+    # Regeneration is a different output: the report describes the current one.
+    regenerated = generate(blind_profile=False)
+    assert (
+        regenerated["composition_report"]["output_identity"]["html_sha256"]
+        != report["output_identity"]["html_sha256"]
+    )
+    current = client.get(regenerated["composition_report_url"]).json()
+    assert current["output_identity"]["html_sha256"] == file_sha256(
+        artifact_dir / "candidate_profile.html"
+    )
+    assert current["output_identity"] != report["output_identity"]
+
+
 @pytest.mark.parametrize("blind", [False, True])
 def test_builtin_api_shared_a_preserves_real_pdf_and_acceptance_identity(
     tmp_path: Path, monkeypatch: MonkeyPatch, blind: bool,
