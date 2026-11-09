@@ -127,11 +127,26 @@ for product acceptance:
   duplicative symbols in `app/pipeline`, `app/template_analysis`,
   `app/generation` and `app/extraction`, migrated `scripts/run_demo.py` to the
   product extraction path, and removed three tests of retired helpers while
-  keeping their independent contracts; a follow-up commit removed the imports
-  and blank line that removal orphaned. Measured reduction: 17 files,
-  +111/−409 lines (production `app/` +6/−277, `scripts/` +29/−4, tests
-  +76/−128), plus +43/−0 of documentation. No dependency, migration, prompt or
-  schema name changed, and `agentic_renderer_version()` is unchanged. Decisions
+  keeping their independent contracts; the follow-up `2841401` removed the
+  imports and blank lines that removal orphaned, re-touching four of the same
+  files. Measured reduction, removal commits only: `git show --numstat bc660ad`
+  = 17 files +109/−403 and `git show --numstat 2841401` = 4 files +2/−6, and
+  because those four files are among the first commit's 17, the two together are
+  17 files +111/−409 (net −298; production `app/` 7 files +6/−277, `scripts/` 1
+  file +29/−4, tests 9 files +76/−128, the same two commits split by path with
+  `-- app`, `-- scripts` and `-- tests`). Documentation delta: `git show --numstat
+  4d69ae5` = +44/−0, all of it `docs/roadmaps/BACKEND_ROADMAP.md`. `bc660ad`
+  landed on `issue-18` and is already an ancestor of this lane's fork base
+  `0d400ae` (`git merge-base --is-ancestor bc660ad 0d400ae` succeeds), so the
+  fork diff `git diff 0d400ae..HEAD` never contained the removal and does not
+  support −298. What this branch itself contributes, measured to the pinning
+  commit rather than to a moving `HEAD`: on the code side `git diff --stat
+  0d400ae..2841401` = 4 files +2/−6, i.e. only the orphaned import/blank lines in
+  `app/pipeline/service.py`, `app/template_analysis/design_evidence.py`,
+  `app/template_analysis/designer.py` and `tests/helpers/adobe_evidence.py`; on
+  the documentation side the +44/−0 above. No dependency,
+  migration, prompt or schema name changed, and `agentic_renderer_version()` is
+  unchanged. Decisions
   and retained paths are in [Legacy Removal Decisions](#legacy-removal-decisions-19-p0)
   and [Historical Paths And Recovery](#historical-paths-and-recovery);
   per-symbol reference counts, the offline gate result and the rollback are in
@@ -171,7 +186,7 @@ reduction are in issue #19's handoff comment.
 | `pipeline/evidence.py::EvidencePod.record_summary` | Access-count/status summary with no caller. | The evidence records themselves (`EvidencePod`, `EvidenceAccessRecord`) and the run/owner report writers in `service.py`. | `tests/integration/test_pipeline_evidence.py`; `tests/integration/test_pipeline_loop.py` owner-package cases. |
 | `template_analysis/design_evidence.py::DesignEvidenceError` | Exception never raised or caught and not a package re-export. | No replacement needed; conversion errors stay with the current bridge. | `tests/unit/test_design_evidence.py`. |
 | `template_analysis/design_evidence.py::section_label_values` and `::evidence_style_roles` | Accessors with no caller; one only copied the list. | `TargetLayoutEvidence.style_roles` read directly by `design_compiler`/`design_validator`. | `tests/unit/test_design_compiler.py`; `tests/unit/test_design_validator.py`. |
-| `template_analysis/designer.py::new_proposal_id` (with its `uuid` import) | Random-ID helper with no caller; proposal IDs are deterministic per request. | The designer proposal construction and `proposal_checksum`. | `tests/unit/test_design_compiler.py::test_proposal_checksum_is_stable`; `tests/unit/test_design_provider.py`. |
+| `template_analysis/designer.py::new_proposal_id` (with its `uuid` import) | Random-ID helper with no caller; proposal IDs are deterministic per request. | The designer proposal construction, `_deterministic_id` and `proposal_checksum`. | `tests/unit/test_design_compiler.py::test_proposal_checksum_is_stable`; `tests/integration/test_design_service.py:499` (identical requests keep the same proposal id). |
 | `generation/template_mapper.py::map_profile_to_template_context` | Dictionary wrapper with no caller. | `generation/template_mapper.py::build_client_render_context`. | `tests/unit/test_template_mapper.py`. |
 | `template_analysis/layout_proof_content.py::build_all_variants` and `tests/unit/test_layout_proof_content.py::test_all_variants_helper` | Wrapper restated `LengthVariant` iteration and its only caller was its own test. | `build_synthetic_context` per variant; `test_variants_supported` exercises every `LengthVariant`. | `tests/unit/test_layout_proof_content.py`. |
 | `pipeline/service.py::summarize_e5_state` and `tests/integration/test_pipeline_loop.py::test_summarize_e5_state_reads_one_run_only` | Summarizer for a historical `E_PIPELINE_PREP.md` report interface with no non-test caller. | The current lane/owner report writers (`_write_e5_lane_report_md`, `_write_e5_comparison`, `_write_e5_owner_package`) over the version-bound `E5LoopRecord`/`E5LaneRecord`. | `tests/integration/test_pipeline_loop.py` ledger, version-bound reporting and owner-package cases. |
