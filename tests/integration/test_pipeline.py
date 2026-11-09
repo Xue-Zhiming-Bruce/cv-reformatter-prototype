@@ -1131,6 +1131,49 @@ def test_product_template_rejects_invalid_dispatch_before_output(tmp_path: Path,
     assert not output.exists()
 
 
+def test_template_label_block_returns_the_catalog_its_approval_must_match(tmp_path: Path) -> None:
+    """A template label block is actionable: the catalog reported to the caller is
+    exactly the identity `run_e5` validates, so approving what was shown admits the
+    label instead of leaving the target permanently blocked."""
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline import service
+    from app.pipeline.service import (
+        PresentationLabelApproval, _apply_presentation_label_approval,
+        template_presentation_label_catalog,
+    )
+    from app.pipeline.html_renderer import render_layout_template
+    from app.template_analysis.commercial.models import NormalizedLayoutEvidence
+    from app.template_analysis.schemas import SectionLayoutSpec
+    from tests.helpers.pipeline_layout import product_template
+
+    inputs = _inputs(tmp_path, one_column=True)
+    spec = product_template()
+    spec.sections.append(SectionLayoutSpec(
+        section_id="custom", source="additional_details", label="Projects Extra",
+        additional_section_heading="Projects"))
+    context = build_client_render_context(CandidateProfile(full_name="Candidate Alpha"))
+    candidate = candidate_document_from_context(context, candidate_id="synthetic-template-label-catalog")
+    target_sha256 = service._sha256_file(inputs["target_pdf"])
+    state, _, _ = render_layout_template(spec, candidate, target_sha256=target_sha256, page_count=1)
+    normalized = NormalizedLayoutEvidence.model_validate_json(
+        inputs["normalized_evidence"].read_text(encoding="utf-8"))
+
+    catalog = template_presentation_label_catalog(state, normalized, target_sha256=target_sha256)
+    assert catalog["unrecognized_template_ids"] == ["label.template.section.04.heading"]
+    approval = PresentationLabelApproval(
+        target_sha256=catalog["target_sha256"], catalog_sha256=catalog["catalog_sha256"],
+        approved_label_ids=[row.label_id for row in catalog["labels"]])
+    assert len(_apply_presentation_label_approval(
+        catalog["labels"], approval, target_sha256=target_sha256)) == len(catalog["labels"])
+
+    # The same approval is accepted by the run itself: no label block is raised.
+    run_e5(**inputs, out_dir=tmp_path / "approved", candidate=candidate, layout_spec=spec,
+           live=False, lanes=("a",), max_repair_rounds=0,
+           presentation_label_approval=PresentationLabelApproval.model_validate(
+               approval.model_dump()))
+
+
 @pytest.mark.parametrize("blind", [False, True])
 @pytest.mark.parametrize("split_work,map_custom", [(False, False), (True, True)])
 def test_cli_product_entries_follow_template_rows(tmp_path: Path, blind: bool, split_work: bool, map_custom: bool) -> None:

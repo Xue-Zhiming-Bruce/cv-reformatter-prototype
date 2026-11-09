@@ -47,6 +47,7 @@ from app.generation.template_mapper import (
     RenderEducation,
     RenderWorkExperience,
 )
+from app.pipeline.service import PresentationLabelApproval
 from app.template_analysis.schemas import (
     LayoutTemplateSpec,
     TemplateStyleSpec,
@@ -335,6 +336,12 @@ class LayoutProofApproval(LayoutProofModel):
     renderer_version: str = Field(default="product-html/1", min_length=1)
     state: Literal["pending", "approved", "rejected"] = "pending"
     variants: dict[LengthVariant, VariantProofEvidence]
+    # Owner-approved presentation-label identity the proof runs validated, so
+    # generation reuses it instead of demanding a second approval of the same
+    # catalog. Appended and defaulted: an existing approval/2 record without
+    # these fields stays readable and simply carries no label approval.
+    presentation_labels: list[PresentationLabelApproval] = Field(default_factory=list)
+    presentation_label_catalog_sha256: str | None = None
     approved_at: str | None = None
     reviewer_id: str | None = None
     reviewer_note: str | None = None

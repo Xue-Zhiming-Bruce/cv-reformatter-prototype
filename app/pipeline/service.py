@@ -677,6 +677,42 @@ def _presentation_label_catalog(derived: dict[str, Any]) -> list[PresentationLab
         )
     return catalog
 
+def _unrendered_target_headings(
+    normalized: Any, template_labels: list[PresentationLabel],
+) -> list[PresentationLabel]:
+    """PROPOSE the conventional target headings the measured TEMPLATE does not
+    render, as evidence-bound catalog entries.
+
+    A target also uses conventional section headings the template chose not to
+    reproduce (e.g. a ``SUMMARY`` heading above a summary paragraph rendered
+    without a heading). Such a target line is not a leaked candidate fact, but
+    admitting it to the privacy exclusion set is an owner decision, so these
+    entries stay `proposed`: never renderable, never privacy-excluded, and
+    admitted only by an explicit `PresentationLabelApproval` bound to this
+    exact target and catalog. Exact product-vocabulary aliases only, so body
+    text and target-person facts never become labels here."""
+    from app.pipeline.quality import _norm
+    from app.template_analysis.commercial.bridge import _section_source_hint
+
+    rendered = {_norm(label.text) for label in template_labels}
+    labels: list[PresentationLabel] = []
+    seen: set[str] = set()
+    for block in getattr(normalized, "text_blocks", None) or []:
+        text = " ".join((block.text or "").split())
+        key = _norm(text)
+        if not key or key in rendered or key in seen:
+            continue
+        if _section_source_hint(text)[0] == "additional_section":
+            continue
+        seen.add(key)
+        labels.append(PresentationLabel(
+            label_id=f"label.target.p{block.page_number}.{block.element_id}",
+            text=text,
+            kind="section_heading",
+            evidence_ids=[f"local_pdf.{block.element_id}"],
+        ))
+    return labels
+
 class PresentationLabelApproval(EvidenceModel):
     """OWNER APPROVAL INPUT for ONE proposed presentation-label catalog of
     ONE target (owner-approved mechanism 2026-09-22; the owner has NOT yet
@@ -705,6 +741,33 @@ class PresentationLabelApproval(EvidenceModel):
         if len(set(self.approved_label_ids)) != len(self.approved_label_ids):
             raise ValueError("presentation-label approval label ids must be unique")
         return self
+
+def template_presentation_label_catalog(
+    state: Any, normalized: Any, *, target_sha256: str,
+) -> dict[str, Any]:
+    """The exact presentation-label identity a template-driven run must approve.
+
+    ``labels`` is what the measured template renders plus the target headings it
+    does not render, and ``catalog_sha256`` is its canonical identity; ``run_e5``
+    computes the same values, so an owner approving this catalog is approving
+    exactly the identity the run validates.
+    """
+    template_labels = [
+        PresentationLabel(label_id=f"label.template.{node.node_id}", text=node.label,
+                          kind="section_heading", evidence_ids=node.evidence_ids)
+        for node in state.nodes if node.kind == "heading"
+    ]
+    labels = [*template_labels, *_unrendered_target_headings(normalized, template_labels)]
+    recognized = {label.label_id for label in _heuristic_presentation_labels(template_labels)}
+    return {
+        "target_sha256": target_sha256,
+        "catalog_sha256": presentation_label_catalog_sha256(labels),
+        "labels": labels,
+        "unrecognized_template_ids": sorted(
+            {label.label_id for label in template_labels} - recognized
+        ),
+    }
+
 
 def presentation_label_catalog_sha256(catalog: list[PresentationLabel]) -> str:
     """Deterministic identity of the EVIDENCE-DERIVED proposed catalog:
@@ -2902,7 +2965,6 @@ def run_e5(
     template_state = None
     template_render = None
     template_label_catalog = None
-    template_approved_labels = None
     if layout_spec is not None:
         import pdfplumber
         layout_spec = LayoutTemplateSpec.model_validate(layout_spec.model_dump())
@@ -2916,12 +2978,14 @@ def run_e5(
                               kind="section_heading", evidence_ids=node.evidence_ids)
             for node in template_state.nodes if node.kind == "heading"
         ]
-        template_approved_labels = (
-            _apply_presentation_label_approval(template_label_catalog, presentation_label_approval, target_sha256=target_sha256)
-            if presentation_label_approval is not None else _heuristic_presentation_labels(template_label_catalog)
-        )
-        if {label.label_id for label in template_label_catalog} != {label.label_id for label in template_approved_labels}:
-            raise ValueError("unrecognized product-template presentation labels require explicit identity-bound label approval")
+        if presentation_label_approval is None:
+            unrecognized = {label.label_id for label in template_label_catalog} - {
+                label.label_id for label in _heuristic_presentation_labels(template_label_catalog)}
+            if unrecognized:
+                raise ValueError(
+                    "unrecognized product-template presentation labels require explicit "
+                    f"identity-bound label approval: {sorted(unrecognized)}"
+                )
     out_dir = out_dir or RUNS / datetime.now(UTC).strftime("e_pipeline_e5_%Y%m%dT%H%M%SZ")
     out_dir.mkdir(parents=True, exist_ok=False)
     budget = budget or RunBudget(
@@ -2984,21 +3048,37 @@ def run_e5(
         return abort("compile_two_column_state", error)
     # Rendering, privacy and owner review share the same evidence-bound label catalog.
     try:
-        label_catalog = _presentation_label_catalog(derived) if template_label_catalog is None else template_label_catalog
+        label_catalog = _presentation_label_catalog(derived) if template_label_catalog is None else [
+            *template_label_catalog,
+            *_unrendered_target_headings(normalized, template_label_catalog),
+        ]
     except Exception as error:
         return abort("presentation_label_catalog", error)
     catalog_sha256 = presentation_label_catalog_sha256(label_catalog)
     # Owner direction 2026-10-22: recognize conventional headings without
     # per-label human approval; legacy explicit input still validates identity.
+    # A heading the TEMPLATE does not render is never recognized that way: it
+    # stays proposed until an explicit, catalog-bound approval admits it.
     try:
-        approved_label_catalog = template_approved_labels if template_approved_labels is not None else (
-            _apply_presentation_label_approval(
+        if presentation_label_approval is not None:
+            approved_label_catalog = _apply_presentation_label_approval(
                 label_catalog, presentation_label_approval, target_sha256=target_sha256,
-            ) if presentation_label_approval is not None
-            else _heuristic_presentation_labels(label_catalog)
-        )
+            )
+        else:
+            approved_label_catalog = _heuristic_presentation_labels(
+                template_label_catalog if template_label_catalog is not None else label_catalog
+            )
     except Exception as error:
         return abort("presentation_label_approval", error)
+    if template_label_catalog is not None:
+        unapproved = {label.label_id for label in template_label_catalog} - {
+            label.label_id for label in approved_label_catalog
+        }
+        if unapproved:
+            return abort("presentation_label_approval", ValueError(
+                "unrecognized product-template presentation labels require explicit "
+                f"identity-bound label approval: {sorted(unapproved)}"
+            ))
     approval_provided = presentation_label_approval is not None
     recognition_method = "explicit_owner_input" if approval_provided else (
         "measured_exact_alias/2" if layout_spec is None else "layout_template_exact_alias/1"

@@ -1082,3 +1082,145 @@ def test_api_corrupt_diagnostic_is_regenerated_not_500(tmp_path: Path) -> None:
             ).read_text(encoding="utf-8")
         )
         assert structural["passed"] is True
+
+
+# ===========================================================================
+# AC4: presentation-label approval is the only way to admit a conventional
+# target heading the measured template does not render.
+# ===========================================================================
+
+def _held_out_catalog() -> dict[str, object]:
+    return {
+        "target_sha256": "a" * 64,
+        "catalog_sha256": "b" * 64,
+        "labels": [{
+            "label_id": "label.target.p1.adobe.page.1.element.2",
+            "text": "SUMMARY",
+            "kind": "section_heading",
+            "status": "proposed",
+            "evidence_ids": ["local_pdf.adobe.page.1.element.2"],
+        }],
+        "leaked_target_lines": ["SUMMARY"],
+    }
+
+
+def test_unapproved_presentation_label_returns_the_catalog_to_approve(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    from app.pipeline.service import PresentationLabelApproval
+    from app.template_analysis.layout_proof_service import LayoutProofPresentationLabelError
+
+    artifact_id = "artifact_presentation_label_block"
+    _upload_target(tmp_path, artifact_id)
+    approval = PresentationLabelApproval(
+        target_sha256="a" * 64, catalog_sha256="b" * 64,
+        approved_label_ids=["label.target.p1.adobe.page.1.element.2"],
+    )
+    received: dict[str, object] = {}
+
+    def blocked(**kwargs):
+        received.update(kwargs)
+        raise LayoutProofPresentationLabelError(
+            "Agentic run did not produce a reviewable output (budget_exhausted): the "
+            "target's conventional section headings 'SUMMARY' are counted as leaked "
+            "target lines because no approval admits them yet.",
+            catalog=_held_out_catalog(),
+        )
+
+    monkeypatch.setattr(main, "create_proof_variants", blocked)
+
+    response = client.post(
+        f"/api/artifacts/{artifact_id}/layout-proofs",
+        json={"presentation_label_approval": approval.model_dump()},
+    )
+
+    # The retry carries the approval; without it the run stays blocked.
+    assert received["presentation_label_approval"] == approval
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "layout_proof_render_failed"
+    assert "SUMMARY" in detail["message"]
+    assert detail["catalog_sha256"] == "b" * 64
+    assert detail["target_sha256"] == "a" * 64
+    assert detail["leaked_target_lines"] == ["SUMMARY"]
+    assert detail["labels"] == _held_out_catalog()["labels"]
+    assert detail["options"][0] == "approve_presentation_labels"
+
+
+def test_presentation_label_approval_must_be_checksum_shaped(tmp_path: Path) -> None:
+    artifact_id = "artifact_presentation_label_malformed"
+    _upload_target(tmp_path, artifact_id)
+    response = client.post(
+        f"/api/artifacts/{artifact_id}/layout-proofs",
+        json={"presentation_label_approval": {
+            "target_sha256": "not-a-checksum", "catalog_sha256": "b" * 64,
+            "approved_label_ids": ["label.target.p1.adobe.page.1.element.2"],
+        }},
+    )
+    assert response.status_code == 422, response.text
+    assert "target_sha256" in response.text
+
+
+# ===========================================================================
+# AC5: a representation ceiling is named, never reported as a generic gate
+# failure and never charged to the repair agents.
+# ===========================================================================
+
+def _ceiling_gate_record() -> tuple[dict[str, object], dict[str, object]]:
+    gates = {
+        "candidate_content_accounting": True, "no_target_candidate_facts": True,
+        "content_gate": True, "section_order_matches_state": True,
+        "no_blank_page": True, "content_shapes_match_evidence": False,
+    }
+    details = {"content_shapes_match_evidence": {"passed": False, "rows": [{
+        "section": "section.02", "consistent": False,
+        "properties": [{
+            "property": "rule", "required_by_declared_shape": True,
+            "measured": {"placement": "below_heading", "x0_pt": 54.0, "x1_pt": 500.0},
+            "renderer_consumes": False,
+            "capability_gap": "declared rule lacks measured/consumed state",
+        }],
+    }]}}
+    return gates, details
+
+
+def test_representation_ceiling_is_named_and_mapped_to_the_structured_422(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    from app.generation import agentic
+    from app.pipeline import service
+
+    gates, details = _ceiling_gate_record()
+    error = agentic._required_gate_failure("render-target-v1", gates, details)
+    assert "Representation ceiling on render-target-v1" in str(error)
+    assert "section.02.rule" in str(error)
+    assert "no agent can repair" in str(error)
+    # Wired to the existing ceiling gate list, not a parallel classification.
+    assert service.E5_REPRESENTATION_CEILING_GATES == ("content_shapes_match_evidence",)
+    assert service._e5_content_shape_capability_gaps(
+        details["content_shapes_match_evidence"]
+    ) == ["section.02.rule"]
+
+    artifact_id = "artifact_representation_ceiling"
+    _upload_target(tmp_path, artifact_id)
+
+    def ceiling(**kwargs):
+        raise layout_proof_service.LayoutProofRenderError(str(error))
+
+    monkeypatch.setattr(main, "create_proof_variants", ceiling)
+    response = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "layout_proof_render_failed"
+    assert "section.02.rule" in detail["message"]
+    assert detail["options"] == ["reanalyze_target", "upload_new_target"]
+
+
+def test_repairable_gate_failure_is_not_reported_as_a_ceiling() -> None:
+    from app.generation import agentic
+
+    gates, details = _ceiling_gate_record()
+    gates["content_gate"] = False
+    error = agentic._required_gate_failure("render-target-v1", gates, details)
+    assert "Representation ceiling" not in str(error)
+    assert "content_gate" in str(error)

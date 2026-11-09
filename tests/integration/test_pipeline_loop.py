@@ -352,6 +352,26 @@ def test_cli_candidate_truth_and_privacy_are_render_gates() -> None:
     assert e._e5_blocking_gates_passed("a", gates) is False
 
 
+def test_lane_a_gate_sets_stay_frozen_for_the_issue_7_proof_chain() -> None:
+    """AC3: the layout-proof chain cannot reach an approved set by dropping a
+    gate. The blocking set, the output set and the non-quarantinable set are
+    frozen here so any weakening is a deliberate, reviewed contract change."""
+    assert e.LANE_A_OUTPUT_GATES == (
+        "candidate_content_accounting",
+        "no_target_candidate_facts",
+        "content_gate",
+        "section_order_matches_state",
+        "no_blank_page",
+        "content_shapes_match_evidence",
+    )
+    assert e._e5_blocking_gates("a") == (
+        "candidate_content_accounting",
+        "no_target_candidate_facts",
+    )
+    assert "no_target_candidate_facts" in e.E5_NON_QUARANTINABLE_GATES
+    assert e.E5_REPRESENTATION_CEILING_GATES == ("content_shapes_match_evidence",)
+
+
 def test_review_gate_full_review_once_per_render_fingerprint() -> None:
     """Review fingerprint = FINAL-PDF sha256 (owner correction 2026-09-22):
     same version id/hash -> one review; a DIFFERENT version id with the SAME
@@ -3255,3 +3275,161 @@ def test_reviewer_findings_bind_catalog_region_without_wording_filters() -> None
         [valid.model_copy(update={"suspected_dimension": "color and alignment"})],
         {"section.03"}, 1,
     ) == [valid.model_copy(update={"suspected_dimension": "color and alignment"})]
+
+
+# ===========================================================================
+# AC4: a conventional target heading the template does not render is admitted
+# only by an explicit, checksum-bound presentation-label approval — never by
+# case-by-case suppression.
+# ===========================================================================
+
+def _unrendered_summary_heading_case(tmp_path: Path):
+    """Target with a SUMMARY heading above a summary paragraph the template
+    renders headless, so the target's conventional heading line is not in the
+    template's own heading catalog."""
+    from app.extraction.candidate_schema import CandidateProfile
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from tests.helpers.pipeline_layout import product_template
+
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    spec = product_template()
+    spec.sections[0] = spec.sections[0].model_copy(
+        update={"label": "", "show_heading": False}
+    )
+    profile = CandidateProfile(
+        full_name="Candidate Alpha", email="alpha@example.test",
+        # The whole-word prose rule does not cover a hyphenated fragment, so the
+        # target's conventional SUMMARY line is a real leaked target line here.
+        professional_summary="Summary-based reporting for engineering teams",
+        skills=["Python", "SQL"],
+    )
+    candidate = candidate_document_from_context(
+        build_client_render_context(profile), candidate_id="synthetic-label-approval"
+    )
+    return inputs, spec, candidate
+
+
+def _privacy_gate(run_dir: Path, record: dict) -> dict:
+    lane = record["lanes"]["a"]
+    version_id = lane["render_versions"][0]["version_id"]
+    gate = json.loads((run_dir / f"lane_a/hard_gates_{version_id}.json").read_text())
+    return gate["details"]["no_target_candidate_facts"]
+
+
+def test_unrendered_conventional_heading_stays_blocked_and_exposes_its_catalog(
+    tmp_path: Path,
+) -> None:
+    inputs, spec, candidate = _unrendered_summary_heading_case(tmp_path)
+    run_dir, terminal, record = e.run_e5(
+        **inputs, out_dir=tmp_path / "unapproved", candidate=candidate,
+        layout_spec=spec, live=False, lanes=("a",), max_repair_rounds=0,
+    )
+    privacy = _privacy_gate(run_dir, record)
+    # No case-by-case suppression: the conventional target heading the template
+    # does not render is reported as a leaked target line.
+    assert privacy["passed"] is False
+    assert privacy["leaked_target_lines"] == ["SUMMARY"]
+    listing = json.loads((run_dir / "presentation_labels.json").read_text())
+    summary = next(row for row in listing["labels"] if row["text"] == "SUMMARY")
+    assert summary["status"] == "proposed"
+    assert summary["label_id"].startswith("label.target.p1.")
+    # The catalog a reviewer must approve is exposed, checksum-bound.
+    assert listing["catalog_sha256"] == e.presentation_label_catalog_sha256([
+        e.PresentationLabel(label_id=row["label_id"], text=row["text"],
+                            kind=row["kind"], evidence_ids=row["evidence_ids"])
+        for row in listing["labels"]
+    ])
+    assert listing["target_sha256"] == record["target_sha256"]
+    # The template's own conventional headings stay auto-recognized; the
+    # target-only heading is the one that needs explicit approval.
+    assert listing["approved_label_ids"] == [
+        "label.template.section.02.heading", "label.template.section.03.heading",
+    ]
+    assert terminal != "ready_for_owner_review"
+
+
+def test_matching_presentation_label_approval_admits_the_heading(tmp_path: Path) -> None:
+    inputs, spec, candidate = _unrendered_summary_heading_case(tmp_path)
+    first, _terminal, _record = e.run_e5(
+        **inputs, out_dir=tmp_path / "catalog", candidate=candidate,
+        layout_spec=spec, live=False, lanes=("a",), max_repair_rounds=0,
+    )
+    listing = json.loads((first / "presentation_labels.json").read_text())
+    approval = e.PresentationLabelApproval(
+        target_sha256=listing["target_sha256"], catalog_sha256=listing["catalog_sha256"],
+        approved_label_ids=[row["label_id"] for row in listing["labels"]],
+    )
+    run_dir, terminal, record = e.run_e5(
+        **inputs, out_dir=tmp_path / "approved", candidate=candidate,
+        layout_spec=spec, presentation_label_approval=approval,
+        live=False, lanes=("a",), max_repair_rounds=0,
+    )
+    privacy = _privacy_gate(run_dir, record)
+    assert privacy["passed"] is True
+    assert "summary" in privacy["label_semantics"]["excluded_labels"]
+    assert privacy["label_semantics"]["symmetric"] is True
+    assert terminal == "ready_for_owner_review"
+    approved_listing = json.loads((run_dir / "presentation_labels.json").read_text())
+    assert approved_listing["recognition_method"] == "explicit_owner_input"
+    assert {row["label_id"] for row in approved_listing["labels"] if row["status"] == "approved"} == {
+        row["label_id"] for row in listing["labels"]
+    }
+
+
+def test_stale_presentation_label_approval_is_rejected(tmp_path: Path) -> None:
+    inputs, spec, candidate = _unrendered_summary_heading_case(tmp_path)
+    first, _terminal, _record = e.run_e5(
+        **inputs, out_dir=tmp_path / "catalog", candidate=candidate,
+        layout_spec=spec, live=False, lanes=("a",), max_repair_rounds=0,
+    )
+    listing = json.loads((first / "presentation_labels.json").read_text())
+    stale = e.PresentationLabelApproval(
+        target_sha256=listing["target_sha256"], catalog_sha256="0" * 64,
+        approved_label_ids=[row["label_id"] for row in listing["labels"]],
+    )
+    run_dir, terminal, record = e.run_e5(
+        **inputs, out_dir=tmp_path / "stale", candidate=candidate,
+        layout_spec=spec, presentation_label_approval=stale,
+        live=False, lanes=("a",), max_repair_rounds=0,
+    )
+    assert terminal == "operational_abort"
+    assert "catalog_sha256 does not match" in json.dumps(record["summary"]["abort"])
+    assert not list(run_dir.glob("lane_a/hard_gates_*.json"))
+
+
+def test_agentic_block_names_the_presentation_label_catalog(tmp_path: Path) -> None:
+    """The proof/generation boundary hands the reviewer the exact catalog and
+    checksum to approve, and an unrelated target-fact leak is never turned into
+    an approval prompt."""
+    from app.generation import agentic
+
+    run_dir = tmp_path / "pipeline"
+    (run_dir / "lane_a").mkdir(parents=True)
+    (run_dir / "presentation_labels.json").write_text(json.dumps({
+        "target_sha256": "a" * 64, "catalog_sha256": "b" * 64,
+        "labels": [
+            {"label_id": "label.template.section.02.heading", "text": "SKILLS",
+             "kind": "section_heading", "status": "approved",
+             "evidence_ids": ["layout-template:x"]},
+            {"label_id": "label.target.p1.adobe.page.1.element.2", "text": "SUMMARY",
+             "kind": "section_heading", "status": "proposed",
+             "evidence_ids": ["local_pdf.adobe.page.1.element.2"]},
+        ],
+    }))
+    (run_dir / "lane_a" / "hard_gates_render-target-laneA-v1.json").write_text(json.dumps({
+        "gates": {"no_target_candidate_facts": False},
+        "details": {"no_target_candidate_facts": {"leaked_target_lines": ["SUMMARY"]}},
+    }))
+    error = agentic._presentation_label_block(run_dir)
+    assert error["catalog_sha256"] == "b" * 64
+    assert [row["label_id"] for row in error["labels"]] == [
+        "label.target.p1.adobe.page.1.element.2"
+    ]
+    assert error["leaked_target_lines"] == ["SUMMARY"]
+
+    (run_dir / "lane_a" / "hard_gates_render-target-laneA-v1.json").write_text(json.dumps({
+        "gates": {"no_target_candidate_facts": False},
+        "details": {"no_target_candidate_facts": {"leaked_target_lines": ["Target Person"]}},
+    }))
+    assert agentic._presentation_label_block(run_dir) is None

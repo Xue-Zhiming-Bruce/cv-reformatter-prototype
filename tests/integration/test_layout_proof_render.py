@@ -159,6 +159,42 @@ def test_render_failure_wrapped(
         render_layout_proof(_request(tmp_path), output_dir=tmp_path, target_pdf=tmp_path / "target.pdf")
 
 
+def test_proof_creation_rejects_uncompilable_two_column_spec_before_any_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC1: a stored measured two-column spec whose sections are all full-width
+    fails at the compile boundary with a structured, actionable error, before a
+    single proof render starts."""
+    from app.template_analysis.layout_proof_service import create_proof_variants
+    from app.template_analysis.schemas import LayoutTemplateSpec
+    from tests.helpers.pipeline_layout import product_template
+    from tests.helpers.synthetic_pdf import build_styled_target_pdf
+
+    def _never(*_args, **_kwargs):
+        raise AssertionError("no proof render may start for an uncompilable spec")
+
+    monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", _never)
+    target_pdf = build_styled_target_pdf(tmp_path / "target.pdf")
+    data = product_template().model_dump()
+    data["template_name"] = "designed_measured"
+    data["columns"] = {"count": 2, "sidebar_side": "left", "gutter_pt": 110,
+                       "left_column_ratio": 0.376}
+    with pytest.raises(LayoutProofRenderError) as raised:
+        create_proof_variants(
+            artifact_dir=tmp_path / "artifact",
+            artifact_id="artifact-1",
+            layout_spec=LayoutTemplateSpec.model_validate(data),
+            target_pdf=target_pdf,
+            target_checksum=file_sha256(target_pdf),
+        )
+    message = str(raised.value)
+    assert "designed_measured" in message
+    assert "no proof render was started" in message
+    assert "sections[i].placement" in message
+    # The failure is a structured proof-render error, not a bare ValueError.
+    assert not isinstance(raised.value, ValueError)
+
+
 def test_artifacts_confined_to_output_dir(tmp_path: Path, fake_pdf: None) -> None:
     result = render_layout_proof(_request(tmp_path, LengthVariant.LONG), output_dir=tmp_path, target_pdf=tmp_path / "target.pdf")
     proof_dir = tmp_path / result.proof_id

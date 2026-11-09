@@ -427,6 +427,42 @@ def test_product_template_rejects_unrepresented_contract_features(patch, reason)
         state_from_layout_template(LayoutTemplateSpec.model_validate(data), target_sha256=TARGET_SHA, page_count=1)
 
 
+def test_two_column_template_without_column_placements_fails_with_actionable_error() -> None:
+    """AC1: the stored measured two-column spec (columns.count=2, every section
+    full_width) is rejected at COMPILE time, naming the spec and the property."""
+    from app.pipeline.layout_compiler import state_from_layout_template
+    from app.template_analysis.schemas import LayoutTemplateSpec
+    from tests.helpers.pipeline_layout import product_template
+
+    data = product_template().model_dump()
+    data["template_name"] = "designed_measured"
+    data["columns"] = {"count": 2, "sidebar_side": "left", "gutter_pt": 110, "left_column_ratio": 0.376}
+    spec = LayoutTemplateSpec.model_validate(data)
+    assert all(section.placement == "full_width" for section in spec.sections)
+    with pytest.raises(ValueError) as raised:
+        state_from_layout_template(spec, target_sha256=TARGET_SHA, page_count=1)
+    message = str(raised.value)
+    assert "designed_measured" in message
+    assert "sections[i].placement" in message
+    assert "'sidebar' or 'main_column'" in message
+    assert "reanalyze the target as a one-column template" in message
+
+
+def test_two_column_template_with_a_column_placed_section_still_compiles() -> None:
+    from app.pipeline.layout_compiler import state_from_layout_template
+    from app.pipeline.layout_state import validate_layout_state
+    from tests.helpers.pipeline_layout import product_column_template
+
+    for side in ("left", "right"):
+        state = state_from_layout_template(
+            product_column_template(side), target_sha256=TARGET_SHA, page_count=1
+        )
+        assert {column.slot for column in state.body_columns} == {"main_column", "sidebar"}
+        slots = {node.column_slot for node in state.nodes if node.kind == "section"}
+        assert {"sidebar", "main_column"} <= slots
+        assert validate_layout_state(state) == []
+
+
 def test_serialized_contact_state_cannot_claim_an_existing_header_slot() -> None:
     from app.pipeline.layout_compiler import state_from_layout_template
     from app.template_analysis.schemas import SectionLayoutSpec

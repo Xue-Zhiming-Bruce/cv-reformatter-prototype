@@ -1388,7 +1388,17 @@ def state_from_layout_template(
                  columns=[Column(slot="left", x0_pt=x0, x1_pt=(x0+x1-section.column_gap_pt)/2),
                           Column(slot="right", x0_pt=(x0+x1+section.column_gap_pt)/2, x1_pt=x1)] if two_item_columns else [])
     if body_columns and not any(node.column_slot for node in nodes):
-        raise ValueError("two-column template has no column placements")
+        # Column placement is a compile-time contract of LayoutTemplateSpec ->
+        # render, never a renderer-time surprise: the message names the spec
+        # and the property, and states the two ways to make it satisfiable.
+        raise ValueError(
+            f"LayoutTemplateSpec {spec.template_name!r} declares two body columns "
+            f"(columns.count=2, sidebar_side={spec.columns.sidebar_side!r}) but has no "
+            "column placements: no section moves into a body column, so "
+            "sections[i].placement is 'full_width' for every section. Set at least "
+            "one section's placement to 'sidebar' or 'main_column', or reanalyze "
+            "the target as a one-column template"
+        )
     tokens = {token.style_id: token for token in styles}
 
     def product_rule(rule_id: str, prefix: str, next_style: StyleToken, x0: float, x1: float) -> RuleDecoration:
