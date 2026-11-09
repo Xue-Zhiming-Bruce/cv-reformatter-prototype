@@ -239,6 +239,7 @@ target and designer-template generation retain the approval-aware product path.
 | --- | --- |
 | Input dispatch and run coordination | `__main__.py`, `service.py` |
 | Evidence access, measurements, review | `evidence.py`, `measurement.py`, `review.py` |
+| Persistent defect state (dedup keys, observation classes, reopen, open/closed, attribution binding) | `defect_ledger.py` |
 | Internal candidate projection and layout state | `candidate_content.py`, `layout_state.py` |
 | Layout compilation and render-plan binding | `layout_compiler.py`, `render_plan.py` |
 | Controlled HTML rendering | `html_renderer.py` |
@@ -257,6 +258,7 @@ HTTP route (app/main.py) / native worker child (app/job_worker.py) / CLI (app/pi
       -> candidate context + disclosure mapping (app/generation/template_mapper.py)
       -> template/proof validation (app/template_analysis/*, app/main.py::_require_layout_proof_approval)
       -> pipeline coordinator (app/pipeline/service.py::run_e5)
+          -> defect state (defect_ledger.py: dedup/reopen/open-closed/attribution)
           -> layout state + compilation (layout_state.py, layout_compiler.py)
           -> deterministic measurements and gates (measurement.py, review.py, quality.py)
           -> model adapters, prompts, bounded repair (service.py adapters, runtime.py)
