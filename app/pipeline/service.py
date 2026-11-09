@@ -9,8 +9,7 @@ import shutil
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
-from pydantic import Field, model_validator
+from typing import Any
 from app.generation.template_mapper import CONTACT_FIELD_SLOTS, CONTACT_LABEL_FIELDS
 from app.pipeline.candidate_content import CandidateDocument
 from app.pipeline.defect_ledger import (

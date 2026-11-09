@@ -94,7 +94,6 @@ def build_synthetic_target_evidence(
     return build_design_evidence_from_normalized(normalized, target_checksum=checksum)
 
 
-
 def mock_run_adobe_layout(_pdf_path: Path):
     return measured_adobe_evidence(), {"provider": "adobe", "archived": True}, b""
 

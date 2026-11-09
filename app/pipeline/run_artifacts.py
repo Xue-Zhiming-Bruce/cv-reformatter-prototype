@@ -495,7 +495,6 @@ def _write_e5_owner_package(
     render side by side per page,
     plus probe outputs, costs, the shell-issued presentation-label table,
     remaining differences, and the non-claims."""
-    from app.ingestion.pdf_reader import read_pdf_text
     from app.pipeline import quality as c2r
     from app.template_analysis.visual_comparator import compare_pdf_layouts
 

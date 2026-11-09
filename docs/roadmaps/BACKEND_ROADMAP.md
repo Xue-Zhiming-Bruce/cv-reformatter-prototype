@@ -123,6 +123,34 @@ for product acceptance:
   [Engineering Guide](../development/ENGINEERING_GUIDE.md); this revision adds
   the #14 documentation corrections and the workspace/worktree view note.
   Documentation and workspace configuration only.
+- Legacy cleanup (#19 P0): `bc660ad` deleted or consolidated 18 dead or
+  duplicative symbols in `app/pipeline`, `app/template_analysis`,
+  `app/generation` and `app/extraction`, migrated `scripts/run_demo.py` to the
+  product extraction path, and removed three tests of retired helpers while
+  keeping their independent contracts; the follow-up `2841401` removed the
+  imports and blank lines that removal orphaned, re-touching four of the same
+  files. Measured reduction, removal commits only: `git show --numstat bc660ad`
+  = 17 files +109/−403 and `git show --numstat 2841401` = 4 files +2/−6, and
+  because those four files are among the first commit's 17, the two together are
+  17 files +111/−409 (net −298; production `app/` 7 files +6/−277, `scripts/` 1
+  file +29/−4, tests 9 files +76/−128, the same two commits split by path with
+  `-- app`, `-- scripts` and `-- tests`). Documentation delta: `git show --numstat
+  4d69ae5` = +44/−0, all of it `docs/roadmaps/BACKEND_ROADMAP.md`. `bc660ad`
+  landed on `issue-18` and is already an ancestor of this lane's fork base
+  `0d400ae` (`git merge-base --is-ancestor bc660ad 0d400ae` succeeds), so the
+  fork diff `git diff 0d400ae..HEAD` never contained the removal and does not
+  support −298. What this branch itself contributes, measured to the pinning
+  commit rather than to a moving `HEAD`: on the code side `git diff --stat
+  0d400ae..2841401` = 4 files +2/−6, i.e. only the orphaned import/blank lines in
+  `app/pipeline/service.py`, `app/template_analysis/design_evidence.py`,
+  `app/template_analysis/designer.py` and `tests/helpers/adobe_evidence.py`; on
+  the documentation side the +44/−0 above. No dependency,
+  migration, prompt or schema name changed, and `agentic_renderer_version()` is
+  unchanged. Decisions
+  and retained paths are in [Legacy Removal Decisions](#legacy-removal-decisions-19-p0)
+  and [Historical Paths And Recovery](#historical-paths-and-recovery);
+  per-symbol reference counts, the offline gate result and the rollback are in
+  issue #19's handoff comment.
 
 ### Historical Paths And Recovery
 
@@ -131,10 +159,41 @@ for product acceptance:
 | Original accepted baseline/build | Preserve the exact reviewed output provenance and explicit rollback evidence. | Recoverable source/evidence remains in Git/local accepted snapshots; M6 binds the final integrated freeze. |
 | Standard uploaded-target `product-html/1` orchestration | Retired in M5; surviving helpers moved unchanged to A. Canonical full regression passes 837, with 23 skipped. | Historical source/evidence remains recoverable from Git; no current supported caller executes it. |
 | B authored HTML/CSS | Retired: execution and exclusive checks removed; shared privacy/identity/repair contracts retained. | Historical source/evidence remains recoverable from Git. Focused retirement check: 155 passed, 7 skipped; the broad run has one recorded Chrome timeout, isolated rerun passed. |
+| `llm_extractor.extract_candidate_profile` with `app/extraction/prompts.py` | Retained lower-level model-adapter surface: it has no production caller, but the unit, dataset and gated live checks exercise it and its prompt bytes are unchanged. The supported demo now uses the segmentation path. | Retiring or rewriting the flat-extraction adapter and its prompts needs its own bounded decision and prompt-identity assessment; nothing here authorizes it. |
+| `schemas.migrate_template_style_spec` | Quarantined ADR 0004 reader for genuinely legacy stored v1 artifacts. New analysis/generation must not call it, so test-only use is the intended state. | Remove only when no stored artifact needs inspection. |
+| `artifacts.load_template_style_spec`, `layout_state.validate_layout_state`, `layout_proof_content.expected_marker_counts` | Stored-artifact loaders and report/proof assertions whose current callers are tests: they validate stored or generated data instead of running a pipeline step. | Remove with the stored-artifact and proof-report contracts they read. |
+| `scripts/mock_api.py` | Documented frontend collaboration stub, a separate supported workflow rather than a redundant production API. | Retained until the frontend no longer needs the stub. |
 
 There is no silent fallback from an uploaded target or failed Agentic run to a
 built-in template, B or the standard renderer. Rollback deploys the matching
 recoverable build and artifacts; it is not an alternative current execution path.
+
+### Legacy Removal Decisions (#19 P0)
+
+`bc660ad` deleted or consolidated the paths below after rechecking definitions,
+callers, configuration/dynamic references, history and contracts. Each row names
+the reason, the owner that now holds the behavior and the canonical suite that
+covers it. The removed symbols have no production, test, script or document
+reference left (repository-wide `git grep`), nothing deleted was persisted,
+serialized, schema-bound or part of a prompt, and no migration or dependency
+changed. Per-symbol reference counts, the offline gate result and the measured
+reduction are in issue #19's handoff comment.
+
+| Removed or consolidated | Reason | Replacement / current owner | Validation |
+| --- | --- | --- | --- |
+| `pipeline/service.py::_approved_presentation_labels` | Catalog filter no path applied; unapproved proposals were already non-renderable elsewhere. | `app/pipeline/presentation_labels.py` (`_heuristic_presentation_labels`, `_apply_presentation_label_approval`, `presentation_label_catalog_sha256`) plus the shell-issued approved catalog in the generation request. | `tests/integration/test_pipeline_loop.py` presentation-label cases; `tests/integration/test_layout_proof_api.py` approval/checksum cases. |
+| `pipeline/service.py::_candidate_role_page` | PDF page-scan helper with no caller; role location stays with the measured evidence path and was not changed. | `app/pipeline/measurement.py` measured line/rule evidence with `_bind_role_gap_anchors` and `_selected_lane_artifact` in `service.py`. | `tests/integration/test_pipeline_loop.py` measurement-binding cases; `tests/unit/test_pipeline_layout.py`. |
+| `pipeline/evidence.py::EvidencePod.record_summary` | Access-count/status summary with no caller. | The evidence records themselves (`EvidencePod`, `EvidenceAccessRecord`) and the run/owner report writers in `service.py`. | `tests/integration/test_pipeline_evidence.py`; `tests/integration/test_pipeline_loop.py` owner-package cases. |
+| `template_analysis/design_evidence.py::DesignEvidenceError` | Exception never raised or caught and not a package re-export. | No replacement needed; conversion errors stay with the current bridge. | `tests/unit/test_design_evidence.py`. |
+| `template_analysis/design_evidence.py::section_label_values` and `::evidence_style_roles` | Accessors with no caller; one only copied the list. | `TargetLayoutEvidence.style_roles` read directly by `design_compiler`/`design_validator`. | `tests/unit/test_design_compiler.py`; `tests/unit/test_design_validator.py`. |
+| `template_analysis/designer.py::new_proposal_id` (with its `uuid` import) | Random-ID helper with no caller; proposal IDs are deterministic per request. | The designer proposal construction, `_deterministic_id` and `proposal_checksum`. | `tests/unit/test_design_compiler.py::test_proposal_checksum_is_stable`; `tests/integration/test_design_service.py:499` (identical requests keep the same proposal id). |
+| `generation/template_mapper.py::map_profile_to_template_context` | Dictionary wrapper with no caller. | `generation/template_mapper.py::build_client_render_context`. | `tests/unit/test_template_mapper.py`. |
+| `template_analysis/layout_proof_content.py::build_all_variants` and `tests/unit/test_layout_proof_content.py::test_all_variants_helper` | Wrapper restated `LengthVariant` iteration and its only caller was its own test. | `build_synthetic_context` per variant; `test_variants_supported` exercises every `LengthVariant`. | `tests/unit/test_layout_proof_content.py`. |
+| `pipeline/service.py::summarize_e5_state` and `tests/integration/test_pipeline_loop.py::test_summarize_e5_state_reads_one_run_only` | Summarizer for a historical `E_PIPELINE_PREP.md` report interface with no non-test caller. | The current lane/owner report writers (`_write_e5_lane_report_md`, `_write_e5_comparison`, `_write_e5_owner_package`) over the version-bound `E5LoopRecord`/`E5LaneRecord`. | `tests/integration/test_pipeline_loop.py` ledger, version-bound reporting and owner-package cases. |
+| `pipeline/evidence.py::_dedup_unresolved` and `tests/integration/test_pipeline_evidence.py::test_duplicate_unresolved_items_are_deduplicated_by_item_id` | Bookkeeping helper the production path never called, so its test proved no runtime behavior. | `TargetStructureDraft.unresolved` and its recording/audit path (`audit_evidence_coverage`). | `tests/integration/test_pipeline_evidence.py` evidence/audit cases. |
+| `extraction/llm_segmentation.py::segmentation_output_lines` (consolidated, not kept as an alias) | Duplicate line projection whose only consumers were tests. | `segmentation_output_line_evidence`, the production projection: the same heading/item lines plus the candidate block id. | `tests/unit/test_llm_segmentation.py`; `tests/integration/test_api_process.py` mock-LLM coverage audit. |
+| `template_analysis/design_evidence.py::build_target_layout_evidence` and its exclusive helpers `_text_block_semantic_role`, `_layout_class_hint`, `_style_roles_from_spec`, `_text_style_role`, `_section_labels` | Older `TargetPdfAnalysis` → evidence adapter used only by tests; the product path converts once from normalized evidence. | `commercial.bridge.build_design_evidence_from_normalized`, called by `app/main.py` for target analysis and design requests; tests build evidence through `tests/helpers/adobe_evidence.py::build_synthetic_target_evidence`. | `tests/unit/test_design_compiler.py`, `tests/unit/test_design_validator.py`, `tests/unit/test_compile_bridge.py`, `tests/integration/test_design_service.py`, `tests/integration/test_design_api.py`. |
+| `scripts/run_demo.py` direct `extract_candidate_profile` call and its `--job-description` flag (migrated) | The demo exercised an older path than the API: flat extraction instead of segmentation, deterministic coverage audit and materialization. | `scripts/run_demo.py` now calls `segment_and_extract_resume`, `audit_segmentation_lines` and `materialize_llm_segmentation`, and writes the profile, document and coverage artifacts. | `tests/unit/test_llm_segmentation.py`; `tests/integration/test_api_process.py`; `tests/integration/test_dataset_smoke.py`. |
 
 ## Ordered Remaining Mainline Work
 
