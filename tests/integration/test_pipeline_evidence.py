@@ -242,7 +242,7 @@ def test_live_http_budget_counts_failed_sdk_retries_before_io(tmp_path: Path, mo
     import asyncio
     import httpx
     from app.pipeline.runtime import RunTrace, _live_model
-    from app.pipeline.service import _with_connection_retry
+    from app.pipeline.agent_adapters import _with_connection_retry
 
     sent = []
     async def respond(request):
@@ -286,7 +286,7 @@ def test_wrapped_budget_failure_is_unwrapped_and_not_retried(tmp_path: Path) -> 
     import httpx
     from openai import APIConnectionError
     from app.pipeline.runtime import RunTrace
-    from app.pipeline.service import _with_connection_retry
+    from app.pipeline.agent_adapters import _with_connection_retry
 
     def call():
         try:
@@ -325,7 +325,7 @@ def test_sdk_wrapped_envelope_failure_is_not_retried_as_a_connection_error(tmp_p
     import asyncio
     import httpx
     from app.pipeline.runtime import RunTrace, _live_model
-    from app.pipeline.service import _with_connection_retry
+    from app.pipeline.agent_adapters import _with_connection_retry
 
     def unexpected_request(_request):
         pytest.fail("over-budget payload reached the network transport")
@@ -425,7 +425,7 @@ def test_color_model_request_preserves_pixels_and_fits_existing_wire_cap(tmp_pat
     import httpx
     from app.pipeline.review import prepare_review_image, _live_reviewer_findings
     from app.pipeline.runtime import RunTrace
-    from app.pipeline.service import _live_lane_a_builder
+    from app.pipeline.agent_adapters import _live_lane_a_builder
 
     page = Image.new("RGB", (1272, 1800), "white")
     draw, font, randomizer = ImageDraw.Draw(page), ImageFont.load_default(size=24), random.Random(7)

@@ -29,7 +29,6 @@ from app.pipeline.runtime import (
     EvidenceStore,
     RunBudget,
     RunTrace,
-    _record_usage,
 )
 from app.pipeline.measurement import (
     HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
@@ -62,12 +61,18 @@ from app.pipeline.repair_policy import (
     _e5_select_round_work,
     _next_e5_repair_finding,
 )
+from app.pipeline.agent_adapters import (
+    E5_ATTRIBUTION_MAX_REQUESTS,
+    E5_BUILDER_MAX_REQUESTS,
+    _live_attribution_batch,
+    _live_lane_a_builder,
+    _with_connection_retry,
+)
 from app.pipeline.evidence import (
     AttributionRecord,
     CandidateBindingLineage,
     DefectFinding,
     DualSourcePod,
-    E4_PER_CALL_MAX_TOOL_CALLS,
     E4_TEMPERATURE,
     E5AgentAuditSpec,
     EvidenceModel,
@@ -78,19 +83,14 @@ from app.pipeline.evidence import (
     PresentationLabel,
     RenderVersion,
     TargetStructureDraft,
-    _call_limits,
-    _e5_agent_audit_record,
     _e5_candidate_binding_lineage,
     _e5_live_attribution_record,
-    _live_model_settings,
     _model_identity,
     _overview_pngs,
     _page_pt_size,
     _pdf_line_rows,
-    _pod_tools,
     _sha256_file,
     _side_by_side,
-    _traced_render_words,
     assert_no_signed_strings,
     freeze_cases,
     redact_signed_urls,
@@ -111,6 +111,12 @@ from app.pipeline.review import (
     prepare_review_image,
 )
 
+from app.pipeline.prompts import (
+    E5_ATTRIBUTION_INSTRUCTIONS,
+    E5_LANE_A_BUILDER_INSTRUCTIONS,
+    E5_LANE_REPAIR_SURFACE,
+    E5_REVIEWER_INSTRUCTIONS,
+)
 from app.pipeline.presentation_labels import (
     _apply_presentation_label_approval,
     _heuristic_presentation_labels,
@@ -135,126 +141,6 @@ E5_MAX_REPAIR_ROUNDS = 1
 
 E5_REVIEWER_MAX_REQUESTS = 4
 
-E5_BUILDER_MAX_REQUESTS = 4
-
-E5_ATTRIBUTION_MAX_REQUESTS = 8  # floor only; the batch envelope is derived below
-
-E5_REVIEWER_INSTRUCTIONS = (
-    "You are the independent Visual Reviewer of a resume-layout experiment.\n"
-    "You inspect the TARGET and the RENDERED page images you are given. You\n"
-    "report LOCALIZED visible differences only.\n"
-    "Phase 0 (E5): you report a SEMANTIC measurement intent, never exact\n"
-    "verbatim PDF text anchors. Set the measurement request's `intent` to a\n"
-    "plain-language description of WHAT to measure (which two elements, which\n"
-    "property) — the shell resolves it against the actual final-PDF objects.\n"
-    "You do NOT need to read exact text strings out of the image; leaving the\n"
-    "four anchor fields empty is correct.\n"
-    "Hard boundaries: you never decide the root cause layer; `proposed_cause`\n"
-    "is a hypothesis for verification, never a verdict. You never approve\n"
-    "delivery. You never modify anything. Every finding binds the exact\n"
-    "target and render version strings you were given and carries one typed\n"
-    "measurement request with `intent` set.\n"
-    "Target person facts and values are diagnostic evidence only; they never\n"
-    "become candidate content. The render's different name, contact values,\n"
-    "employers, languages and synthetic placeholder tokens are expected\n"
-    "candidate-owned content, not substitutions or missing target facts.\n"
-    "Never report value inequality as a defect or request target-value copying.\n"
-    "Compare layout, typography, spacing, alignment,\n"
-    "rules, colors, and structure only where the candidate inventory carries\n"
-    "the same content shape. If the target has a content shape absent from the\n"
-    "candidate inventory, do not request that it be copied or recreated. A\n"
-    "page-local review may say that a section appears on a different page, but\n"
-    "must never claim the whole document lacks a section from one page image.\n"
-    "Use metric='role_gap' only for entry/job/role spacing. Use\n"
-    "metric='header_vertical_rule_geometry' only for a clearly visible vertical\n"
-    "rule beside or through the name/header region. Use\n"
-    "metric='header_contact_label_geometry' with suspected_dimension='header_contact_labels'\n"
-    "only for presence/absence of generated header field labels such as Email:.\n"
-    "This does not measure separators, typography, field values or spacing.\n"
-    "For every other property,\n"
-    "use metric='unsupported' and describe the desired measurement in intent.\n"
-    "Do not substitute role_gap or header_vertical_rule_geometry for alignment,\n"
-    "font, color, contact-row styling, or other unsupported properties. These\n"
-    "observations remain open warnings; no metric value or cause is established."
-)
-
-E5_LANE_A_BUILDER_INSTRUCTIONS = (
-    "You are the Lane A Builder of a resume-layout experiment.\n"
-    "Representation: a provider-neutral STRUCTURED LAYOUT interpreted by a\n"
-    "FIXED renderer. You output ONLY typed, validated structure primitives —\n"
-    "never executable code, never CSS, never candidate text. Allowed\n"
-    "reusable primitives per section: heading_in_rail (the section heading\n"
-    "renders in a left label rail beside its content), rail_label_width_pt\n"
-    "(the label-rail column width), rail_label_align (left/right), and\n"
-    "entry_meta_placement='title_row' (the entry meta column shares the\n"
-    "first title line's row). Unknown or invalid fields fail validation.\n"
-    "At the proposal root, header_contact_labels=true renders generated labels\n"
-    "with structured header contact values; false renders only those values.\n"
-    "null leaves the compiled presentation unchanged. This cannot alter values,\n"
-    "field order, delimiters, body contacts or other header properties. Use this\n"
-    "only for structured contact fields supported by the supplied evidence.\n"
-    "Hard boundaries: candidate facts are NEVER editable and never appear in\n"
-    "your output; target person strings never appear in your output; no\n"
-    "target-specific identifiers (no target hash, filename, or person\n"
-    "branch). You never approve delivery. Base every primitive value on the\n"
-    "evidence-linked structure draft and the recorded measurements you are\n"
-    "given. On repair calls, `current_representation` is the exact validated\n"
-    "proposal that produced the repair-base render; modify it and return one\n"
-    "complete replacement proposal. It is null only for the initial build."
-)
-
-
-E5_ATTRIBUTION_INSTRUCTIONS = (
-    "You are the independent Attribution Investigator of a resume-layout\n"
-    "experiment. For each finding trace the chain: raw target evidence ->\n"
-    "structure -> template slot -> candidate binding -> render plan ->\n"
-    "DOM/CSS -> actual final PDF object. Return ONE typed hypothesis PER\n"
-    "FINDING and set finding_id to that finding's EXACT id. Order does not\n"
-    "matter because the shell binds by finding_id, but a missing, empty,\n"
-    "duplicated, or foreign finding_id is rejected and adds nothing. The\n"
-    "reviewer's proposed_cause is a hypothesis that may be wrong; verify from\n"
-    "evidence. You may replace the causal hypothesis but never delete the\n"
-    "observation, and you never promote or repair anything.\n"
-    "Builder ownership is only valid for a confirmed compilation defect: use\n"
-    "attribution='template_compilation' with hypothesis_status='confirmed' and\n"
-    "repair_owner='builder'. Any other repair_owner='builder' claim is\n"
-    "contradictory and is retained as unresolved/reviewer.\n"
-    "PRODUCT CONTRACT: the target supplies the PRESENTATION and the candidate\n"
-    "supplies the FACTS. The target person's name, contact details, employers\n"
-    "and history are target evidence, never the expected content of the\n"
-    "render. Target-person text differing from the candidate's text is the\n"
-    "contract, NOT a defect: never propose rebinding a different target\n"
-    "person, never ask for target-person facts to be copied into the\n"
-    "candidate, and never claim attribution='candidate_binding' on the ground\n"
-    "that the two people's values differ. candidate_binding is confirmed only\n"
-    "by deterministic shell lineage proof — a rendered leaf identity the\n"
-    "registered candidate does not have, a value substituted under a\n"
-    "candidate leaf's identity, or a leaf owned under a destination that is\n"
-    "not its own slot; the shell rejects any other confirmed candidate_binding\n"
-    "claim and fails closed. A STRUCTURAL presentation difference (a missing\n"
-    "label/value row, rule, or column) belongs to the presentation layer:\
-"
-    "attribute it to the template/plan/renderer, or record it as a\n"
-    "representation capability gap when the shell's representation cannot\n"
-    "express that structure — never to candidate binding."
-)
-
-
-E5_LANE_REPAIR_SURFACE: dict[str, str] = {
-    "a": (
-        "Lane A — provider-neutral structured layout interpreted by a FIXED\n"
-        "renderer. The Builder can change ONLY these per-section primitives:\n"
-        "heading_in_rail, rail_label_width_pt, rail_label_align,\n"
-        "entry_meta_placement. Root header_contact_labels may only show/hide\n"
-        "generated labels on structured header contacts; it cannot change values,\n"
-        "order, delimiters, body contacts or header geometry. It cannot change\n"
-        "section rule geometry or anything the fixed renderer does not\n"
-        "consume. A plan-level structural difference that those primitives CAN\n"
-        "express is a template_compilation defect owned by this Builder; a\n"
-        "difference they cannot express is the shell's representation\n"
-        "capability gap, owned by nobody the loop can call."
-    ),
-}
 
 def _candidate_review_scope(candidate: Any, labels: list[PresentationLabel]) -> dict[str, Any]:
     """Content-free Reviewer boundary: which presentation regions have
@@ -1304,99 +1190,6 @@ def _estimate_lane_cost(
         "assumptions": pricing.get("assumptions"),
     }
 
-def _with_connection_retry(call, *, trace: RunTrace, what: str, attempts: int = 3):
-    """Bounded retry for transient provider Connection errors (observed on
-    long multimodal review calls); every retry is traced, and a persistent
-    failure escalates as before — never silent, never unbounded."""
-    import time as _time
-
-    last: Exception | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            return call()
-        except Exception as error:  # noqa: BLE001 - retried only when transient
-            # A request-hook budget failure arrives either bare (current SDK) or
-            # wrapped in APIConnectionError (older SDK); never retry it.
-            cause: BaseException | None = error
-            while cause is not None:
-                if isinstance(cause, BudgetExhausted):
-                    raise cause from None
-                cause = cause.__cause__
-            if "connection" not in str(error).casefold():
-                raise
-            last = error
-            trace.add(
-                agent="shell", phase="loop", action="connection_retry",
-                note=f"{what}: attempt {attempt} failed ({str(error)[:120]})",
-            )
-            _time.sleep(10)
-    assert last is not None
-    raise last
-
-def _live_lane_a_builder(
-    budget: RunBudget,
-    trace: RunTrace,
-    *,
-    payload: dict[str, Any],
-    images: list[Any],
-    proposal_id: str,
-    audit: E5AgentAuditSpec | None = None,
-) -> LaneAStructureProposal:
-    """The LIVE Lane A Builder: one bounded request that outputs the typed
-    provider-neutral structure primitives. The shell validates, applies and
-    renders — the agent never promotes anything. ``audit`` records the full
-    model-visible message history (owner decision 2026-09-22)."""
-    from pydantic_ai import Agent, BinaryContent
-
-    from app.pipeline.runtime import _live_model
-
-    if budget.remaining_model_requests() < 1:
-        raise CheckpointBudgetExceeded("budget exhausted before lane A builder")
-    images = [prepare_review_image(Path(image)) for image in images]
-    if audit is not None:
-        audit = audit._replace(image_refs=tuple(
-            {**ref, "path": Path(ref["path"]).with_suffix(image.suffix).as_posix(),
-             "sha256": _sha256_file(image)}
-            for ref, image in zip(audit.image_refs, images, strict=True)
-        ))
-    agent = Agent(
-        _live_model(budget, trace, "lane_a_builder"),
-        output_type=LaneAStructureProposal,
-        name="lane_a_builder",
-        instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
-    )
-    user_messages = [
-        json.dumps(payload, ensure_ascii=False, indent=1),
-        *[BinaryContent(data=image.read_bytes(), media_type="image/webp" if image.suffix == ".webp" else "image/png") for image in images],
-    ]
-    model_name = getattr(getattr(agent, "model", None), "model_name", None)
-    try:
-        run_result = _with_connection_retry(
-            lambda: agent.run_sync(
-                user_messages,
-                usage_limits=_call_limits(budget, E5_BUILDER_MAX_REQUESTS),
-                model_settings=_live_model_settings(),
-            ),
-            trace=trace, what="lane A builder",
-        )
-    except Exception as error:
-        if audit is not None:
-            _e5_agent_audit_record(
-                trace, audit, input_messages=user_messages,
-                run_result=None, error=f"{type(error).__name__}: {error}",
-                model_name=model_name,
-            )
-        raise
-    if audit is not None:
-        _e5_agent_audit_record(
-            trace, audit, input_messages=user_messages, run_result=run_result, error=None,
-            model_name=model_name,
-        )
-    _record_usage(budget, trace, "lane_a_builder", "build", run_result)
-    proposal = run_result.output
-    return proposal.model_copy(update={"proposal_id": proposal_id, "agent": "llm"})
-
-
 def _lane_a_attribution_layout(plan: Any, state: Any, findings: list[DefectFinding]) -> dict[str, Any]:
     """Describe consumed A structure and primitive effects without candidate values."""
     sections = {_owning_section_id(state, finding.region) for finding in findings}
@@ -1428,93 +1221,10 @@ def _lane_a_attribution_layout(plan: Any, state: Any, findings: list[DefectFindi
     }
 
 
-def _live_attribution_batch(
-    pod: "DualSourcePod",
-    budget: RunBudget,
-    trace: RunTrace,
-    *,
-    findings: list[DefectFinding],
-    results: list[MeasurementResult],
-    lane: str = "a",
-    current_representation: Any | None = None,
-    compiled_layout: dict[str, Any] | None = None,
-    audit: E5AgentAuditSpec | None = None,
-) -> list[LiveAttributionHypothesis]:
-    """Phase 0 batched live attribution: findings that share the same region
-    (and likely owning layer) are traced in ONE bounded call, ordered like
-    the input findings list."""
-    from pydantic_ai import Agent, Tool
-
-    from app.pipeline.runtime import _live_model
-
-    if budget.remaining_model_requests() < 1:
-        raise CheckpointBudgetExceeded("budget exhausted before attribution batch")
-    tools = _pod_tools(pod, budget, trace, agent_name="attribution_investigator")
-    tools.append(_traced_render_words(pod, budget, trace))
-    agent = Agent(
-        _live_model(budget, trace, "attribution_investigator"),
-        output_type=list[LiveAttributionHypothesis],
-        name="attribution_investigator",
-        instructions=E5_ATTRIBUTION_INSTRUCTIONS,
-        # These tools share a mutable evidence pod and call PDFium. PDFium
-        # forbids concurrent calls even for separate documents; sync tools
-        # otherwise run in parallel worker threads under PydanticAI.
-        tools=[Tool(tool, sequential=True) for tool in tools],
-    )
-    payload = {
-        "findings": [finding.model_dump(mode="json") for finding in findings],
-        "measurements": [result.model_dump(mode="json") for result in results],
-        "target_description": pod.describe_target(),
-        "current_representation": (
-            current_representation.model_dump(mode="json")
-            if current_representation is not None else None
-        ),
-        "current_render_version": audit.render_version if audit is not None else None,
-        "compiled_layout": compiled_layout,
-        # The lane's ACTUAL repair surface: ownership of a confirmed defect may
-        # only follow a surface that exists. Without it the role had to guess
-        # the owning layer, and in live run `e_pipeline_e5_20260923T095557Z` it
-        # attributed Lane A's plan-level structure defects to a renderer no
-        # agent owns — unreachable by construction.
-        "lane_repair_surface": E5_LANE_REPAIR_SURFACE.get(lane, ""),
-        "budget_note": (
-            "ONE bounded agent run for this whole batch; decide from the "
-            "evidence you already have plus at most a few tool calls."
-        ),
-    }
-    user_messages = [json.dumps(payload, ensure_ascii=False, indent=1)]
-    model_name = getattr(getattr(agent, "model", None), "model_name", None)
-    try:
-        run_result = agent.run_sync(
-            user_messages,
-            usage_limits=_call_limits(
-                budget,
-                max(
-                    E5_ATTRIBUTION_MAX_REQUESTS,
-                    E4_PER_CALL_MAX_TOOL_CALLS + len(findings) + 1,
-                ),
-            ),
-            model_settings=_live_model_settings(),
-        )
-    except Exception as error:
-        if audit is not None:
-            _e5_agent_audit_record(
-                trace, audit, input_messages=user_messages,
-                run_result=None, error=f"{type(error).__name__}: {error}",
-                model_name=model_name,
-            )
-        raise
-    if audit is not None:
-        _e5_agent_audit_record(
-            trace, audit, input_messages=user_messages, run_result=run_result, error=None,
-            model_name=model_name,
-        )
-    _record_usage(budget, trace, "attribution_investigator", "attribute_batch", run_result)
-    return list(run_result.output)
-
 E5_SOURCE_FILES = (
     'app/pipeline/__init__.py',
     'app/pipeline/__main__.py',
+    'app/pipeline/agent_adapters.py',
     'app/pipeline/assets/fonts/charter-LICENSE.txt',
     'app/pipeline/assets/fonts/charter-bold.woff2',
     'app/pipeline/assets/fonts/charter-bolditalic.woff2',
@@ -1539,6 +1249,7 @@ E5_SOURCE_FILES = (
     'app/pipeline/layout_state.py',
     'app/pipeline/measurement.py',
     'app/pipeline/presentation_labels.py',
+    'app/pipeline/prompts.py',
     'app/pipeline/quality.py',
     'app/pipeline/render_plan.py',
     'app/pipeline/rendering.py',

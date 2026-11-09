@@ -18,6 +18,7 @@ import app.pipeline.service as e
 import app.pipeline.service as e5
 import app.pipeline.measurement as measurement
 import app.pipeline.presentation_labels as presentation_labels
+import app.pipeline.prompts as prompts
 import app.pipeline.repair_policy as repair_policy
 import app.pipeline.run_models as run_models
 from app.pipeline.runtime import RunBudget
@@ -490,7 +491,7 @@ def test_agent_audit_success_keeps_full_history_and_redacts_images(tmp_path: Pat
     }
     messages = _audit_messages(tmp_image=b"raw png bytes")
     spec = _audit_spec(image_refs=(image_ref,))
-    call_id = e._e5_agent_audit_record(
+    call_id = evidence._e5_agent_audit_record(
         trace, spec,
         input_messages=messages,
         run_result=_FakeRunResult(messages),
@@ -545,7 +546,7 @@ def test_agent_audit_reference_less_image_is_hashed_and_marked_redacted(
     encoded = serialized[0]["parts"][0]["content"][1]["data"]
     assert "-" in encoded or "_" in encoded
     trace = e.RunTrace(tmp_path)
-    e._e5_agent_audit_record(
+    evidence._e5_agent_audit_record(
         trace, _audit_spec(image_refs=()),
         input_messages=messages, run_result=_FakeRunResult(messages), error=None,
     )
@@ -580,7 +581,7 @@ def test_agent_audit_keeps_validation_retry_and_tool_traffic(tmp_path: Path) -> 
     ]
     trace = e.RunTrace(tmp_path)
     spec = _audit_spec(agent="attribution_investigator", phase="attribute")
-    e._e5_agent_audit_record(
+    evidence._e5_agent_audit_record(
         trace, spec, input_messages=messages, run_result=_FakeRunResult(messages), error=None
     )
     import json
@@ -599,7 +600,7 @@ def test_agent_audit_failed_call_records_error_not_a_fake_response(tmp_path: Pat
     messages = [ModelRequest(parts=[UserPromptPart(content="prompt")])]
     trace = e.RunTrace(tmp_path)
     spec = _audit_spec(agent="lane_b_builder", lane="b", phase="repair")
-    e._e5_agent_audit_record(
+    evidence._e5_agent_audit_record(
         trace, spec, input_messages=messages, run_result=None,
         error="UsageLimitExceeded: The next request would exceed the request_limit of 8.",
     )
@@ -625,12 +626,12 @@ def test_agent_audit_withholds_content_on_secret_or_signed_url(tmp_path: Path) -
         ),
     ]
     trace = e.RunTrace(tmp_path)
-    e._e5_agent_audit_record(
+    evidence._e5_agent_audit_record(
         trace, _audit_spec(), input_messages=poisoned,
         run_result=_FakeRunResult(poisoned), error=None,
     )
     safe_messages = [ModelRequest(parts=[UserPromptPart(content="prompt")])]
-    e._e5_agent_audit_record(
+    evidence._e5_agent_audit_record(
         trace,
         _audit_spec(instructions="inspect https://x.test/?X-Amz-Signature=INSTRUCTION_SECRET"),
         input_messages=safe_messages,
@@ -658,11 +659,11 @@ def test_agent_audit_lane_files_are_isolated(tmp_path: Path) -> None:
     from pydantic_ai.messages import ModelRequest, UserPromptPart
 
     messages = [ModelRequest(parts=[UserPromptPart(content="x")])]
-    e._e5_agent_audit_record(
+    evidence._e5_agent_audit_record(
         trace_a, _audit_spec(lane="a"), input_messages=messages,
         run_result=_FakeRunResult(messages), error=None,
     )
-    e._e5_agent_audit_record(
+    evidence._e5_agent_audit_record(
         trace_b, _audit_spec(lane="b"), input_messages=messages,
         run_result=None, error="Connection error.",
     )
@@ -682,7 +683,7 @@ def test_agent_audit_call_id_binds_trace_and_render_version(tmp_path: Path) -> N
 
     messages = [ModelRequest(parts=[UserPromptPart(content="p")])]
     spec = _audit_spec(render_version="render-v1", phase="attribute", agent="attribution_investigator")
-    call_id = e._e5_agent_audit_record(
+    call_id = evidence._e5_agent_audit_record(
         trace, spec, input_messages=messages, run_result=None, error="some error"
     )
     record = json.loads((tmp_path / "agent_messages.jsonl").read_text())
@@ -1808,7 +1809,8 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     for name in e.E5_SOURCE_FILES:
         assert hashes["files"][name] == e._sha256_file(e.ROOT / name), name
     for name in ("runtime.py", "quality.py", "candidate_content.py", "rendering.py", "layout_compiler.py", "layout_state.py",
-                 "run_models.py", "presentation_labels.py", "measurement.py", "repair_policy.py"):
+                 "run_models.py", "presentation_labels.py", "measurement.py", "repair_policy.py",
+                 "prompts.py", "agent_adapters.py"):
         assert f"app/pipeline/{name}" in hashes["files"], f"missing direct runtime source: {name}"
     assert all(not name.startswith("tests/") for name in hashes["files"])
     assert hashes["tracked_diff_sha256"] == e._tracked_diff_sha256(e.ROOT, e.E5_SOURCE_FILES)
@@ -1827,6 +1829,12 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     assert e._source_hashes_changed(drifted) is True
     drifted = json.loads(json.dumps(config))
     drifted["source_hashes"]["files"]["app/pipeline/repair_policy.py"] = "0" * 64
+    assert e._source_hashes_changed(drifted) is True
+    drifted = json.loads(json.dumps(config))
+    drifted["source_hashes"]["files"]["app/pipeline/prompts.py"] = "0" * 64
+    assert e._source_hashes_changed(drifted) is True
+    drifted = json.loads(json.dumps(config))
+    drifted["source_hashes"]["files"]["app/pipeline/agent_adapters.py"] = "0" * 64
     assert e._source_hashes_changed(drifted) is True
     # a changed tracked diff (same file hashes is impossible then, but a
     # tampered diff hash must also be detected)
@@ -2982,7 +2990,7 @@ def test_builder_never_receives_a_rebind_or_target_copy_repair() -> None:
         )
         assert record.repair_owner != "builder"
         assert not (record.attribution == "candidate_binding" and record.repair_owner == "binding")
-    prompt = e5.E5_ATTRIBUTION_INSTRUCTIONS
+    prompt = prompts.E5_ATTRIBUTION_INSTRUCTIONS
     assert "PRODUCT CONTRACT" in prompt
     assert "never propose rebinding a different target" in prompt
     assert "representation capability gap" in prompt
@@ -3110,7 +3118,7 @@ def test_recoverable_tool_input_error_returns_to_the_model(tmp_path: Path) -> No
     def pod_tools(pod: object, trace: object) -> dict[str, object]:
         return {
             tool.__name__: tool
-            for tool in e5._pod_tools(
+            for tool in evidence._pod_tools(
                 pod, RunBudget(max_model_requests=10, max_tool_calls=10), trace
             )
         }

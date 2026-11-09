@@ -17,7 +17,7 @@ from app.pipeline.html_renderer import RENDERER_VERSION, render_layout_template
 from app.pipeline.layout_state import C2LayoutState
 from app.pipeline.runtime import RunBudget
 from app.pipeline.run_models import E5LoopRecord, PresentationLabelApproval
-from app.pipeline import measurement, presentation_labels, quality, repair_policy, review, service
+from app.pipeline import measurement, presentation_labels, prompts, quality, repair_policy, review, service
 from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from app.template_analysis.schemas import LayoutTemplateSpec
@@ -163,8 +163,8 @@ def agentic_renderer_version() -> str:
         "client_disclosure": template_mapper.CLIENT_DISCLOSURE_VERSION,
         "renderer": RENDERER_VERSION, "settings": {**_settings(), "max_request_bytes": MAX_REQUEST_BYTES},
         "models": service._model_identity(),
-        "prompts": [service.E5_LANE_A_BUILDER_INSTRUCTIONS, service.E5_REVIEWER_INSTRUCTIONS,
-                    service.E5_ATTRIBUTION_INSTRUCTIONS],
+        "prompts": [prompts.E5_LANE_A_BUILDER_INSTRUCTIONS, prompts.E5_REVIEWER_INSTRUCTIONS,
+                    prompts.E5_ATTRIBUTION_INSTRUCTIONS],
         "provider_routes": [hashlib.sha256(value.encode()).hexdigest() for value in (
             os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com",
             os.getenv("VISUAL_API_BASE") or "",
