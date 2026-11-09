@@ -138,3 +138,107 @@ def test_target_docx_analysis_emits_measured_v2_structure_contract(
     assert spec.sections[0].heading_style.character_spacing_pt == pytest.approx(0.7)
     assert spec.sections[1].entry_title_style.font_size_pt == pytest.approx(11)
     assert spec.sections[2].additional_section_heading == "PROJECTS"
+
+
+def _remove_style(document: Document, name: str) -> None:
+    document.styles.element.remove(document.styles[name].element)
+
+
+def test_target_docx_analysis_accepts_body_only_normal_style(tmp_path: Path) -> None:
+    sample = Path(__file__).resolve().parents[2] / "frontend" / "public" / "sample-resume.docx"
+
+    spec = analyze_target_docx(sample, tmp_path / "analysis")
+
+    assert spec.schema_version == "2.0"
+    assert spec.structure_contract == "limited_capability"
+    assert spec.body.font_size_pt == pytest.approx(12.0)
+    assert spec.body.font_family == "Cambria"
+    assert spec.title.font_family == spec.body.font_family
+    assert spec.title.color_hex == spec.body.color_hex
+    assert spec.title.bold is True
+    assert spec.title.font_size_pt == pytest.approx(19.2)
+    assert spec.heading.font_family == spec.body.font_family
+    assert spec.heading.font_size_pt == pytest.approx(13.8)
+    assert (tmp_path / "analysis" / "layout_template_spec.json").exists()
+
+
+def test_target_docx_analysis_falls_back_to_body_for_missing_section_styles(
+    tmp_path: Path,
+) -> None:
+    target_path = tmp_path / "target.docx"
+    document = Document()
+    document.styles["Normal"].font.name = "Times New Roman"
+    document.styles["Normal"].font.size = Pt(10.5)
+    document.styles["Title"].font.size = Pt(18)
+    _remove_style(document, "Heading 2")
+    _remove_style(document, "Heading 3")
+    document.save(target_path)
+
+    spec = analyze_target_docx(target_path, tmp_path / "analysis")
+
+    assert spec.title.font_size_pt == pytest.approx(18)
+    assert spec.heading.font_family == spec.body.font_family
+    assert spec.heading.font_size_pt == pytest.approx(12.075)
+    assert spec.heading.bold is True
+    assert spec.heading.color_hex == spec.body.color_hex
+
+
+def test_target_docx_analysis_entry_title_falls_back_to_body_without_heading_3(
+    tmp_path: Path,
+) -> None:
+    target_path = tmp_path / "target.docx"
+    document = Document()
+    document.styles["Normal"].font.name = "Times New Roman"
+    document.styles["Normal"].font.size = Pt(11)
+    _remove_style(document, "Heading 3")
+    document.add_paragraph("WORK EXPERIENCE", style="Heading 2")
+    document.save(target_path)
+
+    spec = analyze_target_docx(target_path, tmp_path / "analysis")
+
+    entry_title = spec.sections[0].entry_title_style
+    assert entry_title is not None
+    assert entry_title.font_family == spec.body.font_family
+    assert entry_title.font_size_pt == pytest.approx(11)
+    assert entry_title.bold is False
+
+
+def test_target_docx_analysis_resolves_docdefaults_and_theme(tmp_path: Path) -> None:
+    target_path = tmp_path / "default.docx"
+    Document().save(target_path)
+
+    spec = analyze_target_docx(target_path, tmp_path / "analysis")
+
+    assert spec.body.font_family == "Cambria"
+    assert spec.body.font_size_pt == pytest.approx(11.0)
+    assert not (
+        spec.body.font_family == "Arial"
+        and spec.body.font_size_pt == 10.0
+        and spec.body.color_hex == "#000000"
+    )
+
+
+def test_target_docx_analysis_rejects_banned_default_fill(tmp_path: Path) -> None:
+    target_path = tmp_path / "banned.docx"
+    document = Document()
+    normal = document.styles["Normal"]
+    normal.font.name = "Arial"
+    normal.font.size = Pt(10)
+    normal.font.color.rgb = RGBColor(0, 0, 0)
+    document.save(target_path)
+
+    with pytest.raises(TargetDocxAnalysisError) as excinfo:
+        analyze_target_docx(target_path, tmp_path / "analysis")
+
+    assert excinfo.value.error_code == "docx_target_unmeasurable"
+    assert "banned" in str(excinfo.value)
+
+
+def test_target_docx_analysis_corrupt_error_code_is_unreadable(tmp_path: Path) -> None:
+    target_path = tmp_path / "target.docx"
+    target_path.write_bytes(b"not a docx")
+
+    with pytest.raises(TargetDocxAnalysisError) as excinfo:
+        analyze_target_docx(target_path, tmp_path / "analysis")
+
+    assert excinfo.value.error_code == "docx_target_unreadable"

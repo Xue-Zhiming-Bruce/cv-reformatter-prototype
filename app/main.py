@@ -675,6 +675,14 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
     )
 
 
+def _raise_docx_target_error(exc: Exception) -> None:
+    """Map DOCX analysis failures to the public error_code contract."""
+    error_code = getattr(exc, "error_code", "docx_target_unreadable")
+    status_code = 400 if error_code == "docx_target_unreadable" else 422
+    detail = {"error_code": error_code, "message": str(exc), "detail": str(exc)}
+    raise HTTPException(status_code=status_code, detail=detail) from exc
+
+
 @app.post("/api/target-format")
 async def upload_target_format(
     file: UploadFile = File(...),
@@ -784,7 +792,7 @@ async def upload_target_format(
             )
         except (TargetDocxAnalysisError, FileNotFoundError) as exc:
             (artifact_dir / target_format.stored_filename).unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            _raise_docx_target_error(exc)
         target_format = target_format.model_copy(
             update={
                 "used_as_template_source": True,

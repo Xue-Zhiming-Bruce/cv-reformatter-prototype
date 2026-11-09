@@ -4,6 +4,7 @@ import json
 
 import pytest
 from docx import Document
+from docx.shared import Pt, RGBColor
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
@@ -639,6 +640,104 @@ def test_target_format_upload_accepts_docx_templates_and_pdf_references(
     assert metadata["status"] == "target_format_uploaded"
     assert metadata["target_format_role"] == "pdf_reference"
     assert metadata["target_format_filename"] == "target-reference.pdf"
+
+
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _upload_docx(contents: bytes, artifact_id: str, filename: str = "target.docx"):
+    return client.post(
+        "/api/target-format",
+        data={"artifact_id": artifact_id},
+        files={"file": (filename, contents, DOCX_MIME)},
+    )
+
+
+def test_target_format_upload_accepts_body_only_docx_sample(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    sample = Path(__file__).resolve().parents[2] / "frontend" / "public" / "sample-resume.docx"
+    artifact_id = "artifact_docx_body_only"
+
+    response = _upload_docx(sample.read_bytes(), artifact_id, "sample-resume.docx")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["target_format"]["analysis_status"] == "analyzed"
+    assert body["target_format"]["used_as_template_source"] is True
+    spec = load_layout_template_spec(tmp_path / artifact_id / "layout_template_spec.json")
+    assert spec.schema_version == "2.0"
+    assert spec.title.font_family == spec.body.font_family
+    assert spec.title.font_size_pt == pytest.approx(spec.body.font_size_pt * 1.6)
+    assert spec.title.bold is True
+    assert spec.heading.font_family == spec.body.font_family
+    assert spec.heading.color_hex == spec.body.color_hex
+    assert (tmp_path / artifact_id / "target_format.json").exists()
+
+
+def test_target_format_upload_resolves_default_docx_theme(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    target_path = tmp_path / "default.docx"
+    Document().save(target_path)
+    artifact_id = "artifact_docx_default_theme"
+
+    response = _upload_docx(target_path.read_bytes(), artifact_id)
+
+    assert response.status_code == 200, response.text
+    spec = load_layout_template_spec(tmp_path / artifact_id / "layout_template_spec.json")
+    assert spec.body.font_family == "Cambria"
+    assert spec.body.font_size_pt == pytest.approx(11.0)
+
+
+def test_target_format_upload_rejects_banned_docx_default_fill(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    document = Document()
+    normal = document.styles["Normal"]
+    normal.font.name = "Arial"
+    normal.font.size = Pt(10)
+    normal.font.color.rgb = RGBColor(0, 0, 0)
+    target_path = tmp_path / "banned.docx"
+    document.save(target_path)
+    artifact_id = "artifact_docx_banned_fill"
+
+    response = _upload_docx(target_path.read_bytes(), artifact_id)
+
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert set(detail) == {"error_code", "message", "detail"}
+    assert detail["error_code"] == "docx_target_unmeasurable"
+    assert "banned" in detail["message"]
+    artifact_dir = tmp_path / artifact_id
+    assert not (artifact_dir / "layout_template_spec.json").exists()
+    assert not (artifact_dir / "target_format.json").exists()
+    assert not (artifact_dir / "target_format_template.docx").exists()
+
+
+def test_target_format_upload_rejects_corrupt_docx(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    artifact_id = "artifact_docx_corrupt"
+
+    response = _upload_docx(b"not a docx", artifact_id, "broken.docx")
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert set(detail) == {"error_code", "message", "detail"}
+    assert detail["error_code"] == "docx_target_unreadable"
+    assert "corrupt or cannot be read as a Word document" in detail["message"]
+    artifact_dir = tmp_path / artifact_id
+    assert not (artifact_dir / "target_format_template.docx").exists()
+    assert not (artifact_dir / "target_format.json").exists()
 
 
 def test_generate_applies_uploaded_docx_style_spec(
