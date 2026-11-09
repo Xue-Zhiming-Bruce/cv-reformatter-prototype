@@ -15,7 +15,7 @@
     "sub": "Upload your resume — get it reformatted into any template, ready to send.",
     "uploadCta": "Upload resume",
     "uploadHint": "or drop it here · PDF, DOCX",
-    "trustLine": "Nothing lost, nothing stored.",
+    "trustLine": "Original preserved. Recruiter approved.",
     "baaBeforeLabel": "BEFORE",
     "baaAfterLabel": "AFTER",
     "sampleLink": "Try a sample resume →",
@@ -61,7 +61,7 @@
     "heading": "Why Reform",
     "items": [
       {
-        "title": "Nothing invented, nothing lost",
+        "title": "Nothing invented",
         "body": "Every field comes from your original resume. Gaps are flagged for you to fill — missing facts are never made up."
       },
       {
@@ -76,8 +76,8 @@
   },
   "trust": {
     "item1": "1 resume ≈ 20 seconds",
-    "item2": "Nothing invented, nothing lost",
-    "item3": "Files deleted after processing"
+    "item2": "Nothing invented",
+    "item3": "Original kept for review"
   },
   "footer": {
     "brandDesc": "Reformat any resume into any template — fast, accurate, ready to send.",
@@ -98,7 +98,7 @@
     "freePeriod": "forever",
     "customPrice": "Custom",
     "mostPopularBadge": "Most popular",
-    "trustLine": "Uploaded files are deleted after processing. We never store your resume.",
+    "trustLine": "Your resume is kept in your review workspace so you can compare the original. Review evidence is not deleted automatically.",
     "comingSoon": "Coming soon",
     "freeName": "Free",
     "freeFeatures": [
@@ -138,7 +138,7 @@
       },
       {
         "q": "Is my resume stored?",
-        "a": "No. Files are deleted immediately after processing."
+        "a": "Your upload and extracted content are kept in your review workspace so you can compare the original. They are not deleted automatically after processing."
       },
       {
         "q": "Do unused conversions roll over?",
@@ -257,7 +257,7 @@
       },
       {
         "heading": "Retention and deletion",
-        "body": "Uploaded resume files and extracted content are deleted immediately after processing and are not stored on our servers. Account data is deleted without delay when you close your account. Records we are legally required to keep (e.g. billing) are retained for the statutory period."
+        "body": "Uploaded resume files and extracted content are kept in your review workspace so you can compare the original with the reformatted result. They are not deleted automatically after processing. Account data is deleted without delay when you close your account. Records we are legally required to keep (e.g. billing) are retained for the statutory period."
       },
       {
         "heading": "Service providers",
