@@ -255,6 +255,33 @@ are true. The renderer places only approved `CandidateProfile` content, and a
 fixed target cannot absorb every content shape; the differences below are
 recorded as review records, never as silent changes to candidate facts.
 
+**Facts and presentation standard.** Candidate facts stay complete and accurate:
+no invention and no silent omission ([Candidate Content
+Contract](#candidate-content-contract)). Font sizes, spacing, alignment, and
+hierarchy closely follow the measured target within the tolerance the product
+has already declared for typography, rule geometry, and color — the same
+tolerance that already turns a larger difference into an unverified visual
+finding. "Close enough" does not relax these standards. Different HR users are
+not expected to share one optimal content arrangement: the product normalizes
+different candidates into the company's template, so several supported
+arrangements can be reasonable.
+
+**Draft first when organization is unspecified.** When the template leaves
+content organization unspecified and the case is within existing capabilities,
+produce a reasonable draft first and explain the arrangement chosen. The
+pending-classification, show/hide, privacy, and source-review gates stay
+effective around that draft, and this direction does not authorize invented
+facts, arbitrary new sections, or bypassing unsupported capabilities. An owner
+edit that changes facts or layout identity follows the existing saved-revision
+and final-acceptance rules.
+
+Owner decision, November 9, 2026: a useful draft may need owner edits because
+several content organizations can be reasonable; this never relaxes facts,
+typography, spacing, alignment, hierarchy, privacy, or supported-capability
+checks. AI may choose a reasonable supported arrangement when unspecified,
+produce the draft, and explain the choice; required disclosure and source review
+remain.
+
 **Content shapes.** Owner review must cover these shapes with real generated
 output, not synthetic proofs alone:
 

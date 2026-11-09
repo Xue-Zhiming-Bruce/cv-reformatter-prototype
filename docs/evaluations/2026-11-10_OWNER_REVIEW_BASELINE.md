@@ -39,26 +39,39 @@ Every run passed the independent content, structure, privacy, and content
 preservation checks; blind views are the same source revision with the
 blind-disclosure rules applied. Normal-view open findings are 0 for all three;
 blind views carry 3 (B→C) and 1 (E→B) open findings recorded in each run's
-`same_build_acceptance_summary.json` and `RESULTS_INDEX.md`. In all runs
+`RESULTS_INDEX.md` PDF rows. Only the B→C run also carries a
+`same_build_acceptance_summary.json`, and that file is a cross-run summary whose
+`cases[]` covers all three runs rather than a per-run findings file, so the E→B
+and F→C rows cite their own `RESULTS_INDEX.md` only. In all runs
 `network_calls.adobe_http_count` is `null` because Adobe HTTP calls are not
 instrumented, and `billed_cost` is `null` because cost was not available — both
 stay reported as unknown.
 
 ## Records
 
-| ID | Category | Scope | Owner statement / evidence | First failing stage | Status |
-| --- | --- | --- | --- | --- | --- |
-| `or-001` | `owner_preference` | All three runs, both views; accepted snapshots | "我感觉OK，继续goal" recorded 2026-10-26T08:37:52Z against the exact HTML/PDF checksums in each `owner_acceptance.json` | `owner_inspection` | `accepted` |
-| `or-002` | `unresolved_requirement` | Template proofs (`layout_proofs`) for the B and C targets | Owner acceptance scope names "template proof defects ... remain known issues"; proof variants report `structural_passed: true` with visual similarity 0.2207–0.565 against target. E→B short/medium proofs additionally record measured contact-label prefix drift of 36.385 pt and 88.074 pt against a target label width of 0.0 pt (`selected_header_label_scope.json`), which that run attributes to incomplete Reviewer discovery rather than a failed repair primitive | `visual_validation` (similarity); contact-label drift cause `unresolved` | `pending_owner_judgment` |
-| `or-003` | `representation_defect` | E→B header, page 1 | `rule_geometry.header.gap_below_pt` drift 2.22 pt (target 9.7785 vs generated 12.0) exceeds the recorded 1.0 pt tolerance; the same target measured 10.07 against 11.0517 in the C runs, inside tolerance | `rendering_geometry` | `pending_owner_judgment` |
-| `or-004` | `representation_defect` | B→C and F→C, target C skill area; scope is the fidelity diagnostic, not the delivered PDFs | Diagnostic `badge count target=18 generated=0` with target fill `#99F6E4` and text `#334155`. Verification of the delivered files: normal and blind HTML carry 18 chips (`data-node-id="…badge…chip.N"`) and both PDFs carry 18 rounded filled shapes in `#99F6E4`, 18 pt high, six per row = the target values; F→C carries 15 chips with the same colors and height because that candidate has 15 skills. The diagnostic reports 0 because `_measure_html_badges` matches the retired `chip-style`/`chip-row` classes and the PDF badge reader counts `rect`s while the chips are rounded `curve` fills | `comparison_diagnostic` | `pending_owner_judgment` |
-| `or-005` | `unresolved_requirement` | E→B, post-completion process | Owner acceptance scope names "SIGBUS remain known issues"; the run records `blind_process_exit_diagnosis.json` and `blind_process_exit_code: 0` for the later B→C run | `process_execution` | `pending_owner_judgment` |
-| `or-006` | `artificial_effect` | All runs, layout proofs | Proof variants render synthetic short/medium/long content (`matrix_harness_synthetic_reviewer` approval, evaluation-only); they are reusable while labeled synthetic and are not product-quality evidence | `design_compilation` | `accepted` |
-| `or-007` | `unresolved_requirement` | E→B, section labels and rule count | Diagnostics `section_labels text/order differs from target` and `rule count target=9 generated=5`: target B carries `SKILLS`, `EXPERIENCE`, `PROJECTS`, `EDUCATION`, `CERTIFICATIONS`, `ADDITIONAL SECTIONS`, `LANGUAGES`, `ADDITIONAL LINKS OR DATA`, while the `resume_e` profile has 0 projects, 0 certifications, 0 additional sections and 0 languages and generates 4 labels, so 4 section rules are absent rather than dropped | `design_compilation` | `pending_owner_judgment` |
-| `or-008` | `lasting_rule` | All future runs | Distinct facts stay distinct: target-sample header/section text differences are content-sensitive diagnostics and never pass/fail gates; only geometry, typography, and color drift beyond tolerance are visual findings | `owner_inspection` | `accepted` |
+| ID | Category | Scope | Owner statement / evidence | First failing stage | Closure requirement | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| `or-001` | `owner_preference` | All three runs, both views; accepted snapshots | "我感觉OK，继续goal" recorded 2026-10-26T08:37:52Z against the exact HTML/PDF checksums in each `owner_acceptance.json` | `owner_inspection` | The acceptance stays bound to those six HTML/PDF checksums; a changed artifact or profile revision reopens it | `accepted` |
+| `or-002` | `unresolved_requirement` | Template proofs (`layout_proofs`) for the B and C targets | Owner acceptance scope names "template proof defects ... remain known issues"; proof variants report `structural_passed: true` with visual similarity 0.2207–0.565 against target. E→B short/medium proofs additionally record measured contact-label prefix drift of 36.385 pt and 88.074 pt against a target label width of 0.0 pt (`selected_header_label_scope.json`), which that run attributes to incomplete Reviewer discovery rather than a failed repair primitive | `visual_validation` (similarity); contact-label drift cause `unresolved` | An explicit owner judgment on template-proof fidelity, recorded against the run, plus an explanation or removal of the Reviewer-discovery cause | `pending_owner_judgment` |
+| `or-003` | `representation_defect` | E→B header, page 1 | `rule_geometry.header.gap_below_pt` drift 2.22 pt (target 9.7785 vs generated 12.0) exceeds the recorded 1.0 pt tolerance; the same target measured 10.07 against 11.0517 in the C runs, inside tolerance | `rendering_geometry` | An E→B header artifact re-measured inside `rule_geometry.tolerance_pt` 1.0 and re-verified under the same checks, or an owner decision to accept the drift | `pending_owner_judgment` |
+| `or-004` | `representation_defect` | B→C and F→C, target C skill area; scope is the fidelity diagnostic, not the delivered PDFs | Diagnostic `badge count target=18 generated=0` with target fill `#99F6E4` and text `#334155`. Verification of the delivered files: normal and blind HTML carry 18 chips (`data-node-id="…badge…chip.N"`) and both PDFs carry 18 rounded filled shapes in `#99F6E4`, 18 pt high, six per row = the target values; F→C carries 15 chips with the same colors and height because that candidate has 15 skills. The diagnostic reports 0 because `_measure_html_badges` matches the retired `chip-style`/`chip-row` classes and the PDF badge reader counts `rect`s while the chips are rounded `curve` fills | `comparison_diagnostic` | A badge comparison that reads the delivered chips (18 for B→C, 15 for F→C) and is re-verified under the same checks, or an owner decision to retire the diagnostic | `pending_owner_judgment` |
+| `or-005` | `unresolved_requirement` | E→B, post-completion process | Owner acceptance scope names "SIGBUS remain known issues"; the run records `blind_process_exit_diagnosis.json` and `blind_process_exit_code: 0` for the later B→C run | `process_execution` | An explanation of the post-`COMPLETE` SIGBUS, or an explicit owner judgment accepting it as a known limit; a later clean exit does not close it | `pending_owner_judgment` |
+| `or-006` | `artificial_effect` | All runs, layout proofs | Proof variants render synthetic short/medium/long content. Each run's `shared/layout_proofs/<target>/layout_proofs/approval.json` records `state: approved`, `reviewer_id: matrix_harness_synthetic_reviewer`, `reviewer_note: "Automated pipeline-fact approval; no visual-quality judgment."` (approval IDs `approval_13359271…` / `approval_d2e0bca5…` / `approval_e816bcb4…`), and each `run_manifest.json` sets `review_policy.synthetic_proof_approval_only: true`; the `layout_proof_summary.json` beside it carries `approval_id: null`, `state: none`. That is a synthetic pipeline-fact approval, not owner acceptance, fidelity approval, or product-quality evidence, and the proofs are reusable only while labeled synthetic | `design_compilation` | Stays labeled synthetic and evaluation-only, or is replaced with real content; never closed as product-quality evidence | `closed` |
+| `or-007` | `unresolved_requirement` | E→B, section labels and rule count | Diagnostics `section_labels text/order differs from target` and `rule count target=9 generated=5`: target B carries `SKILLS`, `EXPERIENCE`, `PROJECTS`, `EDUCATION`, `CERTIFICATIONS`, `ADDITIONAL SECTIONS`, `LANGUAGES`, `ADDITIONAL LINKS OR DATA`, while the `resume_e` profile has 0 projects, 0 certifications, 0 additional sections and 0 languages and generates 4 labels, so 4 section rules are absent rather than dropped | `design_compilation` | An explicit owner judgment on whether the missing labels and four absent section rules are an accepted content-shape consequence or a design defect to fix | `pending_owner_judgment` |
+| `or-008` | `lasting_rule` | All future runs | Distinct facts stay distinct: target-sample header/section text differences are content-sensitive diagnostics and never pass/fail gates; only geometry, typography, and color drift beyond tolerance are visual findings. Basis is the product-contract text in [Content Arrangement And Owner Review](../product/PRODUCT_SPEC.md#content-arrangement-and-owner-review) ("a diagnostic score is never a pass/fail substitute") together with the content rules that forbid copying target-sample facts; no separate owner utterance for this rule is recorded in the runs, so none is quoted and the rule adds no acceptance | `owner_inspection` | Recorded in this spec or an ADR before it binds; the cited contract text is that record | `closed` |
 
 Notes on classification:
 
+- The owner-approved decision rules of November 9, 2026 define four feedback
+  categories: a defect supported by source or template evidence, a choice for
+  this instance, a lasting rule the owner explicitly requested, and an
+  unresolved question. `artificial_effect` is a fifth, engineering-side category
+  that the product contract adds for synthetic proofs, corpora, and scaffolds;
+  it is not part of the owner's four-category table and adds no acceptance.
+  `or-006` is the only record that uses it.
+- The `Closure requirement` column is the record format's required
+  `closure_requirement` field for each record
+  ([Test Result Artifact Format](../testing/TEST_RESULT_FORMAT.md#owner-review-feedback-record-additive-extension-versioned)).
 - Header and section-label text differences appear in every run because the
   generated document carries the candidate's real facts, not the target
   sample's. They stay diagnostics (`or-008`) and are not defects.
@@ -153,7 +166,7 @@ a two-page target; that page-count difference is recorded in its
 | --- | --- | --- | --- |
 | Content validation (normal / blind) | passed, 65 / 61 items | passed, 53 / 50 | passed, 58 / 55 |
 | Structure gate | passed, both views, no unmatched heading | passed, both views | passed, both views |
-| Content preservation | 1/1 passed, manual review pending | 1/1 passed | 1/1 passed |
+| Content preservation | 1/1 passed; manual review `pending` | 1/1 passed; manual review `pending` | 1/1 passed; manual review `pending` |
 | Recovered candidate blocks / added target sections | 2 / 0 | 0 / 0 | 1 / 0 |
 | Privacy review, both views | all seven checks `true` | all seven `true` | all seven `true` |
 | Independent PDF revalidation | not recorded for this run | `external_calls: 0`, both views pass | `external_calls: 0`, both views pass |
@@ -165,6 +178,10 @@ a two-page target; that page-count difference is recorded in its
 | Elapsed, manifest started → completed | 5 min 50 s | 4 min 47 s | 5 min 8 s |
 | Blind process exit | 0 | 138 (SIGBUS after COMPLETE) | completed |
 | Billed cost | unknown (`billed_cost: null`) | unknown | unknown |
+
+Content preservation `manual_review` reads `pending` in all three
+`content_preservation_verification.json` files, so no run counts the
+preservation review as complete.
 
 ### First failing stage per open item
 
@@ -221,6 +238,30 @@ this record.
 - `or-007` now names `PROJECTS` and the four generated labels explicitly, and
   `or-002` carries the E→B contact-label measurement.
 
+### Corrections from the QA rework
+
+- The blind-view finding sentence no longer claims a per-run
+  `same_build_acceptance_summary.json`: only the B→C run has one, it is a
+  cross-run summary whose `cases[]` covers all three runs, and the E→B and F→C
+  rows come from their own `RESULTS_INDEX.md` PDF rows.
+- Every record now carries its `closure_requirement`, the required field of
+  `owner-review-feedback-1.0`, in a `Closure requirement` column.
+- Content preservation `manual_review` is reported as `pending` for all three
+  runs instead of only for B→C.
+- The four categories approved by the owner on November 9, 2026 are stated
+  explicitly, and `artificial_effect` is disclosed as a fifth engineering-side
+  category from the product contract that the owner's table does not contain.
+- `or-006` no longer reads as an approval: it cites the actual
+  `layout_proofs/approval.json` values (synthetic reviewer, pipeline-fact-only
+  note) and states that `layout_proof_summary.json` carries
+  `approval_id: null` / `state: none`.
+- `or-008` cites the product-contract text it derives from and records that no
+  separate owner utterance exists for it.
+- `or-006` and `or-008` moved from `accepted` to `closed`. `accepted` is allowed
+  only for the exact HTML/PDF identity the owner inspected; neither record has
+  an owner inspection, so their status now names the closure requirement that
+  actually holds instead of implying an acceptance that is not recorded.
+
 No acceptance record was rewritten: `owner_acceptance.json` files are untouched
 and still bind only the six exact snapshots.
 
@@ -234,7 +275,7 @@ cost stay factual ([Test Result Artifact Format](../testing/TEST_RESULT_FORMAT.m
 | Owner acceptance | `owner_acceptance.json` per run, bound to HTML/PDF SHA-256 plus the final-acceptance API receipt | The owner inspected and accepted those exact snapshots. It does not carry to any other build or artifact. |
 | Automated checks | `content_preservation_verification.json`, per-pair `content_validation` and `structure_validation`, `independent_privacy_review.json`, `independent_pdf_revalidation.json` | Content, structure, and privacy hold for the recorded PDFs. They are not a quality judgment. |
 | Diagnostic scores | `visual_comparison.json` layout similarity, `rule_geometry`, badge and label measurements, proof visual similarity | They locate differences for review and are never a pass/fail gate (`or-008`). |
-| Synthetic engineering smoke | Short/medium/long layout proofs under `layout_proofs/`, approved by `matrix_harness_synthetic_reviewer` (evaluation-only) | The layout class renders and validates on synthetic content. It is not product-quality evidence (`or-006`). |
+| Synthetic engineering smoke | Short/medium/long layout proofs under `layout_proofs/`, pipeline-fact-approved by `matrix_harness_synthetic_reviewer` with the recorded note "no visual-quality judgment" (evaluation-only) | The layout class renders and validates on synthetic content. It is not product-quality evidence, owner acceptance, or fidelity approval (`or-006`). |
 | Passing tests | Canonical pytest lanes; terminal logs under `tests/test_results/pytest/` | Regression confidence for the code. It says nothing about output quality for a candidate. |
 | Usage and cost | `combined_agentic_usage.json` and the manifest timestamps | Actual request counts, tokens, and elapsed time; `billed_cost` is `null`, so cost stays unknown. |
 
