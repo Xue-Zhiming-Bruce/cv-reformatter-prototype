@@ -4,6 +4,7 @@ import type { ProcessResponse } from "../types"
 // is wired to POST /api/process and render a real response.
 export const sampleReview: ProcessResponse = {
   artifact_id: "sample_review",
+  profile_revision_id: "sample_review_revision",
   original_text: [
     "Dohyun Kim / Seoul / 010-1234-5678",
     "8-yr backend engineer. Large-scale commerce traffic, team lead.",

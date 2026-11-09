@@ -1,7 +1,15 @@
 import { useState, useEffect, useMemo, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { LogoIcon, PencilIcon } from "../components/icons"
-import type { ProcessResponse, TargetFormatMetadata } from "../types"
+import type {
+  CandidateProfile,
+  FinalAcceptanceResponse,
+  GenerateResponse,
+  LayoutProofStatus,
+  ProcessResponse,
+  ProfileRevisionResponse,
+  TargetFormatMetadata,
+} from "../types"
 import "./ReviewScreen.css"
 
 // TODO: When API returns per-field confidence scores, set this to true.
@@ -14,8 +22,74 @@ type ReviewScreenProps = {
   resumeFile: File
   resumeFileName: string
   formatName: string
-  targetFormat: TargetFormatMetadata
+  targetFormat: TargetFormatMetadata | null
   onBack: () => void
+}
+
+type RetryTarget = "preview" | "export" | "createProofs" | "approveProofs" | null
+
+type ActionError = {
+  title: string
+  code: string | null
+  message: string
+  options: string[]
+  retry: RetryTarget
+  forceSaveRetry: boolean
+  regenerate: boolean
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+function profileActionError(
+  title: string,
+  code: string | null,
+  message: string,
+  options: string[],
+  retry: RetryTarget,
+  overrides: Partial<Pick<ActionError, "forceSaveRetry" | "regenerate">> = {},
+): ActionError {
+  return {
+    title,
+    code,
+    message,
+    options,
+    retry,
+    forceSaveRetry: overrides.forceSaveRetry ?? false,
+    regenerate: overrides.regenerate ?? false,
+  }
+}
+
+async function buildApiError(
+  res: Response,
+  title: string,
+  retry: RetryTarget,
+  overrides: Partial<Pick<ActionError, "forceSaveRetry" | "regenerate">> = {},
+): Promise<ActionError> {
+  let body: unknown = null
+  try {
+    body = await res.json()
+  } catch {
+    body = null
+  }
+  const detail = isRecord(body) ? body.detail : null
+  if (isRecord(detail)) {
+    const code = typeof detail.error_code === "string" ? detail.error_code : null
+    const message = typeof detail.message === "string" ? detail.message : title
+    const options = Array.isArray(detail.options)
+      ? detail.options.filter((option): option is string => typeof option === "string")
+      : []
+    return profileActionError(title, code, message, options, retry, {
+      forceSaveRetry:
+        overrides.forceSaveRetry ?? Boolean(code?.startsWith("approved_profile_")),
+      regenerate: overrides.regenerate,
+    })
+  }
+  if (typeof detail === "string") {
+    return profileActionError(title, null, detail, [], retry, overrides)
+  }
+  return profileActionError(title, null, title, [], retry, overrides)
 }
 
 type EditableFieldProps = {
@@ -126,12 +200,38 @@ function pdfViewerUrl(url: string): string {
   return `${url}${url.includes("#") ? "&" : "#"}toolbar=0&navpanes=0&view=FitH`
 }
 
-export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onBack }: ReviewScreenProps) {
+function applyEditsToProfile(profile: CandidateProfile, edits: Record<string, string>): CandidateProfile {
+  const copy = structuredClone(profile) as unknown as Record<string, unknown>
+  for (const [path, value] of Object.entries(edits)) {
+    if (path === "skills") {
+      copy.skills = value.split(",").map((skill) => skill.trim()).filter(Boolean)
+      continue
+    }
+    const parts = path.split(".")
+    let node: unknown = copy
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      const key = parts[i]
+      if (Array.isArray(node)) node = node[Number(key)]
+      else if (isRecord(node)) node = node[key]
+      else node = undefined
+    }
+    const last = parts[parts.length - 1]
+    if (Array.isArray(node)) node[Number(last)] = value
+    else if (isRecord(node)) node[last] = value
+    // Clear PENDING_CONFIRMATION so the backend uses the filled value instead of "To be confirmed"
+    const rules = copy.client_display_rules
+    if (isRecord(rules) && parts[0] && rules[parts[0]] === "pending_confirmation") {
+      delete rules[parts[0]]
+    }
+  }
+  return copy as unknown as CandidateProfile
+}
+
+export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, targetFormat, onBack }: ReviewScreenProps) {
   const { t, i18n } = useTranslation()
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [blindProfile, setBlindProfile] = useState(false)
   const [exportState, setExportState] = useState<"idle" | "confirm" | "generating" | "error">("idle")
-  const [pendingFormat, setPendingFormat] = useState<"docx" | "pdf" | null>(null)
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [reviewCursor, setReviewCursor] = useState(0)
   const [highlightedField, setHighlightedField] = useState<string | null>(null)
@@ -145,7 +245,21 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
   const [emailState, setEmailState] = useState<"idle" | "loading" | "ready">("idle")
   const [copied, setCopied] = useState(false)
   const emailAreaRef = useRef<HTMLDivElement>(null)
+  const [revisionId, setRevisionId] = useState(data.profile_revision_id)
+  const [profileDirty, setProfileDirty] = useState(false)
+  const editVersionRef = useRef(0)
+  const [generation, setGeneration] = useState<GenerateResponse | null>(null)
+  const [acceptanceState, setAcceptanceState] = useState<"idle" | "submitting" | "accepted">("idle")
+  const [acceptanceInvalidated, setAcceptanceInvalidated] = useState(false)
+  const [actionError, setActionError] = useState<ActionError | null>(null)
+  const [proofStatus, setProofStatus] = useState<LayoutProofStatus | null>(null)
+  const [proofBusy, setProofBusy] = useState<"idle" | "loading" | "creating" | "approving">("idle")
   const { profile, ledger } = data
+
+  const isPdfTarget = targetFormat?.input_type === "pdf"
+  const isDocxTarget = targetFormat?.input_type === "docx"
+  const targetBlocked = isDocxTarget
+  const isAccepted = acceptanceState === "accepted" || generation?.client_ready === true
 
   const missingNames = useMemo(
     () => new Set(profile.missing_fields.map((f) => f.field_name)),
@@ -177,9 +291,39 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [emailPopoverOpen])
 
+  useEffect(() => {
+    if (!isPdfTarget) return
+    let cancelled = false
+    async function loadProofStatus() {
+      setProofBusy("loading")
+      try {
+        const res = await fetch(`/api/artifacts/${data.artifact_id}/layout-proofs`)
+        if (!res.ok) return
+        const status = (await res.json()) as LayoutProofStatus
+        if (!cancelled) setProofStatus(status)
+      } catch {
+        // The target panel keeps a refresh action available when status is unavailable.
+      } finally {
+        if (!cancelled) setProofBusy("idle")
+      }
+    }
+    void loadProofStatus()
+    return () => { cancelled = true }
+  }, [data.artifact_id, isPdfTarget])
+
   const isPdf = /\.pdf$/i.test(resumeFile.name) || resumeFile.type === "application/pdf"
   const originalPreviewUrl = data.original_pdf_preview_url ?? (isPdf ? objectUrl : null)
   const originalPdfViewerUrl = originalPreviewUrl ? pdfViewerUrl(originalPreviewUrl) : null
+
+  function invalidateGeneratedOutput() {
+    if (generation?.client_ready || acceptanceState === "accepted") {
+      setAcceptanceInvalidated(true)
+    }
+    setGeneration(null)
+    setPreviewMode(false)
+    setPreviewUrl(null)
+    setAcceptanceState("idle")
+  }
 
   function handleEdit(path: string, value: string) {
     if (path === highlightedField && value.trim()) {
@@ -191,6 +335,14 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
       else next[path] = value
       return next
     })
+    editVersionRef.current += 1
+    setProfileDirty(true)
+    invalidateGeneratedOutput()
+  }
+
+  function handleBlindChange(checked: boolean) {
+    setBlindProfile(checked)
+    invalidateGeneratedOutput()
   }
 
   function handleReviewChipClick() {
@@ -212,103 +364,368 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
     return !edited || !edited.trim()
   }).length
 
-  function applyEditsToProfile(p: typeof profile): typeof profile {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const copy = JSON.parse(JSON.stringify(p)) as any
-    for (const [path, value] of Object.entries(edits)) {
-      if (path === "skills") {
-        copy.skills = value.split(",").map((s: string) => s.trim()).filter(Boolean)
-        continue
+  const failedVariants = proofStatus?.variants.filter((variant) => !variant.structural_passed) ?? []
+  const proofCreated = (proofStatus?.variants.length ?? 0) > 0
+  const proofState = proofStatus?.state ?? "none"
+  const proofLabel = proofBusy === "loading" && !proofStatus
+    ? t("review.proofLoading")
+    : proofState === "approved"
+      ? t("review.proofStateApproved")
+      : proofState === "rejected"
+        ? t("review.proofStateRejected")
+        : proofCreated || proofState === "pending"
+          ? t("review.proofStatePending")
+          : t("review.proofStateNone")
+  const proofChipClass = proofState === "approved"
+    ? "rv-chip--success"
+    : proofState === "none" && !proofCreated
+      ? "rv-chip--neutral"
+      : "rv-chip--warning"
+  const proofNextStep = proofState === "approved"
+    ? t("review.proofNextApproved")
+    : proofState === "rejected"
+      ? t("review.proofNextRejected")
+      : proofCreated || proofState === "pending"
+        ? t("review.proofNextPending")
+        : t("review.proofNextNone")
+  const canApproveProofs = proofCreated && proofState !== "approved" && proofBusy === "idle"
+
+  async function persistRevision(retry: RetryTarget): Promise<string | null> {
+    const editVersionAtSave = editVersionRef.current
+    try {
+      const res = await fetch(`/api/artifacts/${data.artifact_id}/profiles/revisions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile: applyEditsToProfile(profile, edits) }),
+      })
+      if (!res.ok) {
+        setActionError(await buildApiError(res, t("review.revisionSaveFailed"), retry))
+        return null
       }
-      const parts = path.split(".")
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let node: any = copy
-      for (let i = 0; i < parts.length - 1; i++) {
-        const key = parts[i]
-        node = node[isNaN(Number(key)) ? key : Number(key)]
-      }
-      const last = parts[parts.length - 1]
-      node[isNaN(Number(last)) ? last : Number(last)] = value
-      // Clear PENDING_CONFIRMATION so the backend uses the filled value instead of "To be confirmed"
-      if (copy.client_display_rules[parts[0]] === "pending_confirmation") {
-        delete copy.client_display_rules[parts[0]]
-      }
+      const saved = (await res.json()) as ProfileRevisionResponse
+      setRevisionId(saved.profile_revision_id)
+      if (editVersionRef.current === editVersionAtSave) setProfileDirty(false)
+      return saved.profile_revision_id
+    } catch {
+      setActionError(profileActionError(t("review.revisionSaveFailed"), null, t("review.networkErrorMessage"), [], retry))
+      return null
     }
-    return copy as typeof profile
   }
 
-  async function doGenerate(format: "docx" | "pdf") {
-    setDropdownOpen(false)
-    setExportState("generating")
-    setPendingFormat(null)
+  async function loadProofStatus(): Promise<LayoutProofStatus | null> {
+    setProofBusy("loading")
+    try {
+      const res = await fetch(`/api/artifacts/${data.artifact_id}/layout-proofs`)
+      if (!res.ok) {
+        setActionError(await buildApiError(res, t("review.proofStatusFailed"), null))
+        return null
+      }
+      const status = (await res.json()) as LayoutProofStatus
+      setProofStatus(status)
+      return status
+    } catch {
+      setActionError(profileActionError(t("review.proofStatusFailed"), null, t("review.networkErrorMessage"), [], null))
+      return null
+    } finally {
+      setProofBusy("idle")
+    }
+  }
+
+  function proofGateError(status: LayoutProofStatus): ActionError | null {
+    const failed = status.variants.filter((variant) => !variant.structural_passed)
+    if (failed.length > 0) {
+      return profileActionError(
+        t("review.proofTitle"),
+        "layout_proof_validation_failed",
+        t("review.proofVariantsFailed", { variants: failed.map((variant) => variant.variant).join(", ") }),
+        ["create_layout_proofs"],
+        null,
+      )
+    }
+    if (status.state === "approved") return null
+    const created = status.variants.length > 0
+    if (status.state === "rejected") {
+      return profileActionError(
+        t("review.proofTitle"),
+        "layout_proof_rejected",
+        t("review.proofRejectedMessage"),
+        ["create_layout_proofs"],
+        null,
+      )
+    }
+    if (created || status.state === "pending") {
+      return profileActionError(
+        t("review.proofTitle"),
+        "layout_proof_approval_required",
+        t("review.proofApprovalRequiredMessage"),
+        ["approve_layout_proofs"],
+        null,
+      )
+    }
+    return profileActionError(
+      t("review.proofTitle"),
+      "layout_proof_required",
+      t("review.proofRequiredMessage"),
+      ["create_layout_proofs"],
+      null,
+    )
+  }
+
+  async function runGeneration(source: "preview" | "export", forceSave: boolean): Promise<GenerateResponse | null> {
+    if (targetBlocked) return null
+    setActionError(null)
+    let revisionToUse = revisionId
+    if (profileDirty || forceSave || !revisionToUse) {
+      const saved = await persistRevision(source)
+      if (!saved) return null
+      revisionToUse = saved
+    }
+    // No-target defense: layout proofs are only consulted for an uploaded target.
+    if (targetFormat) {
+      const status = await loadProofStatus()
+      if (!status) return null
+      const gateError = proofGateError(status)
+      if (gateError) {
+        setActionError(gateError)
+        return null
+      }
+    }
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          profile: applyEditsToProfile(profile),
+          profile_revision_id: revisionToUse,
           blind_profile: blindProfile,
           artifact_id: data.artifact_id,
-          original_text: data.original_text,
         }),
       })
       if (!res.ok) {
-        setExportState("error")
-        setTimeout(() => setExportState("idle"), 3500)
-        return
+        setActionError(await buildApiError(
+          res,
+          source === "preview" ? t("review.previewFailedTitle") : t("review.exportFailedTitle"),
+          source,
+        ))
+        return null
       }
-      const result = await res.json()
-      const url: string = format === "docx" ? result.docx_download_url : result.pdf_download_url
-      const a = document.createElement("a")
-      a.href = url
-      a.download = format === "docx" ? "resume.docx" : "resume.pdf"
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      setExportState("idle")
+      const result = (await res.json()) as GenerateResponse
+      setGeneration(result)
+      setPreviewUrl(result.pdf_preview_url)
+      setAcceptanceState(result.client_ready ? "accepted" : "idle")
+      if (result.client_ready) setAcceptanceInvalidated(false)
+      return result
     } catch {
-      setExportState("error")
-      setTimeout(() => setExportState("idle"), 3500)
+      setActionError(profileActionError(
+        source === "preview" ? t("review.previewFailedTitle") : t("review.exportFailedTitle"),
+        null,
+        t("review.networkErrorMessage"),
+        [],
+        source,
+      ))
+      return null
     }
   }
 
-  function handleExportClick(format: "docx" | "pdf") {
-    setDropdownOpen(false)
-    if (remainingMissing > 0) {
-      setPendingFormat(format)
-      setExportState("confirm")
-    } else {
-      doGenerate(format)
-    }
-  }
-
-  async function handleFinalPreview() {
-    if (previewState === "generating") return
+  async function handleFinalPreview(forceSave = false) {
+    if (previewState === "generating" || targetBlocked) return
     setPreviewState("generating")
     setPreviewMode(false)
+    const result = await runGeneration("preview", forceSave)
+    if (result) {
+      setPreviewMode(true)
+      setPreviewState("idle")
+    } else {
+      setPreviewState("error")
+      setTimeout(() => setPreviewState("idle"), 3500)
+    }
+  }
+
+  async function doExport(forceSave = false) {
+    if (targetBlocked) return
+    setExportState("generating")
+    const result = await runGeneration("export", forceSave)
+    if (!result) {
+      setExportState("error")
+      setTimeout(() => setExportState("idle"), 3500)
+      return
+    }
+    const a = document.createElement("a")
+    a.href = result.pdf_download_url
+    a.download = "resume.pdf"
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setExportState("idle")
+  }
+
+  function handleExportClick() {
+    setDropdownOpen(false)
+    if (targetBlocked) return
+    if (remainingMissing > 0) {
+      setExportState("confirm")
+    } else {
+      void doExport()
+    }
+  }
+
+  async function handleCreateProofs() {
+    if (!isPdfTarget || proofBusy !== "idle") return
+    setActionError(null)
+    setProofBusy("creating")
     try {
-      const res = await fetch("/api/generate", {
+      const res = await fetch(`/api/artifacts/${data.artifact_id}/layout-proofs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      })
+      if (!res.ok) {
+        const error = await buildApiError(res, t("review.proofCreateFailed"), "createProofs")
+        if (error.options.length === 0) {
+          error.options = ["reanalyze_target", "upload_new_target"]
+        }
+        setActionError(error)
+        return
+      }
+      const status = (await res.json()) as LayoutProofStatus
+      setProofStatus(status)
+    } catch {
+      setActionError(profileActionError(t("review.proofCreateFailed"), null, t("review.networkErrorMessage"), [], "createProofs"))
+    } finally {
+      setProofBusy("idle")
+    }
+  }
+
+  async function handleApproveProofs() {
+    if (!isPdfTarget || proofBusy !== "idle") return
+    setActionError(null)
+    setProofBusy("approving")
+    try {
+      const res = await fetch(`/api/artifacts/${data.artifact_id}/layout-proofs/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state: "approved", reviewer_id: "local-reviewer" }),
+      })
+      if (!res.ok) {
+        const error = await buildApiError(res, t("review.proofApproveFailed"), "approveProofs")
+        if (error.options.length === 0) {
+          error.options = ["create_layout_proofs"]
+        }
+        setActionError(error)
+        return
+      }
+      const status = (await res.json()) as LayoutProofStatus
+      setProofStatus(status)
+    } catch {
+      setActionError(profileActionError(t("review.proofApproveFailed"), null, t("review.networkErrorMessage"), [], "approveProofs"))
+    } finally {
+      setProofBusy("idle")
+    }
+  }
+
+  async function handleAcceptFinal() {
+    if (!generation || acceptanceState === "submitting") return
+    if (!generation.profile_sha256) {
+      setActionError(profileActionError(
+        t("review.acceptanceFailed"),
+        null,
+        t("review.acceptanceIdentityMissing"),
+        [],
+        "preview",
+        { forceSaveRetry: true, regenerate: true },
+      ))
+      return
+    }
+    setActionError(null)
+    setAcceptanceState("submitting")
+    try {
+      const res = await fetch(`/api/artifacts/${data.artifact_id}/final-acceptance`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          profile: applyEditsToProfile(profile),
-          blind_profile: blindProfile,
-          artifact_id: data.artifact_id,
-          original_text: data.original_text,
+          profile_revision_id: generation.profile_revision_id,
+          profile_sha256: generation.profile_sha256,
+          layout_template_version: generation.layout_template_version,
+          layout_spec_sha256: generation.layout_spec_sha256,
+          html_sha256: generation.html_sha256,
+          pdf_sha256: generation.pdf_sha256,
         }),
       })
       if (!res.ok) {
-        setPreviewState("error")
-        setTimeout(() => setPreviewState("idle"), 3500)
+        setActionError(await buildApiError(res, t("review.acceptanceFailed"), "preview", {
+          forceSaveRetry: true,
+          regenerate: true,
+        }))
+        setAcceptanceState("idle")
         return
       }
-      const result = await res.json()
-      setPreviewUrl(result.pdf_preview_url)
-      setPreviewMode(true)
-      setPreviewState("idle")
+      const accepted = (await res.json()) as FinalAcceptanceResponse
+      if (!accepted.client_ready) {
+        setActionError(profileActionError(
+          t("review.acceptanceFailed"),
+          null,
+          t("review.acceptanceNotReady"),
+          [],
+          "preview",
+          { regenerate: true },
+        ))
+        setAcceptanceState("idle")
+        return
+      }
+      setGeneration((current) => (current ? { ...current, client_ready: true } : current))
+      setAcceptanceState("accepted")
+      setAcceptanceInvalidated(false)
     } catch {
-      setPreviewState("error")
-      setTimeout(() => setPreviewState("idle"), 3500)
+      setActionError(profileActionError(
+        t("review.acceptanceFailed"),
+        null,
+        t("review.networkErrorMessage"),
+        [],
+        "preview",
+        { forceSaveRetry: true, regenerate: true },
+      ))
+      setAcceptanceState("idle")
+    }
+  }
+
+  function recoveryLabel(option: string): string | null {
+    switch (option) {
+      case "save_profile_revision": return t("review.recoverySaveRevision")
+      case "create_layout_proofs": return t("review.recoveryCreateLayoutProofs")
+      case "approve_layout_proofs": return t("review.recoveryApproveLayoutProofs")
+      case "reanalyze_target": return t("review.recoveryReanalyzeTarget")
+      case "upload_new_target": return t("review.recoveryUploadNewTarget")
+      default: return null
+    }
+  }
+
+  async function handleRecovery(option: string) {
+    switch (option) {
+      case "save_profile_revision": {
+        const saved = await persistRevision(null)
+        if (saved) setActionError(null)
+        return
+      }
+      case "create_layout_proofs":
+        await handleCreateProofs()
+        return
+      case "approve_layout_proofs":
+        await handleApproveProofs()
+        return
+      case "reanalyze_target":
+      case "upload_new_target":
+        onBack()
+        return
+      default:
+        return
+    }
+  }
+
+  function retryAction(error: ActionError) {
+    switch (error.retry) {
+      case "preview": void handleFinalPreview(error.forceSaveRetry); break
+      case "export": void doExport(error.forceSaveRetry); break
+      case "createProofs": void handleCreateProofs(); break
+      case "approveProofs": void handleApproveProofs(); break
     }
   }
 
@@ -324,7 +741,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          profile: applyEditsToProfile(profile),
+          profile: applyEditsToProfile(profile, edits),
           language: i18n.language === "ko" ? "Korean" : "English",
         }),
       })
@@ -380,7 +797,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
             type="checkbox"
             className="rv-blind-toggle__check"
             checked={blindProfile}
-            onChange={(e) => setBlindProfile(e.target.checked)}
+            onChange={(e) => handleBlindChange(e.target.checked)}
           />
           <span className="rv-blind-toggle__body">
             <span className="rv-blind-toggle__label">{t("review.blindProfileLabel")}</span>
@@ -391,8 +808,9 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
         <button
           type="button"
           className={`rv-preview-btn${previewState === "error" ? " rv-preview-btn--error" : ""}`}
-          disabled={previewState === "generating"}
-          onClick={handleFinalPreview}
+          disabled={previewState === "generating" || targetBlocked}
+          title={targetBlocked ? t("review.targetDocxBlockedShort") : undefined}
+          onClick={() => void handleFinalPreview()}
         >
           {previewState === "generating" ? (
             <><span className="rv-spinner" aria-hidden="true" />{t("review.finalPreviewGenerating")}</>
@@ -412,14 +830,14 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
               <button
                 type="button"
                 className="rv-export-cancel-btn"
-                onClick={() => { setExportState("idle"); setPendingFormat(null) }}
+                onClick={() => setExportState("idle")}
               >
                 {t("review.exportCancel")}
               </button>
               <button
                 type="button"
                 className="rv-export-anyway-btn"
-                onClick={() => pendingFormat && doGenerate(pendingFormat)}
+                onClick={() => void doExport()}
               >
                 {t("review.exportConfirmAction")}
               </button>
@@ -429,7 +847,8 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
               <button
                 type="button"
                 className={`rv-export-btn${exportState === "generating" ? " rv-export-btn--loading" : ""}${exportState === "error" ? " rv-export-btn--error" : ""}`}
-                disabled={exportState === "generating"}
+                disabled={exportState === "generating" || targetBlocked}
+                title={targetBlocked ? t("review.targetDocxBlockedShort") : undefined}
                 onClick={() => {
                   if (exportState === "generating") return
                   setExportState("idle")
@@ -454,10 +873,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
               </button>
               {dropdownOpen && (
                 <div className="rv-export-menu">
-                  <button type="button" className="rv-export-menu__item" onClick={() => handleExportClick("docx")}>
-                    {t("review.exportDocx")}
-                  </button>
-                  <button type="button" className="rv-export-menu__item" onClick={() => handleExportClick("pdf")}>
+                  <button type="button" className="rv-export-menu__item" onClick={handleExportClick}>
                     {t("review.exportPdf")}
                   </button>
                 </div>
@@ -466,6 +882,150 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, onB
           )}
         </div>
       </header>
+
+      {targetFormat && (
+        <section className="rv-target-panel" aria-label={t("review.targetSupportLabel")}>
+          <div className="rv-target-panel__row">
+            <span className="rv-target-panel__label">{t("review.targetSupportLabel")}</span>
+            <span className={`rv-chip rv-chip--static ${isDocxTarget ? "rv-chip--warning" : "rv-chip--neutral"}`}>
+              {isPdfTarget ? t("review.targetTypePdf") : t("review.targetTypeDocx")}
+            </span>
+            <span className="rv-target-panel__meta">
+              {t("review.targetAnalysisStatus", { status: targetFormat.analysis_status })}
+            </span>
+            {targetFormat.structure_contract && (
+              <span className="rv-target-panel__meta">
+                {t("review.targetStructureContract", { contract: targetFormat.structure_contract })}
+              </span>
+            )}
+            {isPdfTarget && (
+              <>
+                <span className="rv-target-panel__label">{t("review.proofLabel")}</span>
+                <span className={`rv-chip rv-chip--static ${proofChipClass}`}>{proofLabel}</span>
+                {proofCreated && (
+                  <span className="rv-target-panel__meta">
+                    {t("review.proofVariantCount", { count: proofStatus?.variants.length ?? 0 })}
+                  </span>
+                )}
+                {failedVariants.length > 0 && (
+                  <span className="rv-target-panel__warning">
+                    {t("review.proofVariantsFailed", { variants: failedVariants.map((variant) => variant.variant).join(", ") })}
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+          {isDocxTarget ? (
+            <p className="rv-target-panel__blocked">{t("review.targetDocxBlocked")}</p>
+          ) : (
+            <div className="rv-proof">
+              <span className="rv-target-panel__next">{proofNextStep}</span>
+              <div className="rv-proof__actions">
+                <button type="button" className="rv-proof__btn" onClick={() => void handleCreateProofs()} disabled={proofBusy !== "idle"}>
+                  {proofBusy === "creating" ? t("review.proofCreating") : t("review.proofCreateBtn")}
+                </button>
+                <button type="button" className="rv-proof__btn" onClick={() => void loadProofStatus()} disabled={proofBusy !== "idle"}>
+                  {proofBusy === "loading" ? t("review.proofLoading") : t("review.proofRefreshBtn")}
+                </button>
+                <button type="button" className="rv-proof__btn" onClick={() => void handleApproveProofs()} disabled={!canApproveProofs}>
+                  {proofBusy === "approving" ? t("review.proofApproving") : t("review.proofApproveBtn")}
+                </button>
+              </div>
+            </div>
+          )}
+          {targetFormat.unsupported_features.length > 0 && (
+            <p className="rv-target-panel__warning">
+              {t("review.targetUnsupportedFeatures", { features: targetFormat.unsupported_features.join(", ") })}
+            </p>
+          )}
+          {targetFormat.analysis_warnings.length > 0 && (
+            <p className="rv-target-panel__warning">
+              {t("review.targetAnalysisWarnings", { warnings: targetFormat.analysis_warnings.join(" · ") })}
+            </p>
+          )}
+        </section>
+      )}
+
+      {actionError && (
+        <section className="rv-action-error" role="alert">
+          <div className="rv-action-error__head">
+            <span className="rv-action-error__title">{actionError.title}</span>
+            {actionError.code && (
+              <span className="rv-action-error__code">
+                {t("review.errorCodeLabel")}: {actionError.code}
+              </span>
+            )}
+          </div>
+          <p className="rv-action-error__message">{actionError.message}</p>
+          <div className="rv-action-error__actions">
+            {actionError.options.map((option) => {
+              const label = recoveryLabel(option)
+              return label ? (
+                <button
+                  key={option}
+                  type="button"
+                  className="rv-action-error__btn"
+                  onClick={() => void handleRecovery(option)}
+                  disabled={proofBusy !== "idle"}
+                >
+                  {label}
+                </button>
+              ) : (
+                <span key={option} className="rv-action-error__option">
+                  {t("review.recoveryUnknown", { option })}
+                </span>
+              )
+            })}
+            {actionError.retry && (
+              <button type="button" className="rv-action-error__btn" onClick={() => retryAction(actionError)}>
+                {actionError.regenerate ? t("review.regenerateBtn") : t("review.retryBtn")}
+              </button>
+            )}
+            <button type="button" className="rv-action-error__dismiss" onClick={() => setActionError(null)}>
+              {t("review.dismissBtn")}
+            </button>
+          </div>
+        </section>
+      )}
+
+      {acceptanceInvalidated && !isAccepted && (
+        <p className="rv-invalidation-notice" role="status">{t("review.acceptanceInvalidated")}</p>
+      )}
+
+      {generation && (
+        <section className="rv-acceptance">
+          <div className="rv-acceptance__row">
+            <span className="rv-target-panel__label">{t("review.acceptanceTitle")}</span>
+            <span className={`rv-chip rv-chip--static ${isAccepted ? "rv-chip--success" : "rv-chip--warning"}`}>
+              {isAccepted ? t("review.clientReady") : t("review.notClientReady")}
+            </span>
+            <span className="rv-target-panel__meta">
+              {t("review.acceptanceRevision", { revision: generation.profile_revision_id })}
+            </span>
+          </div>
+          <p className="rv-acceptance__hint">
+            {isAccepted ? t("review.acceptanceAcceptedHint") : t("review.acceptanceHint")}
+          </p>
+          <div className="rv-acceptance__actions">
+            <a className="rv-acceptance__link" href={generation.html_surface_url} target="_blank" rel="noreferrer">
+              {t("review.openHtmlSurface")}
+            </a>
+            <a className="rv-acceptance__link" href={generation.pdf_preview_url} target="_blank" rel="noreferrer">
+              {t("review.openPdfPreview")}
+            </a>
+            {!isAccepted && (
+              <button
+                type="button"
+                className="rv-acceptance__btn"
+                disabled={acceptanceState === "submitting"}
+                onClick={() => void handleAcceptFinal()}
+              >
+                {acceptanceState === "submitting" ? t("review.accepting") : t("review.acceptBtn")}
+              </button>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* ── Two panes ── */}
       <div className="rv-panes">

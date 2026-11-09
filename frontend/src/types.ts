@@ -63,6 +63,7 @@ export interface LedgerSummary {
 
 export interface ProcessResponse {
   artifact_id: string
+  profile_revision_id: string
   profile: CandidateProfile
   ledger: LedgerSummary
   original_text: string
@@ -83,9 +84,12 @@ export interface TargetFormatMetadata {
   used_as_template_source: boolean
   download_url: string
   note: string
-  matched_template_id: string | null
-  blueprint_version: number | null
-  format_support: "manual_blueprint" | "reference_only"
+  analysis_status: string
+  style_spec_url: string | null
+  analysis_artifact_urls: Record<string, string>
+  analysis_warnings: string[]
+  structure_contract: string | null
+  unsupported_features: string[]
 }
 
 export interface TargetFormatUploadResponse {
@@ -95,14 +99,71 @@ export interface TargetFormatUploadResponse {
   artifact_metadata_url: string
 }
 
+export interface ProfileRevisionResponse {
+  profile_revision_id: string
+  artifact_id: string
+  schema_version: string
+  profile_sha256: string
+  source_draft_sha256: string
+  created_at: string
+}
+
 export interface GenerateResponse {
   artifact_id: string
-  template_id: string
-  docx_download_url: string
+  html_surface_url: string
   pdf_download_url: string
   pdf_preview_url: string
   artifact_metadata_url: string
   followup_message: string
   missing_fields: MissingField[]
   debug_artifacts: Record<string, string>
+  visual_comparison_url: string | null
+  visual_comparison_artifact_urls: Record<string, string>
+  design_id: string | null
+  template_version: string | null
+  profile_sha256: string | null
+  profile_revision_id: string
+  layout_template_version: string
+  layout_spec_sha256: string
+  html_sha256: string
+  pdf_sha256: string
+  client_ready: boolean
+}
+
+export interface LayoutProofVariant {
+  variant: string
+  proof_id: string
+  renderer_version: string
+  page_count: number | null
+  structural_passed: boolean
+  structural_error_count: number
+  visual_similarity: number | null
+  html_filename: string
+  pdf_filename: string
+}
+
+export interface LayoutProofStatus {
+  artifact_id: string
+  renderer_version: string
+  state: "none" | "pending" | "approved" | "rejected"
+  target_checksum: string
+  layout_spec_checksum: string
+  variants: LayoutProofVariant[]
+  approval_id: string | null
+  approved_at: string | null
+  reviewer_id: string | null
+  reviewer_note: string | null
+}
+
+export interface FinalAcceptanceResponse {
+  profile_revision_id: string
+  profile_sha256: string
+  layout_template_version: string
+  layout_spec_sha256: string
+  html_sha256: string
+  pdf_sha256: string
+  schema_version: string
+  accepted_at: string
+  reviewer_note: string | null
+  client_ready: boolean
 }
