@@ -16,7 +16,7 @@ from app.pipeline.evidence import EvidenceRef, SelfReportedStatus, StructuralRel
 from app.pipeline.html_renderer import RENDERER_VERSION, render_layout_template
 from app.pipeline.layout_state import C2LayoutState
 from app.pipeline.runtime import RunBudget
-from app.pipeline.run_models import PresentationLabelApproval
+from app.pipeline.run_models import E5LoopRecord, PresentationLabelApproval
 from app.pipeline import presentation_labels, quality, review, service
 from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
@@ -72,7 +72,7 @@ def _presentation_label_block(run_dir: Path) -> dict[str, Any] | None:
 
 
 def _no_reviewable_output(
-    run_dir: Path, terminal: str, record: "service.E5LoopRecord",
+    run_dir: Path, terminal: str, record: E5LoopRecord,
 ) -> AgenticGenerationError:
     abort = (record.summary or {}).get("abort") or {}
     if abort.get("operation") == "presentation_label_approval":
@@ -304,7 +304,7 @@ def render_agentic(
         budget=RunBudget(max_model_requests=settings["max_model_requests"],
             max_tool_calls=settings["max_tool_calls"], max_request_bytes=MAX_REQUEST_BYTES),
     )
-    record = service.E5LoopRecord.model_validate(raw_record)
+    record = E5LoopRecord.model_validate(raw_record)
     lane = record.lanes.get("a")
     if terminal != "ready_for_owner_review" or lane is None:
         raise _no_reviewable_output(run_dir, terminal, record)

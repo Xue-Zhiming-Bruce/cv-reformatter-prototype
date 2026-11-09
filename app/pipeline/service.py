@@ -16,6 +16,13 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 from app.generation.template_mapper import CONTACT_FIELD_SLOTS, CONTACT_LABEL_FIELDS
 from app.pipeline.candidate_content import CandidateDocument
+from app.pipeline.defect_ledger import (
+    DefectLedger,
+    E5LedgerEntry,
+    _ledger_key,
+    _open_ledger_finding_ids,
+    _record_ledger_attribution,
+)
 from app.template_analysis.schemas import LayoutTemplateSpec
 from app.pipeline.rendering import ROOT, RUNS, _export_pinned_html_to_pdf, _render_pages
 from app.pipeline.runtime import (
@@ -84,12 +91,13 @@ from app.pipeline.presentation_labels import (
     presentation_label_catalog_sha256,
 )
 from app.pipeline.run_models import (
+    E5_SCHEMA_VERSION,
     E5LaneASection,
+    E5LaneRecord,
+    E5LoopRecord,
     LaneAStructureProposal,
     PresentationLabelApproval,
 )
-
-E5_SCHEMA_VERSION = "pipeline-e-e5-state/1"
 
 E5_LANE_MAX_MODEL_REQUESTS = 400
 
@@ -226,32 +234,6 @@ E5_LANE_REPAIR_SURFACE: dict[str, str] = {
         "capability gap, owned by nobody the loop can call."
     ),
 }
-
-class E5LedgerEntry(EvidenceModel):
-    """One persistent defect-ledger record (Phase 0): deduplicated by the
-    stable key `target_version | region | dimension`. Re-observing an
-    unchanged finding never reruns full attribution; an observation that
-    CHANGED on a NEW render version reopens the entry. `deferred` marks an
-    open finding deliberately not selected this round (scheduling), never a
-    closure: deferred entries stay open and are re-eligible."""
-
-    ledger_key: str
-    finding_id: str
-    first_seen_version: str
-    last_seen_version: str
-    status: Literal[
-        "open", "attributed", "repaired", "resolved", "regressed", "deferred"
-    ]
-    attribution: AttributionRecord | None = None
-    measurement_request_id: str | None = None
-    observation_class: str = ""
-    last_measured_version: str = ""
-
-def _observation_class(observation: str) -> str:
-    """Stable semantic observation class: the observation's first normalized
-    words (NOT verbatim OCR text — Phase 0)."""
-    words = re.findall(r"[a-z]+", observation.casefold())
-    return " ".join(words[:8])
 
 def _candidate_review_scope(candidate: Any, labels: list[PresentationLabel]) -> dict[str, Any]:
     """Content-free Reviewer boundary: which presentation regions have
@@ -473,155 +455,6 @@ def _residual_type(finding: DefectFinding) -> str:
         if any(word in text for word in words):
             return residual_type
     return "layout_other"
-
-def _ledger_key(finding: DefectFinding) -> str:
-    """Stable dedup key: target version + structural region + visual
-    dimension (the observation CLASS is tracked separately so a changed
-    finding REOPENS instead of forking a new key)."""
-    return "|".join(
-        (finding.target_version, finding.region, finding.suspected_dimension)
-    )
-
-class DefectLedger:
-    """Persistent defect ledger (Phase 0). `observe` returns one of:
-    'new' (first observation), 'dedup' (unchanged finding; existing
-    attribution/measurement reused), or 'reopened' (the finding CHANGED after
-    a repair — new observation class)."""
-
-    def __init__(self) -> None:
-        self.entries: dict[str, E5LedgerEntry] = {}
-
-    def observe(
-        self,
-        finding: DefectFinding,
-        *,
-        resolved: bool = False,
-    ) -> tuple[E5LedgerEntry, str]:
-        key = _ledger_key(finding)
-        existing = self.entries.get(key)
-        if existing is None:
-            entry = E5LedgerEntry(
-                ledger_key=key,
-                finding_id=finding.finding_id,
-                first_seen_version=finding.render_version,
-                last_seen_version=finding.render_version,
-                status="resolved" if resolved else "open",
-                observation_class=_observation_class(finding.observation),
-                last_measured_version=finding.render_version,
-            )
-            self.entries[key] = entry
-            return entry, "new"
-        previous_version = existing.last_seen_version
-        existing.last_seen_version = finding.render_version
-        # A changed observation REOPENS only when the RENDER changed: the
-        # reopen semantics mean "the defect changed after a repair". The
-        # reviewer paraphrasing the SAME defect on the SAME render is a dedup
-        # — the stored attribution/measurement stay valid; reopening here
-        # would loop re-measurement/re-attribution on an unchanged render.
-        if (
-            _observation_class(finding.observation) != existing.observation_class
-            and previous_version != finding.render_version
-        ):
-            # the finding CHANGED after repair: reopen with the new class,
-            # bound to the LATEST finding id; the stale attribution and
-            # measurement binding no longer describe this defect and are
-            # cleared (never silently inherited).
-            existing.observation_class = _observation_class(finding.observation)
-            existing.finding_id = finding.finding_id
-            existing.attribution = None
-            existing.measurement_request_id = None
-            existing.status = "open"
-            return existing, "reopened"
-        if resolved:
-            existing.status = "resolved"
-        return existing, "dedup"
-
-E5_LEDGER_CLOSED_STATUSES = frozenset({"repaired", "resolved"})
-
-def _open_ledger_finding_ids(entries: list["E5LedgerEntry"]) -> list[str]:
-    """Open findings = the current finding id of every ledger entry whose
-    status is not closed. Raw finding ids are NEVER scanned directly — a
-    deduplicated re-observation of an already-repaired defect must not
-    resurrect the defect as open under a new id."""
-    return [entry.finding_id for entry in entries if entry.status not in E5_LEDGER_CLOSED_STATUSES]
-
-def _record_ledger_attribution(
-    ledger: "DefectLedger",
-    finding: "DefectFinding",
-    attribution: AttributionRecord,
-    request_id: str,
-) -> None:
-    """Write an attribution back to the owning ledger entry (single source of
-    defect state): the attribution record, the measurement request id, and
-    the status. A confirmed measurement WITHIN tolerance (`no_defect`) closes
-    the entry as resolved; every other attribution leaves it not-closed."""
-    entry = ledger.entries.get(_ledger_key(finding))
-    if entry is None:
-        return
-    entry.attribution = attribution
-    entry.measurement_request_id = request_id
-    entry.status = "resolved" if attribution.attribution == "no_defect" else "attributed"
-
-class E5LaneRecord(EvidenceModel):
-    """One lane's resumable E5 state."""
-
-    lane: Literal["a", "b"]
-    representation: str
-    render_versions: list[RenderVersion] = Field(default_factory=list)
-    best_render_version: str | None = None
-    # Local improvement state: a defect-level promoted version (promoted with
-    # a known remaining red gate). Never labeled BEST; never the
-    # hard-gate-valid best.
-    best_defect_level_version: str | None = None
-    active_render_version: str | None = None
-    # QUARANTINED REPAIR BASE: the last repairable-but-not-passing candidate the
-    # next Builder repairs FROM. It is never promoted, never best, and never the
-    # lane's owner-facing output (see `_selected_lane_artifact`).
-    quarantined_repair_base: str | None = None
-    findings: list[DefectFinding] = Field(default_factory=list)
-    measurement_results: list[MeasurementResult] = Field(default_factory=list)
-    attributions: list[AttributionRecord] = Field(default_factory=list)
-    repair_attempts: list[dict[str, Any]] = Field(default_factory=list)
-    builder_candidates: list[dict[str, Any]] = Field(default_factory=list)
-    attempted_strategies: list[str] = Field(default_factory=list)
-    action_fingerprints: list[str] = Field(default_factory=list)
-    ledger: list[E5LedgerEntry] = Field(default_factory=list)
-    open_findings: list[str] = Field(default_factory=list)
-    content_shape_probes_passed: bool = False
-    pages_reviewed: list[int] = Field(default_factory=list)
-    # The lane's stop state. `budget_exhausted` is claimed ONLY when a
-    # configured ceiling was actually hit (model/tool requests, or the repair
-    # round budget); `stalled_no_new_action` is the distinct state for "the
-    # loop had nothing left to do" — every repairable action fingerprint was
-    # already executed. Before 2026-09-23 both were collapsed into
-    # `budget_exhausted`, so a stalled lane read as an exhausted one (live run
-    # `e_pipeline_e5_20260923T095557Z` Lane B stopped after 11 of 400 requests).
-    terminal_state: Literal[
-        "ready_for_owner_review",
-        "budget_exhausted",
-        "stalled_no_new_action",
-        "operational_abort",
-    ] = "budget_exhausted"
-    # WHICH ceiling or stall produced `terminal_state` (e.g.
-    # "repair_round_budget", "model_request_budget", "reviewer_budget",
-    # "attribution_budget", "builder_budget", "tool_call_budget",
-    # "stalled_no_new_action", "no_new_render_no_pending_work"). Empty for a
-    # lane that reached owner review.
-    terminal_reason: str = ""
-    budget_state: dict[str, Any] = Field(default_factory=dict)
-    summary: dict[str, Any] = Field(default_factory=dict)
-
-class E5LoopRecord(EvidenceModel):
-    """The E5 run record: per-lane state, frozen inputs, comparison metrics."""
-
-    schema_version: Literal["pipeline-e-e5-state/1"] = E5_SCHEMA_VERSION
-    target_id: str
-    target_sha256: str
-    lanes: dict[str, E5LaneRecord] = Field(default_factory=dict)
-    budget_state: dict[str, Any] = Field(default_factory=dict)
-    started_at: str = ""
-    finished_at: str = ""
-    summary: dict[str, Any] = Field(default_factory=dict)
 
 
 def _e5_label_semantics(
@@ -2463,6 +2296,7 @@ E5_SOURCE_FILES = (
     'app/pipeline/assets/fonts/roboto-regular.woff2',
     'app/pipeline/assets/fonts/roboto-regularitalic.woff2',
     'app/pipeline/candidate_content.py',
+    'app/pipeline/defect_ledger.py',
     'app/pipeline/evidence.py',
     'app/pipeline/fonts.py',
     'app/pipeline/html_renderer.py',

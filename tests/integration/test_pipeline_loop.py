@@ -19,6 +19,7 @@ import app.pipeline.service as e5
 import app.pipeline.presentation_labels as presentation_labels
 import app.pipeline.run_models as run_models
 from app.pipeline.runtime import RunBudget
+import app.pipeline.defect_ledger as defect_ledger
 import app.pipeline.evidence as evidence
 from tests.helpers.pipeline import (
     ROOT, LOCAL_TARGET as TARGET_PDF, LOCAL_INPUTS,
@@ -124,7 +125,7 @@ def test_stable_duplicate_findings_are_deduplicated_before_attribution() -> None
         confidence=0.6,
         reviewer="scripted",
     )
-    ledger = e.DefectLedger()
+    ledger = defect_ledger.DefectLedger()
     entry, action = ledger.observe(finding)
     assert action == "new"
     # Re-observation of the same defect (same region/dimension/class) is a
@@ -153,7 +154,7 @@ def test_changed_findings_reopen_in_the_ledger() -> None:
         confidence=0.6,
         reviewer="scripted",
     )
-    ledger = e.DefectLedger()
+    ledger = defect_ledger.DefectLedger()
     ledger.observe(finding)
     changed = finding.model_copy(
         update={"render_version": "render-v3", "observation": "The entry head text now overlaps the meta column."}
@@ -234,11 +235,11 @@ def test_same_render_paraphrase_does_not_reopen_the_ledger() -> None:
     measurement/attribution on an unchanged render — the 110-reopen loop).
     Reopen is reserved for a changed observation on a NEW render version."""
     finding = _e5_finding("f1", "section.04", "role_gap")
-    original_class = e._observation_class(finding.observation)
-    ledger = e.DefectLedger()
+    original_class = defect_ledger._observation_class(finding.observation)
+    ledger = defect_ledger.DefectLedger()
     entry, action = ledger.observe(finding)
     assert action == "new"
-    e._record_ledger_attribution(
+    defect_ledger._record_ledger_attribution(
         ledger, finding,
         e.AttributionRecord(
             finding_id="f1", render_version="render-v1",
@@ -1461,14 +1462,14 @@ def test_run_e5_tiny_repair_budget_still_returns_the_safety_valid_output(tmp_pat
 
 def test_neither_lane_can_emit_an_unsupported_terminal_state() -> None:
     with pytest.raises(ValueError):
-        e.E5LaneRecord(lane="a", representation="x", terminal_state="unsupported")
+        run_models.E5LaneRecord(lane="a", representation="x", terminal_state="unsupported")
 
 
 def test_owner_acceptance_is_never_inferred() -> None:
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        e.E5LaneRecord(lane="b", representation="x", terminal_state="delivered")
+        run_models.E5LaneRecord(lane="b", representation="x", terminal_state="delivered")
 
 
 # --- E5 correctness round: injection, rollback, budgets, probes, reports ----
@@ -1731,7 +1732,6 @@ def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -
     lane_dir = out_dir / "lane_a"
     lane_dir.mkdir()
     from app.pipeline.evidence import RenderVersion
-    from app.pipeline.service import E5LaneRecord, E5LoopRecord
 
     v1_pdf = lane_dir / "render_1.pdf"
     v2_pdf = lane_dir / "render_2.pdf"
@@ -1755,12 +1755,12 @@ def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -
             hard_gates_passed=True, promoted=False, note="latest",
         ),
     ]
-    lane = E5LaneRecord(
+    lane = run_models.E5LaneRecord(
         lane="a", representation="lane A", render_versions=versions,
         best_render_version="render-fixture-laneA-v1",
         active_render_version="render-fixture-laneA-v1",
     )
-    record = E5LoopRecord(
+    record = run_models.E5LoopRecord(
         target_id="target-fixture-v1", target_sha256="0" * 64, lanes={"a": lane},
         summary={"terminal_state": "budget_exhausted"},
     )
@@ -1980,13 +1980,13 @@ def test_owner_package_labels_defect_level_active_version_never_best(tmp_path: P
             page_count=1, hard_gates_passed=False, promoted=True, note="defect-level",
         ),
     ]
-    lane = e.E5LaneRecord(
+    lane = run_models.E5LaneRecord(
         lane="a", representation="lane A", render_versions=versions,
         best_render_version=None,
         best_defect_level_version="v2",
         active_render_version="v2",
     )
-    record = e.E5LoopRecord(
+    record = run_models.E5LoopRecord(
         target_id="t", target_sha256="0" * 64, lanes={"a": lane},
         summary={"terminal_state": "budget_exhausted"},
     )
@@ -2636,11 +2636,11 @@ def test_ledger_is_the_single_open_closed_source() -> None:
     re-observation under a NEW finding id must not reopen a repaired defect;
     a CHANGED observation reopens bound to the latest finding id with the
     stale attribution cleared."""
-    ledger = e.DefectLedger()
+    ledger = defect_ledger.DefectLedger()
     f1 = _finding("v1", finding_id="f1")
     entry, action = ledger.observe(f1)
     assert action == "new" and entry.status == "open"
-    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == ["f1"]
+    assert defect_ledger._open_ledger_finding_ids(list(ledger.entries.values())) == ["f1"]
     # confirmed within tolerance (no_defect) closes the entry as resolved
     attribution = e.AttributionRecord(
         finding_id="f1", render_version="v1",
@@ -2648,17 +2648,17 @@ def test_ledger_is_the_single_open_closed_source() -> None:
         attribution="no_defect", hypothesis_status="rejected",
         repair_owner="none", evidence=["measure-f1"], reason="within tolerance",
     )
-    e._record_ledger_attribution(ledger, f1, attribution, "measure-f1")
+    defect_ledger._record_ledger_attribution(ledger, f1, attribution, "measure-f1")
     assert entry.status == "resolved"
     assert entry.attribution is attribution
     assert entry.measurement_request_id == "measure-f1"
-    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == []
+    assert defect_ledger._open_ledger_finding_ids(list(ledger.entries.values())) == []
     # the SAME defect re-observed under a NEW finding id: dedup, still closed
     f2 = _finding("v2", finding_id="f2")
     entry, action = ledger.observe(f2)
     assert action == "dedup"
     assert entry.status == "resolved"
-    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == []
+    assert defect_ledger._open_ledger_finding_ids(list(ledger.entries.values())) == []
     # a changed observation REOPENS: latest finding id, stale state cleared
     f3 = _finding("v3", finding_id="f3", observation="the heading moved below the rule now")
     entry, action = ledger.observe(f3)
@@ -2667,12 +2667,42 @@ def test_ledger_is_the_single_open_closed_source() -> None:
     assert entry.finding_id == "f3"
     assert entry.attribution is None
     assert entry.measurement_request_id is None
-    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == ["f3"]
+    assert defect_ledger._open_ledger_finding_ids(list(ledger.entries.values())) == ["f3"]
     # every status other than repaired/resolved stays open
     entry.status = "regressed"
-    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == ["f3"]
+    assert defect_ledger._open_ledger_finding_ids(list(ledger.entries.values())) == ["f3"]
     entry.status = "repaired"
-    assert e._open_ledger_finding_ids(list(ledger.entries.values())) == []
+    assert defect_ledger._open_ledger_finding_ids(list(ledger.entries.values())) == []
+
+
+def test_stored_ledger_entry_from_before_the_extraction_still_validates() -> None:
+    """A lane ledger entry serialized by the pre-extraction code validates
+    against the new owner unchanged: same schema title, fields, and status
+    meaning, so stored e5_state.json records keep being readable."""
+    stored_entry = {
+        "attribution": {
+            "attribution": "no_defect", "evidence": ["m1"], "finding_id": "f1",
+            "hypothesis_status": "rejected", "measurement_request_id": "m1",
+            "reason": "within tolerance", "render_version": "render-v1",
+            "repair_owner": "none",
+        },
+        "finding_id": "f1", "first_seen_version": "render-v1",
+        "last_measured_version": "render-v1", "last_seen_version": "render-v1",
+        "ledger_key": "target-fixture-v1|section.04|role_gap",
+        "measurement_request_id": "m1",
+        "observation_class": "the gap between the first two entry heads",
+        "status": "resolved",
+    }
+    lane = run_models.E5LaneRecord.model_validate(
+        {"lane": "a", "representation": "lane A", "ledger": [stored_entry]}
+    )
+    entry = lane.ledger[0]
+    assert type(entry) is defect_ledger.E5LedgerEntry
+    assert defect_ledger.E5LedgerEntry.model_json_schema()["title"] == "E5LedgerEntry"
+    assert entry.status == "resolved" and entry.attribution is not None
+    assert json.loads(entry.model_dump_json()) == stored_entry
+    # the stored resolved status keeps its open/closed meaning
+    assert defect_ledger._open_ledger_finding_ids(lane.ledger) == []
 
 
 def test_owner_package_shows_active_unpromoted_never_rolled_back(tmp_path: Path) -> None:
@@ -2696,7 +2726,7 @@ def test_owner_package_shows_active_unpromoted_never_rolled_back(tmp_path: Path)
             page_count=1, hard_gates_passed=False, promoted=False, note="rolled back",
         ),
     ]
-    lane = e.E5LaneRecord(
+    lane = run_models.E5LaneRecord(
         lane="a", representation="lane A", render_versions=versions,
         best_render_version=None,
         best_defect_level_version=None,
@@ -2705,7 +2735,7 @@ def test_owner_package_shows_active_unpromoted_never_rolled_back(tmp_path: Path)
     version, stem, label = e._selected_lane_artifact(lane)
     assert label == "ACTIVE UNPROMOTED VERSION"
     assert version.version_id == "v1" and stem == "render_1"
-    record = e.E5LoopRecord(
+    record = run_models.E5LoopRecord(
         target_id="t", target_sha256="0" * 64, lanes={"a": lane},
         summary={"terminal_state": "budget_exhausted"},
     )
