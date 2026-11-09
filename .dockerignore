@@ -1,0 +1,39 @@
+# Build contexts must never carry secrets, local data, or host tool state.
+.git
+.gitignore
+.vscode
+.DS_Store
+
+# Secrets and local configuration
+.env
+.env.*
+*.pem
+*.key
+
+# Host Python state
+.venv
+.venv-*
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Host frontend state
+frontend/node_modules
+frontend/dist
+
+# Local candidate data, historical runs, generated files
+data/input_samples/*
+data/output_samples/*
+data/generated_outputs/*
+data/local/*
+data/design_cache/*
+tests
+output
+tmp
+
+# Documentation and checkouts not needed at runtime
+docs
+_docs
