@@ -248,6 +248,57 @@ unresolved evidence. Substring matches cannot authorize target-person facts.
 Record the recognition method and target/catalog identities; automatic label
 recognition never approves a template, candidate facts, or the final output.
 
+## Content Arrangement And Owner Review
+
+Arrangement decisions are about where approved content goes, not which facts
+are true. The renderer places only approved `CandidateProfile` content, and a
+fixed target cannot absorb every content shape; the differences below are
+recorded as review records, never as silent changes to candidate facts.
+
+**Content shapes.** Owner review must cover these shapes with real generated
+output, not synthetic proofs alone:
+
+1. **Ordinary experience:** flat employer/role entries with bullets.
+2. **Nested entries:** employer → role → project or degree, where bullets and
+   sub-entries belong to a parent entry and must stay attached to it.
+3. **Content outside the target:** candidate-only sections (custom projects,
+   awards, languages absent from the target) and content the target expresses
+   through presentation the renderer does not support (for example badge-style
+   skill grids), where the candidate block must remain visible and attributed
+   rather than dropped or restyled into an invented target section.
+
+**Feedback categories.** Every owner-review item is recorded in exactly one
+category, because they have different closure requirements:
+
+| Category | Meaning | Closure requirement |
+| --- | --- | --- |
+| Renderer/document-representation defect | The renderer or generated document is wrong or incomplete against its own approved inputs. | Reproduce, fix, and show the corrected artifact under the same checks. |
+| Temporary or reusable artificial effect | A synthetic proof, sample corpus, or scaffold stands in for real content; it is reusable only while labeled synthetic and is never presented as product behavior. | Keep labeled synthetic, or replace with real content; never claim it as evidence of product quality. |
+| Owner preference change | A deliberate presentation or wording preference, not a correctness defect. | Record the preference, its scope, and apply it; distinguish it from defects in reports. |
+| Lasting rule | A preference or decision that must hold for all future runs. | Record it in this spec or an ADR before treating it as binding. |
+| Unresolved requirement | A decision the owner must make, for example a capability limit or an accepted compromise. | Record the open question and evidence; closure requires an explicit owner judgment. |
+
+An unresolved item is a request for owner judgment, never an implicit
+approval. Reporting keeps each category separate: passing automated checks,
+synthetic proofs, owner preference changes, and owner acceptance of actual
+generated files are different evidence and are never merged into one status.
+
+Typographic, color, and rule-geometry differences that exceed the configured
+tolerance are recorded as unverified visual findings until the owner verifies
+them on the actual preview; a diagnostic score is never a pass/fail substitute.
+
+**Owner-review criteria.** An output can be accepted only when, for the exact
+rendered HTML and PDF identity under review: content matches the approved
+client-facing context, no hidden identifier or target-sample candidate fact is
+present, required regions exist without clipping or orphaned headings, the
+recruited source blocks remain attributable, and the owner has inspected the
+actual file. Current status: the six frozen outputs from source revision
+`4766346` carry owner acceptance for their exact snapshots; template-proof and
+process-crash items noted in that acceptance stay open, and every item recorded
+as unresolved still needs explicit owner judgment recorded under the review
+record format in
+[Test Result Artifact Format](../testing/TEST_RESULT_FORMAT.md).
+
 ## Required Outputs
 
 The product must produce:
@@ -282,7 +333,9 @@ Quality dimensions are independent:
 Visual similarity cannot substitute for content or privacy validation. AI may
 assist with semantic extraction, ambiguous-region labeling, and visual
 diagnosis, but it must not supply exact geometry, approve candidate facts, or
-replace recruiter approval.
+replace recruiter approval. Arrangement feedback is recorded under the
+categories and criteria in
+[Content Arrangement And Owner Review](#content-arrangement-and-owner-review).
 
 Owner decision, October 25, 2026: uncertain visual diagnosis or unsupported
 measurement does not prohibit a bounded layout trial in the existing controlled

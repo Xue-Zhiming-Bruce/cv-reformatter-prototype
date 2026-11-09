@@ -181,6 +181,64 @@ additive: the CSV columns and `RESULTS_INDEX.md` review table are unchanged.
   "Layout proofs (synthetic, evaluation-only)" section with per-target page
   counts, structural results, visual similarity, and approval state.
 
+## Owner Review Feedback Record (additive extension, versioned)
+
+Since the November 10, 2026 owner-review baseline, owner feedback is recorded
+as typed records rather than prose. The format version is:
+
+```text
+owner-review-feedback-1.0
+```
+
+The extension is additive: run layout, CSV columns, and `RESULTS_INDEX.md`
+review tables are unchanged. Records live in the run that produced the reviewed
+artifact, or in a curated `docs/evaluations/` summary that cites that run.
+
+```json
+{
+  "feedback_format_version": "owner-review-feedback-1.0",
+  "records": [
+    {
+      "id": "or-001",
+      "category": "representation_defect",
+      "scope": {"run": "matrix_<timestamp>_<purpose>", "transformation_id": "resume_x__to__resume_y", "artifact": "pdf", "section": "header", "region": "page_001"},
+      "owner_statement": "what the owner said or asked for",
+      "evidence": {"pdf_sha256": "...", "html_sha256": "...", "diagnostic": "rule_geometry.header.gap_below_pt 2.22pt > 1.0pt"},
+      "artificial": false,
+      "first_failing_stage": "rendering_geometry",
+      "status": "pending_owner_judgment",
+      "closure_requirement": "corrected artifact re-verified under the same checks"
+    }
+  ]
+}
+```
+
+Required fields and allowed values:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Stable record ID unique within the run or curated summary. |
+| `category` | `representation_defect`, `artificial_effect`, `owner_preference`, `lasting_rule`, or `unresolved_requirement`. |
+| `scope` | Run, transformation, artifact (`html`/`pdf`/`proof`), section, and region. |
+| `owner_statement` | The owner's words, or the quoted source when derived from a recorded disposition. |
+| `evidence` | Checksums plus the diagnostic or inspection that shows the item. |
+| `artificial` | `true` only for synthetic proof/scaffold content; such records are never accepted as product behavior. |
+| `first_failing_stage` | Earliest stage that produces the item, for example `extraction`, `design_compilation`, `rendering_geometry`, `visual_validation`, or `owner_inspection`. |
+| `status` | `pending_owner_judgment`, `accepted`, `rejected`, `deferred`, or `closed`. |
+| `closure_requirement` | What evidence closes the record for its category. |
+
+Rules:
+
+- One category per record. A preference that must hold for every future run is
+two records: an `owner_preference` and a `lasting_rule`.
+- `accepted` is allowed only for the exact artifact identity (HTML/PDF
+  checksums) the owner inspected. Do not copy acceptance to a new build.
+- `unresolved_requirement` records stay open until the owner records an
+explicit judgment; a green test suite or a passing synthetic proof never closes
+  them.
+- Automated findings with no owner statement are not feedback records; they stay
+  in the run manifest diagnostics.
+
 ## Validation Before Handoff
 
 Before reporting a run complete:
@@ -191,7 +249,9 @@ Before reporting a run complete:
 4. Confirm every failed row links to `result.json` and shows its error.
 5. Run content-preservation verification and show passed/total counts.
 6. Confirm all links in `RESULTS_INDEX.md` resolve locally.
-7. Save the validation command output in `tests/test_results/pytest/`.
+7. Confirm every owner feedback record has a category, scope, evidence, and
+   status, and that `accepted` records match the reviewed artifact checksums.
+8. Save the validation command output in `tests/test_results/pytest/`.
 
 ## Retention
 

@@ -40,6 +40,7 @@ agents belongs in the tracked documents listed here.
 | Canonical tests, evidence, and artifact locations | [Test Structure](testing/TEST_STRUCTURE.md) |
 | Resume-matrix manifest and review format | [Test Result Format](testing/TEST_RESULT_FORMAT.md) |
 | Frontend collaboration stub and its limits | [Mock API](development/MOCK_API.md) |
+| Owner feedback categories and current review status | [Owner Review Baseline](evaluations/2026-11-10_OWNER_REVIEW_BASELINE.md) |
 
 The implementation inventory in Document Pipeline distinguishes the retained
 CLI from the FastAPI generation route. Neither the cleanup nor a passing
