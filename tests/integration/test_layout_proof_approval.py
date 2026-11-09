@@ -16,23 +16,26 @@ import pytest
 from app.extraction.candidate_schema import CandidateProfile
 from app.generation.template_mapper import build_client_render_context
 from app.template_analysis.layout_proof_schemas import (
+    LayoutProofApproval,
     LengthVariant,
     LayoutProofRenderRequest,
 )
-from app.template_analysis import layout_proof_service
+from app.template_analysis import layout_proof_rendering
 from app.template_analysis.layout_proof_artifacts import (
     file_sha256,
     layout_spec_checksum,
 )
-from app.template_analysis.layout_proof_service import (
+from app.template_analysis.layout_proof_rendering import (
     LayoutProofMismatchError,
+    render_layout_proof,
+)
+from app.template_analysis.layout_proof_service import (
     LayoutProofNotApprovedError,
     LayoutProofValidationError,
     approve_layout_proof,
     create_proof_variants,
     load_layout_proof_approval,
     render_candidate_document,
-    render_layout_proof,
 )
 from app.template_analysis.schemas import (
     built_in_layout_template_spec,
@@ -162,13 +165,13 @@ def test_non_approved_state_blocks_final_render(
 ) -> None:
     target_pdf = build_styled_target_pdf(tmp_path / "target.pdf")
     outcomes = _render_all_variants(tmp_path, target_pdf=target_pdf)
-    unapproved = layout_proof_service.LayoutProofApproval(
+    unapproved = LayoutProofApproval(
         approval_id="approval-pending",
         artifact_id="artifact-1",
         target_checksum=file_sha256(target_pdf),
         layout_spec_checksum=layout_spec_checksum(_spec()),
         state=state,
-        renderer_version=layout_proof_service.active_renderer_version(),
+        renderer_version=layout_proof_rendering.active_renderer_version(),
         variants=outcomes,  # type: ignore[arg-type]
     )
     with pytest.raises(LayoutProofNotApprovedError, match="approved layout proof"):
@@ -320,7 +323,7 @@ def test_preloaded_approval_cannot_render_with_another_renderer(
         artifact_dir=tmp_path, artifact_id="artifact-1", target_checksum=file_sha256(target_pdf),
         layout_spec=_spec(), target_pdf=target_pdf, reviewer_id="reviewer-1",
     )
-    version = layout_proof_service.active_renderer_version()
+    version = layout_proof_rendering.active_renderer_version()
     monkeypatch.setattr(agentic, "agentic_renderer_version", lambda: version + "/changed")
     output = tmp_path / "candidate"
     with pytest.raises(LayoutProofMismatchError, match="renderer version mismatch"):

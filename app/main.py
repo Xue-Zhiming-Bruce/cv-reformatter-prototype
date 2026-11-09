@@ -105,13 +105,15 @@ from app.template_analysis.docx_style_analyzer import (
 )
 from app.template_analysis.layout_proof_artifacts import layout_spec_checksum
 from app.template_analysis.layout_proof_schemas import LengthVariant
-from app.template_analysis.layout_proof_service import (
-    LayoutProofIncompleteError,
+from app.template_analysis.layout_proof_rendering import (
     LayoutProofMismatchError,
     LayoutProofPresentationLabelError,
     LayoutProofRenderError,
-    LayoutProofValidationError,
     active_renderer_version,
+)
+from app.template_analysis.layout_proof_service import (
+    LayoutProofIncompleteError,
+    LayoutProofValidationError,
     approve_layout_proof,
     create_proof_variants,
     load_layout_proof_approval,

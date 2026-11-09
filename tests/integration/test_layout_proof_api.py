@@ -13,7 +13,7 @@ from app import main
 from app.generation import service as generation_service
 from app.extraction.candidate_schema import CandidateProfile
 from app.main import app
-from app.template_analysis import layout_proof_service
+from app.template_analysis import layout_proof_rendering, layout_proof_service
 from app.template_analysis.artifacts import LAYOUT_SPEC_FILENAME, load_layout_template_spec
 from app.template_analysis.layout_proof_schemas import LengthVariant
 from app.template_analysis.layout_proof_service import load_variant_evidence
@@ -182,7 +182,7 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     request = {"artifact_id": artifact_id, "profile_revision_id": revision.json()["profile_revision_id"],
                "target_format": metadata.model_dump(mode="json")}
     monkeypatch.delenv("GENERATION_STRATEGY", raising=False)
-    assert layout_proof_service.active_renderer_version().startswith("agentic-a/")
+    assert layout_proof_rendering.active_renderer_version().startswith("agentic-a/")
     design_id = None
     scope_dir = directory
     if design_scope:
@@ -655,7 +655,7 @@ def test_create_layout_proofs_returns_all_variants(
     response = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["renderer_version"] == layout_proof_service.active_renderer_version()
+    assert body["renderer_version"] == layout_proof_rendering.active_renderer_version()
     assert {variant["variant"] for variant in body["variants"]} == {
         "short",
         "medium",
@@ -725,7 +725,7 @@ def test_renderer_change_requires_new_proofs_and_explicit_reapproval(
     target_format = _upload_target(tmp_path, artifact_id)
     revision_id = _approve_profile(artifact_id, artifact_dir)
     _create_and_approve(client, artifact_id, artifact_dir)
-    version = layout_proof_service.active_renderer_version()
+    version = layout_proof_rendering.active_renderer_version()
     approval_path = artifact_dir / "layout_proofs/approval.json"
     current_bytes = approval_path.read_bytes()
     current = json.loads(current_bytes)
@@ -1109,7 +1109,7 @@ def test_unapproved_presentation_label_returns_the_catalog_to_approve(
     tmp_path: Path, monkeypatch: MonkeyPatch,
 ) -> None:
     from app.pipeline.run_models import PresentationLabelApproval
-    from app.template_analysis.layout_proof_service import LayoutProofPresentationLabelError
+    from app.template_analysis.layout_proof_rendering import LayoutProofPresentationLabelError
 
     artifact_id = "artifact_presentation_label_block"
     _upload_target(tmp_path, artifact_id)
@@ -1206,7 +1206,7 @@ def test_representation_ceiling_is_named_and_mapped_to_the_structured_422(
     _upload_target(tmp_path, artifact_id)
 
     def ceiling(**kwargs):
-        raise layout_proof_service.LayoutProofRenderError(str(error))
+        raise layout_proof_rendering.LayoutProofRenderError(str(error))
 
     monkeypatch.setattr(main, "create_proof_variants", ceiling)
     response = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})

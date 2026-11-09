@@ -15,13 +15,12 @@ from app.template_analysis.layout_proof_schemas import (
     LengthVariant,
     LayoutProofRenderRequest,
 )
-from app.template_analysis import layout_proof_service
 from app.template_analysis.layout_proof_artifacts import (
     DEFAULT_PROOF_OUTPUT_DIR,
     file_sha256,
     layout_spec_checksum,
 )
-from app.template_analysis.layout_proof_service import (
+from app.template_analysis.layout_proof_rendering import (
     LayoutProofRenderError,
     _render_layout_proof_with_context,
     proof_id_for,
