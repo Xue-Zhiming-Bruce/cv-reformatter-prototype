@@ -742,6 +742,33 @@ class PresentationLabelApproval(EvidenceModel):
             raise ValueError("presentation-label approval label ids must be unique")
         return self
 
+def template_presentation_label_catalog(
+    state: Any, normalized: Any, *, target_sha256: str,
+) -> dict[str, Any]:
+    """The exact presentation-label identity a template-driven run must approve.
+
+    ``labels`` is what the measured template renders plus the target headings it
+    does not render, and ``catalog_sha256`` is its canonical identity; ``run_e5``
+    computes the same values, so an owner approving this catalog is approving
+    exactly the identity the run validates.
+    """
+    template_labels = [
+        PresentationLabel(label_id=f"label.template.{node.node_id}", text=node.label,
+                          kind="section_heading", evidence_ids=node.evidence_ids)
+        for node in state.nodes if node.kind == "heading"
+    ]
+    labels = [*template_labels, *_unrendered_target_headings(normalized, template_labels)]
+    recognized = {label.label_id for label in _heuristic_presentation_labels(template_labels)}
+    return {
+        "target_sha256": target_sha256,
+        "catalog_sha256": presentation_label_catalog_sha256(labels),
+        "labels": labels,
+        "unrecognized_template_ids": sorted(
+            {label.label_id for label in template_labels} - recognized
+        ),
+    }
+
+
 def presentation_label_catalog_sha256(catalog: list[PresentationLabel]) -> str:
     """Deterministic identity of the EVIDENCE-DERIVED proposed catalog:
     canonical JSON (labels sorted by label_id, object keys sorted, UTF-8) over

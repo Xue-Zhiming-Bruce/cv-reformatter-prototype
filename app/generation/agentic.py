@@ -230,6 +230,26 @@ def render_agentic(
     with pdfplumber.open(target_pdf) as pdf:
         state, _, _ = render_layout_template(layout_spec, candidate,
             target_sha256=service._sha256_file(target_pdf), page_count=len(pdf.pages))
+    if presentation_label_approval is None:
+        catalog = service.template_presentation_label_catalog(
+            state, normalized, target_sha256=service._sha256_file(target_pdf))
+        if catalog["unrecognized_template_ids"]:
+            raise AgenticPresentationLabelError(
+                "unrecognized product-template presentation labels require explicit "
+                f"identity-bound label approval: {catalog['unrecognized_template_ids']}. "
+                "Nothing is suppressed case by case: approve this exact catalog "
+                f"(catalog_sha256 {catalog['catalog_sha256']}) and retry, or upload a target "
+                "whose headings the template renders.",
+                catalog={
+                    "target_sha256": catalog["target_sha256"],
+                    "catalog_sha256": catalog["catalog_sha256"],
+                    "labels": [row.model_dump(mode="json") for row in catalog["labels"]],
+                    "leaked_target_lines": [
+                        row.text for row in catalog["labels"]
+                        if row.label_id in catalog["unrecognized_template_ids"]
+                    ],
+                },
+            )
     draft = _structure_basis(state, normalized)
     output_dir.mkdir(parents=True, exist_ok=False)
     draft_path = output_dir/"structure_draft.json"
