@@ -2423,8 +2423,9 @@ def _with_connection_retry(call, *, trace: RunTrace, what: str, attempts: int = 
         try:
             return call()
         except Exception as error:  # noqa: BLE001 - retried only when transient
-            # The SDK wraps request-hook budget failures in APIConnectionError.
-            cause = error.__cause__
+            # A request-hook budget failure arrives either bare (current SDK) or
+            # wrapped in APIConnectionError (older SDK); never retry it.
+            cause: BaseException | None = error
             while cause is not None:
                 if isinstance(cause, BudgetExhausted):
                     raise cause from None
