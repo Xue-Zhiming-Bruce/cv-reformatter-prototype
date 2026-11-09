@@ -237,10 +237,12 @@ def test_budget_counts_live_and_scripted_calls_separately() -> None:
 
 
 def test_live_http_budget_counts_failed_sdk_retries_before_io(tmp_path: Path, monkeypatch) -> None:
+    """The SDK's own retries hit the cap before transport, and the production
+    wrapper surfaces that as BudgetExhausted whoever raised the hook error."""
     import asyncio
     import httpx
-    from openai import APIConnectionError
     from app.pipeline.runtime import RunTrace, _live_model
+    from app.pipeline.service import _with_connection_retry
 
     sent = []
     async def respond(request):
@@ -253,22 +255,47 @@ def test_live_http_budget_counts_failed_sdk_retries_before_io(tmp_path: Path, mo
     monkeypatch.setattr(httpx, "AsyncClient", OfflineClient)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "synthetic-secret")
     monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://deepseek.invalid")
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
     parent = RunBudget(max_model_requests=2)
     lane = RunBudget(max_model_requests=8, max_request_bytes=240000, parent=parent)
     trace = RunTrace(tmp_path)
-    model = _live_model(lane, trace, "builder")
+    attempts = []
 
-    async def call():
-        async with model.client:
-            with pytest.raises(APIConnectionError):
+    def call():
+        attempts.append(1)
+        async def request():
+            model = _live_model(lane, trace, "builder")
+            async with model.client:
                 await model.client.chat.completions.create(
                     model="deepseek-flash", messages=[{"role": "user", "content": "synthetic"}], max_tokens=16,
                 )
-    asyncio.run(call())
+        asyncio.run(request())
+
+    with pytest.raises(BudgetExhausted, match="budget exhausted"):
+        _with_connection_retry(call, trace=trace, what="synthetic builder")
     assert len(sent) == 2  # the third SDK attempt is blocked before transport
     assert lane.model_requests == parent.model_requests == 2
     assert parent.calls_by_mode["live"] == 2
+    assert attempts == [1]  # the wrapper never retried a budget failure
     assert "synthetic-secret" not in (tmp_path / "trace.json").read_text()
+
+
+def test_wrapped_budget_failure_is_unwrapped_and_not_retried(tmp_path: Path) -> None:
+    """Pins _with_connection_retry's __cause__ unwrap for the SDK shape that
+    wraps request-hook failures in APIConnectionError."""
+    import httpx
+    from openai import APIConnectionError
+    from app.pipeline.runtime import RunTrace
+    from app.pipeline.service import _with_connection_retry
+
+    def call():
+        try:
+            raise BudgetExhausted("global model budget exhausted: 0+1 would exceed 0")
+        except BudgetExhausted as budget_failure:
+            raise APIConnectionError(request=httpx.Request("POST", "https://deepseek.invalid")) from budget_failure
+
+    with pytest.raises(BudgetExhausted, match="budget exhausted"):
+        _with_connection_retry(call, trace=RunTrace(tmp_path), what="synthetic builder")
 
 
 @pytest.mark.parametrize("body", [
