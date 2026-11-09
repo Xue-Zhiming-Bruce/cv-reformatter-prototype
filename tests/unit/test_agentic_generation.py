@@ -9,7 +9,7 @@ identity that approval names.
 from __future__ import annotations
 
 from app.generation.agentic import _proof_label_approval
-from app.pipeline.service import PresentationLabelApproval
+from app.pipeline.run_models import PresentationLabelApproval
 from app.template_analysis.layout_proof_schemas import (
     LayoutProofApproval,
     LengthVariant,

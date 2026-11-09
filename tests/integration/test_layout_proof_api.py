@@ -126,7 +126,7 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
         from tests.helpers.postgres import migrate_database
         migrate_database(engine)
         monkeypatch.setattr(main, "DATABASE_URL", database_url)
-    from app.pipeline import quality, review, service
+    from app.pipeline import quality, review, run_models, service
     from app.generation import agentic
     monkeypatch.setattr(agentic, "render_agentic", a_generation_without_model_loop)
     from app.generation.artifact_manifest import write_artifact_manifest
@@ -217,8 +217,8 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
         assert images and all(image.is_file() for image in images)
         assert "Jane Candidate" not in json.dumps(payload)
         calls.append("builder")
-        return service.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", header_contact_labels=False, sections=[
-            service.E5LaneASection(section_node_id=f"section.{index:02d}", heading_in_rail=not design_scope, rail_label_width_pt=None if design_scope else 62)
+        return run_models.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", header_contact_labels=False, sections=[
+            run_models.E5LaneASection(section_node_id=f"section.{index:02d}", heading_in_rail=not design_scope, rail_label_width_pt=None if design_scope else 62)
             for index in range(1, len(spec.sections) + 1)
         ])
 
@@ -1108,7 +1108,7 @@ def _held_out_catalog() -> dict[str, object]:
 def test_unapproved_presentation_label_returns_the_catalog_to_approve(
     tmp_path: Path, monkeypatch: MonkeyPatch,
 ) -> None:
-    from app.pipeline.service import PresentationLabelApproval
+    from app.pipeline.run_models import PresentationLabelApproval
     from app.template_analysis.layout_proof_service import LayoutProofPresentationLabelError
 
     artifact_id = "artifact_presentation_label_block"

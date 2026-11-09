@@ -35,7 +35,7 @@ from app.generation.artifact_manifest import (
     MANIFEST_FILENAME,
     is_artifact_manifest_current,
 )
-from app.pipeline.service import PresentationLabelApproval
+from app.pipeline.run_models import PresentationLabelApproval
 from app.generation.contracts import (
     GenerateRequest,
     GenerateResponse,

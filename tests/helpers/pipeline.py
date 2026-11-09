@@ -297,7 +297,7 @@ def agentic_repair_inputs(tmp_path: Path, *, target_entry_gap: float = 18, unifo
     from app.extraction.candidate_schema import CandidateProfile
     from app.generation.chrome_html_to_pdf import export_html_to_pdf
     from app.generation.template_mapper import build_client_render_context
-    from app.pipeline import service
+    from app.pipeline import run_models, service
     from app.pipeline.candidate_content import candidate_document_from_context
     from app.pipeline.html_renderer import render_layout_template, render_html
     from tests.helpers.pipeline_layout import product_entry_template
@@ -323,8 +323,8 @@ def agentic_repair_inputs(tmp_path: Path, *, target_entry_gap: float = 18, unifo
     target_spec.sections[1].entry_gap_pt = target_entry_gap
     state, plan, _ = render_layout_template(target_spec, candidate_document_from_context(
         build_client_render_context(target_profile), candidate_id="synthetic-target"))
-    reference = service.LaneAStructureProposal(proposal_id="synthetic-target-rail", agent="scripted", sections=[
-        service.E5LaneASection(section_node_id="section.02", heading_in_rail=True, rail_label_width_pt=80),
+    reference = run_models.LaneAStructureProposal(proposal_id="synthetic-target-rail", agent="scripted", sections=[
+        run_models.E5LaneASection(section_node_id="section.02", heading_in_rail=True, rail_label_width_pt=80),
     ])
     target_html = tmp_path / "target.html"
     target_html.write_text(render_html(state, service._apply_lane_a_structure(plan, reference)))

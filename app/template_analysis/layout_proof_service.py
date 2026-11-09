@@ -634,7 +634,7 @@ def _validated_presentation_labels(
     target, and a caller-supplied checksum must be that same one: any
     disagreement is refused rather than silently stored. A proof set rendered
     without a label approval yields no identity (``[]``, ``None``)."""
-    from app.pipeline.service import PresentationLabelApproval
+    from app.pipeline.run_models import PresentationLabelApproval
 
     found: dict[str, set[str]] = {}
     for evidence in variants.values():

@@ -47,7 +47,7 @@ from app.generation.template_mapper import (
     RenderEducation,
     RenderWorkExperience,
 )
-from app.pipeline.service import PresentationLabelApproval
+from app.pipeline.run_models import PresentationLabelApproval
 from app.template_analysis.schemas import (
     LayoutTemplateSpec,
     TemplateStyleSpec,

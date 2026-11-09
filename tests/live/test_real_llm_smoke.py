@@ -151,7 +151,7 @@ def test_real_agentic_repair_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     import pdfplumber
     from app.generation.agentic import render_agentic
     from app.generation.template_mapper import build_client_render_context
-    from app.pipeline import service
+    from app.pipeline import run_models, service
     from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
     from tests.helpers.pipeline import agentic_repair_inputs
 
@@ -170,8 +170,8 @@ def test_real_agentic_repair_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     def initial_fault_then_live_builder(budget, trace, *, payload, images, proposal_id, audit):
         if audit.phase == "initial":
-            seed = service.LaneAStructureProposal(proposal_id=proposal_id, agent="scripted", sections=[
-                service.E5LaneASection(section_node_id="section.02", heading_in_rail=True, rail_label_width_pt=360),
+            seed = run_models.LaneAStructureProposal(proposal_id=proposal_id, agent="scripted", sections=[
+                run_models.E5LaneASection(section_node_id="section.02", heading_in_rail=True, rail_label_width_pt=360),
             ])
             (tmp_path / "initial_fault.json").write_text(json.dumps({
                 "kind": "controlled_test_fault", "not_model_output": True,

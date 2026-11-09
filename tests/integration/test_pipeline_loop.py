@@ -16,6 +16,8 @@ import pytest
 import app.pipeline.quality as quality
 import app.pipeline.service as e
 import app.pipeline.service as e5
+import app.pipeline.presentation_labels as presentation_labels
+import app.pipeline.run_models as run_models
 from app.pipeline.runtime import RunBudget
 import app.pipeline.evidence as evidence
 from tests.helpers.pipeline import (
@@ -690,24 +692,24 @@ def test_agent_audit_call_id_binds_trace_and_render_version(tmp_path: Path) -> N
 def test_lane_a_rejects_target_specific_identifiers_and_invalid_fields() -> None:
     # Unknown fields fail validation (pydantic extra=forbid).
     with pytest.raises(ValueError):
-        e.LaneAStructureProposal.model_validate(
+        run_models.LaneAStructureProposal.model_validate(
             {
                 "proposal_id": "p1", "agent": "scripted", "sections": [],
                 "target_hash": "af6b9234",
             }
         )
     with pytest.raises(ValueError):
-        e.E5LaneASection.model_validate(
+        run_models.E5LaneASection.model_validate(
             {"section_node_id": "section.01", "heading_in_rail": True,
              "rail_label_width_pt": 90.0, "resume_i_heading": "EXPERIENCE"}
         )
     with pytest.raises(ValueError):
-        e.E5LaneASection.model_validate(
+        run_models.E5LaneASection.model_validate(
             {"section_node_id": "section.01", "heading_in_rail": True}
         )  # rail_heading without width is invalid
     for unused_field in ("rationale", "evidence_refs", "expected_measurements"):
         with pytest.raises(ValueError):
-            e.LaneAStructureProposal.model_validate(
+            run_models.LaneAStructureProposal.model_validate(
                 {
                     "proposal_id": "p1",
                     "agent": "scripted",
@@ -1081,7 +1083,7 @@ def test_builder_evidence_binds_selected_attribution_and_fingerprint() -> None:
 
     finding = _e5_finding("f1", "experience", "gap")
     attribution = _e5_attribution(finding)
-    current_representation = e.LaneAStructureProposal(
+    current_representation = run_models.LaneAStructureProposal(
         proposal_id="lane-a-v2", sections=[], agent="llm"
     )
     package = e._e5_builder_evidence_package(
@@ -1348,7 +1350,7 @@ def test_gate_and_builder_candidate_audits_are_version_bound() -> None:
     assert gate_record["details"]["diagnostics"]["pdf_presence"][
         "missing_pdf_leaves"
     ] == ["leaf.1"]
-    proposal = e.LaneAStructureProposal(proposal_id="p1", sections=[], agent="scripted")
+    proposal = run_models.LaneAStructureProposal(proposal_id="p1", sections=[], agent="scripted")
     candidate_record = e._e5_builder_candidate_record(
         lane="a",
         attempt=2,
@@ -1388,17 +1390,17 @@ def test_lane_a_proposal_cites_only_known_state_nodes(tmp_path: Path) -> None:
     normalized = NormalizedLayoutEvidence.model_validate_json(normalized_path.read_text(encoding="utf-8"))
     summary = build_format_summary(normalized, json.loads(raw_path.read_text(encoding="utf-8")), TARGET_PDF)
     state, _derived = e.compile_two_column_state(TARGET_PDF, summary, evidence=normalized)
-    proposal = e.LaneAStructureProposal(
+    proposal = run_models.LaneAStructureProposal(
         proposal_id="p1",
-        sections=[e.E5LaneASection(section_node_id="section.99", heading_in_rail=True, rail_label_width_pt=90.0)],
+        sections=[run_models.E5LaneASection(section_node_id="section.99", heading_in_rail=True, rail_label_width_pt=90.0)],
         agent="scripted",
     )
     assert e._validate_lane_a_proposal(proposal, state) is not None
-    valid = e.LaneAStructureProposal(
+    valid = run_models.LaneAStructureProposal(
         proposal_id="p2",
-        sections=[e.E5LaneASection(section_node_id=node.node_id, heading_in_rail=True, rail_label_width_pt=90.0)
+        sections=[run_models.E5LaneASection(section_node_id=node.node_id, heading_in_rail=True, rail_label_width_pt=90.0)
                   for node in state.nodes if node.kind == "section"] or
-                 [e.E5LaneASection(section_node_id=state.nodes[0].node_id, heading_in_rail=False)],
+                 [run_models.E5LaneASection(section_node_id=state.nodes[0].node_id, heading_in_rail=False)],
         agent="scripted",
     )
     # every proposed id must exist in the compiled state
@@ -1803,7 +1805,8 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     # the registered set covers the ACTUAL direct runtime dependencies
     for name in e.E5_SOURCE_FILES:
         assert hashes["files"][name] == e._sha256_file(e.ROOT / name), name
-    for name in ("runtime.py", "quality.py", "candidate_content.py", "rendering.py", "layout_compiler.py", "layout_state.py"):
+    for name in ("runtime.py", "quality.py", "candidate_content.py", "rendering.py", "layout_compiler.py", "layout_state.py",
+                 "run_models.py", "presentation_labels.py"):
         assert f"app/pipeline/{name}" in hashes["files"], f"missing direct runtime source: {name}"
     assert all(not name.startswith("tests/") for name in hashes["files"])
     assert hashes["tracked_diff_sha256"] == e._tracked_diff_sha256(e.ROOT, e.E5_SOURCE_FILES)
@@ -1815,6 +1818,10 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     # any drift between frozen identity and current source is detected
     drifted = json.loads(json.dumps(config))
     drifted["source_hashes"]["files"]["app/pipeline/service.py"] = "0" * 64
+    assert e._source_hashes_changed(drifted) is True
+    # a mid-run change to a moved owner is detected the same way
+    drifted = json.loads(json.dumps(config))
+    drifted["source_hashes"]["files"]["app/pipeline/presentation_labels.py"] = "0" * 64
     assert e._source_hashes_changed(drifted) is True
     # a changed tracked diff (same file hashes is impossible then, but a
     # tampered diff hash must also be detected)
@@ -1874,7 +1881,7 @@ def test_run_e5_rollback_binds_next_round_to_the_active_version(
     against the OLD ACTIVE version — PDF, RenderPlan, and gates — and the
     rejected representation never enters the probe basis or best selection."""
     _force_scripted_builder_attribution(monkeypatch)
-    from app.pipeline.service import LaneAStructureProposal
+    from app.pipeline.run_models import LaneAStructureProposal
 
     # a scripted proposal that changes nothing -> the identical render ->
     # the identical measurement -> deterministic non-improving rollback
@@ -2026,9 +2033,9 @@ def test_presentation_label_requires_typed_target_evidence() -> None:
 def test_presentation_labels_come_only_from_measured_evidence() -> None:
     # no measured sidebar evidence -> NO label exists (nothing is invented
     # from the target document, its file name, or a hardcoded title list)
-    assert e._presentation_label_catalog({}) == []
-    assert e._presentation_label_catalog({"sidebar_labels": []}) == []
-    catalog = e._presentation_label_catalog(
+    assert presentation_labels._presentation_label_catalog({}) == []
+    assert presentation_labels._presentation_label_catalog({"sidebar_labels": []}) == []
+    catalog = presentation_labels._presentation_label_catalog(
         {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
     )
     assert [
@@ -2050,11 +2057,11 @@ def test_presentation_labels_come_only_from_measured_evidence() -> None:
         )
     ]
     with pytest.raises(ValueError, match="non-empty text"):
-        e._presentation_label_catalog(
+        presentation_labels._presentation_label_catalog(
             {"sidebar_labels": [{"page": 1, "top": 1.0, "text": "   "}]}
         )
     with pytest.raises(ValueError, match="duplicate presentation label id"):
-        e._presentation_label_catalog(
+        presentation_labels._presentation_label_catalog(
             {
                 "sidebar_labels": [
                     {"page": 1, "top": 1.0, "text": "A"},
@@ -2071,7 +2078,7 @@ def test_measurement_alone_never_approves_a_label() -> None:
     approval (target-bound) can flip ids into the approved view."""
     from tests.helpers.pipeline_candidates import candidate_resume_E
 
-    catalog = e._presentation_label_catalog(
+    catalog = presentation_labels._presentation_label_catalog(
         {
             "sidebar_labels": [
                 {"page": 1, "top": 1.0, "text": "JOHN SMITH"},
@@ -2084,7 +2091,7 @@ def test_measurement_alone_never_approves_a_label() -> None:
     assert [label.status for label in catalog] == ["proposed"] * 4
     # no approval -> zero approved labels: nothing renderable, nothing
     # privacy-excluded
-    approved = e._apply_presentation_label_approval(
+    approved = presentation_labels._apply_presentation_label_approval(
         catalog, None, target_sha256="a" * 64
     )
     assert approved == []
@@ -2094,7 +2101,7 @@ def test_measurement_alone_never_approves_a_label() -> None:
 
 
 def _catalog_one() -> list[e.PresentationLabel]:
-    return e._presentation_label_catalog(
+    return presentation_labels._presentation_label_catalog(
         {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
     )
 
@@ -2199,10 +2206,10 @@ def test_common_privacy_requires_disclosed_candidate_provenance(
     ("2020 - 2024", False), ("Custom narrative", False),
 ])
 def test_heuristic_labels_require_exact_presentation_alias(text: str, recognized: bool) -> None:
-    catalog = e._presentation_label_catalog({
+    catalog = presentation_labels._presentation_label_catalog({
         "sidebar_labels": [{"page": 1, "top": 200.0, "text": text}],
     })
-    accepted = e._heuristic_presentation_labels(catalog)
+    accepted = presentation_labels._heuristic_presentation_labels(catalog)
     assert bool(accepted) is recognized
     assert catalog[0].status == "proposed"
     if accepted:
@@ -2216,19 +2223,19 @@ def _approval_for(
     *,
     target_sha256: str = "a" * 64,
     catalog_sha256: str | None = None,
-) -> e.PresentationLabelApproval:
-    return e.PresentationLabelApproval(
+) -> run_models.PresentationLabelApproval:
+    return run_models.PresentationLabelApproval(
         target_sha256=target_sha256,
         catalog_sha256=catalog_sha256
         if catalog_sha256 is not None
-        else e.presentation_label_catalog_sha256(catalog),
+        else presentation_labels.presentation_label_catalog_sha256(catalog),
         approved_label_ids=ids,
     )
 
 
 def _simulated_approval_for_test_target_catalog(
     target: Path | None = None,
-) -> e.PresentationLabelApproval:
+) -> run_models.PresentationLabelApproval:
     """Simulate owner approval so offline tests can exercise the approved path.
 
     Lane A renders the compiled plan, and the plan's section headings come from
@@ -2253,17 +2260,17 @@ def _simulated_approval_for_test_target_catalog(
     )
     summary = build_format_summary(normalized, raw, target)
     _state, derived = e.compile_two_column_state(target, summary, evidence=normalized)
-    catalog = e._presentation_label_catalog(derived)
-    return e.PresentationLabelApproval(
+    catalog = presentation_labels._presentation_label_catalog(derived)
+    return run_models.PresentationLabelApproval(
         target_sha256=e._sha256_file(target),
-        catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+        catalog_sha256=presentation_labels.presentation_label_catalog_sha256(catalog),
         approved_label_ids=[label.label_id for label in catalog],
     )
 
 
 def test_valid_approval_projects_only_the_approved_ids() -> None:
     catalog = _catalog_one()
-    approved = e._apply_presentation_label_approval(
+    approved = presentation_labels._apply_presentation_label_approval(
         catalog,
         _approval_for(catalog, ["label.section.p1.top221.5"]),
         target_sha256="a" * 64,
@@ -2281,7 +2288,7 @@ def test_valid_approval_projects_only_the_approved_ids() -> None:
     # the PROPOSED catalog itself is never mutated by an approval
     assert [label.status for label in catalog] == ["proposed"]
     # partial approval: only the listed ids enter the view
-    two = e._presentation_label_catalog(
+    two = presentation_labels._presentation_label_catalog(
         {
             "sidebar_labels": [
                 {"page": 1, "top": 221.5, "text": "EXPERIENCE"},
@@ -2289,7 +2296,7 @@ def test_valid_approval_projects_only_the_approved_ids() -> None:
             ]
         }
     )
-    approved = e._apply_presentation_label_approval(
+    approved = presentation_labels._apply_presentation_label_approval(
         two,
         _approval_for(two, ["label.section.p1.top309.9"]),
         target_sha256="a" * 64,
@@ -2303,21 +2310,21 @@ def test_approval_fails_closed_on_identity_mismatch() -> None:
     catalog = _catalog_one()
     # wrong target sha
     with pytest.raises(ValueError, match="target_sha256 does not match"):
-        e._apply_presentation_label_approval(
+        presentation_labels._apply_presentation_label_approval(
             catalog,
             _approval_for(catalog, ["label.section.p1.top221.5"], target_sha256="b" * 64),
             target_sha256="a" * 64,
         )
     # wrong catalog sha (any content change invalidates the old approval)
     with pytest.raises(ValueError, match="catalog_sha256 does not match"):
-        e._apply_presentation_label_approval(
+        presentation_labels._apply_presentation_label_approval(
             catalog,
             _approval_for(catalog, ["label.section.p1.top221.5"], catalog_sha256="c" * 64),
             target_sha256="a" * 64,
         )
     # unknown label id
     with pytest.raises(ValueError, match="unknown label ids"):
-        e._apply_presentation_label_approval(
+        presentation_labels._apply_presentation_label_approval(
             catalog,
             _approval_for(catalog, ["label.section.p9.top999.0"]),
             target_sha256="a" * 64,
@@ -2331,16 +2338,16 @@ def test_approval_fails_closed_on_identity_mismatch() -> None:
         _approval_for(catalog, [" "])
     # sha256 shape is enforced
     with pytest.raises(ValidationError):
-        e.PresentationLabelApproval(
+        run_models.PresentationLabelApproval(
             target_sha256="not-a-hash",
-            catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+            catalog_sha256=presentation_labels.presentation_label_catalog_sha256(catalog),
             approved_label_ids=["label.section.p1.top221.5"],
         )
     # the approval model carries NO content fields (extra="forbid")
     with pytest.raises(ValidationError):
-        e.PresentationLabelApproval(
+        run_models.PresentationLabelApproval(
             target_sha256="a" * 64,
-            catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+            catalog_sha256=presentation_labels.presentation_label_catalog_sha256(catalog),
             approved_label_ids=["label.section.p1.top221.5"],
             text="INVENTED",  # type: ignore[call-arg]
         )
@@ -2352,26 +2359,26 @@ def test_same_text_in_another_target_does_not_inherit_approval() -> None:
     approval = _approval_for(
         catalog_a, ["label.section.p1.top221.5"], target_sha256="a" * 64
     )
-    assert e._apply_presentation_label_approval(
+    assert presentation_labels._apply_presentation_label_approval(
         catalog_a, approval, target_sha256="a" * 64
     )
     # target B measures the SAME wording at the SAME geometry: identical label
     # id and identical catalog content hash — but the TARGET differs, so the
     # approval must NOT carry over (the binding is the target, not the words)
-    catalog_b = e._presentation_label_catalog(
+    catalog_b = presentation_labels._presentation_label_catalog(
         {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
     )
-    assert e.presentation_label_catalog_sha256(catalog_b) == e.presentation_label_catalog_sha256(catalog_a)
+    assert presentation_labels.presentation_label_catalog_sha256(catalog_b) == presentation_labels.presentation_label_catalog_sha256(catalog_a)
     with pytest.raises(ValueError, match="target_sha256 does not match"):
-        e._apply_presentation_label_approval(
+        presentation_labels._apply_presentation_label_approval(
             catalog_b, approval, target_sha256="b" * 64
         )
     # different target, different measured geometry: catalog identity differs too
-    catalog_c = e._presentation_label_catalog(
+    catalog_c = presentation_labels._presentation_label_catalog(
         {"sidebar_labels": [{"page": 2, "top": 199.0, "text": "EXPERIENCE"}]}
     )
     with pytest.raises(ValueError, match="target_sha256 does not match"):
-        e._apply_presentation_label_approval(
+        presentation_labels._apply_presentation_label_approval(
             catalog_c, approval, target_sha256="b" * 64
         )
 
@@ -2379,23 +2386,23 @@ def test_same_text_in_another_target_does_not_inherit_approval() -> None:
 def test_catalog_content_change_invalidates_old_approval() -> None:
     catalog = _catalog_one()
     approval = _approval_for(catalog, ["label.section.p1.top221.5"])
-    assert e._apply_presentation_label_approval(catalog, approval, target_sha256="a" * 64)
+    assert presentation_labels._apply_presentation_label_approval(catalog, approval, target_sha256="a" * 64)
     # a text change changes the catalog identity -> the SAME approval fails
     # (note: whitespace-only changes are normalized away by the model, so a
     # REAL wording change is what invalidates approval)
-    changed_text = e._presentation_label_catalog(
+    changed_text = presentation_labels._presentation_label_catalog(
         {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EMPLOYMENT"}]}
     )
-    assert e.presentation_label_catalog_sha256(changed_text) != approval.catalog_sha256
+    assert presentation_labels.presentation_label_catalog_sha256(changed_text) != approval.catalog_sha256
     with pytest.raises(ValueError, match="catalog_sha256 does not match"):
-        e._apply_presentation_label_approval(changed_text, approval, target_sha256="a" * 64)
+        presentation_labels._apply_presentation_label_approval(changed_text, approval, target_sha256="a" * 64)
     # an evidence change does the same (evidence_ids are part of the identity)
     changed_evidence = [
         label.model_copy(update={"evidence_ids": ["local_pdf.other"]}) for label in catalog
     ]
-    assert e.presentation_label_catalog_sha256(changed_evidence) != approval.catalog_sha256
+    assert presentation_labels.presentation_label_catalog_sha256(changed_evidence) != approval.catalog_sha256
     with pytest.raises(ValueError, match="catalog_sha256 does not match"):
-        e._apply_presentation_label_approval(changed_evidence, approval, target_sha256="a" * 64)
+        presentation_labels._apply_presentation_label_approval(changed_evidence, approval, target_sha256="a" * 64)
 
 
 def test_frozen_e5_config_records_the_presentation_label_approval(tmp_path: Path) -> None:
@@ -2462,8 +2469,8 @@ def test_catalog_hash_is_deterministic_and_excludes_status() -> None:
     catalog = _catalog_one()
     flip = [label.model_copy(update={"status": "approved"}) for label in catalog]
     # status is approval state, not evidence: it is NOT part of the identity
-    assert e.presentation_label_catalog_sha256(catalog) == e.presentation_label_catalog_sha256(flip)
-    assert e.presentation_label_catalog_sha256(catalog) == e.presentation_label_catalog_sha256(
+    assert presentation_labels.presentation_label_catalog_sha256(catalog) == presentation_labels.presentation_label_catalog_sha256(flip)
+    assert presentation_labels.presentation_label_catalog_sha256(catalog) == presentation_labels.presentation_label_catalog_sha256(
         list(reversed(catalog))
     )
 
@@ -2479,15 +2486,15 @@ def test_source_has_no_hardcoded_resume_i_approval_list() -> None:
 
 
 def test_privacy_exclusions_match_shell_owned_label_catalog() -> None:
-    catalog = e._presentation_label_catalog(
+    catalog = presentation_labels._presentation_label_catalog(
         {"sidebar_labels": [{"page": 1, "top": 221.5, "text": "EXPERIENCE"}]}
     )
-    approval = e.PresentationLabelApproval(
+    approval = run_models.PresentationLabelApproval(
         target_sha256="a" * 64,
-        catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+        catalog_sha256=presentation_labels.presentation_label_catalog_sha256(catalog),
         approved_label_ids=["label.section.p1.top221.5"],
     )
-    approved = e._apply_presentation_label_approval(
+    approved = presentation_labels._apply_presentation_label_approval(
         catalog, approval, target_sha256="a" * 64
     )
     # Case variants resolve to the same exact approved exclusion set.
@@ -2497,7 +2504,7 @@ def test_privacy_exclusions_match_shell_owned_label_catalog() -> None:
     assert lane_a["approved_label_ids"] == uppercase["approved_label_ids"]
     # P1: a SUBSET is not symmetry — a plan-derived 4-of-9 exclusion must NOT
     # be reported as symmetric
-    two = e._presentation_label_catalog(
+    two = presentation_labels._presentation_label_catalog(
         {
             "sidebar_labels": [
                 {"page": 1, "top": 221.5, "text": "EXPERIENCE"},
@@ -2505,11 +2512,11 @@ def test_privacy_exclusions_match_shell_owned_label_catalog() -> None:
             ]
         }
     )
-    two_approved = e._apply_presentation_label_approval(
+    two_approved = presentation_labels._apply_presentation_label_approval(
         two,
-        e.PresentationLabelApproval(
+        run_models.PresentationLabelApproval(
             target_sha256="a" * 64,
-            catalog_sha256=e.presentation_label_catalog_sha256(two),
+            catalog_sha256=presentation_labels.presentation_label_catalog_sha256(two),
             approved_label_ids=["label.section.p1.top221.5", "label.section.p1.top309.9"],
         ),
         target_sha256="a" * 64,
@@ -2534,7 +2541,7 @@ def test_privacy_exclusions_match_shell_owned_label_catalog() -> None:
 
 
 def test_owner_package_label_listing_matches_the_catalog() -> None:
-    catalog = e._presentation_label_catalog(
+    catalog = presentation_labels._presentation_label_catalog(
         {
             "sidebar_labels": [
                 {"page": 1, "top": 221.5, "text": "EXPERIENCE"},
@@ -2546,12 +2553,12 @@ def test_owner_package_label_listing_matches_the_catalog() -> None:
         catalog,
         {"a": ["label.section.p1.top221.5"], "b": []},
         target_sha256="a" * 64,
-        catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+        catalog_sha256=presentation_labels.presentation_label_catalog_sha256(catalog),
     )
     # no approval input -> EVERYTHING is proposed, zero approved ids
     assert listing["schema_version"] == "e5-presentation-labels/1"
     assert listing["target_sha256"] == "a" * 64
-    assert listing["catalog_sha256"] == e.presentation_label_catalog_sha256(catalog)
+    assert listing["catalog_sha256"] == presentation_labels.presentation_label_catalog_sha256(catalog)
     assert listing["approval_provided"] is None
     assert listing["approved_label_ids"] == []
     assert listing["proposed_label_ids"] == ["label.section.p1.top221.5", "label.section.p1.top309.9"]
@@ -2572,7 +2579,7 @@ def test_owner_package_label_listing_matches_the_catalog() -> None:
         {"a": ["label.section.p1.top221.5"], "b": []},
         ["label.section.p1.top221.5"],
         target_sha256="a" * 64,
-        catalog_sha256=e.presentation_label_catalog_sha256(catalog),
+        catalog_sha256=presentation_labels.presentation_label_catalog_sha256(catalog),
         approval_provided=True,
         approval_validated=True,
     )
@@ -3302,7 +3309,7 @@ def test_unrendered_conventional_heading_stays_blocked_and_exposes_its_catalog(
     assert summary["status"] == "proposed"
     assert summary["label_id"].startswith("label.target.p1.")
     # The catalog a reviewer must approve is exposed, checksum-bound.
-    assert listing["catalog_sha256"] == e.presentation_label_catalog_sha256([
+    assert listing["catalog_sha256"] == presentation_labels.presentation_label_catalog_sha256([
         e.PresentationLabel(label_id=row["label_id"], text=row["text"],
                             kind=row["kind"], evidence_ids=row["evidence_ids"])
         for row in listing["labels"]
@@ -3323,7 +3330,7 @@ def test_matching_presentation_label_approval_admits_the_heading(tmp_path: Path)
         layout_spec=spec, live=False, lanes=("a",), max_repair_rounds=0,
     )
     listing = json.loads((first / "presentation_labels.json").read_text())
-    approval = e.PresentationLabelApproval(
+    approval = run_models.PresentationLabelApproval(
         target_sha256=listing["target_sha256"], catalog_sha256=listing["catalog_sha256"],
         approved_label_ids=[row["label_id"] for row in listing["labels"]],
     )
@@ -3351,7 +3358,7 @@ def test_stale_presentation_label_approval_is_rejected(tmp_path: Path) -> None:
         layout_spec=spec, live=False, lanes=("a",), max_repair_rounds=0,
     )
     listing = json.loads((first / "presentation_labels.json").read_text())
-    stale = e.PresentationLabelApproval(
+    stale = run_models.PresentationLabelApproval(
         target_sha256=listing["target_sha256"], catalog_sha256="0" * 64,
         approved_label_ids=[row["label_id"] for row in listing["labels"]],
     )

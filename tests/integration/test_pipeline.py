@@ -465,7 +465,7 @@ def test_agentic_header_label_choice_preserves_source_and_body_contacts(tmp_path
     from app.pipeline.candidate_content import candidate_document_from_context
     from app.pipeline.html_renderer import render_layout_template, render_html
     from app.pipeline.quality import content_gate, content_shape_verification
-    from app.pipeline import service
+    from app.pipeline import run_models, service
     from app.template_analysis.schemas import SectionLayoutSpec
     from tests.helpers.pipeline_layout import product_template
 
@@ -484,7 +484,7 @@ def test_agentic_header_label_choice_preserves_source_and_body_contacts(tmp_path
     state, base, _ = render_layout_template(spec, candidate,
         target_sha256=hashlib.sha256(inputs["target_pdf"].read_bytes()).hexdigest(), page_count=1)
     original_plan = base.model_dump_json()
-    proposal = service.LaneAStructureProposal(proposal_id="contact-labels", agent="scripted", sections=[], header_contact_labels=labels)
+    proposal = run_models.LaneAStructureProposal(proposal_id="contact-labels", agent="scripted", sections=[], header_contact_labels=labels)
     plan = service._apply_lane_a_structure(base, proposal)
     html = render_html(state, plan)
     html_path = tmp_path / "preview.html";html_path.write_text(html)
@@ -518,7 +518,7 @@ def test_agentic_header_label_choice_preserves_source_and_body_contacts(tmp_path
         with pytest.raises(ValueError, match="structured"):
             service._apply_lane_a_structure(broken, proposal)
         with pytest.raises(ValueError):
-            service.LaneAStructureProposal(proposal_id="untrusted", agent="llm", sections=[], header_contact_labels="false")
+            run_models.LaneAStructureProposal(proposal_id="untrusted", agent="llm", sections=[], header_contact_labels="false")
 
 
 @pytest.mark.parametrize("target_labels,labels,status", [
@@ -531,7 +531,7 @@ def test_header_contact_label_geometry_uses_actual_scoped_prefixes(tmp_path: Pat
     from app.generation.template_mapper import build_client_render_context
     from app.pipeline.candidate_content import candidate_document_from_context
     from app.pipeline.html_renderer import render_layout_template, render_html
-    from app.pipeline import service
+    from app.pipeline import run_models, service
     from tests.helpers.pipeline import header_contact_inputs
 
     inputs, spec, profile = header_contact_inputs(tmp_path, target_labels=target_labels)
@@ -540,7 +540,7 @@ def test_header_contact_label_geometry_uses_actual_scoped_prefixes(tmp_path: Pat
     state, base, _ = render_layout_template(spec, candidate,
         target_sha256=hashlib.sha256(inputs["target_pdf"].read_bytes()).hexdigest(), page_count=1)
     def render(visible: bool, name: str):
-        plan = service._apply_lane_a_structure(base, service.LaneAStructureProposal(
+        plan = service._apply_lane_a_structure(base, run_models.LaneAStructureProposal(
             proposal_id=name, agent="scripted", sections=[], header_contact_labels=visible))
         path = tmp_path / f"{name}.html";path.write_text(render_html(state, plan))
         return plan, export_html_to_pdf(path, tmp_path / f"{name}.pdf")
@@ -586,7 +586,7 @@ def test_agentic_header_label_repair_requires_scoped_measured_improvement(tmp_pa
     import shutil
     from app.generation.agentic import render_agentic
     from app.generation.template_mapper import build_client_render_context
-    from app.pipeline import service
+    from app.pipeline import run_models, service
     from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
     from tests.helpers.pipeline import header_contact_inputs
 
@@ -600,7 +600,7 @@ def test_agentic_header_label_repair_requires_scoped_measured_improvement(tmp_pa
     phases = []
     def builder(_budget, _trace, *, payload, images, proposal_id, audit):
         phases.append(audit.phase)
-        return service.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[],
+        return run_models.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[],
             header_contact_labels=False if audit.phase == "repair" else None)
     def reviewer(_images, **kwargs):
         message = kwargs["message"]
@@ -894,7 +894,7 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repair: str,
 ) -> None:
     import shutil
-    from app.pipeline import service
+    from app.pipeline import run_models, service
     from app.generation.agentic import render_agentic
     from app.generation.template_mapper import build_client_render_context
     from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
@@ -921,16 +921,16 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
     def builder(_budget, _trace, *, payload, images, proposal_id, audit):
         phases.append(audit.phase)
         if repair == "invalid_proposal" and audit.phase == "repair":
-            return service.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[
-                service.E5LaneASection(section_node_id="section.99")])
+            return run_models.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[
+                run_models.E5LaneASection(section_node_id="section.99")])
         if audit.phase == "initial":
             width = 360 if repair in {"improve", "renderer_claim", "unresolved", "dismissed_claim", "accepted_missing"} else 80
         elif repair == "accepted_missing":
             width = 80 if proposal_id.endswith("r2") else 92
         else:
             width = 80 if repair in {"improve", "noop", "renderer_claim", "unresolved", "dismissed_claim", "trial_noop"} else 92
-        return service.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[
-            service.E5LaneASection(section_node_id="section.02", heading_in_rail=True, rail_label_width_pt=width),
+        return run_models.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[
+            run_models.E5LaneASection(section_node_id="section.02", heading_in_rail=True, rail_label_width_pt=width),
         ])
 
     def reviewer(_images, **kwargs):
@@ -1138,10 +1138,10 @@ def test_template_label_block_returns_the_catalog_its_approval_must_match(tmp_pa
     from app.generation.template_mapper import build_client_render_context
     from app.pipeline.candidate_content import candidate_document_from_context
     from app.pipeline import service
-    from app.pipeline.service import (
-        PresentationLabelApproval, _apply_presentation_label_approval,
-        template_presentation_label_catalog,
+    from app.pipeline.presentation_labels import (
+        _apply_presentation_label_approval, template_presentation_label_catalog,
     )
+    from app.pipeline.run_models import PresentationLabelApproval
     from app.pipeline.html_renderer import render_layout_template
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
     from app.template_analysis.schemas import SectionLayoutSpec

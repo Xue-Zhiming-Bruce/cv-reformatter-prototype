@@ -218,7 +218,7 @@ def test_canonical_proof_context_renders_through_a_with_contacts(
     from app.generation.content_validation import validate_generated_content, validate_output_structure
     from app.pipeline.candidate_content import candidate_document_from_context
     from app.pipeline.html_renderer import render_layout_template, render_html
-    from app.pipeline import service
+    from app.pipeline import run_models, service
     from app.pipeline.quality import content_gate, candidate_accounting_gate, blank_page_gate
     from app.template_analysis.schemas import built_in_layout_template_spec
 
@@ -227,7 +227,7 @@ def test_canonical_proof_context_renders_through_a_with_contacts(
     candidate = candidate_document_from_context(context, candidate_id=f"synthetic-proof-{variant.value}")
     state, plan, html = render_layout_template(spec, candidate)
     if labels is False:
-        plan = service._apply_lane_a_structure(plan, service.LaneAStructureProposal(
+        plan = service._apply_lane_a_structure(plan, run_models.LaneAStructureProposal(
             proposal_id="proof-contact-labels", agent="scripted", sections=[], header_contact_labels=False))
         html = render_html(state, plan)
     html_path = tmp_path / "proof.html"

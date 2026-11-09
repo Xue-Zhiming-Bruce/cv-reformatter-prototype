@@ -16,7 +16,8 @@ from app.pipeline.evidence import EvidenceRef, SelfReportedStatus, StructuralRel
 from app.pipeline.html_renderer import RENDERER_VERSION, render_layout_template
 from app.pipeline.layout_state import C2LayoutState
 from app.pipeline.runtime import RunBudget
-from app.pipeline import quality, review, service
+from app.pipeline.run_models import PresentationLabelApproval
+from app.pipeline import presentation_labels, quality, review, service
 from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from app.template_analysis.schemas import LayoutTemplateSpec
@@ -226,7 +227,7 @@ def _proof_label_approval(
         or layout_proof_approval.presentation_label_catalog_sha256 != catalog["catalog_sha256"]
     ):
         return None
-    return service.PresentationLabelApproval(
+    return PresentationLabelApproval(
         target_sha256=target_checksum,
         catalog_sha256=catalog["catalog_sha256"],
         approved_label_ids=sorted({
@@ -264,7 +265,7 @@ def render_agentic(
         state, _, _ = render_layout_template(layout_spec, candidate,
             target_sha256=service._sha256_file(target_pdf), page_count=len(pdf.pages))
     if presentation_label_approval is None:
-        catalog = service.template_presentation_label_catalog(
+        catalog = presentation_labels.template_presentation_label_catalog(
             state, normalized, target_sha256=service._sha256_file(target_pdf))
         from app.template_analysis.layout_proof_service import layout_spec_checksum
 
