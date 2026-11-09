@@ -677,6 +677,18 @@ def _without_section_properties(name: str, data: bytes) -> bytes | None:
     return data
 
 
+def _with_bad_columns(name: str, data: bytes) -> bytes | None:
+    if name == "word/document.xml":
+        return re.sub(rb"<w:cols\b[^>]*/>", b'<w:cols w:num="two" w:space="abc"/>', data)
+    return data
+
+
+def _with_bad_page_size(name: str, data: bytes) -> bytes | None:
+    if name == "word/document.xml":
+        return re.sub(rb"<w:pgSz\b[^>]*/>", b'<w:pgSz w:w="garbage" w:h="garbage"/>', data)
+    return data
+
+
 def test_target_format_upload_rejects_docx_with_unresolvable_theme(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -720,6 +732,36 @@ def test_target_format_upload_rejects_docx_without_page_section(
     assert set(detail) == {"error_code", "message", "detail"}
     assert detail["error_code"] == "docx_target_unmeasurable"
     assert "sectPr" in detail["message"]
+    artifact_dir = tmp_path / artifact_id
+    assert not (artifact_dir / "layout_template_spec.json").exists()
+    assert not (artifact_dir / "target_format.json").exists()
+    assert not (artifact_dir / "target_format_template.docx").exists()
+
+
+@pytest.mark.parametrize(
+    ("filename", "transform"),
+    [("bad-cols.docx", _with_bad_columns), ("bad-pgsz.docx", _with_bad_page_size)],
+)
+def test_target_format_upload_rejects_malformed_section_attributes(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    filename: str,
+    transform,
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    source = tmp_path / "source.docx"
+    Document().save(source)
+    target_path = tmp_path / filename
+    _rewrite_docx(source, target_path, transform)
+    artifact_id = "artifact_docx_malformed"
+
+    response = _upload_docx(target_path.read_bytes(), artifact_id, filename)
+
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert set(detail) == {"error_code", "message", "detail"}
+    assert detail["error_code"] == "docx_target_unmeasurable"
+    assert "could not be measured" in detail["message"]
     artifact_dir = tmp_path / artifact_id
     assert not (artifact_dir / "layout_template_spec.json").exists()
     assert not (artifact_dir / "target_format.json").exists()

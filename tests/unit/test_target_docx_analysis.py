@@ -13,7 +13,6 @@ from app.template_analysis.docx_style_analyzer import (
     analyze_target_docx,
 )
 
-
 def test_target_docx_analysis_extracts_page_and_typography(tmp_path: Path) -> None:
     target_path = tmp_path / "target.docx"
     document = Document()
@@ -46,14 +45,12 @@ def test_target_docx_analysis_extracts_page_and_typography(tmp_path: Path) -> No
     assert (tmp_path / "analysis" / "layout_template_spec.json").exists()
     assert not (tmp_path / "analysis" / "template_style_spec.json").exists()
 
-
 def test_target_docx_analysis_rejects_corrupt_file(tmp_path: Path) -> None:
     target_path = tmp_path / "target.docx"
     target_path.write_bytes(b"not a docx")
 
     with pytest.raises(TargetDocxAnalysisError, match="corrupt"):
         analyze_target_docx(target_path, tmp_path / "analysis")
-
 
 def _set_bottom_border(value, *, color: str, size_eighths_pt: int) -> None:
     properties = value._p.get_or_add_pPr() if hasattr(value, "_p") else value.element.get_or_add_pPr()
@@ -66,7 +63,6 @@ def _set_bottom_border(value, *, color: str, size_eighths_pt: int) -> None:
     bottom.set(qn("w:color"), color)
     bottom.set(qn("w:sz"), str(size_eighths_pt))
     borders.append(bottom)
-
 
 def test_target_docx_analysis_measures_style_rules(tmp_path: Path) -> None:
     target_path = tmp_path / "ruled.docx"
@@ -84,7 +80,6 @@ def test_target_docx_analysis_measures_style_rules(tmp_path: Path) -> None:
     assert spec.decoration.heading_rule is True
     assert spec.decoration.rule_color_hex == "#123456"
     assert spec.decoration.rule_width_pt == pytest.approx(0.75)
-
 
 def test_target_docx_analysis_does_not_globalize_partial_heading_rules(
     tmp_path: Path,
@@ -104,7 +99,6 @@ def test_target_docx_analysis_does_not_globalize_partial_heading_rules(
 
     assert spec.decoration.heading_rule is False
     assert any("Non-uniform Heading 2" in warning for warning in spec.warnings)
-
 
 def test_target_docx_analysis_emits_measured_v2_structure_contract(
     tmp_path: Path,
@@ -141,10 +135,8 @@ def test_target_docx_analysis_emits_measured_v2_structure_contract(
     assert spec.sections[1].entry_title_style.font_size_pt == pytest.approx(11)
     assert spec.sections[2].additional_section_heading == "PROJECTS"
 
-
 def _remove_style(document: Document, name: str) -> None:
     document.styles.element.remove(document.styles[name].element)
-
 
 def test_target_docx_analysis_accepts_body_only_normal_style(tmp_path: Path) -> None:
     sample = Path(__file__).resolve().parents[2] / "frontend" / "public" / "sample-resume.docx"
@@ -162,7 +154,6 @@ def test_target_docx_analysis_accepts_body_only_normal_style(tmp_path: Path) -> 
     assert spec.heading.font_family == spec.body.font_family
     assert spec.heading.font_size_pt == pytest.approx(13.8)
     assert (tmp_path / "analysis" / "layout_template_spec.json").exists()
-
 
 def test_target_docx_analysis_falls_back_to_body_for_missing_section_styles(
     tmp_path: Path,
@@ -184,7 +175,6 @@ def test_target_docx_analysis_falls_back_to_body_for_missing_section_styles(
     assert spec.heading.bold is True
     assert spec.heading.color_hex == spec.body.color_hex
 
-
 def test_target_docx_analysis_entry_title_falls_back_to_body_without_heading_3(
     tmp_path: Path,
 ) -> None:
@@ -204,7 +194,6 @@ def test_target_docx_analysis_entry_title_falls_back_to_body_without_heading_3(
     assert entry_title.font_size_pt == pytest.approx(11)
     assert entry_title.bold is False
 
-
 def test_target_docx_analysis_resolves_docdefaults_and_theme(tmp_path: Path) -> None:
     target_path = tmp_path / "default.docx"
     Document().save(target_path)
@@ -218,7 +207,6 @@ def test_target_docx_analysis_resolves_docdefaults_and_theme(tmp_path: Path) -> 
         and spec.body.font_size_pt == 10.0
         and spec.body.color_hex == "#000000"
     )
-
 
 def test_target_docx_analysis_rejects_banned_default_fill(tmp_path: Path) -> None:
     target_path = tmp_path / "banned.docx"
@@ -235,7 +223,6 @@ def test_target_docx_analysis_rejects_banned_default_fill(tmp_path: Path) -> Non
     assert excinfo.value.error_code == "docx_target_unmeasurable"
     assert "banned" in str(excinfo.value)
 
-
 def test_target_docx_analysis_corrupt_error_code_is_unreadable(tmp_path: Path) -> None:
     target_path = tmp_path / "target.docx"
     target_path.write_bytes(b"not a docx")
@@ -245,15 +232,12 @@ def test_target_docx_analysis_corrupt_error_code_is_unreadable(tmp_path: Path) -
 
     assert excinfo.value.error_code == "docx_target_unreadable"
 
-
 def _rewrite_docx(source: Path, destination: Path, transform) -> None:
     with zipfile.ZipFile(source) as source_zip, zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as target_zip:
         for item in source_zip.infolist():
             data = transform(item.filename, source_zip.read(item.filename))
             if data is not None:
                 target_zip.writestr(item, data)
-
-
 def _without_theme(name: str, data: bytes) -> bytes | None:
     if name == "word/theme/theme1.xml":
         return None
@@ -261,12 +245,18 @@ def _without_theme(name: str, data: bytes) -> bytes | None:
         return re.sub(rb'<Relationship[^>]*Type="[^"]*/theme"[^>]*/>', b"", data)
     return data
 
-
 def _without_section_properties(name: str, data: bytes) -> bytes | None:
     if name == "word/document.xml":
         return re.sub(rb"<w:sectPr\b[^>]*/>|<w:sectPr\b.*?</w:sectPr>", b"", data, flags=re.S)
     return data
-
+def _with_bad_columns(name: str, data: bytes) -> bytes | None:
+    if name == "word/document.xml":
+        return re.sub(rb"<w:cols\b[^>]*/>", b'<w:cols w:num="two" w:space="abc"/>', data)
+    return data
+def _with_bad_page_size(name: str, data: bytes) -> bytes | None:
+    if name == "word/document.xml":
+        return re.sub(rb"<w:pgSz\b[^>]*/>", b'<w:pgSz w:w="garbage" w:h="garbage"/>', data)
+    return data
 
 def test_target_docx_analysis_rejects_unresolvable_theme(tmp_path: Path) -> None:
     source = tmp_path / "source.docx"
@@ -280,7 +270,6 @@ def test_target_docx_analysis_rejects_unresolvable_theme(tmp_path: Path) -> None
     assert excinfo.value.error_code == "docx_target_unmeasurable"
     assert "theme" in str(excinfo.value).lower()
 
-
 def test_target_docx_analysis_rejects_missing_page_section(tmp_path: Path) -> None:
     source = tmp_path / "source.docx"
     Document().save(source)
@@ -293,3 +282,19 @@ def test_target_docx_analysis_rejects_missing_page_section(tmp_path: Path) -> No
 
     assert excinfo.value.error_code == "docx_target_unmeasurable"
     assert "sectPr" in str(excinfo.value)
+
+@pytest.mark.parametrize("transform", [_with_bad_columns, _with_bad_page_size])
+def test_target_docx_analysis_wraps_malformed_section_attributes(
+    tmp_path: Path,
+    transform,
+) -> None:
+    source = tmp_path / "source.docx"
+    Document().save(source)
+    target_path = tmp_path / "malformed.docx"
+    _rewrite_docx(source, target_path, transform)
+
+    with pytest.raises(TargetDocxAnalysisError) as excinfo:
+        analyze_target_docx(target_path, tmp_path / "analysis")
+
+    assert excinfo.value.error_code == "docx_target_unmeasurable"
+    assert "could not be measured" in str(excinfo.value)

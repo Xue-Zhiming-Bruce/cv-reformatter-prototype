@@ -8,7 +8,6 @@ from docx import Document
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import parse_xml
 from docx.oxml.ns import qn
-from pydantic import ValidationError
 
 from app.template_analysis.artifacts import LAYOUT_SPEC_FILENAME
 from app.template_analysis.schemas import (ColumnStyle, DecorationStyle, HeaderLayoutStyle, LayoutTemplateSpec, PageStyle, SectionLayoutSpec, SpacingStyle, TextStyle)
@@ -36,13 +35,14 @@ def analyze_target_docx(docx_path: str | Path, output_dir: str | Path) -> Layout
     document = _load_document(source_path)
     try:
         spec = _build_spec(document)
-    except ValidationError as exc:
-        raise TargetDocxAnalysisError(f"The target DOCX typography could not be measured safely: {exc}") from exc
+    except (TargetDocxAnalysisError, FileNotFoundError):
+        raise
+    except Exception as exc:
+        raise TargetDocxAnalysisError(f"The target DOCX could not be measured safely; its document structure is unsupported or malformed: {exc}") from exc
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     (output / LAYOUT_SPEC_FILENAME).write_text(json.dumps(spec.model_dump(mode="json"), indent=2, ensure_ascii=False), encoding="utf-8")
     return spec
-
 def _load_document(source_path: Path) -> Any:
     try:
         return Document(source_path)
