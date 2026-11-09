@@ -318,9 +318,12 @@ November 10 progress: the owner-review baseline is recorded in typed categories
 without changing any acceptance. [`2026-11-10 Owner Review
 Baseline`](../evaluations/2026-11-10_OWNER_REVIEW_BASELINE.md) classifies the
 three accepted content shapes (ordinary, nested, content outside the target)
-and keeps the template-proof, header-geometry, badge-representation, and
+and keeps the template-proof, header-geometry, badge-comparison, and
 process-crash items open for explicit owner judgment under
-`owner-review-feedback-1.0`. Category definitions and owner-review criteria live
+`owner-review-feedback-1.0`. The same record now indexes the source, target,
+result and comparison files for all three shapes, the independent checks, the
+measured requests and elapsed time, and the first failing stage of every open
+item. Category definitions and owner-review criteria live
 in the [Product Specification](../product/PRODUCT_SPEC.md#content-arrangement-and-owner-review);
 the record format lives in
 [Test Result Artifact Format](../testing/TEST_RESULT_FORMAT.md#owner-review-feedback-record-additive-extension-versioned).
