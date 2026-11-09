@@ -149,10 +149,13 @@ the same machine are separate checkouts that these settings neither filter nor
 clean: inspect with `git worktree list` and clean inside the worktree you are
 working in, rather than removing another agent's files.
 
-Deleting local artifacts is a separate explicit action:
-`python scripts/clean_workspace.py --dry-run` first, after checking accepted
-snapshots, cited evidence, and referenced paths. The command never removes
-source, tracked tests/docs, credentials, or the current matrix run.
+Deleting local artifacts is a separate explicit action: run
+`python scripts/clean_workspace.py` first, after checking accepted snapshots,
+cited evidence, and referenced paths. It deletes nothing without `--apply`:
+the bare command is the preview, and the scopes are named in
+[`docs/testing/TEST_STRUCTURE.md`](../testing/TEST_STRUCTURE.md). The command
+never removes source, tracked tests/docs, credentials, or the current matrix
+run.
 
 ## Mainline And Commits
 
