@@ -218,8 +218,16 @@ def _plan_decisions(plan: C2RenderPlan) -> list[CompositionDecision]:
                 destination_refs=[record["destination_node"]],
                 action="merge_into_compatible_section",
                 state="explained",
-                reason=record["reason"],
-                evidence=["pipeline_render_plan.merged_candidate_headings"],
+                reason=(
+                    f"The target renders its own label "
+                    f"{labels[record['destination_node']]!r} for this section, so the "
+                    f"candidate heading {record['heading']!r} is not printed and its "
+                    f"content merges into the mapped section."
+                ),
+                evidence=[
+                    "pipeline_render_plan.merged_candidate_headings",
+                    record["reason"],
+                ],
             )
         )
     for section in plan.appended_sections:

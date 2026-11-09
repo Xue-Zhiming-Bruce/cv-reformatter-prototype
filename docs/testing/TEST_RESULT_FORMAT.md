@@ -238,6 +238,18 @@ explicit judgment; a green test suite or a passing synthetic proof never closes
   them.
 - Automated findings with no owner statement are not feedback records; they stay
   in the run manifest diagnostics.
+- A generated preview's content-arrangement report
+  (`composition_report.json`, see
+  [API Contract](../architecture/API_CONTRACT.md#content-arrangement-report))
+  is the reference the owner reviews against. It explains where approved
+  content went, so a reasonable arrangement — a target label replacing a
+  candidate heading, a candidate-only section appended under the existing
+  overflow policy, an empty optional section left hidden — is never recorded as
+  a `representation_defect` merely because it differs from the candidate's own
+  layout. Reporting one instance as `owner_preference` does not create a
+  `lasting_rule`; that still needs the record and scope the categories in
+  [Content Arrangement And Owner Review](../product/PRODUCT_SPEC.md#content-arrangement-and-owner-review)
+  require.
 
 ## Validation Before Handoff
 
