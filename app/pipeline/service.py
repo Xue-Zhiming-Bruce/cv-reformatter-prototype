@@ -820,14 +820,6 @@ def _apply_presentation_label_approval(
         for label_id in approval.approved_label_ids
     ]
 
-def _approved_presentation_labels(
-    catalog: list[PresentationLabel],
-) -> list[PresentationLabel]:
-    """The ONLY renderable labels: the shell-recognized view.
-    A proposed entry is deliberately excluded (non-renderable, and not
-    privacy-excluded)."""
-    return [label for label in catalog if label.status == "approved"]
-
 def _heuristic_presentation_labels(catalog: list[PresentationLabel]) -> list[PresentationLabel]:
     """Recognize measured conventional headings using the product vocabulary.
 
@@ -1215,26 +1207,6 @@ def _e5_content_shape_capability_gaps(details: dict[str, Any]) -> list[str]:
             ):
                 gaps.append(f"{section}.{prop.get('property')}")
     return gaps
-
-def _candidate_role_page(candidate: Any, role: str, current_pdf: Path) -> int:
-    """Locate a role from its existing rendered leaves/heading; no new metric."""
-    import pdfplumber
-
-    texts = [
-        leaf.text for leaf in candidate.leaves
-        if leaf.source == role and leaf.text
-    ]
-    texts.extend(
-        section.heading for section in candidate.sections
-        if section.source == role and section.heading
-    )
-    with pdfplumber.open(current_pdf) as document:
-        for page_number, page in enumerate(document.pages, 1):
-            page_text = re.sub(r"\s+", " ", page.extract_text() or "").casefold()
-            if any(re.sub(r"\s+", " ", text).casefold() in page_text for text in texts):
-                return page_number
-    return 1
-
 
 def _e5_quarantine_eligibility(
     candidate_version: RenderVersion,
@@ -5002,48 +4974,6 @@ def _write_e5_lane_report_md(lane_id: str, record: E5LaneRecord) -> str:
 This is an experiment record; automated metrics declare no winner and no
 convergence. The owner reviews the actual files and decides.
 """
-
-def summarize_e5_state(e5_state_path: Path) -> dict[str, Any]:
-    """Deterministic summary of ONE E5 run from its `e5_state.json` (the
-    ledger/report data source): every reported number is read from that
-    single run record, so reports can never splice findings, measurements,
-    calls, probes or costs from different runs. Companion helper for
-    `E_PIPELINE_PREP.md` and run reports."""
-    state = json.loads(Path(e5_state_path).read_text(encoding="utf-8"))
-    lanes: dict[str, Any] = {}
-    for lane_id, lane in state.get("lanes", {}).items():
-        summary = lane.get("summary", {})
-        budget_state = lane.get("budget_state", {})
-        lanes[lane_id] = {
-            "terminal_state": lane.get("terminal_state"),
-            "terminal_reason": lane.get("terminal_reason"),
-            "best_render_version": lane.get("best_render_version"),
-            "active_render_version": lane.get("active_render_version"),
-            "render_versions": len(lane.get("render_versions", [])),
-            "promoted_versions": summary.get("promoted_versions"),
-            "findings": summary.get("total_findings"),
-            "confirmed_measurements": summary.get("confirmed_measurements"),
-            "unbound_measurements": summary.get("unbound_measurements"),
-            "builder_calls": summary.get("builder_calls"),
-            "reviewer_calls": summary.get("reviewer_calls"),
-            "attribution_calls": summary.get("attribution_calls"),
-            "model_calls": budget_state.get("model_request_count"),
-            "model_calls_by_mode": budget_state.get("calls_by_mode"),
-            "tool_calls": budget_state.get("tool_call_count"),
-            "tool_calls_by_tool": budget_state.get("calls_by_tool"),
-            "input_tokens": budget_state.get("usage", {}).get("input_tokens", 0),
-            "output_tokens": budget_state.get("usage", {}).get("output_tokens", 0),
-            "probes_passed": lane.get("content_shape_probes_passed"),
-            "probe_mode": summary.get("probe_mode"),
-        }
-    return {
-        "run_id": Path(e5_state_path).parent.name,
-        "source": str(e5_state_path),
-        "terminal_state": state.get("summary", {}).get("terminal_state"),
-        "source_changed": state.get("summary", {}).get("source_changed"),
-        "source_identity_stable": state.get("summary", {}).get("source_identity_stable"),
-        "lanes": lanes,
-    }
 
 def _selected_lane_artifact(
     lane: "E5LaneRecord",

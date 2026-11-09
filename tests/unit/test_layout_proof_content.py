@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from app.template_analysis.layout_proof_content import (
-    build_all_variants,
     build_synthetic_context,
 )
 from app.template_analysis.layout_proof_schemas import (
@@ -35,12 +34,6 @@ def test_variants_supported() -> None:
         context = build_synthetic_context(variant)
         assert isinstance(context, SyntheticPlaceholderRenderContext)
         assert context.variant is variant
-
-
-def test_all_variants_helper() -> None:
-    variants = build_all_variants()
-    assert set(variants) == set(LengthVariant)
-    assert variants[LengthVariant.SHORT].variant is LengthVariant.SHORT
 
 
 def test_variants_are_structurally_different() -> None:

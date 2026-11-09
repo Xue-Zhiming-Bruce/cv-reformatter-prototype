@@ -363,12 +363,14 @@ def test_resume_abc_segmentation_audit_passes_with_mock_llm_first(
     from app.extraction.llm_segmentation import (
         materialize_llm_segmentation,
         segment_and_extract_resume,
-        segmentation_output_lines,
+        segmentation_output_line_evidence,
     )
 
     text = read_pdf_text(resume_path)
     output = segment_and_extract_resume(text, MockLLMClient())
-    audit = audit_segmentation_lines(text, segmentation_output_lines(output))
+    audit = audit_segmentation_lines(
+        text, [line for line, _block_id in segmentation_output_line_evidence(output)]
+    )
     assert audit.status == "passed", audit
 
     _, document = materialize_llm_segmentation(text, output)

@@ -15,7 +15,6 @@ import json
 import os
 import re
 import time
-import uuid
 from abc import ABC, abstractmethod
 from collections import Counter
 from typing import Any, Literal
@@ -505,7 +504,3 @@ def _env_float(name: str, default: float) -> float:
     except ValueError:
         return default
     return value if value > 0 else default
-
-
-def new_proposal_id() -> str:
-    return f"proposal_{uuid.uuid4().hex}"

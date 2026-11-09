@@ -12,10 +12,8 @@ from app.extraction.candidate_schema import CandidateProfile
 from app.template_analysis.design_cache import DesignCache, DesignCacheKey
 from app.template_analysis.design_evidence import (
     build_design_request,
-    build_target_layout_evidence,
     candidate_sections_from_profile,
     inventory_sha256,
-    target_checksum_from_bytes,
 )
 from app.template_analysis.design_service import (
     DESIGN_STRATEGY_CLAUDE,
@@ -35,7 +33,7 @@ from app.template_analysis.designer import (
     MockTemplateDesigner,
     TemplateDesigner,
 )
-from tests.helpers.adobe_evidence import build_synthetic_target_analysis
+from tests.helpers.adobe_evidence import build_synthetic_target_evidence
 from tests.helpers.synthetic_pdf import build_styled_target_pdf
 
 
@@ -52,12 +50,7 @@ def _setup():
     artifact_dir = tmp_path / "artifact_1"
     artifact_dir.mkdir(parents=True)
     pdf = build_styled_target_pdf(artifact_dir / "styled.pdf")
-    analysis = build_synthetic_target_analysis(pdf, artifact_dir)
-    evidence = build_target_layout_evidence(
-        analysis,
-        target_checksum=target_checksum_from_bytes(pdf.read_bytes()),
-        target_format="pdf",
-    )
+    evidence, style_spec = build_synthetic_target_evidence(pdf)
     profile = CandidateProfile(
         full_name="Jane",
         email="jane@example.com",
@@ -68,7 +61,7 @@ def _setup():
         education=[{"institution": "U"}],
     )
     sections = candidate_sections_from_profile(profile)
-    return tmp, tmp_path, artifact_dir, evidence, analysis.style_spec, sections, profile
+    return tmp, tmp_path, artifact_dir, evidence, style_spec, sections, profile
 
 
 def test_default_strategy_is_measured_template(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -373,10 +366,13 @@ def test_unrepresentable_placement_is_explicit_unsupported_state() -> None:
         cache=DesignCache(tmp_path / "cache"),
         designer=_NonePlacementDesigner(),
     )
+    # Placement comes from the proposal only when the target has no measured
+    # section structure; this fixture's bridge evidence measures it.
+    proposal_evidence = evidence.model_copy(update={"section_structure": []})
     state = service.create_design(
         artifact_id="artifact_1",
         artifact_dir=artifact_dir,
-        evidence=evidence,
+        evidence=proposal_evidence,
         candidate_sections=sections,
         style_spec=style_spec,
     )

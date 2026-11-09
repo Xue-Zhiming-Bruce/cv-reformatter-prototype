@@ -19,12 +19,14 @@ from app.template_analysis.commercial.models import (
     NormalizedTextBlock,
 )
 from app.template_analysis.design_evidence import target_checksum_from_bytes
+from app.template_analysis.design_schemas import TargetLayoutEvidence
 from app.template_analysis.design_compiler import compile_measured_layout_template_spec
 from app.template_analysis.schemas import (
     AnalysisArtifactManifest,
     BoundingBox,
     PageLayout,
     TargetPdfAnalysis,
+    TemplateStyleSpec,
     TextBlock,
 )
 
@@ -80,6 +82,17 @@ def measured_adobe_evidence() -> NormalizedLayoutEvidence:
         text_blocks=blocks,
         rules=rules,
     )
+
+
+def build_synthetic_target_evidence(
+    pdf_path: str | Path,
+) -> tuple[TargetLayoutEvidence, TemplateStyleSpec]:
+    """Current production conversion owner: normalized measured evidence ->
+    indexed target evidence + measured style. No legacy analysis round trip."""
+    normalized = measured_adobe_evidence()
+    checksum = target_checksum_from_bytes(Path(pdf_path).read_bytes())
+    return build_design_evidence_from_normalized(normalized, target_checksum=checksum)
+
 
 
 def mock_run_adobe_layout(_pdf_path: Path):

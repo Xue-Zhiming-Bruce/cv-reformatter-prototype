@@ -194,15 +194,6 @@ def segment_and_extract_resume(
         ) from exc
 
 
-def segmentation_output_lines(output: LLMSegmentationOutput) -> list[str]:
-    lines: list[str] = []
-    for section in output.sections:
-        if section.heading is not None:
-            lines.append(section.heading)
-        lines.extend(section.items)
-    return lines
-
-
 def segmentation_output_line_evidence(
     output: LLMSegmentationOutput,
 ) -> list[tuple[str, str]]:

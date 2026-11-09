@@ -11,9 +11,7 @@ import pytest
 from app.extraction.candidate_schema import CandidateProfile
 from app.template_analysis.design_evidence import (
     build_design_request,
-    build_target_layout_evidence,
     candidate_sections_from_profile,
-    target_checksum_from_bytes,
 )
 from app.template_analysis.design_schemas import (
     CandidateSectionRole,
@@ -22,7 +20,7 @@ from app.template_analysis.design_schemas import (
     SectionMapping,
 )
 from app.template_analysis.design_validator import validate_design_proposal
-from tests.helpers.adobe_evidence import build_synthetic_target_analysis
+from tests.helpers.adobe_evidence import build_synthetic_target_evidence
 from tests.helpers.synthetic_pdf import build_styled_target_pdf
 
 
@@ -31,12 +29,7 @@ def evidence():
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         pdf = build_styled_target_pdf(tmp_path / "styled.pdf")
-        analysis = build_synthetic_target_analysis(pdf, tmp_path)
-        return build_target_layout_evidence(
-            analysis,
-            target_checksum=target_checksum_from_bytes(pdf.read_bytes()),
-            target_format="pdf",
-        )
+        return build_synthetic_target_evidence(pdf)[0]
 
 
 @pytest.fixture(scope="module")
@@ -44,8 +37,7 @@ def style_spec():
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         pdf = build_styled_target_pdf(tmp_path / "styled.pdf")
-        analysis = build_synthetic_target_analysis(pdf, tmp_path)
-        return analysis.style_spec
+        return build_synthetic_target_evidence(pdf)[1]
 
 
 def _request(evidence, profile: CandidateProfile | None = None) -> DesignRequest:

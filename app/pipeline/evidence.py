@@ -195,15 +195,6 @@ class TargetStructureDraft(EvidenceModel):
 def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
-def _dedup_unresolved(items: list["UnresolvedItem"]) -> list["UnresolvedItem"]:
-    """Phase 0 evidence bookkeeping: one unresolved QUESTION is one item.
-    The same item_id recorded once per matching evidence row is a duplicate,
-    not multiple unresolved items; the first record wins."""
-    unique: dict[str, "UnresolvedItem"] = {}
-    for item in items:
-        unique.setdefault(item.item_id, item)
-    return list(unique.values())
-
 def _raw_page_sizes(structured_data: dict[str, Any]) -> dict[int, tuple[float, float]]:
     sizes: dict[int, tuple[float, float]] = {}
     for page in structured_data.get("pages") or []:
@@ -785,15 +776,6 @@ class EvidencePod:
                 f"region too large to be a region crop (> {MAX_CROP_SIDE_PT * 2}pt): "
                 "use inspect_page_overview for whole pages"
             )
-
-    def record_summary(self) -> dict[str, Any]:
-        by_status = Counter(record.status for record in self.records)
-        return {
-            "pod_schema_version": POD_SCHEMA_VERSION,
-            "access_count": len(self.records),
-            "by_status": dict(by_status),
-            "records": [record.model_dump(mode="json") for record in self.records],
-        }
 
 def _verbatim_node(node: dict[str, Any]) -> dict[str, Any]:
     keep = (

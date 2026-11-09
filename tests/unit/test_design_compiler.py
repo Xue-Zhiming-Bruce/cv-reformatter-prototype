@@ -18,9 +18,7 @@ from app.template_analysis.design_compiler import (
 )
 from app.template_analysis.design_evidence import (
     build_design_request,
-    build_target_layout_evidence,
     candidate_sections_from_profile,
-    target_checksum_from_bytes,
 )
 from app.template_analysis.design_schemas import (
     CandidateSectionRole,
@@ -28,7 +26,7 @@ from app.template_analysis.design_schemas import (
     SectionMapping,
 )
 from app.template_analysis.design_validator import validate_design_proposal
-from tests.helpers.adobe_evidence import build_synthetic_target_analysis
+from tests.helpers.adobe_evidence import build_synthetic_target_evidence
 from tests.helpers.synthetic_pdf import build_styled_target_pdf
 
 
@@ -38,12 +36,7 @@ def _pipeline():
     with _tmp.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         pdf = build_styled_target_pdf(tmp_path / "styled.pdf")
-        analysis = build_synthetic_target_analysis(pdf, tmp_path)
-        evidence = build_target_layout_evidence(
-            analysis,
-            target_checksum=target_checksum_from_bytes(pdf.read_bytes()),
-            target_format="pdf",
-        )
+        evidence, style_spec = build_synthetic_target_evidence(pdf)
         profile = CandidateProfile(
             full_name="Jane",
             email="jane@example.com",
@@ -54,18 +47,28 @@ def _pipeline():
             education=[{"institution": "U"}],
         )
         request = build_design_request(evidence, candidate_sections_from_profile(profile))
-        return analysis, evidence, request
+        return style_spec, evidence, request
+
+
+def _proposal_driven(evidence):
+    """Evidence without measured section structure.
+
+    Order and placement come from the proposal only when the target yields no
+    measured section structure; the current bridge measures it for this
+    fixture, so the fallback assertions state the absence explicitly.
+    """
+    return evidence.model_copy(update={"section_structure": []})
 
 
 def test_compile_is_deterministic() -> None:
-    analysis, evidence, request = _pipeline()
+    style_spec, evidence, request = _pipeline()
     from app.template_analysis.designer import MockTemplateDesigner
 
     proposal = MockTemplateDesigner().design(request)
     validation = validate_design_proposal(request, proposal, evidence)
     assert validation.ok, validation.errors
-    spec_a = compile_layout_template_spec(request, proposal, evidence, analysis.style_spec)
-    spec_b = compile_layout_template_spec(request, proposal, evidence, analysis.style_spec)
+    spec_a = compile_layout_template_spec(request, proposal, evidence, style_spec)
+    spec_b = compile_layout_template_spec(request, proposal, evidence, style_spec)
     assert spec_a.model_dump(mode="json") == spec_b.model_dump(mode="json")
     assert spec_a.template_version == spec_b.template_version
 
@@ -75,7 +78,7 @@ def test_default_contact_ownership_invalidates_pre_v10_compiler_cache() -> None:
 
 
 def test_proposal_checksum_is_stable() -> None:
-    analysis, evidence, request = _pipeline()
+    style_spec, evidence, request = _pipeline()
     from app.template_analysis.designer import MockTemplateDesigner
 
     proposal = MockTemplateDesigner().design(request)
@@ -84,7 +87,7 @@ def test_proposal_checksum_is_stable() -> None:
 
 
 def test_sections_follow_proposal_order_and_labels() -> None:
-    analysis, evidence, request = _pipeline()
+    style_spec, evidence, request = _pipeline()
     from app.template_analysis.designer import MockTemplateDesigner
 
     proposal = MockTemplateDesigner().design(request)
@@ -101,7 +104,9 @@ def test_sections_follow_proposal_order_and_labels() -> None:
         if m.source_role not in {"skills", "contact"}
     ]
     reordered = proposal.model_copy(update={"section_order": ordered_ids})
-    spec = compile_layout_template_spec(request, reordered, evidence, analysis.style_spec)
+    spec = compile_layout_template_spec(
+        request, reordered, _proposal_driven(evidence), style_spec
+    )
     sources = [section.source for section in spec.sections]
     assert sources[0] == "skills"
     assert sources[1] == "contact"
@@ -109,18 +114,18 @@ def test_sections_follow_proposal_order_and_labels() -> None:
 
 
 def test_two_column_layout_compiles_with_two_columns() -> None:
-    analysis, evidence, request = _pipeline()
+    style_spec, evidence, request = _pipeline()
     from app.template_analysis.designer import MockTemplateDesigner
 
     proposal = MockTemplateDesigner().design(request).model_copy(
         update={"layout_class": "sidebar"}
     )
-    spec = compile_layout_template_spec(request, proposal, evidence, analysis.style_spec)
+    spec = compile_layout_template_spec(request, proposal, evidence, style_spec)
     assert spec.columns.count == 2
 
 
 def test_declared_unsupported_never_compiles() -> None:
-    analysis, evidence, request = _pipeline()
+    style_spec, evidence, request = _pipeline()
     proposal = DesignProposal(
         proposal_id="p_unsupported",
         layout_class="one_column",
@@ -133,15 +138,15 @@ def test_declared_unsupported_never_compiles() -> None:
         confidence=0.3,
     )
     with pytest.raises(DesignCompilerError):
-        compile_layout_template_spec(request, proposal, evidence, analysis.style_spec)
+        compile_layout_template_spec(request, proposal, evidence, style_spec)
 
 
 def test_compiled_spec_has_no_renderer_properties() -> None:
-    analysis, evidence, request = _pipeline()
+    style_spec, evidence, request = _pipeline()
     from app.template_analysis.designer import MockTemplateDesigner
 
     proposal = MockTemplateDesigner().design(request)
-    spec = compile_layout_template_spec(request, proposal, evidence, analysis.style_spec)
+    spec = compile_layout_template_spec(request, proposal, evidence, style_spec)
     payload = json.dumps(spec.model_dump(mode="json"))
     assert "python-docx" not in payload
     assert "wml" not in payload.lower()
@@ -166,21 +171,21 @@ def _with_placement(proposal, source_role: str, placement: str):
 def test_main_column_to_sidebar_changes_compiled_spec() -> None:
     """A validated placement decision must change the compiled
     provider-neutral template contract."""
-    analysis, evidence, request = _pipeline()
+    style_spec, evidence, request = _pipeline()
     from app.template_analysis.designer import MockTemplateDesigner
 
     proposal = MockTemplateDesigner().design(request)
     spec_main = compile_layout_template_spec(
         request,
         _with_placement(proposal, "summary", "main_column"),
-        evidence,
-        analysis.style_spec,
+        _proposal_driven(evidence),
+        style_spec,
     )
     spec_sidebar = compile_layout_template_spec(
         request,
         _with_placement(proposal, "summary", "sidebar"),
-        evidence,
-        analysis.style_spec,
+        _proposal_driven(evidence),
+        style_spec,
     )
     summary_main = next(section for section in spec_main.sections if section.source == "summary")
     summary_sidebar = next(
@@ -194,11 +199,11 @@ def test_main_column_to_sidebar_changes_compiled_spec() -> None:
 
 def test_compiled_sections_always_carry_measured_style() -> None:
     """Every compiled section carries measured typography without defaults."""
-    analysis, evidence, request = _pipeline()
+    style_spec, evidence, request = _pipeline()
     from app.template_analysis.designer import MockTemplateDesigner
 
     proposal = MockTemplateDesigner().design(request)
-    spec = compile_layout_template_spec(request, proposal, evidence, analysis.style_spec)
+    spec = compile_layout_template_spec(request, proposal, evidence, style_spec)
     for section in spec.sections:
         assert section.heading_style is not None
         assert section.heading_style.font_family
@@ -209,28 +214,30 @@ def test_compiled_sections_always_carry_measured_style() -> None:
 def test_unsupported_placement_never_silently_compiles() -> None:
     """An unrepresentable placement raises an explicit error; it is never
     silently replaced with a default placement."""
-    analysis, evidence, request = _pipeline()
+    style_spec, evidence, request = _pipeline()
     from app.template_analysis.designer import MockTemplateDesigner
 
     proposal = MockTemplateDesigner().design(request)
     bad = _with_placement(proposal, "summary", "none")
     with pytest.raises(UnsupportedPlacementError):
-        compile_layout_template_spec(request, bad, evidence, analysis.style_spec)
+        compile_layout_template_spec(
+            request, bad, _proposal_driven(evidence), style_spec
+        )
 
 
 def test_compiled_spec_placement_has_no_coordinates() -> None:
     """Compiled placement is semantic only; exact geometry still comes from
     measured evidence, never from the proposal. (Measured page dimensions may
     legitimately appear in the spec; section placement never carries them.)"""
-    analysis, evidence, request = _pipeline()
+    style_spec, evidence, request = _pipeline()
     from app.template_analysis.designer import MockTemplateDesigner
 
     proposal = MockTemplateDesigner().design(request)
     spec = compile_layout_template_spec(
         request,
         _with_placement(proposal, "summary", "sidebar"),
-        evidence,
-        analysis.style_spec,
+        _proposal_driven(evidence),
+        style_spec,
     )
     placements = {section.source: section.placement for section in spec.sections}
     assert placements["summary"] == "sidebar"

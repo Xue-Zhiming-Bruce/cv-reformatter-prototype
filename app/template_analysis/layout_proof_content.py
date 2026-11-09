@@ -171,11 +171,6 @@ def build_synthetic_context(variant: LengthVariant) -> SyntheticPlaceholderRende
     )
 
 
-def build_all_variants() -> dict[LengthVariant, SyntheticPlaceholderRenderContext]:
-    """Build contexts for all length variants, keyed by variant."""
-    return {variant: build_synthetic_context(variant) for variant in LengthVariant}
-
-
 def synthetic_context_checksum(context: SyntheticPlaceholderRenderContext) -> str:
     """Bind canonical synthetic text and its derived typed contact metadata."""
     payload = json.dumps(

@@ -9,8 +9,13 @@ from app.extraction.llm_segmentation import (
     LLMSegmentationOutput,
     materialize_llm_segmentation,
     segment_and_extract_resume,
-    segmentation_output_lines,
+    segmentation_output_line_evidence,
 )
+
+
+def _output_lines(output: LLMSegmentationOutput) -> list[str]:
+    """The production line projection (text only) for audit assertions."""
+    return [text for text, _block_id in segmentation_output_line_evidence(output)]
 
 
 def _output() -> LLMSegmentationOutput:
@@ -74,7 +79,7 @@ def test_materialized_profile_and_blocks_keep_llm_section_lineage() -> None:
     source = ("Jane Candidate\njane@example.com\nPROJECTS\nResume Builder\n• Preserved every source\nline\n"
               "EXPERIENCE\nExample Ltd\n• Built fault-tolerant\nservices for clients.\n• Monitored results.\n")
 
-    audit = audit_segmentation_lines(source, segmentation_output_lines(output))
+    audit = audit_segmentation_lines(source, _output_lines(output))
     profile, document = materialize_llm_segmentation(source, output)
 
     assert audit.status == "passed"
@@ -91,7 +96,7 @@ def test_materialized_profile_and_blocks_keep_llm_section_lineage() -> None:
         "Built fault-tolerant services for clients.", "Monitored results.",
     ]
     assert document.blocks[2].raw_text == "Example Ltd\n• Built fault-tolerant\nservices for clients.\n• Monitored results."
-    merged_evidence = [line for line in segmentation_output_lines(output) if line != "services for clients."]
+    merged_evidence = [line for line in _output_lines(output) if line != "services for clients."]
     merged_evidence[merged_evidence.index("• Built fault-tolerant")] += " services for clients."
     assert audit_segmentation_lines(source, merged_evidence).approval_blocked
 

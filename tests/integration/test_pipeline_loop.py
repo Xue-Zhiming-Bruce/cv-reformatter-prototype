@@ -1860,39 +1860,6 @@ def test_source_diff_identity_ignores_unrelated_files(tmp_path: Path) -> None:
     assert e._tracked_diff_sha256(repo, identity) != baseline
 
 
-def test_summarize_e5_state_reads_one_run_only() -> None:
-    """The deterministic ledger summarizer reads a single e5_state.json and
-    reports exactly that run's numbers (no cross-run splicing possible)."""
-    from app.pipeline.service import E5LaneRecord, E5LoopRecord, summarize_e5_state
-    import tempfile
-
-    lane = E5LaneRecord(
-        lane="a", representation="lane A",
-        best_render_version=None, active_render_version="v1",
-        summary={
-            "total_findings": 7, "confirmed_measurements": 5,
-            "unbound_measurements": 1, "builder_calls": 2,
-            "promoted_versions": 0, "probe_mode": "diagnostic",
-        },
-    )
-    record = E5LoopRecord(
-        target_id="t", target_sha256="0" * 64, lanes={"a": lane},
-        summary={"terminal_state": "budget_exhausted", "source_changed": False},
-    )
-    with tempfile.TemporaryDirectory() as tmp:
-        run_dir = Path(tmp) / "e_pipeline_e5_test"
-        run_dir.mkdir()
-        (run_dir / "e5_state.json").write_text(record.model_dump_json())
-        summary = summarize_e5_state(run_dir / "e5_state.json")
-    assert summary["run_id"] == "e_pipeline_e5_test"
-    lane_summary = summary["lanes"]["a"]
-    assert lane_summary["findings"] == 7
-    assert lane_summary["confirmed_measurements"] == 5
-    assert lane_summary["builder_calls"] == 2
-    assert lane_summary["best_render_version"] is None
-    assert summary["source_changed"] is False
-
-
 # --- E5 second correctness round: best vs defect-level, version-bound state,
 # --- fail-closed token fill, source identity, restricted metadata -------------
 

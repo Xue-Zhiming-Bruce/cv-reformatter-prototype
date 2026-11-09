@@ -354,32 +354,6 @@ def test_sdk_wrapped_envelope_failure_is_not_retried_as_a_connection_error(tmp_p
     with pytest.raises(BudgetExhausted, match="envelope"):
         _with_connection_retry(call, trace=trace, what="synthetic reviewer")
     assert attempts == [1] and budget.model_requests == 0
-
-
-def test_duplicate_unresolved_items_are_deduplicated_by_item_id() -> None:
-    items = [
-        e.UnresolvedItem(
-            item_id="unresolved.same",
-            question="same question",
-            status="unresolved",
-            reason="r",
-            evidence_gap="ambiguous_relation",
-        )
-        for _ in range(5)
-    ] + [
-        e.UnresolvedItem(
-            item_id="unresolved.other",
-            question="different question",
-            status="unresolved",
-            reason="r",
-            evidence_gap="normalization_loss",
-        )
-    ]
-    deduped = e._dedup_unresolved(items)
-    assert len(deduped) == 2
-    assert len({item.item_id for item in deduped}) == 2
-
-
 def test_hardcoded_target_data_scan_catches_data_but_not_prose() -> None:
     """Minimal positive/negative check for the semantic scan that replaced the
     old substring scan.
