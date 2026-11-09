@@ -19,6 +19,7 @@ import app.pipeline.service as e5
 import app.pipeline.presentation_labels as presentation_labels
 import app.pipeline.run_models as run_models
 from app.pipeline.runtime import RunBudget
+from app.pipeline.candidate_content import CandidateDocument, CandidateSection
 import app.pipeline.evidence as evidence
 from tests.helpers.pipeline import (
     ROOT, LOCAL_TARGET as TARGET_PDF, LOCAL_INPUTS,
@@ -1457,6 +1458,48 @@ def test_run_e5_tiny_repair_budget_still_returns_the_safety_valid_output(tmp_pat
     assert lane["best_render_version"]
     selected = next(v for v in lane["render_versions"] if v["version_id"] == lane["best_render_version"])
     assert e._sha256_file(run_dir / "lane_a/render_1.pdf") == selected["pdf_sha256"]
+
+
+def test_selected_version_plan_persists_its_own_arrangement(tmp_path: Path) -> None:
+    """Each version writes the plan it rendered beside its HTML/PDF, so an
+    owner-facing explanation is read, never re-derived against a newer plan."""
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    base = synthetic_pipeline_candidate("Candidate Alpha")
+    headed = CandidateDocument(
+        candidate_id=base.candidate_id,
+        leaves=base.leaves,
+        sections=[
+            CandidateSection(
+                section_id="summary", source="summary", content_kind="paragraph",
+                # Differs from the target's own label, so the heading really is
+                # replaced rather than merely re-cased.
+                heading="Professional Summary", leaf_ids=["summary.item"],
+            )
+        ],
+    )
+    run_dir, _terminal, record = e.run_e5(
+        **inputs, candidate=headed, out_dir=tmp_path / "run", live=False,
+        max_repair_rounds=0, budget=RunBudget(max_model_requests=1, max_tool_calls=1),
+    )
+    lane = record["lanes"]["a"]
+    selected = lane["best_render_version"]
+    index = [v["version_id"] for v in lane["render_versions"]].index(selected) + 1
+    lane_dir = Path(run_dir) / "lane_a"
+    plan = json.loads((lane_dir / f"render_{index}_plan.json").read_text())
+    # The persisted plan is that version's own: it reproduces the leaf
+    # destinations the version's hard gates measured.
+    gates = json.loads((lane_dir / f"hard_gates_{selected}.json").read_text())
+    assert plan["leaf_ledger"] == {
+        leaf_id: leaf["destination"]
+        for leaf_id, leaf in gates["details"]["content_gate"]["leaf_records"].items()
+    }
+    labels = {s["node_id"]: s["label"] for s in [*plan["sections"], *plan["appended_sections"]]}
+    merged = [
+        m for m in plan["merged_candidate_headings"]
+        if m["heading"].casefold() != labels[m["destination_node"]].casefold()
+    ]
+    # A replaced candidate heading names the target section that absorbed it.
+    assert merged and merged[0]["destination_node"] == "section.01"
 
 
 def test_neither_lane_can_emit_an_unsupported_terminal_state() -> None:
