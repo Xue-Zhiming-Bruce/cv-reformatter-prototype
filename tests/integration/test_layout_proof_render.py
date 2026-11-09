@@ -7,19 +7,23 @@ from pathlib import Path
 import pytest
 
 from app.generation.chrome_html_to_pdf import HtmlToPdfExportError
-from app.template_analysis.layout_proof_content import build_synthetic_context
+from app.template_analysis.layout_proof_content import (
+    build_synthetic_context,
+    canonical_context_checksum,
+)
 from app.template_analysis.layout_proof_schemas import (
     LengthVariant,
     LayoutProofRenderRequest,
 )
 from app.template_analysis import layout_proof_service
-from app.template_analysis.layout_proof_service import (
+from app.template_analysis.layout_proof_artifacts import (
     DEFAULT_PROOF_OUTPUT_DIR,
-    LayoutProofRenderError,
-    _render_layout_proof_with_context,
-    canonical_context_checksum,
     file_sha256,
     layout_spec_checksum,
+)
+from app.template_analysis.layout_proof_service import (
+    LayoutProofRenderError,
+    _render_layout_proof_with_context,
     proof_id_for,
     render_layout_proof,
 )

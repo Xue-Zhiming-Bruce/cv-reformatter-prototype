@@ -105,10 +105,8 @@ def replace_proof_pdf_with_content(
     """Replace a variant's proof PDF with a text-bearing PDF containing the
     given lines and update the persisted render-result PDF checksum, simulating
     a renderer that produced exactly that (possibly incomplete) proof."""
-    from app.template_analysis.layout_proof_service import (
-        file_sha256,
-        load_variant_evidence,
-    )
+    from app.template_analysis.layout_proof_artifacts import file_sha256
+    from app.template_analysis.layout_proof_service import load_variant_evidence
 
     evidence = load_variant_evidence(artifact_dir, variant)
     assert evidence is not None, variant
@@ -147,10 +145,8 @@ def replace_proof_pdf_with_blank(artifact_dir: Path, variant: LengthVariant) -> 
     """
     from pypdf import PdfWriter
 
-    from app.template_analysis.layout_proof_service import (
-        file_sha256,
-        load_variant_evidence,
-    )
+    from app.template_analysis.layout_proof_artifacts import file_sha256
+    from app.template_analysis.layout_proof_service import load_variant_evidence
 
     evidence = load_variant_evidence(artifact_dir, variant)
     assert evidence is not None, variant

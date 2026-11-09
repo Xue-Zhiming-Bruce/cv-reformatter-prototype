@@ -83,12 +83,12 @@ from app.template_analysis.design_service import (
     get_design_strategy,
     load_design_state,
 )
+from app.template_analysis.layout_proof_artifacts import layout_spec_checksum
 from app.template_analysis.layout_proof_service import (
     LayoutProofMismatchError,
     LayoutProofRenderError,
     LayoutProofValidationError,
     active_renderer_version,
-    layout_spec_checksum,
     load_layout_proof_approval,
     render_candidate_document,
 )

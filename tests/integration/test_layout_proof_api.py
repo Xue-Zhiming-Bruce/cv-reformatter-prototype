@@ -813,7 +813,7 @@ def test_approve_rejects_structurally_failed_proofs(tmp_path: Path) -> None:
     # Simulate a renderer that dropped required content: replace the LONG
     # proof PDF with one missing a heading and keep the persisted checksum
     # consistent, then confirm approval recomputation refuses it.
-    from app.template_analysis.layout_proof_service import file_sha256, layout_spec_checksum
+    from app.template_analysis.layout_proof_artifacts import file_sha256, layout_spec_checksum
     from app.main import _load_generation_style_spec
     from tests.helpers.layout_proof import expected_proof_text
     from tests.helpers.synthetic_pdf import build_text_pdf

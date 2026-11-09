@@ -43,6 +43,16 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from app.generation.template_mapper import ClientFacingRenderContext
+from app.template_analysis.layout_proof_artifacts import (
+    DEFAULT_CANDIDATE_OUTPUT_DIR,
+    DEFAULT_PROOF_OUTPUT_DIR,
+    approval_path_for,
+    file_sha256,
+    layout_proofs_dir_for,
+    layout_spec_checksum,
+    variant_dir_for,
+    write_json_atomic,
+)
 from app.template_analysis.layout_proof_content import (
     build_synthetic_context,
     canonical_context_checksum,
@@ -198,29 +208,6 @@ def load_layout_proof_render_result(
             )
     return result
 
-#: Repository-approved debug artifact location for standalone proof renders.
-DEFAULT_PROOF_OUTPUT_DIR = Path("data/generated_outputs") / "layout_proofs"
-
-#: Repository-approved final candidate document location.
-DEFAULT_CANDIDATE_OUTPUT_DIR = Path("data/generated_outputs") / "candidate_documents"
-
-
-def layout_spec_checksum(spec: LayoutTemplateSpec) -> str:
-    """Deterministic sha256 of a ``LayoutTemplateSpec``'s canonical JSON."""
-    payload = json.dumps(
-        spec.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def file_sha256(path: str | Path) -> str:
-    """Deterministic sha256 of a file's bytes."""
-    digest = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
 
 def proof_id_for(request: LayoutProofRenderRequest) -> str:
     """Identity-bound proof id; agentic attempts preserve immutable prior files."""
@@ -299,7 +286,7 @@ def _render_layout_proof_with_context(
         if isinstance(request.layout_spec, LayoutTemplateSpec)
         else "template_style_spec.json"
     )
-    _write_json_atomic(
+    write_json_atomic(
         proof_dir / spec_filename,
         request.layout_spec.model_dump(mode="json"),
     )
@@ -377,53 +364,21 @@ def build_variant_evidence(
     )
 
 
-# -- artifact-scoped persistence ----------------------------------------------
-
-
-def layout_proofs_dir_for(artifact_dir: str | Path) -> Path:
-    return Path(artifact_dir) / "layout_proofs"
-
-
-def variant_dir_for(artifact_dir: str | Path, variant: LengthVariant) -> Path:
-    return layout_proofs_dir_for(artifact_dir) / "variants" / variant.value
-
-
-def approval_path_for(artifact_dir: str | Path) -> Path:
-    return layout_proofs_dir_for(artifact_dir) / "approval.json"
-
-
-def _write_json_atomic(path: Path, payload: object, *, canonical: bool = False) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2, ensure_ascii=False, sort_keys=canonical)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-
-
 def save_variant_evidence(
     artifact_dir: str | Path,
     evidence: VariantProofEvidence,
 ) -> None:
     """Persist per-variant evidence (strict JSON, atomic writes)."""
     directory = variant_dir_for(artifact_dir, evidence.variant)
-    _write_json_atomic(
+    write_json_atomic(
         directory / "render_result.json",
         evidence.render_result.model_dump(mode="json"),
     )
-    _write_json_atomic(
+    write_json_atomic(
         directory / "structural.json",
         evidence.structural.model_dump(mode="json"),
     )
-    _write_json_atomic(
+    write_json_atomic(
         directory / "visual.json",
         evidence.visual.model_dump(mode="json"),
     )
@@ -470,7 +425,7 @@ def save_layout_proof_approval(
     """Persist the approval aggregate (strict JSON, atomic write)."""
     if repository is not None:
         repository.save(approval)
-    _write_json_atomic(approval_path_for(artifact_dir), approval.model_dump(mode="json"), canonical=repository is not None)
+    write_json_atomic(approval_path_for(artifact_dir), approval.model_dump(mode="json"), canonical=repository is not None)
 
 
 def load_layout_proof_approval(
@@ -493,7 +448,7 @@ def load_layout_proof_approval(
         expected = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True)
         try:
             if not path.exists():
-                _write_json_atomic(path, payload, canonical=True)
+                write_json_atomic(path, payload, canonical=True)
             if path.read_text(encoding="utf-8") != expected:
                 raise LayoutProofValidationError("Proof approval audit copy disagrees with its saved database record.")
         except OSError as exc:

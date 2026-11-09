@@ -20,14 +20,16 @@ from app.template_analysis.layout_proof_schemas import (
     LayoutProofRenderRequest,
 )
 from app.template_analysis import layout_proof_service
+from app.template_analysis.layout_proof_artifacts import (
+    file_sha256,
+    layout_spec_checksum,
+)
 from app.template_analysis.layout_proof_service import (
     LayoutProofMismatchError,
     LayoutProofNotApprovedError,
     LayoutProofValidationError,
     approve_layout_proof,
     create_proof_variants,
-    file_sha256,
-    layout_spec_checksum,
     load_layout_proof_approval,
     render_candidate_document,
     render_layout_proof,
