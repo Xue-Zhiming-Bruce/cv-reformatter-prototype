@@ -126,7 +126,7 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
         from tests.helpers.postgres import migrate_database
         migrate_database(engine)
         monkeypatch.setattr(main, "DATABASE_URL", database_url)
-    from app.pipeline import quality, review, run_models, service
+    from app.pipeline import measurement, quality, repair_policy, review, run_models, service
     from app.generation import agentic
     monkeypatch.setattr(agentic, "render_agentic", a_generation_without_model_loop)
     from app.generation.artifact_manifest import write_artifact_manifest
@@ -361,11 +361,11 @@ print(json.dumps(response.json()))
     # Changing the execution contract invalidates proof approval before model calls.
     calls.clear()
     with monkeypatch.context() as policy:
-        policy.setattr(service, "HEADER_CONTACT_LABEL_MEASUREMENT_VERSION", "future-policy")
+        policy.setattr(measurement, "HEADER_CONTACT_LABEL_MEASUREMENT_VERSION", "future-policy")
         stale = client.post("/api/generate", json=request)
         assert stale.status_code == 409 and calls == [], stale.text
     with monkeypatch.context() as policy:
-        policy.setattr(service, "HEADER_VERTICAL_RULE_MEASUREMENT_VERSION", "future-policy")
+        policy.setattr(measurement, "HEADER_VERTICAL_RULE_MEASUREMENT_VERSION", "future-policy")
         stale = client.post("/api/generate", json=request)
         assert stale.status_code == 409 and calls == [], stale.text
     with monkeypatch.context() as policy:
@@ -1189,7 +1189,7 @@ def test_representation_ceiling_is_named_and_mapped_to_the_structured_422(
     tmp_path: Path, monkeypatch: MonkeyPatch,
 ) -> None:
     from app.generation import agentic
-    from app.pipeline import service
+    from app.pipeline import repair_policy
 
     gates, details = _ceiling_gate_record()
     error = agentic._required_gate_failure("render-target-v1", gates, details)
@@ -1197,8 +1197,8 @@ def test_representation_ceiling_is_named_and_mapped_to_the_structured_422(
     assert "section.02.rule" in str(error)
     assert "no agent can repair" in str(error)
     # Wired to the existing ceiling gate list, not a parallel classification.
-    assert service.E5_REPRESENTATION_CEILING_GATES == ("content_shapes_match_evidence",)
-    assert service._e5_content_shape_capability_gaps(
+    assert repair_policy.E5_REPRESENTATION_CEILING_GATES == ("content_shapes_match_evidence",)
+    assert repair_policy._e5_content_shape_capability_gaps(
         details["content_shapes_match_evidence"]
     ) == ["section.02.rule"]
 

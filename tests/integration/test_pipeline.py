@@ -9,6 +9,7 @@ import pdfplumber
 import pytest
 
 from app.pipeline.service import run_e5
+import app.pipeline.measurement as measurement
 from app.extraction.candidate_schema import AdditionalSection, CandidateProfile
 from tests.helpers.pipeline import synthetic_pipeline_inputs as _inputs, synthetic_pipeline_candidate as _candidate
 
@@ -547,7 +548,7 @@ def test_header_contact_label_geometry_uses_actual_scoped_prefixes(tmp_path: Pat
     plan, pdf = render(labels, "before")
     request = service.MeasurementRequest(request_id="header-labels", metric="header_contact_label_geometry",
         page=1, region_id="header.product_contact", intent="compare generated header contact label presence")
-    result = service._measure_header_contact_label_geometry(request, target_pdf=inputs["target_pdf"],
+    result = measurement._measure_header_contact_label_geometry(request, target_pdf=inputs["target_pdf"],
         current_pdf=pdf, state=state, plan=plan, current_name_text=context.candidate_heading)
     assert result.status == status, result
     facts = service._reviewer_presentation_facts(inputs["target_pdf"], pdf, {},
@@ -564,19 +565,19 @@ def test_header_contact_label_geometry_uses_actual_scoped_prefixes(tmp_path: Pat
         return
     matches = labels == (target_labels == "shown")
     assert result.delta_pt == 0 if matches else result.delta_pt > 20
-    assert result.method == service.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION
+    assert result.method == measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION
     assert "alpha@example.test" not in result.model_dump_json() and "Office: West" not in result.model_dump_json()
     if not matches:
         repaired, repaired_pdf = render(target_labels == "shown", "after")
-        after = service._measure_header_contact_label_geometry(request, target_pdf=inputs["target_pdf"],
+        after = measurement._measure_header_contact_label_geometry(request, target_pdf=inputs["target_pdf"],
             current_pdf=repaired_pdf, state=state, plan=repaired, current_name_text=context.candidate_heading)
         assert after.status == "confirmed" and after.delta_pt == 0
-        actual_pdf = service._measure_header_contact_label_geometry(request, target_pdf=inputs["target_pdf"],
+        actual_pdf = measurement._measure_header_contact_label_geometry(request, target_pdf=inputs["target_pdf"],
             current_pdf=repaired_pdf, state=state, plan=plan, current_name_text=context.candidate_heading)
         assert actual_pdf.status == "confirmed" and actual_pdf.delta_pt == 0  # PDF bytes differ from the stale label choice.
         with pdfplumber.open(repaired_pdf) as doc:text = " ".join(page.extract_text() or "" for page in doc.pages)
         assert "alpha@example.test" in text and "Office: West" in text and "target@example.test" not in text
-        wrong_region = service._measure_header_contact_label_geometry(request.model_copy(update={"region_id": "header.product_name"}),
+        wrong_region = measurement._measure_header_contact_label_geometry(request.model_copy(update={"region_id": "header.product_name"}),
             target_pdf=inputs["target_pdf"], current_pdf=repaired_pdf, state=state, plan=repaired, current_name_text=context.candidate_heading)
         assert wrong_region.status == "not_measurable" and wrong_region.delta_pt is None
 
@@ -640,7 +641,7 @@ def test_agentic_header_label_repair_requires_scoped_measured_improvement(tmp_pa
         assert report["selected_version"].endswith("v2") and html.name == "render_2.html" and pdf.name == "render_2.pdf"
         before, after = lane["measurement_results"][:2]
         assert before["delta_pt"] > 20 and after["delta_pt"] == 0
-        assert before["method"] == after["method"] == service.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION
+        assert before["method"] == after["method"] == measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION
         assert lane["render_versions"][-1]["promoted"] and not report["open_findings"]
         assert "Email:" not in html.read_text() and "Location:" not in html.read_text()
     else:

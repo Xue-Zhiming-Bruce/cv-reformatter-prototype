@@ -242,6 +242,7 @@ target and designer-template generation retain the approval-aware product path.
 | Persistent defect state (dedup keys, observation classes, reopen, open/closed, attribution binding) | `defect_ledger.py` |
 | Stored E5 run records, Lane A structure and label-approval contracts | `run_models.py` |
 | Presentation-label catalog, canonical identity, approval projection, recognition | `presentation_labels.py` |
+| Repair/selection policy (gate classification, representation ceilings, quarantine eligibility, bounded round work, Builder reserve, best-version selection) | `repair_policy.py` |
 | Internal candidate projection and layout state | `candidate_content.py`, `layout_state.py` |
 | Layout compilation and render-plan binding | `layout_compiler.py`, `render_plan.py` |
 | Controlled HTML rendering | `html_renderer.py` |

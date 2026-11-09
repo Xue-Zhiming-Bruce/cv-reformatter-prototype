@@ -17,7 +17,7 @@ from app.pipeline.html_renderer import RENDERER_VERSION, render_layout_template
 from app.pipeline.layout_state import C2LayoutState
 from app.pipeline.runtime import RunBudget
 from app.pipeline.run_models import E5LoopRecord, PresentationLabelApproval
-from app.pipeline import presentation_labels, quality, review, service
+from app.pipeline import measurement, presentation_labels, quality, repair_policy, review, service
 from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from app.template_analysis.schemas import LayoutTemplateSpec
@@ -104,12 +104,12 @@ def _required_gate_failure(
     the repair agents or reporting a generic gate failure."""
     failed = [name for name, passed in gates.items() if passed is not True]
     ceiling = [
-        name for name in service.E5_REPRESENTATION_CEILING_GATES if gates.get(name) is not True
+        name for name in repair_policy.E5_REPRESENTATION_CEILING_GATES if gates.get(name) is not True
     ]
-    gaps = service._e5_content_shape_capability_gaps(
+    gaps = repair_policy._e5_content_shape_capability_gaps(
         details.get("content_shapes_match_evidence") or {}
     )
-    if ceiling and gaps and set(failed) <= set(service.E5_REPRESENTATION_CEILING_GATES):
+    if ceiling and gaps and set(failed) <= set(repair_policy.E5_REPRESENTATION_CEILING_GATES):
         return AgenticGenerationError(
             f"Representation ceiling on {version_id}: the measured properties "
             + ", ".join(gaps)
@@ -154,8 +154,8 @@ def agentic_renderer_version() -> str:
         "image_encoding": "lossless-grayscale-png/1",
         "review_image_encoding": review.REVIEW_IMAGE_ENCODING_VERSION,
         "builder_image_encoding": review.REVIEW_IMAGE_ENCODING_VERSION,
-        "measurement_policy": service.HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
-        "header_contact_label_policy": service.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
+        "measurement_policy": measurement.HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
+        "header_contact_label_policy": measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
         "review_measurement_contract": review.REVIEW_MEASUREMENT_CONTRACT_VERSION,
         "review_presentation_facts": review.REVIEW_PRESENTATION_FACTS_VERSION,
         "pdf_structure_checks": quality.PDF_STRUCTURE_VALIDATION_VERSION,
@@ -319,8 +319,8 @@ def render_agentic(
     if service._sha256_file(html_path) != version.html_sha256 or service._sha256_file(pdf_path) != version.pdf_sha256:
         raise AgenticGenerationError("Selected agentic output changed after validation")
     gates = json.loads((run_dir/f"lane_a/hard_gates_{version.version_id}.json").read_text())
-    gate_validation = service._e5_hard_gate_record(version.version_id, gates["gates"], gates.get("details", {}),
-        blocking_gates=service.LANE_A_OUTPUT_GATES)
+    gate_validation = repair_policy._e5_hard_gate_record(version.version_id, gates["gates"], gates.get("details", {}),
+        blocking_gates=repair_policy.LANE_A_OUTPUT_GATES)
     gate_validation.pop("details")  # Detailed evidence stays in the owning run directory.
     if not gate_validation["passed"]:
         raise _required_gate_failure(version.version_id, gates["gates"], gates.get("details", {}))

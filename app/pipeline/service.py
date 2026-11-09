@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
 import shutil
 import subprocess
 import time
-from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -33,7 +31,37 @@ from app.pipeline.runtime import (
     RunTrace,
     _record_usage,
 )
-from app.pipeline.measurement import _pdf_lines_and_marks, header_contact_label_evidence, pinned_export_environment
+from app.pipeline.measurement import (
+    HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
+    HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
+    _bind_role_gap_anchors,
+    _header_typography_context,
+    _header_vertical_rule_target_context,
+    _measure_header_contact_label_geometry,
+    _measure_header_vertical_rule_geometry,
+    _measurement_improvement,
+    _pdf_lines_and_marks,
+    _target_body_text_color_context,
+    pinned_export_environment,
+)
+from app.pipeline.repair_policy import (
+    E5_BUILDER_RESERVE_REQUESTS,
+    E5_MAX_ROUND_ATTRIBUTION_FINDINGS,
+    E5_REPRESENTATION_CEILING_GATES,
+    LANE_A_OUTPUT_GATES,
+    _best_defect_level_version_id,
+    _best_valid_version_id,
+    _builder_reserve_intact,
+    _e5_attribution_batches,
+    _e5_blocking_gates,
+    _e5_blocking_gates_passed,
+    _e5_gate_classification,
+    _e5_hard_gate_record,
+    _e5_quarantine_eligibility,
+    _e5_review_this_round,
+    _e5_select_round_work,
+    _next_e5_repair_finding,
+)
 from app.pipeline.evidence import (
     AttributionRecord,
     CandidateBindingLineage,
@@ -105,17 +133,11 @@ E5_LANE_MAX_TOOL_CALLS = 2000
 
 E5_MAX_REPAIR_ROUNDS = 1
 
-E5_BUILDER_RESERVE_REQUESTS = 40
-
 E5_REVIEWER_MAX_REQUESTS = 4
 
 E5_BUILDER_MAX_REQUESTS = 4
 
 E5_ATTRIBUTION_MAX_REQUESTS = 8  # floor only; the batch envelope is derived below
-HEADER_VERTICAL_RULE_MEASUREMENT_VERSION = "header_vertical_rule_geometry/2"
-HEADER_CONTACT_LABEL_MEASUREMENT_VERSION = "header_contact_label_geometry/1"
-
-
 
 E5_REVIEWER_INSTRUCTIONS = (
     "You are the independent Visual Reviewer of a resume-layout experiment.\n"
@@ -217,7 +239,6 @@ E5_ATTRIBUTION_INSTRUCTIONS = (
     "express that structure — never to candidate binding."
 )
 
-E5_REPRESENTATION_CEILING_GATES = ("content_shapes_match_evidence",)
 
 E5_LANE_REPAIR_SURFACE: dict[str, str] = {
     "a": (
@@ -666,99 +687,7 @@ def _e5_builder_evidence_package(
     }
     return package
 
-def _e5_gate_classification(
-    lane: str,
-    gates: dict[str, Any],
-    *,
-    privacy_labels_symmetric: bool,
-    gate_details: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Classify only what the implemented gates can establish.
 
-    ``gates`` is the version's BOOLEAN gate map; ``gate_details`` is that
-    version's recorded per-gate evidence (optional: without it the Lane A
-    classification falls back to "no per-property record", never to a claim).
-    """
-    result: dict[str, Any] = {}
-    if lane == "a" and not gates.get("content_shapes_match_evidence", True):
-        result["representation_ceiling"] = "unverified"
-        # The reason must state what the shell's OWN gate record failed on.
-        # Before 2026-09-23 it asserted a rail-geometry gap the record never
-        # named: in live run `e_pipeline_e5_20260923T095557Z` the failing
-        # property was `section.04.entry_typography` ("measured entry
-        # title/meta/detail typography tiers not consumed by the renderer"),
-        # i.e. the classification contradicted its own evidence.
-        gaps = _e5_content_shape_capability_gaps(
-            (gate_details or {}).get("content_shapes_match_evidence") or {}
-        )
-        if gaps:
-            result["reason"] = (
-                "content_shape_verification failed on this lane's declared "
-                "content shapes: the shell's own renderer does not consume "
-                + ", ".join(gaps)
-                + " (recorded capability gaps). No agent — Builder included — "
-                "can change a property the fixed renderer does not consume, so "
-                "this failure is ownerless by design: it is reported here and "
-                "never routed to a repair owner."
-            )
-        else:
-            result["reason"] = (
-                "no per-property record was supplied for the content-shape "
-                "failure, so the shell cannot claim an owning layer; the "
-                "historical ceiling note (rail_heading, rail_label_width_pt, "
-                "rail_label_align, rendered rail geometry) is not verified here"
-            )
-    return result
-
-def _e5_hard_gate_record(
-    render_version: str,
-    gates: dict[str, bool],
-    details: dict[str, Any],
-    *,
-    blocking_gates: tuple[str, ...] | None = None,
-) -> dict[str, Any]:
-    """Version-bound E5 gate summary.
-
-    E5 is an exploratory comparison. Candidate truth and privacy block owner
-    review; template safety is enforced before rendering. Other checks remain
-    visible as diagnostics. The optional argument preserves the legacy
-    all-blocking behavior for callers that do not opt into the E5 policy.
-    """
-    blocking = blocking_gates or tuple(gates)
-    blocking_failures = [name for name in blocking if gates.get(name) is not True]
-    diagnostics = details.get("diagnostics") or {}
-    return {
-        "render_version": render_version,
-        "passed": not blocking_failures,
-        "blocking_gates": list(blocking),
-        "blocking_failures": blocking_failures,
-        "diagnostic_warnings": [
-            *(
-                name for name, passed in gates.items()
-                if not passed and name not in blocking
-            ),
-            *(
-                name for name, detail in diagnostics.items()
-                if detail.get("passed") is not True
-            ),
-        ],
-        "gates": gates,
-        "details": details,
-    }
-
-# Presentation consumption remains mandatory; repeat-render identity is diagnostic.
-LANE_A_OUTPUT_GATES = (
-    "candidate_content_accounting", "no_target_candidate_facts", "content_gate",
-    "section_order_matches_state", "no_blank_page", "content_shapes_match_evidence",
-)
-
-def _e5_blocking_gates(lane: str) -> tuple[str, ...]:
-    """The experiment's minimal safety boundary; all other gates are warnings."""
-    del lane
-    return ("candidate_content_accounting", "no_target_candidate_facts")
-
-def _e5_blocking_gates_passed(lane: str, gates: dict[str, bool]) -> bool:
-    return all(gates.get(name) is True for name in _e5_blocking_gates(lane))
 
 def _e5_builder_candidate_record(
     *,
@@ -790,201 +719,11 @@ def _e5_builder_candidate_record(
         "artifact": f"builder_candidate_{attempt:02d}.json",
     }
 
-E5_MAX_ROUND_ATTRIBUTION_FINDINGS = 3
 
-E5_NON_QUARANTINABLE_GATES = ("no_target_candidate_facts",)
 
-def _e5_review_this_round(reviewed_render_fingerprints: set[str], pdf_sha256: str) -> bool:
-    """Review scheduling gate (2026-09-22 owner correction): the fingerprint
-    is the FINAL PDF's sha256, not the version id. One fingerprint is FULLY
-    reviewed at most once — no new render -> NO review this round; a promoted
-    render with a new PDF hash is reviewed once (scoped to changed regions by
-    the round scope). Both lanes run the SAME gate."""
-    return pdf_sha256 not in reviewed_render_fingerprints
 
-def _e5_content_shape_capability_gaps(details: dict[str, Any]) -> list[str]:
-    """The capability-gap property paths of ONE Lane A
-    `content_shapes_match_evidence` record.
 
-    This gate fails EXACTLY when a declared-shape property is not both measured
-    and consumed by the renderer: `c2_renderer.content_shape_verification`
-    computes `capability_gap = None if not required or (measured and consumed)`
-    and `consistent = all(capability_gap is None)`, with
-    `passed = all(row["consistent"])`. So Lane A's content-shape failure IS the
-    shell's representation capability gap: there is no second, repairable defect
-    hiding in the same record, and no agent (Builder included) can change a
-    property the fixed renderer does not consume. The walker therefore reports
-    the gaps only, and an unreadable record reports nothing (fail closed)."""
-    gaps: list[str] = []
-    for row in details.get("rows") or []:
-        if not isinstance(row, dict) or row.get("consistent"):
-            continue
-        section = str(row.get("section") or "")
-        for prop in row.get("properties") or []:
-            if not isinstance(prop, dict):
-                continue
-            if (
-                str(prop.get("capability_gap") or "").strip()
-                or prop.get("renderer_consumes") is not True
-            ):
-                gaps.append(f"{section}.{prop.get('property')}")
-    return gaps
 
-def _e5_quarantine_eligibility(
-    candidate_version: RenderVersion,
-    candidate_gates: dict[str, Any],
-    *,
-    representation: Any | None,
-    binding_lineage: CandidateBindingLineage | None,
-    candidate_audit: dict[str, Any] | None,
-) -> tuple[bool, str]:
-    """MAY this hard-gate-red candidate become the NEXT repair base?
-
-    Only a *repairable but not passing* candidate may: every safety gate green,
-    its own representation identity verifiable, and its own leaf lineage free of
-    any deterministic candidate-binding contradiction (rewritten or
-    unknown-origin candidate facts fail closed). Nothing is relaxed here — a
-    quarantined candidate is never promoted, never best, and never the lane's
-    owner-facing output; it is only the representation the next Builder edits."""
-    unsafe = [
-        gate for gate in E5_NON_QUARANTINABLE_GATES
-        if candidate_gates.get(gate) is not True
-    ]
-    if unsafe:
-        return False, f"non-quarantinable safety gate(s) failed: {unsafe}"
-    if representation is None:
-        return False, "the candidate's representation identity is not recorded for this version"
-    if (
-        not candidate_audit
-        or candidate_audit.get("candidate_render_version") != candidate_version.version_id
-    ):
-        return False, (
-            "the builder-candidate audit does not bind this render version to "
-            "its validated input"
-        )
-    if binding_lineage is None or binding_lineage.render_version != candidate_version.version_id:
-        return False, "no candidate-leaf lineage audit is bound to this render version"
-    if binding_lineage.proofs:
-        return False, (
-            "deterministic candidate-binding lineage contradiction(s) recorded: "
-            + ", ".join(f"{proof.kind}:{proof.leaf_id}" for proof in binding_lineage.proofs)
-        )
-    return True, (
-        "repairable-but-not-passing candidate: safety gates green, representation "
-        "identity verified, candidate leaf lineage clean"
-    )
-
-def _e5_select_round_work(
-    actionable: list[DefectFinding],
-    gate_findings: list[DefectFinding],
-    deferred_candidates: list[DefectFinding],
-    *,
-    limit: int = E5_MAX_ROUND_ATTRIBUTION_FINDINGS,
-) -> tuple[list[DefectFinding], list[DefectFinding]]:
-    """Bounded per-round scheduling (repair starvation fix):
-
-    1. hard-gate-derived repair inputs first (they are pre-attributed; the
-       run loop normally consumes them via the Builder-first scan and passes
-       an empty list here);
-    2. this round's NEW findings in review order;
-    3. previously deferred open findings (oldest first).
-
-    At most ``limit`` findings enter this round's attribution backlog; the
-    rest stay in the ledger as `deferred` (open, never lost, re-eligible).
-    The SAME function is used by BOTH lanes."""
-    ordered: list[DefectFinding] = []
-    seen: set[str] = set()
-    for finding in [*gate_findings, *actionable, *deferred_candidates]:
-        if finding.finding_id in seen:
-            continue
-        seen.add(finding.finding_id)
-        ordered.append(finding)
-    return ordered[:limit], ordered[limit:]
-
-def _next_e5_repair_finding(
-    actionable: list[DefectFinding],
-    measured: dict[str, tuple[MeasurementResult, MeasurementRequest]],
-    attributions: list[AttributionRecord],
-    fingerprints: list[str],
-    *,
-    layout_trial_regions: set[str] | None = None,
-) -> tuple[
-    tuple[DefectFinding, MeasurementResult, MeasurementRequest, AttributionRecord, str] | None,
-    bool,
-]:
-    """Prefer measured Builder repairs; explicitly eligible A regions may try hypotheses.
-
-    Uncertain trials retain their original attribution and cannot establish improvement.
-    The boolean says repairable findings existed but every fingerprint was
-    already executed, so the lane must stop instead of burning another round.
-    """
-    repairable_seen = False
-    trial = None
-    for finding in actionable:
-        result, bound = measured[finding.finding_id]
-        if result.status == "falsified" or (
-            result.status == "confirmed" and abs(result.delta_pt or 0.0) <= E2_IMPROVEMENT_TOLERANCE_PT
-        ):
-            continue
-        attribution = next(
-            (
-                item
-                for item in reversed(attributions)
-                if item.finding_id == finding.finding_id
-                and item.render_version == finding.render_version
-                and item.measurement_request_id == bound.request_id
-            ),
-            None,
-        )
-        if attribution is None:
-            continue
-        proven_builder = (
-            result.status == "confirmed"
-            and attribution.hypothesis_status == "confirmed"
-            and attribution.repair_owner == "builder"
-        )
-        allow_trial = (
-            finding.region in (layout_trial_regions or set())
-            and not (attribution.attribution == "candidate_binding" and attribution.hypothesis_status == "confirmed")
-        )
-        if not proven_builder and not allow_trial:
-            continue
-        repairable_seen = True
-        # The repair BASE version is part of the action identity (owner work
-        # order 2026-09-22): the identical action on the SAME input version is
-        # still deduplicated, while continuing the remaining defects on a NEW
-        # quarantined repair version is never mistaken for a repeat of the old
-        # action. The base comes from the finding's own bound version, so a
-        # reviewer finding (active version) and a hard-gate input (quarantined
-        # repair base) can never collide.
-        fingerprint = (
-            f"{finding.render_version}:{finding.region}:"
-            f"{finding.suspected_dimension}:{round(result.delta_pt, 3) if result.delta_pt is not None else result.status}"
-        )
-        if fingerprint not in fingerprints:
-            item = (finding, result, bound, attribution, fingerprint)
-            if proven_builder:
-                return item, False
-            if trial is None:
-                trial = item
-    if trial is not None:
-        return trial, False
-    return None, repairable_seen
-
-def _e5_attribution_batches(
-    actionable: list[DefectFinding],
-    measured: dict[str, tuple[MeasurementResult, MeasurementRequest]],
-) -> list[list[DefectFinding]]:
-    """Batch measurable or unbound findings; known unsupported metrics stay warnings."""
-    groups: dict[str, list[DefectFinding]] = {}
-    for finding in actionable:
-        result, _ = measured[finding.finding_id]
-        if result.status == "not_measurable":
-            continue
-        if result.status == "confirmed" and abs(result.delta_pt or 0.0) <= E2_IMPROVEMENT_TOLERANCE_PT:
-            continue
-        groups.setdefault(finding.region, []).append(finding)
-    return [part[i : i + 3] for part in groups.values() for i in range(0, len(part), 3)]
 
 def _e5_default_attribution(
     finding: DefectFinding,
@@ -1096,487 +835,7 @@ def _e5_findings_needing_fallback_attribution(
         not in attributed_keys
     ]
 
-def _builder_reserve_intact(
-    budget: RunBudget, reserve_requests: int = E5_BUILDER_RESERVE_REQUESTS,
-) -> bool:
-    """Phase 0 Builder budget reservation: live attribution may only run when
-    the lane budget still covers the Builder reserve (diagnosis must not eat
-    the budget before the Builder can act)."""
-    return budget.remaining_model_requests() > reserve_requests
 
-def _best_valid_version_id(
-    versions: list[RenderVersion], excluded: set[str] | None = None
-) -> str | None:
-    """Explicit best-valid selection rule (never 'first promoted' and never
-    'first hard-gate-valid', and never `versions[-1]`):
-
-    1. the LATEST HARD-GATE-VALID version that was never explicitly ROLLED
-       BACK. A defect-level promotion (promoted with a known remaining red
-       gate, e.g. content_shapes_match_evidence) is NOT hard-gate-valid and
-       must never masquerade as the best-valid render — it is recorded as
-       the active/defect-level state instead (see
-       `_best_defect_level_version_id`);
-    2. otherwise None (no best-valid render exists)."""
-    excluded = excluded or set()
-    for version in reversed(versions):
-        if version.hard_gates_passed and version.version_id not in excluded:
-            return version.version_id
-    return None
-
-def _best_defect_level_version_id(
-    versions: list[RenderVersion], excluded: set[str] | None = None
-) -> str | None:
-    """The latest defect-level promoted version (promoted=True with a known
-    remaining red hard gate) that was never rolled back. This is LOCAL
-    improvement state — the active render may rest on it — but it is never
-    the hard-gate-valid best and is never labeled BEST."""
-    excluded = excluded or set()
-    for version in reversed(versions):
-        if version.promoted and not version.hard_gates_passed and version.version_id not in excluded:
-            return version.version_id
-    return None
-
-def _bind_role_gap_anchors(
-    request: MeasurementRequest,
-    *,
-    target_pdf: Path,
-    current_pdf: Path,
-    region_span: tuple[float, float] | None,
-    render_leaf_texts: list[str],
-    render_non_head_texts: list[str] | None = None,
-) -> MeasurementRequest | MeasurementResult:
-    """Phase 0 measurement binding: resolve a SEMANTIC measurement intent
-    into actual final-PDF objects (exact line-prefix anchors on BOTH sides).
-    The render side binds against the render's own candidate entry-head
-    texts; the target side binds against the target's measured content rows
-    within the region span. A Reviewer OCR mismatch never becomes an
-    automatic measurement_failure: an unresolvable intent returns
-    `evidence_missing` for re-verification, with the binding method recorded."""
-    intent = (request.intent or "").casefold()
-    if not (
-        any(word in intent for word in ("gap", "distance", "spacing"))
-        and any(word in intent for word in ("entry", "role", "job"))
-        and not any(word in intent for word in (
-            "contact", "typography", "font", "vertical rule",
-        ))
-    ):
-        return MeasurementResult(
-            request_id=request.request_id,
-            status="not_measurable",
-            reason="the current deterministic metric measures entry-head spacing only",
-            method="role_gap_binding/3",
-            warnings=["a different visual dimension requires its own deterministic metric"],
-        )
-    if region_span is None:
-        return MeasurementResult(
-            request_id=request.request_id, status="evidence_missing",
-            reason="entry-head spacing requires a measured owning-section boundary",
-            method="role_gap_binding/3",
-        )
-    render_rows = _pdf_line_rows(current_pdf, request.page)
-
-    def _norm_row(text: str) -> str:
-        return re.sub(r"\s+", " ", text).strip().casefold()
-
-    prefixes = [
-        _norm_row(text)[:12]
-        for text in render_leaf_texts
-        if text and len(text.strip()) >= 6
-    ]
-    render_anchors: list[str] = []
-    render_head_rows: list[dict[str, Any]] = []
-    for row in render_rows:
-        row_text = _norm_row(row["text"])
-        for prefix in prefixes:
-            if row_text.startswith(prefix) and prefix not in render_anchors:
-                render_anchors.append(prefix)
-                render_head_rows.append(row)
-                break
-        if len(render_anchors) == 2:
-            break
-    if len(render_anchors) < 2:
-        return MeasurementResult(
-            request_id=request.request_id,
-            status="evidence_missing",
-            reason=(
-                "the semantic intent could not be bound to two render entry-head "
-                "rows in the final PDF (binding, not OCR, decides)"
-            ),
-            method="role_gap_binding/3",
-            warnings=["binding resolves the Reviewer's semantic intent against actual PDF rows"],
-        )
-    target_rows = _pdf_line_rows(target_pdf, request.page)
-    if region_span is not None:
-        span_top, span_bottom = region_span
-        target_rows = [
-            row for row in target_rows if span_top < row["top"] < span_bottom
-        ]
-    import pdfplumber
-
-    def row_styles(path: Path) -> dict[float, tuple[float, bool, Any]]:
-        with pdfplumber.open(path) as document:
-            words = document.pages[request.page - 1].extract_words(
-                extra_attrs=["fontname", "size", "non_stroking_color"])
-        styles = {}
-        for word in sorted(words, key=lambda item: item["x0"]):
-            styles.setdefault(round(float(word["top"]), 1), (
-                float(word["size"]), "bold" in word["fontname"].casefold(),
-                word["non_stroking_color"],
-            ))
-        return styles
-
-    render_styles, target_styles = row_styles(current_pdf), row_styles(target_pdf)
-    anchor_styles = [render_styles.get(row["top"]) for row in render_head_rows]
-
-    def same_role(style: tuple | None, reference: tuple | None) -> bool:
-        return bool(style and reference and abs(style[0] - reference[0]) < .5
-                    and style[1:] == reference[1:])
-
-    other_prefixes = [_norm_row(text)[:12] for text in render_non_head_texts or [] if text.strip()]
-    if any(any(_norm_row(row["text"]).startswith(prefix) for prefix in other_prefixes)
-           and any(same_role(render_styles.get(row["top"]), style) for style in anchor_styles)
-           for row in render_rows):
-        return MeasurementResult(
-            request_id=request.request_id, status="ambiguous",
-            reason="entry-head typography also belongs to other declared entry fields",
-            method="role_gap_binding/3",
-        )
-
-    # Bind the same measured typographic role, rather than adjacent title,
-    # company or date rows. Unsupported style differences stay unmeasured.
-    head_rows = [row for row in target_rows
-                 if not row["text"].startswith(("•", "-", "–"))
-                 and any(character.isalpha() for character in row["text"])
-                 and all(same_role(target_styles.get(row["top"]), style)
-                         for style in anchor_styles)]
-    if len(head_rows) < 2:
-        return MeasurementResult(
-            request_id=request.request_id,
-            status="evidence_missing",
-            reason="the region's target content rows could not yield two head anchors",
-            method="role_gap_binding/3",
-            warnings=["binding resolves the Reviewer's semantic intent against actual PDF rows"],
-        )
-    if len(head_rows) > 2:
-        return MeasurementResult(
-            request_id=request.request_id, status="ambiguous",
-            reason="matching typography does not identify a unique pair of target entry-head rows",
-            method="role_gap_binding/3",
-            target_evidence=[{"page": request.page, "top": row["top"], "text": row["text"]} for row in head_rows],
-        )
-    return request.model_copy(
-        update={
-            "from_text": _norm_row(head_rows[0]["text"])[:16],
-            "to_text": _norm_row(head_rows[1]["text"])[:16],
-            "render_from_text": render_anchors[0],
-            "render_to_text": render_anchors[1],
-        }
-    )
-
-def _header_vertical_rule_evidence(
-    pdf: Path, page_number: int, *, name_text: str | None = None
-) -> dict[str, Any] | None:
-    """Measure header rules against the exact candidate-name row when known.
-
-    Target PDFs have no candidate lineage, so their bounded fallback is the
-    single tallest header line. This stays one metric, not a visual framework.
-    """
-    import pdfplumber
-
-    page_width, page_height = _page_pt_size(pdf, page_number)
-    lines = [
-        line for line in _pdf_lines_and_marks(pdf)[0]
-        if line["page"] == page_number and line["top"] < page_height * 0.25
-    ]
-    if not lines:
-        return None
-    name_lines: list[dict[str, Any]] = []
-    exact_name_match = False
-    if name_text:
-        expected = re.sub(r"\s+", " ", name_text).strip().casefold()
-        for start in range(len(lines)):
-            selected: list[dict[str, Any]] = []
-            for line in lines[start:start + 3]:
-                selected.append(line)
-                observed = re.sub(
-                    r"\s+", " ", " ".join(item["text"] for item in selected)
-                ).strip().casefold()
-                if observed == expected:
-                    name_lines = selected
-                    exact_name_match = True
-                    break
-                if not expected.startswith(observed + " "):
-                    break
-            if name_lines:
-                break
-    if not name_lines:
-        max_height = max(float(line["bottom"]) - float(line["top"]) for line in lines)
-        name_lines = [
-            line for line in lines
-            if math.isclose(
-                float(line["bottom"]) - float(line["top"]),
-                max_height,
-                abs_tol=0.25,
-            )
-        ]
-    name = {
-        "x0": min(float(line["x0"]) for line in name_lines),
-        "x1": max(float(line["x1"]) for line in name_lines),
-        "top": min(float(line["top"]) for line in name_lines),
-        "bottom": max(float(line["bottom"]) for line in name_lines),
-    }
-    header_top = max(0.0, name["top"] - 80.0)
-    header_bottom = min(page_height, name["bottom"] + 80.0)
-    rules: list[dict[str, Any]] = []
-    with pdfplumber.open(pdf) as document:
-        page = document.pages[page_number - 1]
-        objects = [*page.rects, *page.curves, *(getattr(page, "lines", None) or [])]
-        seen: set[tuple[float, float, float]] = set()
-        for mark in objects:
-            x0, x1 = float(mark["x0"]), float(mark["x1"])
-            top, bottom = float(mark["top"]), float(mark["bottom"])
-            width, height = abs(x1 - x0), abs(bottom - top)
-            center_x = (x0 + x1) / 2
-            if width > 4.0 or height < 8.0 or bottom < header_top or top > header_bottom:
-                continue
-            horizontal_gap = max(name["x0"] - x1, x0 - name["x1"], 0.0)
-            if horizontal_gap > 80.0 or center_x < 12.0 or center_x > page_width - 12.0:
-                continue
-            key = (round(center_x, 2), round(top, 2), round(bottom, 2))
-            if key in seen:
-                continue
-            seen.add(key)
-            dx = horizontal_gap
-            dy = max(name["top"] - bottom, top - name["bottom"], 0.0)
-            overlap = max(0.0, min(bottom, name["bottom"]) - max(top, name["top"]))
-            rules.append({
-                "x": round(center_x, 3),
-                "top": round(top, 3),
-                "bottom": round(bottom, 3),
-                "height": round(height, 3),
-                "relative_x_to_name_left": round(center_x - name["x0"], 3),
-                "relative_top_to_name_top": round(top - name["top"], 3),
-                "relative_bottom_to_name_top": round(bottom - name["top"], 3),
-                "nearest_distance_to_name_bbox": round(math.hypot(dx, dy), 3),
-                "name_vertical_overlap_pt": round(overlap, 3),
-            })
-    rules.sort(key=lambda rule: (rule["relative_top_to_name_top"], rule["relative_x_to_name_left"]))
-    return {
-        "page": page_number,
-        "name_anchor_source": (
-            "candidate_name_text" if exact_name_match else "tallest_header_line"
-        ),
-        "name_region": {key: round(value, 3) for key, value in name.items()},
-        "vertical_rule_count": len(rules),
-        "vertical_rules": rules,
-    }
-
-def _header_vertical_rule_target_context(pdf: Path) -> dict[str, Any] | None:
-    """Small Builder context for the already-supported header-rule metric."""
-    evidence = _header_vertical_rule_evidence(pdf, 1)
-    if evidence is None:
-        return None
-    rules = evidence["vertical_rules"]
-    return {
-        "scope": "header_name",
-        "target_final_pdf_evidence": evidence,
-        "preserve_separate_name_gap": (
-            len(rules) == 2
-            and all(rule["name_vertical_overlap_pt"] == 0 for rule in rules)
-        ),
-        "forbidden_interpretation": "continuous_or_page_spanning_vertical_rail",
-    }
-
-def _target_body_text_color_context(pdf: Path) -> dict[str, Any] | None:
-    """Measured dominant text fill by visible-character volume."""
-    import pdfplumber
-
-    colors: Counter[tuple[float, float, float]] = Counter()
-    with pdfplumber.open(pdf) as document:
-        for page in document.pages:
-            for char in page.chars:
-                color = char.get("non_stroking_color")
-                if not str(char.get("text") or "").strip() or not isinstance(color, (list, tuple)) or len(color) != 3:
-                    continue
-                rgb = tuple(round(float(channel), 4) for channel in color)
-                if all(0.0 <= channel <= 1.0 for channel in rgb):
-                    colors[rgb] += 1
-    if not colors:
-        return None
-    rgb, count = colors.most_common(1)[0]
-    return {
-        "scope": "ordinary_body_copy",
-        "source": "target_final_pdf_character_fill",
-        "selection": "dominant_non_whitespace_character_color",
-        "dominant_color_rgb": list(rgb),
-        "dominant_color_hex": "#" + "".join(f"{round(channel * 255):02x}" for channel in rgb),
-        "supporting_character_count": count,
-        "excluded_roles": ["header_name", "section_labels", "rules"],
-    }
-
-
-def _measure_header_contact_label_geometry(
-    request: MeasurementRequest, *, target_pdf: Path, current_pdf: Path,
-    state: Any, plan: Any, current_name_text: str | None,
-) -> MeasurementResult:
-    """Physical glyph-width cost of a mismatched uniform header label policy."""
-    def unavailable(status: str, reason: str, target: dict[str, Any] | None = None,
-                    current: dict[str, Any] | None = None) -> MeasurementResult:
-        return MeasurementResult(request_id=request.request_id, status=status, reason=reason,
-            method=HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
-            target_evidence=[target] if target else [], current_evidence=[current] if current else [])
-
-    nodes = [node for node in state.nodes if node.kind == "header_row"
-             and any(field.slot in CONTACT_FIELD_SLOTS.values() for field in node.fields)]
-    if request.page != 1 or len(nodes) != 1 or plan is None:
-        return unavailable("not_measurable", "label geometry requires one declared page-one contact row")
-    node = nodes[0]
-    if request.region_id != node.node_id:
-        return unavailable("not_measurable", "label geometry must bind to the declared contact row")
-    row = next((row for row in plan.header_rows if row.node_id == node.node_id), None)
-    fields = list(row.fields) if row else []
-    if not fields or any(field.contact_item is None for field in fields):
-        return unavailable("not_measurable", "label geometry requires structured disclosed contact fields")
-    font = next(style.font_size_pt for style in state.styles if style.style_id == node.style_id)
-    target_name = _header_vertical_rule_evidence(target_pdf, 1)
-    current_name = _header_vertical_rule_evidence(current_pdf, 1, name_text=current_name_text)
-    if target_name is None or current_name is None or current_name["name_anchor_source"] != "candidate_name_text":
-        return unavailable("evidence_missing", "the header name did not bind to the actual PDF")
-    labels = {CONTACT_FIELD_SLOTS[field]: label for label, field in CONTACT_LABEL_FIELDS.items()
-              if CONTACT_FIELD_SLOTS[field] in {item.slot for item in node.fields}}
-    target = header_contact_label_evidence(target_pdf, name_region=target_name["name_region"],
-        font_size_pt=font, labels=labels, separator=node.separator)
-    current = header_contact_label_evidence(current_pdf, name_region=current_name["name_region"],
-        font_size_pt=font, labels={field.slot: field.contact_item.label for field in fields},
-        values={field.slot: field.contact_item.value for field in fields}, separator=row.separator)
-    for evidence in (target, current):
-        if evidence["status"] != "confirmed":
-            return unavailable(evidence["status"], evidence["reason"], target, current)
-    error = 0.0
-    if target["label_mode"] != current["label_mode"]:
-        visible_side = target if target["label_mode"] else current
-        error = sum(visible_side["label_widths_pt"][field.slot] for field in fields)
-    return MeasurementResult(request_id=request.request_id, status="confirmed", target_value_pt=0.0,
-        current_value_pt=round(error, 3), delta_pt=round(error, 3),
-        method=HEADER_CONTACT_LABEL_MEASUREMENT_VERSION, target_evidence=[target], current_evidence=[current],
-        warnings=["error_pt sums actual label-prefix glyph widths only where uniform presence differs; field values, delimiters, fonts and other contact styling are separate properties"])
-
-
-def _measure_header_vertical_rule_geometry(
-    request: MeasurementRequest,
-    *,
-    target_pdf: Path,
-    current_pdf: Path,
-    current_name_text: str | None = None,
-) -> MeasurementResult:
-    """One transparent scalar error over the complete detected rule sets.
-
-    Count and name-overlap penalties prevent an extra retained rule from being
-    ignored; raw geometry remains in evidence for owner inspection.
-    """
-    intent = (request.intent or "").casefold()
-    if not (
-        any(word in intent for word in ("header", "name"))
-        and "vertical" in intent
-        and any(word in intent for word in ("rule", "line", "bar"))
-    ):
-        return MeasurementResult(
-            request_id=request.request_id,
-            status="not_measurable",
-            reason="header_vertical_rule_geometry requires an explicit header/name vertical-rule intent",
-            method=HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
-        )
-    target = _header_vertical_rule_evidence(target_pdf, request.page)
-    current = _header_vertical_rule_evidence(
-        current_pdf, request.page, name_text=current_name_text
-    )
-    if target is None or current is None:
-        return MeasurementResult(
-            request_id=request.request_id,
-            status="evidence_missing",
-            reason="the name/header region could not be located in one of the final PDFs",
-            method=HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
-        )
-    target_rules = target["vertical_rules"]
-    current_rules = current["vertical_rules"]
-    if bool(target_rules) != bool(current_rules):
-        return MeasurementResult(
-            request_id=request.request_id,
-            status="evidence_missing",
-            target_evidence=[target],
-            current_evidence=[current],
-            reason="one header vertical-rule set is empty; deletion is not automatic improvement",
-            method=HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
-        )
-    paired_error = sum(
-        abs(current_rule["relative_x_to_name_left"] - target_rule["relative_x_to_name_left"])
-        + abs(current_rule["relative_top_to_name_top"] - target_rule["relative_top_to_name_top"])
-        + abs(current_rule["relative_bottom_to_name_top"] - target_rule["relative_bottom_to_name_top"])
-        for target_rule, current_rule in zip(target_rules, current_rules)
-    )
-    target_overlap = sum(rule["name_vertical_overlap_pt"] > 0 for rule in target_rules)
-    current_overlap = sum(rule["name_vertical_overlap_pt"] > 0 for rule in current_rules)
-    error = (
-        100.0 * abs(len(current_rules) - len(target_rules))
-        + 100.0 * abs(current_overlap - target_overlap)
-        + paired_error
-    )
-    formula = (
-        "error_pt = 100*abs(rule_count-target_rule_count) + "
-        "100*abs(name_overlap_count-target_name_overlap_count) + "
-        "sum paired abs(relative_x, relative_top, relative_bottom) deltas; "
-        "all detected header vertical rules are included"
-    )
-    target["error_calculation"] = formula
-    current["error_calculation"] = formula
-    return MeasurementResult(
-        request_id=request.request_id,
-        status="confirmed",
-        target_value_pt=0.0,
-        current_value_pt=round(error, 3),
-        delta_pt=round(error, 3),
-        target_evidence=[target],
-        current_evidence=[current],
-        method=HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
-        warnings=["coordinates are page-local pt; geometry is relative to the detected name region"],
-    )
-
-def _measurement_improvement(
-    before: MeasurementResult, after: MeasurementResult
-) -> tuple[bool, str]:
-    if before.method != after.method:
-        return False, "measurement methods differ; improvement is not comparable"
-    if after.status != "confirmed":
-        return False, f"identical re-measurement was {after.status}"
-    if any(value is None for value in (
-        before.current_value_pt, before.target_value_pt,
-        after.current_value_pt, after.target_value_pt,
-    )):
-        return False, "identical re-measurement left scalar evidence missing"
-    if before.method == after.method and before.method in {
-        "header_vertical_rule_geometry/1", HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
-    }:
-        before_rules = (before.current_evidence[0].get("vertical_rules", []) if before.current_evidence else [])
-        after_rules = (after.current_evidence[0].get("vertical_rules", []) if after.current_evidence else [])
-        if len(after_rules) > len(before_rules):
-            retained_crossing_rule = any(
-                old.get("name_vertical_overlap_pt", 0) > 0
-                and any(
-                    new.get("name_vertical_overlap_pt", 0) > 0
-                    and abs(new.get("height", 0) - old.get("height", 0)) <= 2.0
-                    for new in after_rules
-                )
-                for old in before_rules
-            )
-            if retained_crossing_rule:
-                return False, "added a vertical rule while retaining the original long name-crossing rule"
-    improved = abs(after.current_value_pt - after.target_value_pt) < abs(
-        before.current_value_pt - before.target_value_pt
-    )
-    return improved, (
-        "identical deterministic error decreased" if improved
-        else "identical deterministic error did not decrease"
-    )
 
 def _region_spans_from_draft(draft: TargetStructureDraft, page_height: float) -> dict[str, tuple[int, float, float]]:
     """node_id -> (page, top, bottom) from the draft's measured section
@@ -1800,30 +1059,6 @@ def _e5_region_catalog(state: Any, derived: dict[str, Any]) -> list[dict[str, An
             "page": page_for(node, section),
         })
     return catalog
-
-def _header_typography_context(pdf: Path, *, name_text: str | None = None) -> dict[str, Any]:
-    """Content-free font facts over the existing final-PDF header anchor."""
-    import pdfplumber
-
-    evidence = _header_vertical_rule_evidence(pdf, 1, name_text=name_text)
-    if evidence is None or (name_text and evidence["name_anchor_source"] != "candidate_name_text"):
-        return {"state": "unbound", "reason": "the requested header name did not bind to final-PDF text"}
-    region = evidence["name_region"]
-    with pdfplumber.open(pdf) as document:
-        chars = [char for char in document.pages[0].chars if str(char.get("text") or "").strip()]
-        selected = [char for char in chars
-            if region["x0"] - .5 <= (char["x0"] + char["x1"]) / 2 <= region["x1"] + .5
-            and region["top"] - .5 <= (char["top"] + char["bottom"]) / 2 <= region["bottom"] + .5]
-        following = [char for char in chars if char["top"] > region["bottom"] + .5]
-        next_top = min((char["top"] for char in following), default=None)
-        return {
-            "state": "measured", "source": "final_pdf_characters", "page": 1,
-            "selection": evidence["name_anchor_source"], "region": region,
-            "font_sizes_pt": sorted({round(float(char["size"]), 3) for char in selected}),
-            "font_names": sorted({re.sub(r"^[A-Z]{6}\+", "", str(char["fontname"])) for char in selected}),
-            "following_line_font_sizes_pt": sorted({round(float(char["size"]), 3) for char in following
-                if next_top is not None and abs(char["top"] - next_top) < 1.5}),
-        }
 
 
 def _reviewer_presentation_facts(
@@ -2307,6 +1542,7 @@ E5_SOURCE_FILES = (
     'app/pipeline/quality.py',
     'app/pipeline/render_plan.py',
     'app/pipeline/rendering.py',
+    'app/pipeline/repair_policy.py',
     'app/pipeline/review.py',
     'app/pipeline/run_models.py',
     'app/pipeline/runtime.py',

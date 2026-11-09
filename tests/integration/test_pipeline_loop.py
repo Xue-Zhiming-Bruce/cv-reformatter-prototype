@@ -16,7 +16,9 @@ import pytest
 import app.pipeline.quality as quality
 import app.pipeline.service as e
 import app.pipeline.service as e5
+import app.pipeline.measurement as measurement
 import app.pipeline.presentation_labels as presentation_labels
+import app.pipeline.repair_policy as repair_policy
 import app.pipeline.run_models as run_models
 from app.pipeline.runtime import RunBudget
 import app.pipeline.defect_ledger as defect_ledger
@@ -67,7 +69,7 @@ def test_role_gap_binding_does_not_measure_an_unrelated_visual_dimension() -> No
         request_id="measure-header", metric="role_gap", page=1,
         intent="compare the height of the vertical rule beside the name",
     )
-    result = e5._bind_role_gap_anchors(
+    result = measurement._bind_role_gap_anchors(
         request,
         target_pdf=Path("unused-target.pdf"),
         current_pdf=Path("unused-render.pdf"),
@@ -81,7 +83,7 @@ def test_role_gap_binding_does_not_measure_an_unrelated_visual_dimension() -> No
         "request_id": "measure-contact",
         "intent": "measure the gap between the CONTACT INFO heading and its first contact entry",
     })
-    contact_result = e5._bind_role_gap_anchors(
+    contact_result = measurement._bind_role_gap_anchors(
         contact,
         target_pdf=Path("unused-target.pdf"),
         current_pdf=Path("unused-render.pdf"),
@@ -177,15 +179,15 @@ def test_live_builder_budget_is_reserved() -> None:
     assert e.E5_BUILDER_RESERVE_REQUESTS > 0
     exhausted_to_reserve = RunBudget(max_model_requests=e.E5_BUILDER_RESERVE_REQUESTS, max_tool_calls=10)
     assert exhausted_to_reserve.remaining_model_requests() == e.E5_BUILDER_RESERVE_REQUESTS
-    assert e._builder_reserve_intact(exhausted_to_reserve) is False
+    assert repair_policy._builder_reserve_intact(exhausted_to_reserve) is False
     healthy = RunBudget(max_model_requests=e.E5_BUILDER_RESERVE_REQUESTS + 1, max_tool_calls=10)
-    assert e._builder_reserve_intact(healthy) is True
+    assert repair_policy._builder_reserve_intact(healthy) is True
     # A bounded evaluation can reserve one complete Builder turn rather than
     # the default ten; diagnosis still stops at the configured reserve.
     small = RunBudget(max_model_requests=12, max_tool_calls=10)
-    assert e._builder_reserve_intact(small, e.E5_BUILDER_MAX_REQUESTS) is True
+    assert repair_policy._builder_reserve_intact(small, e.E5_BUILDER_MAX_REQUESTS) is True
     small.spend_model("prior", requests=12 - e.E5_BUILDER_MAX_REQUESTS)
-    assert e._builder_reserve_intact(small, e.E5_BUILDER_MAX_REQUESTS) is False
+    assert repair_policy._builder_reserve_intact(small, e.E5_BUILDER_MAX_REQUESTS) is False
 
 
 def test_live_attribution_serializes_native_pdf_tools(tmp_path, monkeypatch) -> None:
@@ -271,8 +273,8 @@ def test_round_work_cap_bounds_attribution_backlog() -> None:
     """100 open findings can only send at most 3 findings into one round's
     attribution backlog; the rest are returned as deferred (never lost)."""
     findings = [_e5_finding(f"f{i}", f"region.{i:03d}", "role_gap") for i in range(100)]
-    selected, deferred = e._e5_select_round_work(findings, [], [])
-    assert len(selected) == e.E5_MAX_ROUND_ATTRIBUTION_FINDINGS == 3
+    selected, deferred = repair_policy._e5_select_round_work(findings, [], [])
+    assert len(selected) == repair_policy.E5_MAX_ROUND_ATTRIBUTION_FINDINGS == 3
     assert len(deferred) == 97
     assert set(f.finding_id for f in selected) != set(f.finding_id for f in deferred)
     assert selected[0].finding_id == "f0"  # review order preserved
@@ -282,10 +284,10 @@ def test_deferred_findings_stay_open_and_reeligible() -> None:
     """Deferred is scheduling state, NOT closure: a deferred finding stays in
     the open-findings view and is re-selected in a later round."""
     findings = [_e5_finding(f"f{i}", f"region.{i}", "role_gap") for i in range(5)]
-    selected, deferred = e._e5_select_round_work(findings, [], [])
+    selected, deferred = repair_policy._e5_select_round_work(findings, [], [])
     assert [f.finding_id for f in selected] == ["f0", "f1", "f2"]
     # a later round re-selects the deferred ones under the same rule
-    later_selected, later_deferred = e._e5_select_round_work([], [], deferred)
+    later_selected, later_deferred = repair_policy._e5_select_round_work([], [], deferred)
     assert [f.finding_id for f in later_selected] == ["f3", "f4"]
     assert later_deferred == []
 
@@ -310,7 +312,7 @@ def test_one_failed_attribution_does_not_block_an_attributed_defect() -> None:
         "f1": (e.MeasurementResult(request_id="measure-f1", status="confirmed", delta_pt=9.0), blocked.requested_measurement),
         "f2": (e.MeasurementResult(request_id="measure-f2", status="confirmed", delta_pt=5.0), repairable.requested_measurement),
     }
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = repair_policy._next_e5_repair_finding(
         [blocked, repairable], measured, attributions, []
     )
     assert selected is not None and selected[0].finding_id == "f2"
@@ -326,7 +328,7 @@ def test_builder_called_before_full_ledger_is_attributed() -> None:
     measured = {
         "f3": (e.MeasurementResult(request_id="measure-f3", status="confirmed", delta_pt=7.0), repairable.requested_measurement),
     }
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = repair_policy._next_e5_repair_finding(
         [repairable], measured, attributions, []
     )
     assert selected is not None and selected[0].finding_id == "f3" and stalled is False
@@ -343,23 +345,23 @@ def test_cli_candidate_truth_and_privacy_are_render_gates() -> None:
         "pdf_presence": {"passed": False},
         "no_blank_page": {"passed": False},
     }}
-    blocking = e._e5_blocking_gates("a")
-    record = e._e5_hard_gate_record(
+    blocking = repair_policy._e5_blocking_gates("a")
+    record = repair_policy._e5_hard_gate_record(
         "render-v1", gates, details, blocking_gates=blocking
     )
     assert record["passed"] is True
     assert record["blocking_failures"] == []
     assert record["diagnostic_warnings"] == ["pdf_presence", "no_blank_page"]
-    assert e._e5_blocking_gates_passed("a", gates) is True
+    assert repair_policy._e5_blocking_gates_passed("a", gates) is True
     gates["candidate_content_accounting"] = False
-    assert e._e5_blocking_gates_passed("a", gates) is False
+    assert repair_policy._e5_blocking_gates_passed("a", gates) is False
 
 
 def test_lane_a_gate_sets_stay_frozen_for_the_issue_7_proof_chain() -> None:
     """AC3: the layout-proof chain cannot reach an approved set by dropping a
     gate. The blocking set, the output set and the non-quarantinable set are
     frozen here so any weakening is a deliberate, reviewed contract change."""
-    assert e.LANE_A_OUTPUT_GATES == (
+    assert repair_policy.LANE_A_OUTPUT_GATES == (
         "candidate_content_accounting",
         "no_target_candidate_facts",
         "content_gate",
@@ -367,12 +369,12 @@ def test_lane_a_gate_sets_stay_frozen_for_the_issue_7_proof_chain() -> None:
         "no_blank_page",
         "content_shapes_match_evidence",
     )
-    assert e._e5_blocking_gates("a") == (
+    assert repair_policy._e5_blocking_gates("a") == (
         "candidate_content_accounting",
         "no_target_candidate_facts",
     )
-    assert "no_target_candidate_facts" in e.E5_NON_QUARANTINABLE_GATES
-    assert e.E5_REPRESENTATION_CEILING_GATES == ("content_shapes_match_evidence",)
+    assert "no_target_candidate_facts" in repair_policy.E5_NON_QUARANTINABLE_GATES
+    assert repair_policy.E5_REPRESENTATION_CEILING_GATES == ("content_shapes_match_evidence",)
 
 
 def test_review_gate_full_review_once_per_render_fingerprint() -> None:
@@ -380,22 +382,22 @@ def test_review_gate_full_review_once_per_render_fingerprint() -> None:
     same version id/hash -> one review; a DIFFERENT version id with the SAME
     pdf hash does NOT re-review; a new pdf hash may be reviewed once."""
     reviewed: set[str] = set()
-    assert e._e5_review_this_round(reviewed, "pdf-hash-a") is True
+    assert repair_policy._e5_review_this_round(reviewed, "pdf-hash-a") is True
     reviewed.add("pdf-hash-a")
-    assert e._e5_review_this_round(reviewed, "pdf-hash-a") is False
+    assert repair_policy._e5_review_this_round(reviewed, "pdf-hash-a") is False
     # different version id, same final PDF: same fingerprint, no re-review
-    assert e._e5_review_this_round(reviewed, "pdf-hash-a") is False
+    assert repair_policy._e5_review_this_round(reviewed, "pdf-hash-a") is False
     # new pdf hash -> scoped review allowed once
-    assert e._e5_review_this_round(reviewed, "pdf-hash-b") is True
+    assert repair_policy._e5_review_this_round(reviewed, "pdf-hash-b") is True
     reviewed.add("pdf-hash-b")
-    assert e._e5_review_this_round(reviewed, "pdf-hash-b") is False
+    assert repair_policy._e5_review_this_round(reviewed, "pdf-hash-b") is False
 
 
 def test_round_scheduling_uses_bounded_selection() -> None:
     """The selected loop defers work beyond the shared per-round cap."""
     findings = [_e5_finding(f"f{i}", f"region.{i}", "role_gap") for i in range(6)]
-    selected, deferred = e._e5_select_round_work(findings, [], [])
-    assert len(selected) == e.E5_MAX_ROUND_ATTRIBUTION_FINDINGS
+    selected, deferred = repair_policy._e5_select_round_work(findings, [], [])
+    assert len(selected) == repair_policy.E5_MAX_ROUND_ATTRIBUTION_FINDINGS
     assert len(deferred) == 3
 
 
@@ -816,7 +818,7 @@ def test_repeated_fingerprint_uses_the_next_repairable_finding() -> None:
         "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), first.requested_measurement),
         "f2": (e.MeasurementResult(request_id="m2", status="confirmed", delta_pt=4.0), second.requested_measurement),
     }
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = repair_policy._next_e5_repair_finding(
         [first, second], measured,
         [_e5_attribution(first), _e5_attribution(second)],
         [f"{first.render_version}:header:gap:8.0"],
@@ -830,7 +832,7 @@ def test_all_repeated_fingerprints_stop_as_stalled() -> None:
     measured = {
         "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
     }
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = repair_policy._next_e5_repair_finding(
         [finding], measured, [_e5_attribution(finding)],
         [f"{finding.render_version}:header:gap:8.0"],
     )
@@ -946,7 +948,7 @@ def test_candidate_shape_filter_keeps_real_skills_layout_and_page_local_residual
         )
     })
     monkeypatch.setattr(e5, "_pdf_line_rows", lambda *_args: [])
-    assert e5._bind_role_gap_anchors(
+    assert measurement._bind_role_gap_anchors(
         entry_header_gap.requested_measurement,
         target_pdf=Path("unused-target.pdf"),
         current_pdf=Path("unused-render.pdf"),
@@ -980,19 +982,19 @@ def test_header_vertical_rule_metric_counts_additive_repairs(tmp_path: Path) -> 
         page=1,
         intent="compare the vertical rule geometry beside the header name",
     )
-    before = e5._measure_header_vertical_rule_geometry(
+    before = measurement._measure_header_vertical_rule_geometry(
         request, target_pdf=target, current_pdf=before_pdf
     )
-    additive = e5._measure_header_vertical_rule_geometry(
+    additive = measurement._measure_header_vertical_rule_geometry(
         request, target_pdf=target, current_pdf=additive_pdf
     )
-    fixed = e5._measure_header_vertical_rule_geometry(
+    fixed = measurement._measure_header_vertical_rule_geometry(
         request, target_pdf=target, current_pdf=fixed_pdf
     )
-    empty = e5._measure_header_vertical_rule_geometry(
+    empty = measurement._measure_header_vertical_rule_geometry(
         request, target_pdf=target, current_pdf=empty_pdf
     )
-    both_empty = e5._measure_header_vertical_rule_geometry(
+    both_empty = measurement._measure_header_vertical_rule_geometry(
         request, target_pdf=empty_target, current_pdf=empty_pdf
     )
     assert before.current_evidence[0]["vertical_rule_count"] == 1
@@ -1003,12 +1005,12 @@ def test_header_vertical_rule_metric_counts_additive_repairs(tmp_path: Path) -> 
     assert both_empty.delta_pt == 0
     assert both_empty.target_evidence[0]["vertical_rule_count"] == 0
     assert both_empty.current_evidence[0]["vertical_rule_count"] == 0
-    improved, reason = e5._measurement_improvement(before, additive)
+    improved, reason = measurement._measurement_improvement(before, additive)
     assert improved is False
     assert "retaining the original long" in reason
-    assert e5._measurement_improvement(before, fixed)[0] is True
+    assert measurement._measurement_improvement(before, fixed)[0] is True
     legacy = before.model_copy(update={"method": "header_vertical_rule_geometry/1"})
-    assert e5._measurement_improvement(legacy, fixed) == (
+    assert measurement._measurement_improvement(legacy, fixed) == (
         False, "measurement methods differ; improvement is not comparable",
     )
 
@@ -1020,7 +1022,7 @@ def test_header_vertical_rule_metric_rejects_unrelated_finding() -> None:
         page=1,
         intent="compare contact typography",
     )
-    result = e5._measure_header_vertical_rule_geometry(
+    result = measurement._measure_header_vertical_rule_geometry(
         request, target_pdf=Path("unused-target.pdf"), current_pdf=Path("unused-render.pdf")
     )
     assert result.status == "not_measurable"
@@ -1041,7 +1043,7 @@ def test_header_vertical_rule_name_anchor_excludes_near_size_rail_heading(
     document.line(190, 640, 190, 665)
     document.save()
 
-    evidence = e5._header_vertical_rule_evidence(
+    evidence = measurement._header_vertical_rule_evidence(
         pdf, 1, name_text="Daniel Phang"
     )
     assert evidence is not None
@@ -1049,7 +1051,7 @@ def test_header_vertical_rule_name_anchor_excludes_near_size_rail_heading(
     assert evidence["name_region"]["x0"] >= 189
     assert evidence["name_region"]["bottom"] < 150
     assert evidence["vertical_rule_count"] == 2
-    context = e5._header_vertical_rule_target_context(pdf)
+    context = measurement._header_vertical_rule_target_context(pdf)
     assert context is not None
     assert context["preserve_separate_name_gap"] is True
     assert context["forbidden_interpretation"] == (
@@ -1071,7 +1073,7 @@ def test_target_body_text_color_context_uses_character_volume(tmp_path: Path) ->
     document.drawString(190, 700, "NAME")
     document.save()
 
-    context = e5._target_body_text_color_context(pdf)
+    context = measurement._target_body_text_color_context(pdf)
     assert context is not None
     assert context["dominant_color_hex"] == "#7d92a1"
     assert context["scope"] == "ordinary_body_copy"
@@ -1119,7 +1121,7 @@ def test_non_builder_owner_never_selects_builder(owner: str) -> None:
     measured = {
         "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
     }
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = repair_policy._next_e5_repair_finding(
         [finding], measured, [_e5_attribution(finding, owner=owner)], []
     )
     assert selected is None and stalled is False
@@ -1130,7 +1132,7 @@ def test_unresolved_attribution_never_selects_builder() -> None:
     measured = {
         "f1": (e.MeasurementResult(request_id="m1", status="confirmed", delta_pt=8.0), finding.requested_measurement),
     }
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = repair_policy._next_e5_repair_finding(
         [finding], measured, [_e5_attribution(finding, status="unresolved")], []
     )
     assert selected is None and stalled is False
@@ -1143,12 +1145,12 @@ def test_only_current_confirmed_builder_attribution_selects_builder() -> None:
     }
     stale = _e5_attribution(finding, render_version="render-old")
     wrong_measurement = _e5_attribution(finding, request_id="measure-old")
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = repair_policy._next_e5_repair_finding(
         [finding], measured, [stale, wrong_measurement], []
     )
     assert selected is None and stalled is False
     current = _e5_attribution(finding)
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = repair_policy._next_e5_repair_finding(
         [finding], measured, [stale, wrong_measurement, current], []
     )
     assert stalled is False
@@ -1244,7 +1246,7 @@ def test_contradictory_builder_claim_never_reaches_builder(
             finding.requested_measurement,
         ),
     }
-    selected, stalled = e._next_e5_repair_finding([finding], measured, [record], [])
+    selected, stalled = repair_policy._next_e5_repair_finding([finding], measured, [record], [])
     assert selected is None and stalled is False
 
 
@@ -1266,7 +1268,7 @@ def test_consistent_builder_claim_is_recorded_and_selects_builder() -> None:
             finding.requested_measurement,
         ),
     }
-    selected, stalled = e._next_e5_repair_finding([finding], measured, [record], [])
+    selected, stalled = repair_policy._next_e5_repair_finding([finding], measured, [record], [])
     assert stalled is False
     assert selected is not None and selected[3] is record
 
@@ -1323,7 +1325,7 @@ def test_valid_full_batch_with_reordered_hypotheses_still_enters_the_flow() -> N
     assert e._e5_findings_needing_fallback_attribution(
         [first, second], measured, records
     ) == []
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = repair_policy._next_e5_repair_finding(
         [first, second], measured, records, []
     )
     assert stalled is False
@@ -1331,7 +1333,7 @@ def test_valid_full_batch_with_reordered_hypotheses_still_enters_the_flow() -> N
 
 
 def test_gate_classification_does_not_overclaim_representation_or_privacy() -> None:
-    lane_a = e._e5_gate_classification(
+    lane_a = repair_policy._e5_gate_classification(
         "a", {"content_shapes_match_evidence": False}, privacy_labels_symmetric=True
     )
     assert lane_a["representation_ceiling"] == "unverified"
@@ -1339,7 +1341,7 @@ def test_gate_classification_does_not_overclaim_representation_or_privacy() -> N
 
 
 def test_gate_and_builder_candidate_audits_are_version_bound() -> None:
-    gate_record = e._e5_hard_gate_record(
+    gate_record = repair_policy._e5_hard_gate_record(
         "render-v2",
         {"candidate_content_accounting": True},
         {"diagnostics": {
@@ -1513,29 +1515,29 @@ def test_best_valid_version_selection_follows_explicit_rule() -> None:
 
     # promoted + hard-gate-INVALID: never best (defect-level promotion only)
     v1 = version("v1", gates=False, promoted=True)
-    assert e._best_valid_version_id([v1]) is None
+    assert repair_policy._best_valid_version_id([v1]) is None
     # the same version IS the defect-level state (it stays the latest
     # promoted-not-valid version even after a full-valid promotion exists)
-    assert e._best_defect_level_version_id([v1]) == "v1"
+    assert repair_policy._best_defect_level_version_id([v1]) == "v1"
     # promoted + hard-gate-valid: the best
     v2 = version("v2", gates=True, promoted=True)
-    assert e._best_valid_version_id([v1, v2]) == "v2"
+    assert repair_policy._best_valid_version_id([v1, v2]) == "v2"
     # the LATEST hard-gate-valid version wins, promoted or not (in practice
     # an executed repair is either promoted or rolled back, so this only
     # differs for the pre-repair initial render)
     v3 = version("v3", gates=True)
-    assert e._best_valid_version_id([v1, v2, v3]) == "v3"
+    assert repair_policy._best_valid_version_id([v1, v2, v3]) == "v3"
     # no promotion: the LATEST hard-gate-valid, not the first
-    assert e._best_valid_version_id([version("a", gates=True), version("b", gates=True)]) == "b"
+    assert repair_policy._best_valid_version_id([version("a", gates=True), version("b", gates=True)]) == "b"
     # nothing valid: None (no best-valid render exists)
-    assert e._best_valid_version_id([version("v1", gates=False)]) is None
+    assert repair_policy._best_valid_version_id([version("v1", gates=False)]) is None
     # a rolled-back hard-gate-valid candidate never masquerades as best
     v4 = version("v4", gates=True)
-    assert e._best_valid_version_id([version("v1", gates=False), v4], excluded={"v4"}) is None
+    assert repair_policy._best_valid_version_id([version("v1", gates=False), v4], excluded={"v4"}) is None
     v5 = version("v5", gates=True)
-    assert e._best_valid_version_id([v4, v5], excluded={"v4"}) == "v5"
+    assert repair_policy._best_valid_version_id([v4, v5], excluded={"v4"}) == "v5"
     # a rolled-back defect-level promotion is not the defect-level state either
-    assert e._best_defect_level_version_id([v1, v2], excluded={"v1"}) is None
+    assert repair_policy._best_defect_level_version_id([v1, v2], excluded={"v1"}) is None
 
 
 @pytest.mark.parametrize("size", ["short", "medium", "long"])
@@ -1806,7 +1808,7 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     for name in e.E5_SOURCE_FILES:
         assert hashes["files"][name] == e._sha256_file(e.ROOT / name), name
     for name in ("runtime.py", "quality.py", "candidate_content.py", "rendering.py", "layout_compiler.py", "layout_state.py",
-                 "run_models.py", "presentation_labels.py"):
+                 "run_models.py", "presentation_labels.py", "measurement.py", "repair_policy.py"):
         assert f"app/pipeline/{name}" in hashes["files"], f"missing direct runtime source: {name}"
     assert all(not name.startswith("tests/") for name in hashes["files"])
     assert hashes["tracked_diff_sha256"] == e._tracked_diff_sha256(e.ROOT, e.E5_SOURCE_FILES)
@@ -1822,6 +1824,9 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     # a mid-run change to a moved owner is detected the same way
     drifted = json.loads(json.dumps(config))
     drifted["source_hashes"]["files"]["app/pipeline/presentation_labels.py"] = "0" * 64
+    assert e._source_hashes_changed(drifted) is True
+    drifted = json.loads(json.dumps(config))
+    drifted["source_hashes"]["files"]["app/pipeline/repair_policy.py"] = "0" * 64
     assert e._source_hashes_changed(drifted) is True
     # a changed tracked diff (same file hashes is impossible then, but a
     # tampered diff hash must also be detected)
@@ -2893,7 +2898,7 @@ def test_differing_target_work_history_does_not_trigger_rebind() -> None:
             finding.requested_measurement,
         ),
     }
-    selected, stalled = e._next_e5_repair_finding([finding], measured, [record], [])
+    selected, stalled = repair_policy._next_e5_repair_finding([finding], measured, [record], [])
     assert selected is None and stalled is False, "a rebind claim must never become a Builder action"
 
 
@@ -3011,7 +3016,7 @@ def _e5_quarantine_case(
         version_id=version_id, html_sha256="h", pdf_sha256="p", page_count=1,
         hard_gates_passed=False,
     )
-    return e5._e5_quarantine_eligibility(
+    return repair_policy._e5_quarantine_eligibility(
         version,
         kwargs.pop("gates", _e5_quarantine_gates()),
         representation=kwargs.pop("representation", "validated-representation"),
@@ -3068,7 +3073,7 @@ def test_action_fingerprint_binds_the_repair_base_version() -> None:
     executed = [
         f"{finding.render_version}:candidate_content_accounting:hard_gate_content:4.0"
     ]
-    selected, stalled = e._next_e5_repair_finding(
+    selected, stalled = repair_policy._next_e5_repair_finding(
         [finding], measured, [_e5_attribution(finding)], executed
     )
     assert selected is None and stalled is True
@@ -3077,7 +3082,7 @@ def test_action_fingerprint_binds_the_repair_base_version() -> None:
         update={"finding_id": "f2", "render_version": "render-q-v2"}
     )
     measured_q = {"f2": (result, quarantined.requested_measurement)}
-    selected_q, _stalled_q = e._next_e5_repair_finding(
+    selected_q, _stalled_q = repair_policy._next_e5_repair_finding(
         [quarantined], measured_q, [_e5_attribution(quarantined)], executed
     )
     assert selected_q is not None
