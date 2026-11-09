@@ -20,6 +20,7 @@ import app.pipeline.measurement as measurement
 import app.pipeline.presentation_labels as presentation_labels
 import app.pipeline.prompts as prompts
 import app.pipeline.repair_policy as repair_policy
+import app.pipeline.run_artifacts as run_artifacts
 import app.pipeline.run_models as run_models
 from app.pipeline.runtime import RunBudget
 import app.pipeline.defect_ledger as defect_ledger
@@ -1767,7 +1768,7 @@ def test_run_e5_owner_package_resolves_best_even_when_not_last(tmp_path: Path) -
         target_id="target-fixture-v1", target_sha256="0" * 64, lanes={"a": lane},
         summary={"terminal_state": "budget_exhausted"},
     )
-    package = e._write_e5_owner_package(out_dir, target, record)
+    package = run_artifacts._write_e5_owner_package(out_dir, target, record)
     best = package / "lane_a_best.pdf"
     assert best.exists()
     assert best.read_bytes() == v1_pdf.read_bytes(), (
@@ -1806,14 +1807,14 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     assert hashes["recorded_before_first_live_call"] is True
     assert hashes["basis"] == "selected_critical_source_drift_detection"
     # the registered set covers the ACTUAL direct runtime dependencies
-    for name in e.E5_SOURCE_FILES:
-        assert hashes["files"][name] == e._sha256_file(e.ROOT / name), name
+    for name in run_artifacts.E5_SOURCE_FILES:
+        assert hashes["files"][name] == e._sha256_file(ROOT / name), name
     for name in ("runtime.py", "quality.py", "candidate_content.py", "rendering.py", "layout_compiler.py", "layout_state.py",
                  "run_models.py", "presentation_labels.py", "measurement.py", "repair_policy.py",
-                 "prompts.py", "agent_adapters.py"):
+                 "prompts.py", "agent_adapters.py", "run_artifacts.py"):
         assert f"app/pipeline/{name}" in hashes["files"], f"missing direct runtime source: {name}"
     assert all(not name.startswith("tests/") for name in hashes["files"])
-    assert hashes["tracked_diff_sha256"] == e._tracked_diff_sha256(e.ROOT, e.E5_SOURCE_FILES)
+    assert hashes["tracked_diff_sha256"] == run_artifacts._tracked_diff_sha256(ROOT, run_artifacts.E5_SOURCE_FILES)
     assert record["summary"]["source_changed"] is False
     assert record["summary"]["source_identity_stable"] is True
     # offline rehearsal runs are NEVER auto-promoted to canonical by a
@@ -1822,28 +1823,28 @@ def test_run_e5_config_freezes_source_hashes_and_detects_change(tmp_path: Path) 
     # any drift between frozen identity and current source is detected
     drifted = json.loads(json.dumps(config))
     drifted["source_hashes"]["files"]["app/pipeline/service.py"] = "0" * 64
-    assert e._source_hashes_changed(drifted) is True
+    assert run_artifacts._source_hashes_changed(drifted) is True
     # a mid-run change to a moved owner is detected the same way
     drifted = json.loads(json.dumps(config))
     drifted["source_hashes"]["files"]["app/pipeline/presentation_labels.py"] = "0" * 64
-    assert e._source_hashes_changed(drifted) is True
+    assert run_artifacts._source_hashes_changed(drifted) is True
     drifted = json.loads(json.dumps(config))
     drifted["source_hashes"]["files"]["app/pipeline/repair_policy.py"] = "0" * 64
-    assert e._source_hashes_changed(drifted) is True
+    assert run_artifacts._source_hashes_changed(drifted) is True
     drifted = json.loads(json.dumps(config))
     drifted["source_hashes"]["files"]["app/pipeline/prompts.py"] = "0" * 64
-    assert e._source_hashes_changed(drifted) is True
+    assert run_artifacts._source_hashes_changed(drifted) is True
     drifted = json.loads(json.dumps(config))
     drifted["source_hashes"]["files"]["app/pipeline/agent_adapters.py"] = "0" * 64
-    assert e._source_hashes_changed(drifted) is True
+    assert run_artifacts._source_hashes_changed(drifted) is True
     # a changed tracked diff (same file hashes is impossible then, but a
     # tampered diff hash must also be detected)
     drifted = json.loads(json.dumps(config))
     drifted["source_hashes"]["tracked_diff_sha256"] = "0" * 64
-    assert e._source_hashes_changed(drifted) is True
+    assert run_artifacts._source_hashes_changed(drifted) is True
     # a config WITHOUT source identity (e.g. the pre-fix canonical run) is
     # reported as changed/not-bindable, never silently trusted
-    assert e._source_hashes_changed({"starting_commit": "x"}) is True
+    assert run_artifacts._source_hashes_changed({"starting_commit": "x"}) is True
 
 
 def test_source_diff_identity_ignores_unrelated_files(tmp_path: Path) -> None:
@@ -1867,17 +1868,17 @@ def test_source_diff_identity_ignores_unrelated_files(tmp_path: Path) -> None:
     git("add", ".")
     git("commit", "-qm", "base")
     identity = ("pkg/a.py", "pkg/b.py")
-    baseline = e._tracked_diff_sha256(repo, identity)
+    baseline = run_artifacts._tracked_diff_sha256(repo, identity)
     assert baseline is not None
     # an unrelated file changes: identity unchanged
     (repo / "unrelated/notes.md").write_text("owner notes edited\n")
-    assert e._tracked_diff_sha256(repo, identity) == baseline
+    assert run_artifacts._tracked_diff_sha256(repo, identity) == baseline
     # an unregistered path inside the same tree changes: identity unchanged
     (repo / "pkg/extra.txt").write_text("new file\n")
-    assert e._tracked_diff_sha256(repo, identity) == baseline
+    assert run_artifacts._tracked_diff_sha256(repo, identity) == baseline
     # a REGISTERED source changes: drift detected
     (repo / "pkg/b.py").write_text("b = 2\n")
-    assert e._tracked_diff_sha256(repo, identity) != baseline
+    assert run_artifacts._tracked_diff_sha256(repo, identity) != baseline
 
 
 # --- E5 second correctness round: best vs defect-level, version-bound state,
@@ -2005,17 +2006,17 @@ def test_owner_package_labels_defect_level_active_version_never_best(tmp_path: P
     )
     # the selection rule: the defect-level version is the shown artifact,
     # labeled ACTIVE DEFECT-LEVEL VERSION
-    version, stem, label = e._selected_lane_artifact(lane)
+    version, stem, label = run_artifacts._selected_lane_artifact(lane)
     assert label == "ACTIVE DEFECT-LEVEL VERSION"
     assert version.version_id == "v2" and stem == "render_2"
-    package = e._write_e5_owner_package(out_dir, TARGET_PDF, record)
+    package = run_artifacts._write_e5_owner_package(out_dir, TARGET_PDF, record)
     assert (package / "lane_a_active_defect_level.pdf").read_bytes() == v2_pdf.read_bytes()
     assert not (package / "lane_a_best.pdf").exists()
     assert not (package / "lane_a_latest_attempt.pdf").exists()
     report = (package / "REPORT.md").read_text(encoding="utf-8")
     assert "ACTIVE DEFECT-LEVEL VERSION" in report
     assert "never BEST" in report
-    comparison = e._write_e5_comparison(out_dir, record, {"run_id": out_dir.name})
+    comparison = run_artifacts._write_e5_comparison(out_dir, record, {"run_id": out_dir.name})
     row = json.loads((out_dir / "comparison_report.json").read_text())["lanes"][0]
     assert row["render_label"] == "ACTIVE DEFECT-LEVEL VERSION"
     assert row["best_render"] is None
@@ -2422,7 +2423,7 @@ def test_frozen_e5_config_records_the_presentation_label_approval(tmp_path: Path
     """The validated approval identity is frozen into run_config.json BEFORE
     the first live call — a mid-run crash still proves what the lanes saw.
     No approval -> the same shape freezes provided=False, approved=[]."""
-    from app.pipeline.service import _freeze_e5_config
+    from app.pipeline.run_artifacts import _freeze_e5_config
 
     target_frozen = e.FrozenCase(
         case_id="x",
@@ -2562,7 +2563,7 @@ def test_owner_package_label_listing_matches_the_catalog() -> None:
             ]
         }
     )
-    listing = e._presentation_label_listing(
+    listing = presentation_labels._presentation_label_listing(
         catalog,
         {"a": ["label.section.p1.top221.5"], "b": []},
         target_sha256="a" * 64,
@@ -2587,7 +2588,7 @@ def test_owner_package_label_listing_matches_the_catalog() -> None:
     assert "target_sha256" in listing["note"]
     # with a VALIDATED owner approval the listing distinguishes approved from
     # proposed; content still comes from the catalog
-    listing = e._presentation_label_listing(
+    listing = presentation_labels._presentation_label_listing(
         catalog,
         {"a": ["label.section.p1.top221.5"], "b": []},
         ["label.section.p1.top221.5"],
@@ -2616,7 +2617,7 @@ def test_owner_package_label_listing_matches_the_catalog() -> None:
             "referenced_by_lanes": [],
         },
     ]
-    assert e._presentation_label_listing([], {"a": [], "b": []})["labels"] == []
+    assert presentation_labels._presentation_label_listing([], {"a": [], "b": []})["labels"] == []
 
 
 # --- E5 third correctness round: ledger as the single open/closed source,
@@ -2745,14 +2746,14 @@ def test_owner_package_shows_active_unpromoted_never_rolled_back(tmp_path: Path)
         best_defect_level_version=None,
         active_render_version="v1",
     )
-    version, stem, label = e._selected_lane_artifact(lane)
+    version, stem, label = run_artifacts._selected_lane_artifact(lane)
     assert label == "ACTIVE UNPROMOTED VERSION"
     assert version.version_id == "v1" and stem == "render_1"
     record = run_models.E5LoopRecord(
         target_id="t", target_sha256="0" * 64, lanes={"a": lane},
         summary={"terminal_state": "budget_exhausted"},
     )
-    package = e._write_e5_owner_package(out_dir, TARGET_PDF, record)
+    package = run_artifacts._write_e5_owner_package(out_dir, TARGET_PDF, record)
     copied = package / "lane_a_active_unpromoted.pdf"
     assert copied.exists()
     assert copied.read_bytes() == v1_pdf.read_bytes(), (
@@ -2762,7 +2763,7 @@ def test_owner_package_shows_active_unpromoted_never_rolled_back(tmp_path: Path)
     assert not (package / "lane_a_best.pdf").exists()
     report = (package / "REPORT.md").read_text(encoding="utf-8")
     assert "ACTIVE UNPROMOTED VERSION" in report
-    row = e._write_e5_comparison(out_dir, record, {"run_id": out_dir.name})
+    row = run_artifacts._write_e5_comparison(out_dir, record, {"run_id": out_dir.name})
     comparison = json.loads((out_dir / "comparison_report.json").read_text())
     assert comparison["lanes"][0]["render_label"] == "ACTIVE UNPROMOTED VERSION"
     assert comparison["lanes"][0]["selected_version"] == "v1"

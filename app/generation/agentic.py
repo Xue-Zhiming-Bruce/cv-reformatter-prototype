@@ -12,12 +12,18 @@ from app.generation.content_validation import validate_generated_content, valida
 from app.generation import template_mapper
 from app.generation.template_mapper import ClientFacingRenderContext
 from app.pipeline.candidate_content import candidate_document_from_context
-from app.pipeline.evidence import EvidenceRef, SelfReportedStatus, StructuralRelation, TargetStructureDraft
+from app.pipeline.evidence import (
+    EvidenceRef,
+    SelfReportedStatus,
+    StructuralRelation,
+    TargetStructureDraft,
+    _model_identity,
+)
 from app.pipeline.html_renderer import RENDERER_VERSION, render_layout_template
 from app.pipeline.layout_state import C2LayoutState
 from app.pipeline.runtime import RunBudget
 from app.pipeline.run_models import E5LoopRecord, PresentationLabelApproval
-from app.pipeline import measurement, presentation_labels, prompts, quality, repair_policy, review, service
+from app.pipeline import measurement, presentation_labels, prompts, quality, repair_policy, review, run_artifacts, service
 from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from app.template_analysis.schemas import LayoutTemplateSpec
@@ -162,7 +168,7 @@ def agentic_renderer_version() -> str:
         "candidate_fact_privacy": quality.PRIVACY_GATE_VERSION,
         "client_disclosure": template_mapper.CLIENT_DISCLOSURE_VERSION,
         "renderer": RENDERER_VERSION, "settings": {**_settings(), "max_request_bytes": MAX_REQUEST_BYTES},
-        "models": service._model_identity(),
+        "models": _model_identity(),
         "prompts": [prompts.E5_LANE_A_BUILDER_INSTRUCTIONS, prompts.E5_REVIEWER_INSTRUCTIONS,
                     prompts.E5_ATTRIBUTION_INSTRUCTIONS],
         "provider_routes": [hashlib.sha256(value.encode()).hexdigest() for value in (
@@ -308,7 +314,7 @@ def render_agentic(
     lane = record.lanes.get("a")
     if terminal != "ready_for_owner_review" or lane is None:
         raise _no_reviewable_output(run_dir, terminal, record)
-    version, stem, selection = service._selected_lane_artifact(lane)
+    version, stem, selection = run_artifacts._selected_lane_artifact(lane)
     if version is None or selection != "BEST" or not version.hard_gates_passed:
         raise AgenticGenerationError("Agentic run has no validated selected output")
     if version.pdf_sha256 not in lane.summary.get("reviewed_pdf_sha256", []):

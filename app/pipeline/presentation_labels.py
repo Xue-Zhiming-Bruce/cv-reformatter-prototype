@@ -183,3 +183,61 @@ def _heuristic_presentation_labels(catalog: list[PresentationLabel]) -> list[Pre
         if (_section_source_hint(label.text)[0] != "additional_section"
             or " ".join(label.text.upper().split()) in {"PROJECTS", "ADDITIONAL SECTIONS"})
     ]
+
+def _presentation_label_listing(
+    catalog: list[PresentationLabel],
+    lane_references: dict[str, list[str]],
+    approved_label_ids: list[str] | None = None,
+    *,
+    target_sha256: str | None = None,
+    catalog_sha256: str | None = None,
+    approval_provided: bool | None = None,
+    approval_validated: bool | None = None,
+    recognition_method: str = "explicit_owner_input",
+) -> dict[str, Any]:
+    """The owner-visible label listing (label_id / text / kind / status /
+    evidence / which lanes referenced it). Status comes from the shell-recognized
+    ``approved_label_ids``; shell catalog entries
+    are always proposed. `proposed` entries are listed for review but are NOT
+    renderable. Audit material only — it does NOT mean the owner accepted
+    T-v1."""
+    approved: set[str] = set(approved_label_ids or [])
+    return {
+        "schema_version": "e5-presentation-labels/1",
+        "note": (
+            "Measured labels are renderable and privacy-excluded only after "
+            "recognition by the recorded method. Conventional exact aliases "
+            "are recognized automatically; unknown labels remain proposed and "
+            "unrenderable. Legacy explicit approval remains bound to "
+            "target_sha256 and catalog_sha256. "
+            "Recognition is not human output acceptance or a lane decision."
+        ),
+        "recognition_method": recognition_method,
+        "target_sha256": target_sha256,
+        "catalog_sha256": catalog_sha256,
+        "approval_provided": approval_provided,
+        "approval_validated": approval_validated,
+        "approved_label_ids": [
+            label.label_id for label in catalog if label.label_id in approved
+        ],
+        "proposed_label_ids": [
+            label.label_id for label in catalog if label.label_id not in approved
+        ],
+        "labels": [
+            {
+                "label_id": label.label_id,
+                "text": label.text,
+                "kind": label.kind,
+                "status": (
+                    "approved" if label.label_id in approved else label.status
+                ),
+                "evidence_ids": label.evidence_ids,
+                "referenced_by_lanes": sorted(
+                    lane_id
+                    for lane_id, refs in lane_references.items()
+                    if label.label_id in set(refs)
+                ),
+            }
+            for label in catalog
+        ],
+    }
