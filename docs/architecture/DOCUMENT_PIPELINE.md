@@ -255,7 +255,8 @@ workflow, policy, measurement, model I/O, rendering, and persistence each have
 their own owner.
 
 ```text
-HTTP route (app/main.py) / native worker child (app/job_worker.py) / CLI (app/pipeline/__main__.py)
+product entries
+HTTP route (app/main.py) / native worker child (app/job_worker.py)
   -> generation application workflow (app/generation/service.py::generate_outputs)
       -> prepare_generation (saved revision + disclosure, template/design/proof selection)
           -> candidate context + disclosure mapping (app/generation/template_mapper.py)
@@ -276,6 +277,11 @@ HTTP route (app/main.py) / native worker child (app/job_worker.py) / CLI (app/pi
           -> manifest, artifacts, repository/publication (generation/artifact_manifest.py, storage/*)
           -> diagnostic visual comparison (app/template_analysis/visual_comparator.py)
   -> HTTP adapter maps GenerationError to the historical status/detail (app/main.py)
+
+diagnostic entry (never enters the application workflow above)
+python -m app.pipeline (app/pipeline/__main__.py)
+  -> its own client render context (app/generation/template_mapper.py::build_client_render_context)
+  -> pipeline coordinator (app/pipeline/service.py::run_e5), the same run_e5 subtree above
 ```
 
 The workflow takes a `GenerateRequest` plus explicit `GenerationSettings`
@@ -286,6 +292,13 @@ store. `app/generation/service.py` imports neither `app.main` nor FastAPI, so
 there is no main→workflow→main cycle and no second generation implementation.
 `GenerationError` carries the status and payload; the HTTP adapter owns the
 framework-specific response.
+
+The diagnostic CLI is not a workflow adapter. `app/pipeline/__main__.py` builds
+its own `ClientFacingRenderContext`, projects its internal
+`CandidateDocument`, and calls `run_e5` directly, so it shares the run
+coordinator and its gates but none of `prepare_generation`,
+`validate_generation`, or `record_generation`; it performs no extraction,
+approval, or input discovery.
 
 Runtime roles and development roles are different things and must not be
 conflated in review notes:

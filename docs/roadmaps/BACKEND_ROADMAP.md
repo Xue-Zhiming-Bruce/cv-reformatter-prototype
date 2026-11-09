@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: October 26, 2026 (M5 verified; bounded M6/B0/B1 source and outcome freeze complete)
+Last reviewed: November 10, 2026 (M5 verified; bounded M6/B0/B1 source and outcome freeze complete; development progress and its verification state recorded below)
 
 This is the sole implementation checklist. Product behavior belongs in the
 [Product Specification](../product/PRODUCT_SPEC.md), approved decisions in
@@ -101,6 +101,28 @@ problem discovery by the default whole-page Reviewer. Ordinary Reviewer
 quality, general target fidelity, automatic repair selection across representative
 samples and asynchronous execution remain unaccepted. No live test or score
 completes B0/B1 or approves a final document.
+
+### Verified Development Progress
+
+Development milestones recorded with their evidence so they are not mistaken
+for product acceptance:
+
+- Local container stack (#14): `compose.yaml`, `Dockerfile`,
+  `docker/frontend.Dockerfile` and `docker/constraints.txt` build PostgreSQL,
+  the one-shot migration, the API and the nginx-served frontend with
+  loopback-only ports and named volumes. Verified on 2026-11-09 and QA PASS at
+  `9c33970`. It changes no pipeline behavior and does not satisfy the hosting
+  or security gates in P4.
+- Generation application workflow (#11): `ac6b0c1` moved prepare → render →
+  validate → record into `app/generation/service.py`, left `app/main.py` as the
+  HTTP adapter and gave the native child explicit `GenerationSettings`.
+  Implemented, under verification; ownership is recorded in the
+  [Document Pipeline](../architecture/DOCUMENT_PIPELINE.md) call flow.
+- Shared engineering guidance (#15): `dcc5af4` routed `AGENTS.md` over the
+  tracked documents and added the
+  [Engineering Guide](../development/ENGINEERING_GUIDE.md); this revision adds
+  the #14 documentation corrections and the workspace/worktree view note.
+  Documentation and workspace configuration only.
 
 ### Historical Paths And Recovery
 
