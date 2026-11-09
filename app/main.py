@@ -4,7 +4,6 @@ import re
 import shutil
 import tempfile
 import time
-import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
@@ -15,52 +14,52 @@ from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, model_validator
 import httpx
-from pypdf.errors import PyPdfError
 
-from app.extraction.candidate_document_analyzer import (
-    CandidateFieldEvidenceLedger,
-    NormalizedCandidateDocument,
-    build_candidate_field_evidence,
-    build_source_coverage_ledger,
-    unaccounted_source_blocks,
-    unreviewed_source_blocks,
-)
-from app.extraction.candidate_schema import CandidateProfile, DisplayRule, MissingField
+from app.extraction.candidate_document_analyzer import build_candidate_field_evidence
+from app.extraction.candidate_schema import CandidateProfile
 from app.extraction.llm_extractor import (
     LLMConfigurationError,
     LLMExtractionError,
     build_llm_client,
 )
-from app.extraction.coverage_audit import (
-    SegmentationCoverageAudit,
-    audit_segmentation_lines,
-)
+from app.extraction.coverage_audit import audit_segmentation_lines
 from app.extraction.llm_segmentation import (
     LLM_SEGMENTATION_PROMPT_VERSION,
-    LLMSegmentationOutput,
     SegmentationRunMetadata,
     materialize_llm_segmentation,
     segment_and_extract_resume,
     segmentation_output_line_evidence,
 )
-from app.generation.chrome_html_to_pdf import HtmlToPdfExportError, export_html_to_pdf
 from app.generation.artifact_manifest import (
     ArtifactManifest,
     MANIFEST_FILENAME,
-    capture_generation_inputs,
     is_artifact_manifest_current,
-    write_artifact_manifest,
 )
-from app.generation.content_validation import (
-    validate_generated_content,
-    validate_output_structure,
-)
-from app.generation.followup_message_generator import generate_followup_message
-from app.pipeline.candidate_content import candidate_document_from_context
 from app.pipeline.service import PresentationLabelApproval
-from app.pipeline.html_renderer import RENDERER_VERSION as PIPELINE_RENDERER_VERSION, render_layout_template
-from app.generation.render_plan import build_production_render_plan
-from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME, build_client_render_context
+from app.generation.contracts import (
+    GenerateRequest,
+    GenerateResponse,
+    TargetFormatMetadata,
+)
+from app.generation.service import (
+    GenerationError,
+    GenerationSettings,
+    artifact_metadata_url,
+    artifact_url,
+    draft_followup,
+    generate_outputs as run_generation,
+    is_safe_artifact_id,
+    is_safe_design_id,
+    load_saved_target_format,
+    new_artifact_id,
+    prepare_artifact_dir,
+    requested_profile_revision_id,
+    require_profile_revision,
+    validate_profile_source_review,
+    validate_target_format_reference,
+    write_json,
+    write_profile_debug_artifacts,
+)
 from app.final_acceptance import (
     FinalOutputAcceptance,
     FinalOutputIdentity,
@@ -71,22 +70,34 @@ from app.final_acceptance import (
 )
 from app.ingestion.docx_reader import read_docx
 from app.ingestion.file_validator import CorruptedFileError, UnsupportedFileTypeError
-from app.ingestion.pdf_reader import CorruptedPdfError, EmptyPdfTextError, UnsupportedPdfTypeError, read_pdf_text
+from app.ingestion.pdf_reader import (
+    CorruptedPdfError,
+    EmptyPdfTextError,
+    UnsupportedPdfTypeError,
+    read_pdf_text,
+)
 from app.profile_approval import (
-    ApprovedProfileVersion,
     ProfileApprovalError,
     ProfileRevisionRepository,
     draft_sha256,
-    is_current_approved_profile,
-    load_current_approved_profile,
-    load_profile_revision,
     profile_sha256,
     save_approved_profile,
     save_profile_revision,
 )
-from app.storage.artifact_store import ArtifactStore, ArtifactStoreConflict, ArtifactStoreError
+from app.storage.artifact_store import (
+    ArtifactStore,
+    ArtifactStoreConflict,
+    ArtifactStoreError,
+)
 from app.storage.local_db import DEFAULT_DATABASE_PATH
-from app.storage.repository import artifact_store, design_repository, final_acceptance_repository, generation_repository, layout_proof_repository, profile_revision_repository
+from app.storage.repository import (
+    artifact_store,
+    design_repository,
+    final_acceptance_repository,
+    generation_repository,
+    layout_proof_repository,
+    profile_revision_repository,
+)
 from app.jobs import JobRecord, NativeJobCreate
 from app.template_analysis.docx_style_analyzer import (
     TargetDocxAnalysisError,
@@ -99,14 +110,13 @@ from app.template_analysis.layout_proof_service import (
     LayoutProofPresentationLabelError,
     LayoutProofRenderError,
     LayoutProofValidationError,
+    active_renderer_version,
     approve_layout_proof,
     create_proof_variants,
     layout_spec_checksum,
     load_layout_proof_approval,
     load_variant_evidence,
     reject_layout_proof,
-    render_candidate_document,
-    active_renderer_version,
 )
 from app.template_analysis.artifacts import (
     ADOBE_RAW_FILENAME,
@@ -117,20 +127,10 @@ from app.template_analysis.artifacts import (
     TargetAnalysisArtifactError,
     load_layout_template_spec,
 )
-from app.template_analysis.schemas import (
-    LayoutTemplateSpec,
-    TemplateStyleSpec,
-    VisualComparisonReport,
-    built_in_layout_template_spec,
-)
-from app.template_analysis.visual_comparator import (
-    COMPARISON_FILENAME,
-    VisualComparisonError,
-    compare_pdf_layouts,
-)
+from app.template_analysis.schemas import LayoutTemplateSpec, TemplateStyleSpec
+from app.template_analysis.visual_comparator import COMPARISON_FILENAME
 from app.template_analysis.design_evidence import (
     candidate_sections_from_profile,
-    inventory_sha256,
     target_checksum_from_bytes,
 )
 from app.template_analysis.commercial.bridge import (
@@ -153,22 +153,18 @@ from app.template_analysis.commercial.local_color import (
 )
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from app.template_analysis.design_schemas import (
-    CandidateSectionRole,
     DesignArtifactState,
     DesignProposal,
     DesignRequest,
     DesignState,
 )
 from app.template_analysis.design_service import (
-    DESIGN_STRATEGY_CLAUDE,
-    DESIGN_STRATEGY_OPENAI,
     DESIGNER_CLAUDE,
-    DESIGNER_OPENAI,
     DESIGNER_DETERMINISTIC,
+    DESIGNER_OPENAI,
     DesignService,
     DesignServiceError,
     design_dir_for,
-    get_design_strategy,
     load_design_state,
 )
 from app.validation.missing_fields import apply_missing_field_detection
@@ -202,11 +198,43 @@ app = FastAPI(title="CV Reformatter MVP", lifespan=_app_lifespan)
 async def artifact_store_error_handler(_request: Request, error: ArtifactStoreError) -> JSONResponse:
     return JSONResponse(status_code=409 if isinstance(error, ArtifactStoreConflict) else 500, content={"detail": str(error)})
 
+@app.exception_handler(GenerationError)
+async def generation_error_handler(_request: Request, error: GenerationError) -> JSONResponse:
+    """Map generation-domain failures to the historical HTTP status/detail."""
+    return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+
 GENERATED_OUTPUTS_DIR = Path(
     os.getenv("GENERATED_OUTPUTS_DIR", "data/generated_outputs")
 )
 LOCAL_DATABASE_PATH = Path(os.getenv("LOCAL_DATABASE_PATH", str(DEFAULT_DATABASE_PATH)))
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+
+def _generation_settings() -> GenerationSettings:
+    """Resolve production configuration at call time so tests and the worker can
+    pass their own values instead of mutating process-wide API state."""
+    return GenerationSettings(
+        outputs_dir=GENERATED_OUTPUTS_DIR,
+        database_url=DATABASE_URL,
+        local_database_path=LOCAL_DATABASE_PATH,
+    )
+
+
+def _prepare_artifact_dir(artifact_id: str, *, allow_existing: bool = False) -> Path:
+    return prepare_artifact_dir(GENERATED_OUTPUTS_DIR, artifact_id, allow_existing=allow_existing)
+
+
+def _require_profile_revision(
+    *, artifact_dir: Path, artifact_id: str, profile_revision_id: str | None
+):
+    return require_profile_revision(
+        _generation_settings(),
+        artifact_dir=artifact_dir,
+        artifact_id=artifact_id,
+        profile_revision_id=profile_revision_id,
+    )
+
+
 DOWNLOADABLE_ARTIFACT_FILENAMES = {
     "candidate_profile.html",
     "candidate_profile.pdf",
@@ -242,28 +270,6 @@ class LedgerSummary(BaseModel):
     needs_review: int
 
 
-class TargetFormatMetadata(BaseModel):
-    artifact_id: str
-    input_filename: str
-    stored_filename: str
-    input_type: str
-    role: str
-    generation_strategy: str
-    accepted_for_generation: bool
-    used_as_template_source: bool
-    download_url: str
-    note: str
-    analysis_status: str = "not_analyzed"
-    style_spec_url: str | None = None
-    analysis_artifact_urls: dict[str, str] = Field(default_factory=dict)
-    analysis_warnings: list[str] = Field(default_factory=list)
-    # Measured-contract capability reporting: the compiled spec's structure
-    # contract and any unsupported-feature markers are surfaced explicitly so
-    # a limited-capability analysis is never silently presented as full.
-    structure_contract: str | None = None
-    unsupported_features: list[str] = Field(default_factory=list)
-
-
 class ProcessResponse(BaseModel):
     artifact_id: str
     profile_revision_id: str
@@ -281,57 +287,6 @@ class TargetFormatUploadResponse(BaseModel):
     target_format: TargetFormatMetadata
     debug_artifacts: dict[str, str] = Field(default_factory=dict)
     artifact_metadata_url: str
-
-
-def _requested_profile_revision_id(
-    revision_id: str | None, legacy_version_id: str | None
-) -> str | None:
-    revision_id = (revision_id or "").strip() or None
-    legacy_version_id = (legacy_version_id or "").strip() or None
-    if revision_id and legacy_version_id and revision_id != legacy_version_id:
-        raise HTTPException(status_code=400, detail="Profile revision identifiers disagree.")
-    return revision_id or legacy_version_id
-
-
-class GenerateRequest(BaseModel):
-    #: Immutable saved profile revision; request-supplied profile data is ignored.
-    profile_revision_id: str | None = None
-    # Transitional read only; remove after clients migrate to profile_revision_id.
-    approved_profile_version_id: str | None = None
-    # Legacy request field is accepted but never used to override a revision.
-    profile: CandidateProfile | None = None
-    client_display_rules: dict[str, DisplayRule] = Field(default_factory=dict)
-    blind_profile: bool = False
-    template_name: str = DEFAULT_TEMPLATE_NAME
-    original_text: str | None = None
-    artifact_id: str | None = None
-    target_format: TargetFormatMetadata | None = None
-    design_id: str | None = None
-    allow_existing_template: bool = False
-    allow_built_in_fallback: bool = False
-
-
-class GenerateResponse(BaseModel):
-    artifact_id: str
-    html_surface_url: str
-    pdf_download_url: str
-    pdf_preview_url: str
-    artifact_metadata_url: str
-    followup_message: str
-    missing_fields: list[MissingField]
-    debug_artifacts: dict[str, str]
-    visual_comparison_url: str | None = None
-    visual_comparison: VisualComparisonReport | None = None
-    visual_comparison_artifact_urls: dict[str, str] = Field(default_factory=dict)
-    design_id: str | None = None
-    template_version: str | None = None
-    profile_sha256: str | None = None
-    profile_revision_id: str
-    layout_template_version: str
-    layout_spec_sha256: str
-    html_sha256: str
-    pdf_sha256: str
-    client_ready: bool = False
 
 
 class FollowupRequest(BaseModel):
@@ -381,7 +336,7 @@ class DesignRequestCreate(BaseModel):
 
     @model_validator(mode="after")
     def require_revision(self) -> "DesignRequestCreate":
-        if not _requested_profile_revision_id(
+        if not requested_profile_revision_id(
             self.profile_revision_id, self.approved_profile_version_id
         ):
             raise ValueError("profile_revision_id is required (legacy approved_profile_version_id accepted).")
@@ -613,7 +568,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
     finally:
         tmp_path.unlink(missing_ok=True)
 
-    artifact_id = _new_artifact_id()
+    artifact_id = new_artifact_id()
     artifact_dir = _prepare_artifact_dir(artifact_id)
     field_evidence = build_candidate_field_evidence(profile, normalized_document)
     source_path = _write_source_resume(
@@ -625,7 +580,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
         source_suffix=suffix,
         artifact_dir=artifact_dir,
     )
-    debug_artifacts = _write_profile_debug_artifacts(
+    debug_artifacts = write_profile_debug_artifacts(
         artifact_dir=artifact_dir,
         profile=profile,
         original_text=extracted_text,
@@ -633,16 +588,16 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
         field_evidence=field_evidence,
     )
     audit_path = artifact_dir / "segmentation_audit.json"
-    _write_json(audit_path, audit.model_dump(mode="json"))
+    write_json(audit_path, audit.model_dump(mode="json"))
     debug_artifacts["segmentation_audit"] = str(audit_path)
     segmentation_metadata_path = artifact_dir / "candidate_segmentation.json"
-    _write_json(
+    write_json(
         segmentation_metadata_path,
         segmentation_metadata.model_dump(mode="json"),
     )
     debug_artifacts["candidate_segmentation"] = str(segmentation_metadata_path)
     segmentation_output_path = artifact_dir / "llm_segmentation.json"
-    _write_json(
+    write_json(
         segmentation_output_path,
         segmentation_output.model_dump(mode="json"),
     )
@@ -682,7 +637,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
         original_pdf_preview_url=original_pdf_preview_url,
         original_preview_error=original_preview_error,
         debug_artifacts=debug_artifacts,
-        artifact_metadata_url=_artifact_metadata_url(artifact_id),
+        artifact_metadata_url=artifact_metadata_url(artifact_id),
     )
 
 
@@ -709,7 +664,7 @@ async def upload_target_format(
             detail="Only .docx target templates and .pdf visual reference samples are supported in the MVP.",
         )
 
-    resolved_artifact_id = artifact_id or _new_artifact_id()
+    resolved_artifact_id = artifact_id or new_artifact_id()
     artifact_dir = _prepare_artifact_dir(resolved_artifact_id, allow_existing=True)
     contents = await file.read()
     analyzed_style_spec: LayoutTemplateSpec | None = None
@@ -756,32 +711,32 @@ async def upload_target_format(
             suffix=suffix,
             contents=contents,
         )
-        _write_json(
+        write_json(
             artifact_dir / NORMALIZED_LAYOUT_FILENAME,
             normalized.model_dump(mode="json"),
         )
-        _write_json(
+        write_json(
             artifact_dir / TARGET_EVIDENCE_FILENAME,
             evidence.model_dump(mode="json"),
         )
-        _write_json(
+        write_json(
             artifact_dir / LAYOUT_SPEC_FILENAME,
             analyzed_style_spec.model_dump(mode="json"),
         )
-        _write_json(artifact_dir / ADOBE_RAW_FILENAME, adobe_raw)
+        write_json(artifact_dir / ADOBE_RAW_FILENAME, adobe_raw)
         target_format = target_format.model_copy(
             update={
                 "used_as_template_source": True,
                 "analysis_status": "analyzed",
-                "style_spec_url": _artifact_url(
+                "style_spec_url": artifact_url(
                     resolved_artifact_id,
                     LAYOUT_SPEC_FILENAME,
                 ),
                 "analysis_artifact_urls": {
-                    "normalized_layout": _artifact_url(resolved_artifact_id, NORMALIZED_LAYOUT_FILENAME),
-                    "target_evidence": _artifact_url(resolved_artifact_id, TARGET_EVIDENCE_FILENAME),
-                    "layout_spec": _artifact_url(resolved_artifact_id, LAYOUT_SPEC_FILENAME),
-                    "adobe_raw": _artifact_url(resolved_artifact_id, ADOBE_RAW_FILENAME),
+                    "normalized_layout": artifact_url(resolved_artifact_id, NORMALIZED_LAYOUT_FILENAME),
+                    "target_evidence": artifact_url(resolved_artifact_id, TARGET_EVIDENCE_FILENAME),
+                    "layout_spec": artifact_url(resolved_artifact_id, LAYOUT_SPEC_FILENAME),
+                    "adobe_raw": artifact_url(resolved_artifact_id, ADOBE_RAW_FILENAME),
                 },
                 "analysis_warnings": list(normalized.warnings),
                 "structure_contract": analyzed_style_spec.structure_contract,
@@ -808,12 +763,12 @@ async def upload_target_format(
             update={
                 "used_as_template_source": True,
                 "analysis_status": "analyzed",
-                "style_spec_url": _artifact_url(
+                "style_spec_url": artifact_url(
                     resolved_artifact_id,
                     LAYOUT_SPEC_FILENAME,
                 ),
                 "analysis_artifact_urls": {
-                    "layout_spec": _artifact_url(
+                    "layout_spec": artifact_url(
                         resolved_artifact_id,
                         LAYOUT_SPEC_FILENAME,
                     )
@@ -825,7 +780,7 @@ async def upload_target_format(
         )
 
     metadata_path = artifact_dir / "target_format.json"
-    _write_json(metadata_path, target_format.model_dump(mode="json"))
+    write_json(metadata_path, target_format.model_dump(mode="json"))
     debug_artifacts = {
         "target_format": str(metadata_path),
         target_format.role: str(artifact_dir / target_format.stored_filename),
@@ -857,7 +812,7 @@ async def upload_target_format(
         artifact_id=resolved_artifact_id,
         target_format=target_format,
         debug_artifacts=debug_artifacts,
-        artifact_metadata_url=_artifact_metadata_url(resolved_artifact_id),
+        artifact_metadata_url=artifact_metadata_url(resolved_artifact_id),
     )
 
 
@@ -869,7 +824,7 @@ def approve_profile(artifact_id: str, body: ProfileApproveRequest) -> ProfileApp
     """Approve a (possibly corrected) CandidateProfile as an immutable version
     under the artifact-store boundary. Never calls the designer; the original
     extraction draft (candidate_profile.json) is preserved untouched."""
-    if not _is_safe_artifact_id(artifact_id):
+    if not is_safe_artifact_id(artifact_id):
         raise HTTPException(status_code=404, detail="Artifact not found.")
     artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
     if not artifact_dir.exists():
@@ -878,7 +833,7 @@ def approve_profile(artifact_id: str, body: ProfileApproveRequest) -> ProfileApp
         source_draft_sha256 = draft_sha256(artifact_dir)
     except ProfileApprovalError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _validate_profile_source_review(artifact_dir, body.profile)
+    validate_profile_source_review(artifact_dir, body.profile)
     try:
         version = save_approved_profile(
             artifact_dir,
@@ -932,7 +887,7 @@ def request_template_design(body: DesignRequestCreate) -> DesignResponse:
     designs produce a structured design state; there is never a silent
     fallback to the built-in template.
     """
-    if not _is_safe_artifact_id(body.artifact_id):
+    if not is_safe_artifact_id(body.artifact_id):
         raise HTTPException(status_code=404, detail="Artifact not found.")
     artifact_dir = GENERATED_OUTPUTS_DIR / body.artifact_id
     if not artifact_dir.exists():
@@ -952,7 +907,7 @@ def request_template_design(body: DesignRequestCreate) -> DesignResponse:
     revision = _require_profile_revision(
         artifact_dir=artifact_dir,
         artifact_id=body.artifact_id,
-        profile_revision_id=_requested_profile_revision_id(
+        profile_revision_id=requested_profile_revision_id(
             body.profile_revision_id, body.approved_profile_version_id
         ),
     )
@@ -990,7 +945,7 @@ def request_template_design(body: DesignRequestCreate) -> DesignResponse:
     response_model=DesignDetailResponse,
 )
 def get_template_design(artifact_id: str, design_id: str) -> DesignDetailResponse:
-    if not _is_safe_artifact_id(artifact_id) or not _is_safe_design_id(design_id):
+    if not is_safe_artifact_id(artifact_id) or not is_safe_design_id(design_id):
         raise HTTPException(status_code=404, detail="Design not found.")
     artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
     if not artifact_dir.exists():
@@ -1009,8 +964,8 @@ def download_design_artifact(
     artifact_id: str, design_id: str, filename: str
 ) -> FileResponse:
     if (
-        not _is_safe_artifact_id(artifact_id)
-        or not _is_safe_design_id(design_id)
+        not is_safe_artifact_id(artifact_id)
+        or not is_safe_design_id(design_id)
         or filename not in DESIGN_ARTIFACT_FILENAMES
     ):
         raise HTTPException(status_code=404, detail="Design artifact not found.")
@@ -1049,7 +1004,7 @@ def approve_template_design(
     design_id: str,
     body: DesignApproveRequest,
 ) -> DesignApproveResponse:
-    if not _is_safe_artifact_id(artifact_id) or not _is_safe_design_id(design_id):
+    if not is_safe_artifact_id(artifact_id) or not is_safe_design_id(design_id):
         raise HTTPException(status_code=404, detail="Design not found.")
     artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
     if not artifact_dir.exists():
@@ -1242,462 +1197,15 @@ def cancel_generation_job(artifact_id: str, job_id: str) -> JobRecord:
     return job
 
 
-@app.post("/api/generate")
+@app.post("/api/generate", response_model=GenerateResponse)
 def generate_outputs(request: GenerateRequest) -> GenerateResponse:
-    from app.generation.agentic import AgenticGenerationError, generation_strategy
+    """HTTP adapter: request validation and error mapping only.
 
-    try:
-        generation_strategy()
-    except AgenticGenerationError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    target_format = request.target_format
-    artifact_id = request.artifact_id or (target_format.artifact_id if target_format else None) or _new_artifact_id()
-    artifact_dir = _prepare_artifact_dir(
-        artifact_id,
-        allow_existing=request.artifact_id is not None or target_format is not None,
-    )
-    if target_format is None and request.artifact_id is not None:
-        target_format = _load_saved_target_format(artifact_dir)
-    if target_format is not None and target_format.artifact_id != artifact_id:
-        raise HTTPException(status_code=400, detail="target_format.artifact_id must match artifact_id.")
-    fallback_warnings: list[str] = []
-    if request.allow_built_in_fallback:
-        fallback_warnings.append(
-            "allow_built_in_fallback is deprecated and never honored: the "
-            "built-in template is a normal no-target choice only and is not "
-            "an escape for an uploaded target (retired 2026-08-28)."
-        )
-    if target_format is not None:
-        _validate_target_format_reference(artifact_id, artifact_dir, target_format)
-        if target_format.analysis_status == "fallback_to_built_in":
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error_code": "uploaded_target_fallback_removed",
-                    "message": (
-                        "The uploaded target could not be compiled into a measured "
-                        "LayoutTemplateSpec. Built-in fallback is unavailable for "
-                        "uploaded targets; analyze a supported target instead."
-                    ),
-                    "options": ["upload_new_target"],
-                },
-            )
-
-    profile_revision_id = _requested_profile_revision_id(
-        request.profile_revision_id, request.approved_profile_version_id
-    )
-    profile_revision = _require_profile_revision(
-        artifact_dir=artifact_dir,
-        artifact_id=artifact_id,
-        profile_revision_id=profile_revision_id,
-    )
-    merged_profile = profile_revision.profile.model_copy(
-        update={
-            "client_display_rules": {
-                **profile_revision.profile.client_display_rules,
-                **request.client_display_rules,
-            }
-        }
-    )
-    reviewed_profile = apply_missing_field_detection(merged_profile)
-
-    render_context = build_client_render_context(
-        reviewed_profile,
-        blind_profile=request.blind_profile,
-        template_name=request.template_name,
-    )
-    style_spec = None
-    if (
-        target_format is not None
-        and target_format.role in {"pdf_reference", "docx_template"}
-        and target_format.used_as_template_source
-    ):
-        try:
-            style_spec = load_layout_template_spec(
-                artifact_dir / LAYOUT_SPEC_FILENAME
-            )
-        except TargetAnalysisArtifactError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "The uploaded target format has no valid artifact-root "
-                    "LayoutTemplateSpec. Re-analyze this target."
-                ),
-            ) from exc
-        if style_spec.structure_contract == "legacy" or (
-            target_format.role == "pdf_reference"
-            and style_spec.structure_contract != "measured"
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error_code": "measured_layout_spec_required",
-                    "message": (
-                        "Generation from an uploaded target requires its measured "
-                        "structure contract; legacy v1 migrations are not accepted."
-                    ),
-                    "options": ["reanalyze_target"],
-                },
-            )
-
-    design_id = request.design_id
-    design_template_version: str | None = None
-    design_profile_sha256: str | None = None
-    if design_id is not None:
-        design_state = _load_approved_design(
-            artifact_id, artifact_dir, design_id, reviewed_profile,
-        )
-        style_spec = load_layout_template_spec(
-            design_dir_for(artifact_dir, design_id) / "layout_template_spec.json"
-        )
-        design_template_version = design_state.template_version
-        design_profile_sha256 = profile_sha256(reviewed_profile)
-    elif (
-        get_design_strategy() in {DESIGN_STRATEGY_CLAUDE, DESIGN_STRATEGY_OPENAI}
-        and target_format is not None
-        and target_format.role in {"pdf_reference", "docx_template"}
-        and target_format.used_as_template_source
-        and not request.allow_existing_template
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "fallback_requires_approval",
-                "message": (
-                    "TEMPLATE_DESIGN_STRATEGY=claude_designer requires an approved "
-                    "design before generation from a requested target format. "
-                    "Approve a design for this artifact, or explicitly set "
-                    "allow_existing_template=true to use the existing template path."
-                ),
-                "options": ["approve_design", "allow_existing_template"],
-            },
-        )
-    elif (
-        request.allow_existing_template
-        and target_format is not None
-        and get_design_strategy() in {
-            DESIGN_STRATEGY_CLAUDE,
-            DESIGN_STRATEGY_OPENAI,
-        }
-    ):
-        fallback_warnings.append(
-            "EXPLICIT FALLBACK: allow_existing_template=true selected the "
-            "artifact-root measured template instead of an approved designer template."
-        )
-
-    # Layout-proof gate: any generation driven by an uploaded target layout
-    # must have a valid persisted layout-proof approval covering this exact
-    # artifact, target checksum, and LayoutTemplateSpec. An approved designer
-    # workflow (design_id) approves the template DESIGN; layout-proof approval
-    # is a separate, independent gate that proves the exact template reflows
-    # safely with short/medium/long synthetic content. Both are required and
-    # neither silently substitutes for the other.
-    uses_uploaded_target = (
-        target_format is not None
-        and target_format.used_as_template_source
-        and style_spec is not None
-    )
-    if uses_uploaded_target:
-        layout_proof_approval = _require_layout_proof_approval(
-            artifact_dir=artifact_dir,
-            artifact_id=artifact_id,
-            target_format=target_format,
-            style_spec=style_spec,
-        )
-    else:
-        layout_proof_approval = None
-
-    normalized_document = _load_normalized_candidate_document(artifact_dir)
-    effective_layout_spec = style_spec or built_in_layout_template_spec()
-    production_render_plan = build_production_render_plan(
-        approved_profile_version_id=profile_revision.profile_revision_id,
-        profile_sha256=profile_revision.profile_sha256,
-        document=normalized_document,
-        context=render_context,
-        layout_spec=effective_layout_spec,
-        warnings=fallback_warnings,
-    )
-
-    html_path = artifact_dir / "candidate_profile.html"
-    pdf_path = artifact_dir / "candidate_profile.pdf"
-    try:
-        manifest_inputs = capture_generation_inputs(
-            artifact_dir,
-            revision_id=profile_revision.profile_revision_id,
-            layout_path=(
-                design_dir_for(artifact_dir, design_id) / LAYOUT_SPEC_FILENAME
-                if design_id is not None else artifact_dir / LAYOUT_SPEC_FILENAME
-            ) if uses_uploaded_target else None,
-            target_filename=target_format.stored_filename if target_format else None,
-        )
-    except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=500, detail={
-            "error_code": "artifact_manifest_unavailable",
-            "message": "Generation inputs could not be verified.",
-        }) from exc
-
-    debug_artifacts = _write_debug_artifacts(
-        artifact_dir=artifact_dir,
-        profile=reviewed_profile,
-        render_context=render_context,
-        # Request-supplied original_text is NOT trusted source evidence: only
-        # resume processing may create raw_extracted_text.txt, and generation
-        # must never rewrite or delete it (nor candidate_profile.json). The
-        # legacy original_text field remains accepted for compatibility but is
-        # ignored here.
-        original_text=None,
-        target_format=target_format,
-        profile_filename="generated_profile.json",
-    )
-    debug_artifacts["profile_revision_id"] = profile_revision.profile_revision_id
-    if request.approved_profile_version_id:
-        debug_artifacts["approved_profile_version_id"] = request.approved_profile_version_id
-    render_plan_path = artifact_dir / "production_render_plan.json"
-    _write_json(render_plan_path, production_render_plan.model_dump(mode="json"))
-    debug_artifacts["production_render_plan"] = str(render_plan_path)
-    generation_metadata_path = artifact_dir / "generation_metadata.json"
-    _write_json(
-        generation_metadata_path,
-        {
-            "profile_revision_id": profile_revision.profile_revision_id,
-            "profile_sha256": profile_revision.profile_sha256,
-            "renderer_version": (
-                active_renderer_version() if uses_uploaded_target else PIPELINE_RENDERER_VERSION
-            ),
-            "layout_template_version": effective_layout_spec.template_version,
-            "layout_spec_sha256": production_render_plan.layout_spec_sha256,
-            "layout_spec_filename": (
-                LAYOUT_SPEC_FILENAME if uses_uploaded_target else None
-            ),
-            "fallback_warnings": fallback_warnings,
-        },
-    )
-    debug_artifacts["generation_metadata"] = str(generation_metadata_path)
-
-    try:
-        if uses_uploaded_target:
-            # Approval-aware candidate renderer: renders only with an approved,
-            # artifact-scoped, checksum-matched layout-proof approval.
-            html_path, exported_pdf_path = render_candidate_document(
-                approval=layout_proof_approval,
-                artifact_id=artifact_id,
-                layout_spec=style_spec,
-                render_context=render_context,
-                output_dir=artifact_dir,
-                target_pdf=artifact_dir / target_format.stored_filename,
-            )
-        else:
-            _, _, html = render_layout_template(
-                effective_layout_spec,
-                candidate_document_from_context(
-                    render_context, candidate_id=f"candidate-{profile_revision.profile_sha256[:16]}",
-                    include_subheading=effective_layout_spec.header.show_candidate_subheading
-                ),
-            )
-            html_path.write_text(html, encoding="utf-8")
-            exported_pdf_path = export_html_to_pdf(html_path, pdf_path)
-    except (
-        ValueError,
-        HtmlToPdfExportError,
-        FileNotFoundError,
-        LayoutProofRenderError,
-    ) as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    if exported_pdf_path != pdf_path and exported_pdf_path.exists():
-        exported_pdf_path.replace(pdf_path)
-    if uses_uploaded_target:
-        debug_artifacts["agentic_generation"] = str(artifact_dir / "agentic_generation.json")
-
-    try:
-        content_validation = validate_generated_content(
-            render_context,
-            pdf_path=pdf_path,
-            layout_spec=effective_layout_spec,
-        )
-    except (OSError, ValueError) as exc:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error_code": "content_validation_unavailable",
-                "message": f"Generated content could not be verified: {exc}",
-            },
-        ) from exc
-    content_validation_path = artifact_dir / "content_validation.json"
-    _write_json(content_validation_path, content_validation.model_dump(mode="json"))
-    debug_artifacts["content_validation"] = str(content_validation_path)
-    if not content_validation.passed:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error_code": "generated_content_incomplete",
-                "message": "Approved content is missing from a generated output.",
-                "checks": [
-                    check.model_dump(mode="json")
-                    for check in content_validation.checks
-                    if not check.passed
-                ],
-            },
-        )
-
-    try:
-        structure_validation = validate_output_structure(
-            render_context,
-            html_path=html_path,
-            layout_spec=effective_layout_spec,
-            pdf_path=pdf_path,
-            coverage_ledger=build_source_coverage_ledger(
-                profile_revision.profile, normalized_document
-            ),
-        )
-    except (OSError, ValueError) as exc:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error_code": "structure_validation_unavailable",
-                "message": f"Generated structure could not be verified: {exc}",
-            },
-        ) from exc
-    structure_validation_path = artifact_dir / "structure_validation.json"
-    _write_json(
-        structure_validation_path, structure_validation.model_dump(mode="json")
-    )
-    debug_artifacts["structure_validation"] = str(structure_validation_path)
-    if not structure_validation.passed:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error_code": "generated_structure_incomplete",
-                "message": (
-                    "Generated output does not match the expected entry "
-                    "structure (tiers, bullet state, ordering, bullet counts)."
-                ),
-                "checks": [
-                    check.model_dump(mode="json")
-                    for check in structure_validation.checks
-                    if not check.matched or check.issues
-                ],
-            },
-        )
-
-    debug_artifacts["generated_html"] = str(html_path)
-    debug_artifacts["generated_pdf"] = str(pdf_path)
-    if design_id is not None:
-        debug_artifacts["design_id"] = design_id
-        debug_artifacts["design_state"] = "approved"
-        debug_artifacts["layout_template_spec"] = str(
-            design_dir_for(artifact_dir, design_id) / "layout_template_spec.json"
-        )
-        debug_artifacts["template_version"] = design_template_version or ""
-
-    html_url = _artifact_url(artifact_id, "candidate_profile.html")
-    pdf_url = _artifact_url(artifact_id, "candidate_profile.pdf")
-    visual_comparison: VisualComparisonReport | None = None
-    visual_comparison_url: str | None = None
-    visual_comparison_artifact_urls: dict[str, str] = {}
-    if target_format is not None and target_format.role == "pdf_reference":
-        try:
-            visual_comparison = compare_pdf_layouts(
-                artifact_dir / target_format.stored_filename,
-                pdf_path,
-                artifact_dir,
-            )
-        except VisualComparisonError as exc:
-            comparison_error_path = artifact_dir / "visual_comparison_error.txt"
-            comparison_error_path.write_text(str(exc), encoding="utf-8")
-            debug_artifacts["visual_comparison_error"] = str(comparison_error_path)
-        else:
-            visual_comparison_url = _artifact_url(artifact_id, COMPARISON_FILENAME)
-            visual_comparison_artifact_urls["report"] = visual_comparison_url
-            debug_artifacts["visual_comparison"] = str(artifact_dir / COMPARISON_FILENAME)
-            for index, filename in enumerate(
-                visual_comparison.target_page_filenames,
-                start=1,
-            ):
-                visual_comparison_artifact_urls[f"target_page_{index:03d}"] = _artifact_url(
-                    artifact_id,
-                    filename,
-                )
-                debug_artifacts[f"comparison_target_page_{index:03d}"] = str(
-                    artifact_dir / filename
-                )
-            for index, filename in enumerate(
-                visual_comparison.generated_page_filenames,
-                start=1,
-            ):
-                visual_comparison_artifact_urls[f"generated_page_{index:03d}"] = _artifact_url(
-                    artifact_id,
-                    filename,
-                )
-                debug_artifacts[f"comparison_generated_page_{index:03d}"] = str(
-                    artifact_dir / filename
-                )
-            for page in visual_comparison.pages:
-                visual_comparison_artifact_urls[f"difference_page_{page.page_number:03d}"] = (
-                    _artifact_url(artifact_id, page.difference_filename)
-                )
-                debug_artifacts[f"visual_comparison_page_{page.page_number:03d}"] = str(
-                    artifact_dir / page.difference_filename
-                )
-
-    try:
-        write_artifact_manifest(
-            artifact_dir, artifact_id=artifact_id, inputs=manifest_inputs,
-            layout_spec=effective_layout_spec,
-            blind_profile=request.blind_profile,
-            disclosure_rules=reviewed_profile.client_display_rules,
-            uses_agentic=bool(uses_uploaded_target),
-            repository=generation_repository(DATABASE_URL),
-            visual_status=("diagnostic" if visual_comparison is not None else
-                           "unavailable" if target_format is not None and target_format.role == "pdf_reference" else "not_run"),
-        )
-    except (OSError, ValueError, PyPdfError) as exc:
-        raise HTTPException(status_code=500, detail={
-            "error_code": "artifact_manifest_unavailable",
-            "message": "Generation provenance could not be verified or saved.",
-        }) from exc
-    debug_artifacts["artifact_manifest"] = str(artifact_dir / MANIFEST_FILENAME)
-
-    try:
-        _artifact_store().record_generated_outputs(
-            artifact_id=artifact_id,
-            artifact_dir=artifact_dir,
-            template_name=request.template_name,
-            blind_profile=request.blind_profile,
-            html_surface_url=html_url,
-            pdf_download_url=pdf_url,
-            pdf_preview_url=pdf_url,
-            missing_fields=reviewed_profile.missing_fields,
-            debug_artifacts=debug_artifacts,
-        )
-    except ArtifactStoreError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    output_identity = current_output_identity(artifact_dir)
-    client_ready = is_final_acceptance_current(artifact_dir, profile_repository=_profile_repository(), repository=final_acceptance_repository(DATABASE_URL))
-
-    return GenerateResponse(
-        artifact_id=artifact_id,
-        html_surface_url=html_url,
-        pdf_download_url=pdf_url,
-        pdf_preview_url=pdf_url,
-        artifact_metadata_url=_artifact_metadata_url(artifact_id),
-        followup_message=_draft_followup(reviewed_profile),
-        missing_fields=reviewed_profile.missing_fields,
-        debug_artifacts=debug_artifacts,
-        visual_comparison_url=visual_comparison_url,
-        visual_comparison=visual_comparison,
-        visual_comparison_artifact_urls=visual_comparison_artifact_urls,
-        design_id=design_id,
-        template_version=design_template_version,
-        profile_sha256=profile_revision.profile_sha256,
-        profile_revision_id=profile_revision.profile_revision_id,
-        layout_template_version=output_identity.layout_template_version,
-        layout_spec_sha256=output_identity.layout_spec_sha256,
-        html_sha256=output_identity.html_sha256,
-        pdf_sha256=output_identity.pdf_sha256,
-        client_ready=client_ready,
-    )
+    The workflow owns prepare→render→validate→record. The module-level
+    configuration is resolved into explicit settings here, so the workflow
+    reads no process-wide state and the native child can pass its own.
+    """
+    return run_generation(request, settings=_generation_settings())
 
 
 @app.post(
@@ -1748,7 +1256,7 @@ def accept_final_output(
 def get_followup_message(request: FollowupRequest) -> FollowupResponse:
     profile = apply_missing_field_detection(request.profile)
     return FollowupResponse(
-        followup_message=_draft_followup(profile, stage="followup", language=request.language)
+        followup_message=draft_followup(profile, stage="followup", language=request.language)
     )
 
 
@@ -1770,7 +1278,7 @@ def list_artifact_metadata(limit: int = 50) -> ArtifactListResponse:
 
 @app.get("/api/artifacts/{artifact_id}/metadata", response_model=ArtifactMetadataResponse)
 def get_artifact_metadata(artifact_id: str) -> ArtifactMetadataResponse:
-    if not _is_safe_artifact_id(artifact_id):
+    if not is_safe_artifact_id(artifact_id):
         raise HTTPException(status_code=404, detail="Artifact metadata not found.")
     try:
         artifact = _artifact_store().get_artifact(artifact_id)
@@ -1829,22 +1337,6 @@ def _count_populated(value: Any) -> int:
     return 1
 
 
-def _new_artifact_id() -> str:
-    return f"artifact_{uuid.uuid4().hex}"
-
-
-def _prepare_artifact_dir(artifact_id: str, *, allow_existing: bool = False) -> Path:
-    if not _is_safe_artifact_id(artifact_id):
-        raise HTTPException(status_code=400, detail="Invalid artifact_id.")
-    artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
-    if artifact_dir.exists() and not artifact_dir.is_dir():
-        raise HTTPException(status_code=400, detail="Invalid artifact storage path.")
-    if artifact_dir.exists() and not allow_existing:
-        raise HTTPException(status_code=409, detail="Artifact already exists.")
-    artifact_dir.mkdir(parents=True, exist_ok=allow_existing)
-    return artifact_dir
-
-
 def _write_source_resume(artifact_dir: Path, *, suffix: str, contents: bytes) -> Path:
     source_path = artifact_dir / f"source_resume{suffix}"
     source_path.write_bytes(contents)
@@ -1861,7 +1353,7 @@ def _create_original_pdf_preview(
     preview_path = artifact_dir / "original_resume_preview.pdf"
     if source_suffix == ".pdf":
         shutil.copyfile(source_path, preview_path)
-        return _artifact_url(artifact_id, preview_path.name), None
+        return artifact_url(artifact_id, preview_path.name), None
 
     return None, (
         "Original DOCX preview PDF is unavailable: the LibreOffice conversion "
@@ -1904,150 +1396,9 @@ def _store_target_format(
         generation_strategy="html_adobe_renderer",
         accepted_for_generation=True,
         used_as_template_source=False,
-        download_url=_artifact_url(artifact_id, stored_filename),
+        download_url=artifact_url(artifact_id, stored_filename),
         note=note,
     )
-
-
-def _validate_target_format_reference(
-    artifact_id: str,
-    artifact_dir: Path,
-    target_format: TargetFormatMetadata,
-) -> None:
-    expected_filename_by_role = {
-        "docx_template": "target_format_template.docx",
-        "pdf_reference": "target_format_reference.pdf",
-    }
-    expected_filename = expected_filename_by_role.get(target_format.role)
-    if (
-        target_format.artifact_id != artifact_id
-        or expected_filename is None
-        or target_format.stored_filename != expected_filename
-        or target_format.download_url != _artifact_url(artifact_id, expected_filename)
-    ):
-        raise HTTPException(status_code=400, detail="Invalid target format reference.")
-
-    stored_path = artifact_dir / target_format.stored_filename
-    if not stored_path.exists() or not stored_path.is_file():
-        raise HTTPException(
-            status_code=400,
-            detail="The target format reference has not been uploaded for this artifact.",
-        )
-
-
-def _draft_followup(profile: CandidateProfile, *, stage: str = "message", language: str = "English") -> str:
-    try:
-        llm_client = build_llm_client(stage=stage)
-    except LLMConfigurationError:
-        llm_client = None
-    return generate_followup_message(profile, llm_client=llm_client, language=language)
-
-
-def _load_saved_target_format(artifact_dir: Path) -> TargetFormatMetadata | None:
-    metadata_path = artifact_dir / "target_format.json"
-    if not metadata_path.exists():
-        return None
-    try:
-        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-        return TargetFormatMetadata.model_validate(payload)
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="Saved target format metadata is invalid.") from exc
-
-
-def _write_profile_debug_artifacts(
-    *,
-    artifact_dir: Path,
-    profile: CandidateProfile,
-    original_text: str | None,
-    profile_filename: str = "candidate_profile.json",
-    normalized_document: NormalizedCandidateDocument | None = None,
-    field_evidence: CandidateFieldEvidenceLedger | None = None,
-) -> dict[str, str]:
-    """Write profile debug artifacts. The default ``profile_filename``
-    (``candidate_profile.json``) is the extraction draft and is written only
-    by the process endpoint; the generation endpoint passes a separate
-    ``generated_profile.json`` so the preserved draft is never overwritten
-    (it is the file the profile-approval checksum is computed from)."""
-    debug_artifacts: dict[str, str] = {}
-
-    if original_text is not None:
-        raw_text_path = artifact_dir / "raw_extracted_text.txt"
-        raw_text_path.write_text(original_text, encoding="utf-8")
-        debug_artifacts["raw_extracted_text"] = str(raw_text_path)
-
-    if normalized_document is not None:
-        normalized_path = artifact_dir / "normalized_candidate_document.json"
-        _write_json(normalized_path, normalized_document.model_dump(mode="json"))
-        debug_artifacts["normalized_candidate_document"] = str(normalized_path)
-
-    if field_evidence is not None:
-        evidence_path = artifact_dir / "candidate_field_evidence.json"
-        _write_json(evidence_path, field_evidence.model_dump(mode="json"))
-        debug_artifacts["candidate_field_evidence"] = str(evidence_path)
-
-    profile_path = artifact_dir / profile_filename
-    _write_json(profile_path, profile.model_dump(mode="json"))
-    debug_artifacts[Path(profile_filename).stem] = str(profile_path)
-
-    missing_fields_path = artifact_dir / "missing_fields.json"
-    _write_json(missing_fields_path, [field.model_dump(mode="json") for field in profile.missing_fields])
-    debug_artifacts["missing_fields"] = str(missing_fields_path)
-
-    return debug_artifacts
-
-
-def _write_debug_artifacts(
-    *,
-    artifact_dir: Path,
-    profile: CandidateProfile,
-    render_context: BaseModel,
-    original_text: str | None,
-    target_format: TargetFormatMetadata | None = None,
-    profile_filename: str = "candidate_profile.json",
-) -> dict[str, str]:
-    debug_artifacts = _write_profile_debug_artifacts(
-        artifact_dir=artifact_dir,
-        profile=profile,
-        original_text=original_text,
-        profile_filename=profile_filename,
-    )
-
-    render_context_path = artifact_dir / "client_render_context.json"
-    _write_json(render_context_path, render_context.model_dump(mode="json"))
-    debug_artifacts["client_render_context"] = str(render_context_path)
-
-    if target_format is not None:
-        target_format_path = artifact_dir / "target_format.json"
-        _write_json(target_format_path, target_format.model_dump(mode="json"))
-        debug_artifacts["target_format"] = str(target_format_path)
-
-    return debug_artifacts
-
-
-def _write_json(path: Path, payload: object) -> None:
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def _load_normalized_candidate_document(
-    artifact_dir: Path,
-) -> NormalizedCandidateDocument:
-    normalized_path = artifact_dir / "normalized_candidate_document.json"
-    if not normalized_path.exists():
-        # Artifacts without a source-analysis run (e.g. target-only flows)
-        # have no source blocks; an empty document keeps the coverage gate
-        # vacuous instead of reconstructing from raw text.
-        return NormalizedCandidateDocument(
-            source_text_sha256="0" * 64, blocks=[]
-        )
-    try:
-        return NormalizedCandidateDocument.model_validate_json(
-            normalized_path.read_text(encoding="utf-8")
-        )
-    except (OSError, ValueError) as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="Saved normalized candidate document is invalid.",
-        ) from exc
 
 
 def _resolve_download_artifact(artifact_id: str, filename: str) -> Path:
@@ -2055,7 +1406,7 @@ def _resolve_download_artifact(artifact_id: str, filename: str) -> Path:
         filename in DOWNLOADABLE_ARTIFACT_FILENAMES
         or DOWNLOADABLE_DIAGNOSTIC_PNG_PATTERN.fullmatch(filename) is not None
     )
-    if not _is_safe_artifact_id(artifact_id) or not is_allowed_filename:
+    if not is_safe_artifact_id(artifact_id) or not is_allowed_filename:
         raise HTTPException(status_code=404, detail="Generated artifact not found.")
     directory = GENERATED_OUTPUTS_DIR / artifact_id
     generations = generation_repository(DATABASE_URL)
@@ -2085,28 +1436,12 @@ def _resolve_download_artifact(artifact_id: str, filename: str) -> Path:
     return artifact_path
 
 
-def _artifact_url(artifact_id: str, filename: str) -> str:
-    return f"/api/artifacts/{artifact_id}/{filename}"
-
-
-def _artifact_metadata_url(artifact_id: str) -> str:
-    return f"/api/artifacts/{artifact_id}/metadata"
-
-
 def _artifact_store() -> ArtifactStore:
     return artifact_store(database_url=DATABASE_URL, local_database_path=LOCAL_DATABASE_PATH)
 
 
 def _profile_repository() -> ProfileRevisionRepository | None:
     return profile_revision_repository(DATABASE_URL)
-
-
-def _is_safe_artifact_id(artifact_id: str) -> bool:
-    return bool(artifact_id) and all(character.isalnum() or character in {"_", "-"} for character in artifact_id)
-
-
-def _is_safe_design_id(design_id: str) -> bool:
-    return bool(design_id) and all(character.isalnum() or character in {"_", "-"} for character in design_id)
 
 
 def _load_design_evidence(artifact_dir: Path) -> tuple[Any, TemplateStyleSpec | None]:
@@ -2134,75 +1469,6 @@ def _load_design_evidence(artifact_dir: Path) -> tuple[Any, TemplateStyleSpec | 
         target_checksum=target_checksum_from_bytes(stored_path.read_bytes()),
     )
     return evidence, measured_style_spec
-
-
-def _load_approved_design(
-    artifact_id: str,
-    artifact_dir: Path,
-    design_id: str,
-    profile: CandidateProfile,
-) -> DesignArtifactState:
-    """Load an approved design for generation. Rejects unapproved states,
-    approved-profile version/checksum drift, and inventory drift, and never
-    calls the designer."""
-    if not _is_safe_design_id(design_id):
-        raise HTTPException(status_code=404, detail="Design not found.")
-    try:
-        state = load_design_state(design_dir_for(artifact_dir, design_id), repository=design_repository(DATABASE_URL))
-    except DesignServiceError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    if state.artifact_id != artifact_id:
-        raise HTTPException(status_code=404, detail="Design not found for this artifact.")
-    if state.state != "approved":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "design_not_approved",
-                "state": state.state,
-                "message": "The referenced design is not approved.",
-            },
-        )
-    current_approved = load_current_approved_profile(artifact_dir, repository=_profile_repository())
-    if current_approved is None:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "approved_profile_missing",
-                "message": (
-                    "No approved profile version exists for this artifact; approve a "
-                    "profile before generating from a design."
-                ),
-            },
-        )
-    if (
-        state.approved_profile_version_id != current_approved.profile_version_id
-        or state.profile_sha256 != current_approved.profile_sha256
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "design_profile_mismatch",
-                "message": (
-                    "The approved profile version/checksum changed since this design "
-                    "was approved; request a new design for the current approved "
-                    "profile version."
-                ),
-                "options": ["request_new_design", "approve_current_profile"],
-            },
-        )
-    current_inventory = inventory_sha256(candidate_sections_from_profile(profile))
-    if state.inventory_sha256 != current_inventory:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "design_inventory_mismatch",
-                "message": (
-                    "Candidate section inventory changed since design approval; "
-                    "request a new design or use allow_existing_template=true."
-                ),
-            },
-        )
-    return state
 
 
 def _record_design_reference(artifact_dir: Path, state: DesignArtifactState) -> None:
@@ -2251,7 +1517,7 @@ def _design_response(artifact_id: str, state: DesignArtifactState) -> DesignResp
             if state.layout_spec_json
             else None
         ),
-        artifact_metadata_url=_artifact_metadata_url(artifact_id),
+        artifact_metadata_url=artifact_metadata_url(artifact_id),
     )
 
 
@@ -2275,171 +1541,10 @@ def _design_artifact_url(artifact_id: str, design_id: str, filename: str) -> str
 
 
 def _require_artifact(artifact_id: str) -> None:
-    if not _is_safe_artifact_id(artifact_id):
+    if not is_safe_artifact_id(artifact_id):
         raise HTTPException(status_code=404, detail="Artifact not found.")
     if not (GENERATED_OUTPUTS_DIR / artifact_id).exists():
         raise HTTPException(status_code=404, detail="Artifact not found.")
-
-
-def _validate_profile_source_review(artifact_dir: Path, profile: CandidateProfile) -> None:
-    segmentation_audit_path = artifact_dir / "segmentation_audit.json"
-    if segmentation_audit_path.exists():
-        try:
-            segmentation_audit = SegmentationCoverageAudit.model_validate_json(
-                segmentation_audit_path.read_text(encoding="utf-8")
-            )
-        except (OSError, ValueError) as exc:
-            raise HTTPException(
-                status_code=400,
-                detail="Saved segmentation coverage audit is invalid.",
-            ) from exc
-        if segmentation_audit.approval_blocked:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error_code": "segmentation_coverage_failed",
-                    "message": (
-                        "LLM segmentation changed, omitted, duplicated, or invented "
-                        "source lines; profile approval is blocked."
-                    ),
-                    "missing_lines": [
-                        item.model_dump(mode="json")
-                        for item in segmentation_audit.missing_lines
-                    ],
-                    "invented_or_altered_lines": [
-                        item.model_dump(mode="json")
-                        for item in segmentation_audit.invented_or_altered_lines
-                    ],
-                },
-            )
-    normalized_document = _load_normalized_candidate_document(artifact_dir)
-    missing_blocks = unaccounted_source_blocks(profile, normalized_document)
-    unreviewed_blocks = unreviewed_source_blocks(profile, normalized_document)
-    if missing_blocks or unreviewed_blocks:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "source_content_unaccounted",
-                "message": (
-                    "Every optional or custom source section must have an explicit "
-                    "show or hide decision before approval, and sections entered "
-                    "pending recruiter review (unknown/other classifications) must "
-                    "be reviewed."
-                ),
-                "source_blocks": [
-                    {
-                        "source_block_id": block.block_id,
-                        "source_heading": block.source_heading,
-                        "classification": block.classification,
-                    }
-                    for block in missing_blocks
-                ],
-                "pending_review_sections": [
-                    {
-                        "source_block_id": block.block_id,
-                        "source_heading": block.source_heading,
-                        "classification": block.classification,
-                    }
-                    for block in unreviewed_blocks
-                ],
-            },
-        )
-
-
-def _require_profile_revision(
-    *,
-    artifact_dir: Path,
-    artifact_id: str,
-    profile_revision_id: str | None,
-) -> ApprovedProfileVersion:
-    """Require a current saved revision. Legacy error codes remain compatible;
-    a saved revision is not human acceptance of the generated output.
-    """
-    if not (profile_revision_id or "").strip():
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "approved_profile_missing",
-                "message": (
-                    "profile_revision_id is required. Save a profile revision "
-                    "before generating a preview; the legacy "
-                    "approved_profile_version_id is also accepted."
-                ),
-                "options": ["save_profile_revision"],
-            },
-        )
-    try:
-        approved = load_profile_revision(
-            artifact_dir, profile_revision_id, repository=_profile_repository(),
-        )
-    except ProfileApprovalError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error_code": "approved_profile_invalid",
-                "message": str(exc),
-            },
-        ) from exc
-    if approved is None:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error_code": "approved_profile_invalid",
-                "message": (
-                    f"Profile revision '{profile_revision_id}' does not resolve "
-                    "to a saved profile for this artifact."
-                ),
-            },
-        )
-    if approved.artifact_id != artifact_id:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error_code": "approved_profile_artifact_mismatch",
-                "message": (
-                    f"The approved profile version belongs to artifact "
-                    f"'{approved.artifact_id}', not '{artifact_id}'."
-                ),
-            },
-        )
-    try:
-        current_draft = draft_sha256(artifact_dir)
-    except ProfileApprovalError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error_code": "approved_profile_draft_mismatch",
-                "message": str(exc),
-            },
-        ) from exc
-    if approved.source_draft_sha256 != current_draft:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error_code": "approved_profile_draft_mismatch",
-                "message": (
-                    "The artifact's extraction draft changed after this profile "
-                    "was approved; the approval no longer covers the current "
-                    "source. Re-approve the profile for the current draft."
-                ),
-                "options": ["approve_profile"],
-            },
-        )
-    if not is_current_approved_profile(artifact_dir, approved.profile_version_id, repository=_profile_repository()):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "approved_profile_superseded",
-                "message": (
-                    "The referenced approved profile version has been superseded "
-                    "by a newer approval; pass the current profile_version_id or "
-                    "approve again."
-                ),
-                "options": ["approve_profile"],
-            },
-        )
-    _validate_profile_source_review(artifact_dir, approved.profile)
-    return approved
 
 
 def _load_generation_style_spec(
@@ -2450,7 +1555,7 @@ def _load_generation_style_spec(
 
 
 def _load_design_layout_spec(artifact_dir: Path, design_id: str) -> LayoutTemplateSpec:
-    if not _is_safe_design_id(design_id):
+    if not is_safe_design_id(design_id):
         raise HTTPException(status_code=404, detail="Design not found.")
     try:
         state = load_design_state(design_dir_for(artifact_dir, design_id), repository=design_repository(DATABASE_URL))
@@ -2476,7 +1581,7 @@ def _layout_proof_context(
 ) -> tuple[TargetFormatMetadata, LayoutTemplateSpec, Path, str]:
     """Resolve target metadata, the template spec, the visual-comparison target
     PDF, and the target checksum for layout-proof operations."""
-    target_format = _load_saved_target_format(artifact_dir)
+    target_format = load_saved_target_format(artifact_dir)
     if target_format is None:
         raise HTTPException(
             status_code=400, detail="No target format for this artifact."
@@ -2486,7 +1591,7 @@ def _layout_proof_context(
             status_code=400,
             detail="The target format is not used as a template source.",
         )
-    _validate_target_format_reference(artifact_id, artifact_dir, target_format)
+    validate_target_format_reference(artifact_id, artifact_dir, target_format)
     stored_path = artifact_dir / target_format.stored_filename
     try:
         style_spec = (
@@ -2524,7 +1629,7 @@ def _layout_proof_status(
     except (LayoutProofMismatchError, LayoutProofValidationError):
         approval = None
     target_checksum = ""
-    target_format = _load_saved_target_format(artifact_dir)
+    target_format = load_saved_target_format(artifact_dir)
     if target_format is not None:
         stored_path = artifact_dir / target_format.stored_filename
         if stored_path.exists():
@@ -2570,84 +1675,3 @@ def _layout_proof_status(
     )
 
 
-def _require_layout_proof_approval(
-    *,
-    artifact_dir: Path,
-    artifact_id: str,
-    target_format: TargetFormatMetadata,
-    style_spec: TemplateStyleSpec | LayoutTemplateSpec,
-) -> Any:
-    """Load and validate the persisted layout-proof approval for generation.
-
-    Returns the approved ``LayoutProofApproval`` or raises HTTP 409 with a
-    structured error code. Never falls back to an unapproved template.
-    """
-    try:
-        approval = load_layout_proof_approval(artifact_dir, repository=layout_proof_repository(DATABASE_URL))
-    except LayoutProofMismatchError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"error_code": "layout_proof_mismatch", "message": str(exc)},
-        ) from exc
-    except LayoutProofValidationError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "layout_proof_validation_failed",
-                "message": str(exc),
-            },
-        ) from exc
-    if approval is None:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "layout_proof_required",
-                "message": (
-                    "Generation from an uploaded target layout requires an approved "
-                    "layout proof. Create the short/medium/long synthetic proofs and "
-                    "approve them before generating."
-                ),
-                "options": ["create_layout_proofs", "approve_layout_proofs"],
-            },
-        )
-    if not approval.is_approved:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "layout_proof_approval_required",
-                "message": "The layout proof set exists but is not approved.",
-                "options": ["approve_layout_proofs"],
-            },
-        )
-    if approval.artifact_id != artifact_id:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "layout_proof_mismatch",
-                "message": "The layout-proof approval does not belong to this artifact.",
-            },
-        )
-    stored_path = artifact_dir / target_format.stored_filename
-    try:
-        target_checksum = target_checksum_from_bytes(stored_path.read_bytes())
-    except OSError as exc:
-        raise HTTPException(
-            status_code=400, detail="Target format file is missing."
-        ) from exc
-    if approval.target_checksum != target_checksum:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "layout_proof_mismatch",
-                "message": "The layout-proof approval does not cover this target checksum.",
-            },
-        )
-    if approval.layout_spec_checksum != layout_spec_checksum(style_spec):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "layout_proof_mismatch",
-                "message": "The layout-proof approval does not cover this LayoutTemplateSpec.",
-            },
-        )
-    return approval

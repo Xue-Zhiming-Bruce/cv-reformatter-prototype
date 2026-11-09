@@ -1,0 +1,103 @@
+# Reproducible local stack: PostgreSQL, one-shot migrations, API, frontend proxy,
+# and an opt-in native-synthetic worker. All published ports are loopback-only.
+# Project name keeps these containers, networks and volumes apart from
+# unrelated local services.
+name: cv-reformatter-compose
+
+x-backend: &backend
+  image: cv-reformatter-backend:local
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+x-database-url: &database-url
+  DATABASE_URL: postgresql+psycopg://cv_reformatter:cv_reformatter_local_only@postgres:5432/cv_reformatter
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: cv_reformatter
+      # Disposable loopback-only database for this local project. Not a real credential.
+      POSTGRES_PASSWORD: cv_reformatter_local_only
+      POSTGRES_DB: cv_reformatter
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:16543:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cv_reformatter -d cv_reformatter"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    <<: *backend
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    environment: *database-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *backend
+    environment:
+      <<: *database-url
+      GENERATED_OUTPUTS_DIR: /app/data/generated_outputs
+      # Offline default: deterministic mock extraction, so no provider is called.
+      # The host .env is deliberately not interpolated here; provider credentials
+      # and job enablement are opt-in through an untracked compose.override.yaml.
+      API_LLM_PROVIDER: mock
+      LLM_PROVIDER: mock
+    volumes:
+      - artifacts:/app/data/generated_outputs
+    ports:
+      - "127.0.0.1:18000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  frontend:
+    image: cv-reformatter-frontend:local
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    ports:
+      - "127.0.0.1:15173:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8080/"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Opt-in: docker compose --profile jobs up (the API also needs
+  # LOCAL_JOBS_ENABLED=1 from the untracked override for job submission).
+  worker:
+    <<: *backend
+    profiles: ["jobs"]
+    command: ["python", "-B", "-m", "app.job_worker"]
+    environment:
+      <<: *database-url
+      GENERATED_OUTPUTS_DIR: /app/data/generated_outputs
+      LOCAL_JOBS_ENABLED: "1"
+      LLM_PROVIDER: mock
+    volumes:
+      - artifacts:/app/data/generated_outputs
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+# Routine stop/start preserves both volumes. Clearing them is the separate,
+# destructive action documented in README.md ("Reset Local Container State").
+volumes:
+  postgres_data:
+  artifacts:

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
 from app import main
+from app.generation import service as generation_service
 from app.extraction.candidate_schema import CandidateProfile
 from app.main import app
 from app.template_analysis import layout_proof_service
@@ -29,7 +30,7 @@ def _tmp_storage(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(main, "LOCAL_DATABASE_PATH", tmp_path / "local.sqlite3")
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
     exporter = make_proof_pdf_exporter()
-    monkeypatch.setattr(main, "export_html_to_pdf", exporter)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", exporter)
     monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", exporter)
 
 
@@ -129,7 +130,7 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     from app.generation import agentic
     monkeypatch.setattr(agentic, "render_agentic", a_generation_without_model_loop)
     from app.generation.artifact_manifest import write_artifact_manifest
-    monkeypatch.setattr(main, "write_artifact_manifest", write_artifact_manifest)
+    monkeypatch.setattr(generation_service, "write_artifact_manifest", write_artifact_manifest)
     from app.generation.agentic import agentic_renderer_version
     from app.generation import template_mapper
     from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME, LAYOUT_SPEC_FILENAME
@@ -299,7 +300,7 @@ print(json.dumps(response.json()))
     assert report["content_validation"]["passed"] and report["structure_validation"]["passed"]
     assert report["selected_version"] and report["summary"]["reviewed_pdf_sha256"]
     assert identity["debug_artifacts"]["agentic_generation"] == str(directory / "agentic_generation.json")
-    assert client.get(main._artifact_url(artifact_id, "agentic_generation.json")).status_code == 200
+    assert client.get(generation_service.artifact_url(artifact_id, "agentic_generation.json")).status_code == 200
     import hashlib
     manifest_path = directory / "artifact_manifest.json"
     manifest = json.loads(manifest_path.read_text())

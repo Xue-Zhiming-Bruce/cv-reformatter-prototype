@@ -226,6 +226,76 @@ and native lease-expiry recovery. Unknown child exits require attention.
 Migration downgrade refuses to discard published bundle references; use a tested
 matching application/database/artifact backup for rollback.
 
+## Run Locally With Docker Compose
+
+The tracked [compose.yaml](compose.yaml) starts PostgreSQL, applies migrations
+once, then the API and the built frontend behind a same-origin `/api` proxy.
+From a clean checkout:
+
+```bash
+docker compose up -d --build   # first run; reuse the same built images afterwards
+docker compose up -d           # later runs
+```
+
+Open <http://127.0.0.1:15173>. Published ports are loopback-only:
+frontend `15173`, API `18000`, PostgreSQL `16543`. The Compose project name is
+`cv-reformatter-compose`, so an existing host database or another checkout on
+the same machine stays untouched.
+
+| Task | Command |
+| --- | --- |
+| Health | `curl -fsS http://127.0.0.1:18000/health` |
+| Migration result | `docker compose logs migrate` (one-shot; must exit 0) |
+| Logs | `docker compose logs -f api` |
+| Stop, keep state | `docker compose down` |
+| Rebuild after code changes | `docker compose up -d --build` |
+| Destructive reset | `docker compose down --volumes` (deletes both volumes below) |
+
+The `migrate` service is an explicit dependency step: the API starts only after
+it exits successfully, and the API never creates or migrates tables. An
+unmigrated database returns an attributable `500` instead.
+
+State lives in two volumes: `cv-reformatter-compose_postgres_data` for records
+and `cv-reformatter-compose_artifacts` (mounted at `/app/data/generated_outputs`)
+for document/debug files shared by the API and the optional worker. `docker
+compose down` preserves both; only `docker compose down --volumes` deletes them,
+and no host candidate data is imported into either volume.
+
+Verification identity: Python 3.12.16 (`python:3.12-slim-bookworm`), Debian
+bookworm Chromium 156.0.8078.79, Python dependency versions pinned in
+[docker/constraints.txt](docker/constraints.txt), product webfonts from the
+bundled `app/pipeline/assets/fonts` woff2 assets (Lato, Charter, Roboto), and
+fontconfig fallbacks from `fonts-liberation`/`fonts-dejavu-core`. Frontend
+`node:22-alpine` builds the existing `package-lock.json` with `npm ci`; nginx
+`1.29-alpine` serves it; `postgres:17` provides the database. The image is not
+a pixel-identity claim: glyph shapes and antialiasing still differ across Linux,
+macOS and Chrome versions, and this image resolves the default template's Arial
+to Liberation Sans, a metric-compatible substitute.
+
+Chromium runs as unprivileged uid 10001 under the default Docker security
+settings, with no `--no-sandbox`, no `--privileged` and no added capabilities;
+its namespace sandbox needs user namespaces, which the image verifies with
+`unshare --user`. A host that forbids user namespaces fails the PDF export with
+Chrome's sandbox error; do not fix that by disabling the sandbox.
+
+Provider credentials stay runtime-only and the default stack calls no provider
+(`API_LLM_PROVIDER=mock`). For provider extraction or the native job worker, add
+an untracked `compose.override.yaml`, for example:
+
+```yaml
+services:
+  api:
+    environment:
+      API_LLM_PROVIDER: openai
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      LOCAL_JOBS_ENABLED: "1"
+```
+
+Then `docker compose up -d` and, for jobs, `docker compose --profile jobs up -d`,
+which adds the `app.job_worker` service on the same image, artifact volume and
+database. Do not commit that file; the Python test lanes still run on the host
+virtualenv from the earlier setup steps.
+
 ## Validate Changes
 
 Run the canonical offline checks:

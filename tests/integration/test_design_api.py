@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
 from app import main
+from app.generation import service as generation_service
 from app.extraction.candidate_schema import CandidateProfile
 from app.main import app
 from app.template_analysis import layout_proof_service
@@ -68,7 +69,7 @@ pytestmark = pytest.mark.usefixtures("a_generation_without_model_loop")
 def _isolate(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")
     monkeypatch.setattr(main, "LOCAL_DATABASE_PATH", tmp_path / "local.sqlite3")
-    monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
     monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", _fake_pdf_export)
     monkeypatch.delenv("TEMPLATE_DESIGN_STRATEGY", raising=False)
     # Hard guarantee: no live Claude call can occur during offline pytest,
@@ -191,6 +192,7 @@ def test_postgres_design_history_supersedes_atomically_and_preserves_source(
     code = f"""import json
 from fastapi.testclient import TestClient
 from app.main import app
+from app.generation import service as generation_service
 response=TestClient(app).get({detail_url!r})
 assert response.status_code == 200, response.text
 print(json.dumps(response.json()))

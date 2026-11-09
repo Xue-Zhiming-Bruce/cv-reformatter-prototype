@@ -255,15 +255,29 @@ class NativeJobWorker:
 
 
 def render_snapshot(bundle: Path) -> None:
-    """Run the existing synchronous service in an isolated, database-free child."""
+    """Run the shared generation workflow in an isolated, database-free child."""
     os.environ["LLM_PROVIDER"] = "mock"
-    from app import main
-    main.DATABASE_URL = None
-    main.GENERATED_OUTPUTS_DIR = bundle.parent
-    main.LOCAL_DATABASE_PATH = bundle.parent / "execution.sqlite3"
-    payload = NativeGenerationPayload.model_validate_json((bundle / "job_request.json").read_text())
-    main.generate_outputs(main.GenerateRequest(artifact_id=payload.artifact_id,
-        profile_revision_id=payload.profile_revision_id, blind_profile=payload.blind_profile))
+    from app.generation.contracts import GenerateRequest
+    from app.generation.service import GenerationError, GenerationSettings, generate_outputs
+
+    payload = NativeGenerationPayload.model_validate_json(
+        (bundle / "job_request.json").read_text()
+    )
+    try:
+        generate_outputs(
+            GenerateRequest(
+                artifact_id=payload.artifact_id,
+                profile_revision_id=payload.profile_revision_id,
+                blind_profile=payload.blind_profile,
+            ),
+            settings=GenerationSettings(
+                outputs_dir=bundle.parent,
+                database_url=None,
+                local_database_path=bundle.parent / "execution.sqlite3",
+            ),
+        )
+    except GenerationError as exc:
+        raise SystemExit(f"generation failed: {exc.status_code} {exc.detail}") from exc
     (bundle / "execution_result.json").write_text(json.dumps({"state": "rendered"}))
 
 

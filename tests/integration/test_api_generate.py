@@ -16,6 +16,7 @@ from app.main import app
 from app.template_analysis import layout_proof_service
 from app.generation.render_plan import layout_spec_sha256
 from app.template_analysis.artifacts import load_layout_template_spec
+from app.generation import service as generation_service
 from tests.helpers.layout_proof import (
     create_and_approve_proofs,
     make_proof_pdf_exporter,
@@ -54,7 +55,7 @@ def _approve_profile_via_api(
 
 def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
-    monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
     profile = CandidateProfile(
         full_name="Jane Candidate",
         email="jane@example.com",
@@ -316,7 +317,7 @@ def test_generation_rejects_source_drift_without_publishing_manifest(
         (directory / "raw_extracted_text.txt").write_text("Changed during rendering")
         return result
 
-    monkeypatch.setattr(main, "export_html_to_pdf", drifting_export)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", drifting_export)
     response = client.post("/api/generate", json={"artifact_id": directory.name, "profile_revision_id": revision_id})
     assert response.status_code == 500, response.text
     assert response.json()["detail"]["error_code"] == "artifact_manifest_unavailable"
@@ -339,7 +340,7 @@ def test_builtin_api_rejects_unsupported_a_contract_without_replacing_outputs(
     if problem == "layout":
         spec = built_in_layout_template_spec()
         next(section for section in spec.sections if section.source == "skills").placement = "footer"
-        monkeypatch.setattr(main, "built_in_layout_template_spec", lambda: spec)
+        monkeypatch.setattr(generation_service, "built_in_layout_template_spec", lambda: spec)
     else:
         monkeypatch.setenv("GENERATION_STRATEGY", problem)
     outputs = {directory / "candidate_profile.html": b"PREVIOUS HTML", directory / "candidate_profile.pdf": b"PREVIOUS PDF"}
@@ -365,7 +366,7 @@ def test_uploaded_target_never_falls_back_to_built_in(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
-    monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
     artifact_id = "artifact_explicit_target_fallback"
     artifact_dir = tmp_path / artifact_id
     artifact_dir.mkdir()
@@ -421,7 +422,7 @@ def test_allow_built_in_fallback_use_is_recorded_not_honored(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
-    monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
     profile = CandidateProfile(
         full_name="Jane Candidate",
         email="jane@example.com",
@@ -461,7 +462,7 @@ def test_generate_outputs_can_reuse_process_artifact_with_target_format(
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
-    monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
     monkeypatch.setattr(
         "app.generation.chrome_html_to_pdf.export_html_to_pdf", _fake_pdf_export
     )
@@ -860,7 +861,7 @@ def test_generate_applies_uploaded_docx_style_spec(
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
-    monkeypatch.setattr(main, "export_html_to_pdf", _fake_pdf_export)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
     monkeypatch.setattr(
         "app.generation.chrome_html_to_pdf.export_html_to_pdf", _fake_pdf_export
     )

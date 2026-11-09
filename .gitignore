@@ -1,4 +1,6 @@
 .env
+# Local container overrides carry runtime-only provider credentials and job opt-ins.
+compose.override.yaml
 .venv/
 .venv-*/
 .test_deps/

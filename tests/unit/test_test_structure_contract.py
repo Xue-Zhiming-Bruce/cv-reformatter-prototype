@@ -58,12 +58,10 @@ def test_normalized_commercial_evidence_is_production_owned() -> None:
 
 
 def test_uploaded_target_generation_has_no_v1_spec_reader_or_migration() -> None:
-    main_source = (PROJECT_ROOT / "app" / "main.py").read_text(encoding="utf-8")
-    generation_source = main_source[
-        main_source.index("def generate_outputs(") : main_source.index(
-            '@app.post("/api/followup"'
-        )
-    ]
+    # The generation workflow owns spec loading; the HTTP module only maps to it.
+    generation_source = (
+        PROJECT_ROOT / "app" / "generation" / "service.py"
+    ).read_text(encoding="utf-8")
     assert "load_template_style_spec" not in generation_source
     assert "migrate_template_style_spec" not in generation_source
     assert "STYLE_SPEC_FILENAME" not in generation_source
