@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: November 10, 2026 (M5 verified; bounded M6/B0/B1 source and outcome freeze complete; Clean Code P0–P4 structural milestones recorded; development progress and its verification state recorded below)
+Last reviewed: November 10, 2026 (M5 verified; bounded M6/B0/B1 source and outcome freeze complete; Clean Code P0–P4 structural milestones recorded and QA-passed; development progress and its verification state recorded below)
 
 This is the sole implementation checklist. Product behavior belongs in the
 [Product Specification](../product/PRODUCT_SPEC.md), approved decisions in
@@ -173,15 +173,17 @@ for product acceptance:
   `run_artifacts.py` each own one concern, `run_e5` reads as setup → lanes →
   named round phases over explicit run/lane/round state, and the coordinator
   keeps only imports for the moved symbols. Commits `1f0b77c`, `9040df6`,
-  `6338364`, `779134c`, `cfcb1a0`, `395def5`. Reviewer sign-off on the merged
-  head is still open on #17.
+  `6338364`, `779134c`, `cfcb1a0`, `395def5`. Closed with `## QA: PASS` at
+  `4b04804`; the current ownership map is the
+  [Document Pipeline](../architecture/DOCUMENT_PIPELINE.md) responsibility table.
 - Proof owners (#18 P4.1–P4.5): `layout_proof_artifacts.py`,
   `layout_proof_rendering.py` and `layout_proof_validation.py` take the
   checksum/path writes, the renderer binding and the page/structure/visual
   checks out of `layout_proof_service.py`, which keeps the create → pending →
   approve/reject → validate-on-use lifecycle. Commits `070ab24`, `c6a86c6`,
-  `17df5b9`, `241eeb3`, `fd690b8` (merge `7d43597`). Reviewer sign-off is still
-  open on #18.
+  `17df5b9`, `241eeb3`, `fd690b8` (merge `7d43597`). Closed with `## QA: PASS`
+  at `4b04804`; the boundary is the
+  [Layout Proof Boundary](../architecture/DOCUMENT_PIPELINE.md#layout-proof-boundary).
 
 ### Structural Program Order And Remaining Work
 
@@ -201,10 +203,13 @@ state the split introduced. `agentic_renderer_version()` is unchanged at
 `agentic-a/6+lane-a-product-subset/17+3db18fdc7f95b8e1`, so no prompt, renderer
 or proof identity moved with the code.
 
-Still open structurally: the reviewer sign-off and canonical gate result for
-#17 and #18 on `7d43597`. #10's additional owner-review campaign is separate
-work on that issue and not a structural prerequisite. No structural milestone
-is awaiting implementation here.
+No structural milestone is open here: #19, #11, #12, #17 and #18 all carry
+`## QA: PASS`, and the last two closed at `4b04804`, the documentation-only
+commit after the code head `7d43597` that the canonical gate ran against
+(`tests/test_results/pytest/final_gate_20261110T011044Z_head7d43597.log`:
+940 passed, 7 skipped in 1371.69s, the skips being the same seven
+`@local_pipeline` cases as before the program). #10's additional owner-review
+campaign is separate work on that issue and not a structural prerequisite.
 
 ### Historical Paths And Recovery
 
