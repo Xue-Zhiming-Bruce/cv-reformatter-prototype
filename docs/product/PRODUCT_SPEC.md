@@ -4,13 +4,14 @@ Status: `Active product contract`
 
 Owner: Product and backend
 
-Last reviewed: October 25, 2026 (owner-approved bounded layout trials and output-gate separation)
+Last reviewed: November 10, 2026 (editorial clarification of existing decisions;
+no new product scope or acceptance)
 
-This document defines what CV Reformatter must do and the product boundaries
-that implementations must preserve. It does not serve as an engineering
-checklist. See [Backend Roadmap](../roadmaps/BACKEND_ROADMAP.md) for active work
-and [Document Pipeline](../architecture/DOCUMENT_PIPELINE.md) for component
-responsibilities.
+This is the product contract, not a completion checklist. Requirements do not
+imply implementation or acceptance. Use the [Backend Roadmap](../roadmaps/BACKEND_ROADMAP.md)
+for delivery status, [Document Pipeline](../architecture/DOCUMENT_PIPELINE.md)
+for component responsibilities, and [API Contract](../architecture/API_CONTRACT.md)
+for current backend behavior and versioned capability limits.
 
 ## Product Promise
 
@@ -55,63 +56,48 @@ Candidate resume
 -> recruiter acceptance of the exact generated HTML/PDF
 ```
 
-Owner decision, October 21, 2026: saving a candidate revision permits preview
-generation; there is no separate human profile-approval step before preview.
-The recruiter reviews candidate information and the resulting document before
-accepting the exact output as client-ready. Saving a revision, passing gates,
-and approving a template do not imply final output acceptance.
+Edits create immutable revisions; preview uses an explicitly referenced current
+revision, never replacement profile values supplied with a generation request.
+Final acceptance binds the revision/checksum, layout version/checksum and
+HTML/PDF checksums. Changing those identities invalidates acceptance.
 
-Edits create immutable profile revisions. Previews use an explicitly referenced,
-current revision; request-supplied profile values cannot replace it. Final
-acceptance binds the revision/checksum, layout version/checksum, and HTML/PDF
-checksums. A new revision or changed output invalidates acceptance. Source
-coverage, disclosure, privacy, and layout validation remain mandatory; this
-workflow does not remove their checks.
+The approval terms below have separate meanings:
+
+| Term | Meaning |
+| --- | --- |
+| Saved revision | Permits preview subject to source, disclosure, privacy and layout checks. No separate human profile approval is required (owner decision, October 21, 2026). |
+| Template/proof approval | Permission to use a particular layout under its verified configuration; not acceptance of a candidate's output. |
+| Published preview | Generated HTML/PDF available for review after the required checks; not yet client-ready. |
+| Final acceptance | Recruiter acceptance of the exact revision, layout and HTML/PDF identities. |
 
 ## Candidate Content Contract
 
 `CandidateProfile` is the authoritative internal source for candidate facts in
 generated documents. It must use strict, versioned Pydantic models.
 
-The supported core profile includes:
+The profile includes identity/contact details (name, email, phone, location,
+LinkedIn, portfolio/GitHub); summary, skills and source-preserved skill groups,
+languages, work experience, education and certifications; recruiter details
+(salary expectation, notice period, work authorization, interview availability);
+and optional/custom source sections.
 
-- full name;
-- email;
-- phone;
-- location;
-- LinkedIn URL;
-- portfolio or GitHub URL;
-- professional summary;
-- skills;
-- languages;
-- work experience;
-- education;
-- certifications;
-- salary expectation;
-- notice period;
-- work authorization;
-- interview availability;
-- source-preserved skill groups;
-- recruiter-dispositioned optional and custom sections.
+Schema v2 additional sections are established
+([ADR 0003](../decisions/0003-additional-sections-schema-v2.md)). Preserve source
+heading/block ID, structured entries (title, links, description bullets,
+per-entry evidence), section type, `show`/`hide` disposition and
+`reviewed`/`pending_review` state. Keep entry hierarchy instead of flattening
+it. Types are `projects`, `awards`, `publications`, `volunteering`, `interests`,
+`other`; do not add fields/renderers per section kind. Unknown or unreliable
+classification retains evidence as `other` pending review or pending source
+coverage; provider failure must not silently lose content. Segmentation and
+its deterministic completeness audit follow [ADR 0005](../decisions/0005-llm-first-candidate-segmentation.md).
 
-Planned (schema v2 contract defined; direction approved 2026-08-28, revised
-same day; contract accepted 2026-08-28 in ADR
-[0003](../decisions/0003-additional-sections-schema-v2.md), pipeline and
-rendering implementation pending): source sections outside the fixed core
-fields become structured entries. `additional_sections` entries are upgraded
-from flat `items` strings to structured entries (title, links, description
-bullets, per-entry evidence) with `section_type` classified by the LLM
-against a versioned vocabulary (projects, awards, publications, volunteering,
-interests, other). Rendering reuses the existing entry-title/metadata
-machinery so any entry-type section (section heading, entry titles, links,
-bullets) reproduces its source structure instead of collapsing into a flat
-bullet list. No per-section-type hardcoded fields are added; unknown
-classification (or provider unavailability) maps to `other` with
-`pending_review` state and retained evidence, and unknown section types
-render with entry structure and require recruiter review. The v2 change also
-adds a source-coverage ledger: every meaningful source block must be mapped,
-explicitly omitted, or pending review before profile approval; silent
-omission blocks generation.
+Every meaningful source block must be accounted for in the source-coverage
+ledger: mapped, explicitly omitted, or pending review. Pending or unaccounted
+content blocks preview/design generation until resolved. Optional/custom
+sections render only after review with a `show` disposition; hidden content
+remains accounted for. Saving a revision does not bypass these checks
+([ADR 0003 workflow amendment](../decisions/0003-additional-sections-schema-v2.md#workflow-amendment--october-21-2026)).
 
 Content rules:
 
@@ -125,11 +111,8 @@ Content rules:
 - Preserve meaningful unsupported source sections for recruiter review rather
   than silently discarding them.
 
-Recognized optional and custom source sections are promoted into typed
-`additional_sections` entries with their source heading, items, source block
-identifier, and an explicit `show` or `hide` disposition. Approval must reject
-silent deletion of those entries. The broader historical block-model proposal
-remains archived in [Content and Layout Model](../archive/CONTENT_AND_LAYOUT_MODEL_PROPOSED_20260807.md).
+The broader historical [Content and Layout Model](../archive/CONTENT_AND_LAYOUT_MODEL_PROPOSED_20260807.md)
+is archived; it is not an additional product schema.
 
 ## Missing Information
 
@@ -160,7 +143,9 @@ For each sensitive or incomplete field, the recruiter chooses one of:
 - `available_upon_request`.
 
 Client-facing examples include `To be confirmed` and `Available upon request`.
-The recruiter remains responsible for the final disclosure decision.
+These are presentation labels, not candidate facts. The checklist does not
+authorize printing every missing field. The recruiter owns final disclosure;
+defaults remain an [open clarification](#clarifications-requiring-owner-decisions).
 
 ## Blind Profiles
 
@@ -176,17 +161,18 @@ When enabled:
 - hide or generalize the current employer when marked sensitive;
 - generalize exact location when required.
 
+Employer/location sensitivity and generalization need the clarification below;
+do not advertise the blind toggle as comprehensive anonymization.
+
 ## Candidate And Target Inputs
 
 Candidate inputs and target-format inputs have different meanings.
 
 ### Candidate resume
 
-The candidate resume supplies candidate content. The accepted baseline supports:
-
-- DOCX resumes;
-- text-based PDF resumes;
-- optional job-description text.
+The candidate resume supplies candidate content. DOCX and text-based PDF
+resumes are supported inputs. Optional job-description text is separate context,
+not a source of candidate facts.
 
 Scanned or photographed resumes remain unsupported until OCR enters scope.
 
@@ -194,9 +180,11 @@ Scanned or photographed resumes remain unsupported until OCR enters scope.
 
 The recruiter target supplies presentation behavior only.
 
-- A supported DOCX can be analyzed or used as a controlled template source.
-- A supported text-based PDF is a target-style source, not candidate data and
-  not a directly editable template.
+- DOCX upload/style analysis has explicit limits; the current workflow cannot
+  create layout proofs or export from a DOCX target.
+- A supported measured text-based PDF is a target-style source, not candidate
+  data and not a directly editable template. Target-based generation requires
+  the corresponding approved layout proofs.
 - PDF analysis may contribute page geometry, typography, colors, rules,
   regions, and reviewed branding assets.
 - Generated decoration follows the selected target presentation. Visual rules
@@ -204,10 +192,16 @@ The recruiter target supplies presentation behavior only.
 - Target candidate facts and target page images must never appear in generated
   output.
 
-The supported design classes begin with conventional one-column, two-column,
-and sidebar resume layouts. Corrupt, scanned, vector-outline-only, and highly
-graphical brochure layouts must be rejected or require an explicit safe
-fallback and recruiter approval.
+The native template is an explicit no-target choice, never an uploaded-target
+fallback, including via deprecated flags. The recorded designer-to-measured-
+template escape stays within the same target
+([ADR 0004](../decisions/0004-single-spec-source-measured-generation.md)).
+
+Reject corrupt, scanned, vector-outline-only and unsupported graphical targets
+with clear errors/limitations. The versioned [support table](../architecture/API_CONTRACT.md#a-templateinput-support-boundary--renderer-17-compiler-10)
+distinguishes implemented properties from accepted fidelity: accepted examples
+cover bounded one-column targets; column/sidebar implementation does not grant
+general fidelity acceptance.
 
 ## Layout And Rendering Contract
 
@@ -240,125 +234,89 @@ measured target structure, including provider-neutral character spacing.
 Candidate-only sections remain preserved for review;
 the renderer must not invent a generic target section to place them silently.
 
-Owner decision, October 22, 2026: measured conventional presentation labels
-may be recognized heuristically without individual human label approval. The
-retained pipeline uses the existing product's exact heading aliases after
-measured sidebar detection; unknown labels stay unrenderable and visible as
-unresolved evidence. Substring matches cannot authorize target-person facts.
-Record the recognition method and target/catalog identities; automatic label
-recognition never approves a template, candidate facts, or the final output.
+Measured conventional labels may use the approved exact-alias recognition
+policy without individual human label approval (owner decision, October 22,
+2026). Unknown labels stay unresolved/unrenderable; substring matches cannot
+authorize target-person facts. Record recognition method and target/catalog
+identities. Recognition never approves a template, candidate facts or output;
+implementation belongs in [Document Pipeline](../architecture/DOCUMENT_PIPELINE.md).
 
 ## Content Arrangement And Owner Review
 
-Arrangement decisions are about where approved content goes, not which facts
-are true. The renderer places only approved `CandidateProfile` content, and a
-fixed target cannot absorb every content shape; the differences below are
-recorded as review records, never as silent changes to candidate facts.
+**Standards.** Preserve candidate facts without invention or silent omission.
+Font sizes, spacing, alignment, hierarchy, rule geometry and colors must follow
+the measured target within already declared tolerances. “Close enough” never
+relaxes these standards. Several content arrangements can be reasonable;
+different HR users need not prefer the same one.
 
-**Facts and presentation standard.** Candidate facts stay complete and accurate:
-no invention and no silent omission ([Candidate Content
-Contract](#candidate-content-contract)). Font sizes, spacing, alignment, and
-hierarchy closely follow the measured target within the tolerance the product
-has already declared for typography, rule geometry, and color — the same
-tolerance that already turns a larger difference into an unverified visual
-finding. "Close enough" does not relax these standards. Different HR users are
-not expected to share one optimal content arrangement: the product normalizes
-different candidates into the company's template, so several supported
-arrangements can be reasonable.
+**Draft and review.** When organization is unspecified and supported, produce
+a reasonable draft and explain the choice (owner decision, November 9, 2026).
+Classification, disclosure, privacy and source-review gates still apply; no
+invented facts/sections or unsupported-capability bypass. Edits follow revision
+and exact-output acceptance rules.
 
-**Draft first when organization is unspecified.** When the template leaves
-content organization unspecified and the case is within existing capabilities,
-produce a reasonable draft first and explain the arrangement chosen. The
-pending-classification, show/hide, privacy, and source-review gates stay
-effective around that draft, and this direction does not authorize invented
-facts, arbitrary new sections, or bypassing unsupported capabilities. An owner
-edit that changes facts or layout identity follows the existing saved-revision
-and final-acceptance rules.
+Review actual outputs, not synthetic proofs alone, for:
 
-Owner decision, November 9, 2026: a useful draft may need owner edits because
-several content organizations can be reasonable; this never relaxes facts,
-typography, spacing, alignment, hierarchy, privacy, or supported-capability
-checks. AI may choose a reasonable supported arrangement when unspecified,
-produce the draft, and explain the choice; required disclosure and source review
-remain.
+1. Ordinary employer/role entries with bullets.
+2. Nested employer → role → project/degree entries, keeping children attached
+   to their parent.
+3. Candidate-only sections and unsupported target presentation: preserve
+   candidate blocks visibly and with attribution for review, without silently
+   dropping them or inventing a target section.
 
-**Content shapes.** Owner review must cover these shapes with real generated
-output, not synthetic proofs alone:
-
-1. **Ordinary experience:** flat employer/role entries with bullets.
-2. **Nested entries:** employer → role → project or degree, where bullets and
-   sub-entries belong to a parent entry and must stay attached to it.
-3. **Content outside the target:** candidate-only sections (custom projects,
-   awards, languages absent from the target) and content the target expresses
-   through presentation the renderer does not support (for example badge-style
-   skill grids), where the candidate block must remain visible and attributed
-   rather than dropped or restyled into an invented target section.
-
-**Feedback categories.** Every owner-review item is recorded in exactly one
-category, because they have different closure requirements:
+**Feedback categories.** Each owner-review item has one category and its own
+closure requirement:
 
 | Category | Meaning | Closure requirement |
 | --- | --- | --- |
-| Renderer/document-representation defect | The renderer or generated document is wrong or incomplete against its own approved inputs. | Reproduce, fix, and show the corrected artifact under the same checks. |
-| Temporary or reusable artificial effect | A synthetic proof, sample corpus, or scaffold stands in for real content; it is reusable only while labeled synthetic and is never presented as product behavior. | Keep labeled synthetic, or replace with real content; never claim it as evidence of product quality. |
-| Owner preference change | A deliberate presentation or wording preference, not a correctness defect. | Record the preference, its scope, and apply it; distinguish it from defects in reports. |
-| Lasting rule | A preference or decision that must hold for all future runs. | Record it in this spec or an ADR before treating it as binding. |
-| Unresolved requirement | A decision the owner must make, for example a capability limit or an accepted compromise. | Record the open question and evidence; closure requires an explicit owner judgment. |
+| Renderer/document-representation defect | Wrong/incomplete against approved inputs. | Reproduce, fix and show corrected artifacts under the same checks. |
+| Temporary or reusable artificial effect | Synthetic proof, corpus or scaffold stands in for real content. | Label synthetic or replace with real content; never claim product-quality evidence. |
+| Owner preference change | Instance-specific presentation/wording preference. | Record scope and apply; report separately from defects. |
+| Lasting rule | Decision applying to future runs. | Record in this spec or an ADR before treating it as binding. |
+| Unresolved requirement | Capability limit, compromise or other owner decision needed. | Record question/evidence; explicit owner judgment closes it. |
 
-An unresolved item is a request for owner judgment, never an implicit
-approval. Reporting keeps each category separate: passing automated checks,
-synthetic proofs, owner preference changes, and owner acceptance of actual
-generated files are different evidence and are never merged into one status.
+Unresolved never means approved. Keep automated checks, synthetic evidence,
+preferences and human acceptance separate in reports.
 
-**Arrangement reports.** Each generated preview carries a content-arrangement
-report bound to that exact HTML/PDF identity, explaining where approved content
-went: which candidate headings a target label replaced, which candidate-only
-sections were appended under the existing overflow policy, and which optional
-sections were left hidden or are pending review. Two rules follow from the
-categories above. A reasonable arrangement is not a proven defect: an
-explained arrangement is not a renderer defect and does not fail an output.
-An owner's choice for one instance — accepting this preview, or rejecting this
-one arrangement — is recorded for that instance only and does not automatically
-become a global rule; a lasting rule still needs this specification or an ADR.
-This increment adds neither a preference engine nor new layout controls. The
-report format is in
+**Arrangement report.** Bind the report to the exact HTML/PDF identity. Explain
+heading replacements, candidate-only sections appended under the existing
+overflow policy, and hidden/pending optional sections. Use the selected plan,
+without another interpretation engine or new preference/layout controls; see
 [API Contract](../architecture/API_CONTRACT.md#content-arrangement-report).
+An otherwise compliant arrangement is not defective solely because the owner
+prefers another. Explanation never excuses failed checks. Instance acceptance
+or rejection does not become a global rule automatically.
 
-Typographic, color, and rule-geometry differences that exceed the configured
-tolerance are recorded as unverified visual findings until the owner verifies
-them on the actual preview; a diagnostic score is never a pass/fail substitute.
+**Acceptance.** The owner inspects the actual HTML/PDF: content matches the
+reviewed client-facing context; no hidden identifier or target-person fact
+appears; required regions have no clipping/orphaned headings; source blocks
+remain attributable. Typography, color and rule-geometry drift beyond configured
+tolerances remains an unverified visual finding until inspected; diagnostic
+scores never substitute for acceptance.
 
-**Owner-review criteria.** An output can be accepted only when, for the exact
-rendered HTML and PDF identity under review: content matches the approved
-client-facing context, no hidden identifier or target-sample candidate fact is
-present, required regions exist without clipping or orphaned headings, the
-recruited source blocks remain attributable, and the owner has inspected the
-actual file. Current status: the six frozen outputs from source revision
-`4766346` carry owner acceptance for their exact snapshots; template-proof and
-process-crash items noted in that acceptance stay open, and every item recorded
-as unresolved still needs explicit owner judgment recorded under the review
-record format in
-[Test Result Artifact Format](../testing/TEST_RESULT_FORMAT.md).
+Use [Test Result Artifact Format](../testing/TEST_RESULT_FORMAT.md) for review
+records. The dated [Owner Review Baseline](../evaluations/2026-11-10_OWNER_REVIEW_BASELINE.md)
+owns snapshot acceptance and open evidence; acceptance never covers future runs.
 
 ## Required Outputs
 
 The product must produce:
 
-1. Editable rendered HTML surface in the interface (not raw-source editing).
-2. Client-ready formatted CV as PDF.
+1. Editable rendered HTML surface in the interface. Edits change content/data,
+   save a new revision and re-render; raw-source editing is not the model
+   ([ADR 0006](../decisions/0006-badge-decoration-and-html-ground-truth-renderer.md)).
+2. PDF preview, client-ready only after exact final acceptance. DOCX is an input
+   format, not a current output deliverable.
 3. Missing-information checklist for the recruiter.
 4. Draft candidate follow-up message.
-5. Debug and reproducibility artifacts, including:
-   - original extracted text;
-   - versioned `CandidateProfile` JSON;
-   - missing-fields JSON;
-   - raw target-layout evidence;
-   - validated layout-template JSON;
-   - target page PNGs and diagnostic overlays;
-   - generated-versus-target comparison JSON and difference images;
-   - editable HTML surface and generated PDF;
-   - content-arrangement report bound to that exact output identity;
-   - schema, provider, prompt, model, renderer, font, and checksum metadata.
+5. Internal reproducibility artifacts: extracted text, versioned profile and
+   missing-fields JSON; raw target evidence, validated template JSON, target
+   PNGs/overlays, comparison JSON/difference images; HTML/PDF, identity-bound
+   arrangement report; schema/provider/prompt/model/renderer/font/checksum metadata.
+
+Target-specific evidence/comparisons apply to uploaded-target workflows; native
+no-target generation must not fabricate target evidence. Internal/debug files
+are not client-facing submission content.
 
 ## Quality Gates
 
@@ -388,29 +346,22 @@ trial without comparable measurements remains a separate local artifact for
 human comparison; it cannot become the selected preview or be claimed improved.
 Repeated-export variability is diagnostic; the actual selected HTML/PDF must
 still pass content, privacy, structure and template-consumption checks and
-complete visual review before API publication. Final acceptance remains human.
+complete the visual review required for its workflow before API publication.
+Publication makes a preview available for review. A completed model Reviewer
+pass, where required by the workflow, is separate from human final acceptance;
+the [API Contract](../architecture/API_CONTRACT.md) defines the current gates.
 
 ## Accepted Baseline
 
-The product owner accepted the MVP and target-PDF demo on July 26, 2026. The
-baseline includes:
+The MVP and target-PDF demo were accepted on July 26, 2026. Later accepted ADRs
+changed the implementation, including schema v2, HTML/Chrome rendering and
+PostgreSQL; the July milestone is not a description of today's entire stack.
+The [Backend Roadmap](../roadmaps/BACKEND_ROADMAP.md) owns the current baseline,
+its bounded six-output acceptance and remaining reliability/fidelity work.
 
-- DOCX and text-based PDF candidate extraction;
-- strict `CandidateProfile` validation;
-- OpenAI and Anthropic extraction abstraction plus deterministic mock mode;
-- missing-field detection and follow-up drafting;
-- disclosure and blind-profile render behavior;
-- target DOCX/PDF analysis into `LayoutTemplateSpec`;
-- target page images and diagnostic overlays;
-- controlled product HTML generation;
-- headless-Chrome HTML-to-PDF export;
-- generated-versus-target visual comparison;
-- FastAPI process, target-format, generation, artifact, preview, and download
-  endpoints;
-- local filesystem artifacts and a transitional SQLite metadata index.
-
-Future changes must preserve this baseline until a measured replacement passes
-the relevant corpus and rollback behavior is proven.
+Preserve accepted behavior until a measured replacement passes the relevant
+corpus and rollback behavior is proven. Accepted snapshots do not certify new
+outputs, broader layout classes, model-review reliability or production readiness.
 
 ## Persistence And Hosting Direction
 
@@ -441,6 +392,21 @@ monitoring, and tested backup and restore procedures are complete.
 
 These areas require separate product decisions and must not interrupt the
 active backend quality sequence.
+
+## Clarifications Requiring Owner Decisions
+
+These clarify existing requirements; they approve no new capabilities or
+policies. Preserve safeguards and disclose limitations until the owner decides.
+
+| Existing wording | Decision still needed | Boundary that already applies |
+| --- | --- | --- |
+| Missing links “when relevant”; fields required by “approved organization policy.” | When is a link required? How is organization policy selected? | Do not invent policy or treat all absent optional sections as missing. |
+| Recruiter chooses sensitive/incomplete-field disclosure. | Which defaults, explicit confirmations and absent-field placeholders are allowed? | The internal checklist does not authorize client disclosure. |
+| Employer “marked sensitive”; location generalized “when required.” | Who marks sensitivity? Which occurrences and replacement/granularity are covered? | Preserve internal facts; do not claim comprehensive anonymization. |
+| Target fidelity within declared tolerances. | Beyond accepted examples, which measurements/tolerances define the claim? | Existing standards remain. The frozen 0.25pt typography/1pt rule diagnostics are not universal acceptance thresholds. |
+
+Record the decision in its contract/ADR before applying it as a lasting rule.
+Open questions neither erase existing requirements nor grant output acceptance.
 
 ## Non-Negotiable Guardrails
 
