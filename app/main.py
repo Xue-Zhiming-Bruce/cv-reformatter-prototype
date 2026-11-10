@@ -104,20 +104,24 @@ from app.template_analysis.docx_style_analyzer import (
     TargetDocxAnalysisError,
     analyze_target_docx,
 )
+from app.template_analysis.layout_proof_artifacts import layout_spec_checksum
 from app.template_analysis.layout_proof_schemas import LengthVariant
-from app.template_analysis.layout_proof_service import (
-    LayoutProofIncompleteError,
+from app.template_analysis.layout_proof_rendering import (
     LayoutProofMismatchError,
     LayoutProofPresentationLabelError,
     LayoutProofRenderError,
-    LayoutProofValidationError,
     active_renderer_version,
+)
+from app.template_analysis.layout_proof_service import (
     approve_layout_proof,
     create_proof_variants,
-    layout_spec_checksum,
     load_layout_proof_approval,
-    load_variant_evidence,
     reject_layout_proof,
+)
+from app.template_analysis.layout_proof_validation import (
+    LayoutProofIncompleteError,
+    LayoutProofValidationError,
+    load_variant_evidence,
 )
 from app.template_analysis.artifacts import (
     ADOBE_RAW_FILENAME,

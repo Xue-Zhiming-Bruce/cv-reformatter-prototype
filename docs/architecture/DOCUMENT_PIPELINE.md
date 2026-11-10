@@ -2,7 +2,7 @@
 
 Status: `Active contract`
 
-Last reviewed: November 9, 2026 (generation application workflow extraction)
+Last reviewed: November 10, 2026 (layout-proof owner boundary)
 
 This document defines the provider-neutral boundaries of the CV Reformatter
 backend. The [Product Specification](../product/PRODUCT_SPEC.md) remains the
@@ -215,6 +215,29 @@ renderer-authored identities, never by text equality. After Chrome export, the
 no-loss content gate extracts PDF text and verifies every approved source-owned
 value. Generation fails closed and persists the independent structure and
 content reports.
+
+## Layout Proof Boundary
+
+Layout proofs are rendered, validated, and approved by four owners in one
+direction: `app/template_analysis/layout_proof_rendering.py` (renderer identity,
+generation-adapter invocation and staged output), `layout_proof_validation.py`
+(deterministic geometry/structure/visual checks, render-result and evidence reads,
+evidence assembly and recomputation), `layout_proof_artifacts.py` (proof ids and
+paths, file/checksum verification, atomic proof and evidence writes) and
+`layout_proof_service.py` (the create -> pending -> approve/reject ->
+validate-on-use lifecycle, the approval/rejection policy, presentation-label
+identity, the approval aggregate and its repository/audit-copy authority).
+
+The service is the only entry point its consumers use: HTTP routes in
+`app/main.py` create, approve, reject and read proof status, and
+`app/generation/service.py` reads the current approval and renders the candidate
+from it. `LayoutProofRepository` stays the storage interface
+(`app/storage/repository.py`, `app/storage/postgres.py`); no proof owner imports
+`app.main` or `app/generation/service.py`, the rendering owner is the only one
+calling the agentic adapter (`app.generation.agentic`), and the service is the
+only one reaching the pipeline's `run_models` / `layout_compiler` contracts, so
+a lifecycle change never has to reach renderer internals and a renderer change
+never has to reach approval policy.
 
 ## Retained Pipeline Implementation
 

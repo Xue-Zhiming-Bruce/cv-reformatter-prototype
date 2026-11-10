@@ -274,7 +274,7 @@ def render_agentic(
     if presentation_label_approval is None:
         catalog = presentation_labels.template_presentation_label_catalog(
             state, normalized, target_sha256=_sha256_file(target_pdf))
-        from app.template_analysis.layout_proof_service import layout_spec_checksum
+        from app.template_analysis.layout_proof_artifacts import layout_spec_checksum
 
         presentation_label_approval = _proof_label_approval(
             layout_proof_approval, catalog,

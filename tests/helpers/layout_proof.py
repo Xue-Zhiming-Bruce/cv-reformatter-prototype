@@ -15,7 +15,7 @@ from app.template_analysis.layout_proof_content import (
     rendered_content_values,
 )
 from app.template_analysis.layout_proof_schemas import LengthVariant
-from app.template_analysis.layout_proof_service import _expected_heading_labels
+from app.template_analysis.layout_proof_validation import expected_heading_labels
 from app.template_analysis.schemas import (
     built_in_layout_template_spec,
 )
@@ -27,7 +27,7 @@ def expected_proof_text(spec, variant: LengthVariant) -> list[str]:
 
     The exporter itself extracts the actual HTML rather than using this list.
     """
-    return list(_expected_heading_labels(spec, variant)) + rendered_content_values(
+    return list(expected_heading_labels(spec, variant)) + rendered_content_values(
         spec, variant, include_unmapped_sections=True
     )
 
@@ -105,10 +105,8 @@ def replace_proof_pdf_with_content(
     """Replace a variant's proof PDF with a text-bearing PDF containing the
     given lines and update the persisted render-result PDF checksum, simulating
     a renderer that produced exactly that (possibly incomplete) proof."""
-    from app.template_analysis.layout_proof_service import (
-        file_sha256,
-        load_variant_evidence,
-    )
+    from app.template_analysis.layout_proof_artifacts import file_sha256
+    from app.template_analysis.layout_proof_validation import load_variant_evidence
 
     evidence = load_variant_evidence(artifact_dir, variant)
     assert evidence is not None, variant
@@ -147,10 +145,8 @@ def replace_proof_pdf_with_blank(artifact_dir: Path, variant: LengthVariant) -> 
     """
     from pypdf import PdfWriter
 
-    from app.template_analysis.layout_proof_service import (
-        file_sha256,
-        load_variant_evidence,
-    )
+    from app.template_analysis.layout_proof_artifacts import file_sha256
+    from app.template_analysis.layout_proof_validation import load_variant_evidence
 
     evidence = load_variant_evidence(artifact_dir, variant)
     assert evidence is not None, variant

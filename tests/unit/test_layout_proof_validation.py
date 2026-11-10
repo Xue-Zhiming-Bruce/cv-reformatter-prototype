@@ -691,7 +691,7 @@ def test_custom_section_bindings_do_not_duplicate_generic_proof_details() -> Non
     from app.template_analysis.layout_proof_content import (
         expected_rendered_marker_counts,
     )
-    from app.template_analysis.layout_proof_service import _expected_heading_labels
+    from app.template_analysis.layout_proof_validation import expected_heading_labels
 
     spec = _partial_spec(
         "additional_details", "additional_details", "additional_details"
@@ -719,7 +719,7 @@ def test_custom_section_bindings_do_not_duplicate_generic_proof_details() -> Non
 
     counts = expected_rendered_marker_counts(spec, LengthVariant.LONG)
     assert counts["SYNTHETIC_DETAIL_LABEL_1"] == 1
-    assert _expected_heading_labels(spec, LengthVariant.LONG) == [
+    assert expected_heading_labels(spec, LengthVariant.LONG) == [
         "ADDITIONAL LINKS OR DATA"
     ]
 
