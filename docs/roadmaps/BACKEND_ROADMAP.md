@@ -4,7 +4,7 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: November 10, 2026 (M5 verified; bounded M6/B0/B1 source and outcome freeze complete; development progress and its verification state recorded below)
+Last reviewed: November 10, 2026 (M5 verified; bounded M6/B0/B1 source and outcome freeze complete; Clean Code P0–P4 structural milestones recorded; development progress and its verification state recorded below)
 
 This is the sole implementation checklist. Product behavior belongs in the
 [Product Specification](../product/PRODUCT_SPEC.md), approved decisions in
@@ -116,7 +116,8 @@ for product acceptance:
 - Generation application workflow (#11): `ac6b0c1` moved prepare → render →
   validate → record into `app/generation/service.py`, left `app/main.py` as the
   HTTP adapter and gave the native child explicit `GenerationSettings`.
-  Implemented, under verification; ownership is recorded in the
+  QA PASS at `ac6b0c1` and merged without later code change to the workflow;
+  ownership is recorded in the
   [Document Pipeline](../architecture/DOCUMENT_PIPELINE.md) call flow.
 - Shared engineering guidance (#15): `dcc5af4` routed `AGENTS.md` over the
   tracked documents and added the
@@ -151,6 +152,59 @@ for product acceptance:
   and [Historical Paths And Recovery](#historical-paths-and-recovery);
   per-symbol reference counts, the offline gate result and the rollback are in
   issue #19's handoff comment.
+- Owner-review baseline (#10): `822742d` recorded the three accepted content
+  shapes in typed categories under `owner-review-feedback-1.0` and bound every
+  open item to its first failing stage, QA PASS at `62f3ecc`. The record is
+  [2026-11-10 Owner Review Baseline](../evaluations/2026-11-10_OWNER_REVIEW_BASELINE.md);
+  category definitions are in the
+  [Product Specification](../product/PRODUCT_SPEC.md#content-arrangement-and-owner-review).
+  #10's additional sample-review campaign remains that issue's own work.
+- Defect ledger (#12): `b0bd657` gave persistent defect state one owner,
+  `app/pipeline/defect_ledger.py` (dedup keys, observation classes, reopen,
+  open/closed, attribution binding); `7e45258` reconciled it with the #11
+  workflow and the #17 owners, and QA re-verified it at the mainline `0d400ae`.
+  `service.py` imports those symbols and defines none of them.
+- Content-arrangement report (#13): `app/generation/composition_report.py`
+  (`a2a6184`–`167bd37`, QA PASS at `167bd37`) publishes the selected output's
+  arrangement decisions as `composition_report.json`, distinct from quality
+  defects; `app/generation/contracts.py` and `artifact_manifest.py` consume it.
+- Pipeline owners (#17 P3.1–P3.6): `run_models.py`, `presentation_labels.py`,
+  `measurement.py`, `repair_policy.py`, `prompts.py`, `agent_adapters.py` and
+  `run_artifacts.py` each own one concern, `run_e5` reads as setup → lanes →
+  named round phases over explicit run/lane/round state, and the coordinator
+  keeps only imports for the moved symbols. Commits `1f0b77c`, `9040df6`,
+  `6338364`, `779134c`, `cfcb1a0`, `395def5`. Reviewer sign-off on the merged
+  head is still open on #17.
+- Proof owners (#18 P4.1–P4.5): `layout_proof_artifacts.py`,
+  `layout_proof_rendering.py` and `layout_proof_validation.py` take the
+  checksum/path writes, the renderer binding and the page/structure/visual
+  checks out of `layout_proof_service.py`, which keeps the create → pending →
+  approve/reject → validate-on-use lifecycle. Commits `070ab24`, `c6a86c6`,
+  `17df5b9`, `241eeb3`, `fd690b8` (merge `7d43597`). Reviewer sign-off is still
+  open on #18.
+
+### Structural Program Order And Remaining Work
+
+The program landed in its dependency order on this mainline: P0 `bc660ad` →
+P1 `ac6b0c1` → P2 merge `7618450` (the ledger; P3.1's record-model tail was
+resolved inside that merge) → P3 `1f0b77c`…`395def5` → P4 merge `7d43597`, with
+the independent #10, #14 and #15 packages interleaved. Later commits migrated
+caller-side references and rewrote no earlier milestone's gate or test.
+
+Ownership is recorded once, in the
+[Document Pipeline](../architecture/DOCUMENT_PIPELINE.md) responsibility table
+and call flow; it is the current map. The gain is the single-owner boundary,
+not a smaller total: `app/pipeline/service.py` 5,495 → 3,447 lines,
+`app/main.py` 2,653 → 1,684, `layout_proof_service.py` 1,005 → 527, while the
+two split packages grow by the module headers, phase signatures and explicit
+state the split introduced. `agentic_renderer_version()` is unchanged at
+`agentic-a/6+lane-a-product-subset/17+3db18fdc7f95b8e1`, so no prompt, renderer
+or proof identity moved with the code.
+
+Still open structurally: the reviewer sign-off and canonical gate result for
+#17 and #18 on `7d43597`. #10's additional owner-review campaign is separate
+work on that issue and not a structural prerequisite. No structural milestone
+is awaiting implementation here.
 
 ### Historical Paths And Recovery
 
@@ -182,8 +236,8 @@ reduction are in issue #19's handoff comment.
 | Removed or consolidated | Reason | Replacement / current owner | Validation |
 | --- | --- | --- | --- |
 | `pipeline/service.py::_approved_presentation_labels` | Catalog filter no path applied; unapproved proposals were already non-renderable elsewhere. | `app/pipeline/presentation_labels.py` (`_heuristic_presentation_labels`, `_apply_presentation_label_approval`, `presentation_label_catalog_sha256`) plus the shell-issued approved catalog in the generation request. | `tests/integration/test_pipeline_loop.py` presentation-label cases; `tests/integration/test_layout_proof_api.py` approval/checksum cases. |
-| `pipeline/service.py::_candidate_role_page` | PDF page-scan helper with no caller; role location stays with the measured evidence path and was not changed. | `app/pipeline/measurement.py` measured line/rule evidence with `_bind_role_gap_anchors` and `_selected_lane_artifact` in `service.py`. | `tests/integration/test_pipeline_loop.py` measurement-binding cases; `tests/unit/test_pipeline_layout.py`. |
-| `pipeline/evidence.py::EvidencePod.record_summary` | Access-count/status summary with no caller. | The evidence records themselves (`EvidencePod`, `EvidenceAccessRecord`) and the run/owner report writers in `service.py`. | `tests/integration/test_pipeline_evidence.py`; `tests/integration/test_pipeline_loop.py` owner-package cases. |
+| `pipeline/service.py::_candidate_role_page` | PDF page-scan helper with no caller; role location stays with the measured evidence path and was not changed. | `app/pipeline/measurement.py` measured line/rule evidence with `_bind_role_gap_anchors` and `_selected_lane_artifact` in `run_artifacts.py`. | `tests/integration/test_pipeline_loop.py` measurement-binding cases; `tests/unit/test_pipeline_layout.py`. |
+| `pipeline/evidence.py::EvidencePod.record_summary` | Access-count/status summary with no caller. | The evidence records themselves (`EvidencePod`, `EvidenceAccessRecord`) and the run/owner report writers in `run_artifacts.py`. | `tests/integration/test_pipeline_evidence.py`; `tests/integration/test_pipeline_loop.py` owner-package cases. |
 | `template_analysis/design_evidence.py::DesignEvidenceError` | Exception never raised or caught and not a package re-export. | No replacement needed; conversion errors stay with the current bridge. | `tests/unit/test_design_evidence.py`. |
 | `template_analysis/design_evidence.py::section_label_values` and `::evidence_style_roles` | Accessors with no caller; one only copied the list. | `TargetLayoutEvidence.style_roles` read directly by `design_compiler`/`design_validator`. | `tests/unit/test_design_compiler.py`; `tests/unit/test_design_validator.py`. |
 | `template_analysis/designer.py::new_proposal_id` (with its `uuid` import) | Random-ID helper with no caller; proposal IDs are deterministic per request. | The designer proposal construction, `_deterministic_id` and `proposal_checksum`. | `tests/unit/test_design_compiler.py::test_proposal_checksum_is_stable`; `tests/integration/test_design_service.py:499` (identical requests keep the same proposal id). |
