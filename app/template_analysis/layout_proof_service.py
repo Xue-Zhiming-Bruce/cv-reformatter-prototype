@@ -25,9 +25,15 @@ Boundaries:
 - renderer-specific invocation and staged output belong to
   ``layout_proof_rendering``; ``LayoutTemplateSpec`` remains pure;
 - deterministic evidence — render-result loading, page/structure/visual
-  validation and per-variant recomputation — belongs to
+  validation, assembly, per-variant loading and recomputation — belongs to
   ``layout_proof_validation``; the service only decides whether a failed
   structural result blocks (approval) or is recorded (rejection);
+- the per-variant evidence files are written by ``layout_proof_artifacts``;
+- lifecycle: ``create_proof_variants`` renders and stores one pending
+  aggregate, ``approve_layout_proof`` / ``reject_layout_proof`` recompute the
+  evidence from the actual files before deciding the outcome, and
+  ``render_candidate_document`` is the validate-on-use gate that refuses
+  anything but an approved aggregate for exactly this artifact and spec;
 - approval is an evidence-bound aggregate over short, medium, and long
   variants, persisted as strict validated JSON (atomic writes, revalidated on
   load); stored proof HTML/PDF files are re-hashed on load so any alteration
@@ -49,6 +55,7 @@ from app.template_analysis.layout_proof_artifacts import (
     file_sha256,
     layout_proofs_dir_for,
     layout_spec_checksum,
+    save_variant_evidence,
     variant_dir_for,
     write_json_atomic,
 )
@@ -64,14 +71,12 @@ from app.template_analysis.layout_proof_rendering import (
 from app.template_analysis.layout_proof_schemas import (
     LayoutProofApproval,
     LayoutProofRenderRequest,
-    LayoutProofRenderResult,
     LengthVariant,
-    StructuralValidationResult,
     VariantProofEvidence,
-    VisualComparisonEvidence,
 )
 from app.template_analysis.layout_proof_validation import (
     LayoutProofValidationError,
+    build_variant_evidence,
     build_visual_comparison_evidence,
     expected_heading_labels,
     measure_pdf_geometry,
@@ -89,83 +94,6 @@ class LayoutProofRepository(Protocol):
     def save(self, approval: LayoutProofApproval) -> None: ...
 
     def current(self, artifact_id: str) -> LayoutProofApproval | None: ...
-
-
-def build_variant_evidence(
-    *,
-    render_result: LayoutProofRenderResult,
-    structural: StructuralValidationResult,
-    visual: VisualComparisonEvidence,
-) -> VariantProofEvidence:
-    """Assemble immutable per-variant evidence from the actual render output.
-
-    The structural result must be derived from the exact rendered PDF (page
-    count match); the visual evidence must be derived from that PDF against
-    the target.
-    """
-    if structural.page_count != (render_result.page_count or 0):
-        raise LayoutProofValidationError(
-            "structural result page count does not match the render result"
-        )
-    return VariantProofEvidence(
-        variant=render_result.variant,
-        render_result=render_result,
-        structural=structural,
-        visual=visual,
-    )
-
-
-def save_variant_evidence(
-    artifact_dir: str | Path,
-    evidence: VariantProofEvidence,
-) -> None:
-    """Persist per-variant evidence (strict JSON, atomic writes)."""
-    directory = variant_dir_for(artifact_dir, evidence.variant)
-    write_json_atomic(
-        directory / "render_result.json",
-        evidence.render_result.model_dump(mode="json"),
-    )
-    write_json_atomic(
-        directory / "structural.json",
-        evidence.structural.model_dump(mode="json"),
-    )
-    write_json_atomic(
-        directory / "visual.json",
-        evidence.visual.model_dump(mode="json"),
-    )
-
-
-def load_variant_evidence(
-    artifact_dir: str | Path,
-    variant: LengthVariant,
-) -> VariantProofEvidence | None:
-    """Load and revalidate stored per-variant evidence (untrusted JSON)."""
-    directory = variant_dir_for(artifact_dir, variant)
-    render_result_path = directory / "render_result.json"
-    if not render_result_path.exists():
-        return None
-    try:
-        render_result = _load_json_model(
-            render_result_path, LayoutProofRenderResult
-        )
-        structural = _load_json_model(
-            directory / "structural.json", StructuralValidationResult
-        )
-        visual = _load_json_model(
-            directory / "visual.json", VisualComparisonEvidence
-        )
-    except LayoutProofValidationError:
-        raise
-    if structural is None or visual is None:
-        raise LayoutProofValidationError(
-            f"stored evidence for variant '{variant.value}' is incomplete"
-        )
-    return VariantProofEvidence(
-        variant=variant,
-        render_result=render_result,
-        structural=structural,
-        visual=visual,
-    )
 
 
 def save_layout_proof_approval(
@@ -302,6 +230,42 @@ def _validated_presentation_labels(
     )
 
 
+def _recompute_and_record(
+    *,
+    artifact_dir: str | Path,
+    artifact_id: str,
+    target_checksum: str,
+    layout_spec: TemplateStyleSpec | LayoutTemplateSpec,
+    target_pdf: str | Path,
+    require_passing: bool,
+) -> dict[LengthVariant, VariantProofEvidence]:
+    """Recompute every variant's evidence from the actual proof files and
+    atomically replace the stored diagnostic evidence.
+
+    ``require_passing`` is the lifecycle's policy difference between the two
+    outcomes: a failed structural result blocks approval, while a rejection
+    records the same evidence either way.
+    """
+    recomputed: dict[LengthVariant, VariantProofEvidence] = {}
+    for variant in LengthVariant:
+        evidence = recompute_variant_evidence(
+            artifact_dir=artifact_dir,
+            artifact_id=artifact_id,
+            variant=variant,
+            target_checksum=target_checksum,
+            layout_spec=layout_spec,
+            target_pdf=target_pdf,
+        )
+        if require_passing and not evidence.structural.passed:
+            raise LayoutProofValidationError(
+                f"{variant.value}: recomputed structural validation failed: "
+                + "; ".join(evidence.structural.errors[:3])
+            )
+        save_variant_evidence(artifact_dir, evidence)
+        recomputed[variant] = evidence
+    return recomputed
+
+
 def approve_layout_proof(
     *,
     artifact_dir: str | Path,
@@ -325,24 +289,14 @@ def approve_layout_proof(
     scope/checksum (artifact, target, layout, canonical context) mismatches.
     The regenerated per-variant evidence is persisted atomically.
     """
-    recomputed: dict[LengthVariant, VariantProofEvidence] = {}
-    for variant in LengthVariant:
-        evidence = recompute_variant_evidence(
-            artifact_dir=artifact_dir,
-            artifact_id=artifact_id,
-            variant=variant,
-            target_checksum=target_checksum,
-            layout_spec=layout_spec,
-            target_pdf=target_pdf,
-        )
-        if not evidence.structural.passed:
-            raise LayoutProofValidationError(
-                f"{variant.value}: recomputed structural validation failed: "
-                + "; ".join(evidence.structural.errors[:3])
-            )
-        # Atomically replace the diagnostic evidence with the recomputed results.
-        save_variant_evidence(artifact_dir, evidence)
-        recomputed[variant] = evidence
+    recomputed = _recompute_and_record(
+        artifact_dir=artifact_dir,
+        artifact_id=artifact_id,
+        target_checksum=target_checksum,
+        layout_spec=layout_spec,
+        target_pdf=target_pdf,
+        require_passing=True,
+    )
 
     presentation_labels, presentation_label_catalog_sha256 = _validated_presentation_labels(
         artifact_dir,
@@ -488,18 +442,14 @@ def reject_layout_proof(
     rejected aggregate; final candidate generation remains blocked because
     ``is_approved`` is False.
     """
-    recomputed: dict[LengthVariant, VariantProofEvidence] = {}
-    for variant in LengthVariant:
-        evidence = recompute_variant_evidence(
-            artifact_dir=artifact_dir,
-            artifact_id=artifact_id,
-            variant=variant,
-            target_checksum=target_checksum,
-            layout_spec=layout_spec,
-            target_pdf=target_pdf,
-        )
-        save_variant_evidence(artifact_dir, evidence)
-        recomputed[variant] = evidence
+    recomputed = _recompute_and_record(
+        artifact_dir=artifact_dir,
+        artifact_id=artifact_id,
+        target_checksum=target_checksum,
+        layout_spec=layout_spec,
+        target_pdf=target_pdf,
+        require_passing=False,
+    )
     approval = LayoutProofApproval(
         approval_id=f"approval_{uuid.uuid4().hex[:16]}",
         artifact_id=artifact_id,

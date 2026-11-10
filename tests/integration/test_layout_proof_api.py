@@ -16,8 +16,10 @@ from app.main import app
 from app.template_analysis import layout_proof_rendering
 from app.template_analysis.artifacts import LAYOUT_SPEC_FILENAME, load_layout_template_spec
 from app.template_analysis.layout_proof_schemas import LengthVariant
-from app.template_analysis.layout_proof_service import load_variant_evidence
-from app.template_analysis.layout_proof_validation import load_layout_proof_render_result
+from app.template_analysis.layout_proof_validation import (
+    load_layout_proof_render_result,
+    load_variant_evidence,
+)
 from tests.helpers.layout_proof import make_proof_pdf_exporter, create_and_approve_proofs as _create_and_approve
 from tests.helpers.synthetic_pdf import build_styled_target_pdf
 

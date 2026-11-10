@@ -12,9 +12,10 @@ never approve a proof. Structural failure is not approvable: the
 ``LayoutProofApproval`` model rejects any ``approved`` state whose evidence
 contains a failed or empty ``StructuralValidationResult``.
 
-This owner also loads the authoritative ``render_result.json`` and recomputes
-one variant's evidence from the actual proof files; it defines no approval
-policy and never imports the proof lifecycle facade.
+This owner also loads the authoritative ``render_result.json``, assembles and
+loads per-variant evidence, and recomputes one variant's evidence from the
+actual proof files; it defines no approval policy and never imports the proof
+lifecycle facade.
 """
 
 from __future__ import annotations
@@ -109,6 +110,67 @@ def load_layout_proof_render_result(
                 f"render result artifact filename is unsafe: {filename!r}"
             )
     return result
+
+
+def build_variant_evidence(
+    *,
+    render_result: LayoutProofRenderResult,
+    structural: StructuralValidationResult,
+    visual: VisualComparisonEvidence,
+) -> VariantProofEvidence:
+    """Assemble immutable per-variant evidence from the actual render output.
+
+    The structural result must be derived from the exact rendered PDF (page
+    count match); the visual evidence must be derived from that PDF against
+    the target.
+    """
+    if structural.page_count != (render_result.page_count or 0):
+        raise LayoutProofValidationError(
+            "structural result page count does not match the render result"
+        )
+    return VariantProofEvidence(
+        variant=render_result.variant,
+        render_result=render_result,
+        structural=structural,
+        visual=visual,
+    )
+
+
+def load_variant_evidence(
+    artifact_dir: str | Path,
+    variant: LengthVariant,
+) -> VariantProofEvidence | None:
+    """Load and revalidate stored per-variant evidence (untrusted JSON)."""
+    directory = variant_dir_for(artifact_dir, variant)
+    render_result_path = directory / "render_result.json"
+    if not render_result_path.exists():
+        return None
+    render_result = _load_evidence_json(render_result_path, LayoutProofRenderResult)
+    structural = _load_evidence_json(
+        directory / "structural.json", StructuralValidationResult
+    )
+    visual = _load_evidence_json(directory / "visual.json", VisualComparisonEvidence)
+    if structural is None or visual is None:
+        raise LayoutProofValidationError(
+            f"stored evidence for variant '{variant.value}' is incomplete"
+        )
+    return VariantProofEvidence(
+        variant=variant,
+        render_result=render_result,
+        structural=structural,
+        visual=visual,
+    )
+
+
+def _load_evidence_json(path: Path, model):
+    """Load and strictly revalidate a stored JSON record (untrusted input)."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return model.model_validate(payload)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise LayoutProofValidationError(
+            f"stored layout-proof JSON is invalid ({path.name}): {exc}"
+        ) from exc
 
 
 _SYNTHETIC_TOKEN_RE = re.compile(r"SYNTHETIC_[A-Z0-9_]+")

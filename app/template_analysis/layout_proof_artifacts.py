@@ -15,7 +15,10 @@ import os
 import tempfile
 from pathlib import Path
 
-from app.template_analysis.layout_proof_schemas import LengthVariant
+from app.template_analysis.layout_proof_schemas import (
+    LengthVariant,
+    VariantProofEvidence,
+)
 from app.template_analysis.schemas import LayoutTemplateSpec
 
 #: Repository-approved debug artifact location for standalone proof renders.
@@ -55,6 +58,26 @@ def variant_dir_for(artifact_dir: str | Path, variant: LengthVariant) -> Path:
 
 def approval_path_for(artifact_dir: str | Path) -> Path:
     return layout_proofs_dir_for(artifact_dir) / "approval.json"
+
+
+def save_variant_evidence(
+    artifact_dir: str | Path,
+    evidence: VariantProofEvidence,
+) -> None:
+    """Persist per-variant evidence (strict JSON, atomic writes)."""
+    directory = variant_dir_for(artifact_dir, evidence.variant)
+    write_json_atomic(
+        directory / "render_result.json",
+        evidence.render_result.model_dump(mode="json"),
+    )
+    write_json_atomic(
+        directory / "structural.json",
+        evidence.structural.model_dump(mode="json"),
+    )
+    write_json_atomic(
+        directory / "visual.json",
+        evidence.visual.model_dump(mode="json"),
+    )
 
 
 def write_json_atomic(path: Path, payload: object, *, canonical: bool = False) -> None:
