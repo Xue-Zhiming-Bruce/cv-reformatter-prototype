@@ -112,13 +112,15 @@ from app.template_analysis.layout_proof_rendering import (
     active_renderer_version,
 )
 from app.template_analysis.layout_proof_service import (
-    LayoutProofIncompleteError,
-    LayoutProofValidationError,
     approve_layout_proof,
     create_proof_variants,
     load_layout_proof_approval,
     load_variant_evidence,
     reject_layout_proof,
+)
+from app.template_analysis.layout_proof_validation import (
+    LayoutProofIncompleteError,
+    LayoutProofValidationError,
 )
 from app.template_analysis.artifacts import (
     ADOBE_RAW_FILENAME,

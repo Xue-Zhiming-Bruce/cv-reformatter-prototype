@@ -13,10 +13,11 @@ from app import main
 from app.generation import service as generation_service
 from app.extraction.candidate_schema import CandidateProfile
 from app.main import app
-from app.template_analysis import layout_proof_rendering, layout_proof_service
+from app.template_analysis import layout_proof_rendering
 from app.template_analysis.artifacts import LAYOUT_SPEC_FILENAME, load_layout_template_spec
 from app.template_analysis.layout_proof_schemas import LengthVariant
 from app.template_analysis.layout_proof_service import load_variant_evidence
+from app.template_analysis.layout_proof_validation import load_layout_proof_render_result
 from tests.helpers.layout_proof import make_proof_pdf_exporter, create_and_approve_proofs as _create_and_approve
 from tests.helpers.synthetic_pdf import build_styled_target_pdf
 
@@ -740,7 +741,7 @@ def test_renderer_change_requires_new_proofs_and_explicit_reapproval(
         stored = json.loads(path.read_text())
         stored.pop("renderer_version")
         path.write_text(json.dumps(stored))
-        loaded = layout_proof_service.load_layout_proof_render_result(
+        loaded = load_layout_proof_render_result(
             artifact_dir, LengthVariant(variant), artifact_id=artifact_id)
         assert loaded.renderer_version == "product-html/1"
         assert "renderer_version" not in json.loads(path.read_text())

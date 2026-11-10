@@ -31,11 +31,14 @@ from app.template_analysis.layout_proof_rendering import (
 )
 from app.template_analysis.layout_proof_service import (
     LayoutProofNotApprovedError,
-    LayoutProofValidationError,
     approve_layout_proof,
     create_proof_variants,
     load_layout_proof_approval,
     render_candidate_document,
+)
+from app.template_analysis.layout_proof_validation import (
+    LayoutProofValidationError,
+    expected_heading_labels,
 )
 from app.template_analysis.schemas import (
     built_in_layout_template_spec,
@@ -595,12 +598,10 @@ def test_partial_section_template_renders_and_validates(
     assert "SYNTHETIC_UNIVERSITY_1" in docx_text
 
     measurements = measure_pdf_geometry(proof_pdf)
-    from app.template_analysis.layout_proof_service import _expected_heading_labels
-
     structural = validate_proof_structure(
         layout_spec=partial,
         measurements=measurements,
-        expected_headings=_expected_heading_labels(partial, LengthVariant.MEDIUM),
+        expected_headings=expected_heading_labels(partial, LengthVariant.MEDIUM),
         variant=LengthVariant.MEDIUM,
         include_unmapped_sections=True,
     )

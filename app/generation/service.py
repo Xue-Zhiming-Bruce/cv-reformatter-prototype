@@ -90,10 +90,10 @@ from app.template_analysis.layout_proof_rendering import (
     active_renderer_version,
 )
 from app.template_analysis.layout_proof_service import (
-    LayoutProofValidationError,
     load_layout_proof_approval,
     render_candidate_document,
 )
+from app.template_analysis.layout_proof_validation import LayoutProofValidationError
 from app.template_analysis.schemas import (
     LayoutTemplateSpec,
     TemplateStyleSpec,

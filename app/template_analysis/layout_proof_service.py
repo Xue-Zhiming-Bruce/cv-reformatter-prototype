@@ -24,6 +24,10 @@ Boundaries:
   render from the provider-neutral ``LayoutTemplateSpec`` into semantic HTML;
 - renderer-specific invocation and staged output belong to
   ``layout_proof_rendering``; ``LayoutTemplateSpec`` remains pure;
+- deterministic evidence — render-result loading, page/structure/visual
+  validation and per-variant recomputation — belongs to
+  ``layout_proof_validation``; the service only decides whether a failed
+  structural result blocks (approval) or is recorded (rejection);
 - approval is an evidence-bound aggregate over short, medium, and long
   variants, persisted as strict validated JSON (atomic writes, revalidated on
   load); stored proof HTML/PDF files are re-hashed on load so any alteration
@@ -33,7 +37,6 @@ Boundaries:
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,10 +51,6 @@ from app.template_analysis.layout_proof_artifacts import (
     layout_spec_checksum,
     variant_dir_for,
     write_json_atomic,
-)
-from app.template_analysis.layout_proof_content import (
-    build_synthetic_context,
-    canonical_context_checksum,
 )
 from app.template_analysis.layout_proof_rendering import (
     LayoutProofMismatchError,
@@ -72,8 +71,11 @@ from app.template_analysis.layout_proof_schemas import (
     VisualComparisonEvidence,
 )
 from app.template_analysis.layout_proof_validation import (
+    LayoutProofValidationError,
     build_visual_comparison_evidence,
+    expected_heading_labels,
     measure_pdf_geometry,
+    recompute_variant_evidence,
     validate_proof_structure,
 )
 from app.template_analysis.schemas import LayoutTemplateSpec, TemplateStyleSpec
@@ -87,66 +89,6 @@ class LayoutProofRepository(Protocol):
     def save(self, approval: LayoutProofApproval) -> None: ...
 
     def current(self, artifact_id: str) -> LayoutProofApproval | None: ...
-
-
-class LayoutProofValidationError(RuntimeError):
-    """Raised when proof evidence is invalid or recomputed validation fails."""
-
-
-class LayoutProofIncompleteError(LayoutProofValidationError):
-    """Raised when a required authoritative artifact (render result or proof
-    file) is missing; maps to HTTP 409 ``layout_proof_incomplete``."""
-
-
-_SAFE_PROOF_ID = re.compile(r"^layout_proof_(short|medium|long)_[0-9a-f]{16}$")
-_SAFE_PROOF_FILENAME = re.compile(r"^proof-(short|medium|long)\.(html|pdf)$")
-
-
-def load_layout_proof_render_result(
-    artifact_dir: str | Path,
-    variant: LengthVariant,
-    *,
-    artifact_id: str,
-) -> LayoutProofRenderResult:
-    """Load and strictly validate only the authoritative render result JSON.
-
-    Never requires the diagnostic ``structural.json`` / ``visual.json`` files.
-    Verifies the expected variant and artifact scope, and rejects unsafe proof
-    ids or artifact filenames (path-traversal guard) before any path is built.
-    """
-    path = variant_dir_for(artifact_dir, variant) / "render_result.json"
-    if not path.exists():
-        raise LayoutProofIncompleteError(
-            f"render result not found for variant '{variant.value}'"
-        )
-    try:
-        result = LayoutProofRenderResult.model_validate(
-            json.loads(path.read_text(encoding="utf-8"))
-        )
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        raise LayoutProofValidationError(
-            f"render result is corrupt for variant '{variant.value}': {exc}"
-        ) from exc
-    if result.variant is not variant:
-        raise LayoutProofValidationError(
-            f"render result variant '{result.variant.value}' does not match "
-            f"'{variant.value}'"
-        )
-    if result.artifact_id != artifact_id:
-        raise LayoutProofValidationError(
-            f"render result belongs to artifact '{result.artifact_id}', expected "
-            f"'{artifact_id}'"
-        )
-    if not _SAFE_PROOF_ID.match(result.proof_id):
-        raise LayoutProofValidationError(
-            f"render result proof id is unsafe: {result.proof_id!r}"
-        )
-    for filename in (result.html_filename, result.pdf_filename):
-        if not _SAFE_PROOF_FILENAME.match(filename):
-            raise LayoutProofValidationError(
-                f"render result artifact filename is unsafe: {filename!r}"
-            )
-    return result
 
 
 def build_variant_evidence(
@@ -301,86 +243,6 @@ def verify_approval_files(
             )
 
 
-def _recompute_variant_evidence(
-    *,
-    artifact_dir: str | Path,
-    artifact_id: str,
-    variant: LengthVariant,
-    target_checksum: str,
-    layout_spec: TemplateStyleSpec | LayoutTemplateSpec,
-    target_pdf: str | Path,
-) -> VariantProofEvidence:
-    """Recompute one variant's evidence from the authoritative render result
-    and the actual proof files only.
-
-    Loads only ``render_result.json`` (never the diagnostic structural/visual
-    JSON), verifies artifact/target/layout/canonical-context checksums and the
-    proof HTML/PDF file checksums, reopens the proof PDF, re-runs
-    ``measure_pdf_geometry`` / template-aware structural validation / local
-    visual comparison against the current target, and returns the freshly
-    computed evidence. The caller decides whether a failed structural result
-    blocks (approval) or is merely recorded (rejection).
-    """
-    result = load_layout_proof_render_result(
-        artifact_dir, variant, artifact_id=artifact_id
-    )
-    require_current_renderer(result.renderer_version)
-    if result.target_checksum != target_checksum:
-        raise LayoutProofMismatchError(
-            f"{variant.value}: evidence target checksum does not match"
-        )
-    layout_checksum = layout_spec_checksum(layout_spec)
-    if result.layout_spec_checksum != layout_checksum:
-        raise LayoutProofMismatchError(
-            f"{variant.value}: evidence layout spec checksum does not match"
-        )
-    if result.context_checksum != canonical_context_checksum(variant):
-        raise LayoutProofMismatchError(
-            f"{variant.value}: evidence synthetic-context checksum does not match "
-            "the canonical context"
-        )
-    proof_dir = layout_proofs_dir_for(artifact_dir) / result.proof_id
-    html_path = proof_dir / result.html_filename
-    pdf_path = proof_dir / result.pdf_filename
-    if not html_path.exists() or not pdf_path.exists():
-        raise LayoutProofIncompleteError(
-            f"{variant.value}: proof artifact files are missing"
-        )
-    if file_sha256(html_path) != result.html_checksum:
-        raise LayoutProofMismatchError(
-            f"{variant.value}: proof HTML changed after validation"
-        )
-    if file_sha256(pdf_path) != result.pdf_checksum:
-        raise LayoutProofMismatchError(
-            f"{variant.value}: proof PDF changed after validation"
-        )
-
-    measurements = measure_pdf_geometry(pdf_path)
-    if measurements.page_count != (result.page_count or 0):
-        raise LayoutProofMismatchError(
-            f"{variant.value}: proof PDF page count changed after validation "
-            f"({measurements.page_count} != {result.page_count})"
-        )
-    structural = validate_proof_structure(
-        layout_spec=layout_spec,
-        measurements=measurements,
-        expected_headings=_expected_heading_labels(layout_spec, variant),
-        variant=variant,
-        include_unmapped_sections=result.renderer_version.startswith("agentic-a/"),
-    )
-    visual = build_visual_comparison_evidence(
-        target_pdf=target_pdf,
-        generated_pdf=pdf_path,
-        output_dir=variant_dir_for(artifact_dir, variant) / "visual",
-    )
-    return VariantProofEvidence(
-        variant=variant,
-        render_result=result,
-        structural=structural,
-        visual=visual,
-    )
-
-
 def _validated_presentation_labels(
     artifact_dir: str | Path,
     variants: dict[LengthVariant, VariantProofEvidence],
@@ -465,7 +327,7 @@ def approve_layout_proof(
     """
     recomputed: dict[LengthVariant, VariantProofEvidence] = {}
     for variant in LengthVariant:
-        evidence = _recompute_variant_evidence(
+        evidence = recompute_variant_evidence(
             artifact_dir=artifact_dir,
             artifact_id=artifact_id,
             variant=variant,
@@ -506,60 +368,6 @@ def approve_layout_proof(
     verify_approval_files(artifact_dir, approval)
     save_layout_proof_approval(artifact_dir, approval, repository=repository)
     return approval
-
-
-def _expected_heading_labels(
-    layout_spec: TemplateStyleSpec | LayoutTemplateSpec,
-    variant: LengthVariant,
-) -> list[str]:
-    """Heading labels of the sections a synthetic variant actually populates."""
-    context = build_synthetic_context(variant)
-    populated_sources: set[str] = set()
-    if context.contact_lines:
-        populated_sources.add("contact")
-    if context.professional_summary:
-        populated_sources.add("summary")
-    if context.skills:
-        populated_sources.add("skills")
-    if context.languages:
-        populated_sources.add("languages")
-    if context.work_experience:
-        populated_sources.add("work_experience")
-    if context.education:
-        populated_sources.add("education")
-    if context.certifications:
-        populated_sources.add("certifications")
-    if context.additional_details:
-        populated_sources.add("additional_details")
-    labels: list[str] = []
-    if isinstance(layout_spec, LayoutTemplateSpec):
-        for section in layout_spec.sections:
-            if (
-                section.source == "additional_details"
-                and section.additional_section_heading
-            ):
-                # Canonical proof content contains no candidate-specific
-                # custom sections, so an exact-heading binding renders empty.
-                continue
-            if section.source in populated_sources and section.label:
-                labels.append(section.label)
-    else:
-        defaults = layout_spec.section_labels
-        by_source = {
-            "contact": defaults.contact,
-            "summary": defaults.summary,
-            "skills": defaults.skills,
-            "languages": defaults.languages,
-            "work_experience": defaults.work_experience,
-            "education": defaults.education,
-            "certifications": defaults.certifications,
-            "additional_details": defaults.additional_details,
-        }
-        for source in populated_sources:
-            label = by_source.get(source)
-            if label:
-                labels.append(label)
-    return labels
 
 
 def require_compilable_layout_spec(
@@ -630,7 +438,7 @@ def create_proof_variants(
         structural = validate_proof_structure(
             layout_spec=layout_spec,
             measurements=measurements,
-            expected_headings=_expected_heading_labels(layout_spec, variant),
+            expected_headings=expected_heading_labels(layout_spec, variant),
             variant=variant,
             include_unmapped_sections=result.renderer_version.startswith("agentic-a/"),
         )
@@ -682,7 +490,7 @@ def reject_layout_proof(
     """
     recomputed: dict[LengthVariant, VariantProofEvidence] = {}
     for variant in LengthVariant:
-        evidence = _recompute_variant_evidence(
+        evidence = recompute_variant_evidence(
             artifact_dir=artifact_dir,
             artifact_id=artifact_id,
             variant=variant,
