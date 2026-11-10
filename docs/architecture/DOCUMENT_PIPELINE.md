@@ -218,10 +218,19 @@ content reports.
 
 ## Retained Pipeline Implementation
 
-Implementation inventory, October 19, 2026. This section records the relocated
-mainline code; it does not promote its internal schemas, VLM access, or authored
-HTML/CSS into approved product contracts. The product/API boundaries above and
-accepted ADRs still govern integration.
+Implementation inventory, October 19, 2026; ownership table re-verified
+November 10, 2026 after the pipeline-owner split (issue #17, P3.1–P3.6). This
+section records the relocated mainline code; it does not promote its internal
+schemas, VLM access, or authored HTML/CSS into approved product contracts. The
+product/API boundaries above and accepted ADRs still govern integration.
+
+The coordinator below is one owner with delegated work, not a monolith being
+described loosely: `service.py` decides the workflow (setup → initial build →
+gates → review → measurement/attribution → bounded repair → selection →
+handoff) and each named module owns the policy, measurement, prompt, provider
+I/O, or artifact writing that step consumes. Changing a gate, a prompt, a
+measurement, a retry, or a report therefore means reading one module, not the
+coordinator and not provider code.
 
 `python -m app.pipeline` takes an explicit target PDF, raw Adobe response,
 normalized evidence, typed structure draft, and saved `CandidateProfile` JSON.
@@ -237,12 +246,14 @@ target and designer-template generation retain the approval-aware product path.
 
 | Responsibility | Implementation in `app/pipeline/` |
 | --- | --- |
-| Input dispatch and run coordination | `__main__.py`, `service.py` |
+| Input dispatch and run coordination (`run_e5`, its named phases, per-run state) | `__main__.py`, `service.py` |
 | Evidence access, measurements, review | `evidence.py`, `measurement.py`, `review.py` |
 | Persistent defect state (dedup keys, observation classes, reopen, open/closed, attribution binding) | `defect_ledger.py` |
 | Stored E5 run records, Lane A structure and label-approval contracts | `run_models.py` |
 | Presentation-label catalog, canonical identity, approval projection, recognition | `presentation_labels.py` |
 | Repair/selection policy (gate classification, representation ceilings, quarantine eligibility, bounded round work, Builder reserve, best-version selection) | `repair_policy.py` |
+| Builder, Reviewer and attribution prompt constants, at their exact existing bytes | `prompts.py` |
+| Provider/model I/O adapters (connection retry, live Builder and attribution calls, their tool registration and call audit) and their request ceilings | `agent_adapters.py` |
 | Frozen run configuration, selected-source identity, and lane/comparison/owner-review artifact writers | `run_artifacts.py` |
 | Internal candidate projection and layout state | `candidate_content.py`, `layout_state.py` |
 | Layout compilation and render-plan binding | `layout_compiler.py`, `render_plan.py` |
@@ -270,8 +281,9 @@ HTTP route (app/main.py) / native worker child (app/job_worker.py)
               -> defect state (defect_ledger.py: dedup/reopen/open-closed/attribution)
               -> layout state + compilation (layout_state.py, layout_compiler.py)
               -> deterministic measurements and gates (measurement.py, review.py, quality.py)
-              -> model adapters, prompts, bounded repair (service.py adapters, runtime.py)
-              -> selected version + run artifacts (service.py report writers, runtime.py)
+              -> prompts and model adapters (prompts.py, agent_adapters.py, runtime.py)
+              -> repair/selection policy decisions (repair_policy.py) applied by the coordinator's phases
+              -> frozen config, selected version + run artifacts (run_artifacts.py, runtime.py)
           -> generation/proof adapters (app/generation/agentic.py, app/template_analysis/layout_proof_service.py)
           -> controlled HTML + Chrome PDF export (html_renderer.py, rendering.py, fonts.py, chrome_html_to_pdf.py)
       -> validate_generation (independent content and structure gates, fail-closed)
@@ -301,7 +313,10 @@ its own `ClientFacingRenderContext`, projects its internal
 `CandidateDocument`, and calls `run_e5` directly, so it shares the run
 coordinator and its gates but none of `prepare_generation`,
 `validate_generation`, or `record_generation`; it performs no extraction,
-approval, or input discovery.
+approval, or input discovery. Its only import from the coordinator is
+`run_e5`; the budget ceilings it reports and validates come from their own
+owners (`run_artifacts.py`, `agent_adapters.py`, `repair_policy.py`), so
+reading the CLI's limits never means reading orchestration internals.
 
 Runtime roles and development roles are different things and must not be
 conflated in review notes:

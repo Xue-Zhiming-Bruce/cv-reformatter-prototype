@@ -18,6 +18,7 @@ from app.pipeline.evidence import (
     StructuralRelation,
     TargetStructureDraft,
     _model_identity,
+    _sha256_file,
 )
 from app.pipeline.html_renderer import RENDERER_VERSION, render_layout_template
 from app.pipeline.layout_state import C2LayoutState
@@ -269,15 +270,15 @@ def render_agentic(
         include_subheading=layout_spec.header.show_candidate_subheading)
     with pdfplumber.open(target_pdf) as pdf:
         state, _, _ = render_layout_template(layout_spec, candidate,
-            target_sha256=service._sha256_file(target_pdf), page_count=len(pdf.pages))
+            target_sha256=_sha256_file(target_pdf), page_count=len(pdf.pages))
     if presentation_label_approval is None:
         catalog = presentation_labels.template_presentation_label_catalog(
-            state, normalized, target_sha256=service._sha256_file(target_pdf))
+            state, normalized, target_sha256=_sha256_file(target_pdf))
         from app.template_analysis.layout_proof_service import layout_spec_checksum
 
         presentation_label_approval = _proof_label_approval(
             layout_proof_approval, catalog,
-            target_checksum=service._sha256_file(target_pdf),
+            target_checksum=_sha256_file(target_pdf),
             layout_spec_checksum=layout_spec_checksum(layout_spec),
         )
         if presentation_label_approval is None and catalog["unrecognized_template_ids"]:
@@ -322,7 +323,7 @@ def render_agentic(
     if not record.summary.get("source_identity_stable"):
         raise AgenticGenerationError("Pipeline source changed during agentic generation; run again")
     html_path, pdf_path = run_dir/f"lane_a/{stem}.html", run_dir/f"lane_a/{stem}.pdf"
-    if service._sha256_file(html_path) != version.html_sha256 or service._sha256_file(pdf_path) != version.pdf_sha256:
+    if _sha256_file(html_path) != version.html_sha256 or _sha256_file(pdf_path) != version.pdf_sha256:
         raise AgenticGenerationError("Selected agentic output changed after validation")
     gates = json.loads((run_dir/f"lane_a/hard_gates_{version.version_id}.json").read_text())
     gate_validation = repair_policy._e5_hard_gate_record(version.version_id, gates["gates"], gates.get("details", {}),

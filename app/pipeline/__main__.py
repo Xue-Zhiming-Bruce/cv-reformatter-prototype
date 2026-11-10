@@ -6,12 +6,12 @@ from pathlib import Path
 from app.extraction.candidate_schema import CandidateProfile, SectionReviewState
 from app.generation.template_mapper import build_client_render_context
 from app.profile_approval import profile_sha256
+from app.pipeline.agent_adapters import E5_BUILDER_MAX_REQUESTS
 from app.pipeline.candidate_content import candidate_document_from_context
+from app.pipeline.repair_policy import E5_BUILDER_RESERVE_REQUESTS
 from app.pipeline.run_models import PresentationLabelApproval
 from app.pipeline.run_artifacts import E5_LANE_MAX_MODEL_REQUESTS, E5_LANE_MAX_TOOL_CALLS
-from app.pipeline.service import (
-    E5_BUILDER_MAX_REQUESTS, E5_BUILDER_RESERVE_REQUESTS, run_e5,
-)
+from app.pipeline.service import run_e5
 from app.pipeline.runtime import RunBudget
 from app.template_analysis.schemas import LayoutTemplateSpec
 

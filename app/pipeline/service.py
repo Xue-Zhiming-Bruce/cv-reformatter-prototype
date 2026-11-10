@@ -11,11 +11,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
-from app.generation.template_mapper import CONTACT_FIELD_SLOTS, CONTACT_LABEL_FIELDS
+from app.generation.template_mapper import CONTACT_FIELD_SLOTS
 from app.pipeline.candidate_content import CandidateDocument
 from app.pipeline.defect_ledger import (
     DefectLedger,
-    E5LedgerEntry,
     _ledger_key,
     _open_ledger_finding_ids,
     _record_ledger_attribution,
@@ -61,7 +60,6 @@ from app.pipeline.repair_policy import (
     _next_e5_repair_finding,
 )
 from app.pipeline.agent_adapters import (
-    E5_ATTRIBUTION_MAX_REQUESTS,
     E5_BUILDER_MAX_REQUESTS,
     _live_attribution_batch,
     _live_lane_a_builder,
@@ -82,7 +80,6 @@ from app.pipeline.evidence import (
     DefectFinding,
     DualSourcePod,
     E5AgentAuditSpec,
-    EvidenceModel,
     FrozenCase,
     LiveAttributionHypothesis,
     MeasurementRequest,
@@ -94,7 +91,6 @@ from app.pipeline.evidence import (
     _e5_live_attribution_record,
     _overview_pngs,
     _page_pt_size,
-    _pdf_line_rows,
     _sha256_file,
     assert_no_signed_strings,
     freeze_cases,
@@ -130,7 +126,6 @@ from app.pipeline.presentation_labels import (
     presentation_label_catalog_sha256,
 )
 from app.pipeline.run_models import (
-    E5_SCHEMA_VERSION,
     E5LaneASection,
     E5LaneRecord,
     E5LoopRecord,
