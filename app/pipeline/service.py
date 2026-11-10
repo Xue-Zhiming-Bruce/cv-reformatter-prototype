@@ -7,9 +7,10 @@ import json
 import re
 import shutil
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from app.generation.template_mapper import CONTACT_FIELD_SLOTS, CONTACT_LABEL_FIELDS
 from app.pipeline.candidate_content import CandidateDocument
 from app.pipeline.defect_ledger import (
@@ -1161,6 +1162,1857 @@ def _lane_a_attribution_layout(plan: Any, state: Any, findings: list[DefectFindi
     }
 
 
+
+@dataclass
+class _E5RunState:
+    """Everything a lane reads from the run and never writes."""
+
+    candidate: CandidateDocument
+    state: Any
+    derived: dict[str, Any]
+    draft: TargetStructureDraft
+    page_size: tuple[float, float]
+    target_pdf: Path
+    target_id: str
+    target_frozen: FrozenCase
+    target_sha256: str
+    out_dir: Path
+    lanes: tuple[str, ...]
+    live: bool
+    max_repair_rounds: int
+    budget: RunBudget
+    builder_reserve_requests: int
+    layout_spec: LayoutTemplateSpec | None
+    template_render: Any
+    store: EvidenceStore
+    pod: DualSourcePod
+    summary: dict[str, Any]
+    environment: dict[str, str]
+    region_spans: dict[str, tuple[int, float, float]]
+    shared_target_images: list[Path]
+    approved_label_catalog: list[PresentationLabel]
+    approved_label_texts: set[str]
+    label_catalog: list[PresentationLabel]
+    body_scaffold: Any
+    bullet_tiers: dict[str, Any]
+    candidate_name_text: str | None
+    candidate_review_scope: dict[str, Any]
+    initial_builder_evidence: dict[str, Any]
+    body_color_context: Any
+    probe_candidates: dict[str, CandidateDocument] | None
+
+
+@dataclass
+class _E5LaneState:
+    """One lane's own versions, evidence, budget and audit trail.
+
+    Lane phases receive this object explicitly instead of capturing a mutable
+    local of the coordinator, so a phase can only touch state it was handed."""
+
+    run: _E5RunState
+    lane: str
+    lane_dir: Path
+    lane_budget: RunBudget
+    trace: RunTrace
+    versions: list[RenderVersion] = field(default_factory=list)
+    # Explicit ACTIVE version (E5 rollback fix): the lane always reads, reviews
+    # and measures the active version — never `versions[-1]`. A rejected
+    # candidate render stays in `versions` as immutable history but never
+    # becomes active; only a shell promotion does.
+    active_index: int = 0
+    pdf_by_version: dict[str, Path] = field(default_factory=dict)
+    # version_id -> the EXACT representation (proposal/template) that produced
+    # it; probes must use the selected one, never the default state or a
+    # scripted fixture.
+    representation_by_version: dict[str, Any] = field(default_factory=dict)
+    # Version-bound mutable render state (rollback correctness): the RenderPlan
+    # (Lane A) and the delivery gates belong to ONE render version each. Every
+    # reader (reviewer, measurement binding, builder) resolves them through the
+    # ACTIVE version id — a rejected candidate never overwrites the active
+    # state.
+    plan_by_version: dict[str, Any] = field(default_factory=dict)
+    gates_by_version: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # version_id -> the RICH gate details (missing-leaf sets, per-gate rows) —
+    # the repair-input derivation reuses THIS evidence verbatim;
+    # `gates_by_version` holds only the boolean decisions.
+    gate_details_by_version: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Per-version answer to "did the privacy gate exclude exactly the shared
+    # shell-owned label catalog?" — derived, never lane-specific.
+    label_symmetry_by_version: dict[str, bool] = field(default_factory=dict)
+    # version_id -> the shell's deterministic candidate-binding lineage audit
+    # for that render (the ONLY evidence that may confirm a `candidate_binding`
+    # attribution, and one input to quarantine eligibility). Built once per
+    # render from that version's own leaf ledger, never from the target
+    # document.
+    binding_lineage_by_version: dict[str, CandidateBindingLineage] = field(
+        default_factory=dict
+    )
+    # Presentation labels THIS lane actually referenced (Lane A: rendered plan
+    # labels).
+    referenced_labels: set[str] = field(default_factory=set)
+    # The region/page of the last PROMOTED repair (the only state that scopes
+    # the next review round; rejected attempts never do).
+    last_promoted_region: str | None = None
+    last_promoted_page: int | None = None
+    # QUARANTINED REPAIR BASE (owner work order 2026-09-22): the history index
+    # of the last repairable-but-not-passing candidate. It is NOT a second
+    # state machine — it reuses the existing version map, builder-candidate
+    # audit, gate records, action fingerprints and rollback: it is only "which
+    # representation the next Builder edits", while `active_index` stays the
+    # reviewer/measurement/promotion/owner-package scope. Cleared on promotion.
+    quarantine_index: int | None = None
+    findings: list[DefectFinding] = field(default_factory=list)
+    measurement_results: list[MeasurementResult] = field(default_factory=list)
+    attributions: list[AttributionRecord] = field(default_factory=list)
+    repair_attempts: list[dict[str, Any]] = field(default_factory=list)
+    builder_candidates: list[dict[str, Any]] = field(default_factory=list)
+    attempted_strategies: list[str] = field(default_factory=list)
+    fingerprints: list[str] = field(default_factory=list)
+    resolved_measurements: dict[str, tuple[MeasurementRequest, MeasurementResult]] = field(
+        default_factory=dict
+    )
+    rolled_back_versions: set[str] = field(default_factory=set)
+    pending_layout_trials: set[str] = field(default_factory=set)
+    ledger: DefectLedger = field(default_factory=DefectLedger)
+    pages_reviewed: set[int] = field(default_factory=set)
+    reviewed_render_fingerprints: set[str] = field(default_factory=set)
+    counter: dict[str, int] = field(
+        default_factory=lambda: {"finding": 0, "request": 0}
+    )
+    lane_state: dict[str, Any] = field(
+        default_factory=lambda: {"proposal": None, "template": None}
+    )
+    # Loop stop state (terminal semantics fix, 2026-09-23): the lane's terminal
+    # state must say WHICH ceiling was hit, or that nothing was left to do —
+    # never a single catch-all. Declared before `_e5_lane_terminal` so the
+    # pre-loop failure paths can read them too.
+    stop_state: str | None = None
+    stop_reason: str = ""
+    # Regions a live layout trial may touch; every other region stays owned by
+    # the fixed renderer.
+    layout_trial_regions: set[str] = field(default_factory=set)
+    # version_id -> pdf hash: two different version ids with the SAME hash do
+    # not re-review, and the SAME version_id can never map to a different PDF
+    # (conflict fails closed).
+    version_pdf_hashes: dict[str, str] = field(default_factory=dict)
+    findings_by_id: dict[str, DefectFinding] = field(default_factory=dict)
+    # finding_id -> (finding, result, bound) for every measurement taken on any
+    # version; the repair scan filters by the ACTIVE version.
+    measured_by_finding: dict[
+        str, tuple[DefectFinding, MeasurementResult, MeasurementRequest]
+    ] = field(default_factory=dict)
+
+
+@dataclass
+class _E5RoundState:
+    """State produced and consumed inside a single repair round; never read by
+    the next round or by `_e5_lane_terminal`."""
+
+    round_no: int
+    current_version: RenderVersion | None = None
+    current_pdf: Path | None = None
+    current_plan: Any = None
+    current_gates: dict[str, Any] = field(default_factory=dict)
+    current_gate_details: dict[str, Any] = field(default_factory=dict)
+    repair_base_version: RenderVersion | None = None
+    repair_base_gates: dict[str, Any] = field(default_factory=dict)
+    repair_base_details: dict[str, Any] = field(default_factory=dict)
+    repair_scope_versions: set[str] = field(default_factory=set)
+    changed_regions: list[str] = field(default_factory=list)
+    findings_new: list[DefectFinding] = field(default_factory=list)
+    render_fingerprint: str = ""
+    run_review: bool = False
+    actionable: list[DefectFinding] = field(default_factory=list)
+    selected: list[DefectFinding] = field(default_factory=list)
+    scan_candidates: list[DefectFinding] = field(default_factory=list)
+    scan_measured: dict[str, Any] = field(default_factory=dict)
+    repair_finding: Any = None
+    finding: Any = None
+    result: Any = None
+    bound: Any = None
+    attribution: Any = None
+    fingerprint: str = ""
+    proposal: Any = None
+    candidate_version: Any = None
+    candidate_pdf: Path | None = None
+    candidate_gates: dict[str, Any] = field(default_factory=dict)
+    candidate_index: int = 0
+    candidate_audit_index: int | None = None
+
+
+@dataclass(frozen=True)
+class _E5LoopStep:
+    """The only control flow a round phase may report to the repair loop."""
+
+    action: Literal["next", "retry", "stop"]
+    stop_state: str = ""
+    stop_reason: str = ""
+
+
+_E5_NEXT = _E5LoopStep("next")
+_E5_RETRY = _E5LoopStep("retry")
+
+
+def _e5_stop(stop_state: str, stop_reason: str) -> _E5LoopStep:
+    return _E5LoopStep("stop", stop_state, stop_reason)
+
+
+def _e5_abort(
+    out_dir: Path, operation: str, error: Exception
+) -> tuple[Path, str, dict[str, Any]]:
+    """Write the operational abort and return the coordinator's result shape."""
+    record = E5LoopRecord(target_id="unknown", target_sha256="0" * 64)
+    record.summary["terminal_state"] = "operational_abort"
+    record.summary["abort"] = {"operation": operation, "error": str(error)}
+    (out_dir / "e5_state.json").write_text(
+        json.dumps(record.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return out_dir, "operational_abort", record.model_dump(mode="json")
+
+
+def _e5_image_refs(
+    out_dir: Path, paths: list[Any], role: str, *, first_page: int = 1
+) -> tuple[dict[str, Any], ...]:
+    """Image audit references in the EXACT user-content order: file path
+    relative to the run dir, sha256, page number, target/render role — NEVER
+    image bytes."""
+    refs: list[dict[str, Any]] = []
+    for index, path in enumerate(paths, first_page):
+        path = Path(path)
+        refs.append(
+            {
+                "path": (
+                    path.relative_to(out_dir).as_posix()
+                    if path.is_relative_to(out_dir)
+                    else path.name
+                ),
+                "page": index,
+                "role": role,
+                "sha256": _sha256_file(path),
+            }
+        )
+    return tuple(refs)
+
+
+def _e5_audit(ls: _E5LaneState,
+    *,
+    agent: str,
+    phase: str,
+    round_no: int | None,
+    render_version: str | None,
+    finding_ids: tuple[str, ...] = (),
+    measurement_ids: tuple[str, ...] = (),
+    instructions: str,
+    image_refs: tuple[dict[str, Any], ...] = (),
+) -> E5AgentAuditSpec:
+    return E5AgentAuditSpec(
+        agent=agent,
+        lane=ls.lane,
+        phase=phase,
+        round_no=round_no,
+        target_version=ls.run.target_id,
+        render_version=render_version,
+        finding_ids=finding_ids,
+        measurement_ids=measurement_ids,
+        model=None,
+        instructions=instructions,
+        image_refs=image_refs,
+    )
+
+def _e5_record_builder_candidate(ls: _E5LaneState,
+    candidate_output: Any,
+    *,
+    stage: str,
+    input_render_version: str | None,
+    validation: dict[str, Any],
+    outcome: str,
+    reason: str,
+    attribution: AttributionRecord | None = None,
+    action_fingerprint: str | None = None,
+) -> int:
+    attempt = len(ls.builder_candidates) + 1
+    record = _e5_builder_candidate_record(
+        lane=ls.lane,
+        attempt=attempt,
+        stage=stage,
+        input_render_version=input_render_version,
+        candidate_output=candidate_output,
+        validation=validation,
+        outcome=outcome,
+        reason=reason,
+        attribution=attribution,
+        action_fingerprint=action_fingerprint,
+    )
+    ls.builder_candidates.append(record)
+    (ls.lane_dir / record["artifact"]).write_text(
+        json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return attempt - 1
+
+def _e5_update_builder_candidate(ls: _E5LaneState, index: int, **updates: Any) -> None:
+    ls.builder_candidates[index].update(updates)
+    (ls.lane_dir / ls.builder_candidates[index]["artifact"]).write_text(
+        json.dumps(ls.builder_candidates[index], ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+def _e5_escalate(ls: _E5LaneState, strategy: str) -> None:
+    ls.attempted_strategies.append(strategy)
+    ls.trace.add(agent="shell", phase="loop", action="strategy_escalation", note=strategy)
+
+def _e5_checkpoint(ls: _E5LaneState, phase: str) -> None:
+    """Small atomic recovery snapshot plus machine-readable residuals."""
+    current = ls.versions[ls.active_index].version_id if ls.versions else None
+    payload = {
+        "schema_version": "e5-checkpoint/1",
+        "phase": phase,
+        "lane": ls.lane,
+        "active_render_version": current,
+        "render_versions": [item.model_dump(mode="json") for item in ls.versions],
+        "findings": [item.model_dump(mode="json") for item in ls.findings],
+        "ledger": [item.model_dump(mode="json") for item in ls.ledger.entries.values()],
+        "builder_candidates": ls.builder_candidates,
+        "budget_state": ls.lane_budget.to_json(),
+    }
+    path = ls.lane_dir / "checkpoint.json"
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+    findings_by_key = {_ledger_key(item): item for item in ls.findings}
+    residuals = []
+    for key, entry in ls.ledger.entries.items():
+        finding = findings_by_key.get(key)
+        if finding is None:
+            continue
+        repair = next(
+            (
+                item for item in reversed(ls.builder_candidates)
+                if (item.get("trigger_attribution") or {}).get("finding_id")
+                == finding.finding_id
+            ),
+            None,
+        )
+        attribution = entry.attribution
+        residuals.append({
+            "schema_version": "e5-residual/1",
+            "residual_type": _residual_type(finding),
+            "region_role": finding.region,
+            "status": entry.status,
+            "finding_id": finding.finding_id,
+            "render_version": finding.render_version,
+            "observation": finding.observation,
+            "repair_attempted": repair is not None,
+            "repair_outcome": repair.get("outcome") if repair else None,
+            "resolution_layer": (
+                "representation" if attribution and attribution.repair_owner == "builder"
+                else attribution.repair_owner if attribution else None
+            ),
+        })
+    residual_path = ls.lane_dir / "residuals.jsonl"
+    residual_tmp = residual_path.with_suffix(".tmp")
+    residual_tmp.write_text(
+        "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in residuals),
+        encoding="utf-8",
+    )
+    residual_tmp.replace(residual_path)
+
+def _e5_lane_terminal(
+    ls: _E5LaneState, forced: str | None = None, reason: str = ""
+) -> E5LaneRecord:
+    from app.pipeline import quality as c2r
+    from app.pipeline.render_plan import compile_render_plan
+    from app.pipeline.html_renderer import render_html
+    from app.pipeline.html_renderer import render_layout_template
+
+    open_ids = _open_ledger_finding_ids(list(ls.ledger.entries.values()))
+    # Best-valid selection FIRST: the content-shape probes must run
+    # against the EXACT SELECTED representation (the best-valid
+    # render's proposal/template). With no best-valid render, the
+    # latest attempt gets DIAGNOSTIC probes only — never promotion
+    # evidence. A QUARANTINED repair base is excluded exactly like a
+    # rolled-back attempt: it was never promoted and may never be
+    # selected as a render, a best, or a probe basis. Unmeasured
+    # layout trials likewise require human comparison before selection.
+    excluded_versions = ls.rolled_back_versions | ls.pending_layout_trials
+    if ls.quarantine_index is not None:
+        excluded_versions.add(ls.versions[ls.quarantine_index].version_id)
+    # Best-valid selection FIRST: the content-shape probes must run
+    # against the EXACT SELECTED representation (the best-valid
+    # render's proposal/template). With no best-valid render, the
+    # latest attempt gets DIAGNOSTIC probes only — never promotion
+    # evidence.
+    best_version_id = _best_valid_version_id(ls.versions, excluded=excluded_versions)
+    defect_version_id = _best_defect_level_version_id(
+        ls.versions, excluded=excluded_versions
+    )
+    active_version_id = ls.versions[ls.active_index].version_id if ls.versions else None
+    best_version = next((v for v in ls.versions if v.version_id == best_version_id), None)
+    diagnostic_probes = best_version_id is None
+    # Probes run on the lane's ACTIVE state when no best-valid (or
+    # defect-level) render exists — a rejected candidate never
+    # becomes the probe basis.
+    selected_id = best_version_id or defect_version_id or (
+        ls.versions[ls.active_index].version_id if ls.versions else None
+    )
+    selected_representation = ls.representation_by_version.get(selected_id)
+    probes_ok = bool(ls.run.probe_candidates) and bool(ls.versions) and selected_id is not None
+    probe_report: dict[str, Any] = {
+        "_selected_version": selected_id,
+        "_probe_mode": ("not_requested" if not ls.run.probe_candidates else
+                        "diagnostic" if diagnostic_probes else "promotion_evidence"),
+    }
+    for profile, fixture in (ls.run.probe_candidates or {}).items():
+        probe_candidate = _probe_candidate_with_text(fixture)
+        probe_candidate = _sectioned_probe_candidate(probe_candidate)
+        entry: dict[str, Any] = {
+            "passed": False,
+            "diagnostic": diagnostic_probes,
+            "representation": (
+                selected_representation.proposal_id
+                if selected_representation is not None else "initial_compiled_plan"
+            ),
+        }
+        probe_report[profile] = entry
+        try:
+            index = next(
+                (i + 1 for i, v in enumerate(ls.versions) if v.version_id == selected_id), 0
+            )
+            probe_html_path = ls.lane_dir / f"probe_{profile}.html"
+            probe_pdf_path = ls.lane_dir / f"probe_{profile}.pdf"
+            probe_pdf_second = ls.lane_dir / f"probe_{profile}_second.pdf"
+            # Real chain with the SELECTED proposal: candidate
+            # binding (incl. the shared header-overflow shell
+            # transition) -> compile -> HTML -> Chrome PDF -> gates.
+            probe_plan_candidate = _apply_header_overflow_disposition(
+                probe_candidate, ls.run.state
+            )
+            if ls.run.layout_spec is not None:
+                _, plan, _ = render_layout_template(ls.run.layout_spec, probe_plan_candidate,
+                    target_sha256=ls.run.target_sha256, page_count=ls.run.state.page.page_count)
+                plan = _apply_lane_a_structure(plan, selected_representation)
+                html = render_html(ls.run.state, plan)
+            else:
+                plan = _apply_lane_a_structure(
+                    compile_render_plan(ls.run.state, probe_plan_candidate), selected_representation
+                )
+                if plan.status == "failed":
+                    raise RuntimeError(f"probe plan failed: {plan.failures[:3]}")
+                html = render_html(ls.run.state, plan)
+            probe_html_path.write_text(html, encoding="utf-8")
+            _export_pinned_html_to_pdf(probe_html_path, probe_pdf_path, ls.run.environment)
+            _export_pinned_html_to_pdf(probe_html_path, probe_pdf_second, ls.run.environment)
+            pages = _render_pages(probe_pdf_path, ls.lane_dir, f"probe_{profile}")
+            second_pages = _render_pages(probe_pdf_second, ls.lane_dir, f"probe_{profile}_second")
+            content = c2r.content_gate(plan, html, probe_pdf_path)
+            gates = {
+                "content_gate": content["passed"],
+                "candidate_content_accounting": c2r.candidate_accounting_gate(
+                    plan, content
+                )["passed"],
+                # The same COMMON privacy gate with the same
+                # shell-recognized label set as the main renders.
+                "privacy_gate": c2r.candidate_privacy_gate(
+                    html, probe_pdf_path, ls.run.target_pdf,
+                    labels=ls.run.approved_label_texts, candidate=probe_candidate,
+                )["passed"],
+                "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
+                "deterministic_render": (
+                    all(
+                        c2r._sha256(left) == c2r._sha256(right)
+                        for left, right in zip(pages, second_pages)
+                    )
+                    and c2r._line_stability(probe_pdf_path, probe_pdf_second)["passed"]
+                ),
+            }
+            entry["gates"] = gates
+            entry["pages"] = len(pages)
+            entry["html"] = probe_html_path.name
+            entry["pdf"] = probe_pdf_path.name
+            entry["passed"] = all(gates.values())
+        except Exception as error:  # a probe failure is recorded, never a crash
+            entry["error"] = str(error)[:200]
+        probes_ok = probes_ok and bool(entry.get("passed"))
+    (ls.lane_dir / "content_shape_probes.json").write_text(
+        json.dumps(probe_report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    # E5 asks which representation is worth pursuing.  Once a
+    # safety-valid PDF exists it belongs in owner review; open visual
+    # findings, failed probes, and incomplete agent review stay visible
+    # as observations instead of suppressing the output.
+    terminal = (
+        "ready_for_owner_review"
+        if best_version_id and best_version is not None
+        and best_version.hard_gates_passed
+        else "budget_exhausted"
+    )
+    terminal_reason = ""
+    if terminal != "ready_for_owner_review":
+        # The loop records WHICH ceiling or stall ended the lane; the
+        # for-loop completing with no recorded stop means the repair
+        # round budget was reached.
+        terminal = ls.stop_state or terminal
+        terminal_reason = ls.stop_reason or "repair_round_budget"
+    if forced is not None:
+        terminal = forced
+        terminal_reason = reason
+    record = E5LaneRecord(
+        lane=ls.lane,
+        representation=(
+            "provider-neutral structured layout + fixed renderer (Lane A)"
+        ),
+        render_versions=ls.versions,
+        best_render_version=best_version_id,
+        best_defect_level_version=defect_version_id,
+        active_render_version=active_version_id,
+        quarantined_repair_base=(
+            ls.versions[ls.quarantine_index].version_id
+            if ls.quarantine_index is not None
+            else None
+        ),
+        findings=ls.findings,
+        measurement_results=ls.measurement_results,
+        attributions=ls.attributions,
+        repair_attempts=ls.repair_attempts,
+        builder_candidates=ls.builder_candidates,
+        attempted_strategies=ls.attempted_strategies,
+        action_fingerprints=ls.fingerprints,
+        ledger=list(ls.ledger.entries.values()),
+        open_findings=open_ids,
+        content_shape_probes_passed=probes_ok,
+        pages_reviewed=sorted(ls.pages_reviewed),
+        terminal_state=terminal,
+        terminal_reason=terminal_reason,
+        budget_state=ls.lane_budget.to_json(),
+        summary={
+            "total_findings": len(ls.findings),
+            "best_render_version": best_version_id,
+            "best_defect_level_version": defect_version_id,
+            "active_render_version": active_version_id,
+            "quarantined_repair_base": (
+                ls.versions[ls.quarantine_index].version_id
+                if ls.quarantine_index is not None
+                else None
+            ),
+            "probe_mode": probe_report.get("_probe_mode"),
+            "pending_layout_trials": sorted(ls.pending_layout_trials),
+            "promoted_versions": len([v for v in ls.versions if v.promoted]),
+            "confirmed_measurements": len([r for r in ls.measurement_results if r.status == "confirmed"]),
+            "unbound_measurements": len([r for r in ls.measurement_results if r.status == "evidence_missing"]),
+            "builder_calls": ls.lane_budget.calls_by_agent.get(f"lane_{ls.lane}_builder", 0),
+            "reviewer_calls": ls.lane_budget.calls_by_agent.get("visual_reviewer", 0),
+            "reviewed_pdf_sha256": sorted(ls.reviewed_render_fingerprints),
+            "attribution_calls": ls.lane_budget.calls_by_agent.get("attribution_investigator", 0),
+            "methodology_classification": _e5_gate_classification(
+                ls.lane,
+                ls.gates_by_version.get(active_version_id, {}),
+                privacy_labels_symmetric=ls.label_symmetry_by_version.get(
+                    active_version_id or "", True
+                ),
+                gate_details=ls.gate_details_by_version.get(active_version_id or "", {}),
+            ),
+            "diagnostic_warnings": _e5_hard_gate_record(
+                active_version_id or "none",
+                ls.gates_by_version.get(active_version_id, {}),
+                ls.gate_details_by_version.get(active_version_id or "", {}),
+                blocking_gates=_e5_blocking_gates(ls.lane),
+            )["diagnostic_warnings"],
+            "presentation_labels_referenced": sorted(ls.referenced_labels),
+            "elapsed_seconds": None,
+            "live": ls.run.live,
+        },
+    )
+    (ls.lane_dir / f"e5_lane_{ls.lane}_state.json").write_text(
+        json.dumps(record.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (ls.lane_dir / "REPORT.md").write_text(
+        _write_e5_lane_report_md(ls.lane, record), encoding="utf-8"
+    )
+    _e5_checkpoint(ls, "terminal")
+    ls.trace.save()
+    return record
+
+def _e5_render_version(ls: _E5LaneState, note: str, proposal: LaneAStructureProposal | None = None) -> tuple[RenderVersion, Path, dict[str, Any]]:
+    from app.pipeline import quality as c2r
+    from app.pipeline.render_plan import compile_render_plan
+    from app.pipeline.html_renderer import render_html
+
+    ls.lane_budget.spend_tool("render_and_checkpoint")
+    if ls.run.template_render is not None:
+        _, plan, html = ls.run.template_render
+        if proposal is not None:
+            plan = _apply_lane_a_structure(plan, proposal)
+            html = render_html(ls.run.state, plan)
+    else:
+        plan = _apply_lane_a_structure(compile_render_plan(ls.run.state, ls.run.candidate), proposal)
+        if plan.status == "failed":
+            raise RuntimeError(f"refusing to render a failed plan: {plan.failures[:3]}")
+        html = render_html(ls.run.state, plan)
+    index = len(ls.versions) + 1
+    html_path = ls.lane_dir / f"render_{index}.html"
+    html_path.write_text(html, encoding="utf-8")
+    # The version's own arrangement plan, immutable like its HTML/PDF:
+    # traceability for owner-facing explanations, never re-derived later.
+    (ls.lane_dir / f"render_{index}_plan.json").write_text(
+        plan.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    pdf_path = ls.lane_dir / f"render_{index}.pdf"
+    _export_pinned_html_to_pdf(html_path, pdf_path, ls.run.environment)
+    second = ls.lane_dir / f"render_{index}_second.pdf"
+    _export_pinned_html_to_pdf(html_path, second, ls.run.environment)
+    pages = _render_pages(pdf_path, ls.lane_dir, f"render_{index}")
+    second_pages = _render_pages(second, ls.lane_dir, f"render_{index}_second")
+    stability = c2r._line_stability(pdf_path, second)
+    content = c2r.content_gate(plan, html, pdf_path)
+    # DIAGNOSTIC ONLY (see gate_details): the renderer gate keeps
+    # excluding plan-derived labels; the privacy DECISION is the
+    # common gate below.
+    privacy = c2r.privacy_gate(plan, ls.run.target_pdf, html, pdf_path)
+    # The ONE common privacy gate: identical function and identical
+    # shell-recognized label set for BOTH lanes, so the two lanes'
+    # privacy decisions are directly comparable.
+    common_privacy = c2r.candidate_privacy_gate(
+        html, pdf_path, ls.run.target_pdf, labels=ls.run.approved_label_texts, candidate=ls.run.candidate
+    )
+    structure_gate = c2r.structure_gate(plan, ls.run.state, html, pdf_path)
+    blank = c2r.blank_page_gate(pdf_path)
+    accounting = c2r.candidate_accounting_gate(plan, content)
+    shape = c2r.content_shape_verification(
+        ls.run.state, plan, ls.run.body_scaffold, ls.run.bullet_tiers, html, ls.run.summary, pdf_path
+    )
+    if ls.run.layout_spec is not None:
+        shape["basis"] = "layout_template_spec; consumption checks only, not visual parity"
+    gates = {
+        "deterministic_render": all(
+            c2r._sha256(left) == c2r._sha256(right)
+            for left, right in zip(pages, second_pages)
+        ) and stability["passed"],
+        # The COMMON privacy decision: the same gate function and
+        # the same shell-recognized label set as owner review.
+        "no_target_candidate_facts": common_privacy["passed"],
+        "section_order_matches_state": structure_gate["section_order_matches_state"],
+        "no_blank_page": blank["passed"],
+        "candidate_content_accounting": accounting["passed"],
+        "content_shapes_match_evidence": shape["passed"],
+        "content_gate": content["passed"],
+    }
+    label_semantics = _e5_label_semantics(
+        common_privacy, ls.run.approved_label_catalog
+    )
+    ls.label_symmetry_by_version[f"render-{ls.run.target_pdf.stem}-laneA-v{index}"] = bool(
+        label_semantics["symmetric"]
+    )
+    ls.referenced_labels.update(
+        label.label_id
+        for label in ls.run.label_catalog
+        if c2r._norm(label.text)
+        in {
+            c2r._norm(section.label)
+            for section in [*plan.sections, *plan.appended_sections]
+        }
+    )
+    gate_details = {
+        "deterministic_render": {
+            "passed": gates["deterministic_render"],
+            "first_page_hashes": [c2r._sha256(page) for page in pages],
+            "second_page_hashes": [c2r._sha256(page) for page in second_pages],
+            "line_stability": stability,
+        },
+        "no_target_candidate_facts": {
+            **common_privacy,
+            "label_semantics": label_semantics,
+            # DIAGNOSTIC ONLY: the renderer gate keeps excluding
+            # plan-derived labels; it is no longer the privacy
+            # decision and never used to claim symmetry.
+            "plan_derived_privacy_gate": privacy,
+        },
+        "section_order_matches_state": structure_gate,
+        "no_blank_page": blank,
+        "candidate_content_accounting": accounting,
+        "content_shapes_match_evidence": shape,
+        "content_gate": content,
+    }
+    version = RenderVersion(
+        version_id=f"render-{ls.run.target_pdf.stem}-laneA-v{index}",
+        html_sha256=_sha256_file(html_path),
+        pdf_sha256=_sha256_file(pdf_path),
+        page_count=len(pages),
+        hard_gates_passed=_e5_blocking_gates_passed("a", gates),
+        note=note,
+    )
+    ls.versions.append(version)
+    ls.pdf_by_version[version.version_id] = pdf_path
+    ls.representation_by_version[version.version_id] = proposal
+    ls.plan_by_version[version.version_id] = plan
+    ls.gates_by_version[version.version_id] = gates
+    ls.gate_details_by_version[version.version_id] = gate_details
+    ls.binding_lineage_by_version[version.version_id] = _e5_candidate_binding_lineage(
+        ls.run.candidate,
+        version.version_id,
+        content.get("leaf_records") or {},
+        representation_ceiling_gates=[
+            name for name in E5_REPRESENTATION_CEILING_GATES
+            if gates.get(name) is False
+        ],
+    )
+    ls.run.store.register_version(version.version_id, pdf_path, note)
+    (ls.lane_dir / f"hard_gates_{version.version_id}.json").write_text(
+        json.dumps(
+            _e5_hard_gate_record(
+                version.version_id,
+                gates,
+                gate_details,
+                blocking_gates=_e5_blocking_gates("a"),
+            ),
+            indent=2,
+            sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    ls.trace.add(agent="shell", phase="render", action="render_version", output=version.model_dump(mode="json"), note=note)
+    return version, pdf_path, gates
+
+def _e5_render_entry_texts(ls: _E5LaneState, region_id: str | None, plan: Any = None) -> tuple[list[str], list[str]]:
+    if plan is not None:
+        plan_section = next(
+            (s for s in [*plan.sections, *plan.appended_sections] if s.node_id == _owning_section_id(ls.run.state, region_id)),
+            None,
+        )
+        if plan_section is not None and plan_section.entries:
+            heads = [entry.title_lines[0] for entry in plan_section.entries if entry.title_lines]
+            head_ids = {line.leaf_id for line in heads}
+            other_fields = [field.text for entry in plan_section.entries for row in entry.rows or []
+                            for field in [*row.left, *row.right] if field.leaf_id not in head_ids]
+            return [line.text for line in heads], other_fields
+    # generic fallback: the candidate's own entry heads (same role)
+    return [
+        leaf.text or "" for leaf in ls.run.candidate.leaves
+        if leaf.kind in {"work_entry", "education_entry"} and leaf.text
+    ][:4], []
+
+def _e5_execute_measurement(ls: _E5LaneState,
+    finding: DefectFinding,
+    pdf: Path,
+    request_id: str,
+    *,
+    plan: Any = None,
+    render_version: str = "",
+) -> tuple[MeasurementResult, MeasurementRequest]:
+    section_id = _owning_section_id(ls.run.state, finding.region)
+    span = ls.run.region_spans.get(section_id or finding.region)
+    span_tuple = (span[1], span[2]) if span and span[0] == finding.page else None
+    ls.trace.add(
+        agent="measure_controller", phase="measure", action="binding",
+        input={"render_version": render_version, "finding": finding.finding_id},
+    )
+    request = finding.requested_measurement.model_copy(update={"request_id": request_id})
+    if request.metric == "unsupported":
+        return MeasureController(ls.run.pod, ls.lane_budget, ls.trace).execute(request, current_pdf=pdf), request
+    dimension = finding.suspected_dimension.casefold()
+    compound = bool(re.search(r"\b(and|plus)\b", dimension))
+    if compound or (request.metric == "role_gap" and not any(
+        word in dimension for word in ("gap", "spacing", "role")
+    )):
+        result = MeasurementResult(
+            request_id=request_id, status="not_measurable",
+            reason=("compound dimensions need separate measurements" if compound else
+                    f"dimension {finding.suspected_dimension!r} is not supported by the role_gap metric"),
+            method="reviewer_metric_binding/1",
+        )
+        ls.trace.add(agent="measure_controller", phase="measure", action="binding_unresolved",
+                  output=result.model_dump(mode="json"), persist_output=True)
+        return result, request
+    if request.metric == "header_contact_label_geometry":
+        if finding.suspected_dimension != "header_contact_labels":
+            result = MeasurementResult(request_id=request_id, status="not_measurable",
+                reason="label geometry cannot measure other or compound contact dimensions",
+                method=HEADER_CONTACT_LABEL_MEASUREMENT_VERSION)
+        else:
+            ls.lane_budget.spend_tool("measure_header_contact_label_geometry")
+            request = request.model_copy(update={"region_id": finding.region})
+            result = _measure_header_contact_label_geometry(request, target_pdf=ls.run.target_pdf,
+                current_pdf=pdf, state=ls.run.state, plan=plan, current_name_text=ls.run.candidate_name_text)
+        ls.trace.add(agent="measure_controller", phase="measure", action="measurement",
+            tool="measure_header_contact_label_geometry", output=result.model_dump(mode="json"), persist_output=True)
+        return result, request
+    if request.metric == "header_vertical_rule_geometry":
+        finding_text = (
+            f"{finding.region} {finding.suspected_dimension} {finding.observation} "
+            f"{request.intent or ''}"
+        ).casefold()
+        if not (
+            finding.region.startswith("header")
+            and any(word in finding_text for word in ("header", "name"))
+            and "vertical" in finding_text
+            and any(word in finding_text for word in ("rule", "line", "bar"))
+        ):
+            result = MeasurementResult(
+                request_id=request_id,
+                status="not_measurable",
+                reason="metric may bind only to an explicit header vertical-rule finding",
+                method=HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
+            )
+        else:
+            ls.lane_budget.spend_tool("measure_header_vertical_rule_geometry")
+            result = _measure_header_vertical_rule_geometry(
+                request,
+                target_pdf=ls.run.target_pdf,
+                current_pdf=pdf,
+                current_name_text=ls.run.candidate_name_text,
+            )
+        ls.trace.add(
+            agent="measure_controller", phase="measure", action="measurement",
+            tool="measure_header_vertical_rule_geometry",
+            output=result.model_dump(mode="json"), persist_output=True,
+        )
+        return result, request
+    heads, other_fields = _e5_render_entry_texts(ls, finding.region, plan)
+    bound = _bind_role_gap_anchors(
+        request,
+        target_pdf=ls.run.target_pdf,
+        current_pdf=pdf,
+        region_span=span_tuple,
+        render_leaf_texts=heads, render_non_head_texts=other_fields,
+    )
+    if isinstance(bound, MeasurementResult):
+        ls.trace.add(
+            agent="measure_controller", phase="measure", action="binding_unresolved",
+            note=bound.reason, persist_output=True,
+        )
+        return bound, request
+    # MeasureController.execute is the SINGLE tool-budget consumer for
+    # a deterministic measurement (one compare_pdf_geometry per call,
+    # one trace record). Callers never spend or re-trace it.
+    result = MeasureController(ls.run.pod, ls.lane_budget, ls.trace).execute(bound, current_pdf=pdf)
+    return result, bound
+
+def _e5_attribute(ls: _E5LaneState,
+    finding: DefectFinding,
+    result: MeasurementResult,
+    request: MeasurementRequest,
+) -> AttributionRecord:
+    attribution = _e5_default_attribution(finding, result, request)
+    ls.attributions.append(attribution)
+    # Single source of defect state: the attribution (and its
+    # measurement request) is written back to the owning ledger
+    # entry; a no_defect measurement closes the entry as resolved.
+    _record_ledger_attribution(ls.ledger, finding, attribution, request.request_id)
+    ls.trace.add(
+        agent="attribution_investigator", phase="attribute", action="attribution",
+        output=attribution.model_dump(mode="json"),
+    )
+    return attribution
+
+def _e5_accepted_regions_hold(ls: _E5LaneState, candidate_pdf: Path) -> tuple[bool, list[dict[str, Any]]]:
+    """FAIL CLOSED accepted-region recheck: an accepted region is held
+    ONLY when the identical re-measurement is CONFIRMED on the
+    candidate PDF with all measured values present and the error did
+    not grow beyond the prior error + tolerance. Any evidence_missing
+    / unmeasurable / vanished anchor / missing value means the
+    candidate CANNOT be verified to hold the region -> not held."""
+    rechecks: list[dict[str, Any]] = []
+    for finding_id, (request, prior) in ls.resolved_measurements.items():
+        finding = ls.findings_by_id[finding_id]
+        repeat, _ = _e5_execute_measurement(
+            ls,
+            finding.model_copy(update={"requested_measurement": request}),
+            candidate_pdf,
+            request.request_id,
+            plan=ls.plan_by_version.get(ls.versions[-1].version_id),
+            render_version=ls.versions[-1].version_id,
+        )
+        values_present = (
+            repeat.current_value_pt is not None
+            and repeat.target_value_pt is not None
+            and prior.current_value_pt is not None
+            and prior.target_value_pt is not None
+        )
+        held = (
+            repeat.status == "confirmed"
+            and values_present
+            and abs(repeat.current_value_pt - repeat.target_value_pt)
+            <= abs(prior.current_value_pt - prior.target_value_pt) + E2_IMPROVEMENT_TOLERANCE_PT
+        )
+        reason = None
+        if not held:
+            if repeat.status != "confirmed":
+                reason = f"re-measurement not confirmed on the candidate PDF (status={repeat.status})"
+            elif not values_present:
+                reason = "re-measurement left measured values missing (vanished anchor / evidence gap)"
+            else:
+                reason = "accepted region error grew beyond the prior error + tolerance"
+        rechecks.append(
+            {
+                "finding": finding_id,
+                "held": held,
+                "status": repeat.status,
+                **({"reason": reason} if reason else {}),
+            }
+        )
+        if not held:
+            return False, rechecks
+    return True, rechecks
+
+
+def _e5_round_open(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
+    """Round setup: which version this round reviews, which version the Builder
+    repairs, and whether the Reviewer runs at all. Everything is resolved from
+    the lane's own history, never from a mutable lane-wide variable."""
+
+    if ls.lane_budget.remaining_model_requests() < 1:
+        ls.trace.add(agent="shell", phase="loop", action="budget_exhausted", note="before review")
+        return _e5_stop("budget_exhausted", "model_request_budget")
+    # The round reviews/measures the ACTIVE version (the last
+    # PROMOTED render, or the initial render before any
+    # promotion) — never the newest render in history.
+    rs.current_version = ls.versions[ls.active_index]
+    rs.current_pdf = ls.pdf_by_version[rs.current_version.version_id]
+    rs.current_plan = ls.plan_by_version.get(rs.current_version.version_id)
+    rs.current_gates = ls.gates_by_version.get(rs.current_version.version_id, {})
+    rs.current_gate_details = ls.gate_details_by_version.get(rs.current_version.version_id, {})
+    # The repair base is the quarantined candidate when one exists
+    # (its own representation/version/gates/missing leaves), and
+    # the ACTIVE version otherwise. Reviewer, measurement binding,
+    # promotion and the owner package always resolve against the
+    # ACTIVE version; the only thing that may look at the quarantine
+    # is the hard-gate repair input and the Builder payload that
+    # continues fixing it.
+    rs.repair_base_version = (
+        ls.versions[ls.quarantine_index] if ls.quarantine_index is not None else rs.current_version
+    )
+    rs.repair_base_gates = ls.gates_by_version.get(rs.repair_base_version.version_id, {})
+    rs.repair_base_details = ls.gate_details_by_version.get(rs.repair_base_version.version_id, {})
+    rs.repair_scope_versions = {
+        rs.current_version.version_id, rs.repair_base_version.version_id,
+    }
+    # The next round's changed-region scope comes ONLY from the
+    # last PROMOTED repair: a rejected/rolled-back attempt is
+    # immutable history (diagnostic), never review scope.
+    rs.changed_regions: list[str] = (
+        [ls.last_promoted_region] if ls.last_promoted_region else []
+    )
+    rs.findings_new: list[DefectFinding] = []
+    # SCHEDULING GATE: the SAME render fingerprint gets at most ONE
+    # full Reviewer pass. With no new render there is NO review
+    # this round: the round works on the bounded deferred backlog
+    # or calls the Builder for an already-attributed repair
+    # candidate — it never re-reviews an unchanged render.
+    # Review gate: fingerprint = final-PDF sha256. A conflicting
+    # re-hash for a known version_id fails closed.
+    rs.render_fingerprint = rs.current_version.pdf_sha256
+    known_pdf_hash = ls.version_pdf_hashes.get(rs.current_version.version_id)
+    if known_pdf_hash is not None and known_pdf_hash != rs.render_fingerprint:
+        raise RuntimeError(
+            f"render identity conflict: {rs.current_version.version_id} "
+            f"previously hashed {known_pdf_hash}, now {rs.render_fingerprint}"
+        )
+    ls.version_pdf_hashes[rs.current_version.version_id] = rs.render_fingerprint
+    rs.run_review = _e5_review_this_round(ls.reviewed_render_fingerprints, rs.render_fingerprint)
+    ls.trace.add(
+        agent="shell", phase="loop", action="review_gate",
+        output={
+            "render_version": rs.current_version.version_id,
+            "pdf_sha256": rs.render_fingerprint,
+            "review_executed": rs.run_review,
+            "skip_reason": (
+                None if rs.run_review
+                else "same render pdf_sha256 already fully reviewed"
+            ),
+        },
+    )
+    return _E5_NEXT
+
+
+def _e5_round_review(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
+    """See: the bounded Reviewer pass over the ACTIVE render, then the candidate-
+    boundary filter and the ledger dedup that decide what is actionable this
+    round."""
+
+    reviewer_failed = False
+    try:
+        if ls.run.live and rs.run_review:
+            target_overviews = _overview_pngs(ls.run.target_pdf, ls.run.out_dir, f"review_target_l{ls.lane}_{rs.round_no}")
+            render_overviews = _overview_pngs(rs.current_pdf, ls.run.out_dir, f"review_render_l{ls.lane}_{rs.round_no}")
+            scope = _review_scope_payload(
+                rs.round_no,
+                rs.changed_regions,
+                ls.findings,
+                ledger_statuses={
+                    entry.finding_id: entry.status
+                    for entry in ls.ledger.entries.values()
+                },
+                changed_pages=[ls.last_promoted_page] if ls.last_promoted_page else [],
+            )
+            region_catalog = _e5_region_catalog(ls.run.state, ls.run.derived)
+            presentation_facts = _reviewer_presentation_facts(
+                ls.run.target_pdf, rs.current_pdf, ls.run.derived, current_name_text=ls.run.candidate_name_text,
+                state=ls.run.state, plan=rs.current_plan,
+            )
+            ls.counter["finding"] += 1
+            node_inventory = json.dumps(
+                {
+                    "region_catalog": region_catalog,
+                    "review_scope": scope,
+                    "candidate_review_scope": ls.run.candidate_review_scope,
+                },
+                ensure_ascii=False,
+            )
+            # Bounded images per call: one PAGE per reviewer call
+            # (target overview + render overview), merged across pages.
+            review_page_count = (
+                len(render_overviews)
+                if ls.run.layout_spec is not None else len(target_overviews)
+            )
+            for page_index in range(1, review_page_count + 1):
+                target_page_number = min(page_index, len(target_overviews))
+                target_page = prepare_review_image(target_overviews[target_page_number - 1])
+                lane_images = [target_page]
+                if page_index <= len(render_overviews):
+                    lane_images.append(prepare_review_image(render_overviews[page_index - 1]))
+                ls.counter["finding"] += 1
+                page_findings = _with_connection_retry(
+                    lambda lane_images=lane_images, page_index=page_index, target_page_number=target_page_number: _live_reviewer_findings(
+                        lane_images,
+                        finding_id=f"finding-l{ls.lane}-r{rs.round_no}-p{page_index}",
+                        target_version=ls.run.target_id,
+                        render_version=rs.current_version.version_id,
+                        page=page_index,
+                        node_inventory=node_inventory,
+                        budget=ls.lane_budget,
+                        trace=ls.trace,
+                        id_prefix=f"finding-l{ls.lane}-r{rs.round_no}-p{page_index}",
+                        instructions=E5_REVIEWER_INSTRUCTIONS,
+                        visual_model=True,
+                        audit=_e5_audit(ls,
+                            agent="visual_reviewer",
+                            phase="review",
+                            round_no=rs.round_no,
+                            render_version=rs.current_version.version_id,
+                            finding_ids=(f"finding-l{ls.lane}-r{rs.round_no}-p{page_index}",),
+                            instructions=E5_REVIEWER_INSTRUCTIONS,
+                            image_refs=(
+                                _e5_image_refs(ls.run.out_dir, [target_page], "target", first_page=target_page_number)
+                                + _e5_image_refs(ls.run.out_dir,
+                                    [lane_images[1]], "render", first_page=page_index
+                                )
+                                if len(lane_images) > 1
+                                else _e5_image_refs(ls.run.out_dir, [target_page], "target", first_page=target_page_number)
+                            ),
+                        ),
+                        message=(
+                            _e5_reviewer_message(
+                                target_version=ls.run.target_id,
+                                render_version=rs.current_version.version_id,
+                                page=page_index,
+                                region_catalog=region_catalog,
+                                review_scope=scope,
+                                candidate_review_scope=ls.run.candidate_review_scope,
+                                lane=ls.lane,
+                                deterministic_presentation_facts=presentation_facts,
+                                image_pages=(
+                                    {"target": target_page_number,
+                                     "render": page_index if page_index <= len(render_overviews) else None}
+                                    if ls.run.layout_spec is not None else None
+                                ),
+                            )
+                        ),
+                    ),
+                    trace=ls.trace, what=f"visual reviewer page {page_index}",
+                )
+                rs.findings_new.extend(_validate_reviewer_regions(
+                    page_findings,
+                    {item["region_id"] for item in region_catalog},
+                    page_index,
+                ))
+                ls.pages_reviewed.add(page_index)
+        elif not ls.run.live:
+            ls.counter["finding"] += 1
+            prompt = f"TARGET {ls.run.target_frozen.case_id} RENDER {rs.current_version.version_id} page 1."
+            rs.findings_new = ScriptedReviewer().run(
+                prompt,
+                finding_id=f"finding-l{ls.lane}-r{rs.round_no}",
+                target_version=ls.run.target_id,
+                render_version=rs.current_version.version_id,
+                page=1,
+                budget=ls.lane_budget,
+                trace=ls.trace,
+                target_id=ls.run.target_id,
+            )
+            ls.pages_reviewed.add(1)
+    except CheckpointBudgetExceeded:
+        _e5_escalate(ls, "reviewer_budget_exhausted")
+        return _e5_stop("budget_exhausted", "reviewer_budget")
+    except Exception as error:
+        import traceback as _tb2
+        ls.trace.add(
+            agent="shell", phase="loop", action="reviewer_failed",
+            output={"traceback": _tb2.format_exc()[-4000:]}, persist_output=True,
+        )
+        _e5_escalate(ls, f"reviewer_live_call_failed:{type(error).__name__}: {str(error)[:200]}")
+        reviewer_failed = True
+    if rs.run_review and not reviewer_failed:
+        ls.reviewed_render_fingerprints.add(rs.render_fingerprint)
+    rs.findings_new = _validate_finding_versions(rs.findings_new, ls.run.target_id, rs.current_version.version_id)
+    filtered = [
+        {
+            "finding": finding.model_dump(mode="json"),
+            "reason": reason,
+        }
+        for finding in rs.findings_new
+        if (reason := _candidate_boundary_filter_reason(
+            finding, ls.run.candidate_review_scope
+        )) is not None
+    ]
+    rs.findings_new = _candidate_aware_findings(rs.findings_new, ls.run.candidate_review_scope)
+    if filtered:
+        ls.trace.add(
+            agent="shell",
+            phase="review",
+            action="candidate_boundary_filtered",
+            output={"removed": len(filtered), "findings": filtered},
+            persist_output=True,
+        )
+    ls.findings.extend(rs.findings_new)
+    for finding in rs.findings_new:
+        ls.findings_by_id[finding.finding_id] = finding
+
+    # Ledger dedup BEFORE attribution (Phase 0).
+    rs.actionable: list[DefectFinding] = []
+    carried_open_used = False
+    for finding in rs.findings_new:
+        resolved = finding.finding_id in ls.resolved_measurements
+        entry, action = ls.ledger.observe(finding, resolved=resolved)
+        ls.trace.add(
+            agent="shell", phase="ledger", action=action,
+            output={"key": entry.ledger_key, "finding": finding.finding_id},
+        )
+        if action == "dedup" and entry.status in {"resolved", "repaired", "attributed"}:
+            continue  # unchanged finding with unchanged evidence: no re-attribution
+        if action == "dedup":
+            if entry.last_measured_version == rs.current_version.version_id:
+                continue  # already measured on THIS render version
+            if finding.region not in rs.changed_regions or carried_open_used:
+                continue  # unchanged region: the stored measurement stays the record
+            carried_open_used = True  # one bounded carried-open re-measure
+        rs.actionable.append(finding)
+    if rs.run_review and not reviewer_failed:
+        _e5_checkpoint(ls, "review_complete")
+    return _E5_NEXT
+
+
+def _e5_round_schedule(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
+    """Schedule: Builder-first pre-scan, then the bounded attribution backlog for
+    this round; the rest stay `deferred` and re-eligible."""
+
+    # Bounded per-round scheduling: this round's new findings
+    # first, then previously deferred open findings; at most
+    # E5_MAX_ROUND_ATTRIBUTION_FINDINGS enter this round's
+    # attribution backlog. The rest stay in the ledger as
+    # `deferred` — open, never lost, re-eligible in later rounds
+    # under the SAME rule (both lanes run this identical logic).
+    # Builder FIRST (scheduling guarantee, owner work order §三.6):
+    # if a confirmed, attributed, builder-owned defect bound to the
+    # ACTIVE version already exists (e.g. attributed in an earlier
+    # round, or a hard-gate repair input), the Builder is called
+    # THIS ROUND — before any full review and before the
+    # attribution backlog expands by even one finding.
+    pre_scan_candidates = [
+        finding
+        for finding, _result, _bound in ls.measured_by_finding.values()
+        if finding.render_version in rs.repair_scope_versions
+    ]
+    pre_scan_measured = {
+        finding.finding_id: (result, bound)
+        for finding, result, bound in ls.measured_by_finding.values()
+        if finding.render_version in rs.repair_scope_versions
+    }
+    pre_repair, _pre_repeated = _next_e5_repair_finding(
+        pre_scan_candidates, pre_scan_measured, ls.attributions, ls.fingerprints,
+        layout_trial_regions=ls.layout_trial_regions,
+    )
+    skip_attribution = pre_repair is not None
+
+    deferred_candidates: list[DefectFinding] = [
+        ls.findings_by_id[entry.finding_id]
+        for entry in ls.ledger.entries.values()
+        if entry.status == "deferred"
+        and entry.finding_id in ls.findings_by_id
+        and ls.findings_by_id[entry.finding_id].render_version
+        == rs.current_version.version_id
+    ]
+    if skip_attribution:
+        rs.selected, deferred_now = [], []
+    else:
+        # Gate repair inputs do NOT enter the round backlog: they
+        # are pre-attributed and reached the pre-repair scan above
+        # (the Builder-first guarantee); the bounded cap is for
+        # reviewer findings.
+        rs.selected, deferred_now = _e5_select_round_work(
+            rs.actionable, [], deferred_candidates
+        )
+    for deferred_finding in deferred_now:
+        entry = ls.ledger.entries.get(_ledger_key(deferred_finding))
+        if entry is None or entry.status != "open":
+            continue
+        entry.status = "deferred"
+        ls.trace.add(
+            agent="shell", phase="ledger", action="deferred",
+            output={"finding": deferred_finding.finding_id},
+            note=(
+                f"not selected this round (cap "
+                f"{E5_MAX_ROUND_ATTRIBUTION_FINDINGS}); stays open and "
+                "re-eligible"
+            ),
+        )
+    return _E5_NEXT
+
+
+def _e5_round_measure_and_attribute(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
+    """Measure and attribute the SELECTED findings only: identical requests bound
+    to this render version, then one attribution per finding (live batches
+    first, deterministic fallback second)."""
+
+    # Bind -> measure -> attribute for the SELECTED findings only.
+    measured: dict[str, tuple[MeasurementResult, MeasurementRequest]] = {}
+    for finding in rs.selected:
+        ls.counter["request"] += 1
+        request_id = f"measure-l{ls.lane}-{ls.counter['request']:03d}"
+        result, bound = _e5_execute_measurement(ls,
+            finding, rs.current_pdf, request_id,
+            plan=rs.current_plan, render_version=rs.current_version.version_id,
+        )
+        ls.measurement_results.append(result)
+        measured[finding.finding_id] = (result, bound)
+        ls.measured_by_finding[finding.finding_id] = (finding, result, bound)
+        ls.ledger.entries[_ledger_key(finding)].last_measured_version = rs.current_version.version_id
+    batches = _e5_attribution_batches(rs.selected, measured)
+    if ls.run.live and batches and _builder_reserve_intact(ls.lane_budget, ls.run.builder_reserve_requests):
+        ls.run.pod.render_pdf = rs.current_pdf
+        for group in batches:
+            try:
+                hypotheses = _live_attribution_batch(
+                    ls.run.pod, ls.lane_budget, ls.trace,
+                    findings=group,
+                    results=[measured[f.finding_id][0] for f in group],
+                    lane=ls.lane,
+                    current_representation=ls.representation_by_version.get(rs.current_version.version_id),
+                    compiled_layout=_lane_a_attribution_layout(rs.current_plan, ls.run.state, group),
+                    audit=_e5_audit(ls,
+                        agent="attribution_investigator",
+                        phase="attribute",
+                        round_no=rs.round_no,
+                        render_version=rs.current_version.version_id,
+                        finding_ids=tuple(item.finding_id for item in group),
+                        measurement_ids=tuple(
+                            measured[item.finding_id][1].request_id for item in group
+                        ),
+                        instructions=E5_ATTRIBUTION_INSTRUCTIONS,
+                    ),
+                )
+                # Identity binding, never list position: a swapped,
+                # missing, duplicated, or foreign finding_id rejects
+                # the WHOLE batch (it contributes nothing).
+                bound_hypotheses = _bind_live_attribution_batch(group, hypotheses)
+                for finding, hypothesis in bound_hypotheses:
+                    request_id = measured[finding.finding_id][1].request_id
+                    attribution = _e5_live_attribution_record(
+                        finding,
+                        hypothesis,
+                        request_id,
+                        lineage=ls.binding_lineage_by_version.get(
+                            finding.render_version
+                        ),
+                    )
+                    ls.attributions.append(attribution)
+                    _record_ledger_attribution(
+                        ls.ledger, finding, attribution, request_id,
+                    )
+                    ls.trace.add(
+                        agent="attribution_investigator", phase="attribute",
+                        action="live_attribution", output=attribution.model_dump(mode="json"),
+                    )
+            except CheckpointBudgetExceeded:
+                _e5_escalate(ls, "attribution_budget_exhausted")
+                ls.stop_state, ls.stop_reason = "budget_exhausted", "attribution_budget"
+                break
+            except LiveAttributionBindingError as error:
+                # Fail closed WITH an auditable reason: the batch's
+                # findings fall through to the deterministic
+                # attribution instead of a positional guess.
+                _e5_escalate(ls, f"attribution_batch_binding_rejected:{error}")
+                ls.trace.add(
+                    agent="shell", phase="attribute",
+                    action="attribution_batch_binding_rejected",
+                    output={
+                        "batch_findings": [item.finding_id for item in group],
+                        "reason": str(error),
+                    },
+                )
+            except Exception as error:
+                _e5_escalate(ls, f"attribution_live_call_failed:{type(error).__name__}: {str(error)[:150]}")
+    for finding in _e5_findings_needing_fallback_attribution(
+        rs.selected, measured, ls.attributions
+    ):
+        result, bound = measured[finding.finding_id]
+        _e5_attribute(ls, finding, result, bound)
+    return _E5_NEXT
+
+
+def _e5_round_select_repair(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
+    """Repair selection: the scan covers every defect bound to the ACTIVE version,
+    so the Builder runs as soon as one confirmed, attributed, builder-owned
+    defect exists. No repairable action left is a distinct stop state from a
+    budget ceiling."""
+
+    # `max_repair_rounds=0` is review-only. The old `+ 2` loop
+    # envelope accidentally allowed one repair even with a zero
+    # repair budget.
+    if rs.round_no > ls.run.max_repair_rounds:
+        return _e5_stop("budget_exhausted", "repair_round_budget")
+
+    # Builder opportunity (SCHEDULING GUARANTEE): the scan covers
+    # EVERY defect bound to the ACTIVE version — this round's and
+    # previously attributed ones — so the Builder is called as
+    # soon as ONE confirmed, attributed, builder-owned defect
+    # exists. Live A may also try a bounded layout hypothesis;
+    # improvement is established only after rendering and rechecks.
+    rs.scan_candidates = [
+        finding
+        for finding, _result, _bound in ls.measured_by_finding.values()
+        if finding.render_version in rs.repair_scope_versions
+    ]
+    rs.scan_measured = {
+        finding.finding_id: (result, bound)
+        for finding, result, bound in ls.measured_by_finding.values()
+        if finding.render_version in rs.repair_scope_versions
+    }
+    rs.repair_finding, all_repairable_repeated = _next_e5_repair_finding(
+        rs.scan_candidates, rs.scan_measured, ls.attributions, ls.fingerprints,
+        layout_trial_regions=ls.layout_trial_regions,
+    )
+    if rs.repair_finding is None and all_repairable_repeated:
+        _e5_escalate(ls, "stalled_no_new_action")
+        # Nothing is left to DO (every repairable action
+        # fingerprint was already executed) — that is a distinct
+        # state from a real budget ceiling.
+        return _e5_stop("stalled_no_new_action", "stalled_no_new_action")
+    if rs.repair_finding is None:
+        actionable_keys = {
+            (finding.finding_id, finding.render_version) for finding in rs.scan_candidates
+        }
+        awaiting = any(
+            (item.finding_id, item.render_version) in actionable_keys
+            and item.attribution != "no_defect"
+            for item in ls.attributions
+        )
+        # Termination (no infinite no-op rounds): with no new
+        # render, no review, and no pending backlog work, another
+        # round would deterministically repeat this state.
+        work_this_round = bool(rs.findings_new) or bool(rs.selected)
+        if not work_this_round:
+            _e5_escalate(ls, f"round{rs.round_no}:no_new_render_no_pending_work")
+            return _e5_stop("stalled_no_new_action", "no_new_render_no_pending_work")
+        _e5_escalate(ls,
+            "awaiting_attribution_or_other_owner"
+            if awaiting
+            else f"round{rs.round_no}:no_repairable_bound_finding_continue_review"
+        )
+        return _E5_RETRY
+    return _E5_NEXT
+
+
+def _e5_round_build_candidate(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
+    """Repair: build the repair-base payload, call the Builder, validate the typed
+    proposal and render the candidate. A rejected or failed candidate is
+    recorded and the round is retried; a budget ceiling stops the lane."""
+
+    rs.finding, rs.result, rs.bound, rs.attribution, rs.fingerprint = rs.repair_finding
+    # The Builder repairs the REPAIR BASE: with a quarantine that is
+    # the quarantined candidate's own render images, and its own
+    # representation/render version/gates are bound in the payload
+    # below. Without a quarantine the base IS the active version, so
+    # this is the pre-existing behavior unchanged.
+    current_render_images = _overview_pngs(
+        ls.pdf_by_version[rs.repair_base_version.version_id],
+        ls.lane_dir,
+        f"builder_render_r{rs.round_no}",
+    )
+    repair_target_images = ls.run.shared_target_images
+    repair_render_images = current_render_images
+    repair_builder_evidence = _e5_builder_evidence_package(
+        draft=ls.run.draft,
+        state=ls.run.state,
+        derived=ls.run.derived,
+        page_size=ls.run.page_size,
+        current_render_version=rs.repair_base_version.version_id,
+        findings=rs.scan_candidates,
+        measurements=[
+            rs.scan_measured[item.finding_id][0] for item in rs.scan_candidates
+        ],
+        current_gates=rs.repair_base_gates,
+        last_rejection=ls.lane_state.get("last_rejection"),
+        target_images=repair_target_images,
+        current_render_images=repair_render_images,
+        current_representation=ls.representation_by_version[
+            rs.repair_base_version.version_id
+        ],
+        selected_attribution=rs.attribution,
+        action_fingerprint=rs.fingerprint,
+        presentation_labels=ls.run.approved_label_catalog,
+        candidate_review_scope=ls.run.candidate_review_scope,
+        candidate=ls.run.candidate,
+        body_color_context=ls.run.body_color_context,
+    )
+    repair_builder_evidence["repair_policy"] = {
+        "mode": "bounded_layout_trial",
+        "instruction": "Attribution is a hypothesis, not permission. Try only existing typed layout primitives; preserve candidate facts. Unmeasured changes require human comparison and cannot be automatically selected.",
+        "compiled_layout": _lane_a_attribution_layout(rs.current_plan, ls.run.state, [rs.finding]),
+    }
+    (ls.lane_dir / f"builder_evidence_round_{rs.round_no:02d}.json").write_text(
+        json.dumps(
+            repair_builder_evidence,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    rs.candidate_audit_index = None
+    try:
+        if ls.run.live:
+            rs.proposal = _live_lane_a_builder(
+                ls.lane_budget,
+                ls.trace,
+                payload=repair_builder_evidence,
+                images=[*ls.run.shared_target_images, *current_render_images],
+                proposal_id=f"lane-a-r{rs.round_no + 1}",
+                audit=_e5_audit(ls,
+                    agent="lane_a_builder",
+                    phase="repair",
+                    round_no=rs.round_no,
+                    render_version=rs.repair_base_version.version_id,
+                    finding_ids=(rs.finding.finding_id,),
+                    measurement_ids=(rs.bound.request_id,),
+                    instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
+                    image_refs=(
+                        _e5_image_refs(ls.run.out_dir, ls.run.shared_target_images, "target")
+                        + _e5_image_refs(ls.run.out_dir, current_render_images, "render")
+                    ),
+                ),
+            )
+        else:
+            rs.proposal = _scripted_lane_a_proposal(ls.run.state, ls.run.derived)
+        validation_error = _validate_lane_a_proposal(rs.proposal, ls.run.state)
+        rs.candidate_audit_index = _e5_record_builder_candidate(ls,
+            rs.proposal,
+            stage="repair",
+            input_render_version=rs.repair_base_version.version_id,
+            validation={"passed": validation_error is None, "error": validation_error},
+            outcome="validator_rejected" if validation_error else "validated",
+            reason=validation_error or "typed proposal accepted by the shell validator",
+            attribution=rs.attribution,
+            action_fingerprint=rs.fingerprint,
+        )
+        if validation_error:
+            ls.repair_attempts.append({"finding": rs.finding.finding_id, "region": rs.finding.region, "rejected": validation_error, "round": rs.round_no})
+            ls.trace.add(agent="shell", phase="repair", action="rejected", note=validation_error)
+            return _E5_RETRY
+        ls.repair_attempts.append(
+            {"finding": rs.finding.finding_id, "region": rs.finding.region, "round": rs.round_no,
+             "agent": rs.proposal.agent, "sections": len(rs.proposal.sections)}
+        )
+        rs.candidate_version, rs.candidate_pdf, rs.candidate_gates = _e5_render_version(ls,
+            f"lane A repair round {rs.round_no} for {rs.finding.finding_id}", rs.proposal
+        )
+        assert rs.candidate_audit_index is not None
+        _e5_update_builder_candidate(ls,
+            rs.candidate_audit_index,
+            candidate_render_version=rs.candidate_version.version_id,
+            outcome="rendered_pending_decision",
+            reason="validated candidate rendered; awaiting shell promotion or rollback",
+        )
+        _e5_checkpoint(ls, "repair_rendered")
+    except CheckpointBudgetExceeded:
+        _e5_escalate(ls, "builder_budget_exhausted")
+        return _e5_stop("budget_exhausted", "builder_budget")
+    except Exception as error:
+        if rs.candidate_audit_index is not None:
+            _e5_update_builder_candidate(ls,
+                rs.candidate_audit_index,
+                outcome="render_failed",
+                reason=str(error)[:300],
+            )
+        _e5_escalate(ls, f"repair_render_failed:{type(error).__name__}: {str(error)[:150]}")
+        return _E5_RETRY
+    ls.lane_budget.repair_attempt_count += 1
+    ls.fingerprints.append(rs.fingerprint)  # records the EXECUTED action
+    rs.candidate_index = len(ls.versions) - 1  # the candidate's history index
+    ls.trace.add(
+        agent="builder", phase="repair", action="proposal",
+        note=f"round {rs.round_no} on repair base {rs.repair_base_version.version_id}",
+        persist_output=True,
+        output={
+            "current_version": rs.repair_base_version.version_id,
+            "active_version": rs.current_version.version_id,
+            "quarantined": ls.quarantine_index is not None,
+            "current_gates": rs.repair_base_gates,
+        },
+    )
+    return _E5_NEXT
+
+
+def _e5_round_decide_candidate(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
+    """Decision: re-measure the identical request on the candidate, then promote,
+    quarantine, roll back, or hold an unmeasured layout trial for owner
+    comparison. Only a shell-verified improvement that holds every accepted
+    region and passes every hard gate is promoted."""
+
+    # Re-measure FIRST: the IDENTICAL request, changing only the version.
+    # A hard-gate repair input re-measures the SAME shell gate on
+    # the candidate (the gate already re-ran during the candidate
+    # render); no reviewer measurement channel is invented.
+    ls.counter["request"] += 1
+    repeat_id = rs.bound.request_id
+    if rs.finding.suspected_dimension == "hard_gate_content":
+        candidate_gate_details = (
+            ls.gate_details_by_version.get(rs.candidate_version.version_id, {}).get(
+                "candidate_content_accounting"
+            )
+            or {}
+        )
+        candidate_missing = len(
+            candidate_gate_details.get("missing_leaves")
+            or []
+        )
+        repeat_result = MeasurementResult(
+            request_id=repeat_id,
+            status="confirmed",
+            target_value_pt=0.0,
+            current_value_pt=float(candidate_missing),
+            delta_pt=float(candidate_missing),
+            method="candidate_content_accounting_missing/1",
+            warnings=[
+                "the identical hard-gate record re-measured on the "
+                "candidate render (target baseline 0)"
+            ],
+        )
+    else:
+        repeat_result, _ = _e5_execute_measurement(ls,
+            rs.finding, rs.candidate_pdf, repeat_id,
+            plan=ls.plan_by_version.get(rs.candidate_version.version_id),
+            render_version=rs.candidate_version.version_id,
+        )
+    ls.measurement_results.append(repeat_result)
+    improved, improvement_reason = _measurement_improvement(rs.result, repeat_result)
+    if not improved:
+        unmeasured_trial = (
+            rs.result.status in {"ambiguous", "evidence_missing", "not_measurable"}
+            and all(rs.candidate_gates.get(name) is True for name in LANE_A_OUTPUT_GATES)
+            and not ls.binding_lineage_by_version[rs.candidate_version.version_id].proofs
+            and rs.candidate_version.html_sha256 != rs.repair_base_version.html_sha256
+        )
+        if rs.result.status != "confirmed":
+            failed = [name for name in LANE_A_OUTPUT_GATES if rs.candidate_gates.get(name) is not True]
+            if failed:
+                improvement_reason = f"unmeasured trial failed output gate(s): {failed}"
+        if unmeasured_trial:
+            holds, rechecks = _e5_accepted_regions_hold(ls, rs.candidate_pdf)
+            if holds:
+                ls.pending_layout_trials.add(rs.candidate_version.version_id)
+                _e5_update_builder_candidate(ls, rs.candidate_audit_index, outcome="awaiting_owner_review",
+                    reason="Unmeasured layout trial passed output gates and accepted-region checks; not automatically selected or claimed improved")
+                ls.trace.add(agent="shell", phase="repair", action="awaiting_owner_review",
+                    output={"version": rs.candidate_version.version_id, "rechecks": rechecks}, persist_output=True)
+                return _E5_RETRY
+            improvement_reason = "unmeasured trial failed accepted-region recheck"
+        ls.rolled_back_versions.add(rs.candidate_version.version_id)
+        _e5_update_builder_candidate(ls,
+            rs.candidate_audit_index,
+            outcome="rolled_back",
+            reason=improvement_reason,
+        )
+        ls.attempted_strategies.append(f"round{rs.round_no}:{rs.finding.finding_id}:non_improving_rolled_back")
+        ls.trace.add(
+            agent="shell", phase="repair", action="rolled_back",
+            note=f"non-improving repair: {improvement_reason}",
+        )
+        return _E5_RETRY
+    gate_keys = _e5_blocking_gates(ls.lane)
+    failing_gates = [
+        gate for gate in gate_keys if rs.candidate_gates.get(gate) is not True
+    ]
+    # A red candidate is no longer thrown away wholesale: the shell
+    # decides between an unsafe REJECTION and a QUARANTINED repair
+    # base. The decision is deterministic and uses existing evidence
+    # only (gate records, builder-candidate audit, the per-version
+    # candidate-binding lineage audit).
+    quarantinable, quarantine_reason = (
+        _e5_quarantine_eligibility(
+            rs.candidate_version,
+            rs.candidate_gates,
+            representation=ls.representation_by_version.get(
+                rs.candidate_version.version_id
+            ),
+            binding_lineage=ls.binding_lineage_by_version.get(
+                rs.candidate_version.version_id
+            ),
+            candidate_audit=(
+                ls.builder_candidates[rs.candidate_audit_index]
+                if rs.candidate_audit_index is not None
+                else None
+            ),
+        )
+        if failing_gates
+        else (False, "candidate passed every hard gate")
+    )
+    if failing_gates and not quarantinable:
+        ls.rolled_back_versions.add(rs.candidate_version.version_id)
+        _e5_update_builder_candidate(ls,
+            rs.candidate_audit_index,
+            outcome="rolled_back",
+            reason=f"not quarantinable: {quarantine_reason}",
+        )
+        ls.attempted_strategies.append(
+            f"round{rs.round_no}:{rs.finding.finding_id}:rejected_not_quarantinable_rolled_back"
+        )
+        # The rollback note names the ACTUAL failing gates (the old
+        # blanket "candidate-safety gate failed" mislabeled a pure
+        # content-gate failure as a safety failure).
+        ls.trace.add(
+            agent="shell", phase="repair", action="rolled_back",
+            output={
+                "candidate_version": rs.candidate_version.version_id,
+                "failing_gates": failing_gates,
+                "reason": quarantine_reason,
+            },
+            note=f"not quarantinable: failing gates {failing_gates}; {quarantine_reason}",
+        )
+        return _E5_RETRY
+    holds, rechecks = _e5_accepted_regions_hold(ls, rs.candidate_pdf)
+    if not holds:
+        ls.rolled_back_versions.add(rs.candidate_version.version_id)
+        _e5_update_builder_candidate(ls,
+            rs.candidate_audit_index,
+            outcome="rolled_back",
+            reason="accepted-region recheck failed closed",
+        )
+        ls.attempted_strategies.append(f"round{rs.round_no}:{rs.finding.finding_id}:accepted_region_regressed_rolled_back")
+        ls.trace.add(agent="shell", phase="repair", action="rolled_back", note="accepted region regressed")
+        return _E5_RETRY
+    if failing_gates:
+        # QUARANTINE (owner work order 2026-09-22): the candidate is
+        # repairable but not passing. It becomes the NEXT repair
+        # base ONLY — never promoted, never best, never the lane's
+        # owner-facing output; `active_index` still points at the
+        # accepted active version.
+        previous_base = (
+            ls.versions[ls.quarantine_index].version_id
+            if ls.quarantine_index is not None
+            else rs.current_version.version_id
+        )
+        ls.quarantine_index = rs.candidate_index
+        _e5_update_builder_candidate(ls,
+            rs.candidate_audit_index,
+            outcome="quarantined",
+            reason=f"repairable-but-not-passing: {quarantine_reason}",
+        )
+        ls.attempted_strategies.append(
+            f"round{rs.round_no}:{rs.finding.finding_id}:quarantined_repair_base"
+        )
+        ls.trace.add(
+            agent="shell", phase="repair", action="quarantined",
+            output={
+                "candidate_version": rs.candidate_version.version_id,
+                "previous_repair_base": previous_base,
+                "active_version": rs.current_version.version_id,
+                "failing_gates": failing_gates,
+                "reason": quarantine_reason,
+            },
+            note=(
+                f"quarantined repair base {rs.candidate_version.version_id} "
+                f"(failing gates {failing_gates}); active version "
+                f"{rs.current_version.version_id} unchanged"
+            ),
+            persist_output=True,
+        )
+        return _E5_RETRY
+    # PROMOTION (shell-only): the candidate becomes the new ACTIVE
+    # version; the rejected candidates before it stay in the
+    # immutable history and are never implicitly selected again. A
+    # promoted version supersedes any quarantined repair base.
+    ls.quarantine_index = None
+    ls.versions[rs.candidate_index] = rs.candidate_version.model_copy(update={"promoted": True})
+    _e5_update_builder_candidate(ls,
+        rs.candidate_audit_index,
+        outcome="promoted",
+        reason="shell verified improvement, safety gates, and accepted-region hold",
+    )
+    ls.active_index = rs.candidate_index
+    ls.last_promoted_region = rs.finding.region
+    ls.last_promoted_page = rs.finding.page
+    ls.lane_state["active_proposal"] = rs.proposal
+    ls.resolved_measurements[rs.finding.finding_id] = (rs.bound, repeat_result)
+    repaired_entry = ls.ledger.entries[_ledger_key(rs.finding)]
+    repaired_entry.status = "repaired"
+    repaired_entry.measurement_request_id = repeat_result.request_id
+    ls.trace.add(
+        agent="shell", phase="repair", action="promoted",
+        output={"version": rs.candidate_version.version_id, "rechecks": rechecks},
+        persist_output=True,
+    )
+    return _E5_NEXT
+
+
+def _e5_repair_loop(ls: _E5LaneState) -> E5LaneRecord:
+    """See -> Measure -> Attribute -> Repair -> Re-render.
+
+    The round phases run in this order every round; a phase either continues,
+    asks for another round, or stops the lane with the ceiling it hit."""
+    for round_no in range(1, ls.run.max_repair_rounds + 2):
+        rs = _E5RoundState(round_no)
+        try:
+            for phase in _E5_ROUND_PHASES:
+                step = phase(ls, rs)
+                if step.action == "stop":
+                    ls.stop_state, ls.stop_reason = step.stop_state, step.stop_reason
+                    return _e5_lane_terminal(ls)
+                if step.action == "retry":
+                    break
+        except (CheckpointBudgetExceeded, BudgetExhausted) as budget_error:
+            _e5_escalate(ls, "loop_tool_budget_exhausted")
+            ls.trace.add(
+                agent="shell", phase="loop", action="budget_exhausted",
+                note=str(budget_error)[:200],
+            )
+            ls.stop_state, ls.stop_reason = "budget_exhausted", "tool_call_budget"
+            break
+    return _e5_lane_terminal(ls)
+
+
+_E5_ROUND_PHASES = (
+    _e5_round_open,
+    _e5_round_review,
+    _e5_round_schedule,
+    _e5_round_measure_and_attribute,
+    _e5_round_select_repair,
+    _e5_round_build_candidate,
+    _e5_round_decide_candidate,
+)
+
+
+def _e5_run_lane(run: _E5RunState, lane: str) -> E5LaneRecord:
+    """One lane: its own budget, trace and state, then the initial render."""
+    lane_dir = run.out_dir / f"lane_{lane}"
+    lane_dir.mkdir(exist_ok=True)
+    # The per-lane budget lives INSIDE the run budget (recorded in the frozen
+    # config; a smaller caller-provided budget is respected so a constrained
+    # run still exits budget_exhausted with resumable state).
+    ls = _E5LaneState(
+        run=run,
+        lane=lane,
+        lane_dir=lane_dir,
+        lane_budget=RunBudget(
+            max_model_requests=min(
+                E5_LANE_MAX_MODEL_REQUESTS, run.budget.max_model_requests // len(run.lanes)
+            ),
+            max_tool_calls=min(
+                E5_LANE_MAX_TOOL_CALLS, run.budget.max_tool_calls // len(run.lanes)
+            ),
+            max_request_bytes=run.budget.max_request_bytes,
+            parent=run.budget,
+        ),
+        trace=RunTrace(lane_dir),
+    )
+    ls.trace.add(
+        agent="shell", phase="e0", action="lane_started",
+        output={"lane": lane, "live": run.live},
+    )
+    # --- 3. Initial Builder output (representation under test) ---------
+    initial_note = f"lane {lane} initial render ({'structured layout'})"
+    candidate_audit_index: int | None = None
+    try:
+        proposal = None
+        if run.live:
+            proposal = _live_lane_a_builder(
+                ls.lane_budget,
+                ls.trace,
+                payload=run.initial_builder_evidence,
+                images=run.shared_target_images,
+                proposal_id="lane-a-r1",
+                audit=_e5_audit(
+                    ls,
+                    agent="lane_a_builder",
+                    phase="initial",
+                    round_no=0,
+                    render_version=None,
+                    instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
+                    image_refs=_e5_image_refs(run.out_dir, run.shared_target_images, "target"),
+                ),
+            )
+            validation_error = _validate_lane_a_proposal(proposal, run.state)
+            candidate_audit_index = _e5_record_builder_candidate(
+                ls,
+                proposal,
+                stage="initial",
+                input_render_version=None,
+                validation={"passed": validation_error is None, "error": validation_error},
+                outcome="validator_rejected" if validation_error else "validated",
+                reason=validation_error or "typed proposal accepted by the shell validator",
+            )
+            if validation_error:
+                raise ValueError(validation_error)
+        ls.lane_state["proposal"] = proposal
+        ls.lane_state["active_proposal"] = proposal
+        version, pdf, gates = _e5_render_version(ls, initial_note, proposal)
+        if candidate_audit_index is not None:
+            _e5_update_builder_candidate(
+                ls,
+                candidate_audit_index,
+                candidate_render_version=version.version_id,
+                outcome="active_unpromoted",
+                reason="initial validated candidate rendered and became the active version",
+            )
+    except CheckpointBudgetExceeded:
+        _e5_escalate(ls, "builder_initial_budget_exhausted")
+        return _e5_lane_terminal(ls, "budget_exhausted", reason="builder_initial_budget")
+    except Exception as error:
+        import traceback as _tb
+        detail = _tb.format_exc()[-600:]
+        if (
+            candidate_audit_index is not None
+            and ls.builder_candidates[candidate_audit_index]["outcome"] != "validator_rejected"
+        ):
+            _e5_update_builder_candidate(
+                ls,
+                candidate_audit_index,
+                outcome="render_failed",
+                reason=str(error)[:300],
+            )
+        ls.lane_state["last_rejection"] = f"initial render failed: {str(error)[:200]}"
+        ls.trace.add(
+            agent="shell", phase="builder", action="initial_failed",
+            note=str(error)[:200], output={"traceback": detail}, persist_output=True,
+        )
+        _e5_escalate(ls, f"lane_builder_initial_failed:{type(error).__name__}")
+        return _e5_lane_terminal(ls, "budget_exhausted", reason="builder_initial_failed")
+    _e5_checkpoint(ls, "initial_render")
+    if run.layout_spec is not None and not run.live:
+        # Offline previews execute the supplied template without a model loop.
+        return _e5_lane_terminal(ls)
+    ls.layout_trial_regions = {
+        node.node_id for node in run.state.nodes
+        if run.live and _owning_section_id(run.state, node.node_id) is not None
+    }
+    return _e5_repair_loop(ls)
+
+
 def run_e5(
     target_pdf: Path,
     out_dir: Path | None = None,
@@ -1247,23 +3099,13 @@ def run_e5(
         max_tool_calls=E5_LANE_MAX_TOOL_CALLS * len(lanes),
     )
 
-    def abort(operation: str, error: Exception) -> tuple[Path, str, dict[str, Any]]:
-        record = E5LoopRecord(target_id="unknown", target_sha256="0" * 64)
-        record.summary["terminal_state"] = "operational_abort"
-        record.summary["abort"] = {"operation": operation, "error": str(error)}
-        (out_dir / "e5_state.json").write_text(
-            json.dumps(record.model_dump(mode="json"), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        return out_dir, "operational_abort", record.model_dump(mode="json")
-
     # -- 1. FREEZE shared inputs ------------------------------------------
     raw_path = Path(adobe_json).resolve()
     normalized_path = Path(normalized_evidence).resolve()
     draft_source = Path(structure_draft).resolve()
     for input_path in (raw_path, normalized_path, draft_source):
         if not input_path.is_file():
-            return abort("pipeline_input", FileNotFoundError(str(input_path)))
+            return _e5_abort(out_dir, "pipeline_input", FileNotFoundError(str(input_path)))
     try:
         candidate = CandidateDocument.model_validate(candidate.model_dump(mode="python"))
         raw = json.loads(raw_path.read_text(encoding="utf-8"))
@@ -1272,7 +3114,7 @@ def run_e5(
         normalized = NormalizedLayoutEvidence.model_validate_json(normalized_path.read_text())
         draft = TargetStructureDraft.model_validate_json(draft_source.read_text())
     except (OSError, ValueError) as error:
-        return abort("pipeline_input", error)
+        return _e5_abort(out_dir, "pipeline_input", error)
     (out_dir / "adobe_raw.json").write_text(
         json.dumps(
             redact_signed_urls(raw),
@@ -1299,7 +3141,7 @@ def run_e5(
         else:
             state, derived = template_state, {}
     except Exception as error:
-        return abort("compile_two_column_state", error)
+        return _e5_abort(out_dir, "compile_two_column_state", error)
     # Rendering, privacy and owner review share the same evidence-bound label catalog.
     try:
         label_catalog = _presentation_label_catalog(derived) if template_label_catalog is None else [
@@ -1307,7 +3149,7 @@ def run_e5(
             *_unrendered_target_headings(normalized, template_label_catalog),
         ]
     except Exception as error:
-        return abort("presentation_label_catalog", error)
+        return _e5_abort(out_dir, "presentation_label_catalog", error)
     catalog_sha256 = presentation_label_catalog_sha256(label_catalog)
     # Owner direction 2026-10-22: recognize conventional headings without
     # per-label human approval; legacy explicit input still validates identity.
@@ -1323,13 +3165,13 @@ def run_e5(
                 template_label_catalog if template_label_catalog is not None else label_catalog
             )
     except Exception as error:
-        return abort("presentation_label_approval", error)
+        return _e5_abort(out_dir, "presentation_label_approval", error)
     if template_label_catalog is not None:
         unapproved = {label.label_id for label in template_label_catalog} - {
             label.label_id for label in approved_label_catalog
         }
         if unapproved:
-            return abort("presentation_label_approval", ValueError(
+            return _e5_abort(out_dir, "presentation_label_approval", ValueError(
                 "unrecognized product-template presentation labels require explicit "
                 f"identity-bound label approval: {sorted(unapproved)}"
             ))
@@ -1369,30 +3211,6 @@ def run_e5(
         }
     page_height = _page_pt_size(target_pdf, 1)[1]
     region_spans = _region_spans_from_draft(draft, page_height)
-
-
-    def _e5_image_refs(
-        paths: list[Any], role: str, *, first_page: int = 1
-    ) -> tuple[dict[str, Any], ...]:
-        """Image audit references in the EXACT user-content order: file
-        path relative to the run dir, sha256, page number, target/render
-        role — NEVER image bytes."""
-        refs: list[dict[str, Any]] = []
-        for index, path in enumerate(paths, first_page):
-            path = Path(path)
-            refs.append(
-                {
-                    "path": (
-                        path.relative_to(out_dir).as_posix()
-                        if path.is_relative_to(out_dir)
-                        else path.name
-                    ),
-                    "page": index,
-                    "role": role,
-                    "sha256": _sha256_file(path),
-                }
-            )
-        return tuple(refs)
 
     # Generic header-overflow disposition (E3 shell transition, reused for
     # the main candidate AND every content-shape probe): the compiled
@@ -1490,7 +3308,7 @@ def run_e5(
         and "work_experience" in node.binding.sources
     ]
     if not mapped and layout_spec is None:
-        return abort("scripted_reviewer_region", RuntimeError("compiled state has no mapped work_experience section"))
+        return _e5_abort(out_dir, "scripted_reviewer_region", RuntimeError("compiled state has no mapped work_experience section"))
     if layout_spec is None:
         entry_region = mapped[0].node_id
         SCRIPTED_REGION_BY_TARGET[target_id] = entry_region
@@ -1508,1613 +3326,46 @@ def run_e5(
 
     lane_records: dict[str, E5LaneRecord] = {}
 
-    def _run_lane(lane: str) -> E5LaneRecord:
-        def _e5_audit(
-            *,
-            agent: str,
-            phase: str,
-            round_no: int | None,
-            render_version: str | None,
-            finding_ids: tuple[str, ...] = (),
-            measurement_ids: tuple[str, ...] = (),
-            instructions: str,
-            image_refs: tuple[dict[str, Any], ...] = (),
-        ) -> E5AgentAuditSpec:
-            return E5AgentAuditSpec(
-                agent=agent,
-                lane=lane,
-                phase=phase,
-                round_no=round_no,
-                target_version=target_id,
-                render_version=render_version,
-                finding_ids=finding_ids,
-                measurement_ids=measurement_ids,
-                model=None,
-                instructions=instructions,
-                image_refs=image_refs,
-            )
-
-        lane_dir = out_dir / f"lane_{lane}"
-        lane_dir.mkdir(exist_ok=True)
-        # The per-lane budget lives INSIDE the run budget (recorded in the
-        # frozen config; a smaller caller-provided budget is respected so a
-        # constrained run still exits budget_exhausted with resumable state).
-        lane_budget = RunBudget(
-            max_model_requests=min(E5_LANE_MAX_MODEL_REQUESTS, budget.max_model_requests // len(lanes)),
-            max_tool_calls=min(E5_LANE_MAX_TOOL_CALLS, budget.max_tool_calls // len(lanes)),
-            max_request_bytes=budget.max_request_bytes,
-            parent=budget,
-        )
-        trace = RunTrace(lane_dir)
-        trace.add(agent="shell", phase="e0", action="lane_started", output={"lane": lane, "live": live})
-        versions: list[RenderVersion] = []
-        # Explicit ACTIVE version (E5 rollback fix): the lane always reads,
-        # reviews and measures the active version — never `versions[-1]`.
-        # A rejected candidate render stays in `versions` as immutable
-        # history but never becomes active; only a shell promotion does.
-        active_index = 0
-        pdf_by_version: dict[str, Path] = {}
-        # version_id -> the EXACT representation (proposal/template) that
-        # produced it; probes must use the selected one, never the default
-        # state or a scripted fixture.
-        representation_by_version: dict[str, Any] = {}
-        # Version-bound mutable render state (rollback correctness): the
-        # RenderPlan (Lane A) and the delivery gates belong to ONE render
-        # version each. Every reader (reviewer, measurement binding,
-        # builder) resolves them through the ACTIVE version id — a rejected
-        # candidate never overwrites the active state.
-        plan_by_version: dict[str, Any] = {}
-        gates_by_version: dict[str, dict[str, Any]] = {}
-        # version_id -> the RICH gate details (missing-leaf sets, per-gate
-        # rows) — the repair-input derivation reuses THIS evidence verbatim;
-        # `gates_by_version` holds only the boolean decisions.
-        gate_details_by_version: dict[str, dict[str, Any]] = {}
-        # Per-version answer to "did the privacy gate exclude exactly the
-        # shared shell-owned label catalog?" — derived, never lane-specific.
-        label_symmetry_by_version: dict[str, bool] = {}
-        # version_id -> the shell's deterministic candidate-binding lineage
-        # audit for that render (the ONLY evidence that may confirm a
-        # `candidate_binding` attribution, and one input to quarantine
-        # eligibility). Built once per render from that version's own leaf
-        # ledger, never from the target document.
-        binding_lineage_by_version: dict[str, CandidateBindingLineage] = {}
-        # Presentation labels THIS lane actually referenced (Lane A: rendered
-        # plan labels).
-        referenced_labels: set[str] = set()
-        # The region of the last PROMOTED repair (the only state that scopes
-        # the next review round; rejected attempts never do).
-        last_promoted_region: str | None = None
-        last_promoted_page: int | None = None
-        # QUARANTINED REPAIR BASE (owner work order 2026-09-22): the history
-        # index of the last repairable-but-not-passing candidate. It is NOT a
-        # second state machine — it reuses the existing version map, builder-
-        # candidate audit, gate records, action fingerprints and rollback: it is
-        # only "which representation the next Builder edits", while
-        # `active_index` stays the reviewer/measurement/promotion/owner-package
-        # scope. Cleared on promotion.
-        quarantine_index: int | None = None
-        findings: list[DefectFinding] = []
-        measurement_results: list[MeasurementResult] = []
-        attributions: list[AttributionRecord] = []
-        repair_attempts: list[dict[str, Any]] = []
-        builder_candidates: list[dict[str, Any]] = []
-        attempted_strategies: list[str] = []
-        fingerprints: list[str] = []
-        resolved_measurements: dict[str, tuple[MeasurementRequest, MeasurementResult]] = {}
-        rolled_back_versions: set[str] = set()
-        pending_layout_trials: set[str] = set()
-        ledger = DefectLedger()
-        pages_reviewed: set[int] = set()
-        reviewed_render_fingerprints: set[str] = set()
-        counter = {"finding": 0, "request": 0}
-        lane_state: dict[str, Any] = {"proposal": None, "template": None}
-
-        def record_builder_candidate(
-            candidate_output: Any,
-            *,
-            stage: str,
-            input_render_version: str | None,
-            validation: dict[str, Any],
-            outcome: str,
-            reason: str,
-            attribution: AttributionRecord | None = None,
-            action_fingerprint: str | None = None,
-        ) -> int:
-            attempt = len(builder_candidates) + 1
-            record = _e5_builder_candidate_record(
-                lane=lane,
-                attempt=attempt,
-                stage=stage,
-                input_render_version=input_render_version,
-                candidate_output=candidate_output,
-                validation=validation,
-                outcome=outcome,
-                reason=reason,
-                attribution=attribution,
-                action_fingerprint=action_fingerprint,
-            )
-            builder_candidates.append(record)
-            (lane_dir / record["artifact"]).write_text(
-                json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
-            return attempt - 1
-
-        def update_builder_candidate(index: int, **updates: Any) -> None:
-            builder_candidates[index].update(updates)
-            (lane_dir / builder_candidates[index]["artifact"]).write_text(
-                json.dumps(builder_candidates[index], ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
-
-        def escalate(strategy: str) -> None:
-            attempted_strategies.append(strategy)
-            trace.add(agent="shell", phase="loop", action="strategy_escalation", note=strategy)
-
-        # Loop stop state (terminal semantics fix, 2026-09-23): the lane's
-        # terminal state must say WHICH ceiling was hit, or that nothing was
-        # left to do — never a single catch-all. Declared before
-        # `_lane_terminal` so the pre-loop failure paths can read them too.
-        stop_state: str | None = None
-        stop_reason = ""
-
-        def _lane_terminal(
-            lane_id: str,
-            forced: str | None = None,
-            reason: str = "",
-        ) -> E5LaneRecord:
-            # The ledger is the ONLY open/closed source: a deduplicated
-            # re-observation of an already-repaired/resolved defect must not
-            # resurrect it as open under a new finding id.
-            open_ids = _open_ledger_finding_ids(list(ledger.entries.values()))
-            # Best-valid selection FIRST: the content-shape probes must run
-            # against the EXACT SELECTED representation (the best-valid
-            # render's proposal/template). With no best-valid render, the
-            # latest attempt gets DIAGNOSTIC probes only — never promotion
-            # evidence. A QUARANTINED repair base is excluded exactly like a
-            # rolled-back attempt: it was never promoted and may never be
-            # selected as a render, a best, or a probe basis. Unmeasured
-            # layout trials likewise require human comparison before selection.
-            excluded_versions = rolled_back_versions | pending_layout_trials
-            if quarantine_index is not None:
-                excluded_versions.add(versions[quarantine_index].version_id)
-            # Best-valid selection FIRST: the content-shape probes must run
-            # against the EXACT SELECTED representation (the best-valid
-            # render's proposal/template). With no best-valid render, the
-            # latest attempt gets DIAGNOSTIC probes only — never promotion
-            # evidence.
-            best_version_id = _best_valid_version_id(versions, excluded=excluded_versions)
-            defect_version_id = _best_defect_level_version_id(
-                versions, excluded=excluded_versions
-            )
-            active_version_id = versions[active_index].version_id if versions else None
-            best_version = next((v for v in versions if v.version_id == best_version_id), None)
-            diagnostic_probes = best_version_id is None
-            # Probes run on the lane's ACTIVE state when no best-valid (or
-            # defect-level) render exists — a rejected candidate never
-            # becomes the probe basis.
-            selected_id = best_version_id or defect_version_id or (
-                versions[active_index].version_id if versions else None
-            )
-            selected_representation = representation_by_version.get(selected_id)
-            probes_ok = bool(probe_candidates) and bool(versions) and selected_id is not None
-            probe_report: dict[str, Any] = {
-                "_selected_version": selected_id,
-                "_probe_mode": ("not_requested" if not probe_candidates else
-                                "diagnostic" if diagnostic_probes else "promotion_evidence"),
-            }
-            for profile, fixture in (probe_candidates or {}).items():
-                probe_candidate = _probe_candidate_with_text(fixture)
-                probe_candidate = _sectioned_probe_candidate(probe_candidate)
-                entry: dict[str, Any] = {
-                    "passed": False,
-                    "diagnostic": diagnostic_probes,
-                    "representation": (
-                        selected_representation.proposal_id
-                        if selected_representation is not None else "initial_compiled_plan"
-                    ),
-                }
-                probe_report[profile] = entry
-                try:
-                    index = next(
-                        (i + 1 for i, v in enumerate(versions) if v.version_id == selected_id), 0
-                    )
-                    probe_html_path = lane_dir / f"probe_{profile}.html"
-                    probe_pdf_path = lane_dir / f"probe_{profile}.pdf"
-                    probe_pdf_second = lane_dir / f"probe_{profile}_second.pdf"
-                    # Real chain with the SELECTED proposal: candidate
-                    # binding (incl. the shared header-overflow shell
-                    # transition) -> compile -> HTML -> Chrome PDF -> gates.
-                    probe_plan_candidate = _apply_header_overflow_disposition(
-                        probe_candidate, state
-                    )
-                    if layout_spec is not None:
-                        _, plan, _ = render_layout_template(layout_spec, probe_plan_candidate,
-                            target_sha256=target_sha256, page_count=state.page.page_count)
-                        plan = _apply_lane_a_structure(plan, selected_representation)
-                        html = render_html(state, plan)
-                    else:
-                        plan = _apply_lane_a_structure(
-                            compile_render_plan(state, probe_plan_candidate), selected_representation
-                        )
-                        if plan.status == "failed":
-                            raise RuntimeError(f"probe plan failed: {plan.failures[:3]}")
-                        html = render_html(state, plan)
-                    probe_html_path.write_text(html, encoding="utf-8")
-                    _export_pinned_html_to_pdf(probe_html_path, probe_pdf_path, environment)
-                    _export_pinned_html_to_pdf(probe_html_path, probe_pdf_second, environment)
-                    pages = _render_pages(probe_pdf_path, lane_dir, f"probe_{profile}")
-                    second_pages = _render_pages(probe_pdf_second, lane_dir, f"probe_{profile}_second")
-                    content = c2r.content_gate(plan, html, probe_pdf_path)
-                    gates = {
-                        "content_gate": content["passed"],
-                        "candidate_content_accounting": c2r.candidate_accounting_gate(
-                            plan, content
-                        )["passed"],
-                        # The same COMMON privacy gate with the same
-                        # shell-recognized label set as the main renders.
-                        "privacy_gate": c2r.candidate_privacy_gate(
-                            html, probe_pdf_path, target_pdf,
-                            labels=approved_label_texts, candidate=probe_candidate,
-                        )["passed"],
-                        "no_blank_page": c2r.blank_page_gate(probe_pdf_path)["passed"],
-                        "deterministic_render": (
-                            all(
-                                c2r._sha256(left) == c2r._sha256(right)
-                                for left, right in zip(pages, second_pages)
-                            )
-                            and c2r._line_stability(probe_pdf_path, probe_pdf_second)["passed"]
-                        ),
-                    }
-                    entry["gates"] = gates
-                    entry["pages"] = len(pages)
-                    entry["html"] = probe_html_path.name
-                    entry["pdf"] = probe_pdf_path.name
-                    entry["passed"] = all(gates.values())
-                except Exception as error:  # a probe failure is recorded, never a crash
-                    entry["error"] = str(error)[:200]
-                probes_ok = probes_ok and bool(entry.get("passed"))
-            (lane_dir / "content_shape_probes.json").write_text(
-                json.dumps(probe_report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
-            # E5 asks which representation is worth pursuing.  Once a
-            # safety-valid PDF exists it belongs in owner review; open visual
-            # findings, failed probes, and incomplete agent review stay visible
-            # as observations instead of suppressing the output.
-            terminal = (
-                "ready_for_owner_review"
-                if best_version_id and best_version is not None
-                and best_version.hard_gates_passed
-                else "budget_exhausted"
-            )
-            terminal_reason = ""
-            if terminal != "ready_for_owner_review":
-                # The loop records WHICH ceiling or stall ended the lane; the
-                # for-loop completing with no recorded stop means the repair
-                # round budget was reached.
-                terminal = stop_state or terminal
-                terminal_reason = stop_reason or "repair_round_budget"
-            if forced is not None:
-                terminal = forced
-                terminal_reason = reason
-            record = E5LaneRecord(
-                lane=lane_id,
-                representation=(
-                    "provider-neutral structured layout + fixed renderer (Lane A)"
-                ),
-                render_versions=versions,
-                best_render_version=best_version_id,
-                best_defect_level_version=defect_version_id,
-                active_render_version=active_version_id,
-                quarantined_repair_base=(
-                    versions[quarantine_index].version_id
-                    if quarantine_index is not None
-                    else None
-                ),
-                findings=findings,
-                measurement_results=measurement_results,
-                attributions=attributions,
-                repair_attempts=repair_attempts,
-                builder_candidates=builder_candidates,
-                attempted_strategies=attempted_strategies,
-                action_fingerprints=fingerprints,
-                ledger=list(ledger.entries.values()),
-                open_findings=open_ids,
-                content_shape_probes_passed=probes_ok,
-                pages_reviewed=sorted(pages_reviewed),
-                terminal_state=terminal,
-                terminal_reason=terminal_reason,
-                budget_state=lane_budget.to_json(),
-                summary={
-                    "total_findings": len(findings),
-                    "best_render_version": best_version_id,
-                    "best_defect_level_version": defect_version_id,
-                    "active_render_version": active_version_id,
-                    "quarantined_repair_base": (
-                        versions[quarantine_index].version_id
-                        if quarantine_index is not None
-                        else None
-                    ),
-                    "probe_mode": probe_report.get("_probe_mode"),
-                    "pending_layout_trials": sorted(pending_layout_trials),
-                    "promoted_versions": len([v for v in versions if v.promoted]),
-                    "confirmed_measurements": len([r for r in measurement_results if r.status == "confirmed"]),
-                    "unbound_measurements": len([r for r in measurement_results if r.status == "evidence_missing"]),
-                    "builder_calls": lane_budget.calls_by_agent.get(f"lane_{lane_id}_builder", 0),
-                    "reviewer_calls": lane_budget.calls_by_agent.get("visual_reviewer", 0),
-                    "reviewed_pdf_sha256": sorted(reviewed_render_fingerprints),
-                    "attribution_calls": lane_budget.calls_by_agent.get("attribution_investigator", 0),
-                    "methodology_classification": _e5_gate_classification(
-                        lane_id,
-                        gates_by_version.get(active_version_id, {}),
-                        privacy_labels_symmetric=label_symmetry_by_version.get(
-                            active_version_id or "", True
-                        ),
-                        gate_details=gate_details_by_version.get(active_version_id or "", {}),
-                    ),
-                    "diagnostic_warnings": _e5_hard_gate_record(
-                        active_version_id or "none",
-                        gates_by_version.get(active_version_id, {}),
-                        gate_details_by_version.get(active_version_id or "", {}),
-                        blocking_gates=_e5_blocking_gates(lane_id),
-                    )["diagnostic_warnings"],
-                    "presentation_labels_referenced": sorted(referenced_labels),
-                    "elapsed_seconds": None,
-                    "live": live,
-                },
-            )
-            (lane_dir / f"e5_lane_{lane_id}_state.json").write_text(
-                json.dumps(record.model_dump(mode="json"), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            (lane_dir / "REPORT.md").write_text(
-                _write_e5_lane_report_md(lane_id, record), encoding="utf-8"
-            )
-            checkpoint("terminal")
-            trace.save()
-            return record
-
-        # --- render plumbing ---------------------------------------------
-        def render_version(
-            note: str, proposal: LaneAStructureProposal | None = None
-        ) -> tuple[RenderVersion, Path, dict[str, Any]]:
-            lane_budget.spend_tool("render_and_checkpoint")
-            if template_render is not None:
-                _, plan, html = template_render
-                if proposal is not None:
-                    plan = _apply_lane_a_structure(plan, proposal)
-                    html = render_html(state, plan)
-            else:
-                plan = _apply_lane_a_structure(compile_render_plan(state, candidate), proposal)
-                if plan.status == "failed":
-                    raise RuntimeError(f"refusing to render a failed plan: {plan.failures[:3]}")
-                html = render_html(state, plan)
-            index = len(versions) + 1
-            html_path = lane_dir / f"render_{index}.html"
-            html_path.write_text(html, encoding="utf-8")
-            # The version's own arrangement plan, immutable like its HTML/PDF:
-            # traceability for owner-facing explanations, never re-derived later.
-            (lane_dir / f"render_{index}_plan.json").write_text(
-                plan.model_dump_json(indent=2) + "\n", encoding="utf-8"
-            )
-            pdf_path = lane_dir / f"render_{index}.pdf"
-            _export_pinned_html_to_pdf(html_path, pdf_path, environment)
-            second = lane_dir / f"render_{index}_second.pdf"
-            _export_pinned_html_to_pdf(html_path, second, environment)
-            pages = _render_pages(pdf_path, lane_dir, f"render_{index}")
-            second_pages = _render_pages(second, lane_dir, f"render_{index}_second")
-            stability = c2r._line_stability(pdf_path, second)
-            content = c2r.content_gate(plan, html, pdf_path)
-            # DIAGNOSTIC ONLY (see gate_details): the renderer gate keeps
-            # excluding plan-derived labels; the privacy DECISION is the
-            # common gate below.
-            privacy = c2r.privacy_gate(plan, target_pdf, html, pdf_path)
-            # The ONE common privacy gate: identical function and identical
-            # shell-recognized label set for BOTH lanes, so the two lanes'
-            # privacy decisions are directly comparable.
-            common_privacy = c2r.candidate_privacy_gate(
-                html, pdf_path, target_pdf, labels=approved_label_texts, candidate=candidate
-            )
-            structure_gate = c2r.structure_gate(plan, state, html, pdf_path)
-            blank = c2r.blank_page_gate(pdf_path)
-            accounting = c2r.candidate_accounting_gate(plan, content)
-            shape = c2r.content_shape_verification(
-                state, plan, body_scaffold, bullet_tiers, html, summary, pdf_path
-            )
-            if layout_spec is not None:
-                shape["basis"] = "layout_template_spec; consumption checks only, not visual parity"
-            gates = {
-                "deterministic_render": all(
-                    c2r._sha256(left) == c2r._sha256(right)
-                    for left, right in zip(pages, second_pages)
-                ) and stability["passed"],
-                # The COMMON privacy decision: the same gate function and
-                # the same shell-recognized label set as owner review.
-                "no_target_candidate_facts": common_privacy["passed"],
-                "section_order_matches_state": structure_gate["section_order_matches_state"],
-                "no_blank_page": blank["passed"],
-                "candidate_content_accounting": accounting["passed"],
-                "content_shapes_match_evidence": shape["passed"],
-                "content_gate": content["passed"],
-            }
-            label_semantics = _e5_label_semantics(
-                common_privacy, approved_label_catalog
-            )
-            label_symmetry_by_version[f"render-{target_pdf.stem}-laneA-v{index}"] = bool(
-                label_semantics["symmetric"]
-            )
-            referenced_labels.update(
-                label.label_id
-                for label in label_catalog
-                if c2r._norm(label.text)
-                in {
-                    c2r._norm(section.label)
-                    for section in [*plan.sections, *plan.appended_sections]
-                }
-            )
-            gate_details = {
-                "deterministic_render": {
-                    "passed": gates["deterministic_render"],
-                    "first_page_hashes": [c2r._sha256(page) for page in pages],
-                    "second_page_hashes": [c2r._sha256(page) for page in second_pages],
-                    "line_stability": stability,
-                },
-                "no_target_candidate_facts": {
-                    **common_privacy,
-                    "label_semantics": label_semantics,
-                    # DIAGNOSTIC ONLY: the renderer gate keeps excluding
-                    # plan-derived labels; it is no longer the privacy
-                    # decision and never used to claim symmetry.
-                    "plan_derived_privacy_gate": privacy,
-                },
-                "section_order_matches_state": structure_gate,
-                "no_blank_page": blank,
-                "candidate_content_accounting": accounting,
-                "content_shapes_match_evidence": shape,
-                "content_gate": content,
-            }
-            version = RenderVersion(
-                version_id=f"render-{target_pdf.stem}-laneA-v{index}",
-                html_sha256=_sha256_file(html_path),
-                pdf_sha256=_sha256_file(pdf_path),
-                page_count=len(pages),
-                hard_gates_passed=_e5_blocking_gates_passed("a", gates),
-                note=note,
-            )
-            versions.append(version)
-            pdf_by_version[version.version_id] = pdf_path
-            representation_by_version[version.version_id] = proposal
-            plan_by_version[version.version_id] = plan
-            gates_by_version[version.version_id] = gates
-            gate_details_by_version[version.version_id] = gate_details
-            binding_lineage_by_version[version.version_id] = _e5_candidate_binding_lineage(
-                candidate,
-                version.version_id,
-                content.get("leaf_records") or {},
-                representation_ceiling_gates=[
-                    name for name in E5_REPRESENTATION_CEILING_GATES
-                    if gates.get(name) is False
-                ],
-            )
-            store.register_version(version.version_id, pdf_path, note)
-            (lane_dir / f"hard_gates_{version.version_id}.json").write_text(
-                json.dumps(
-                    _e5_hard_gate_record(
-                        version.version_id,
-                        gates,
-                        gate_details,
-                        blocking_gates=_e5_blocking_gates("a"),
-                    ),
-                    indent=2,
-                    sort_keys=True,
-                ) + "\n",
-                encoding="utf-8",
-            )
-            trace.add(agent="shell", phase="render", action="render_version", output=version.model_dump(mode="json"), note=note)
-            return version, pdf_path, gates
-
-        def render_entry_texts(region_id: str | None, plan: Any = None) -> tuple[list[str], list[str]]:
-            # The plan is always the version-bound plan of the render being
-            # measured (the ACTIVE plan for a round measurement, the
-            # candidate's own plan for the identical re-measurement) — never
-            # a mutable lane-wide variable that a rejected render could
-            # overwrite.
-            if plan is not None:
-                plan_section = next(
-                    (s for s in [*plan.sections, *plan.appended_sections] if s.node_id == _owning_section_id(state, region_id)),
-                    None,
-                )
-                if plan_section is not None and plan_section.entries:
-                    heads = [entry.title_lines[0] for entry in plan_section.entries if entry.title_lines]
-                    head_ids = {line.leaf_id for line in heads}
-                    other_fields = [field.text for entry in plan_section.entries for row in entry.rows or []
-                                    for field in [*row.left, *row.right] if field.leaf_id not in head_ids]
-                    return [line.text for line in heads], other_fields
-            # generic fallback: the candidate's own entry heads (same role)
-            return [
-                leaf.text or "" for leaf in candidate.leaves
-                if leaf.kind in {"work_entry", "education_entry"} and leaf.text
-            ][:4], []
-
-        def execute_measurement(
-            finding: DefectFinding,
-            pdf: Path,
-            request_id: str,
-            *,
-            plan: Any = None,
-            render_version: str = "",
-        ) -> tuple[MeasurementResult, MeasurementRequest]:
-            section_id = _owning_section_id(state, finding.region)
-            span = region_spans.get(section_id or finding.region)
-            span_tuple = (span[1], span[2]) if span and span[0] == finding.page else None
-            trace.add(
-                agent="measure_controller", phase="measure", action="binding",
-                input={"render_version": render_version, "finding": finding.finding_id},
-            )
-            request = finding.requested_measurement.model_copy(update={"request_id": request_id})
-            if request.metric == "unsupported":
-                return MeasureController(pod, lane_budget, trace).execute(request, current_pdf=pdf), request
-            dimension = finding.suspected_dimension.casefold()
-            compound = bool(re.search(r"\b(and|plus)\b", dimension))
-            if compound or (request.metric == "role_gap" and not any(
-                word in dimension for word in ("gap", "spacing", "role")
-            )):
-                result = MeasurementResult(
-                    request_id=request_id, status="not_measurable",
-                    reason=("compound dimensions need separate measurements" if compound else
-                            f"dimension {finding.suspected_dimension!r} is not supported by the role_gap metric"),
-                    method="reviewer_metric_binding/1",
-                )
-                trace.add(agent="measure_controller", phase="measure", action="binding_unresolved",
-                          output=result.model_dump(mode="json"), persist_output=True)
-                return result, request
-            if request.metric == "header_contact_label_geometry":
-                if finding.suspected_dimension != "header_contact_labels":
-                    result = MeasurementResult(request_id=request_id, status="not_measurable",
-                        reason="label geometry cannot measure other or compound contact dimensions",
-                        method=HEADER_CONTACT_LABEL_MEASUREMENT_VERSION)
-                else:
-                    lane_budget.spend_tool("measure_header_contact_label_geometry")
-                    request = request.model_copy(update={"region_id": finding.region})
-                    result = _measure_header_contact_label_geometry(request, target_pdf=target_pdf,
-                        current_pdf=pdf, state=state, plan=plan, current_name_text=candidate_name_text)
-                trace.add(agent="measure_controller", phase="measure", action="measurement",
-                    tool="measure_header_contact_label_geometry", output=result.model_dump(mode="json"), persist_output=True)
-                return result, request
-            if request.metric == "header_vertical_rule_geometry":
-                finding_text = (
-                    f"{finding.region} {finding.suspected_dimension} {finding.observation} "
-                    f"{request.intent or ''}"
-                ).casefold()
-                if not (
-                    finding.region.startswith("header")
-                    and any(word in finding_text for word in ("header", "name"))
-                    and "vertical" in finding_text
-                    and any(word in finding_text for word in ("rule", "line", "bar"))
-                ):
-                    result = MeasurementResult(
-                        request_id=request_id,
-                        status="not_measurable",
-                        reason="metric may bind only to an explicit header vertical-rule finding",
-                        method=HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
-                    )
-                else:
-                    lane_budget.spend_tool("measure_header_vertical_rule_geometry")
-                    result = _measure_header_vertical_rule_geometry(
-                        request,
-                        target_pdf=target_pdf,
-                        current_pdf=pdf,
-                        current_name_text=candidate_name_text,
-                    )
-                trace.add(
-                    agent="measure_controller", phase="measure", action="measurement",
-                    tool="measure_header_vertical_rule_geometry",
-                    output=result.model_dump(mode="json"), persist_output=True,
-                )
-                return result, request
-            heads, other_fields = render_entry_texts(finding.region, plan)
-            bound = _bind_role_gap_anchors(
-                request,
-                target_pdf=target_pdf,
-                current_pdf=pdf,
-                region_span=span_tuple,
-                render_leaf_texts=heads, render_non_head_texts=other_fields,
-            )
-            if isinstance(bound, MeasurementResult):
-                trace.add(
-                    agent="measure_controller", phase="measure", action="binding_unresolved",
-                    note=bound.reason, persist_output=True,
-                )
-                return bound, request
-            # MeasureController.execute is the SINGLE tool-budget consumer for
-            # a deterministic measurement (one compare_pdf_geometry per call,
-            # one trace record). Callers never spend or re-trace it.
-            result = MeasureController(pod, lane_budget, trace).execute(bound, current_pdf=pdf)
-            return result, bound
-
-        def attribute(
-            finding: DefectFinding, result: MeasurementResult, request: MeasurementRequest
-        ) -> AttributionRecord:
-            attribution = _e5_default_attribution(finding, result, request)
-            attributions.append(attribution)
-            # Single source of defect state: the attribution (and its
-            # measurement request) is written back to the owning ledger
-            # entry; a no_defect measurement closes the entry as resolved.
-            _record_ledger_attribution(ledger, finding, attribution, request.request_id)
-            trace.add(
-                agent="attribution_investigator", phase="attribute", action="attribution",
-                output=attribution.model_dump(mode="json"),
-            )
-            return attribution
-
-        def accepted_regions_hold(candidate_pdf: Path) -> tuple[bool, list[dict[str, Any]]]:
-            """FAIL CLOSED accepted-region recheck: an accepted region is held
-            ONLY when the identical re-measurement is CONFIRMED on the
-            candidate PDF with all measured values present and the error did
-            not grow beyond the prior error + tolerance. Any evidence_missing
-            / unmeasurable / vanished anchor / missing value means the
-            candidate CANNOT be verified to hold the region -> not held."""
-            rechecks: list[dict[str, Any]] = []
-            for finding_id, (request, prior) in resolved_measurements.items():
-                finding = findings_by_id[finding_id]
-                repeat, _ = execute_measurement(
-                    finding.model_copy(update={"requested_measurement": request}),
-                    candidate_pdf,
-                    request.request_id,
-                    plan=plan_by_version.get(versions[-1].version_id),
-                    render_version=versions[-1].version_id,
-                )
-                values_present = (
-                    repeat.current_value_pt is not None
-                    and repeat.target_value_pt is not None
-                    and prior.current_value_pt is not None
-                    and prior.target_value_pt is not None
-                )
-                held = (
-                    repeat.status == "confirmed"
-                    and values_present
-                    and abs(repeat.current_value_pt - repeat.target_value_pt)
-                    <= abs(prior.current_value_pt - prior.target_value_pt) + E2_IMPROVEMENT_TOLERANCE_PT
-                )
-                reason = None
-                if not held:
-                    if repeat.status != "confirmed":
-                        reason = f"re-measurement not confirmed on the candidate PDF (status={repeat.status})"
-                    elif not values_present:
-                        reason = "re-measurement left measured values missing (vanished anchor / evidence gap)"
-                    else:
-                        reason = "accepted region error grew beyond the prior error + tolerance"
-                rechecks.append(
-                    {
-                        "finding": finding_id,
-                        "held": held,
-                        "status": repeat.status,
-                        **({"reason": reason} if reason else {}),
-                    }
-                )
-                if not held:
-                    return False, rechecks
-            return True, rechecks
-
-        def checkpoint(phase: str) -> None:
-            """Small atomic recovery snapshot plus machine-readable residuals."""
-            current = versions[active_index].version_id if versions else None
-            payload = {
-                "schema_version": "e5-checkpoint/1",
-                "phase": phase,
-                "lane": lane,
-                "active_render_version": current,
-                "render_versions": [item.model_dump(mode="json") for item in versions],
-                "findings": [item.model_dump(mode="json") for item in findings],
-                "ledger": [item.model_dump(mode="json") for item in ledger.entries.values()],
-                "builder_candidates": builder_candidates,
-                "budget_state": lane_budget.to_json(),
-            }
-            path = lane_dir / "checkpoint.json"
-            temporary = path.with_suffix(".tmp")
-            temporary.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
-            temporary.replace(path)
-
-            findings_by_key = {_ledger_key(item): item for item in findings}
-            residuals = []
-            for key, entry in ledger.entries.items():
-                finding = findings_by_key.get(key)
-                if finding is None:
-                    continue
-                repair = next(
-                    (
-                        item for item in reversed(builder_candidates)
-                        if (item.get("trigger_attribution") or {}).get("finding_id")
-                        == finding.finding_id
-                    ),
-                    None,
-                )
-                attribution = entry.attribution
-                residuals.append({
-                    "schema_version": "e5-residual/1",
-                    "residual_type": _residual_type(finding),
-                    "region_role": finding.region,
-                    "status": entry.status,
-                    "finding_id": finding.finding_id,
-                    "render_version": finding.render_version,
-                    "observation": finding.observation,
-                    "repair_attempted": repair is not None,
-                    "repair_outcome": repair.get("outcome") if repair else None,
-                    "resolution_layer": (
-                        "representation" if attribution and attribution.repair_owner == "builder"
-                        else attribution.repair_owner if attribution else None
-                    ),
-                })
-            residual_path = lane_dir / "residuals.jsonl"
-            residual_tmp = residual_path.with_suffix(".tmp")
-            residual_tmp.write_text(
-                "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in residuals),
-                encoding="utf-8",
-            )
-            residual_tmp.replace(residual_path)
-
-        # --- 3. Initial Builder output (representation under test) ---------
-        initial_note = f"lane {lane} initial render ({'structured layout'})"
-        candidate_audit_index: int | None = None
-        try:
-            proposal = None
-            if live:
-                proposal = _live_lane_a_builder(
-                    lane_budget,
-                    trace,
-                    payload=initial_builder_evidence,
-                    images=shared_target_images,
-                    proposal_id="lane-a-r1",
-                    audit=_e5_audit(
-                        agent="lane_a_builder",
-                        phase="initial",
-                        round_no=0,
-                        render_version=None,
-                        instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
-                        image_refs=_e5_image_refs(shared_target_images, "target"),
-                    ),
-                )
-                validation_error = _validate_lane_a_proposal(proposal, state)
-                candidate_audit_index = record_builder_candidate(
-                    proposal,
-                    stage="initial",
-                    input_render_version=None,
-                    validation={"passed": validation_error is None, "error": validation_error},
-                    outcome="validator_rejected" if validation_error else "validated",
-                    reason=validation_error or "typed proposal accepted by the shell validator",
-                )
-                if validation_error:
-                    raise ValueError(validation_error)
-            lane_state["proposal"] = proposal
-            lane_state["active_proposal"] = proposal
-            version, pdf, gates = render_version(initial_note, proposal)
-            if candidate_audit_index is not None:
-                update_builder_candidate(
-                    candidate_audit_index,
-                    candidate_render_version=version.version_id,
-                    outcome="active_unpromoted",
-                    reason="initial validated candidate rendered and became the active version",
-                )
-        except CheckpointBudgetExceeded:
-            escalate("builder_initial_budget_exhausted")
-            return _lane_terminal(lane, "budget_exhausted", reason="builder_initial_budget")
-        except Exception as error:
-            import traceback as _tb
-            detail = _tb.format_exc()[-600:]
-            if candidate_audit_index is not None and builder_candidates[candidate_audit_index]["outcome"] != "validator_rejected":
-                update_builder_candidate(
-                    candidate_audit_index,
-                    outcome="render_failed",
-                    reason=str(error)[:300],
-                )
-            lane_state["last_rejection"] = f"initial render failed: {str(error)[:200]}"
-            trace.add(agent="shell", phase="builder", action="initial_failed", note=str(error)[:200], output={"traceback": detail}, persist_output=True)
-            escalate(f"lane_builder_initial_failed:{type(error).__name__}")
-            return _lane_terminal(lane, "budget_exhausted", reason="builder_initial_failed")
-        checkpoint("initial_render")
-        if layout_spec is not None and not live:
-            # Offline previews execute the supplied template without a model loop.
-            return _lane_terminal(lane)
-
-        layout_trial_regions = {
-            node.node_id for node in state.nodes
-            if live and _owning_section_id(state, node.node_id) is not None
-        }
-        # --- 4. See -> Measure -> Attribute -> Repair -> Re-render loop -----
-        # Scheduling state (repair-starvation fix, 2026-09-21 owner work order):
-        # a render fingerprint is fully reviewed AT MOST ONCE; each round's
-        # attribution backlog is bounded; the Builder is called as soon as a
-        # confirmed, attributed, builder-owned defect bound to the ACTIVE
-        # version exists — it never waits for the whole open-findings ledger.
-        # Review scheduling state: the fingerprint is the ACTIVE render's
-        # FINAL-PDF sha256 (owner correction 2026-09-22). version_id ->
-        # pdf hash is also recorded: two different version ids with the SAME
-        # hash do not re-review, and the SAME version_id can never map to a
-        # different PDF (conflict fails closed).
-        version_pdf_hashes: dict[str, str] = {}
-        findings_by_id: dict[str, DefectFinding] = {}
-        # finding_id -> (finding, result, bound) for every measurement taken on
-        # any version; the repair scan filters by the ACTIVE version.
-        measured_by_finding: dict[str, tuple[DefectFinding, MeasurementResult, MeasurementRequest]] = {}
-        for round_no in range(1, max_repair_rounds + 2):
-            try:
-                if lane_budget.remaining_model_requests() < 1:
-                    trace.add(agent="shell", phase="loop", action="budget_exhausted", note="before review")
-                    stop_state, stop_reason = "budget_exhausted", "model_request_budget"
-                    break
-                # The round reviews/measures the ACTIVE version (the last
-                # PROMOTED render, or the initial render before any
-                # promotion) — never the newest render in history.
-                current_version = versions[active_index]
-                current_pdf = pdf_by_version[current_version.version_id]
-                current_plan = plan_by_version.get(current_version.version_id)
-                current_gates = gates_by_version.get(current_version.version_id, {})
-                current_gate_details = gate_details_by_version.get(current_version.version_id, {})
-                # The repair base is the quarantined candidate when one exists
-                # (its own representation/version/gates/missing leaves), and
-                # the ACTIVE version otherwise. Reviewer, measurement binding,
-                # promotion and the owner package always resolve against the
-                # ACTIVE version; the only thing that may look at the quarantine
-                # is the hard-gate repair input and the Builder payload that
-                # continues fixing it.
-                repair_base_version = (
-                    versions[quarantine_index] if quarantine_index is not None else current_version
-                )
-                repair_base_gates = gates_by_version.get(repair_base_version.version_id, {})
-                repair_base_details = gate_details_by_version.get(repair_base_version.version_id, {})
-                repair_scope_versions = {
-                    current_version.version_id, repair_base_version.version_id,
-                }
-                # The next round's changed-region scope comes ONLY from the
-                # last PROMOTED repair: a rejected/rolled-back attempt is
-                # immutable history (diagnostic), never review scope.
-                changed_regions: list[str] = (
-                    [last_promoted_region] if last_promoted_region else []
-                )
-                findings_new: list[DefectFinding] = []
-                # SCHEDULING GATE: the SAME render fingerprint gets at most ONE
-                # full Reviewer pass. With no new render there is NO review
-                # this round: the round works on the bounded deferred backlog
-                # or calls the Builder for an already-attributed repair
-                # candidate — it never re-reviews an unchanged render.
-                # Review gate: fingerprint = final-PDF sha256. A conflicting
-                # re-hash for a known version_id fails closed.
-                render_fingerprint = current_version.pdf_sha256
-                known_pdf_hash = version_pdf_hashes.get(current_version.version_id)
-                if known_pdf_hash is not None and known_pdf_hash != render_fingerprint:
-                    raise RuntimeError(
-                        f"render identity conflict: {current_version.version_id} "
-                        f"previously hashed {known_pdf_hash}, now {render_fingerprint}"
-                    )
-                version_pdf_hashes[current_version.version_id] = render_fingerprint
-                run_review = _e5_review_this_round(reviewed_render_fingerprints, render_fingerprint)
-                trace.add(
-                    agent="shell", phase="loop", action="review_gate",
-                    output={
-                        "render_version": current_version.version_id,
-                        "pdf_sha256": render_fingerprint,
-                        "review_executed": run_review,
-                        "skip_reason": (
-                            None if run_review
-                            else "same render pdf_sha256 already fully reviewed"
-                        ),
-                    },
-                )
-                reviewer_failed = False
-                try:
-                    if live and run_review:
-                        target_overviews = _overview_pngs(target_pdf, out_dir, f"review_target_l{lane}_{round_no}")
-                        render_overviews = _overview_pngs(current_pdf, out_dir, f"review_render_l{lane}_{round_no}")
-                        scope = _review_scope_payload(
-                            round_no,
-                            changed_regions,
-                            findings,
-                            ledger_statuses={
-                                entry.finding_id: entry.status
-                                for entry in ledger.entries.values()
-                            },
-                            changed_pages=[last_promoted_page] if last_promoted_page else [],
-                        )
-                        region_catalog = _e5_region_catalog(state, derived)
-                        presentation_facts = _reviewer_presentation_facts(
-                            target_pdf, current_pdf, derived, current_name_text=candidate_name_text,
-                            state=state, plan=current_plan,
-                        )
-                        counter["finding"] += 1
-                        node_inventory = json.dumps(
-                            {
-                                "region_catalog": region_catalog,
-                                "review_scope": scope,
-                                "candidate_review_scope": candidate_review_scope,
-                            },
-                            ensure_ascii=False,
-                        )
-                        # Bounded images per call: one PAGE per reviewer call
-                        # (target overview + render overview), merged across pages.
-                        review_page_count = (
-                            len(render_overviews)
-                            if layout_spec is not None else len(target_overviews)
-                        )
-                        for page_index in range(1, review_page_count + 1):
-                            target_page_number = min(page_index, len(target_overviews))
-                            target_page = prepare_review_image(target_overviews[target_page_number - 1])
-                            lane_images = [target_page]
-                            if page_index <= len(render_overviews):
-                                lane_images.append(prepare_review_image(render_overviews[page_index - 1]))
-                            counter["finding"] += 1
-                            page_findings = _with_connection_retry(
-                                lambda lane_images=lane_images, page_index=page_index, target_page_number=target_page_number: _live_reviewer_findings(
-                                    lane_images,
-                                    finding_id=f"finding-l{lane}-r{round_no}-p{page_index}",
-                                    target_version=target_id,
-                                    render_version=current_version.version_id,
-                                    page=page_index,
-                                    node_inventory=node_inventory,
-                                    budget=lane_budget,
-                                    trace=trace,
-                                    id_prefix=f"finding-l{lane}-r{round_no}-p{page_index}",
-                                    instructions=E5_REVIEWER_INSTRUCTIONS,
-                                    visual_model=True,
-                                    audit=_e5_audit(
-                                        agent="visual_reviewer",
-                                        phase="review",
-                                        round_no=round_no,
-                                        render_version=current_version.version_id,
-                                        finding_ids=(f"finding-l{lane}-r{round_no}-p{page_index}",),
-                                        instructions=E5_REVIEWER_INSTRUCTIONS,
-                                        image_refs=(
-                                            _e5_image_refs([target_page], "target", first_page=target_page_number)
-                                            + _e5_image_refs(
-                                                [lane_images[1]], "render", first_page=page_index
-                                            )
-                                            if len(lane_images) > 1
-                                            else _e5_image_refs([target_page], "target", first_page=target_page_number)
-                                        ),
-                                    ),
-                                    message=(
-                                        _e5_reviewer_message(
-                                            target_version=target_id,
-                                            render_version=current_version.version_id,
-                                            page=page_index,
-                                            region_catalog=region_catalog,
-                                            review_scope=scope,
-                                            candidate_review_scope=candidate_review_scope,
-                                            lane=lane,
-                                            deterministic_presentation_facts=presentation_facts,
-                                            image_pages=(
-                                                {"target": target_page_number,
-                                                 "render": page_index if page_index <= len(render_overviews) else None}
-                                                if layout_spec is not None else None
-                                            ),
-                                        )
-                                    ),
-                                ),
-                                trace=trace, what=f"visual reviewer page {page_index}",
-                            )
-                            findings_new.extend(_validate_reviewer_regions(
-                                page_findings,
-                                {item["region_id"] for item in region_catalog},
-                                page_index,
-                            ))
-                            pages_reviewed.add(page_index)
-                    elif not live:
-                        counter["finding"] += 1
-                        prompt = f"TARGET {target_frozen.case_id} RENDER {current_version.version_id} page 1."
-                        findings_new = ScriptedReviewer().run(
-                            prompt,
-                            finding_id=f"finding-l{lane}-r{round_no}",
-                            target_version=target_id,
-                            render_version=current_version.version_id,
-                            page=1,
-                            budget=lane_budget,
-                            trace=trace,
-                            target_id=target_id,
-                        )
-                        pages_reviewed.add(1)
-                except CheckpointBudgetExceeded:
-                    escalate("reviewer_budget_exhausted")
-                    stop_state, stop_reason = "budget_exhausted", "reviewer_budget"
-                    break
-                except Exception as error:
-                    import traceback as _tb2
-                    trace.add(
-                        agent="shell", phase="loop", action="reviewer_failed",
-                        output={"traceback": _tb2.format_exc()[-4000:]}, persist_output=True,
-                    )
-                    escalate(f"reviewer_live_call_failed:{type(error).__name__}: {str(error)[:200]}")
-                    reviewer_failed = True
-                if run_review and not reviewer_failed:
-                    reviewed_render_fingerprints.add(render_fingerprint)
-                findings_new = _validate_finding_versions(findings_new, target_id, current_version.version_id)
-                filtered = [
-                    {
-                        "finding": finding.model_dump(mode="json"),
-                        "reason": reason,
-                    }
-                    for finding in findings_new
-                    if (reason := _candidate_boundary_filter_reason(
-                        finding, candidate_review_scope
-                    )) is not None
-                ]
-                findings_new = _candidate_aware_findings(findings_new, candidate_review_scope)
-                if filtered:
-                    trace.add(
-                        agent="shell",
-                        phase="review",
-                        action="candidate_boundary_filtered",
-                        output={"removed": len(filtered), "findings": filtered},
-                        persist_output=True,
-                    )
-                findings.extend(findings_new)
-                for finding in findings_new:
-                    findings_by_id[finding.finding_id] = finding
-
-                # Ledger dedup BEFORE attribution (Phase 0).
-                actionable: list[DefectFinding] = []
-                carried_open_used = False
-                for finding in findings_new:
-                    resolved = finding.finding_id in resolved_measurements
-                    entry, action = ledger.observe(finding, resolved=resolved)
-                    trace.add(
-                        agent="shell", phase="ledger", action=action,
-                        output={"key": entry.ledger_key, "finding": finding.finding_id},
-                    )
-                    if action == "dedup" and entry.status in {"resolved", "repaired", "attributed"}:
-                        continue  # unchanged finding with unchanged evidence: no re-attribution
-                    if action == "dedup":
-                        if entry.last_measured_version == current_version.version_id:
-                            continue  # already measured on THIS render version
-                        if finding.region not in changed_regions or carried_open_used:
-                            continue  # unchanged region: the stored measurement stays the record
-                        carried_open_used = True  # one bounded carried-open re-measure
-                    actionable.append(finding)
-                if run_review and not reviewer_failed:
-                    checkpoint("review_complete")
-
-                # Bounded per-round scheduling: this round's new findings
-                # first, then previously deferred open findings; at most
-                # E5_MAX_ROUND_ATTRIBUTION_FINDINGS enter this round's
-                # attribution backlog. The rest stay in the ledger as
-                # `deferred` — open, never lost, re-eligible in later rounds
-                # under the SAME rule (both lanes run this identical logic).
-                # Builder FIRST (scheduling guarantee, owner work order §三.6):
-                # if a confirmed, attributed, builder-owned defect bound to the
-                # ACTIVE version already exists (e.g. attributed in an earlier
-                # round, or a hard-gate repair input), the Builder is called
-                # THIS ROUND — before any full review and before the
-                # attribution backlog expands by even one finding.
-                pre_scan_candidates = [
-                    finding
-                    for finding, _result, _bound in measured_by_finding.values()
-                    if finding.render_version in repair_scope_versions
-                ]
-                pre_scan_measured = {
-                    finding.finding_id: (result, bound)
-                    for finding, result, bound in measured_by_finding.values()
-                    if finding.render_version in repair_scope_versions
-                }
-                pre_repair, _pre_repeated = _next_e5_repair_finding(
-                    pre_scan_candidates, pre_scan_measured, attributions, fingerprints,
-                    layout_trial_regions=layout_trial_regions,
-                )
-                skip_attribution = pre_repair is not None
-
-                deferred_candidates: list[DefectFinding] = [
-                    findings_by_id[entry.finding_id]
-                    for entry in ledger.entries.values()
-                    if entry.status == "deferred"
-                    and entry.finding_id in findings_by_id
-                    and findings_by_id[entry.finding_id].render_version
-                    == current_version.version_id
-                ]
-                if skip_attribution:
-                    selected, deferred_now = [], []
-                else:
-                    # Gate repair inputs do NOT enter the round backlog: they
-                    # are pre-attributed and reached the pre-repair scan above
-                    # (the Builder-first guarantee); the bounded cap is for
-                    # reviewer findings.
-                    selected, deferred_now = _e5_select_round_work(
-                        actionable, [], deferred_candidates
-                    )
-                for deferred_finding in deferred_now:
-                    entry = ledger.entries.get(_ledger_key(deferred_finding))
-                    if entry is None or entry.status != "open":
-                        continue
-                    entry.status = "deferred"
-                    trace.add(
-                        agent="shell", phase="ledger", action="deferred",
-                        output={"finding": deferred_finding.finding_id},
-                        note=(
-                            f"not selected this round (cap "
-                            f"{E5_MAX_ROUND_ATTRIBUTION_FINDINGS}); stays open and "
-                            "re-eligible"
-                        ),
-                    )
-
-                # Bind -> measure -> attribute for the SELECTED findings only.
-                measured: dict[str, tuple[MeasurementResult, MeasurementRequest]] = {}
-                for finding in selected:
-                    counter["request"] += 1
-                    request_id = f"measure-l{lane}-{counter['request']:03d}"
-                    result, bound = execute_measurement(
-                        finding, current_pdf, request_id,
-                        plan=current_plan, render_version=current_version.version_id,
-                    )
-                    measurement_results.append(result)
-                    measured[finding.finding_id] = (result, bound)
-                    measured_by_finding[finding.finding_id] = (finding, result, bound)
-                    ledger.entries[_ledger_key(finding)].last_measured_version = current_version.version_id
-                batches = _e5_attribution_batches(selected, measured)
-                if live and batches and _builder_reserve_intact(lane_budget, builder_reserve_requests):
-                    pod.render_pdf = current_pdf
-                    for group in batches:
-                        try:
-                            hypotheses = _live_attribution_batch(
-                                pod, lane_budget, trace,
-                                findings=group,
-                                results=[measured[f.finding_id][0] for f in group],
-                                lane=lane,
-                                current_representation=representation_by_version.get(current_version.version_id),
-                                compiled_layout=_lane_a_attribution_layout(current_plan, state, group),
-                                audit=_e5_audit(
-                                    agent="attribution_investigator",
-                                    phase="attribute",
-                                    round_no=round_no,
-                                    render_version=current_version.version_id,
-                                    finding_ids=tuple(item.finding_id for item in group),
-                                    measurement_ids=tuple(
-                                        measured[item.finding_id][1].request_id for item in group
-                                    ),
-                                    instructions=E5_ATTRIBUTION_INSTRUCTIONS,
-                                ),
-                            )
-                            # Identity binding, never list position: a swapped,
-                            # missing, duplicated, or foreign finding_id rejects
-                            # the WHOLE batch (it contributes nothing).
-                            bound_hypotheses = _bind_live_attribution_batch(group, hypotheses)
-                            for finding, hypothesis in bound_hypotheses:
-                                request_id = measured[finding.finding_id][1].request_id
-                                attribution = _e5_live_attribution_record(
-                                    finding,
-                                    hypothesis,
-                                    request_id,
-                                    lineage=binding_lineage_by_version.get(
-                                        finding.render_version
-                                    ),
-                                )
-                                attributions.append(attribution)
-                                _record_ledger_attribution(
-                                    ledger, finding, attribution, request_id,
-                                )
-                                trace.add(
-                                    agent="attribution_investigator", phase="attribute",
-                                    action="live_attribution", output=attribution.model_dump(mode="json"),
-                                )
-                        except CheckpointBudgetExceeded:
-                            escalate("attribution_budget_exhausted")
-                            stop_state, stop_reason = "budget_exhausted", "attribution_budget"
-                            break
-                        except LiveAttributionBindingError as error:
-                            # Fail closed WITH an auditable reason: the batch's
-                            # findings fall through to the deterministic
-                            # attribution instead of a positional guess.
-                            escalate(f"attribution_batch_binding_rejected:{error}")
-                            trace.add(
-                                agent="shell", phase="attribute",
-                                action="attribution_batch_binding_rejected",
-                                output={
-                                    "batch_findings": [item.finding_id for item in group],
-                                    "reason": str(error),
-                                },
-                            )
-                        except Exception as error:
-                            escalate(f"attribution_live_call_failed:{type(error).__name__}: {str(error)[:150]}")
-                for finding in _e5_findings_needing_fallback_attribution(
-                    selected, measured, attributions
-                ):
-                    result, bound = measured[finding.finding_id]
-                    attribute(finding, result, bound)
-
-                # `max_repair_rounds=0` is review-only. The old `+ 2` loop
-                # envelope accidentally allowed one repair even with a zero
-                # repair budget.
-                if round_no > max_repair_rounds:
-                    stop_state, stop_reason = "budget_exhausted", "repair_round_budget"
-                    break
-
-                # Builder opportunity (SCHEDULING GUARANTEE): the scan covers
-                # EVERY defect bound to the ACTIVE version — this round's and
-                # previously attributed ones — so the Builder is called as
-                # soon as ONE confirmed, attributed, builder-owned defect
-                # exists. Live A may also try a bounded layout hypothesis;
-                # improvement is established only after rendering and rechecks.
-                scan_candidates = [
-                    finding
-                    for finding, _result, _bound in measured_by_finding.values()
-                    if finding.render_version in repair_scope_versions
-                ]
-                scan_measured = {
-                    finding.finding_id: (result, bound)
-                    for finding, result, bound in measured_by_finding.values()
-                    if finding.render_version in repair_scope_versions
-                }
-                repair_finding, all_repairable_repeated = _next_e5_repair_finding(
-                    scan_candidates, scan_measured, attributions, fingerprints,
-                    layout_trial_regions=layout_trial_regions,
-                )
-                if repair_finding is None and all_repairable_repeated:
-                    escalate("stalled_no_new_action")
-                    # Nothing is left to DO (every repairable action
-                    # fingerprint was already executed) — that is a distinct
-                    # state from a real budget ceiling.
-                    stop_state, stop_reason = "stalled_no_new_action", "stalled_no_new_action"
-                    break
-                if repair_finding is None:
-                    actionable_keys = {
-                        (finding.finding_id, finding.render_version) for finding in scan_candidates
-                    }
-                    awaiting = any(
-                        (item.finding_id, item.render_version) in actionable_keys
-                        and item.attribution != "no_defect"
-                        for item in attributions
-                    )
-                    # Termination (no infinite no-op rounds): with no new
-                    # render, no review, and no pending backlog work, another
-                    # round would deterministically repeat this state.
-                    work_this_round = bool(findings_new) or bool(selected)
-                    if not work_this_round:
-                        escalate(f"round{round_no}:no_new_render_no_pending_work")
-                        stop_state, stop_reason = "stalled_no_new_action", "no_new_render_no_pending_work"
-                        break
-                    escalate(
-                        "awaiting_attribution_or_other_owner"
-                        if awaiting
-                        else f"round{round_no}:no_repairable_bound_finding_continue_review"
-                    )
-                    continue
-                finding, result, bound, attribution, fingerprint = repair_finding
-                # The Builder repairs the REPAIR BASE: with a quarantine that is
-                # the quarantined candidate's own render images, and its own
-                # representation/render version/gates are bound in the payload
-                # below. Without a quarantine the base IS the active version, so
-                # this is the pre-existing behavior unchanged.
-                current_render_images = _overview_pngs(
-                    pdf_by_version[repair_base_version.version_id],
-                    lane_dir,
-                    f"builder_render_r{round_no}",
-                )
-                repair_target_images = shared_target_images
-                repair_render_images = current_render_images
-                repair_builder_evidence = _e5_builder_evidence_package(
-                    draft=draft,
-                    state=state,
-                    derived=derived,
-                    page_size=page_size,
-                    current_render_version=repair_base_version.version_id,
-                    findings=scan_candidates,
-                    measurements=[
-                        scan_measured[item.finding_id][0] for item in scan_candidates
-                    ],
-                    current_gates=repair_base_gates,
-                    last_rejection=lane_state.get("last_rejection"),
-                    target_images=repair_target_images,
-                    current_render_images=repair_render_images,
-                    current_representation=representation_by_version[
-                        repair_base_version.version_id
-                    ],
-                    selected_attribution=attribution,
-                    action_fingerprint=fingerprint,
-                    presentation_labels=approved_label_catalog,
-                    candidate_review_scope=candidate_review_scope,
-                    candidate=candidate,
-                    body_color_context=body_color_context,
-                )
-                repair_builder_evidence["repair_policy"] = {
-                    "mode": "bounded_layout_trial",
-                    "instruction": "Attribution is a hypothesis, not permission. Try only existing typed layout primitives; preserve candidate facts. Unmeasured changes require human comparison and cannot be automatically selected.",
-                    "compiled_layout": _lane_a_attribution_layout(current_plan, state, [finding]),
-                }
-                (lane_dir / f"builder_evidence_round_{round_no:02d}.json").write_text(
-                    json.dumps(
-                        repair_builder_evidence,
-                        ensure_ascii=False,
-                        indent=2,
-                        sort_keys=True,
-                    ) + "\n",
-                    encoding="utf-8",
-                )
-                candidate_audit_index = None
-                try:
-                    if live:
-                        proposal = _live_lane_a_builder(
-                            lane_budget,
-                            trace,
-                            payload=repair_builder_evidence,
-                            images=[*shared_target_images, *current_render_images],
-                            proposal_id=f"lane-a-r{round_no + 1}",
-                            audit=_e5_audit(
-                                agent="lane_a_builder",
-                                phase="repair",
-                                round_no=round_no,
-                                render_version=repair_base_version.version_id,
-                                finding_ids=(finding.finding_id,),
-                                measurement_ids=(bound.request_id,),
-                                instructions=E5_LANE_A_BUILDER_INSTRUCTIONS,
-                                image_refs=(
-                                    _e5_image_refs(shared_target_images, "target")
-                                    + _e5_image_refs(current_render_images, "render")
-                                ),
-                            ),
-                        )
-                    else:
-                        proposal = _scripted_lane_a_proposal(state, derived)
-                    validation_error = _validate_lane_a_proposal(proposal, state)
-                    candidate_audit_index = record_builder_candidate(
-                        proposal,
-                        stage="repair",
-                        input_render_version=repair_base_version.version_id,
-                        validation={"passed": validation_error is None, "error": validation_error},
-                        outcome="validator_rejected" if validation_error else "validated",
-                        reason=validation_error or "typed proposal accepted by the shell validator",
-                        attribution=attribution,
-                        action_fingerprint=fingerprint,
-                    )
-                    if validation_error:
-                        repair_attempts.append({"finding": finding.finding_id, "region": finding.region, "rejected": validation_error, "round": round_no})
-                        trace.add(agent="shell", phase="repair", action="rejected", note=validation_error)
-                        continue
-                    repair_attempts.append(
-                        {"finding": finding.finding_id, "region": finding.region, "round": round_no,
-                         "agent": proposal.agent, "sections": len(proposal.sections)}
-                    )
-                    candidate_version, candidate_pdf, candidate_gates = render_version(
-                        f"lane A repair round {round_no} for {finding.finding_id}", proposal
-                    )
-                    assert candidate_audit_index is not None
-                    update_builder_candidate(
-                        candidate_audit_index,
-                        candidate_render_version=candidate_version.version_id,
-                        outcome="rendered_pending_decision",
-                        reason="validated candidate rendered; awaiting shell promotion or rollback",
-                    )
-                    checkpoint("repair_rendered")
-                except CheckpointBudgetExceeded:
-                    escalate("builder_budget_exhausted")
-                    stop_state, stop_reason = "budget_exhausted", "builder_budget"
-                    break
-                except Exception as error:
-                    if candidate_audit_index is not None:
-                        update_builder_candidate(
-                            candidate_audit_index,
-                            outcome="render_failed",
-                            reason=str(error)[:300],
-                        )
-                    escalate(f"repair_render_failed:{type(error).__name__}: {str(error)[:150]}")
-                    continue
-                lane_budget.repair_attempt_count += 1
-                fingerprints.append(fingerprint)  # records the EXECUTED action
-                candidate_index = len(versions) - 1  # the candidate's history index
-                trace.add(
-                    agent="builder", phase="repair", action="proposal",
-                    note=f"round {round_no} on repair base {repair_base_version.version_id}",
-                    persist_output=True,
-                    output={
-                        "current_version": repair_base_version.version_id,
-                        "active_version": current_version.version_id,
-                        "quarantined": quarantine_index is not None,
-                        "current_gates": repair_base_gates,
-                    },
-                )
-                # Re-measure FIRST: the IDENTICAL request, changing only the version.
-                # A hard-gate repair input re-measures the SAME shell gate on
-                # the candidate (the gate already re-ran during the candidate
-                # render); no reviewer measurement channel is invented.
-                counter["request"] += 1
-                repeat_id = bound.request_id
-                if finding.suspected_dimension == "hard_gate_content":
-                    candidate_gate_details = (
-                        gate_details_by_version.get(candidate_version.version_id, {}).get(
-                            "candidate_content_accounting"
-                        )
-                        or {}
-                    )
-                    candidate_missing = len(
-                        candidate_gate_details.get("missing_leaves")
-                        or []
-                    )
-                    repeat_result = MeasurementResult(
-                        request_id=repeat_id,
-                        status="confirmed",
-                        target_value_pt=0.0,
-                        current_value_pt=float(candidate_missing),
-                        delta_pt=float(candidate_missing),
-                        method="candidate_content_accounting_missing/1",
-                        warnings=[
-                            "the identical hard-gate record re-measured on the "
-                            "candidate render (target baseline 0)"
-                        ],
-                    )
-                else:
-                    repeat_result, _ = execute_measurement(
-                        finding, candidate_pdf, repeat_id,
-                        plan=plan_by_version.get(candidate_version.version_id),
-                        render_version=candidate_version.version_id,
-                    )
-                measurement_results.append(repeat_result)
-                improved, improvement_reason = _measurement_improvement(result, repeat_result)
-                if not improved:
-                    unmeasured_trial = (
-                        result.status in {"ambiguous", "evidence_missing", "not_measurable"}
-                        and all(candidate_gates.get(name) is True for name in LANE_A_OUTPUT_GATES)
-                        and not binding_lineage_by_version[candidate_version.version_id].proofs
-                        and candidate_version.html_sha256 != repair_base_version.html_sha256
-                    )
-                    if result.status != "confirmed":
-                        failed = [name for name in LANE_A_OUTPUT_GATES if candidate_gates.get(name) is not True]
-                        if failed:
-                            improvement_reason = f"unmeasured trial failed output gate(s): {failed}"
-                    if unmeasured_trial:
-                        holds, rechecks = accepted_regions_hold(candidate_pdf)
-                        if holds:
-                            pending_layout_trials.add(candidate_version.version_id)
-                            update_builder_candidate(candidate_audit_index, outcome="awaiting_owner_review",
-                                reason="Unmeasured layout trial passed output gates and accepted-region checks; not automatically selected or claimed improved")
-                            trace.add(agent="shell", phase="repair", action="awaiting_owner_review",
-                                output={"version": candidate_version.version_id, "rechecks": rechecks}, persist_output=True)
-                            continue
-                        improvement_reason = "unmeasured trial failed accepted-region recheck"
-                    rolled_back_versions.add(candidate_version.version_id)
-                    update_builder_candidate(
-                        candidate_audit_index,
-                        outcome="rolled_back",
-                        reason=improvement_reason,
-                    )
-                    attempted_strategies.append(f"round{round_no}:{finding.finding_id}:non_improving_rolled_back")
-                    trace.add(
-                        agent="shell", phase="repair", action="rolled_back",
-                        note=f"non-improving repair: {improvement_reason}",
-                    )
-                    continue
-                gate_keys = _e5_blocking_gates(lane)
-                failing_gates = [
-                    gate for gate in gate_keys if candidate_gates.get(gate) is not True
-                ]
-                # A red candidate is no longer thrown away wholesale: the shell
-                # decides between an unsafe REJECTION and a QUARANTINED repair
-                # base. The decision is deterministic and uses existing evidence
-                # only (gate records, builder-candidate audit, the per-version
-                # candidate-binding lineage audit).
-                quarantinable, quarantine_reason = (
-                    _e5_quarantine_eligibility(
-                        candidate_version,
-                        candidate_gates,
-                        representation=representation_by_version.get(
-                            candidate_version.version_id
-                        ),
-                        binding_lineage=binding_lineage_by_version.get(
-                            candidate_version.version_id
-                        ),
-                        candidate_audit=(
-                            builder_candidates[candidate_audit_index]
-                            if candidate_audit_index is not None
-                            else None
-                        ),
-                    )
-                    if failing_gates
-                    else (False, "candidate passed every hard gate")
-                )
-                if failing_gates and not quarantinable:
-                    rolled_back_versions.add(candidate_version.version_id)
-                    update_builder_candidate(
-                        candidate_audit_index,
-                        outcome="rolled_back",
-                        reason=f"not quarantinable: {quarantine_reason}",
-                    )
-                    attempted_strategies.append(
-                        f"round{round_no}:{finding.finding_id}:rejected_not_quarantinable_rolled_back"
-                    )
-                    # The rollback note names the ACTUAL failing gates (the old
-                    # blanket "candidate-safety gate failed" mislabeled a pure
-                    # content-gate failure as a safety failure).
-                    trace.add(
-                        agent="shell", phase="repair", action="rolled_back",
-                        output={
-                            "candidate_version": candidate_version.version_id,
-                            "failing_gates": failing_gates,
-                            "reason": quarantine_reason,
-                        },
-                        note=f"not quarantinable: failing gates {failing_gates}; {quarantine_reason}",
-                    )
-                    continue
-                holds, rechecks = accepted_regions_hold(candidate_pdf)
-                if not holds:
-                    rolled_back_versions.add(candidate_version.version_id)
-                    update_builder_candidate(
-                        candidate_audit_index,
-                        outcome="rolled_back",
-                        reason="accepted-region recheck failed closed",
-                    )
-                    attempted_strategies.append(f"round{round_no}:{finding.finding_id}:accepted_region_regressed_rolled_back")
-                    trace.add(agent="shell", phase="repair", action="rolled_back", note="accepted region regressed")
-                    continue
-                if failing_gates:
-                    # QUARANTINE (owner work order 2026-09-22): the candidate is
-                    # repairable but not passing. It becomes the NEXT repair
-                    # base ONLY — never promoted, never best, never the lane's
-                    # owner-facing output; `active_index` still points at the
-                    # accepted active version.
-                    previous_base = (
-                        versions[quarantine_index].version_id
-                        if quarantine_index is not None
-                        else current_version.version_id
-                    )
-                    quarantine_index = candidate_index
-                    update_builder_candidate(
-                        candidate_audit_index,
-                        outcome="quarantined",
-                        reason=f"repairable-but-not-passing: {quarantine_reason}",
-                    )
-                    attempted_strategies.append(
-                        f"round{round_no}:{finding.finding_id}:quarantined_repair_base"
-                    )
-                    trace.add(
-                        agent="shell", phase="repair", action="quarantined",
-                        output={
-                            "candidate_version": candidate_version.version_id,
-                            "previous_repair_base": previous_base,
-                            "active_version": current_version.version_id,
-                            "failing_gates": failing_gates,
-                            "reason": quarantine_reason,
-                        },
-                        note=(
-                            f"quarantined repair base {candidate_version.version_id} "
-                            f"(failing gates {failing_gates}); active version "
-                            f"{current_version.version_id} unchanged"
-                        ),
-                        persist_output=True,
-                    )
-                    continue
-                # PROMOTION (shell-only): the candidate becomes the new ACTIVE
-                # version; the rejected candidates before it stay in the
-                # immutable history and are never implicitly selected again. A
-                # promoted version supersedes any quarantined repair base.
-                quarantine_index = None
-                versions[candidate_index] = candidate_version.model_copy(update={"promoted": True})
-                update_builder_candidate(
-                    candidate_audit_index,
-                    outcome="promoted",
-                    reason="shell verified improvement, safety gates, and accepted-region hold",
-                )
-                active_index = candidate_index
-                last_promoted_region = finding.region
-                last_promoted_page = finding.page
-                lane_state["active_proposal"] = proposal
-                resolved_measurements[finding.finding_id] = (bound, repeat_result)
-                repaired_entry = ledger.entries[_ledger_key(finding)]
-                repaired_entry.status = "repaired"
-                repaired_entry.measurement_request_id = repeat_result.request_id
-                trace.add(
-                    agent="shell", phase="repair", action="promoted",
-                    output={"version": candidate_version.version_id, "rechecks": rechecks},
-                    persist_output=True,
-                )
-
-            except (CheckpointBudgetExceeded, BudgetExhausted) as budget_error:
-                escalate("loop_tool_budget_exhausted")
-                trace.add(agent="shell", phase="loop", action="budget_exhausted", note=str(budget_error)[:200])
-                stop_state, stop_reason = "budget_exhausted", "tool_call_budget"
-                break
-        return _lane_terminal(lane)
+    run_state = _E5RunState(
+        candidate=candidate,
+        state=state,
+        derived=derived,
+        draft=draft,
+        page_size=page_size,
+        target_pdf=target_pdf,
+        target_id=target_id,
+        target_frozen=target_frozen,
+        target_sha256=target_sha256,
+        out_dir=out_dir,
+        lanes=lanes,
+        live=live,
+        max_repair_rounds=max_repair_rounds,
+        budget=budget,
+        builder_reserve_requests=builder_reserve_requests,
+        layout_spec=layout_spec,
+        template_render=template_render,
+        store=store,
+        pod=pod,
+        summary=summary,
+        environment=environment,
+        region_spans=region_spans,
+        shared_target_images=shared_target_images,
+        approved_label_catalog=approved_label_catalog,
+        approved_label_texts=approved_label_texts,
+        label_catalog=label_catalog,
+        body_scaffold=body_scaffold,
+        bullet_tiers=bullet_tiers,
+        candidate_name_text=candidate_name_text,
+        candidate_review_scope=candidate_review_scope,
+        initial_builder_evidence=initial_builder_evidence,
+        body_color_context=body_color_context,
+        probe_candidates=probe_candidates,
+    )
 
     # -- 5. Run the lanes (fresh contexts; lane B never sees lane A output) --
     for lane in lanes:
         started_lane = time.time()
-        record = _run_lane(lane)
+        record = _e5_run_lane(run_state, lane)
         record.summary["elapsed_seconds"] = round(time.time() - started_lane, 1)
         record.summary["estimated_provider_cost"] = _estimate_lane_cost(record, pricing)
         lane_records[lane] = record
