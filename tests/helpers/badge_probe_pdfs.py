@@ -70,6 +70,32 @@ def build_deep_label_inset_bars_pdf(path: Path) -> Path:
     return _write_single_page_pdf(path, operations)
 
 
+def build_multiword_label_pills_pdf(path: Path) -> Path:
+    """Two 160x20 pt pills whose 10 pt "Data Science SQL" label spans 51% of the width.
+
+    The label's ink runs 82.26 pt wide (51.4% of 160 pt), just past the container
+    cutoff, while its three word boxes alone add up to 76.7 pt (47.9%).
+    """
+    operations = [
+        f"q {CHIP_FILL} rg\n{_pill_path(66, 600, 160, 20)}\nf Q",
+        f"BT {CHIP_TEXT} rg /F1 10 Tf 105 606 Td (Data Science SQL) Tj ET",
+        f"q {CHIP_FILL} rg\n{_pill_path(266, 600, 160, 20)}\nf Q",
+        f"BT {CHIP_TEXT} rg /F1 10 Tf 305 606 Td (Data Science SQL) Tj ET",
+    ]
+    return _write_single_page_pdf(path, operations)
+
+
+def build_two_singleton_pills_pdf(path: Path) -> Path:
+    """Two well-formed 80x20 pt pills in different fills: two lone chips, not a row."""
+    operations = [
+        f"q {CHIP_FILL} rg\n{_pill_path(66, 600, 80, 20)}\nf Q",
+        f"BT {CHIP_TEXT} rg /F1 10 Tf 72 606 Td (Python) Tj ET",
+        f"q {BANNER_FILL} rg\n{_pill_path(200, 600, 80, 20)}\nf Q",
+        "BT 1 1 1 rg /F1 10 Tf 206 606 Td (Go) Tj ET",
+    ]
+    return _write_single_page_pdf(path, operations)
+
+
 def build_outlined_chip_pdf(path: Path) -> Path:
     """One 120x20 pt rounded outline painted with a stroke and no fill."""
     operations = [f"{BANNER_FILL} RG 1 w\n{_pill_path(66, 600, 120, 20)}\nS"]

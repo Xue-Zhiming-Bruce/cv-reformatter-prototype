@@ -30,9 +30,11 @@ from scripts.run_abc_live_matrix import (
 )
 from tests.helpers.badge_probe_pdfs import (
     build_deep_label_inset_bars_pdf,
+    build_multiword_label_pills_pdf,
     build_outlined_chip_pdf,
     build_overflowing_chip_pdf,
     build_section_banner_pdf,
+    build_two_singleton_pills_pdf,
     build_wide_padded_and_square_chip_pdf,
 )
 from tests.helpers.synthetic_pdf import (
@@ -783,6 +785,41 @@ def test_enrich_measures_wide_padded_and_square_chips(tmp_path: Path) -> None:
     assert cluster.fill_color_hex == "#99F6E4"
     assert cluster.text_color_hex == "#334155"
     assert cluster.height_pt == pytest.approx(18.0, abs=0.1)
+
+
+def test_enrich_measures_a_multiword_label_spanning_most_of_its_pill(
+    tmp_path: Path,
+) -> None:
+    """Two 160x20 pt pills hold a 10 pt "Data Science SQL" label whose ink span
+    is 82.26 pt, 51.4% of the width: chips, not containers."""
+    pdf = build_multiword_label_pills_pdf(tmp_path / "multiword.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    assert enriched.warnings == []
+    assert len(enriched.badge_clusters) == 1
+    cluster = enriched.badge_clusters[0]
+    assert cluster.badge_count == 2  # the two pills this probe draws
+    assert cluster.items_per_line == [2]
+    assert cluster.fill_color_hex == "#99F6E4"
+    assert cluster.text_color_hex == "#334155"
+    assert cluster.height_pt == pytest.approx(20.0, abs=0.1)
+
+
+def test_enrich_names_each_legitimate_singleton_pill_with_its_geometry(
+    tmp_path: Path,
+) -> None:
+    """Two well-formed pills in different fills are lone chips: no cluster, and
+    each one is named with its own width, height and position."""
+    pdf = build_two_singleton_pills_pdf(tmp_path / "singletons.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    assert enriched.badge_clusters == []
+    warnings = " ".join(enriched.warnings)
+    assert "were detected but not classified as a repeated badge decoration" in warnings
+    assert "80x20 pt shape (at x=66.0 pt, top=172.0 pt)" in warnings
+    assert "80x20 pt shape (at x=200.0 pt, top=172.0 pt)" in warnings
 
 
 def test_enrich_rejects_section_banners_as_containers(tmp_path: Path) -> None:
