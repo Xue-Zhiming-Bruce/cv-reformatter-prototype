@@ -359,11 +359,77 @@ def _single_run(
     return Counter(colors).most_common(1)[0][0], inset
 
 
+def _filled_area_ratio(item: dict[str, object]) -> float | None:
+    """Filled area over bounding-box area; a triangle fills about half of its box."""
+    x0, x1, top, bottom = _shape_bounds(item)
+    box = (x1 - x0) * abs(bottom - top)
+    path = item.get("path") or []
+    points: list[tuple[float, float]] = []
+    current = (0.0, 0.0)
+    for segment in path:
+        values = [float(value) for point in segment[1:] for value in point]
+        if segment[0] in {"m", "l"}:
+            current = (values[0], values[1])
+            points.append(current)
+        elif segment[0] == "c":
+            ends = [
+                (current[0], values[0], values[2], values[4]),
+                (current[1], values[1], values[3], values[5]),
+            ]
+            for step in range(1, 9):
+                t = step / 8
+                weights = ((1 - t) ** 3, 3 * (1 - t) ** 2 * t, 3 * (1 - t) * t**2, t**3)
+                points.append(
+                    (
+                        sum(weight * value for weight, value in zip(weights, ends[0])),
+                        sum(weight * value for weight, value in zip(weights, ends[1])),
+                    )
+                )
+            current = (values[4], values[5])
+        elif segment[0] != "h":
+            return None
+    if not path:
+        points = [(float(x), float(y)) for x, y in item.get("pts") or []]
+    if len(points) < 3 or box <= 0:
+        return None
+    area = abs(
+        sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(points, points[1:] + points[:1]))
+    ) / 2
+    return max(0.0, area / box)
+
+
+def _not_a_chip_reason(
+    item: dict[str, object],
+    *,
+    text_run: bool,
+    padding_pt: float,
+) -> str | None:
+    """Geometry-derived reason this filled in-band shape is not a chip, else None."""
+    x0, x1, top, bottom = _shape_bounds(item)
+    width, height = x1 - x0, abs(bottom - top)
+    label = f"{width:g}x{height:g} pt shape"
+    if not text_run:
+        return f"{label} holds no single short text run"
+    if padding_pt > height:
+        return f"{label} insets its text by {padding_pt:g} pt, more than its height"
+    # A chip spans a few of its own heights; a section banner spans many.
+    if width > 10 * height:
+        return f"{label} is more than 10x wider than it is tall"
+    ratio = _filled_area_ratio(item)
+    if ratio is None:
+        return f"{label} has a fill path this reader cannot measure"
+    # A chip's body fills its box; a triangle fills about half of it.
+    if ratio < 0.8:
+        return f"{label} fills only {ratio:.0%} of its bounding box"
+    return None
+
+
 def _rect_badge_candidates(
     page: pdfplumber.page.Page, words: list[dict[str, object]]
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], list[str]]:
     """Rectangular badge bodies: a filled rect holding one short text run."""
     candidates: list[dict[str, object]] = []
+    unmeasured: list[str] = []
     seen: set[tuple[float, ...]] = set()
     for object_index, item in enumerate(page.rects):
         x0, x1, top, bottom = _shape_bounds(item)
@@ -395,14 +461,16 @@ def _rect_badge_candidates(
         if full_width <= 20:
             continue
         run = _single_run(words, x0, x1, top, bottom)
-        if run is None:
-            continue
-        text_color = run[0]
         padding = (
             max(0.0, (float(flat["x1"]) - float(flat["x0"]) - (x1 - x0)) / 2)
             if flat is not None
             else 0.0
         )
+        reason = _not_a_chip_reason(item, text_run=run is not None, padding_pt=padding)
+        if reason is not None:
+            unmeasured.append(reason)
+            continue
+        text_color = run[0]
         candidates.append(
             {
                 "object_index": object_index,
@@ -417,16 +485,17 @@ def _rect_badge_candidates(
                 "rounded": False,
             }
         )
-    return candidates
+    return candidates, unmeasured
 
 
 def _rounded_badge_candidates(
     page: pdfplumber.page.Page,
     words: list[dict[str, object]],
     measured: list[dict[str, object]],
-) -> tuple[list[dict[str, object]], int]:
+) -> tuple[list[dict[str, object]], list[str]]:
     """Rounded badge bodies as the HTML renderer draws them: filled bezier paths."""
     candidates: list[dict[str, object]] = []
+    unmeasured: list[str] = []
     seen: set[tuple[float, ...]] = set()
     for object_index, item in enumerate(page.curves):
         x0, x1, top, bottom = _shape_bounds(item)
@@ -449,7 +518,11 @@ def _rounded_badge_candidates(
         ):
             continue  # a pill body already measured as a rectangle
         run = _single_run(words, x0, x1, top, bottom)
-        if run is None:
+        reason = _not_a_chip_reason(
+            item, text_run=run is not None, padding_pt=run[1] if run else 0.0
+        )
+        if reason is not None:
+            unmeasured.append(reason)
             continue
         text_color, padding = run
         candidates.append(
@@ -466,7 +539,27 @@ def _rounded_badge_candidates(
                 "rounded": True,
             }
         )
-    return candidates, len(seen)
+    return candidates, unmeasured
+
+
+def _page_badge_candidates(
+    page: pdfplumber.page.Page, words: list[dict[str, object]]
+) -> tuple[list[dict[str, object]], list[str]]:
+    """Chip bodies on one page, plus why every other in-band filled shape is not one."""
+    candidates, unmeasured = _rect_badge_candidates(page, words)
+    rounded, rounded_unmeasured = _rounded_badge_candidates(page, words, candidates)
+    return [*candidates, *rounded], [*unmeasured, *rounded_unmeasured]
+
+
+def _unmeasured_warning(unmeasured: list[str]) -> str | None:
+    """Warning for in-band filled shapes that no chip rule classified."""
+    if not unmeasured:
+        return None
+    return (
+        f"{len(unmeasured)} filled shape(s) between 10 and 30 pt high were detected "
+        f"but not classified as chips ({'; '.join(unmeasured)}); they remain "
+        "unmeasured pending inspection."
+    )
 
 
 def enrich_badges_from_local_pdf(
@@ -481,11 +574,9 @@ def enrich_badges_from_local_pdf(
         for page_number, page in enumerate(pdf.pages, start=1):
             width, height = float(page.width), float(page.height)
             words = page.extract_words(extra_attrs=["non_stroking_color"])
-            candidates = _rect_badge_candidates(page, words)
-            rounded, rounded_shape_count = _rounded_badge_candidates(
-                page, words, candidates
-            )
-            candidates.extend(rounded)
+            candidates, unmeasured = _page_badge_candidates(page, words)
+            if warning := _unmeasured_warning(unmeasured):
+                warnings.append(warning)
 
             grouped: dict[tuple[str, str, float], list[dict[str, object]]] = {}
             for candidate in candidates:
@@ -543,12 +634,6 @@ def enrich_badges_from_local_pdf(
                             ),
                         ),
                     )
-                )
-            if rounded_shape_count >= 4 and not candidates:
-                warnings.append(
-                    f"{rounded_shape_count} filled rounded shapes between 10 and 30 pt "
-                    "were detected but none could be classified as badge decoration; "
-                    "they remain unmeasured pending inspection."
                 )
     return normalized.model_copy(
         update={"badge_clusters": clusters, "warnings": warnings}

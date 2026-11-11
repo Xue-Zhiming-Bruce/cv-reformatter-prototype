@@ -274,6 +274,43 @@ def build_rounded_decoration_target_pdf(path: Path) -> Path:
     return _write_single_page_pdf(path, operations)
 
 
+def build_banner_and_triangle_target_pdf(path: Path) -> Path:
+    """Rounded and rectangular section banners plus filled triangles: decoration, not chips.
+
+    Each banner is 400 x 24 pt with its label inset 84 pt from the left edge, so the
+    measured inset cannot fit the badge cluster schema (0..72 pt). Each triangle is
+    30 x 24 pt, filling half of its bounding box, and carries one short text run.
+    """
+    banner = "0.05098 0.58039 0.53333"
+    triangle = "0.6 0.96471 0.89412"
+    body = "0.2 0.25490 0.33333"
+    operations = [
+        f"q {banner} rg\n{_pill_path(66, 700, 400, 24)}\nf Q",
+        f"BT 1 1 1 rg /F2 11 Tf 150 708 Td (Skills overview) Tj ET",
+        f"q {banner} rg\n{_pill_path(66, 660, 400, 24)}\nf Q",
+        f"BT 1 1 1 rg /F2 11 Tf 150 668 Td (Experience overview) Tj ET",
+        f"q {banner} rg 66 620 400 24 re f Q",
+        f"BT 1 1 1 rg /F2 11 Tf 150 628 Td (Education overview) Tj ET",
+        f"q {triangle} rg\n66 580 m 96 580 l 81 604 l h f Q",
+        f"BT {body} rg /F1 9 Tf 76 585 Td (Tri) Tj ET",
+        f"q {triangle} rg\n166 580 m 196 580 l 181 604 l h f Q",
+        f"BT {body} rg /F1 9 Tf 176 585 Td (Tri) Tj ET",
+    ]
+    return _write_single_page_pdf(path, operations)
+
+
+def build_multiline_rounded_shape_target_pdf(path: Path) -> Path:
+    """One filled rounded shape holding two text lines: a single unclassifiable shape."""
+    chip = "0.6 0.96471 0.89412"
+    body = "0.2 0.25490 0.33333"
+    operations = [
+        f"q {chip} rg\n{_pill_path(66, 540, 140, 24)}\nf Q",
+        f"BT {body} rg /F1 8 Tf 72 546 Td (First text line) Tj ET",
+        f"BT {body} rg /F1 8 Tf 72 556 Td (Second line) Tj ET",
+    ]
+    return _write_single_page_pdf(path, operations)
+
+
 def build_design_plain_target_pdf(path: Path) -> Path:
     """Conventional one-column target with typographically distinct title and
     section headings (for the design lane)."""

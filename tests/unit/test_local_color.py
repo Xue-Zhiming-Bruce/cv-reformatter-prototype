@@ -27,6 +27,8 @@ from scripts.run_abc_live_matrix import (
     _structure_failures,
 )
 from tests.helpers.synthetic_pdf import (
+    build_banner_and_triangle_target_pdf,
+    build_multiline_rounded_shape_target_pdf,
     build_partial_heading_rules_target_pdf,
     build_pipe_contact_header_target_pdf,
     build_rounded_chip_target_pdf,
@@ -410,13 +412,60 @@ def test_enrich_leaves_rounded_decoration_unmeasured(tmp_path: Path) -> None:
 
     enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
 
-    # A wide banner, an over-tall blob, a stroked rule, and a two-line shape
-    # are decoration, never skills.
+    # The 400x24 pt banner (label inset 84 pt) and the 140x18 pt two-line shape are
+    # decoration, never skills; the over-tall blob and the stroked rule are not chips.
     assert enriched.badge_clusters == []
     warnings = " ".join(enriched.warnings)
-    assert "1 filled short-text shape(s)" in warnings
-    assert "24 pt" in warnings
+    assert "2 filled shape(s)" in warnings
+    assert "400x24 pt shape insets its text by 84 pt" in warnings
+    assert "140x18 pt shape holds no single short text run" in warnings
+    assert "60 pt" not in warnings
     assert "unmeasured pending inspection" in warnings
+
+
+def test_enrich_warns_instead_of_raising_on_a_banner_sized_text_inset(
+    tmp_path: Path,
+) -> None:
+    # Two rounded section banners measure an 84 pt text inset, outside the badge
+    # cluster's 0..72 pt range: that must become a warning, never a ValidationError.
+    pdf = build_banner_and_triangle_target_pdf(tmp_path / "banners.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    assert enriched.badge_clusters == []
+    warnings = " ".join(enriched.warnings)
+    assert "400x24 pt shape insets its text by 84 pt, more than its height" in warnings
+    assert "unmeasured pending inspection" in warnings
+
+
+def test_enrich_leaves_banners_and_triangles_unmeasured(tmp_path: Path) -> None:
+    # Three 400x24 pt banners (two rounded, one rectangular) and two 30x24 pt filled
+    # triangles fill about half of their bounding boxes; none of them is a chip.
+    pdf = build_banner_and_triangle_target_pdf(tmp_path / "decoration.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    assert enriched.badge_clusters == []
+    assert len(enriched.warnings) == 1
+    warnings = enriched.warnings[0]
+    assert "5 filled shape(s)" in warnings
+    assert "400x24 pt shape is more than 10x wider than it is tall" in warnings
+    assert "30x24 pt shape fills only 50% of its bounding box" in warnings
+    assert "unmeasured pending inspection" in warnings
+
+
+def test_enrich_reports_a_single_unclassified_rounded_shape(tmp_path: Path) -> None:
+    pdf = build_multiline_rounded_shape_target_pdf(tmp_path / "multiline.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    # One filled rounded shape alone is unmeasured, not "no badges": the warning
+    # names the shape and its geometry so both readings stay distinguishable.
+    assert enriched.badge_clusters == []
+    assert len(enriched.warnings) == 1
+    assert "1 filled shape(s)" in enriched.warnings[0]
+    assert "140x24 pt shape holds no single short text run" in enriched.warnings[0]
+    assert "unmeasured pending inspection" in enriched.warnings[0]
 
 
 def test_enrich_measures_rectangular_chip_band(tmp_path: Path) -> None:
