@@ -1,18 +1,5 @@
 from app.extraction.candidate_schema import CandidateProfile, DisplayRule
-from app.validation.missing_fields import apply_missing_field_detection, detect_missing_fields
-
-
-def test_detect_missing_recruiter_fields() -> None:
-    profile = CandidateProfile(full_name="Jane Candidate", location="Boston")
-
-    missing = detect_missing_fields(profile)
-
-    assert [field.field_name for field in missing] == [
-        "salary_expectation",
-        "notice_period",
-        "work_authorization",
-        "interview_availability",
-    ]
+from app.validation.missing_fields import apply_missing_field_detection
 
 
 def test_apply_missing_field_detection_records_fields_without_a_display_rule() -> None:

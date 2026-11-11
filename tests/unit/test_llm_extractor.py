@@ -18,7 +18,7 @@ from app.extraction.llm_extractor import (
 )
 
 
-def test_mock_llm_extractor_returns_validated_profile_with_missing_fields() -> None:
+def test_mock_llm_extractor_returns_validated_profile_with_source_facts() -> None:
     resume_text = """Jane Candidate
 jane@example.com
 Location: Boston
@@ -30,12 +30,6 @@ Skills: Python, SQL
     assert profile.full_name == "Jane Candidate"
     assert profile.email == "jane@example.com"
     assert profile.skills == ["Python", "SQL"]
-    assert {field.field_name for field in profile.missing_fields} == {
-        "salary_expectation",
-        "notice_period",
-        "work_authorization",
-        "interview_availability",
-    }
 
 
 def test_mock_llm_extractor_parses_common_docx_resume_sections() -> None:

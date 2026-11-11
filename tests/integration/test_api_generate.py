@@ -201,6 +201,8 @@ def test_generate_keeps_absent_source_facts_absent(
     assert saved.profile.client_display_rules == {}
     assert {field["field_name"] for field in body["missing_fields"]} >= set(absent[:5])
     html = (artifact_dir / "candidate_profile.html").read_text(encoding="utf-8")
+    assert "Fictional Source Candidate" in html
+    assert "Maintains documented services." in html
     for label in (
         "Salary expectation",
         "Notice period",
