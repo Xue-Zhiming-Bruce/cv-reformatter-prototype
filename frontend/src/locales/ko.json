@@ -30,7 +30,15 @@
     "templateBtn": "양식 선택",
     "convertBtn": "변환 후 검토",
     "convertingBtn": "추출 중…",
-    "convertHint": "계속하려면 목표 양식을 업로드하세요"
+    "convertHint": "계속하려면 목표 양식을 업로드하세요",
+    "builtInNote": "기본 템플릿(built-in-3) — 한 컬럼 레이아웃이라 목표 파일을 올릴 필요가 없습니다."
+  },
+  "mode": {
+    "groupLabel": "표시 방식",
+    "builtInLabel": "기본 템플릿 사용",
+    "builtInHint": "한 컬럼 전문가용 레이아웃. 목표 파일이 필요 없습니다.",
+    "uploadedTargetLabel": "회사 PDF 목표 양식 업로드",
+    "uploadedTargetHint": "회사 PDF에 맞춥니다. 승인된 레이아웃 증명이 필요합니다."
   },
   "how": {
     "heading": "사용 방법",
@@ -222,6 +230,7 @@
     "emailCopied": "복사됨",
     "emailOpen": "메일 앱으로 열기",
     "emailLoading": "작성 중…",
+    "builtInTemplateName": "기본 템플릿",
     "targetSupportLabel": "목표 양식 지원",
     "targetTypePdf": "PDF 목표 양식",
     "targetTypeDocx": "DOCX 목표 양식",
@@ -384,6 +393,7 @@
     "unsupported": "지원하지 않는 파일 형식입니다 — {{detail}}",
     "server": "서버 오류 — 다시 시도해주세요. ({{detail}})",
     "network": "서버에 연결할 수 없습니다. 인터넷 연결을 확인해주세요.",
-    "invalidFileType": "PDF와 DOCX 파일만 지원합니다."
+    "invalidFileType": "PDF와 DOCX 파일만 지원합니다.",
+    "targetRequired": "계속하려면 회사 PDF 목표 양식을 업로드하세요."
   }
 }

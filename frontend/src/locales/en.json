@@ -30,7 +30,15 @@
     "templateBtn": "Upload format",
     "convertBtn": "Convert & review",
     "convertingBtn": "Extracting…",
-    "convertHint": "Upload a target format to continue"
+    "convertHint": "Upload a target format to continue",
+    "builtInNote": "Built-in template (built-in-3) — one-column layout, no target file to upload."
+  },
+  "mode": {
+    "groupLabel": "Presentation",
+    "builtInLabel": "Use built-in template",
+    "builtInHint": "One-column professional layout. No target file needed.",
+    "uploadedTargetLabel": "Upload company PDF target",
+    "uploadedTargetHint": "Match a company PDF. Requires an approved layout proof."
   },
   "how": {
     "heading": "How it works",
@@ -222,6 +230,7 @@
     "emailCopied": "Copied",
     "emailOpen": "Open in email app",
     "emailLoading": "Drafting…",
+    "builtInTemplateName": "Built-in template",
     "targetSupportLabel": "Target support",
     "targetTypePdf": "PDF target",
     "targetTypeDocx": "DOCX target",
@@ -384,6 +393,7 @@
     "unsupported": "Unsupported file — {{detail}}",
     "server": "Server error — please try again. ({{detail}})",
     "network": "Could not reach the server — check your connection and try again.",
-    "invalidFileType": "Only PDF and DOCX files are supported."
+    "invalidFileType": "Only PDF and DOCX files are supported.",
+    "targetRequired": "Upload a company PDF target to continue."
   }
 }
