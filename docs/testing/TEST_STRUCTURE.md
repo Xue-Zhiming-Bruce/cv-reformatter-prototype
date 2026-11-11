@@ -2,7 +2,8 @@
 
 Status: `Active contract`
 
-Last reviewed: October 19, 2026 (historical pipeline and commercial runners retired)
+Last reviewed: November 11, 2026 (owner-confirmed fictional corpus and
+document-input requirement for product trials)
 
 This document is the authoritative structural contract for tests, evaluation
 workflows, fixtures, and generated evidence. It exists to prevent separate
@@ -73,6 +74,30 @@ There may be only one current workflow for each responsibility. Retained
 historical result directories may be consumed by an explicit compatibility
 reader, but historical source modules must not be restored to produce new
 evidence.
+
+## Product Trials Use Document Inputs
+
+The owner confirmed on November 11, 2026 that the current test resumes are all
+fictional/manufactured. Fictional content does not mean mocked execution.
+For product-use, end-to-end and output-quality evaluation:
+
+- Read existing PDF/DOCX files from the [input inventory](../../tests/local_datasets/README.md).
+  Record the exact source and target paths, actual formats and checksums.
+- Exercise upload/ingestion, extraction, saved revision, client rendering and
+  actual HTML/PDF output. Target files supply presentation only; candidate
+  facts must come from the selected source document.
+- Do not substitute a hand-written profile, demo response, mock extraction or
+  fabricated target evidence and call the result a product trial. If a required
+  provider is unavailable, report the blocked stage instead of silently mocking
+  it. Existing provider opt-ins/budgets still apply.
+- Saved checksum-matched extraction/target evidence may be replayed through the
+  existing workflow, but label it replay and name the stages not rerun; it is
+  not fresh end-to-end/provider evidence.
+
+Small fixtures, mocks and synthetic short/medium/long layout proofs remain
+useful for isolated regression/proof checks. Label their scope; they cannot
+replace document-based candidate trials or establish product-output quality.
+Do not delete those checks or introduce a second runner/corpus for this rule.
 
 ## Test Classification
 

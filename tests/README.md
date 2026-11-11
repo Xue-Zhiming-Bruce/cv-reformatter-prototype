@@ -3,6 +3,14 @@
 This directory follows the authoritative
 [`Repository Test Structure Contract`](../docs/testing/TEST_STRUCTURE.md).
 
+For product trials, use the existing PDF/DOCX documents listed in the
+[local input inventory](local_datasets/README.md), including the exact A–I PDFs,
+numbered DOCX files and archive index. Their content is fictional by owner
+attestation (November 11, 2026); the files must still pass through the actual
+document workflow. Mock profiles/model responses are isolated-test evidence,
+not product-use or output-quality evidence; see the
+[document-input rule](../docs/testing/TEST_STRUCTURE.md#product-trials-use-document-inputs).
+
 Use these entry points:
 
 - `unit/` — fast isolated backend tests;

@@ -2,7 +2,8 @@
 
 Status: `Active testing guide`
 
-Last reviewed: August 10, 2026
+Last reviewed: November 11, 2026 (fictional-corpus attestation and document-input
+rule; result schema unchanged)
 
 This guide defines the required human-readable and machine-readable format for
 resume-matrix result folders. It does not change product quality gates or make
@@ -24,9 +25,10 @@ timestamped filename.
 The authoritative provenance and live-provider authorization record for the
 current local corpus is
 [`tests/local_datasets/README.md`](../../tests/local_datasets/README.md). The
-product owner confirmed on August 12, 2026 that the current corpus contains
-fake example resumes downloaded from public internet sources, not real
-candidate submissions. Run manifests using this corpus must record
+product owner reaffirmed on November 11, 2026 that all current test resumes
+are fictional/manufactured, not confidential candidate submissions. Product
+trials must use the PDF/DOCX files listed in that inventory, not mock profiles
+or substituted candidate information. Run manifests using this corpus must record
 `dataset_classification: owner_attested_fake_resume_corpus`. New datasets need
 their own provenance classification; do not copy the current attestation to
 new inputs automatically.

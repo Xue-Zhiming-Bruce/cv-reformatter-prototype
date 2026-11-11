@@ -413,5 +413,10 @@ diagnostics remain evidence for those examples, not universal acceptance rules.
 - Normalize providers into versioned internal contracts.
 - Require benchmarks before replacing accepted analyzers or renderers.
 - Use synthetic or explicitly authorized data for tests and evaluations.
+- The current test resumes are all fictional by owner attestation (November 11,
+  2026). Product trials use the actual PDF/DOCX files in the
+  [input inventory](../../tests/local_datasets/README.md), following the
+  [document-input test rule](../testing/TEST_STRUCTURE.md#product-trials-use-document-inputs);
+  mock candidate data does not establish product-output quality.
 - Do not commit real resumes, candidate data, secrets, or generated personal
   information.

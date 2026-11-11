@@ -83,11 +83,13 @@ information separate from client-facing disclosure.
   exact conversion.
 - Never commit real resumes, candidate data, generated personal information,
   `.env` files, API keys, or license credentials.
-- Use synthetic or explicitly authorized inputs. Local development/test
-  documents under `data/input_samples/`, `tests/local_datasets/`, and related
-  folders are public or fictional (`[maintainer]` clearance, 2026-08-24) and may
-  be used freely; the prohibitions above apply to real candidate/target
-  documents received in confidence.
+- The owner confirmed on 2026-11-11 that all resumes currently used for testing
+  are fictional/manufactured, not confidential candidate submissions. Use the
+  actual PDF/DOCX documents for product trials, not mock profiles or substituted
+  candidate information. The [test contract](docs/testing/TEST_STRUCTURE.md#product-trials-use-document-inputs)
+  defines the boundary; the [input inventory](tests/local_datasets/README.md)
+  lists exact files/locations. This supersedes the earlier public-or-fictional
+  description; new inputs need their own provenance record.
 - Do not send real candidate or target documents to external providers before
   provider policy, authorization, retention, and deletion controls exist.
 
