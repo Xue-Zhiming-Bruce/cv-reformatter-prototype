@@ -419,17 +419,17 @@ export function MainScreen({ mode, onModeChange, onConvert, isLoading, error, on
                 <div className="resume-preview resume-preview--after">
                   <p className="rp-name">Alex Kim</p>
                   <p className="rp-title">Senior Software Engineer</p>
-                  <p className="rp-meta">alex.kim@gmail.com · 555-0171 · New York, NY</p>
+                  <p className="rp-meta">alex.kim@gmail.com · 555-0171 · New York</p>
                   <div className="rp-section">
                     <div className="rp-section-head">Experience</div>
                     <div className="rp-entry">
                       <p className="rp-entry-head">Google Inc. · Senior SWE · Jan 2020 – Present</p>
-                      <p className="rp-entry-body">Architected microservices serving 50M+ requests/day</p>
-                      <p className="rp-entry-body">Mentored 2 junior engineers; drove cross-functional delivery</p>
+                      <p className="rp-entry-body">Built and maintained microservices, primarily in Python and Go</p>
+                      <p className="rp-entry-body">Cross-functional team collaboration</p>
                     </div>
                     <div className="rp-entry">
                       <p className="rp-entry-head">StartupCo · Software Developer · 2017 – 2020</p>
-                      <p className="rp-entry-body">Reduced mobile load time 30% via caching</p>
+                      <p className="rp-entry-body">Built mobile features; reduced load time 30%. Managed juniors.</p>
                     </div>
                   </div>
                   <div className="rp-section">
