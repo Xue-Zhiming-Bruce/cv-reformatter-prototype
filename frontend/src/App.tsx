@@ -185,6 +185,7 @@ export default function App() {
       isLoading={state.status === "loading"}
       error={state.status === "error" ? state.message : null}
       onDismissError={() => showUpload(state.mode)}
+      onReset={() => showUpload(state.mode)}
       onLogin={() => leaveFor({ status: "login", from: "idle" })}
       onSignup={() => leaveFor({ status: "signup", from: "idle" })}
       onPricing={() => leaveFor({ status: "pricing" })}

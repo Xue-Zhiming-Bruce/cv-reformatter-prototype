@@ -32,6 +32,7 @@ type MainScreenProps = {
   isLoading: boolean
   error: string | null
   onDismissError: () => void
+  onReset: () => void
   onLogin: () => void
   onSignup: () => void
   onPricing: () => void
@@ -80,7 +81,7 @@ function nl(text: string | string[]) {
   ))
 }
 
-export function MainScreen({ mode, onModeChange, onConvert, isLoading, error, onDismissError, onLogin, onSignup, onPricing, onTerms, onPrivacy }: MainScreenProps) {
+export function MainScreen({ mode, onModeChange, onConvert, isLoading, error, onDismissError, onReset, onLogin, onSignup, onPricing, onTerms, onPrivacy }: MainScreenProps) {
   const { t } = useTranslation()
   const [resumeFile, setResumeFile] = useState<File | null>(null)
   const [templateFile, setTemplateFile] = useState<File | null>(null)
@@ -91,6 +92,14 @@ export function MainScreen({ mode, onModeChange, onConvert, isLoading, error, on
   const resumeInputRef = useRef<HTMLInputElement>(null)
 
   const canConvert = !!resumeFile && !isLoading && (mode === "built-in" || !!templateFile)
+
+  // Every control that clears the selected file resets the flow through App's attempt gate, so a run
+  // still in flight is superseded instead of landing its late response on the reset screen.
+  function handleReset() {
+    setResumeFile(null)
+    setTemplateFile(null)
+    onReset()
+  }
 
   function isAllowedFile(file: File): boolean {
     const ext = file.name.split(".").pop()?.toLowerCase()
@@ -174,7 +183,7 @@ export function MainScreen({ mode, onModeChange, onConvert, isLoading, error, on
 
       <SiteHeader
         activePage="home"
-        onHome={() => { setResumeFile(null); setTemplateFile(null) }}
+        onHome={handleReset}
         onPricing={onPricing}
         onLogin={onLogin}
         onSignup={onSignup}
@@ -275,7 +284,7 @@ export function MainScreen({ mode, onModeChange, onConvert, isLoading, error, on
               <button
                 type="button"
                 className="resume-badge__change"
-                onClick={() => { setResumeFile(null); setTemplateFile(null) }}
+                onClick={handleReset}
               >
                 {t("converter.badgeChange")}
               </button>
@@ -472,7 +481,7 @@ export function MainScreen({ mode, onModeChange, onConvert, isLoading, error, on
         <span>{t("trust.item3")}</span>
       </div>
 
-      <Footer onHome={() => { setResumeFile(null); setTemplateFile(null) }} onPricing={onPricing} onTerms={onTerms} onPrivacy={onPrivacy} />
+      <Footer onHome={handleReset} onPricing={onPricing} onTerms={onTerms} onPrivacy={onPrivacy} />
     </div>
   )
 }
