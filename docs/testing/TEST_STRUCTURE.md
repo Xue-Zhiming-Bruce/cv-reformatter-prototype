@@ -2,8 +2,9 @@
 
 Status: `Active contract`
 
-Last reviewed: November 11, 2026 (owner-confirmed fictional corpus and
-document-input requirement for product trials)
+Last reviewed: November 12, 2026 (frontend UI lane added under Canonical
+Workflows; owner-confirmed fictional corpus and document-input requirement for
+product trials)
 
 This document is the authoritative structural contract for tests, evaluation
 workflows, fixtures, and generated evidence. It exists to prevent separate
@@ -56,6 +57,7 @@ were retired on October 19, 2026; its source remains in Git.
 | Automated backend tests | `pytest tests/unit tests/integration` | synthetic fixtures | `tests/test_results/pytest/` terminal log |
 | Explicit live smoke tests | pytest tests under `tests/live/` with `live_provider` marker and opt-in | synthetic or authorized input | `tests/test_results/pytest/` terminal log |
 | Resume transformation matrix | `scripts/run_abc_live_matrix.py` (API-driven; supersedes the retired `run_block_aware_matrix.py` offline runner) | authorized `tests/local_datasets/resume_matrix/` inputs | versioned matrix run defined by `TEST_RESULT_FORMAT.md`; run reports under `data/generated_outputs/abc_live_matrix/` |
+| Frontend UI behaviour | `cd frontend && npm test` (Node's built-in runner; the UI files drive the app in Chromium through the `playwright` library, never `playwright test`) | Vite-served app with `/api/*` stubbed in the page | terminal output only; no artifact directory or result schema |
 | Selected E5 pipeline (A only; B execution retired) | `python -m app.pipeline` | saved `CandidateProfile` JSON (shared disclosure/blind mapper; internal projection), target PDF, Adobe JSON, normalized evidence, structure draft, and optional identity-bound label approval | `data/generated_outputs/pipeline/` by default or explicit `--out`; regressions in `tests/unit/test_pipeline_*.py` and `tests/integration/test_pipeline*.py`; synthetic fixtures in `tests/helpers/pipeline*.py`; optional explicit local bundle documented in `tests/README.md`; no automatic historical-run lookup or synthetic probes |
 
 API and CLI now share the selected A compilation/rendering owner. Authored B
@@ -69,6 +71,12 @@ Their historical plans, run reports, and repository-memory ledgers were removed
 from the working tree after consolidation into the current docs. Source and
 history remain recoverable from Git. Existing ignored experiment outputs stay
 local; there is no active producer for that directory.
+
+The frontend UI lane extends the existing `npm test` entry point: it starts the
+repo's own Vite on a free `127.0.0.1` port, launches the installed Chromium,
+and answers every `/api/*` request inside the page. It needs no backend, Docker,
+PostgreSQL, provider credential or fixed port, and writes nothing to disk.
+Chromium is a one-time local prerequisite: `npx playwright install chromium`.
 
 There may be only one current workflow for each responsibility. Retained
 historical result directories may be consumed by an explicit compatibility
