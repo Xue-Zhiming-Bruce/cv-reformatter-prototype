@@ -15,6 +15,7 @@ from app.extraction.llm_extractor import (
     OpenAILLMClient,
     build_llm_client,
     extract_candidate_profile,
+    extraction_mode,
 )
 
 
@@ -137,6 +138,20 @@ def test_build_llm_client_reuses_single_generic_openai_key(monkeypatch) -> None:
 
     assert isinstance(client, FakeOpenAIClient)
     assert captured == {"api_key": "one-project-key", "model": None}
+
+
+def test_extraction_mode_follows_configured_provider(monkeypatch) -> None:
+    """The disclosed mode resolves through the same precedence as build_llm_client."""
+
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    assert extraction_mode() == "live"  # unset means the openai default
+    assert extraction_mode(provider="openai") == "live"
+    assert extraction_mode(provider="anthropic") == "live"
+
+    monkeypatch.setenv("LLM_PROVIDER", "mock")
+    assert extraction_mode() == "mock"  # falls back to LLM_PROVIDER like build_llm_client
+    assert extraction_mode(provider="MOCK") == "mock"
+    assert extraction_mode(provider="openai") == "live"  # an explicit provider wins
 
 
 def test_openai_client_uses_responses_api_with_strict_profile_output() -> None:

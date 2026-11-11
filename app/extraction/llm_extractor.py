@@ -2,7 +2,7 @@ import json
 import os
 import re
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -221,8 +221,20 @@ def _accumulate_usage(total: dict[str, int], latest: dict[str, int]) -> None:
         total[key] = total.get(key, 0) + value
 
 
+ExtractionMode = Literal["mock", "live"]
+
+
+def _provider_name(provider: str | None) -> str:
+    return (provider or os.getenv("LLM_PROVIDER") or "openai").lower()
+
+
+def extraction_mode(provider: str | None = None) -> ExtractionMode:
+    """The mode label a run may disclose; the provider name itself never leaves the server."""
+    return "mock" if _provider_name(provider) == "mock" else "live"
+
+
 def build_llm_client(provider: str | None = None, stage: str = "extract") -> LLMClient:
-    provider_name = (provider or os.getenv("LLM_PROVIDER") or "openai").lower()
+    provider_name = _provider_name(provider)
     if provider_name == "openai":
         return OpenAILLMClient(
             api_key=_stage_env_value("OPENAI", stage, "API_KEY"),

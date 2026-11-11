@@ -10,7 +10,11 @@ from pytest import MonkeyPatch
 from app import main
 from app.main import app
 from app.extraction.candidate_schema import CandidateProfile
-from app.extraction.llm_extractor import LLMConfigurationError, LLMExtractionError
+from app.extraction.llm_extractor import (
+    LLMConfigurationError,
+    LLMExtractionError,
+    MockLLMClient,
+)
 from app.ingestion.pdf_reader import read_pdf_text
 from app.generation import service as generation_service
 
@@ -187,6 +191,77 @@ def test_process_accepts_text_pdf_upload(tmp_path: Path, monkeypatch: MonkeyPatc
     metadata = metadata_response.json()
     assert metadata["status"] == "processed"
     assert metadata["source_file_type"] == "pdf"
+
+
+PRE_EXISTING_RESPONSE_FIELDS = {
+    "artifact_id",
+    "artifact_metadata_url",
+    "debug_artifacts",
+    "ledger",
+    "original_pdf_preview_url",
+    "original_preview_error",
+    "original_text",
+    "profile",
+    "profile_revision_id",
+}
+
+
+def test_process_reports_mock_extraction_mode(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """AC1/AC5: the offline stack reports mock extraction and discloses nothing about a provider."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["extraction_mode"] == "mock"
+    assert set(body) == PRE_EXISTING_RESPONSE_FIELDS | {"extraction_mode"}
+    body_text = response.text.lower()
+    for provider_token in ("openai", "anthropic", "gpt-", "claude-", "api_key", "sk-"):
+        assert provider_token not in body_text
+
+
+def test_process_reports_live_extraction_mode_for_configured_provider(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """AC2: the mode follows configuration rather than a literal. The extraction client is
+    stubbed, so no network call and no credential are involved."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "openai")
+    monkeypatch.setattr(main, "build_llm_client", lambda **_kwargs: MockLLMClient())
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["extraction_mode"] == "live"
 
 
 def test_followup_endpoint_still_drafts_a_message(monkeypatch: MonkeyPatch) -> None:

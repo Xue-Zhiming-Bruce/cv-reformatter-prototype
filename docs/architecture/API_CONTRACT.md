@@ -58,7 +58,10 @@ Response fields:
 - `original_pdf_preview_url`;
 - `original_preview_error`;
 - `debug_artifacts`;
-- `artifact_metadata_url`.
+- `artifact_metadata_url`;
+- `extraction_mode` — `mock` or `live`: whether this run used the deterministic
+  mock extraction client or a configured AI provider. It carries no provider
+  name, model id, endpoint, credential or region.
 
 In addition to `raw_extracted_text.txt` and `candidate_profile.json`, processing
 persists two immutable source-analysis artifacts:
