@@ -103,29 +103,44 @@ def _measure_pdf_badges(path: Path) -> dict[str, Any]:
 
 
 def _measure_html_badges(path: Path) -> dict[str, Any]:
+    """Measure rendered chip spans, in document order, one row at a time."""
+
     class BadgeParser(HTMLParser):
         def __init__(self) -> None:
             super().__init__()
             self.badges: list[dict[str, str | None]] = []
             self.rows: list[int] = []
-            self._row: int | None = None
+            self._row: tuple[str, int] | None = None
 
         def handle_starttag(self, tag, attrs):
             values = dict(attrs)
             classes = set((values.get("class") or "").split())
-            if "chip-row" in classes:
-                self._row = 0
-            elif "chip-style" in classes:
+            node_id = values.get("data-node-id") or ""
+            is_row = "chip-row" in classes or (
+                ".badge_group." in node_id and ".row." in node_id
+            )
+            is_chip = "chip-style" in classes or (
+                ".badge." in node_id and ".chip." in node_id
+            )
+            if is_row and self._row is None:
+                self._row = (tag, 0)
+            # One start tag carries one chip even when it matches both forms.
+            if is_chip:
                 style = dict(
-                    item.split(":", 1) for item in (values.get("style") or "").split(";") if ":" in item
+                    item.split(":", 1)
+                    for item in (values.get("style") or "").split(";")
+                    if ":" in item
                 )
-                self.badges.append({"fill": style.get("background"), "text": style.get("color")})
+                self.badges.append(
+                    {"fill": style.get("background"), "text": style.get("color")}
+                )
                 if self._row is not None:
-                    self._row += 1
+                    self._row = (self._row[0], self._row[1] + 1)
 
         def handle_endtag(self, tag):
-            if tag == "div" and self._row is not None:
-                self.rows.append(self._row)
+            if self._row is not None and tag == self._row[0]:
+                if self._row[1]:
+                    self.rows.append(self._row[1])
                 self._row = None
 
     parser = BadgeParser()
