@@ -319,6 +319,156 @@ def _enrich_section_spacing(
     return normalized.model_copy(update={"text_blocks": blocks, "warnings": warnings})
 
 
+def _shape_bounds(item: dict[str, object]) -> tuple[float, float, float, float]:
+    x0, x1 = sorted((float(item.get("x0") or 0), float(item.get("x1") or 0)))
+    top = float(item.get("top") or 0)
+    bottom = float(item.get("bottom") or top)
+    return x0, x1, top, bottom
+
+
+def _single_run(
+    words: list[dict[str, object]],
+    x0: float,
+    x1: float,
+    top: float,
+    bottom: float,
+) -> tuple[str, float] | None:
+    """Text color and smaller horizontal inset of the shape's single short run."""
+    inside = [
+        word
+        for word in words
+        if x0 <= (float(word["x0"]) + float(word["x1"])) / 2 <= x1
+        and top <= (float(word["top"]) + float(word["bottom"])) / 2 <= bottom
+    ]
+    if not inside or len({round(float(word["top"]), 1) for word in inside}) != 1:
+        return None
+    text = " ".join(str(word["text"]) for word in inside).strip()
+    if not text or len(text) > 80:
+        return None
+    colors = [
+        color
+        for word in inside
+        if (color := _hex_from_color(word.get("non_stroking_color"))) is not None
+    ]
+    if not colors:
+        return None
+    inset = min(
+        min(max(0.0, float(word["x0"]) - x0) for word in inside),
+        min(max(0.0, x1 - float(word["x1"])) for word in inside),
+    )
+    return Counter(colors).most_common(1)[0][0], inset
+
+
+def _rect_badge_candidates(
+    page: pdfplumber.page.Page, words: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """Rectangular badge bodies: a filled rect holding one short text run."""
+    candidates: list[dict[str, object]] = []
+    seen: set[tuple[float, ...]] = set()
+    for object_index, item in enumerate(page.rects):
+        x0, x1, top, bottom = _shape_bounds(item)
+        object_height = abs(bottom - top)
+        fill = _hex_from_color(item.get("non_stroking_color"))
+        if not item.get("fill") or fill is None:
+            continue
+        if not 10 <= object_height <= 30:
+            continue
+        shape_key = (round(x0, 1), round(x1, 1), round(top, 1), round(bottom, 1), fill)
+        if shape_key in seen:
+            continue  # the same fill path emitted twice is one shape
+        seen.add(shape_key)
+        flat = next(
+            (
+                other
+                for other in page.rects
+                if other is not item
+                and abs(float(other.get("top") or 0) - (top + object_height / 2)) <= 0.2
+                and _hex_from_color(other.get("non_stroking_color")) == fill
+                and float(other.get("x0") or 0) <= x0
+                and float(other.get("x1") or 0) >= x1
+            ),
+            None,
+        )
+        full_width = (
+            float(flat["x1"]) - float(flat["x0"]) if flat is not None else x1 - x0
+        )
+        if full_width <= 20:
+            continue
+        run = _single_run(words, x0, x1, top, bottom)
+        if run is None:
+            continue
+        text_color = run[0]
+        padding = (
+            max(0.0, (float(flat["x1"]) - float(flat["x0"]) - (x1 - x0)) / 2)
+            if flat is not None
+            else 0.0
+        )
+        candidates.append(
+            {
+                "object_index": object_index,
+                "x0": float(flat["x0"]) if flat is not None else x0,
+                "x1": float(flat["x1"]) if flat is not None else x1,
+                "top": top,
+                "bottom": bottom,
+                "fill": fill,
+                "text_color": text_color,
+                "height": object_height,
+                "padding": padding,
+                "rounded": False,
+            }
+        )
+    return candidates
+
+
+def _rounded_badge_candidates(
+    page: pdfplumber.page.Page,
+    words: list[dict[str, object]],
+    measured: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], int]:
+    """Rounded badge bodies as the HTML renderer draws them: filled bezier paths."""
+    candidates: list[dict[str, object]] = []
+    seen: set[tuple[float, ...]] = set()
+    for object_index, item in enumerate(page.curves):
+        x0, x1, top, bottom = _shape_bounds(item)
+        object_height = abs(bottom - top)
+        fill = _hex_from_color(item.get("non_stroking_color"))
+        if not item.get("fill") or fill is None:
+            continue
+        if not 10 <= object_height <= 30:
+            continue
+        shape_key = (round(x0, 1), round(x1, 1), round(top, 1), round(bottom, 1), fill)
+        if shape_key in seen:
+            continue  # the same fill path emitted twice is one shape
+        seen.add(shape_key)
+        if any(
+            x0 < float(other["x1"])
+            and x1 > float(other["x0"])
+            and top < float(other["bottom"])
+            and bottom > float(other["top"])
+            for other in measured
+        ):
+            continue  # a pill body already measured as a rectangle
+        run = _single_run(words, x0, x1, top, bottom)
+        if run is None:
+            continue
+        text_color, padding = run
+        candidates.append(
+            {
+                "object_index": object_index,
+                "x0": x0,
+                "x1": x1,
+                "top": top,
+                "bottom": bottom,
+                "fill": fill,
+                "text_color": text_color,
+                "height": object_height,
+                "padding": padding,
+                "rounded": True,
+            }
+        )
+    return candidates, len(seen)
+
+
 def enrich_badges_from_local_pdf(
     normalized: NormalizedLayoutEvidence,
     pdf_path: str | Path,
@@ -331,72 +481,11 @@ def enrich_badges_from_local_pdf(
         for page_number, page in enumerate(pdf.pages, start=1):
             width, height = float(page.width), float(page.height)
             words = page.extract_words(extra_attrs=["non_stroking_color"])
-            candidates: list[dict[str, object]] = []
-            for object_index, item in enumerate(page.rects):
-                x0, x1 = sorted((float(item.get("x0") or 0), float(item.get("x1") or 0)))
-                top = float(item.get("top") or 0)
-                bottom = float(item.get("bottom") or top)
-                object_height = abs(bottom - top)
-                fill = _hex_from_color(item.get("non_stroking_color"))
-                if not item.get("fill") or fill is None:
-                    continue
-                if not 10 <= object_height <= 30:
-                    continue
-                flat = next(
-                    (
-                        other
-                        for other in page.rects
-                        if other is not item
-                        and abs(float(other.get("top") or 0) - (top + object_height / 2)) <= 0.2
-                        and _hex_from_color(other.get("non_stroking_color")) == fill
-                        and float(other.get("x0") or 0) <= x0
-                        and float(other.get("x1") or 0) >= x1
-                    ),
-                    None,
-                )
-                full_width = (
-                    float(flat["x1"]) - float(flat["x0"])
-                    if flat is not None
-                    else x1 - x0
-                )
-                if full_width <= 20:
-                    continue
-                inside = [
-                    word
-                    for word in words
-                    if x0 <= (float(word["x0"]) + float(word["x1"])) / 2 <= x1
-                    and top <= (float(word["top"]) + float(word["bottom"])) / 2 <= bottom
-                ]
-                if not inside or len({round(float(word["top"]), 1) for word in inside}) != 1:
-                    continue
-                text = " ".join(str(word["text"]) for word in inside).strip()
-                if not text or len(text) > 80:
-                    continue
-                colors = [
-                    color
-                    for word in inside
-                    if (color := _hex_from_color(word.get("non_stroking_color"))) is not None
-                ]
-                if not colors:
-                    continue
-                padding = (
-                    max(0.0, (float(flat["x1"]) - float(flat["x0"]) - (x1 - x0)) / 2)
-                    if flat is not None
-                    else 0.0
-                )
-                candidates.append(
-                    {
-                        "object_index": object_index,
-                        "x0": float(flat["x0"]) if flat is not None else x0,
-                        "x1": float(flat["x1"]) if flat is not None else x1,
-                        "top": top,
-                        "bottom": bottom,
-                        "fill": fill,
-                        "text_color": Counter(colors).most_common(1)[0][0],
-                        "height": object_height,
-                        "padding": padding,
-                    }
-                )
+            candidates = _rect_badge_candidates(page, words)
+            rounded, rounded_shape_count = _rounded_badge_candidates(
+                page, words, candidates
+            )
+            candidates.extend(rounded)
 
             grouped: dict[tuple[str, str, float], list[dict[str, object]]] = {}
             for candidate in candidates:
@@ -408,9 +497,17 @@ def enrich_badges_from_local_pdf(
                 grouped.setdefault(key, []).append(candidate)
             for cluster_index, ((fill, text_color, _), items) in enumerate(grouped.items()):
                 if len(items) < 2:
+                    heights = ", ".join(
+                        f"{value:g}"
+                        for value in sorted(
+                            {round(float(item["height"]), 1) for item in items}
+                        )
+                    )
                     warnings.append(
-                        "A filled short-text shape was detected but not classified "
-                        "as a repeated badge decoration."
+                        f"{len(items)} filled short-text shape(s) with fill {fill}, "
+                        f"text {text_color} at {heights} pt were detected but not "
+                        "classified as a repeated badge decoration; they remain "
+                        "unmeasured pending inspection."
                     )
                     continue
                 row_tops = sorted({round(float(item["top"]), 1) for item in items})
@@ -439,19 +536,19 @@ def enrich_badges_from_local_pdf(
                             source="local_pdf",
                             provider="pdfplumber",
                             source_element_id=element_id,
-                            method="filled_rectangle_containing_one_short_text_run",
+                            method=(
+                                "filled_shape_containing_one_short_text_run"
+                                if any(item["rounded"] for item in items)
+                                else "filled_rectangle_containing_one_short_text_run"
+                            ),
                         ),
                     )
                 )
-            potential_rounded_shapes = sum(
-                10 <= abs(float(curve.get("bottom") or 0) - float(curve.get("top") or 0)) <= 30
-                and bool(curve.get("fill"))
-                for curve in page.curves
-            )
-            if potential_rounded_shapes >= 4 and not candidates:
+            if rounded_shape_count >= 4 and not candidates:
                 warnings.append(
-                    "Repeated filled rounded shapes were detected but badge measurement "
-                    "failed; decoration remains absent pending review."
+                    f"{rounded_shape_count} filled rounded shapes between 10 and 30 pt "
+                    "were detected but none could be classified as badge decoration; "
+                    "they remain unmeasured pending inspection."
                 )
     return normalized.model_copy(
         update={"badge_clusters": clusters, "warnings": warnings}
