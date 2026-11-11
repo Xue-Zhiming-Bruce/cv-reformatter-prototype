@@ -80,6 +80,24 @@ test("target copy offers a PDF and never a DOCX template in both locales", () =>
   }
 })
 
+// #23 AC3/AC4: the showcase subtitle promises what the recruiter gets — an editable
+// preview plus a PDF deliverable — and names no DOCX output or engine detail.
+test("showcase subtitle promises an editable preview and a PDF deliverable", () => {
+  for (const [locale, resource] of [["en", en], ["ko", ko]] as const) {
+    const sub = at(resource, "showcase.sub")
+    assert.equal(typeof sub, "string", `${locale}.json is missing showcase.sub`)
+    assert.doesNotMatch(sub as string, /DOCX/i, `${locale}.showcase.sub must not name DOCX output`)
+    assert.doesNotMatch(
+      sub as string,
+      /pipeline|renderer|chrome|파이프라인|렌더러/i,
+      `${locale}.showcase.sub must state the deliverable, not the implementation`,
+    )
+    assert.match(sub as string, /PDF/, `${locale}.showcase.sub must name the PDF deliverable`)
+  }
+  assert.match(at(en, "showcase.sub") as string, /preview/)
+  assert.match(at(ko, "showcase.sub") as string, /미리보기/)
+})
+
 // AC5: a review already blocked by a DOCX target keeps the exact banner that describes the block.
 test("the DOCX-target block banner keeps its wording in both locales", () => {
   assert.equal(
