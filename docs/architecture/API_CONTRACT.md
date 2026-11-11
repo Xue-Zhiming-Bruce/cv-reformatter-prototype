@@ -4,11 +4,31 @@ Status: `Active contract`
 
 Owner: Backend
 
-Last reviewed: October 28, 2026 (native jobs, bundle publication and exact output reads)
+Last reviewed: November 11, 2026 (source-faithful scope decision and known
+alignment gap; executable interface unchanged)
 
 This document records the current MVP-compatible backend interface used by the
 frontend. It is not a complete versioned OpenAPI replacement; the FastAPI
 schema remains the executable interface.
+
+The [November 11 product decision](../product/PRODUCT_SPEC.md#owner-scope-decision--november-11-2026)
+supersedes the required missing-information completion/follow-up workflow:
+absent facts/links stay absent, without generated placeholders or mandatory HR
+input. Name, phone, private address and private email may be hidden; presentation
+follows measured target font sizes/spacing. This is approved product scope,
+not a claim that the current API/UI has completed alignment.
+
+Current responses still expose `missing_fields` and `followup_message`, and
+stored disclosure rules still accept `pending_confirmation` and
+`available_upon_request`. Processing currently assigns pending-confirmation
+rules to detected gaps; rendering may print a placeholder (for example for
+location). Those defaults need alignment, not additional required-field rules.
+Existing schema values/response fields are not removed by this documentation
+change. The name currently follows the whole-profile blind switch; independent
+controls for all four personal-information categories remain to be verified.
+Existing blind-link privacy protections remain in force. The
+[roadmap](../roadmaps/BACKEND_ROADMAP.md#owner-scope-alignment--november-11-2026)
+owns the pending work.
 
 ## Process Candidate Resume
 

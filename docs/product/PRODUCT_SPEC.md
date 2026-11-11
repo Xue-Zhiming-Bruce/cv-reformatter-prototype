@@ -4,8 +4,8 @@ Status: `Active product contract`
 
 Owner: Product and backend
 
-Last reviewed: November 10, 2026 (editorial clarification of existing decisions;
-no new product scope or acceptance)
+Last reviewed: November 11, 2026 (owner decision: source-faithful reformatting,
+absent fields omitted, optional identity hiding, measured presentation)
 
 This is the product contract, not a completion checklist. Requirements do not
 imply implementation or acceptance. Use the [Backend Roadmap](../roadmaps/BACKEND_ROADMAP.md)
@@ -15,9 +15,10 @@ for current backend behavior and versioned capability limits.
 
 ## Product Promise
 
-CV Reformatter helps boutique recruiters turn inconsistent candidate resumes
-into recruiter-approved, client-ready submissions while preserving recruiter
-control over missing, sensitive, and uncertain information.
+CV Reformatter helps recruiters reformat different candidate resumes into a
+consistent target presentation while faithfully preserving source content and
+allowing personal information to be hidden. The current task is formatting,
+not completing or enriching the candidate's information.
 
 Preferred promise:
 
@@ -35,10 +36,10 @@ who needs to:
 
 - extract candidate information from inconsistent resumes;
 - review and correct the extracted information;
-- identify recruiter-critical missing information;
 - apply recruiter or client branding;
-- edit content in an HTML surface in the interface and prepare visually consistent PDF submissions;
-- draft a follow-up message for missing candidate details.
+- hide selected personal information;
+- correct extraction errors in an HTML surface and prepare visually consistent
+  PDF submissions without collecting facts absent from the source.
 
 ## Required Workflow
 
@@ -46,7 +47,7 @@ who needs to:
 Candidate resume
 -> extracted source content
 -> validated CandidateProfile
--> missing and sensitive field review
+-> extraction-accuracy and optional personal-information review
 -> recruiter corrections and disclosure choices saved as an immutable revision
 -> client-facing render context
 -> approved layout template
@@ -103,6 +104,8 @@ Content rules:
 
 - Never invent facts.
 - Store `null` when the source does not explicitly support a value.
+- Render a fact or link only when present in the original resume and not hidden.
+  In particular, absent LinkedIn/portfolio links are simply omitted.
 - Do not infer salary, visa status, employment dates, achievements,
   qualifications, or employer names.
 - Preserve original extracted text for comparison.
@@ -116,53 +119,43 @@ is archived; it is not an additional product schema.
 
 ## Missing Information
 
-The internal recruiter view must detect at least:
+Absence is valid. If the original resume omits salary expectation, notice
+period, language proficiency, contact links or another fact, leave it absent.
+Do not ask the recruiter to guess it, make completion mandatory, or block
+conversion because the candidate did not supply it. An empty optional field
+does not require an output row or an empty section.
 
-- salary expectation;
-- notice period;
-- current location;
-- work authorization or visa status;
-- interview availability;
-- language proficiency;
-- LinkedIn or portfolio link when relevant.
-
-An absent optional resume section, such as hobbies, is not automatically a
-missing field. Missing-field policy applies to recruiter-critical information
-or information explicitly required by an approved organization policy.
-
-The internal view may show a direct checklist. The client-facing document must
-not automatically expose that checklist.
+Missing-information collection, organization-required-field policies and
+follow-up drafting are outside the current required workflow. Any retained
+internal missing-field metadata is informational only. This differs from
+unaccounted source content: losing a fact that the source contains still fails
+the source-coverage/content checks.
 
 ## Client-Facing Disclosure
 
-For each sensitive or incomplete field, the recruiter chooses one of:
+Preserve source-supported values unless explicitly hidden. Absent values stay
+absent: do not generate `To be confirmed`, `Available upon request`, invented
+values or prompts for HR to complete them. A phrase literally present in the
+source remains source content, not a system-generated placeholder.
 
-- `show`;
-- `hide`;
-- `pending_confirmation`;
-- `available_upon_request`.
-
-Client-facing examples include `To be confirmed` and `Available upon request`.
-These are presentation labels, not candidate facts. The checklist does not
-authorize printing every missing field. The recruiter owns final disclosure;
-defaults remain an [open clarification](#clarifications-requiring-owner-decisions).
+The current product choices are show existing content or hide selected content.
+Legacy API/schema disclosure values are compatibility surfaces, not additional
+requirements; see the [API Contract](../architecture/API_CONTRACT.md) for the
+implementation gap and retained response fields.
 
 ## Blind Profiles
 
-Blind-profile behavior applies only to generated client-facing previews and
-exports. It must never delete or overwrite internal candidate data.
+The recruiter may hide name, phone number, private address and private email
+in client-facing previews/exports. Preserve original internal data and source
+evidence; selected hidden values must not leak into the client output. A
+neutral candidate label may replace a hidden name.
 
-When enabled:
-
-- replace the full name with a neutral label or initials;
-- hide email and phone;
-- hide LinkedIn;
-- hide portfolio or GitHub by default unless explicitly shown;
-- hide or generalize the current employer when marked sensitive;
-- generalize exact location when required.
-
-Employer/location sensitivity and generalization need the clarification below;
-do not advertise the blind toggle as comprehensive anonymization.
+Use explicit hiding choices, not guesses about personal/work email or a new
+generalized address. Employer anonymization and automatic location
+generalization are outside the current required scope. Existing blind-mode
+LinkedIn/portfolio-link safeguards remain; this decision does not authorize
+exposing values already hidden by that mode. See the API contract for current
+control limitations. The blind toggle does not promise comprehensive anonymity.
 
 ## Candidate And Target Inputs
 
@@ -244,9 +237,13 @@ implementation belongs in [Document Pipeline](../architecture/DOCUMENT_PIPELINE.
 ## Content Arrangement And Owner Review
 
 **Standards.** Preserve candidate facts without invention or silent omission.
-Font sizes, spacing, alignment, hierarchy, rule geometry and colors must follow
-the measured target within already declared tolerances. “Close enough” never
-relaxes these standards. Several content arrangements can be reasonable;
+Font sizes and spacing must remain basically consistent with the measured
+target: measure and compare the corresponding typography roles, line/paragraph/
+entry spacing and alignment rather than guessing by appearance. Hierarchy,
+rule geometry and colors retain their declared standards. Content amount may
+change wrapping and page count; it does not justify arbitrary font/spacing
+changes. Existing checks/tolerances remain; the owner has not set a new
+universal numerical threshold. Several content arrangements can be reasonable;
 different HR users need not prefer the same one.
 
 **Draft and review.** When organization is unspecified and supported, produce
@@ -307,11 +304,9 @@ The product must produce:
    ([ADR 0006](../decisions/0006-badge-decoration-and-html-ground-truth-renderer.md)).
 2. PDF preview, client-ready only after exact final acceptance. DOCX is an input
    format, not a current output deliverable.
-3. Missing-information checklist for the recruiter.
-4. Draft candidate follow-up message.
-5. Internal reproducibility artifacts: extracted text, versioned profile and
-   missing-fields JSON; raw target evidence, validated template JSON, target
-   PNGs/overlays, comparison JSON/difference images; HTML/PDF, identity-bound
+3. Internal reproducibility artifacts: extracted text, versioned profile and
+   any retained missing-field metadata; raw target evidence, validated template
+   JSON, target PNGs/overlays, comparison JSON/difference images; HTML/PDF, identity-bound
    arrangement report; schema/provider/prompt/model/renderer/font/checksum metadata.
 
 Target-specific evidence/comparisons apply to uploaded-target workflows; native
@@ -388,25 +383,23 @@ monitoring, and tested backup and restore procedures are complete.
 - automatic candidate or client sending;
 - complex dashboards and searchable talent-pool features;
 - arbitrary PDF editing;
-- unsupported brochure-style templates.
+- unsupported brochure-style templates;
+- missing-information collection, organization-required-field policies and
+  candidate follow-up drafting;
+- employer anonymization and automatic location generalization.
 
 These areas require separate product decisions and must not interrupt the
 active backend quality sequence.
 
-## Clarifications Requiring Owner Decisions
+## Owner Scope Decision — November 11, 2026
 
-These clarify existing requirements; they approve no new capabilities or
-policies. Preserve safeguards and disclose limitations until the owner decides.
-
-| Existing wording | Decision still needed | Boundary that already applies |
-| --- | --- | --- |
-| Missing links “when relevant”; fields required by “approved organization policy.” | When is a link required? How is organization policy selected? | Do not invent policy or treat all absent optional sections as missing. |
-| Recruiter chooses sensitive/incomplete-field disclosure. | Which defaults, explicit confirmations and absent-field placeholders are allowed? | The internal checklist does not authorize client disclosure. |
-| Employer “marked sensitive”; location generalized “when required.” | Who marks sensitivity? Which occurrences and replacement/granularity are covered? | Preserve internal facts; do not claim comprehensive anonymization. |
-| Target fidelity within declared tolerances. | Beyond accepted examples, which measurements/tolerances define the claim? | Existing standards remain. The frozen 0.25pt typography/1pt rule diagnostics are not universal acceptance thresholds. |
-
-Record the decision in its contract/ADR before applying it as a lasting rule.
-Open questions neither erase existing requirements nor grant output acceptance.
+The owner resolved the previous clarification questions: faithfully reformat
+the original, omit absent information, allow the listed personal details to be
+hidden, and keep font sizes/spacing basically consistent through measurement.
+This supersedes the earlier mandatory missing-information checklist/follow-up
+requirements and employer/location-generalization scope. It sets no new
+numerical acceptance threshold. The frozen examples' 0.25pt typography/1pt rule
+diagnostics remain evidence for those examples, not universal acceptance rules.
 
 ## Non-Negotiable Guardrails
 

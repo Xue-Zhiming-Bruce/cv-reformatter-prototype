@@ -4,7 +4,8 @@ Status: `Active roadmap`
 
 Owner: Backend
 
-Last reviewed: November 10, 2026 (M5 verified; bounded M6/B0/B1 source and outcome freeze complete; Clean Code P0–P4 structural milestones recorded and QA-passed; development progress and its verification state recorded below)
+Last reviewed: November 11, 2026 (owner narrowed scope to source-faithful
+reformatting; alignment work remains pending below; prior milestone status unchanged)
 
 This is the sole implementation checklist. Product behavior belongs in the
 [Product Specification](../product/PRODUCT_SPEC.md), approved decisions in
@@ -44,6 +45,35 @@ checks. Template approval, green tests and model review do not grant final
 output acceptance. Final acceptance binds the profile revision/checksum, layout
 version/checksum and HTML/PDF checksums; changed identities invalidate it.
 A fixed business workflow and a bounded Agentic review/repair loop coexist.
+
+### Owner Scope Alignment — November 11, 2026
+
+The [product decision](../product/PRODUCT_SPEC.md#owner-scope-decision--november-11-2026)
+requires faithful reformatting: present source values, omit absent ones, allow
+name/phone/private-address/private-email hiding, and keep font sizes/spacing
+basically consistent using target measurements. Missing-information collection
+and follow-up drafting are no longer required. This decision is recorded;
+implementation alignment is not complete:
+
+- [ ] Remove automatic missing-value placeholders from the ordinary conversion
+      workflow, including retained saved disclosure states. Preserve wire/schema
+      compatibility deliberately; do not silently rename/remove stored contracts.
+      `apply_missing_field_detection` still assigns `pending_confirmation`,
+      and `_field_display` can turn it into client-facing text. Conversion must
+      accept absent facts while still rejecting omitted/unaccounted source facts.
+- [ ] Align review/API consumers with optional omission: no required gap-filling
+      or follow-up output. Existing UI copy still asks users to fill gaps;
+      frontend work belongs to the co-founder. Do not expand missing-field
+      detection to language proficiency or links to satisfy the superseded spec.
+- [ ] Verify the four personal-information hiding controls in actual HTML/PDF,
+      including repeated occurrences, without changing internal source evidence.
+      The current name projection uses the whole-profile blind toggle; this
+      documentation decision does not establish independent field controls.
+      Preserve existing blind-link safeguards; no employer-sensitivity classifier
+      or automatic address generalization is required.
+- [ ] Report measured font-size/spacing differences for supported target roles
+      alongside the actual files. Preserve existing checks; do not invent a new
+      global numerical threshold or treat the frozen diagnostics as acceptance.
 
 ### Actual Entrances (M5 single-renderer ownership, October 26)
 
