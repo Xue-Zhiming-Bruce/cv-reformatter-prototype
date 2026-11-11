@@ -17,6 +17,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import pdfplumber
+
 from app.generation.template_mapper import ClientFacingRenderContext
 from app.template_analysis.layout_proof_artifacts import (
     DEFAULT_PROOF_OUTPUT_DIR,
@@ -217,16 +219,6 @@ def _render_layout_proof_with_context(
 
 
 def pdf_page_count(pdf_path: Path) -> int:
-    """Deterministic page count of a rendered proof PDF."""
-    try:
-        import pdfplumber
-    except ImportError:  # pragma: no cover - fallback path
-        pdfplumber = None
-    if pdfplumber is not None:
-        with pdfplumber.open(pdf_path) as pdf:
-            return len(pdf.pages)
-    try:  # pragma: no cover - fallback path
-        from pypdf import PdfReader
-    except ImportError:
-        from PyPDF2 import PdfReader
-    return len(PdfReader(str(pdf_path)).pages)
+    """Deterministic page count of a rendered proof PDF; unreadable files raise."""
+    with pdfplumber.open(pdf_path) as pdf:
+        return len(pdf.pages)
