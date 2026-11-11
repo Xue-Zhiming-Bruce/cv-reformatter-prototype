@@ -55,12 +55,18 @@ basically consistent using target measurements. Missing-information collection
 and follow-up drafting are no longer required. This decision is recorded;
 implementation alignment is not complete:
 
-- [ ] Remove automatic missing-value placeholders from the ordinary conversion
+- [x] Remove automatic missing-value placeholders from the ordinary conversion
       workflow, including retained saved disclosure states. Preserve wire/schema
       compatibility deliberately; do not silently rename/remove stored contracts.
       `apply_missing_field_detection` still assigns `pending_confirmation`,
       and `_field_display` can turn it into client-facing text. Conversion must
       accept absent facts while still rejecting omitted/unaccounted source facts.
+      Closed by #30: `23f113d` stops the rule assignment and removes both label
+      producers (`_field_display` now hides or shows the source value only, and
+      `DisplayRule`, `MissingField`, `missing_fields` and the label-free
+      `missing_fields.json` artifact keep their names/types), and `03de4ae`
+      stops automatic follow-up drafting in conversion while `POST /api/followup`
+      keeps drafting for the review UI.
 - [ ] Align review/API consumers with optional omission: no required gap-filling
       or follow-up output. Existing UI copy still asks users to fill gaps;
       frontend work belongs to the co-founder. Do not expand missing-field
@@ -248,7 +254,7 @@ campaign is separate work on that issue and not a structural prerequisite.
 | Original accepted baseline/build | Preserve the exact reviewed output provenance and explicit rollback evidence. | Recoverable source/evidence remains in Git/local accepted snapshots; M6 binds the final integrated freeze. |
 | Standard uploaded-target `product-html/1` orchestration | Retired in M5; surviving helpers moved unchanged to A. Canonical full regression passes 837, with 23 skipped. | Historical source/evidence remains recoverable from Git; no current supported caller executes it. |
 | B authored HTML/CSS | Retired: execution and exclusive checks removed; shared privacy/identity/repair contracts retained. | Historical source/evidence remains recoverable from Git. Focused retirement check: 155 passed, 7 skipped; the broad run has one recorded Chrome timeout, isolated rerun passed. |
-| `llm_extractor.extract_candidate_profile` with `app/extraction/prompts.py` | Retained lower-level model-adapter surface: it has no production caller, but the unit, dataset and gated live checks exercise it and its prompt bytes are unchanged. The supported demo now uses the segmentation path. | Retiring or rewriting the flat-extraction adapter and its prompts needs its own bounded decision and prompt-identity assessment; nothing here authorizes it. |
+| `llm_extractor.extract_candidate_profile` with `app/extraction/prompts.py` | Retained lower-level model-adapter surface: it has no production caller, but the unit, dataset and gated live checks exercise it and its prompt bytes are unchanged. The supported demo now uses the segmentation path. | Retiring or rewriting the flat-extraction adapter and its prompts needs its own bounded decision and prompt-identity assessment; nothing here authorizes it. #30 re-checked this row and recorded retention: the required inventory is taken after #26 item A removes the corpus mock-render smoke caller, which has not landed, and no prompt-identity assessment exists, so no flat-extraction code, prompt or test was deleted. |
 | `schemas.migrate_template_style_spec` | Quarantined ADR 0004 reader for genuinely legacy stored v1 artifacts. New analysis/generation must not call it, so test-only use is the intended state. | Remove only when no stored artifact needs inspection. |
 | `artifacts.load_template_style_spec`, `layout_state.validate_layout_state`, `layout_proof_content.expected_marker_counts` | Stored-artifact loaders and report/proof assertions whose current callers are tests: they validate stored or generated data instead of running a pipeline step. | Remove with the stored-artifact and proof-report contracts they read. |
 | `scripts/mock_api.py` | Documented frontend collaboration stub, a separate supported workflow rather than a redundant production API. | Retained until the frontend no longer needs the stub. |
