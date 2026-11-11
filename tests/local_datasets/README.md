@@ -60,10 +60,11 @@ number gaps**. Examples: [it_cv_1.docx](cvparserpro_it_resumes/files/it_cv_1.doc
 archive is `tests/local_datasets/cvparserpro_it_resumes/source.zip`.
 
 `~$t_cv_1.docx` is a Word lock/temp file, **not a resume input**; exclude `~$*`
-files even though their extension is `.docx`. Existing local smoke coverage is
-`tests/integration/test_dataset_smoke.py`: it reads the documents but uses
-`MockLLMClient` and writes HTML only. It is a mocked smoke regression, not a
-product trial or evidence that extracted candidate facts are correct.
+files even though their extension is `.docx`. Existing local corpus coverage is
+`tests/integration/test_dataset_smoke.py`: it reads every inventoried document
+and asserts the numbered set is complete and each file yields extracted text. It
+guards ingestion only, so it is not a product trial or evidence that extracted
+candidate facts are correct.
 
 ## PDF archive — 2,484 files in 24 categories
 
