@@ -55,6 +55,21 @@ def build_overflowing_chip_pdf(path: Path) -> Path:
     return _write_single_page_pdf(path, operations)
 
 
+def build_deep_label_inset_bars_pdf(path: Path) -> Path:
+    """Two 300x24 pt filled bars whose centred label spans 51% of the width.
+
+    That leaves a 73.3 pt inset, so the bars are no containers but sit past the
+    72 pt badge padding ceiling that the cluster schema bounds.
+    """
+    operations = [
+        f"q {BANNER_FILL} rg\n66 600 300 24 re f Q",
+        "BT 1 1 1 rg /F2 10.5 Tf 139.3 608 Td (PROFESSIONAL EXPERIENCE) Tj ET",
+        f"q {BANNER_FILL} rg\n66 540 300 24 re f Q",
+        "BT 1 1 1 rg /F2 10.5 Tf 139.3 548 Td (PROFESSIONAL EXPERIENCE) Tj ET",
+    ]
+    return _write_single_page_pdf(path, operations)
+
+
 def build_outlined_chip_pdf(path: Path) -> Path:
     """One 120x20 pt rounded outline painted with a stroke and no fill."""
     operations = [f"{BANNER_FILL} RG 1 w\n{_pill_path(66, 600, 120, 20)}\nS"]
