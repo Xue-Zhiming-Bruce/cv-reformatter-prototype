@@ -64,6 +64,9 @@ matrix_<timestamp>_<purpose>/
       generation/
         candidate_profile.html
         candidate_profile.pdf
+        blind/
+          candidate_profile.html
+          candidate_profile.pdf
         client_render_context.json
         effective_layout_template_spec.json
         candidate_block_binding_plan.json
@@ -76,6 +79,10 @@ matrix_<timestamp>_<purpose>/
 
 If a transformation fails, keep its directory and `result.json`. Do not create
 placeholder DOCX, PDF, or comparison files.
+
+The blind render is diagnosed here — `result.json` reports its measured badge
+facts next to the ordinary ones, and a badge difference between generated
+surfaces is named as drift — and a blind generation is never an acceptance.
 
 ## Human Review Entry Point
 
