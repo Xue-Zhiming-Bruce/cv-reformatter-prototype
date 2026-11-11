@@ -21,7 +21,7 @@ type ReviewScreenProps = {
   data: ProcessResponse
   resumeFile: File
   resumeFileName: string
-  formatName: string
+  formatName: string | null
   targetFormat: TargetFormatMetadata | null
   onBack: () => void
 }
@@ -255,6 +255,8 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   const [proofStatus, setProofStatus] = useState<LayoutProofStatus | null>(null)
   const [proofBusy, setProofBusy] = useState<"idle" | "loading" | "creating" | "approving">("idle")
   const { profile, ledger } = data
+
+  const formatLabel = formatName ?? t("review.builtInTemplateName")
 
   const isPdfTarget = targetFormat?.input_type === "pdf"
   const isDocxTarget = targetFormat?.input_type === "docx"
@@ -790,7 +792,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         <div className="rv-header__meta">
           <span className="rv-header__filename">{resumeFileName}</span>
           <span className="rv-header__arrow" aria-hidden="true">→</span>
-          <span className="rv-header__format">{formatName}</span>
+          <span className="rv-header__format">{formatLabel}</span>
         </div>
         <label className="rv-blind-toggle">
           <input
@@ -1061,7 +1063,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
               </>
             ) : (
               <>
-                {t("review.rightLabel")} · {formatName}
+                {t("review.rightLabel")} · {formatLabel}
                 <span className="pane-label__hint">{t("review.rightLabelHint")}</span>
               </>
             )}
