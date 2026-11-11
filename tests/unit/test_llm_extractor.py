@@ -15,7 +15,6 @@ from app.extraction.llm_extractor import (
     OpenAILLMClient,
     build_llm_client,
     extract_candidate_profile,
-    extraction_mode,
 )
 
 
@@ -135,17 +134,21 @@ def test_build_llm_client_reuses_single_generic_openai_key(monkeypatch) -> None:
 
 
 def test_extraction_mode_follows_configured_provider(monkeypatch) -> None:
-    """The disclosed mode resolves through the same precedence as build_llm_client."""
+    """The disclosed mode is the built client's own label, resolved with the same
+    provider precedence as build_llm_client. Dummy keys: nothing is called."""
 
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
-    assert extraction_mode() == "live"  # unset means the openai default
-    assert extraction_mode(provider="openai") == "live"
-    assert extraction_mode(provider="anthropic") == "live"
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-real")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+
+    assert build_llm_client().extraction_mode == "live"  # unset means the openai default
+    assert build_llm_client(provider="openai").extraction_mode == "live"
+    assert build_llm_client(provider="anthropic").extraction_mode == "live"
 
     monkeypatch.setenv("LLM_PROVIDER", "mock")
-    assert extraction_mode() == "mock"  # falls back to LLM_PROVIDER like build_llm_client
-    assert extraction_mode(provider="MOCK") == "mock"
-    assert extraction_mode(provider="openai") == "live"  # an explicit provider wins
+    assert build_llm_client().extraction_mode == "mock"  # falls back to LLM_PROVIDER
+    assert build_llm_client(provider="MOCK").extraction_mode == "mock"
+    assert build_llm_client(provider="openai").extraction_mode == "live"  # explicit provider wins
 
 
 def test_openai_client_uses_responses_api_with_strict_profile_output() -> None:

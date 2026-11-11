@@ -239,10 +239,14 @@ def test_process_reports_live_extraction_mode_for_configured_provider(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """AC2: the mode follows configuration rather than a literal. The extraction client is
-    stubbed, so no network call and no credential are involved."""
+    """AC2: a run whose built client is a live client reports `live`. The extraction
+    client is stubbed, so no network call and no credential are involved."""
+
+    class LiveStubClient(MockLLMClient):
+        extraction_mode = "live"
+
     monkeypatch.setenv("API_LLM_PROVIDER", "openai")
-    monkeypatch.setattr(main, "build_llm_client", lambda **_kwargs: MockLLMClient())
+    monkeypatch.setattr(main, "build_llm_client", lambda **_kwargs: LiveStubClient())
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
     monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
     resume_path = tmp_path / "resume.docx"
@@ -264,6 +268,36 @@ def test_process_reports_live_extraction_mode_for_configured_provider(
     assert response.json()["extraction_mode"] == "live"
 
 
+def test_process_reports_the_mode_of_the_client_it_built(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Judge P3: the label is the built client's own, never a second read of the
+    configuration. A run whose client is the mock client is labelled `mock` even
+    though `API_LLM_PROVIDER` said `openai` when the request arrived."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "openai")
+    monkeypatch.setattr(main, "build_llm_client", lambda **_kwargs: MockLLMClient())
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["extraction_mode"] == "mock"
+
+
 def test_followup_endpoint_still_drafts_a_message(monkeypatch: MonkeyPatch) -> None:
     def fail_build_llm_client(**kwargs: object) -> None:
         raise LLMConfigurationError("no provider configured")
@@ -282,10 +316,12 @@ def test_followup_endpoint_still_drafts_a_message(monkeypatch: MonkeyPatch) -> N
 def test_llm_first_unavailable_fails_closed_with_structured_error(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """LLM-first segmentation is the only path (ADR 0005 Phase 2/3): provider
     unavailability returns an explicit structured 502 with no fallback
-    segmenter and no persisted artifacts."""
+    segmenter and no persisted artifacts. The provider's own error text (here a
+    credential name) stays in the server log, never in the response body."""
 
     class UnavailableClient:
         model = "test-model"
@@ -296,7 +332,9 @@ def test_llm_first_unavailable_fails_closed_with_structured_error(
 
         def complete_json(self, _system: str, _prompt: str, **_kwargs: object) -> str:
             self.calls += 1
-            raise LLMExtractionError("provider unavailable")
+            raise LLMExtractionError(
+                "OpenAI authentication failed. Check the configured OPENAI_API_KEY."
+            )
 
     llm_client = UnavailableClient()
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
@@ -321,9 +359,63 @@ def test_llm_first_unavailable_fails_closed_with_structured_error(
     detail = response.json()["detail"]
     assert detail["error_code"] == "candidate_segmentation_failed"
     assert "no fallback segmenter" in detail["message"]
-    assert "provider unavailable" in detail["detail"]
+    assert set(detail) == {"error_code", "message"}
+    body = response.text.lower()
+    for provider_token in ("openai", "anthropic", "api_key", "sk-"):
+        assert provider_token not in body
+    assert "OPENAI_API_KEY" in caplog.text  # the provider detail is logged, not returned
     assert llm_client.calls == 1
     assert list(tmp_path.glob("artifact_*")) == []
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {
+            "API_LLM_PROVIDER": "openai",
+            "OPENAI_API_KEY": None,
+            "OPENAI_EXTRACT_API_KEY": None,
+        },
+        {"API_LLM_PROVIDER": "not-a-provider"},
+    ],
+)
+def test_extraction_configuration_failure_discloses_no_provider_identity(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    env: dict[str, str | None],
+) -> None:
+    """Judge P2: a missing key and an unsupported provider both answer with a stable
+    message and the structured code; provider and setting names stay in the log."""
+    for name, value in env.items():
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "extraction_not_configured"
+    assert "operator" in detail["message"]
+    assert set(detail) == {"error_code", "message"}
+    body = response.text.lower()
+    for provider_token in ("openai", "anthropic", "api_key", "sk-", "not-a-provider"):
+        assert provider_token not in body
+    assert "Extraction client configuration failed" in caplog.text
 
 
 def test_llm_first_missing_line_persists_failed_audit_and_blocks_approval(
@@ -339,6 +431,8 @@ def test_llm_first_missing_line_persists_failed_audit_and_blocks_approval(
     class MissingLineClient:
         """Deterministic segmentation client that drops one item from the
         mock payload (no network; strictly offline)."""
+
+        extraction_mode = "mock"
 
         def __init__(self, omitted: str) -> None:
             self.omitted = omitted
