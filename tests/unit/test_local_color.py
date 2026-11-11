@@ -28,6 +28,12 @@ from scripts.run_abc_live_matrix import (
     _structure_failures,
     _surface_drift,
 )
+from tests.helpers.badge_probe_pdfs import (
+    build_outlined_chip_pdf,
+    build_overflowing_chip_pdf,
+    build_section_banner_pdf,
+    build_wide_padded_and_square_chip_pdf,
+)
 from tests.helpers.synthetic_pdf import (
     build_banner_and_triangle_target_pdf,
     build_multiline_rounded_shape_target_pdf,
@@ -418,8 +424,10 @@ def test_enrich_leaves_rounded_decoration_unmeasured(tmp_path: Path) -> None:
     # decoration, never skills; the over-tall blob and the stroked rule are not chips.
     assert enriched.badge_clusters == []
     warnings = " ".join(enriched.warnings)
+    # The 400x24 pt banner is a container: wider than six of its own heights with
+    # its label filling only part of that width.
     assert "2 filled shape(s)" in warnings
-    assert "400x24 pt shape insets its text by 84 pt" in warnings
+    assert "400x24 pt shape is more than 6x wider than it is tall" in warnings
     assert "140x18 pt shape holds no single short text run" in warnings
     assert "60 pt" not in warnings
     assert "unmeasured pending inspection" in warnings
@@ -428,15 +436,15 @@ def test_enrich_leaves_rounded_decoration_unmeasured(tmp_path: Path) -> None:
 def test_enrich_warns_instead_of_raising_on_a_banner_sized_text_inset(
     tmp_path: Path,
 ) -> None:
-    # Two rounded section banners measure an 84 pt text inset, outside the badge
-    # cluster's 0..72 pt range: that must become a warning, never a ValidationError.
+    # Its label is inset 84 pt, outside the badge cluster's 0..72 pt range: the
+    # shape must become a warning, never a ValidationError.
     pdf = build_banner_and_triangle_target_pdf(tmp_path / "banners.pdf")
 
     enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
 
     assert enriched.badge_clusters == []
     warnings = " ".join(enriched.warnings)
-    assert "400x24 pt shape insets its text by 84 pt, more than its height" in warnings
+    assert "400x24 pt shape is more than 6x wider than it is tall while its label spans only" in warnings
     assert "unmeasured pending inspection" in warnings
 
 
@@ -451,7 +459,7 @@ def test_enrich_leaves_banners_and_triangles_unmeasured(tmp_path: Path) -> None:
     assert len(enriched.warnings) == 1
     warnings = enriched.warnings[0]
     assert "5 filled shape(s)" in warnings
-    assert "400x24 pt shape is more than 10x wider than it is tall" in warnings
+    assert "400x24 pt shape is more than 6x wider than it is tall" in warnings
     assert "30x24 pt shape fills only 50% of its bounding box" in warnings
     assert "unmeasured pending inspection" in warnings
 
@@ -757,3 +765,67 @@ def test_matrix_review_projection_keeps_blind_and_ordinary_outputs(
                            ("blind/candidate_profile.pdf", writes["generate_blind"])):
         digest = hashlib.sha256((generation / name).read_bytes()).hexdigest()
         assert digest == response[name.rsplit(".", 1)[1] + "_sha256"]
+
+
+def test_enrich_measures_wide_padded_and_square_chips(tmp_path: Path) -> None:
+    """A chip is a label with padding: 200x18 with a 9 pt inset, 100x18 with a
+    25 pt inset, and an 18x18 rounded square labelled R are all chips."""
+    pdf = build_wide_padded_and_square_chip_pdf(tmp_path / "chips.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    assert enriched.warnings == []
+    assert len(enriched.badge_clusters) == 1
+    cluster = enriched.badge_clusters[0]
+    assert cluster.badge_count == 3  # the three pills this probe draws
+    assert cluster.items_per_line == [3]
+    assert cluster.fill_color_hex == "#99F6E4"
+    assert cluster.text_color_hex == "#334155"
+    assert cluster.height_pt == pytest.approx(18.0, abs=0.1)
+
+
+def test_enrich_rejects_section_banners_as_containers(tmp_path: Path) -> None:
+    """Two 200x24 pt banners labelled EXPERIENCE at a 9 pt inset are a column
+    container, not a chip, and each banner is named in the warning."""
+    import re
+
+    pdf = build_section_banner_pdf(tmp_path / "banners.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    assert enriched.badge_clusters == []
+    warnings = " ".join(enriched.warnings)
+    assert "2 filled shape(s)" in warnings
+    assert warnings.count("200x24 pt shape is more than 6x wider than it is tall") == 2
+    assert len(set(re.findall(r"\(at (x=[^)]*)\)", warnings))) == 2
+    assert "unmeasured pending inspection" in warnings
+
+
+def test_enrich_rejects_a_chip_whose_label_hangs_over_its_edge(
+    tmp_path: Path,
+) -> None:
+    """Two 60x18 pt pills whose label starts 2 pt outside the left edge are
+    warned about, never measured with the negative inset clamped to 0."""
+    pdf = build_overflowing_chip_pdf(tmp_path / "overflow.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    assert enriched.badge_clusters == []
+    warnings = " ".join(enriched.warnings)
+    assert "2 filled shape(s)" in warnings
+    assert warnings.count("60x18 pt shape has its text run 2 pt outside its own edge") == 2
+    assert "unmeasured pending inspection" in warnings
+
+
+def test_enrich_names_an_outlined_in_band_shape(tmp_path: Path) -> None:
+    """A 120x20 pt rounded outline carries a stroke and no fill, so it is named
+    as unmeasured instead of being skipped silently."""
+    pdf = build_outlined_chip_pdf(tmp_path / "outline.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    assert enriched.badge_clusters == []
+    warnings = " ".join(enriched.warnings)
+    assert "1 shape(s) between 10 and 30 pt high carry no fill colour" in warnings
+    assert "120x20 pt outline" in warnings
+    assert "unmeasured pending inspection" in warnings

@@ -326,14 +326,30 @@ def _shape_bounds(item: dict[str, object]) -> tuple[float, float, float, float]:
     return x0, x1, top, bottom
 
 
-def _single_run(
+# Chip classification bounds, each read off what a filled label box is. A chip
+# body lines up with one text line (10-30 pt high); a filled chip body covers its
+# box (a rounded box fills 79% or more of it, a triangle about half); a chip's
+# label sits inside its own edges; and a chip is a label with padding, so a box
+# many times wider than it is tall is a container unless its label spans it.
+_MIN_BADGE_HEIGHT_PT = 10.0
+_MAX_BADGE_HEIGHT_PT = 30.0
+_MAX_CHIP_ASPECT_RATIO = 6.0
+_MIN_CHIP_LABEL_WIDTH_FRACTION = 0.5
+_MIN_CHIP_FILL_FRACTION = 2 / 3
+
+
+def _in_chip_height_band(item: dict[str, object]) -> bool:
+    """True when this shape is as high as a chip body, not a rule or a panel."""
+    _x0, _x1, top, bottom = _shape_bounds(item)
+    return _MIN_BADGE_HEIGHT_PT <= abs(bottom - top) <= _MAX_BADGE_HEIGHT_PT
+
+
+def _text_run(
     words: list[dict[str, object]],
-    x0: float,
-    x1: float,
-    top: float,
-    bottom: float,
-) -> tuple[str, float] | None:
-    """Text color and smaller horizontal inset of the shape's single short run."""
+    box: tuple[float, float, float, float],
+) -> dict[str, object] | None:
+    """The box's single short text line, with its measured edge insets and width."""
+    x0, x1, top, bottom = box
     inside = [
         word
         for word in words
@@ -343,20 +359,20 @@ def _single_run(
     if not inside or len({round(float(word["top"]), 1) for word in inside}) != 1:
         return None
     text = " ".join(str(word["text"]) for word in inside).strip()
-    if not text or len(text) > 80:
-        return None
     colors = [
         color
         for word in inside
         if (color := _hex_from_color(word.get("non_stroking_color"))) is not None
     ]
-    if not colors:
+    if not text or len(text) > 80 or not colors:
         return None
-    inset = min(
-        min(max(0.0, float(word["x0"]) - x0) for word in inside),
-        min(max(0.0, x1 - float(word["x1"])) for word in inside),
-    )
-    return Counter(colors).most_common(1)[0][0], inset
+    return {
+        "color": Counter(colors).most_common(1)[0][0],
+        # Raw edges: a run crossing the shape's edge is a negative inset.
+        "left": min(float(word["x0"]) for word in inside) - x0,
+        "right": x1 - max(float(word["x1"]) for word in inside),
+        "width": sum(float(word["x1"]) - float(word["x0"]) for word in inside),
+    }
 
 
 def _filled_area_ratio(item: dict[str, object]) -> float | None:
@@ -400,28 +416,91 @@ def _filled_area_ratio(item: dict[str, object]) -> float | None:
 
 def _not_a_chip_reason(
     item: dict[str, object],
-    *,
-    text_run: bool,
-    padding_pt: float,
+    box: tuple[float, float, float, float],
+    run: dict[str, object] | None,
 ) -> str | None:
     """Geometry-derived reason this filled in-band shape is not a chip, else None."""
-    x0, x1, top, bottom = _shape_bounds(item)
+    x0, x1, top, bottom = box
     width, height = x1 - x0, abs(bottom - top)
-    label = f"{width:g}x{height:g} pt shape"
-    if not text_run:
-        return f"{label} holds no single short text run"
-    if padding_pt > height:
-        return f"{label} insets its text by {padding_pt:g} pt, more than its height"
-    # A chip spans a few of its own heights; a section banner spans many.
-    if width > 10 * height:
-        return f"{label} is more than 10x wider than it is tall"
+    place = f"x={x0:.1f} pt, top={top:.1f} pt"
+
+    def say(clause: str) -> str:
+        return f"{width:g}x{height:g} pt shape {clause} (at {place})"
+
+    if run is None:
+        return say("holds no single short text run")
+    # A chip's label sits inside its own edges; a label hanging over them is not
+    # a chip, and its negative inset must never be reported as zero padding.
+    overflow = max(0.0, -float(run["left"]), -float(run["right"]))
+    if overflow:
+        return say(f"has its text run {overflow:g} pt outside its own edge")
     ratio = _filled_area_ratio(item)
     if ratio is None:
-        return f"{label} has a fill path this reader cannot measure"
-    # A chip's body fills its box; a triangle fills about half of it.
-    if ratio < 0.8:
-        return f"{label} fills only {ratio:.0%} of its bounding box"
+        return say("has a fill path this reader cannot measure")
+    if ratio < _MIN_CHIP_FILL_FRACTION:
+        return say(f"fills only {ratio:.0%} of its bounding box")
+    label_fraction = float(run["width"]) / width
+    if (
+        width > _MAX_CHIP_ASPECT_RATIO * height
+        and label_fraction < _MIN_CHIP_LABEL_WIDTH_FRACTION
+    ):
+        return say(
+            f"is more than {_MAX_CHIP_ASPECT_RATIO:g}x wider than it is tall while "
+            f"its label spans only {label_fraction:.0%} of that width"
+        )
     return None
+
+
+def _overlaps(shape: dict[str, object], other: dict[str, object]) -> bool:
+    """True when the two shapes' boxes intersect."""
+    x0, x1, top, bottom = _shape_bounds(shape)
+    other_x0, other_x1, other_top, other_bottom = _shape_bounds(other)
+    return x0 < other_x1 and x1 > other_x0 and top < other_bottom and bottom > other_top
+
+
+def _pill_span(
+    rects: list[dict[str, object]], item: dict[str, object], fill: str
+) -> tuple[float, float] | None:
+    """Full span of a pill drawn as a body plus a same-fill band through its centre."""
+    x0, x1, top, bottom = _shape_bounds(item)
+    middle = (top + bottom) / 2
+    flat = next(
+        (
+            other
+            for other in rects
+            if other is not item
+            and abs(float(other.get("top") or 0) - middle) <= 0.2
+            and _hex_from_color(other.get("non_stroking_color")) == fill
+            and float(other.get("x0") or 0) <= x0
+            and float(other.get("x1") or 0) >= x1
+        ),
+        None,
+    )
+    return (float(flat["x0"]), float(flat["x1"])) if flat is not None else None
+
+
+def _chip_candidate(
+    object_index: int,
+    box: tuple[float, float, float, float],
+    fill: str,
+    run: dict[str, object],
+    *,
+    rounded: bool,
+) -> dict[str, object]:
+    """One measured chip body, as the cluster pass consumes it."""
+    x0, x1, top, bottom = box
+    return {
+        "object_index": object_index,
+        "x0": x0,
+        "x1": x1,
+        "top": top,
+        "bottom": bottom,
+        "fill": fill,
+        "text_color": str(run["color"]),
+        "height": abs(bottom - top),
+        "padding": min(float(run["left"]), float(run["right"])),
+        "rounded": rounded,
+    }
 
 
 def _rect_badge_candidates(
@@ -432,59 +511,25 @@ def _rect_badge_candidates(
     unmeasured: list[str] = []
     seen: set[tuple[float, ...]] = set()
     for object_index, item in enumerate(page.rects):
-        x0, x1, top, bottom = _shape_bounds(item)
-        object_height = abs(bottom - top)
         fill = _hex_from_color(item.get("non_stroking_color"))
-        if not item.get("fill") or fill is None:
+        if not item.get("fill") or fill is None or not _in_chip_height_band(item):
             continue
-        if not 10 <= object_height <= 30:
-            continue
+        x0, x1, top, bottom = _shape_bounds(item)
         shape_key = (round(x0, 1), round(x1, 1), round(top, 1), round(bottom, 1), fill)
         if shape_key in seen:
             continue  # the same fill path emitted twice is one shape
         seen.add(shape_key)
-        flat = next(
-            (
-                other
-                for other in page.rects
-                if other is not item
-                and abs(float(other.get("top") or 0) - (top + object_height / 2)) <= 0.2
-                and _hex_from_color(other.get("non_stroking_color")) == fill
-                and float(other.get("x0") or 0) <= x0
-                and float(other.get("x1") or 0) >= x1
-            ),
-            None,
-        )
-        full_width = (
-            float(flat["x1"]) - float(flat["x0"]) if flat is not None else x1 - x0
-        )
-        if full_width <= 20:
-            continue
-        run = _single_run(words, x0, x1, top, bottom)
-        padding = (
-            max(0.0, (float(flat["x1"]) - float(flat["x0"]) - (x1 - x0)) / 2)
-            if flat is not None
-            else 0.0
-        )
-        reason = _not_a_chip_reason(item, text_run=run is not None, padding_pt=padding)
+        # A pill drawn as a body plus end caps spans the band through its centre,
+        # and its label is measured against that full span, not the body alone.
+        span = _pill_span(page.rects, item, fill)
+        box = (span[0], span[1], top, bottom) if span is not None else (x0, x1, top, bottom)
+        run = _text_run(words, box)
+        reason = _not_a_chip_reason(item, box, run)
         if reason is not None:
             unmeasured.append(reason)
             continue
-        text_color = run[0]
-        candidates.append(
-            {
-                "object_index": object_index,
-                "x0": float(flat["x0"]) if flat is not None else x0,
-                "x1": float(flat["x1"]) if flat is not None else x1,
-                "top": top,
-                "bottom": bottom,
-                "fill": fill,
-                "text_color": text_color,
-                "height": object_height,
-                "padding": padding,
-                "rounded": False,
-            }
-        )
+        assert run is not None  # a chip candidate carries its measured run
+        candidates.append(_chip_candidate(object_index, box, fill, run, rounded=False))
     return candidates, unmeasured
 
 
@@ -498,47 +543,24 @@ def _rounded_badge_candidates(
     unmeasured: list[str] = []
     seen: set[tuple[float, ...]] = set()
     for object_index, item in enumerate(page.curves):
-        x0, x1, top, bottom = _shape_bounds(item)
-        object_height = abs(bottom - top)
         fill = _hex_from_color(item.get("non_stroking_color"))
-        if not item.get("fill") or fill is None:
+        if not item.get("fill") or fill is None or not _in_chip_height_band(item):
             continue
-        if not 10 <= object_height <= 30:
-            continue
+        x0, x1, top, bottom = _shape_bounds(item)
         shape_key = (round(x0, 1), round(x1, 1), round(top, 1), round(bottom, 1), fill)
         if shape_key in seen:
             continue  # the same fill path emitted twice is one shape
         seen.add(shape_key)
-        if any(
-            x0 < float(other["x1"])
-            and x1 > float(other["x0"])
-            and top < float(other["bottom"])
-            and bottom > float(other["top"])
-            for other in measured
-        ):
-            continue  # a pill body already measured as a rectangle
-        run = _single_run(words, x0, x1, top, bottom)
-        reason = _not_a_chip_reason(
-            item, text_run=run is not None, padding_pt=run[1] if run else 0.0
-        )
+        if any(_overlaps(item, other) for other in measured):
+            continue  # an end cap of a pill already measured as a rectangle
+        box = (x0, x1, top, bottom)
+        run = _text_run(words, box)
+        reason = _not_a_chip_reason(item, box, run)
         if reason is not None:
             unmeasured.append(reason)
             continue
-        text_color, padding = run
-        candidates.append(
-            {
-                "object_index": object_index,
-                "x0": x0,
-                "x1": x1,
-                "top": top,
-                "bottom": bottom,
-                "fill": fill,
-                "text_color": text_color,
-                "height": object_height,
-                "padding": padding,
-                "rounded": True,
-            }
-        )
+        assert run is not None  # a chip candidate carries its measured run
+        candidates.append(_chip_candidate(object_index, box, fill, run, rounded=True))
     return candidates, unmeasured
 
 
@@ -551,15 +573,45 @@ def _page_badge_candidates(
     return [*candidates, *rounded], [*unmeasured, *rounded_unmeasured]
 
 
-def _unmeasured_warning(unmeasured: list[str]) -> str | None:
-    """Warning for in-band filled shapes that no chip rule classified."""
-    if not unmeasured:
-        return None
-    return (
-        f"{len(unmeasured)} filled shape(s) between 10 and 30 pt high were detected "
-        f"but not classified as chips ({'; '.join(unmeasured)}); they remain "
-        "unmeasured pending inspection."
-    )
+def _unfilled_shape_labels(page: pdfplumber.page.Page) -> list[str]:
+    """Named in-band shapes with no fill colour: outlines, not chip bodies."""
+    labels: list[str] = []
+    for item in [*page.rects, *page.curves]:
+        if not _in_chip_height_band(item):
+            continue
+        filled = bool(item.get("fill")) and _hex_from_color(
+            item.get("non_stroking_color")
+        ) is not None
+        if filled:
+            continue
+        x0, x1, top, bottom = _shape_bounds(item)
+        labels.append(
+            f"{x1 - x0:g}x{abs(bottom - top):g} pt outline "
+            f"(at x={x0:.1f} pt, top={top:.1f} pt)"
+        )
+    return labels
+
+
+def _page_shape_warnings(
+    page: pdfplumber.page.Page, unmeasured: list[str]
+) -> list[str]:
+    """Warnings naming every in-band shape on this page that no chip rule measured."""
+    warnings: list[str] = []
+    if unmeasured:
+        warnings.append(
+            f"{len(unmeasured)} filled shape(s) between {_MIN_BADGE_HEIGHT_PT:g} and "
+            f"{_MAX_BADGE_HEIGHT_PT:g} pt high were detected but not classified as "
+            f"chips ({'; '.join(unmeasured)}); they remain unmeasured pending inspection."
+        )
+    outlines = _unfilled_shape_labels(page)
+    if outlines:
+        warnings.append(
+            f"{len(outlines)} shape(s) between {_MIN_BADGE_HEIGHT_PT:g} and "
+            f"{_MAX_BADGE_HEIGHT_PT:g} pt high carry no fill colour "
+            f"({'; '.join(outlines)}); a chip body is filled, so they remain "
+            "unmeasured pending inspection."
+        )
+    return warnings
 
 
 def enrich_badges_from_local_pdf(
@@ -575,8 +627,7 @@ def enrich_badges_from_local_pdf(
             width, height = float(page.width), float(page.height)
             words = page.extract_words(extra_attrs=["non_stroking_color"])
             candidates, unmeasured = _page_badge_candidates(page, words)
-            if warning := _unmeasured_warning(unmeasured):
-                warnings.append(warning)
+            warnings.extend(_page_shape_warnings(page, unmeasured))
 
             grouped: dict[tuple[str, str, float], list[dict[str, object]]] = {}
             for candidate in candidates:
