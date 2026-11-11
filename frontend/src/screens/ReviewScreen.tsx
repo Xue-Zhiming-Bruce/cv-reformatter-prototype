@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { LogoIcon, PencilIcon, FileIcon } from "../components/icons"
 import { Dropzone, isPdfTargetFile } from "../components/Dropzone"
+import { reviewHasChanges } from "../reviewLeave"
 import type {
   CandidateProfile,
   FinalAcceptanceResponse,
@@ -233,6 +234,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   const { t, i18n } = useTranslation()
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [blindProfile, setBlindProfile] = useState(false)
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false)
   const [exportState, setExportState] = useState<"idle" | "confirm" | "generating" | "error">("idle")
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [reviewCursor, setReviewCursor] = useState(0)
@@ -324,6 +326,15 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   const isPdf = /\.pdf$/i.test(resumeFile.name) || resumeFile.type === "application/pdf"
   const originalPreviewUrl = data.original_pdf_preview_url ?? (isPdf ? objectUrl : null)
   const originalPdfViewerUrl = originalPreviewUrl ? pdfViewerUrl(originalPreviewUrl) : null
+
+  // The only two ways out of the review: the Reform logo in the header, and the reanalyze_target /
+  // upload_new_target recovery actions in the action-error panel. Both ask this, so neither can
+  // discard the edits above silently. Deliberately unguarded: browser close/reload (beforeunload is
+  // a separate decision) and the preview/HTML links, which open a new tab and unmount nothing.
+  function requestLeave(): void {
+    if (reviewHasChanges(edits, blindProfile)) setLeaveConfirmOpen(true)
+    else onBack()
+  }
 
   function invalidateGeneratedOutput() {
     if (generation?.client_ready || acceptanceState === "accepted") {
@@ -756,7 +767,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         return
       case "reanalyze_target":
       case "upload_new_target":
-        onBack()
+        requestLeave()
         return
       default:
         return
@@ -826,7 +837,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
     <div className="review-page">
       {/* ── Header ── */}
       <header className="rv-header">
-        <button type="button" className="brand brand--link rv-brand" onClick={onBack}>
+        <button type="button" className="brand brand--link rv-brand" onClick={requestLeave}>
           <LogoIcon className="brand__icon" />
           <span className="brand__name">Reform</span>
         </button>
@@ -925,6 +936,26 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
           )}
         </div>
       </header>
+
+      {leaveConfirmOpen && (
+        <div className="rv-leave-confirm">
+          <span className="rv-export-confirm__msg">{t("review.leaveConfirm")}</span>
+          <button
+            type="button"
+            className="rv-export-cancel-btn"
+            onClick={() => setLeaveConfirmOpen(false)}
+          >
+            {t("review.leaveCancel")}
+          </button>
+          <button
+            type="button"
+            className="rv-export-anyway-btn"
+            onClick={() => { setLeaveConfirmOpen(false); onBack() }}
+          >
+            {t("review.leaveConfirmAction")}
+          </button>
+        </div>
+      )}
 
       {effectiveTarget && (
         <section className="rv-target-panel" aria-label={t("review.targetSupportLabel")}>
