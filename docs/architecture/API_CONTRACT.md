@@ -20,11 +20,13 @@ not a claim that the current API/UI has completed alignment.
 
 Current responses still expose `missing_fields` and `followup_message`, and
 stored disclosure rules still accept `pending_confirmation` and
-`available_upon_request`. Processing currently assigns pending-confirmation
-rules to detected gaps; rendering may print a placeholder (for example for
-location). Those defaults need alignment, not additional required-field rules.
-Existing schema values/response fields are not removed by this documentation
-change. The name currently follows the whole-profile blind switch; independent
+`available_upon_request`. Processing records detected gaps as internal
+information only: it assigns no display rule and rendering prints no
+placeholder, so an absent fact stays absent, a present value renders as the
+source wrote it, and a hidden value stays hidden (issue #30). Legacy stored
+rules keep their enum values and stay valid. Existing schema values/response
+fields are not removed by this documentation change. The name currently
+follows the whole-profile blind switch; independent
 controls for all four personal-information categories remain to be verified.
 Existing blind-link privacy protections remain in force. The
 [roadmap](../roadmaps/BACKEND_ROADMAP.md#owner-scope-alignment--november-11-2026)
@@ -184,8 +186,13 @@ Response fields:
 - `visual_comparison_url`;
 - `visual_comparison`;
 - `visual_comparison_artifact_urls`;
-- `followup_message`;
-- `missing_fields`;
+- `followup_message` — always the empty string. A conversion drafts no
+  follow-up; the field keeps its `str` type so existing clients stay valid, and
+  the review UI's `POST /api/followup` remains the only drafting caller
+  (issue #30; its frontend retirement is #32);
+- `missing_fields` — informational only: the absent source facts detected for
+  this revision. They are never required, never block conversion and never
+  change a client-facing value;
 - `composition_report` and `composition_report_url` (see
   [Content Arrangement Report](#content-arrangement-report));
 - `debug_artifacts`.

@@ -9,7 +9,8 @@ from pytest import MonkeyPatch
 
 from app import main
 from app.main import app
-from app.extraction.llm_extractor import LLMExtractionError
+from app.extraction.candidate_schema import CandidateProfile
+from app.extraction.llm_extractor import LLMConfigurationError, LLMExtractionError
 from app.ingestion.pdf_reader import read_pdf_text
 from app.generation import service as generation_service
 
@@ -186,6 +187,21 @@ def test_process_accepts_text_pdf_upload(tmp_path: Path, monkeypatch: MonkeyPatc
     metadata = metadata_response.json()
     assert metadata["status"] == "processed"
     assert metadata["source_file_type"] == "pdf"
+
+
+def test_followup_endpoint_still_drafts_a_message(monkeypatch: MonkeyPatch) -> None:
+    def fail_build_llm_client(**kwargs: object) -> None:
+        raise LLMConfigurationError("no provider configured")
+
+    monkeypatch.setattr(generation_service, "build_llm_client", fail_build_llm_client)
+    response = client.post("/api/followup", json={
+        "profile": CandidateProfile(full_name="Fictional Candidate").model_dump(mode="json")
+    })
+
+    assert response.status_code == 200, response.text
+    followup_message = response.json()["followup_message"]
+    assert isinstance(followup_message, str)
+    assert "Salary expectation" in followup_message
 
 
 def test_llm_first_unavailable_fails_closed_with_structured_error(
