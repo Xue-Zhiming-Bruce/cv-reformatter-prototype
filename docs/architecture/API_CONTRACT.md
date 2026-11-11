@@ -191,8 +191,9 @@ Response fields:
 - `visual_comparison_artifact_urls`;
 - `followup_message` — always the empty string. A conversion drafts no
   follow-up; the field keeps its `str` type so existing clients stay valid, and
-  the review UI's `POST /api/followup` remains the only drafting caller
-  (issue #30; its frontend retirement is #32);
+  the review screen no longer requests one: `POST /api/followup` stays
+  available with its unchanged value, and no in-repo UI caller remains
+  (issues #30, #32);
 - `missing_fields` — informational only: the absent source facts detected for
   this revision. They are never required, never block conversion and never
   change a client-facing value;

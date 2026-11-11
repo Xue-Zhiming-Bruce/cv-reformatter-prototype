@@ -100,13 +100,11 @@ type EditableFieldProps = {
   path: string
   edits: Record<string, string>
   onEdit: (path: string, value: string) => void
-  isMissing?: boolean
-  isHighlighted?: boolean
   multiline?: boolean
   className?: string
 }
 
-function EditableField({ value, path, edits, onEdit, isMissing, isHighlighted, multiline, className }: EditableFieldProps) {
+function EditableField({ value, path, edits, onEdit, multiline, className }: EditableFieldProps) {
   const { t } = useTranslation()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState("")
@@ -165,20 +163,17 @@ function EditableField({ value, path, edits, onEdit, isMissing, isHighlighted, m
     )
   }
 
-  if (isEmpty && isMissing) {
+  if (isEmpty) {
     return (
       <button
         type="button"
-        className={`empty-slot${isHighlighted ? " empty-slot--active" : ""}${className ? ` ${className}` : ""}`}
+        className={`empty-slot${className ? ` ${className}` : ""}`}
         onClick={startEdit}
-        data-review-field={path}
       >
         <span className="empty-slot__badge">{t("review.emptySlot")}</span>
       </button>
     )
   }
-
-  if (isEmpty) return null
 
   return (
     <span
@@ -221,7 +216,7 @@ function applyEditsToProfile(profile: CandidateProfile, edits: Record<string, st
     const last = parts[parts.length - 1]
     if (Array.isArray(node)) node[Number(last)] = value
     else if (isRecord(node)) node[last] = value
-    // Clear PENDING_CONFIRMATION so the backend uses the filled value instead of "To be confirmed"
+    // Drop only the legacy stored pending_confirmation rule; it writes no client text of its own.
     const rules = copy.client_display_rules
     if (isRecord(rules) && parts[0] && rules[parts[0]] === "pending_confirmation") {
       delete rules[parts[0]]
@@ -231,24 +226,16 @@ function applyEditsToProfile(profile: CandidateProfile, edits: Record<string, st
 }
 
 export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, targetFormat, onReplaceTarget, onBack }: ReviewScreenProps) {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [blindProfile, setBlindProfile] = useState(false)
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false)
-  const [exportState, setExportState] = useState<"idle" | "confirm" | "generating" | "error">("idle")
+  const [exportState, setExportState] = useState<"idle" | "generating" | "error">("idle")
   const [dropdownOpen, setDropdownOpen] = useState(false)
-  const [reviewCursor, setReviewCursor] = useState(0)
-  const [highlightedField, setHighlightedField] = useState<string | null>(null)
   const exportAreaRef = useRef<HTMLDivElement>(null)
-  const rightPaneBodyRef = useRef<HTMLDivElement>(null)
   const [previewMode, setPreviewMode] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [previewState, setPreviewState] = useState<"idle" | "generating" | "error">("idle")
-  const [emailPopoverOpen, setEmailPopoverOpen] = useState(false)
-  const [emailDraft, setEmailDraft] = useState("")
-  const [emailState, setEmailState] = useState<"idle" | "loading" | "ready">("idle")
-  const [copied, setCopied] = useState(false)
-  const emailAreaRef = useRef<HTMLDivElement>(null)
   const [revisionId, setRevisionId] = useState(data.profile_revision_id)
   const [profileDirty, setProfileDirty] = useState(false)
   const editVersionRef = useRef(0)
@@ -273,11 +260,6 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   const targetBlocked = isDocxTarget
   const isAccepted = acceptanceState === "accepted" || generation?.client_ready === true
 
-  const missingNames = useMemo(
-    () => new Set(profile.missing_fields.map((f) => f.field_name)),
-    [profile.missing_fields]
-  )
-
   const objectUrl = useMemo(() => URL.createObjectURL(resumeFile), [resumeFile])
   useEffect(() => () => URL.revokeObjectURL(objectUrl), [objectUrl])
 
@@ -291,17 +273,6 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
     document.addEventListener("mousedown", handleClickOutside)
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [dropdownOpen])
-
-  useEffect(() => {
-    if (!emailPopoverOpen) return
-    function handleClickOutside(e: MouseEvent) {
-      if (emailAreaRef.current && !emailAreaRef.current.contains(e.target as Node)) {
-        setEmailPopoverOpen(false)
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside)
-    return () => document.removeEventListener("mousedown", handleClickOutside)
-  }, [emailPopoverOpen])
 
   useEffect(() => {
     if (!isPdfTarget) return
@@ -347,9 +318,6 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   }
 
   function handleEdit(path: string, value: string) {
-    if (path === highlightedField && value.trim()) {
-      setHighlightedField(null)
-    }
     setEdits((prev) => {
       const next = { ...prev }
       if (value === "") delete next[path]
@@ -365,25 +333,6 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
     setBlindProfile(checked)
     invalidateGeneratedOutput()
   }
-
-  function handleReviewChipClick() {
-    const unresolved = profile.missing_fields.filter((f) => {
-      const edited = edits[f.field_name]
-      return !edited || !edited.trim()
-    })
-    if (!unresolved.length) return
-    const idx = reviewCursor % unresolved.length
-    const fieldName = unresolved[idx].field_name
-    setHighlightedField(fieldName)
-    setReviewCursor(reviewCursor + 1)
-    const el = rightPaneBodyRef.current?.querySelector(`[data-review-field="${fieldName}"]`)
-    el?.scrollIntoView({ behavior: "smooth", block: "center" })
-  }
-
-  const remainingMissing = profile.missing_fields.filter((f) => {
-    const edited = edits[f.field_name]
-    return !edited || !edited.trim()
-  }).length
 
   const failedVariants = proofStatus?.variants.filter((variant) => !variant.structural_passed) ?? []
   const proofCreated = (proofStatus?.variants.length ?? 0) > 0
@@ -582,11 +531,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   function handleExportClick() {
     setDropdownOpen(false)
     if (targetBlocked) return
-    if (remainingMissing > 0) {
-      setExportState("confirm")
-    } else {
-      void doExport()
-    }
+    void doExport()
   }
 
   async function handleCreateProofs() {
@@ -783,40 +728,6 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
     }
   }
 
-  async function handleEmailBtnClick() {
-    if (emailPopoverOpen) {
-      setEmailPopoverOpen(false)
-      return
-    }
-    setEmailPopoverOpen(true)
-    setEmailState("loading")
-    try {
-      const res = await fetch("/api/followup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          profile: applyEditsToProfile(profile, edits),
-          language: i18n.language === "ko" ? "Korean" : "English",
-        }),
-      })
-      if (!res.ok) throw new Error("failed")
-      const result = await res.json()
-      setEmailDraft(result.followup_message)
-      setEmailState("ready")
-    } catch {
-      setEmailPopoverOpen(false)
-      setEmailState("idle")
-    }
-  }
-
-  async function handleCopyEmail() {
-    try {
-      await navigator.clipboard.writeText(emailDraft)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch { /* clipboard blocked — silent */ }
-  }
-
   function ef(path: string, value: string | null, opts: { multiline?: boolean; className?: string } = {}) {
     return (
       <EditableField
@@ -824,8 +735,6 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         path={path}
         edits={edits}
         onEdit={handleEdit}
-        isMissing={missingNames.has(path)}
-        isHighlighted={path === highlightedField}
         multiline={opts.multiline}
         className={opts.className}
       />
@@ -879,64 +788,42 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         </button>
 
         <div className="rv-export-area" ref={exportAreaRef}>
-          {exportState === "confirm" ? (
-            <div className="rv-export-confirm">
-              <span className="rv-export-confirm__msg">
-                {t("review.exportConfirm", { count: remainingMissing })}
-              </span>
-              <button
-                type="button"
-                className="rv-export-cancel-btn"
-                onClick={() => setExportState("idle")}
-              >
-                {t("review.exportCancel")}
-              </button>
-              <button
-                type="button"
-                className="rv-export-anyway-btn"
-                onClick={() => void doExport()}
-              >
-                {t("review.exportConfirmAction")}
-              </button>
-            </div>
-          ) : (
-            <div className="rv-export-split">
-              <button
-                type="button"
-                className={`rv-export-btn${exportState === "generating" ? " rv-export-btn--loading" : ""}${exportState === "error" ? " rv-export-btn--error" : ""}`}
-                disabled={exportState === "generating" || targetBlocked}
-                title={targetBlocked ? t("review.targetDocxBlockedShort") : undefined}
-                onClick={() => {
-                  if (exportState === "generating") return
-                  setExportState("idle")
-                  setDropdownOpen((v) => !v)
-                }}
-              >
-                {exportState === "generating" ? (
-                  <>
-                    <span className="rv-spinner" aria-hidden="true" />
-                    {t("review.exportGenerating")}
-                  </>
-                ) : exportState === "error" ? (
-                  t("review.exportError")
-                ) : (
-                  <>
-                    {t("review.exportBtn")}
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <path d="M6 9l6 6 6-6" />
-                    </svg>
-                  </>
-                )}
-              </button>
-              {dropdownOpen && (
-                <div className="rv-export-menu">
-                  <button type="button" className="rv-export-menu__item" onClick={handleExportClick}>
-                    {t("review.exportPdf")}
-                  </button>
-                </div>
+          <div className="rv-export-split">
+            <button
+              type="button"
+              className={`rv-export-btn${exportState === "generating" ? " rv-export-btn--loading" : ""}${exportState === "error" ? " rv-export-btn--error" : ""}`}
+              disabled={exportState === "generating" || targetBlocked}
+              title={targetBlocked ? t("review.targetDocxBlockedShort") : undefined}
+              onClick={() => {
+                if (exportState === "generating") return
+                setExportState("idle")
+                setDropdownOpen((v) => !v)
+              }}
+            >
+              {exportState === "generating" ? (
+                <>
+                  <span className="rv-spinner" aria-hidden="true" />
+                  {t("review.exportGenerating")}
+                </>
+              ) : exportState === "error" ? (
+                t("review.exportError")
+              ) : (
+                <>
+                  {t("review.exportBtn")}
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </>
               )}
-            </div>
-          )}
+            </button>
+            {dropdownOpen && (
+              <div className="rv-export-menu">
+                <button type="button" className="rv-export-menu__item" onClick={handleExportClick}>
+                  {t("review.exportPdf")}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -1166,70 +1053,9 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
               <span className="rv-chip rv-chip--success">
                 {t("review.chipPlaced", { count: ledger.placed })}
               </span>
-              {remainingMissing > 0 ? (
-                <>
-                  <button
-                    type="button"
-                    className="rv-chip rv-chip--warning"
-                    onClick={handleReviewChipClick}
-                  >
-                    {t("review.chipNeedsReview", { count: remainingMissing })}
-                  </button>
-                  <div className="rv-email-wrap" ref={emailAreaRef}>
-                    <button type="button" className="rv-email-btn" onClick={handleEmailBtnClick}>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <rect x="2" y="4" width="20" height="16" rx="2"/>
-                        <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
-                      </svg>
-                      {t("review.emailDraftBtn")}
-                    </button>
-                    {emailPopoverOpen && (
-                      <div className="rv-email-popover">
-                        <div className="rv-email-popover__header">
-                          <span className="rv-email-popover__title">{t("review.emailPopoverTitle")}</span>
-                          <button type="button" className="rv-email-popover__close" onClick={() => setEmailPopoverOpen(false)}>×</button>
-                        </div>
-                        {(edits["email"] ?? profile.email) && (
-                          <div className="rv-email-popover__to">
-                            <span className="rv-email-popover__to-label">{t("review.emailTo")}</span>
-                            <span className="rv-email-popover__to-value">{edits["email"] ?? profile.email}</span>
-                          </div>
-                        )}
-                        {emailState === "loading" ? (
-                          <div className="rv-email-popover__loading">
-                            <span className="rv-spinner" aria-hidden="true" />
-                            {t("review.emailLoading")}
-                          </div>
-                        ) : (
-                          <textarea
-                            className="rv-email-popover__textarea"
-                            value={emailDraft}
-                            onChange={(e) => setEmailDraft(e.target.value)}
-                            rows={8}
-                          />
-                        )}
-                        <div className="rv-email-popover__actions">
-                          <button
-                            type="button"
-                            className={`rv-email-popover__copy-btn${copied ? " rv-email-popover__copy-btn--copied" : ""}`}
-                            disabled={emailState !== "ready"}
-                            onClick={handleCopyEmail}
-                          >
-                            {copied ? t("review.emailCopied") : t("review.emailCopy")}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <span className="rv-chip rv-chip--all-reviewed">
-                  {t("review.chipAllReviewed")}
-                </span>
-              )}
             </div>
           )}
-          <div className={`pane-body${previewMode ? " pane-body--pdf" : ""}`} ref={rightPaneBodyRef}>
+          <div className={`pane-body${previewMode ? " pane-body--pdf" : ""}`}>
             {previewMode && previewUrl ? (
               <object data={pdfViewerUrl(previewUrl)} type="application/pdf" className="pdf-embed">
                 <p className="pane-fallback">{t("review.pdfFallback")}</p>
@@ -1244,7 +1070,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
                 <div className="rdoc-name-row">
                   {ef("full_name", profile.full_name)}
                 </div>
-                {(profile.work_experience[0]?.title || missingNames.has("current_title")) && (
+                {profile.work_experience[0]?.title && (
                   <div className="rdoc-title-row">
                     {ef("current_title", profile.work_experience[0]?.title ?? null)}
                   </div>
@@ -1287,7 +1113,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
               </div>
 
               {/* Summary */}
-              {(profile.professional_summary || missingNames.has("professional_summary")) && (
+              {profile.professional_summary && (
                 <div className="rdoc-section">
                   <div className="rdoc-section__head">{t("review.sectionSummary")}</div>
                   <div className="rdoc-summary">
@@ -1297,7 +1123,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
               )}
 
               {/* Skills */}
-              {(profile.skills.length > 0 || missingNames.has("skills")) && (
+              {profile.skills.length > 0 && (
                 <div className="rdoc-section">
                   <div className="rdoc-section__head">{t("review.sectionSkills")}</div>
                   <div className="rdoc-skills">
