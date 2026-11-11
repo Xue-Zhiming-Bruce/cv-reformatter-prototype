@@ -204,6 +204,113 @@ def build_tech_teal_palette_target_pdf(path: Path) -> Path:
     return _write_single_page_pdf(path, operations)
 
 
+def _pill_path(x: float, y: float, width: float, height: float) -> str:
+    """Rounded-rectangle subpath at PDF coordinates, unpainted (r = height/2)."""
+    radius = height / 2
+    handle = 0.5523 * radius
+    x1, y1 = x + width, y + height
+    return "\n".join(
+        [
+            f"{x + radius} {y} m",
+            f"{x1 - radius} {y} l",
+            f"{x1 - radius + handle} {y} {x1} {y + radius - handle} {x1} {y + radius} c",
+            f"{x1} {y1 - radius} l",
+            f"{x1} {y1 - radius + handle} {x1 - radius + handle} {y1} {x1 - radius} {y1} c",
+            f"{x + radius} {y1} l",
+            f"{x + radius - handle} {y1} {x} {y1 - radius + handle} {x} {y1 - radius} c",
+            f"{x} {y + radius} l",
+            f"{x} {y + radius - handle} {x + radius - handle} {y} {x + radius} {y} c",
+        ]
+    )
+
+
+def build_rounded_chip_target_pdf(
+    path: Path,
+    *,
+    chip_count: int = 18,
+    per_row: int = 6,
+    fill: str = "0.6 0.96471 0.89412",
+    text: str = "0.2 0.25490 0.33333",
+) -> Path:
+    """Target whose badges are filled rounded paths, as the HTML renderer draws them.
+
+    The first chip's identical fill path is emitted twice, mirroring the live
+    renderer's PDF output; the duplicate must still measure as one chip.
+    """
+    operations: list[str] = []
+    for index in range(chip_count):
+        row, column = divmod(index, per_row)
+        x = 66 + column * 90
+        y = 620 - row * 44
+        pill = _pill_path(x, y, 80, 18)
+        operations.append(f"q {fill} rg\n{pill}\nf Q")
+        if index == 0:
+            operations.append(f"q {fill} rg\n{pill}\nf Q")
+        operations.append(
+            f"BT {text} rg /F1 9 Tf {x + 9} {y + 5} Td (Skill {index + 1}) Tj ET"
+        )
+    return _write_single_page_pdf(path, operations)
+
+
+def build_rounded_decoration_target_pdf(path: Path) -> Path:
+    """Filled rounded decoration that must stay unmeasured instead of becoming badges.
+
+    A wide banner with one short text run, a rounded blob taller than the badge
+    band, a stroked curve rule, and one rounded shape holding two text lines.
+    """
+    banner = "0.05098 0.58039 0.53333"
+    chip = "0.6 0.96471 0.89412"
+    body = "0.2 0.25490 0.33333"
+    operations = [
+        f"q {banner} rg\n{_pill_path(66, 700, 400, 24)}\nf Q",
+        f"BT 1 1 1 rg /F2 11 Tf 150 708 Td (Skills overview) Tj ET",
+        f"q {chip} rg\n{_pill_path(66, 620, 120, 60)}\nf Q",
+        f"BT {body} rg /F1 10 Tf 80 640 Td (Tall rounded blob) Tj ET",
+        "0 0 0 RG 0.75 w\n66 600 m\n120 600 120 580 220 580 c S",
+        f"q {chip} rg\n{_pill_path(66, 540, 140, 18)}\nf Q",
+        f"BT {body} rg /F1 9 Tf 72 550 Td (First text line) Tj ET",
+        f"BT {body} rg /F1 9 Tf 72 541 Td (Second line) Tj ET",
+    ]
+    return _write_single_page_pdf(path, operations)
+
+
+def build_banner_and_triangle_target_pdf(path: Path) -> Path:
+    """Rounded and rectangular section banners plus filled triangles: decoration, not chips.
+
+    Each banner is 400 x 24 pt with its label inset 84 pt from the left edge, so the
+    measured inset cannot fit the badge cluster schema (0..72 pt). Each triangle is
+    30 x 24 pt, filling half of its bounding box, and carries one short text run.
+    """
+    banner = "0.05098 0.58039 0.53333"
+    triangle = "0.6 0.96471 0.89412"
+    body = "0.2 0.25490 0.33333"
+    operations = [
+        f"q {banner} rg\n{_pill_path(66, 700, 400, 24)}\nf Q",
+        f"BT 1 1 1 rg /F2 11 Tf 150 708 Td (Skills overview) Tj ET",
+        f"q {banner} rg\n{_pill_path(66, 660, 400, 24)}\nf Q",
+        f"BT 1 1 1 rg /F2 11 Tf 150 668 Td (Experience overview) Tj ET",
+        f"q {banner} rg 66 620 400 24 re f Q",
+        f"BT 1 1 1 rg /F2 11 Tf 150 628 Td (Education overview) Tj ET",
+        f"q {triangle} rg\n66 580 m 96 580 l 81 604 l h f Q",
+        f"BT {body} rg /F1 9 Tf 76 585 Td (Tri) Tj ET",
+        f"q {triangle} rg\n166 580 m 196 580 l 181 604 l h f Q",
+        f"BT {body} rg /F1 9 Tf 176 585 Td (Tri) Tj ET",
+    ]
+    return _write_single_page_pdf(path, operations)
+
+
+def build_multiline_rounded_shape_target_pdf(path: Path) -> Path:
+    """One filled rounded shape holding two text lines: a single unclassifiable shape."""
+    chip = "0.6 0.96471 0.89412"
+    body = "0.2 0.25490 0.33333"
+    operations = [
+        f"q {chip} rg\n{_pill_path(66, 540, 140, 24)}\nf Q",
+        f"BT {body} rg /F1 8 Tf 72 546 Td (First text line) Tj ET",
+        f"BT {body} rg /F1 8 Tf 72 556 Td (Second line) Tj ET",
+    ]
+    return _write_single_page_pdf(path, operations)
+
+
 def build_design_plain_target_pdf(path: Path) -> Path:
     """Conventional one-column target with typographically distinct title and
     section headings (for the design lane)."""

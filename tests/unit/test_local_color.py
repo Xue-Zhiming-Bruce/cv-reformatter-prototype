@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.template_analysis.commercial.local_color import (
     _hex_from_color,
+    enrich_badges_from_local_pdf,
     enrich_colors_from_local_pdf,
     enrich_rules_from_local_pdf,
 )
@@ -18,14 +21,20 @@ from app.template_analysis.commercial.models import (
 from scripts.run_abc_live_matrix import (
     _body_size_failure,
     _measure_dominant_text_size,
+    _measure_html_badges,
     _measure_pdf_rules,
     _rule_geometry_failures,
     _structure_failures,
 )
 from tests.helpers.synthetic_pdf import (
+    build_banner_and_triangle_target_pdf,
+    build_multiline_rounded_shape_target_pdf,
     build_partial_heading_rules_target_pdf,
     build_pipe_contact_header_target_pdf,
+    build_rounded_chip_target_pdf,
+    build_rounded_decoration_target_pdf,
     build_styled_target_pdf,
+    build_tech_teal_palette_target_pdf,
 )
 
 
@@ -305,3 +314,171 @@ def test_matrix_retains_successful_api_receipt_with_raw_target_differences(tmp_p
     assert result["fidelity_diagnostics"]["issues"]
     assert result["fidelity_diagnostics"]["human_review"] == "pending"
     assert result["preview_identity"]["client_ready"] is False
+
+
+def _chip(node_id: str, text: str, *, background: str = "#99F6E4", color: str = "#334155") -> str:
+    return (
+        f'<span data-node-id="{node_id}" style="display:inline-flex;align-items:center;'
+        f'height:18pt;padding:0 9pt;border-radius:9pt;background:{background};'
+        f'color:{color};">{text}</span>'
+    )
+
+
+def test_html_badge_measure_reads_rendered_chip_rows(tmp_path: Path) -> None:
+    html = "\n".join(
+        [
+            '<div data-node-id="section.02.badge_group.0">',
+            '<div data-node-id="section.02.badge_group.0.row.0" style="display:flex;gap:6pt;">',
+            _chip("section.02.badge.skills.group.0.chip.0", "React"),
+            _chip("section.02.badge.skills.group.0.chip.1", "Next.js"),
+            _chip("section.02.badge.skills.group.0.chip.2", "TypeScript"),
+            "</div>",
+            "</div>",
+            '<div data-node-id="section.02.badge_group.1">',
+            '<div data-node-id="section.02.badge_group.1.row.0" style="display:flex;gap:6pt;">',
+            _chip("section.02.badge.skills.group.1.chip.0", "Node.js"),
+            _chip("section.02.badge.skills.group.1.chip.1", "Express"),
+            "</div>",
+            '<div data-node-id="section.02.badge_group.1.row.1" style="display:flex;gap:6pt;">',
+            _chip("section.02.badge.skills.group.1.chip.2", "GraphQL"),
+            "</div>",
+            "</div>",
+        ]
+    )
+    path = tmp_path / "candidate_profile.html"
+    path.write_text(html, encoding="utf-8")
+
+    assert _measure_html_badges(path) == {
+        "count": 6,
+        "fill_colors": ["#99F6E4"],
+        "text_colors": ["#334155"],
+        "items_per_line": [3, 2, 1],
+    }
+
+
+def test_html_badge_measure_reports_zero_without_chip_nodes(tmp_path: Path) -> None:
+    path = tmp_path / "candidate_profile.html"
+    path.write_text('<div class="chip-row"><p>No chips here</p></div>', encoding="utf-8")
+
+    assert _measure_html_badges(path) == {
+        "count": 0,
+        "fill_colors": [],
+        "text_colors": [],
+        "items_per_line": [],
+    }
+
+
+def test_html_badge_measure_counts_a_chip_matched_by_both_forms_once(tmp_path: Path) -> None:
+    path = tmp_path / "candidate_profile.html"
+    path.write_text(
+        '<div class="chip-row" data-node-id="section.02.badge_group.0.row.0">'
+        '<span class="chip-style" data-node-id="section.02.badge.skills.group.0.chip.0" '
+        'style="background:#99F6E4;color:#334155;">React</span>'
+        '<span class="chip-style" data-node-id="section.02.badge.skills.group.0.chip.1" '
+        'style="background:#99F6E4;color:#334155;">SQL</span>'
+        "</div>",
+        encoding="utf-8",
+    )
+
+    assert _measure_html_badges(path) == {
+        "count": 2,
+        "fill_colors": ["#99F6E4"],
+        "text_colors": ["#334155"],
+        "items_per_line": [2],
+    }
+
+
+def test_enrich_measures_generated_rounded_chip_paths(tmp_path: Path) -> None:
+    pdf = build_rounded_chip_target_pdf(tmp_path / "rounded.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    assert enriched.warnings == []
+    assert len(enriched.badge_clusters) == 1
+    cluster = enriched.badge_clusters[0]
+    # 18 rendered chips; the first chip's fill path is emitted twice on purpose.
+    assert cluster.badge_count == 18
+    assert cluster.items_per_line == [6, 6, 6]
+    assert cluster.fill_color_hex == "#99F6E4"
+    assert cluster.text_color_hex == "#334155"
+    assert cluster.height_pt == pytest.approx(18.0, abs=0.1)
+    assert cluster.horizontal_padding_pt == pytest.approx(9.0, abs=0.2)
+    assert cluster.provenance.source == "local_pdf"
+    assert cluster.provenance.provider == "pdfplumber"
+
+
+def test_enrich_leaves_rounded_decoration_unmeasured(tmp_path: Path) -> None:
+    pdf = build_rounded_decoration_target_pdf(tmp_path / "decoration.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    # The 400x24 pt banner (label inset 84 pt) and the 140x18 pt two-line shape are
+    # decoration, never skills; the over-tall blob and the stroked rule are not chips.
+    assert enriched.badge_clusters == []
+    warnings = " ".join(enriched.warnings)
+    assert "2 filled shape(s)" in warnings
+    assert "400x24 pt shape insets its text by 84 pt" in warnings
+    assert "140x18 pt shape holds no single short text run" in warnings
+    assert "60 pt" not in warnings
+    assert "unmeasured pending inspection" in warnings
+
+
+def test_enrich_warns_instead_of_raising_on_a_banner_sized_text_inset(
+    tmp_path: Path,
+) -> None:
+    # Two rounded section banners measure an 84 pt text inset, outside the badge
+    # cluster's 0..72 pt range: that must become a warning, never a ValidationError.
+    pdf = build_banner_and_triangle_target_pdf(tmp_path / "banners.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    assert enriched.badge_clusters == []
+    warnings = " ".join(enriched.warnings)
+    assert "400x24 pt shape insets its text by 84 pt, more than its height" in warnings
+    assert "unmeasured pending inspection" in warnings
+
+
+def test_enrich_leaves_banners_and_triangles_unmeasured(tmp_path: Path) -> None:
+    # Three 400x24 pt banners (two rounded, one rectangular) and two 30x24 pt filled
+    # triangles fill about half of their bounding boxes; none of them is a chip.
+    pdf = build_banner_and_triangle_target_pdf(tmp_path / "decoration.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    assert enriched.badge_clusters == []
+    assert len(enriched.warnings) == 1
+    warnings = enriched.warnings[0]
+    assert "5 filled shape(s)" in warnings
+    assert "400x24 pt shape is more than 10x wider than it is tall" in warnings
+    assert "30x24 pt shape fills only 50% of its bounding box" in warnings
+    assert "unmeasured pending inspection" in warnings
+
+
+def test_enrich_reports_a_single_unclassified_rounded_shape(tmp_path: Path) -> None:
+    pdf = build_multiline_rounded_shape_target_pdf(tmp_path / "multiline.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    # One filled rounded shape alone is unmeasured, not "no badges": the warning
+    # names the shape and its geometry so both readings stay distinguishable.
+    assert enriched.badge_clusters == []
+    assert len(enriched.warnings) == 1
+    assert "1 filled shape(s)" in enriched.warnings[0]
+    assert "140x24 pt shape holds no single short text run" in enriched.warnings[0]
+    assert "unmeasured pending inspection" in enriched.warnings[0]
+
+
+def test_enrich_measures_rectangular_chip_band(tmp_path: Path) -> None:
+    pdf = build_tech_teal_palette_target_pdf(tmp_path / "teal.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    assert len(enriched.badge_clusters) == 1
+    cluster = enriched.badge_clusters[0]
+    assert cluster.badge_count == 10
+    assert cluster.items_per_line == [5, 5]
+    assert cluster.fill_color_hex == "#99F6E4"
+    assert cluster.text_color_hex == "#334155"
+    assert cluster.height_pt == 20.0
+    assert cluster.provenance.source == "local_pdf"
+    assert cluster.provenance.provider == "pdfplumber"
