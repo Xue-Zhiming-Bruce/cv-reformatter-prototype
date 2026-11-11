@@ -80,9 +80,12 @@ test("target copy offers a PDF and never a DOCX template in both locales", () =>
   }
 })
 
-// #23 AC3/AC4: the showcase subtitle promises what the recruiter gets — an editable
-// preview plus a PDF deliverable — and names no DOCX output or engine detail.
+// #23 AC3/AC4/AC11: the showcase subtitle promises what the recruiter gets — an
+// editable preview plus a PDF deliverable — and names no DOCX output or engine detail.
+// A preview that drops the edit promise fails the test, not just the retired DOCX wording.
 test("showcase subtitle promises an editable preview and a PDF deliverable", () => {
+  const preview = { en: /preview/i, ko: /미리보기/ }
+  const editable = { en: /edit/i, ko: /수정/ }
   for (const [locale, resource] of [["en", en], ["ko", ko]] as const) {
     const sub = at(resource, "showcase.sub")
     assert.equal(typeof sub, "string", `${locale}.json is missing showcase.sub`)
@@ -93,9 +96,13 @@ test("showcase subtitle promises an editable preview and a PDF deliverable", () 
       `${locale}.showcase.sub must state the deliverable, not the implementation`,
     )
     assert.match(sub as string, /PDF/, `${locale}.showcase.sub must name the PDF deliverable`)
+    assert.match(sub as string, preview[locale], `${locale}.showcase.sub must name the preview`)
+    assert.match(
+      sub as string,
+      editable[locale],
+      `${locale}.showcase.sub must promise an editable preview, not only a viewable one`,
+    )
   }
-  assert.match(at(en, "showcase.sub") as string, /preview/)
-  assert.match(at(ko, "showcase.sub") as string, /미리보기/)
 })
 
 // AC5: a review already blocked by a DOCX target keeps the exact banner that describes the block.
