@@ -74,6 +74,7 @@ export interface ProcessResponse {
   original_preview_error: string | null
   debug_artifacts: Record<string, string>
   artifact_metadata_url: string
+  extraction_mode: "mock" | "live"
 }
 
 export interface TargetFormatMetadata {

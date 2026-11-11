@@ -107,3 +107,28 @@ test("the DOCX-target block banner keeps its wording in both locales", () => {
   assert.ok(typeof at(ko, "review.targetDocxBlocked") === "string")
   assert.match(at(ko, "review.targetDocxBlocked") as string, /PDF/)
 })
+
+// AC7/AC5: the review header names the extraction mode of that run, and the mock copy never
+// claims a live provider was involved.
+test("extraction mode copy exists in both locales without a live claim in the mock string", () => {
+  const expected = {
+    en: {
+      mock: "Mock extraction — no external AI service was called.",
+      live: "Live AI extraction — a configured AI provider extracted this resume.",
+    },
+    ko: {
+      mock: "모의 추출 — 외부 AI 서비스가 호출되지 않았습니다.",
+      live: "실시간 AI 추출 — 설정된 AI 제공자가 이 이력서에서 정보를 추출했습니다.",
+    },
+  }
+  const liveClaim = { en: "Live AI extraction", ko: "실시간 AI 추출" }
+  for (const [locale, resource] of [["en", en], ["ko", ko]] as const) {
+    for (const mode of ["mock", "live"] as const) {
+      assert.equal(at(resource, `review.extractionMode.${mode}`), expected[locale][mode])
+    }
+    assert.ok(
+      !expected[locale].mock.includes(liveClaim[locale]),
+      `${locale} mock copy must not claim live inference`,
+    )
+  }
+})

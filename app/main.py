@@ -18,9 +18,11 @@ import httpx
 from app.extraction.candidate_document_analyzer import build_candidate_field_evidence
 from app.extraction.candidate_schema import CandidateProfile
 from app.extraction.llm_extractor import (
+    ExtractionMode,
     LLMConfigurationError,
     LLMExtractionError,
     build_llm_client,
+    extraction_mode,
 )
 from app.extraction.coverage_audit import audit_segmentation_lines
 from app.extraction.llm_segmentation import (
@@ -286,6 +288,7 @@ class ProcessResponse(BaseModel):
     original_preview_error: str | None = None
     debug_artifacts: dict[str, str] = Field(default_factory=dict)
     artifact_metadata_url: str
+    extraction_mode: ExtractionMode
 
 
 class TargetFormatUploadResponse(BaseModel):
@@ -529,8 +532,9 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
                 ),
             ) from exc
 
+        provider = os.getenv("API_LLM_PROVIDER")
         try:
-            llm_client = build_llm_client(provider=os.getenv("API_LLM_PROVIDER"))
+            llm_client = build_llm_client(provider=provider)
         except (LLMConfigurationError, ValueError) as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         segmentation_started = time.monotonic()
@@ -644,6 +648,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
         original_preview_error=original_preview_error,
         debug_artifacts=debug_artifacts,
         artifact_metadata_url=artifact_metadata_url(artifact_id),
+        extraction_mode=extraction_mode(provider=provider),
     )
 
 
