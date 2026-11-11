@@ -5,41 +5,41 @@ Status: `Curated timing record` — evidence for the homepage's duration copy
 
 Last reviewed: November 11, 2026
 
-Measured build revision: `8e6c9d7e425351a15f7fc4542743487b4e035659`
+Measured build revision: `79afb6273c61f9d7d4ada6044ae1bf26148c4905`
 
-Judged code revision: `8e6c9d7e425351a15f7fc4542743487b4e035659` — the last code
-commit of the frozen tree; the only change between this revision and the judged
-head is this note, and `git diff --name-only 8e6c9d7..HEAD -- app/ migrations/`
-prints nothing.
+Judged code revision: `79afb6273c61f9d7d4ada6044ae1bf26148c4905` — the only
+change between this revision and the judged head is this note, and
+`git diff --name-only 79afb62..HEAD -- app/ migrations/`, printed after this note
+was committed, outputs nothing.
 
 This note records one controlled measurement of the path a homepage visitor
 takes on the tracked offline stack, and the copy decision the numbers force. It
 does not optimise latency, profile steps, or add a benchmark harness. It
-supersedes earlier measurements of the same path on `02a7a76` and `09dd00b`
-taken before the tree was frozen; those reached the same decision and were
+supersedes the `8e6c9d7` measurement of the same path, which preceded the #22
+badge-padding-ceiling merges; that measurement reached the same decision and is
 replaced rather than kept beside this one. The measured tree here is the frozen
-tree: #20–#32 merged.
+tree (#20–#32 merged) plus `6a97f3b`/`79afb62` (#22).
 
 ## Environment
 
 | Item | Value |
 | --- | --- |
-| Measured build revision (`git rev-parse HEAD` before the build and during the runs) | `8e6c9d7e425351a15f7fc4542743487b4e035659` |
-| Judged code revision | `8e6c9d7e425351a15f7fc4542743487b4e035659` |
-| `git diff --name-only 8e6c9d7..HEAD -- app/ migrations/`, printed after committing this note | empty — nothing printed, so the measured and judged trees carry identical `app/` and `migrations/` code |
+| Measured build revision (`git rev-parse HEAD` before the build and during the runs) | `79afb6273c61f9d7d4ada6044ae1bf26148c4905` |
+| Judged code revision | `79afb6273c61f9d7d4ada6044ae1bf26148c4905` |
+| `git diff --name-only 79afb62..HEAD -- app/ migrations/`, printed after committing this note | empty — nothing printed, so the measured and judged trees carry identical `app/` and `migrations/` code |
 | Note commit (the judged head itself) | recorded in issue #24's comment as `git rev-parse HEAD` once this note was committed; it adds this note and no other file |
-| `docker compose build api frontend` | exit `0` on the frozen tree, run before this measurement and not repeated; `api  Built`, `frontend  Built` |
-| Backend image | `cv-reformatter-backend:local` = `sha256:d9989488e2b0bbc698567ebf31a3f6df2dede1d7943092d2966c30e101e44223`, built 2026-11-11T22:10:16Z |
+| `docker compose build api frontend` | exit `0` on this head, run before this measurement and not repeated; `api  Built`, `frontend  Built` |
+| Backend image | `cv-reformatter-backend:local` = `sha256:f36ac121a6c4b9ad8aa0e09a8a6ba64671a76ba9983f4e529b04b8075a180fa2`, built 2026-11-11T23:04:14Z |
 | Frontend image | `cv-reformatter-frontend:local` = `sha256:aad8e48acc448a01a6df3f1d6304edbbe7ec8ffbe7eb2661e0fbe9de22144089`, built 2026-11-11T22:10:21Z |
-| `docker compose up -d --force-recreate` | exit `0`; `api` created 2026-11-11T22:10:23Z, started 22:10:27Z, `Up (healthy)`; `frontend` created 2026-11-11T22:10:23Z, started 22:10:33Z, `Up (healthy)` |
-| Timed code inside the container | sha256 aggregate over `app/` + `migrations/*.py` = `f65289ddc6bd33675fb5d81aa42ae98f2ae69a81a74a3da6985e1a237f069b28`, identical to the same aggregate over `git archive 8e6c9d7 app migrations` |
-| Served frontend bundle | `assets/index-D7REkhTn.js` sha256 `247dd23fde09905c9dd568e3eaa3807df1977e76e6596298d0fabf1a13f38f62`, identical to `frontend/npm run build` output; `assets/index-EUgwPrA1.css` sha256 `72e252e69bd535b6de40c1eb63533bb1a068bef2c62f4e951c90d888f31f1e1c` |
+| `docker compose up -d --force-recreate` | exit `0`; `api` and `frontend` recreated 2026-11-11T23:04:16Z, both `Up (healthy)` during the runs |
+| Timed code inside the container | sha256 aggregate over `app/` (every file) + `migrations/*.py` = `945c79751e9ca03e2f9302d79c08816b96080479d9ff396564f1c29115261ab6` (104 files), identical file-by-file to the same aggregate over `git archive 79afb62 app migrations` |
+| Served frontend bundle | `assets/index-D7REkhTn.js` sha256 `247dd23fde09905c9dd568e3eaa3807df1977e76e6596298d0fabf1a13f38f62`, identical to my own `frontend/npm run build` output; `assets/index-EUgwPrA1.css` sha256 `72e252e69bd535b6de40c1eb63533bb1a068bef2c62f4e951c90d888f31f1e1c` and `index.html` sha256 `d12348e30153d58b1dd245613108c9905864c93e5d452f208e7a5c896485b982` also identical |
 | `docker compose ps -a` (`migrate`) | `Exited (0)` |
 | `curl -fsS http://127.0.0.1:18000/health` | `{"status":"ok"}`; frontend root `/` = HTTP 200 |
 | Extraction configuration | `API_LLM_PROVIDER: mock`, `LLM_PROVIDER: mock`, and zero matches for `OPENAI`, `ANTHROPIC`, `ADOBE`, `API_KEY`, `CLIENT_SECRET`; captured by `docker compose config` in the same timing log, under `=== docker compose config evidence ===` |
 | Host | macOS 27.0.1 (build 26A434), Apple M3, 8 cores, 16 GiB memory |
 | Client / container runtime | curl 8.7.1 (arm64-apple-darwin20.0.0), Docker 28.1.1 |
-| Run window (UTC) | start 2026-11-11T22:11:21Z, end 2026-11-11T22:11:29Z |
+| Run window (UTC) | start 2026-11-11T23:18:44Z, end 2026-11-11T23:18:56Z |
 
 ## Measured Segment
 
@@ -69,20 +69,24 @@ Per-request times in seconds, as recorded by `curl -w '%{time_total}'`.
 
 | Run | `POST /api/process` | `POST /api/generate` | `GET` PDF | Run total (sum) | HTTP status (3 requests) | PDF bytes |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 (cold) | 0.324217 | 1.041533 | 0.007886 | 1.373636 | 200 / 200 / 200 | 39,629 |
-| 2 | 0.013712 | 0.563075 | 0.007056 | 0.583843 | 200 / 200 / 200 | 39,629 |
-| 3 | 0.014666 | 0.600648 | 0.006362 | 0.621676 | 200 / 200 / 200 | 39,629 |
-| 4 | 0.014463 | 0.568836 | 0.005562 | 0.588861 | 200 / 200 / 200 | 39,629 |
-| 5 | 0.017590 | 0.551268 | 0.007277 | 0.576135 | 200 / 200 / 200 | 39,629 |
-| 6 | 0.018885 | 0.569696 | 0.007708 | 0.596289 | 200 / 200 / 200 | 39,629 |
-| 7 | 0.017847 | 0.561255 | 0.007211 | 0.586313 | 200 / 200 / 200 | 39,629 |
-| 8 | 0.039544 | 0.711223 | 0.007476 | 0.758243 | 200 / 200 / 200 | 39,629 |
-| 9 | 0.015171 | 0.661598 | 0.008465 | 0.685234 | 200 / 200 / 200 | 39,629 |
-| 10 | 0.029023 | 0.519586 | 0.005260 | 0.553869 | 200 / 200 / 200 | 39,629 |
+| 1 (cold) | 0.384546 | 1.577409 | 0.016121 | 1.978076 | 200 / 200 / 200 | 39,629 |
+| 2 | 0.017155 | 0.749464 | 0.011381 | 0.778000 | 200 / 200 / 200 | 39,629 |
+| 3 | 0.014905 | 0.683956 | 0.006530 | 0.705391 | 200 / 200 / 200 | 39,629 |
+| 4 | 0.024247 | 0.684582 | 0.016959 | 0.725788 | 200 / 200 / 200 | 39,629 |
+| 5 | 0.026182 | 0.823508 | 0.005817 | 0.855507 | 200 / 200 / 200 | 39,629 |
+| 6 | 0.012210 | 0.502103 | 0.005478 | 0.519791 | 200 / 200 / 200 | 39,629 |
+| 7 | 0.012980 | 0.608852 | 0.014963 | 0.636795 | 200 / 200 / 200 | 39,629 |
+| 8 | 0.013927 | 0.446372 | 0.010965 | 0.471264 | 200 / 200 / 200 | 39,629 |
+| 9 | 0.012955 | 1.009278 | 0.018585 | 1.040818 | 200 / 200 / 200 | 39,629 |
+| 10 | 0.030149 | 2.244316 | 0.026191 | 2.300656 | 200 / 200 / 200 | 39,629 |
 
 - Successful runs: 10 of 10 (no failure to record).
-- Median run total: **0.592575 s** (mean of 0.588861 and 0.596289).
-- Maximum: 1.373636 s (run 1, cold). Minimum: 0.553869 s.
+- Sum of the ten totals: 10.012086 s. Mean: 1.001209 s.
+- Median run total: **0.751894 s** (mean of 0.725788 and 0.778000).
+- Maximum: 2.300656 s (run 10). Minimum: 0.471264 s (run 8).
+- Every run returned the same PDF size, 39,629 bytes — the same size the
+  `8e6c9d7` measurement produced, so the #22 change left this sample's output
+  untouched.
 
 ## Decision
 
@@ -90,7 +94,8 @@ Rule applied (issue #24 AC4): the claim may stay **only if** the median of the
 ten run totals is ≤ 20.0 s **and** all ten runs succeeded; a median above
 20.0 s, or any failed run, removes the numeric duration.
 
-Recorded numbers: median **0.592575 s** ≤ 20.0 s, and **10/10** runs succeeded.
+Recorded numbers: median **0.751894 s** ≤ 20.0 s, and **10/10** runs succeeded.
+The median sits at 3.8 % of the bound.
 
 Outcome: **the claim stays.** `how.sub`, `why.items[2].title`,
 `why.items[2].body` and `trust.item1` keep their current values in both
@@ -109,18 +114,23 @@ number stays because the measured median is inside the bound with no failure.
    excluded, so a visitor's stopwatch reads higher than these totals.
 4. The input is the bundled fictional `sample-resume.docx` (1,776 bytes), not a
    worst case.
-5. The figure describes one local stack on one machine and is not evidence of
+5. This machine was also running other checkouts' checks during the run window,
+   so the spread here (0.471 s to 2.301 s) is wider than the `8e6c9d7`
+   measurement's; the median, not the mean, is what the decision rule reads.
+6. The figure describes one local stack on one machine and is not evidence of
    hosted latency; a change to the renderer, the container images or the machine
    invalidates it.
 
 ## Reproduction
 
-The raw log is `_docs/reports/2026-11-11_issue-24-timing-8e6c9d7.log` (Git-ignored)
-and the measuring script is `tmp/timing_issue24.sh` (Git-ignored). The log holds
-the ten runs and, appended under `=== docker compose config evidence ===`, the
-`docker compose config` extraction evidence quoted in the environment block.
-Earlier runs on pre-freeze trees are `_docs/reports/2026-11-11_issue-24-timing.log`
-(`02a7a76`) and `_docs/reports/2026-11-11_issue-24-timing-09dd00b.log`. From the
+The raw log is `_docs/reports/2026-11-11_issue-24-timing-79afb62.log`
+(Git-ignored) and the measuring script is `tmp/timing_issue24.sh` (Git-ignored).
+The log holds the ten runs and, appended under
+`=== docker compose config evidence ===`, the `docker compose config` extraction
+evidence quoted in the environment block. Earlier runs are
+`_docs/reports/2026-11-11_issue-24-timing-8e6c9d7.log`,
+`_docs/reports/2026-11-11_issue-24-timing-09dd00b.log` and
+`_docs/reports/2026-11-11_issue-24-timing.log` (`02a7a76`). From the
 repository root, with the stack built from the recorded revision:
 
 ```bash
@@ -136,3 +146,8 @@ The script posts the sample DOCX to `http://127.0.0.1:15173/api/process`, posts
 `http://127.0.0.1:15173/api/generate`, and downloads the returned
 `pdf_download_url` from the same proxy, ten times, recording `%{http_code}`,
 `%{time_total}` and the downloaded PDF size per request.
+
+The tree-identity aggregate is the sha256 of the sorted per-file `sha256sum`
+lines for every file under `app/` plus every `migrations/*.py`, taken once inside
+the `api` container (`/app`) and once over `git archive 79afb62 app migrations`;
+both print `945c7975…`.
