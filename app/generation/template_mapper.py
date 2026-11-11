@@ -14,8 +14,6 @@ from app.extraction.candidate_schema import (
 
 DEFAULT_TEMPLATE_NAME = "apex_standard"
 CLIENT_DISCLOSURE_VERSION = "client_disclosure/2"
-PENDING_CONFIRMATION_LABEL = "To be confirmed"
-AVAILABLE_UPON_REQUEST_LABEL = "Available upon request"
 CONTACT_LABEL_FIELDS = {
     "email": "email", "phone": "phone", "location": "location",
     "linkedin": "linkedin_url", "portfolio": "portfolio_url",
@@ -305,13 +303,14 @@ def _build_additional_details(profile: CandidateProfile) -> list[RenderDetail]:
 
 
 def _field_display(profile: CandidateProfile, field_name: str, value: object) -> str | None:
-    rule = profile.client_display_rules.get(field_name, DisplayRule.SHOW)
-    if rule == DisplayRule.HIDE:
+    """Hide a value the recruiter hid; otherwise show the source value or nothing.
+
+    A stored ``pending_confirmation``/``available_upon_request`` rule is a
+    legacy disclosure state: it never invents client text, so a present value
+    renders as-is and an absent one stays absent.
+    """
+    if profile.client_display_rules.get(field_name) == DisplayRule.HIDE:
         return None
-    if rule == DisplayRule.PENDING_CONFIRMATION:
-        return PENDING_CONFIRMATION_LABEL
-    if rule == DisplayRule.AVAILABLE_UPON_REQUEST:
-        return AVAILABLE_UPON_REQUEST_LABEL
     return _display_or_none(value)
 
 

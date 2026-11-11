@@ -44,7 +44,12 @@ from app.generation.content_validation import (
     validate_generated_content,
     validate_output_structure,
 )
-from app.generation.contracts import GenerateRequest, GenerateResponse, TargetFormatMetadata
+from app.generation.contracts import (
+    FOLLOWUP_MESSAGE_NOT_DRAFTED,
+    GenerateRequest,
+    GenerateResponse,
+    TargetFormatMetadata,
+)
 from app.generation.followup_message_generator import generate_followup_message
 from app.generation.render_plan import build_production_render_plan
 from app.generation.template_mapper import build_client_render_context
@@ -620,6 +625,7 @@ def write_debug_artifacts(
 def draft_followup(
     profile: CandidateProfile, *, stage: str = "message", language: str = "English"
 ) -> str:
+    """Draft a follow-up email for ``POST /api/followup``; conversion never calls this."""
     try:
         llm_client = build_llm_client(stage=stage)
     except LLMConfigurationError:
@@ -1220,7 +1226,7 @@ def record_generation(
         pdf_download_url=pdf_url,
         pdf_preview_url=pdf_url,
         artifact_metadata_url=artifact_metadata_url(artifact_id),
-        followup_message=draft_followup(reviewed_profile),
+        followup_message=FOLLOWUP_MESSAGE_NOT_DRAFTED,
         missing_fields=reviewed_profile.missing_fields,
         debug_artifacts=debug_artifacts,
         visual_comparison_url=visual_comparison_url,

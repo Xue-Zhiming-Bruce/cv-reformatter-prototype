@@ -135,7 +135,7 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
     assert body["pdf_download_url"] == f"/api/artifacts/{body['artifact_id']}/candidate_profile.pdf"
     assert body["pdf_preview_url"] == body["pdf_download_url"]
     assert body["artifact_metadata_url"] == f"/api/artifacts/{body['artifact_id']}/metadata"
-    assert "Salary expectation" in body["followup_message"]
+    assert body["followup_message"] == ""  # documented compatibility value
     assert {field["field_name"] for field in body["missing_fields"]} >= {
         "salary_expectation",
         "notice_period",
@@ -160,6 +160,84 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
     assert metadata["html_surface_url"] == body["html_surface_url"]
     assert metadata["pdf_preview_url"] == body["pdf_preview_url"]
     assert metadata["needs_review_count"] == len(body["missing_fields"])
+
+
+def test_generate_keeps_absent_source_facts_absent(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    from app.profile_approval import load_profile_revision
+
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
+    artifact_id = "artifact_absent_facts"
+    artifact_dir = tmp_path / artifact_id
+    artifact_dir.mkdir()
+    profile = CandidateProfile(
+        full_name="Fictional Source Candidate",
+        professional_summary="Maintains documented services.",
+        skills=["Python"],
+    )
+    version_id = _approve_profile_via_api(artifact_dir, profile, artifact_id)
+
+    response = client.post(
+        "/api/generate",
+        json={"artifact_id": artifact_id, "approved_profile_version_id": version_id},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    absent = [
+        "salary_expectation",
+        "notice_period",
+        "work_authorization",
+        "interview_availability",
+        "location",
+        "linkedin_url",
+        "portfolio_url",
+    ]
+    saved = load_profile_revision(artifact_dir, version_id)
+    assert saved is not None
+    assert [getattr(saved.profile, name) for name in absent] == [None] * len(absent)
+    assert saved.profile.client_display_rules == {}
+    assert {field["field_name"] for field in body["missing_fields"]} >= set(absent[:5])
+    html = (artifact_dir / "candidate_profile.html").read_text(encoding="utf-8")
+    for label in (
+        "Salary expectation",
+        "Notice period",
+        "Work authorization",
+        "Interview availability",
+        "To be confirmed",
+        "Available upon request",
+    ):
+        assert label not in html
+    render_context = json.loads((artifact_dir / "client_render_context.json").read_text())
+    assert render_context["contact_items"] == []
+    assert render_context["additional_details"] == []
+
+
+def test_generate_drafts_no_followup(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
+    artifact_id = "artifact_no_followup"
+    artifact_dir = tmp_path / artifact_id
+    artifact_dir.mkdir()
+    version_id = _approve_profile_via_api(
+        artifact_dir, CandidateProfile(full_name="Fictional Candidate"), artifact_id
+    )
+
+    def fail_build_llm_client(**kwargs: object) -> None:
+        raise AssertionError("a conversion must not build a follow-up model client")
+
+    monkeypatch.setattr(generation_service, "build_llm_client", fail_build_llm_client)
+    response = client.post(
+        "/api/generate",
+        json={"artifact_id": artifact_id, "approved_profile_version_id": version_id},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["followup_message"] == ""
 
 
 def test_generate_returns_a_composition_report_for_the_exact_output(

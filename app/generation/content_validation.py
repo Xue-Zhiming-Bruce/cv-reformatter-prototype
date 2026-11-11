@@ -12,9 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.extraction.candidate_document_analyzer import SourceCoverageLedger
 from app.generation.template_mapper import (
-    AVAILABLE_UPON_REQUEST_LABEL,
     ClientFacingRenderContext,
-    PENDING_CONFIRMATION_LABEL,
     RenderAdditionalSection,
 )
 from app.template_analysis.schemas import LayoutTemplateSpec
@@ -108,11 +106,6 @@ def _expected_items(
         )
     items.extend(context.certifications)
     for detail in context.additional_details:
-        if detail.value in {
-            PENDING_CONFIRMATION_LABEL,
-            AVAILABLE_UPON_REQUEST_LABEL,
-        }:
-            continue
         items.extend([detail.label, detail.value])
     for section in context.additional_sections:
         mapped_label = next((item.label for item in (layout_spec.sections if layout_spec else [])

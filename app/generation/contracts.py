@@ -12,6 +12,10 @@ from app.generation.composition_report import CompositionReport
 from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME
 from app.template_analysis.schemas import VisualComparisonReport
 
+#: Conversion never drafts a follow-up (issue #30); ``POST /api/followup`` stays
+#: the only drafting caller. The field keeps its wire type for existing clients.
+FOLLOWUP_MESSAGE_NOT_DRAFTED = ""
+
 
 class TargetFormatMetadata(BaseModel):
     artifact_id: str
@@ -59,6 +63,7 @@ class GenerateResponse(BaseModel):
     pdf_download_url: str
     pdf_preview_url: str
     artifact_metadata_url: str
+    #: Always ``FOLLOWUP_MESSAGE_NOT_DRAFTED``; a conversion drafts no follow-up.
     followup_message: str
     missing_fields: list[MissingField]
     debug_artifacts: dict[str, str]
