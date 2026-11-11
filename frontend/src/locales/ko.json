@@ -25,12 +25,13 @@
   "converter": {
     "badgeChange": "변경",
     "connectorLabel": "이 양식으로 변환",
-    "templateTitle": "목표 양식 업로드",
-    "templateSubtitle": "DOCX 템플릿 또는 PDF 참고 샘플",
-    "templateBtn": "양식 선택",
+    "templateTitle": "PDF 목표 양식 업로드",
+    "templateSubtitle": "맞추고 싶은 회사 문서의 PDF",
+    "templateBtn": "PDF 업로드",
+    "targetPdfRequired": "PDF 목표 양식이 필요합니다 — 미리보기와 내보내기는 PDF로만 진행됩니다. 회사 문서를 Word나 Google Docs에서 PDF로 내려받은 뒤 그 파일을 업로드해 주세요.",
     "convertBtn": "변환 후 검토",
     "convertingBtn": "추출 중…",
-    "convertHint": "계속하려면 목표 양식을 업로드하세요",
+    "convertHint": "계속하려면 PDF 목표 양식을 업로드하세요",
     "builtInNote": "기본 템플릿(built-in-3) — 한 컬럼 레이아웃이라 목표 파일을 올릴 필요가 없습니다."
   },
   "mode": {
@@ -49,8 +50,8 @@
         "body": "PDF 또는 DOCX — 텍스트 기반 파일을 지원합니다."
       },
       {
-        "title": "목표 양식 업로드",
-        "body": "DOCX 템플릿을 사용하거나 PDF를 시각적 참고 샘플로 업로드하세요."
+        "title": "PDF 목표 양식 업로드",
+        "body": "회사 문서를 PDF로 업로드하면, 그 레이아웃에 이력서를 맞춰드립니다."
       },
       {
         "title": "검토 후 생성",
@@ -240,6 +241,11 @@
     "targetAnalysisWarnings": "목표 양식 참고: {{warnings}}",
     "targetDocxBlocked": "DOCX 목표 양식은 업로드된 상태로 미리보기나 내보내기를 할 수 없습니다 — 레이아웃 증명에는 PDF 목표 양식이 필요합니다. 계속하려면 PDF 목표 양식을 업로드하세요.",
     "targetDocxBlockedShort": "미리보기와 내보내기에는 PDF 목표 양식이 필요합니다",
+    "replaceTargetTitle": "PDF 목표 양식으로 교체",
+    "replaceTargetSubtitle": "PDF만 가능 — 새 파일 기준으로 증명이 다시 만들어집니다",
+    "replaceTargetBtn": "PDF 선택",
+    "replaceTargetBusy": "교체한 목표 양식을 분석하는 중…",
+    "replaceTargetFailed": "교체한 목표 양식을 분석하지 못했습니다.",
     "proofLabel": "레이아웃 증명",
     "proofStateNone": "생성되지 않음",
     "proofStatePending": "생성됨 — 승인 필요",

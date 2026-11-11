@@ -18,6 +18,15 @@ function keyPaths(value: unknown, prefix = ""): string[] {
 const en = load("en")
 const ko = load("ko")
 
+function at(resource: Record<string, unknown>, key: string): unknown {
+  return key.split(".").reduce<unknown>(
+    (node, part) => (typeof node === "object" && node !== null
+      ? (node as Record<string, unknown>)[part]
+      : undefined),
+    resource,
+  )
+}
+
 test("en and ko carry the same key set", () => {
   const enKeys = new Set(keyPaths(en))
   const koKeys = new Set(keyPaths(ko))
@@ -40,14 +49,43 @@ test("conversion mode labels and hints exist in both locales", () => {
   ]
   for (const key of expected) {
     for (const [locale, resource] of [["en", en], ["ko", ko]] as const) {
-      const value = key.split(".").reduce<unknown>(
-        (node, part) => (typeof node === "object" && node !== null
-          ? (node as Record<string, unknown>)[part]
-          : undefined),
-        resource,
-      )
+      const value = at(resource, key)
       assert.equal(typeof value, "string", `${locale}.json is missing ${key}`)
       assert.ok((value as string).trim() !== "", `${locale}.json has an empty ${key}`)
     }
   }
+})
+
+// AC1: the target step may only offer a PDF; the candidate step still accepts PDF and DOCX.
+test("target copy offers a PDF and never a DOCX template in both locales", () => {
+  const targetKeys = [
+    "converter.templateTitle",
+    "converter.templateSubtitle",
+    "converter.templateBtn",
+    "converter.targetPdfRequired",
+    "converter.convertHint",
+    "how.steps.1.title",
+    "how.steps.1.body",
+  ]
+  for (const [locale, resource] of [["en", en], ["ko", ko]] as const) {
+    for (const key of targetKeys) {
+      const value = at(resource, key)
+      assert.equal(typeof value, "string", `${locale}.json is missing ${key}`)
+      assert.match(value as string, /PDF/, `${locale}.${key} must name PDF`)
+      assert.doesNotMatch(value as string, /DOCX/i, `${locale}.${key} must not offer a DOCX target`)
+    }
+    const candidateHint = at(resource, "hero.uploadHint")
+    assert.match(candidateHint as string, /PDF/, `${locale}.hero.uploadHint must keep PDF`)
+    assert.match(candidateHint as string, /DOCX/i, `${locale}.hero.uploadHint must keep DOCX`)
+  }
+})
+
+// AC5: a review already blocked by a DOCX target keeps the exact banner that describes the block.
+test("the DOCX-target block banner keeps its wording in both locales", () => {
+  assert.equal(
+    at(en, "review.targetDocxBlocked"),
+    "DOCX targets cannot reach preview or export as uploaded — layout proofs require a PDF target. Upload a PDF target to continue.",
+  )
+  assert.ok(typeof at(ko, "review.targetDocxBlocked") === "string")
+  assert.match(at(ko, "review.targetDocxBlocked") as string, /PDF/)
 })

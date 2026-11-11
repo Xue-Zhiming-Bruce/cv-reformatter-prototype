@@ -14,6 +14,12 @@ type DropzoneProps = {
   uploadLabel?: string
 }
 
+// The only definition of target eligibility for the generation path: the picker `accept` list is a
+// filter only, so picker and drop both funnel through here.
+export function isPdfTargetFile(file: File): boolean {
+  return /\.pdf$/i.test(file.name)
+}
+
 export function Dropzone({ icon, title, subtitle, file, onFileSelected, accept, variant, uploadLabel }: DropzoneProps) {
   const inputId = useId()
   const inputRef = useRef<HTMLInputElement>(null)

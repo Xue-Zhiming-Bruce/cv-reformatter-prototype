@@ -1,6 +1,6 @@
 import React, { useState, useRef } from "react"
 import { useTranslation } from "react-i18next"
-import { Dropzone } from "../components/Dropzone"
+import { Dropzone, isPdfTargetFile } from "../components/Dropzone"
 import { GridIcon, PencilIcon } from "../components/icons"
 import { SiteHeader } from "../components/SiteHeader"
 import { Footer } from "../components/Footer"
@@ -87,6 +87,7 @@ export function MainScreen({ mode, onModeChange, onConvert, isLoading, error, on
   const [sampleLoading, setSampleLoading] = useState(false)
   const [pageDragging, setPageDragging] = useState(false)
   const [fileTypeError, setFileTypeError] = useState<string | null>(null)
+  const [targetTypeError, setTargetTypeError] = useState<string | null>(null)
   const resumeInputRef = useRef<HTMLInputElement>(null)
 
   const canConvert = !!resumeFile && !isLoading && (mode === "built-in" || !!templateFile)
@@ -103,6 +104,19 @@ export function MainScreen({ mode, onModeChange, onConvert, isLoading, error, on
     }
     setFileTypeError(null)
     setResumeFile(file)
+  }
+
+  // Target eligibility is decided here, before any request; a cancelled picker (null) changes nothing.
+  // An ineligible file clears any earlier target so no stale selection stays armed behind an error.
+  function acceptTargetFile(file: File | null) {
+    if (!file) return
+    if (!isPdfTargetFile(file)) {
+      setTargetTypeError(t("converter.targetPdfRequired"))
+      setTemplateFile(null)
+      return
+    }
+    setTargetTypeError(null)
+    setTemplateFile(file)
   }
 
   const howSteps = t("how.steps", { returnObjects: true }) as Array<{ title: string; body: string }>
@@ -287,13 +301,17 @@ export function MainScreen({ mode, onModeChange, onConvert, isLoading, error, on
                 title={t("converter.templateTitle")}
                 subtitle={t("converter.templateSubtitle")}
                 file={templateFile}
-                onFileSelected={setTemplateFile}
-                accept=".docx,.pdf"
+                onFileSelected={acceptTargetFile}
+                accept=".pdf"
                 variant="primary"
                 uploadLabel={t("converter.templateBtn")}
               />
             ) : (
               <p className="step2__builtin">{t("converter.builtInNote")}</p>
+            )}
+
+            {mode === "uploaded-target" && targetTypeError && (
+              <p className="upload-type-error" role="alert">{targetTypeError}</p>
             )}
 
             {/* formats insertion point — logged-in users' saved templates render here */}

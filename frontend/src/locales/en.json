@@ -25,12 +25,13 @@
   "converter": {
     "badgeChange": "Change",
     "connectorLabel": "reformat into",
-    "templateTitle": "Upload target format",
-    "templateSubtitle": "DOCX template or PDF reference sample",
-    "templateBtn": "Upload format",
+    "templateTitle": "Upload a PDF target",
+    "templateSubtitle": "PDF of the company document you want to match",
+    "templateBtn": "Upload PDF",
+    "targetPdfRequired": "PDF target required — only a PDF can go through preview and export. Export the company document to PDF from Word or Google Docs, then upload that file.",
     "convertBtn": "Convert & review",
     "convertingBtn": "Extracting…",
-    "convertHint": "Upload a target format to continue",
+    "convertHint": "Upload a PDF target to continue",
     "builtInNote": "Built-in template (built-in-3) — one-column layout, no target file to upload."
   },
   "mode": {
@@ -49,8 +50,8 @@
         "body": "PDF or DOCX — text-based files supported."
       },
       {
-        "title": "Upload target format",
-        "body": "Use a DOCX template, or upload a PDF as a visual reference sample."
+        "title": "Upload a PDF target",
+        "body": "Upload the company's document as a PDF — it sets the layout your resume is matched to."
       },
       {
         "title": "Review and generate",
@@ -240,6 +241,11 @@
     "targetAnalysisWarnings": "Target notes: {{warnings}}",
     "targetDocxBlocked": "DOCX targets cannot reach preview or export as uploaded — layout proofs require a PDF target. Upload a PDF target to continue.",
     "targetDocxBlockedShort": "PDF target required for preview and export",
+    "replaceTargetTitle": "Replace with a PDF target",
+    "replaceTargetSubtitle": "PDF only — the new file brings its own proofs",
+    "replaceTargetBtn": "Choose PDF",
+    "replaceTargetBusy": "Analyzing the replacement target…",
+    "replaceTargetFailed": "The replacement target could not be analyzed.",
     "proofLabel": "Layout proof",
     "proofStateNone": "Not created",
     "proofStatePending": "Created — approval required",
