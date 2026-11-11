@@ -1,6 +1,7 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { formatApiError } from "./apiError"
+import { isCurrentAttempt, supersedeAttempt, type AttemptGate } from "./conversionAttempt"
 import { MainScreen } from "./screens/MainScreen"
 import { ReviewScreen } from "./screens/ReviewScreen"
 import { AuthScreen } from "./screens/AuthScreen"
@@ -33,32 +34,45 @@ type AppState =
 export default function App() {
   const { t } = useTranslation()
   const [state, setState] = useState<AppState>({ status: "idle", mode: "built-in" })
+  const attemptGate = useRef<AttemptGate>({ current: 0 })
+
+  // A response only lands while its attempt is still the current one, so a superseded run cannot
+  // overwrite the screen that superseded it.
+  function setIfCurrent(attempt: number, next: AppState) {
+    if (isCurrentAttempt(attemptGate.current, attempt)) setState(next)
+  }
+
+  // Any departure from a run supersedes it; the response still in flight is dropped, not queued.
+  function leaveFor(next: AppState) {
+    supersedeAttempt(attemptGate.current)
+    setState(next)
+  }
 
   // The mode is chosen on the upload screen and then carried by every state an attempt reaches,
   // so a failed uploaded-target run returns to the upload screen in uploaded-target mode.
   function showUpload(mode: ConversionMode = "built-in") {
-    setState({ status: "idle", mode })
+    leaveFor({ status: "idle", mode })
   }
 
-  async function processResume(resumeFile: File, mode: ConversionMode): Promise<ProcessResponse | null> {
+  async function processResume(resumeFile: File, mode: ConversionMode, attempt: number): Promise<ProcessResponse | null> {
     const formData = new FormData()
     formData.append("file", resumeFile)
     const res = await fetch("/api/process", { method: "POST", body: formData })
     if (!res.ok) {
       const prefix = res.status === 400 ? "Unsupported file — " : "Server error — please try again. "
-      setState({ status: "error", mode, message: await formatApiError(res, prefix) })
+      setIfCurrent(attempt, { status: "error", mode, message: await formatApiError(res, prefix) })
       return null
     }
     return (await res.json()) as ProcessResponse
   }
 
-  async function analyzeTarget(artifactId: string, targetFile: File, mode: ConversionMode): Promise<TargetFormatMetadata | null> {
+  async function analyzeTarget(artifactId: string, targetFile: File, mode: ConversionMode, attempt: number): Promise<TargetFormatMetadata | null> {
     const formData = new FormData()
     formData.append("file", targetFile)
     formData.append("artifact_id", artifactId)
     const res = await fetch("/api/target-format", { method: "POST", body: formData })
     if (!res.ok) {
-      setState({ status: "error", mode, message: await formatApiError(res, "Target format error — ") })
+      setIfCurrent(attempt, { status: "error", mode, message: await formatApiError(res, "Target format error — ") })
       return null
     }
     const data = (await res.json()) as TargetFormatUploadResponse
@@ -78,6 +92,7 @@ export default function App() {
   }
 
   async function handleConvert(resumeFile: File, targetFile: File | null, mode: ConversionMode) {
+    const attempt = supersedeAttempt(attemptGate.current)
     // An uploaded-target request never degrades to the built-in template.
     if (mode === "uploaded-target" && !targetFile) {
       setState({ status: "error", mode, message: t("errors.targetRequired") })
@@ -87,11 +102,11 @@ export default function App() {
     setState({ status: "loading", mode, fileName: resumeFile.name, targetFormatName: target?.name ?? null })
 
     try {
-      const data = await processResume(resumeFile, mode)
-      if (!data) return
-      const targetFormat = target ? await analyzeTarget(data.artifact_id, target, mode) : null
+      const data = await processResume(resumeFile, mode, attempt)
+      if (!data || !isCurrentAttempt(attemptGate.current, attempt)) return
+      const targetFormat = target ? await analyzeTarget(data.artifact_id, target, mode, attempt) : null
       if (target && !targetFormat) return
-      setState({
+      setIfCurrent(attempt, {
         status: "done",
         mode,
         data,
@@ -101,7 +116,7 @@ export default function App() {
         resumeFile,
       })
     } catch {
-      setState({
+      setIfCurrent(attempt, {
         status: "error",
         mode,
         message: t("errors.network"),
@@ -170,11 +185,11 @@ export default function App() {
       isLoading={state.status === "loading"}
       error={state.status === "error" ? state.message : null}
       onDismissError={() => showUpload(state.mode)}
-      onLogin={() => setState({ status: "login", from: "idle" })}
-      onSignup={() => setState({ status: "signup", from: "idle" })}
-      onPricing={() => setState({ status: "pricing" })}
-      onTerms={() => setState({ status: "terms" })}
-      onPrivacy={() => setState({ status: "privacy" })}
+      onLogin={() => leaveFor({ status: "login", from: "idle" })}
+      onSignup={() => leaveFor({ status: "signup", from: "idle" })}
+      onPricing={() => leaveFor({ status: "pricing" })}
+      onTerms={() => leaveFor({ status: "terms" })}
+      onPrivacy={() => leaveFor({ status: "privacy" })}
     />
   )
 }
