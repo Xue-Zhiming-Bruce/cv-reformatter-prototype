@@ -368,12 +368,15 @@ def _text_run(
     ]
     if not text or len(text) > 80 or not colors:
         return None
+    first = min(float(word["x0"]) for word in inside)
+    last = max(float(word["x1"]) for word in inside)
     return {
         "color": Counter(colors).most_common(1)[0][0],
         # Raw edges: a run crossing the shape's edge is a negative inset.
-        "left": min(float(word["x0"]) for word in inside) - x0,
-        "right": x1 - max(float(word["x1"]) for word in inside),
-        "width": sum(float(word["x1"]) - float(word["x0"]) for word in inside),
+        "left": first - x0,
+        "right": x1 - last,
+        # The run's ink extent: the gaps between its words are label too.
+        "width": last - first,
     }
 
 
@@ -653,11 +656,18 @@ def enrich_badges_from_local_pdf(
                             {round(float(item["height"]), 1) for item in items}
                         )
                     )
+                    shapes = "; ".join(
+                        f"{float(item['x1']) - float(item['x0']):g}x"
+                        f"{float(item['height']):g} pt shape "
+                        f"(at x={float(item['x0']):.1f} pt, "
+                        f"top={float(item['top']):.1f} pt)"
+                        for item in items
+                    )
                     warnings.append(
                         f"{len(items)} filled short-text shape(s) with fill {fill}, "
                         f"text {text_color} at {heights} pt were detected but not "
-                        "classified as a repeated badge decoration; they remain "
-                        "unmeasured pending inspection."
+                        f"classified as a repeated badge decoration ({shapes}); "
+                        "they remain unmeasured pending inspection."
                     )
                     continue
                 row_tops = sorted({round(float(item["top"]), 1) for item in items})
