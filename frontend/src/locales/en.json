@@ -61,7 +61,7 @@
   },
   "showcase": {
     "heading": "Any resume, your client-ready format.",
-    "sub": "Extract into structured fields, preserve the original for review, and render through the controlled DOCX/PDF pipeline.",
+    "sub": "Extract into structured fields, preserve the original for review, edit every field in the preview, and download the finished resume as a PDF.",
     "beforeLabel": "Before",
     "afterLabel": "After",
     "arrowLabel": "reformatted"
