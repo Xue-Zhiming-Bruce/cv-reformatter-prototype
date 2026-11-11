@@ -60,4 +60,5 @@ export const sampleReview: ProcessResponse = {
   original_preview_error: null,
   debug_artifacts: {},
   artifact_metadata_url: "/api/artifacts/sample_review/metadata",
+  extraction_mode: "mock",
 }

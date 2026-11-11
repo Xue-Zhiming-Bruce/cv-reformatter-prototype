@@ -300,7 +300,11 @@
     "recoveryReanalyzeTarget": "목표 양식 재분석",
     "recoveryUploadNewTarget": "새 목표 양식 업로드",
     "recoveryUnknown": "지원되지 않는 복구 옵션: {{option}}",
-    "errorCodeLabel": "오류 코드"
+    "errorCodeLabel": "오류 코드",
+    "extractionMode": {
+      "mock": "모의 추출 — 외부 AI 서비스가 호출되지 않았습니다.",
+      "live": "실시간 AI 추출 — 설정된 AI 제공자가 이 이력서에서 정보를 추출했습니다."
+    }
   },
   "auth": {
     "loginTitle": "다시 오셨군요",

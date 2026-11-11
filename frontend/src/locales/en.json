@@ -300,7 +300,11 @@
     "recoveryReanalyzeTarget": "Re-analyze target",
     "recoveryUploadNewTarget": "Upload new target",
     "recoveryUnknown": "Unsupported recovery option: {{option}}",
-    "errorCodeLabel": "Error code"
+    "errorCodeLabel": "Error code",
+    "extractionMode": {
+      "mock": "Mock extraction — no external AI service was called.",
+      "live": "Live AI extraction — a configured AI provider extracted this resume."
+    }
   },
   "auth": {
     "loginTitle": "Welcome back",

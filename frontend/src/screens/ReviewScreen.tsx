@@ -845,6 +845,9 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
           <span className="rv-header__filename">{resumeFileName}</span>
           <span className="rv-header__arrow" aria-hidden="true">→</span>
           <span className="rv-header__format">{formatLabel}</span>
+          <span data-extraction-mode={data.extraction_mode}>
+            {t(`review.extractionMode.${data.extraction_mode}`)}
+          </span>
         </div>
         <label className="rv-blind-toggle">
           <input
