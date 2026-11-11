@@ -61,7 +61,14 @@ def test_saved_pending_confirmation_state_renders_without_a_placeholder() -> Non
     saved = CandidateProfile.model_validate(
         {
             "full_name": "Fictional Audit Candidate",
-            "client_display_rules": {"location": "pending_confirmation"},
+            "client_display_rules": {
+                "location": "pending_confirmation",
+                "salary_expectation": "pending_confirmation",
+                "notice_period": "available_upon_request",
+                "interview_availability": "available_upon_request",
+                "linkedin_url": "available_upon_request",
+                "portfolio_url": "pending_confirmation",
+            },
             "missing_fields": [
                 {
                     "field_name": "location",
@@ -75,9 +82,28 @@ def test_saved_pending_confirmation_state_renders_without_a_placeholder() -> Non
     context = build_client_render_context(saved)
 
     assert saved.client_display_rules["location"] == DisplayRule.PENDING_CONFIRMATION
+    assert context.contact_lines == []
     assert context.contact_items == []
+    assert context.additional_details == []
     assert context.candidate_subheading is None
-    assert "To be confirmed" not in context.model_dump_json()
+    rendered = context.model_dump_json()
+    assert "To be confirmed" not in rendered
+    assert "Available upon request" not in rendered
+
+
+def test_source_text_equal_to_a_placeholder_phrase_is_still_rendered() -> None:
+    profile = CandidateProfile(
+        full_name="Fictional Candidate",
+        salary_expectation="To be confirmed",
+        notice_period="Available upon request",
+    )
+
+    context = build_client_render_context(profile)
+
+    assert [(detail.label, detail.value) for detail in context.additional_details] == [
+        ("Salary expectation", "To be confirmed"),
+        ("Notice period", "Available upon request"),
+    ]
 
 
 def test_blind_profile_hides_direct_identifiers_without_mutating_profile() -> None:
