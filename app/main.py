@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import shutil
@@ -19,10 +20,10 @@ from app.extraction.candidate_document_analyzer import build_candidate_field_evi
 from app.extraction.candidate_schema import CandidateProfile
 from app.extraction.llm_extractor import (
     ExtractionMode,
+    LLMClient,
     LLMConfigurationError,
     LLMExtractionError,
     build_llm_client,
-    extraction_mode,
 )
 from app.extraction.coverage_audit import audit_segmentation_lines
 from app.extraction.llm_segmentation import (
@@ -177,6 +178,8 @@ from app.template_analysis.design_service import (
 from app.validation.missing_fields import apply_missing_field_detection
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -494,6 +497,48 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+# The recruiter-facing answer to a configuration failure. The provider name,
+# the missing setting and the SDK error stay in the server log.
+EXTRACTION_NOT_CONFIGURED_DETAIL = {
+    "error_code": "extraction_not_configured",
+    "message": (
+        "Live extraction is not configured on this server: its AI provider "
+        "configuration is missing or invalid. Report this to the operator and "
+        "retry once it is fixed."
+    ),
+}
+
+SEGMENTATION_FAILED_MESSAGE = (
+    "LLM-first candidate segmentation is unavailable or returned malformed "
+    "output; no fallback segmenter exists."
+)
+
+
+def _build_extraction_client(provider: str | None) -> LLMClient:
+    """Build the run's client; the client itself is the source of the run's mode."""
+    try:
+        return build_llm_client(provider=provider)
+    except (LLMConfigurationError, ValueError) as exc:
+        logger.warning("Extraction client configuration failed: %s", exc)
+        raise HTTPException(
+            status_code=500, detail=EXTRACTION_NOT_CONFIGURED_DETAIL
+        ) from exc
+
+
+def _segmentation_failed(exc: LLMExtractionError) -> HTTPException:
+    # Fail closed: no deterministic fallback segmenter remains (ADR 0005
+    # Phase 2/3, ADR 0002 no-analyzer-fallback doctrine). The provider's own
+    # error text stays in the server log.
+    logger.warning("LLM-first candidate segmentation failed: %s", exc)
+    return HTTPException(
+        status_code=502,
+        detail={
+            "error_code": "candidate_segmentation_failed",
+            "message": SEGMENTATION_FAILED_MESSAGE,
+        },
+    )
+
+
 @app.post("/api/process")
 async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
     if not file.filename:
@@ -533,10 +578,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
             ) from exc
 
         provider = os.getenv("API_LLM_PROVIDER")
-        try:
-            llm_client = build_llm_client(provider=provider)
-        except (LLMConfigurationError, ValueError) as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        llm_client = _build_extraction_client(provider)
         segmentation_started = time.monotonic()
         try:
             segmentation_output = segment_and_extract_resume(extracted_text, llm_client)
@@ -548,19 +590,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
                 extracted_text, segmentation_output
             )
         except LLMExtractionError as exc:
-            # Fail closed: no deterministic fallback segmenter remains (ADR 0005
-            # Phase 2/3, ADR 0002 no-analyzer-fallback doctrine).
-            raise HTTPException(
-                status_code=502,
-                detail={
-                    "error_code": "candidate_segmentation_failed",
-                    "message": (
-                        "LLM-first candidate segmentation is unavailable or "
-                        "returned malformed output; no fallback segmenter exists."
-                    ),
-                    "detail": str(exc),
-                },
-            ) from exc
+            raise _segmentation_failed(exc) from exc
         segmentation_metadata = SegmentationRunMetadata(
             requested_mode="llm_first",
             selected_mode="llm_first",
@@ -648,7 +678,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
         original_preview_error=original_preview_error,
         debug_artifacts=debug_artifacts,
         artifact_metadata_url=artifact_metadata_url(artifact_id),
-        extraction_mode=extraction_mode(provider=provider),
+        extraction_mode=llm_client.extraction_mode,
     )
 
 

@@ -28,6 +28,9 @@ class LLMConfigurationError(RuntimeError):
     """Raised when an LLM provider is selected but not configured."""
 
 
+ExtractionMode = Literal["mock", "live"]
+
+
 class CandidateProfileLLMOutput(BaseModel):
     """OpenAI-compatible extraction shape; core URL validation happens afterward."""
 
@@ -52,6 +55,10 @@ class CandidateProfileLLMOutput(BaseModel):
 
 
 class LLMClient(ABC):
+    # The mode this client's runs may disclose. It belongs to the client so a
+    # response can never relabel a run that already picked its client.
+    extraction_mode: ExtractionMode = "live"
+
     @abstractmethod
     def complete_json(
         self,
@@ -175,6 +182,8 @@ class AnthropicLLMClient(LLMClient):
 class MockLLMClient(LLMClient):
     """Deterministic extractor for tests and offline demo with synthetic resumes."""
 
+    extraction_mode: ExtractionMode = "mock"
+
     def complete_json(
         self,
         _system_prompt: str,
@@ -221,16 +230,8 @@ def _accumulate_usage(total: dict[str, int], latest: dict[str, int]) -> None:
         total[key] = total.get(key, 0) + value
 
 
-ExtractionMode = Literal["mock", "live"]
-
-
 def _provider_name(provider: str | None) -> str:
     return (provider or os.getenv("LLM_PROVIDER") or "openai").lower()
-
-
-def extraction_mode(provider: str | None = None) -> ExtractionMode:
-    """The mode label a run may disclose; the provider name itself never leaves the server."""
-    return "mock" if _provider_name(provider) == "mock" else "live"
 
 
 def build_llm_client(provider: str | None = None, stage: str = "extract") -> LLMClient:
