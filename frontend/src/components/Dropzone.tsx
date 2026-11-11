@@ -55,7 +55,13 @@ export function Dropzone({ icon, title, subtitle, file, onFileSelected, accept, 
         type="file"
         accept={accept}
         className="dropzone__input"
-        onChange={(event) => onFileSelected(event.target.files?.[0] ?? null)}
+        onChange={(event) => {
+          const picked = event.target.files?.[0] ?? null
+          // Clearing the value lets the same file be selected again after a failed attempt, which
+          // would otherwise leave the value unchanged and emit no `change`.
+          event.target.value = ""
+          onFileSelected(picked)
+        }}
       />
       {file ? (
         <>
