@@ -426,6 +426,11 @@
   border-color: var(--color-accent-border);
 }
 
+/* Locked for the whole attempt: readable, but no longer clickable. */
+.mode-choice__option:disabled {
+  cursor: default;
+}
+
 .mode-choice__option--selected {
   border-color: var(--color-accent);
   background: var(--color-accent-bg);

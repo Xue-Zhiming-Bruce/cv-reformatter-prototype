@@ -12,16 +12,17 @@ import "./App.css"
 type AuthFrom = "idle" | "pricing" | "terms" | "privacy"
 
 type AppState =
-  | { status: "idle" }
+  | { status: "idle"; mode: ConversionMode }
   | { status: "pricing" }
   | { status: "terms" }
   | { status: "privacy" }
   | { status: "login";  from: AuthFrom }
   | { status: "signup"; from: AuthFrom }
-  | { status: "loading"; fileName: string; targetFormatName: string | null }
-  | { status: "error"; message: string }
+  | { status: "loading"; mode: ConversionMode; fileName: string; targetFormatName: string | null }
+  | { status: "error"; mode: ConversionMode; message: string }
   | {
       status: "done"
+      mode: ConversionMode
       data: ProcessResponse
       fileName: string
       targetFormatName: string | null
@@ -31,27 +32,33 @@ type AppState =
 
 export default function App() {
   const { t } = useTranslation()
-  const [state, setState] = useState<AppState>({ status: "idle" })
+  const [state, setState] = useState<AppState>({ status: "idle", mode: "built-in" })
 
-  async function processResume(resumeFile: File): Promise<ProcessResponse | null> {
+  // The mode is chosen on the upload screen and then carried by every state an attempt reaches,
+  // so a failed uploaded-target run returns to the upload screen in uploaded-target mode.
+  function showUpload(mode: ConversionMode = "built-in") {
+    setState({ status: "idle", mode })
+  }
+
+  async function processResume(resumeFile: File, mode: ConversionMode): Promise<ProcessResponse | null> {
     const formData = new FormData()
     formData.append("file", resumeFile)
     const res = await fetch("/api/process", { method: "POST", body: formData })
     if (!res.ok) {
       const prefix = res.status === 400 ? "Unsupported file — " : "Server error — please try again. "
-      setState({ status: "error", message: await formatApiError(res, prefix) })
+      setState({ status: "error", mode, message: await formatApiError(res, prefix) })
       return null
     }
     return (await res.json()) as ProcessResponse
   }
 
-  async function analyzeTarget(artifactId: string, targetFile: File): Promise<TargetFormatMetadata | null> {
+  async function analyzeTarget(artifactId: string, targetFile: File, mode: ConversionMode): Promise<TargetFormatMetadata | null> {
     const formData = new FormData()
     formData.append("file", targetFile)
     formData.append("artifact_id", artifactId)
     const res = await fetch("/api/target-format", { method: "POST", body: formData })
     if (!res.ok) {
-      setState({ status: "error", message: await formatApiError(res, "Target format error — ") })
+      setState({ status: "error", mode, message: await formatApiError(res, "Target format error — ") })
       return null
     }
     const data = (await res.json()) as TargetFormatUploadResponse
@@ -61,19 +68,20 @@ export default function App() {
   async function handleConvert(resumeFile: File, targetFile: File | null, mode: ConversionMode) {
     // An uploaded-target request never degrades to the built-in template.
     if (mode === "uploaded-target" && !targetFile) {
-      setState({ status: "error", message: t("errors.targetRequired") })
+      setState({ status: "error", mode, message: t("errors.targetRequired") })
       return
     }
     const target = mode === "uploaded-target" ? targetFile : null
-    setState({ status: "loading", fileName: resumeFile.name, targetFormatName: target?.name ?? null })
+    setState({ status: "loading", mode, fileName: resumeFile.name, targetFormatName: target?.name ?? null })
 
     try {
-      const data = await processResume(resumeFile)
+      const data = await processResume(resumeFile, mode)
       if (!data) return
-      const targetFormat = target ? await analyzeTarget(data.artifact_id, target) : null
+      const targetFormat = target ? await analyzeTarget(data.artifact_id, target, mode) : null
       if (target && !targetFormat) return
       setState({
         status: "done",
+        mode,
         data,
         fileName: resumeFile.name,
         targetFormatName: target?.name ?? null,
@@ -83,6 +91,7 @@ export default function App() {
     } catch {
       setState({
         status: "error",
+        mode,
         message: t("errors.network"),
       })
     }
@@ -94,7 +103,7 @@ export default function App() {
       <AuthScreen
         mode={state.status}
         onSwitchMode={() => setState({ status: state.status === "login" ? "signup" : "login", from })}
-        onGoHome={() => setState({ status: from })}
+        onGoHome={() => (from === "idle" ? showUpload() : setState({ status: from }))}
       />
     )
   }
@@ -107,7 +116,7 @@ export default function App() {
         resumeFileName={state.fileName}
         formatName={state.targetFormatName}
         targetFormat={state.targetFormat}
-        onBack={() => setState({ status: "idle" })}
+        onBack={() => showUpload(state.mode)}
       />
     )
   }
@@ -115,7 +124,7 @@ export default function App() {
   if (state.status === "pricing") {
     return (
       <PricingScreen
-        onHome={() => setState({ status: "idle" })}
+        onHome={() => showUpload()}
         onPricing={() => setState({ status: "pricing" })}
         onLogin={() => setState({ status: "login", from: "pricing" })}
         onSignup={() => setState({ status: "signup", from: "pricing" })}
@@ -130,7 +139,7 @@ export default function App() {
     return (
       <LegalScreen
         page={page}
-        onHome={() => setState({ status: "idle" })}
+        onHome={() => showUpload()}
         onPricing={() => setState({ status: "pricing" })}
         onLogin={() => setState({ status: "login", from: page })}
         onSignup={() => setState({ status: "signup", from: page })}
@@ -142,10 +151,12 @@ export default function App() {
 
   return (
     <MainScreen
+      mode={state.mode}
+      onModeChange={showUpload}
       onConvert={handleConvert}
       isLoading={state.status === "loading"}
       error={state.status === "error" ? state.message : null}
-      onDismissError={() => setState({ status: "idle" })}
+      onDismissError={() => showUpload(state.mode)}
       onLogin={() => setState({ status: "login", from: "idle" })}
       onSignup={() => setState({ status: "signup", from: "idle" })}
       onPricing={() => setState({ status: "pricing" })}

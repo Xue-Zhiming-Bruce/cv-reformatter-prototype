@@ -26,6 +26,8 @@ const HOW_ICONS = [
 ]
 
 type MainScreenProps = {
+  mode: ConversionMode
+  onModeChange: (mode: ConversionMode) => void
   onConvert: (resumeFile: File, targetFile: File | null, mode: ConversionMode) => void
   isLoading: boolean
   error: string | null
@@ -37,8 +39,9 @@ type MainScreenProps = {
   onPrivacy: () => void
 }
 
-// Mutually exclusive presentation choice; exactly one option is selected at all times.
-function ModeChoice({ mode, onChange }: { mode: ConversionMode; onChange: (mode: ConversionMode) => void }) {
+// Mutually exclusive presentation choice; exactly one option is selected at all times, and the
+// choice is locked while an attempt is in flight so it cannot drift from the run it started.
+function ModeChoice({ mode, disabled, onChange }: { mode: ConversionMode; disabled: boolean; onChange: (mode: ConversionMode) => void }) {
   const { t } = useTranslation()
   const options: Array<{ id: ConversionMode; label: string; hint: string }> = [
     { id: "built-in", label: t("mode.builtInLabel"), hint: t("mode.builtInHint") },
@@ -54,6 +57,7 @@ function ModeChoice({ mode, onChange }: { mode: ConversionMode; onChange: (mode:
             type="button"
             role="radio"
             aria-checked={selected}
+            disabled={disabled}
             className={`mode-choice__option${selected ? " mode-choice__option--selected" : ""}`}
             onClick={() => onChange(option.id)}
           >
@@ -76,9 +80,8 @@ function nl(text: string | string[]) {
   ))
 }
 
-export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogin, onSignup, onPricing, onTerms, onPrivacy }: MainScreenProps) {
+export function MainScreen({ mode, onModeChange, onConvert, isLoading, error, onDismissError, onLogin, onSignup, onPricing, onTerms, onPrivacy }: MainScreenProps) {
   const { t } = useTranslation()
-  const [mode, setMode] = useState<ConversionMode>("built-in")
   const [resumeFile, setResumeFile] = useState<File | null>(null)
   const [templateFile, setTemplateFile] = useState<File | null>(null)
   const [sampleLoading, setSampleLoading] = useState(false)
@@ -171,7 +174,7 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
           </h1>
           <p className="hero-sub">{t("hero.sub")}</p>
 
-          <ModeChoice mode={mode} onChange={setMode} />
+          <ModeChoice mode={mode} disabled={isLoading} onChange={onModeChange} />
 
           {!resumeFile ? (
             <div className="upload-zone">
