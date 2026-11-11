@@ -1,11 +1,7 @@
 import pytest
 
 from app.extraction.candidate_schema import CandidateProfile, DisplayRule, Language, SectionType, WorkExperience
-from app.generation.template_mapper import (
-    AVAILABLE_UPON_REQUEST_LABEL,
-    PENDING_CONFIRMATION_LABEL,
-    build_client_render_context,
-)
+from app.generation.template_mapper import build_client_render_context
 
 
 def test_render_context_applies_disclosure_rules() -> None:
@@ -31,6 +27,57 @@ def test_render_context_applies_disclosure_rules() -> None:
     assert "Notice period" not in details
     assert details["Work authorization"] == "US citizen"
     assert "Interview availability" not in details
+
+
+def test_present_values_survive_a_legacy_pending_or_available_rule() -> None:
+    profile = CandidateProfile(
+        full_name="Fictional Candidate",
+        location="Berlin",
+        salary_expectation="Negotiable 6M",
+        notice_period="Four weeks",
+        work_authorization="EU work permit",
+        linkedin_url="https://www.linkedin.com/in/fictional-candidate",
+        client_display_rules={
+            "location": DisplayRule.AVAILABLE_UPON_REQUEST,
+            "salary_expectation": DisplayRule.PENDING_CONFIRMATION,
+            "notice_period": DisplayRule.PENDING_CONFIRMATION,
+            "work_authorization": DisplayRule.HIDE,
+        },
+    )
+
+    context = build_client_render_context(profile)
+
+    assert [(item.field, item.value) for item in context.contact_items] == [
+        ("location", "Berlin"),
+        ("linkedin_url", "https://www.linkedin.com/in/fictional-candidate"),
+    ]
+    assert [(detail.label, detail.value) for detail in context.additional_details] == [
+        ("Salary expectation", "Negotiable 6M"),
+        ("Notice period", "Four weeks"),
+    ]
+
+
+def test_saved_pending_confirmation_state_renders_without_a_placeholder() -> None:
+    saved = CandidateProfile.model_validate(
+        {
+            "full_name": "Fictional Audit Candidate",
+            "client_display_rules": {"location": "pending_confirmation"},
+            "missing_fields": [
+                {
+                    "field_name": "location",
+                    "label": "Current location",
+                    "reason": "Not clearly present in the source resume.",
+                }
+            ],
+        }
+    )
+
+    context = build_client_render_context(saved)
+
+    assert saved.client_display_rules["location"] == DisplayRule.PENDING_CONFIRMATION
+    assert context.contact_items == []
+    assert context.candidate_subheading is None
+    assert "To be confirmed" not in context.model_dump_json()
 
 
 def test_blind_profile_hides_direct_identifiers_without_mutating_profile() -> None:

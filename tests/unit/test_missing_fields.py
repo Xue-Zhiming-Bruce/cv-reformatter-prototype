@@ -15,7 +15,7 @@ def test_detect_missing_recruiter_fields() -> None:
     ]
 
 
-def test_apply_missing_field_detection_sets_safe_client_rules() -> None:
+def test_apply_missing_field_detection_records_fields_without_a_display_rule() -> None:
     profile = CandidateProfile(full_name="Jane Candidate")
 
     updated = apply_missing_field_detection(profile)
@@ -27,7 +27,7 @@ def test_apply_missing_field_detection_sets_safe_client_rules() -> None:
         "location",
         "interview_availability",
     }
-    assert updated.client_display_rules["salary_expectation"] == DisplayRule.PENDING_CONFIRMATION
+    assert updated.client_display_rules == {}
 
 
 def test_existing_client_display_rule_is_preserved() -> None:
