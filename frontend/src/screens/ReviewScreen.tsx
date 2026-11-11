@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react"
 import { useTranslation } from "react-i18next"
-import { LogoIcon, PencilIcon } from "../components/icons"
+import { LogoIcon, PencilIcon, FileIcon } from "../components/icons"
+import { Dropzone, isPdfTargetFile } from "../components/Dropzone"
 import type {
   CandidateProfile,
   FinalAcceptanceResponse,
@@ -23,6 +24,7 @@ type ReviewScreenProps = {
   resumeFileName: string
   formatName: string | null
   targetFormat: TargetFormatMetadata | null
+  onReplaceTarget: (artifactId: string, targetFile: File) => Promise<TargetFormatMetadata>
   onBack: () => void
 }
 
@@ -227,7 +229,7 @@ function applyEditsToProfile(profile: CandidateProfile, edits: Record<string, st
   return copy as unknown as CandidateProfile
 }
 
-export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, targetFormat, onBack }: ReviewScreenProps) {
+export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, targetFormat, onReplaceTarget, onBack }: ReviewScreenProps) {
   const { t, i18n } = useTranslation()
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [blindProfile, setBlindProfile] = useState(false)
@@ -254,12 +256,18 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   const [actionError, setActionError] = useState<ActionError | null>(null)
   const [proofStatus, setProofStatus] = useState<LayoutProofStatus | null>(null)
   const [proofBusy, setProofBusy] = useState<"idle" | "loading" | "creating" | "approving">("idle")
+  // A DOCX target is a dead end, so a replacement PDF becomes the run's target in place: the
+  // candidate edits above stay local while the target identity, proofs and acceptance start over.
+  const [replacementTarget, setReplacementTarget] = useState<TargetFormatMetadata | null>(null)
+  const [replaceBusy, setReplaceBusy] = useState(false)
+  const [replaceTypeError, setReplaceTypeError] = useState<string | null>(null)
   const { profile, ledger } = data
 
-  const formatLabel = formatName ?? t("review.builtInTemplateName")
+  const effectiveTarget = replacementTarget ?? targetFormat
+  const formatLabel = replacementTarget?.input_filename ?? formatName ?? t("review.builtInTemplateName")
 
-  const isPdfTarget = targetFormat?.input_type === "pdf"
-  const isDocxTarget = targetFormat?.input_type === "docx"
+  const isPdfTarget = effectiveTarget?.input_type === "pdf"
+  const isDocxTarget = effectiveTarget?.input_type === "docx"
   const targetBlocked = isDocxTarget
   const isAccepted = acceptanceState === "accepted" || generation?.client_ready === true
 
@@ -483,7 +491,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
       revisionToUse = saved
     }
     // No-target defense: layout proofs are only consulted for an uploaded target.
-    if (targetFormat) {
+    if (effectiveTarget) {
       const status = await loadProofStatus()
       if (!status) return null
       const gateError = proofGateError(status)
@@ -689,6 +697,39 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
     }
   }
 
+  // The blocked review keeps every local edit; only the target identity is replaced.
+  async function replaceTarget(file: File): Promise<void> {
+    if (replaceBusy) return
+    if (!isPdfTargetFile(file)) {
+      setReplaceTypeError(t("converter.targetPdfRequired"))
+      return
+    }
+    setReplaceTypeError(null)
+    setActionError(null)
+    setReplaceBusy(true)
+    try {
+      const next = await onReplaceTarget(data.artifact_id, file)
+      setProofStatus(null)
+      setGeneration(null)
+      setAcceptanceState("idle")
+      setAcceptanceInvalidated(false)
+      setPreviewMode(false)
+      setPreviewUrl(null)
+      setReplacementTarget(next)
+    } catch (error) {
+      // The DOCX block and every local edit stay; only a readable, retryable error is added.
+      setActionError(profileActionError(
+        t("review.replaceTargetFailed"),
+        null,
+        error instanceof Error ? error.message : t("review.networkErrorMessage"),
+        [],
+        null,
+      ))
+    } finally {
+      setReplaceBusy(false)
+    }
+  }
+
   function recoveryLabel(option: string): string | null {
     switch (option) {
       case "save_profile_revision": return t("review.recoverySaveRevision")
@@ -885,19 +926,20 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         </div>
       </header>
 
-      {targetFormat && (
+      {effectiveTarget && (
         <section className="rv-target-panel" aria-label={t("review.targetSupportLabel")}>
           <div className="rv-target-panel__row">
             <span className="rv-target-panel__label">{t("review.targetSupportLabel")}</span>
             <span className={`rv-chip rv-chip--static ${isDocxTarget ? "rv-chip--warning" : "rv-chip--neutral"}`}>
               {isPdfTarget ? t("review.targetTypePdf") : t("review.targetTypeDocx")}
             </span>
+            <span className="rv-target-panel__meta">{effectiveTarget.input_filename}</span>
             <span className="rv-target-panel__meta">
-              {t("review.targetAnalysisStatus", { status: targetFormat.analysis_status })}
+              {t("review.targetAnalysisStatus", { status: effectiveTarget.analysis_status })}
             </span>
-            {targetFormat.structure_contract && (
+            {effectiveTarget.structure_contract && (
               <span className="rv-target-panel__meta">
-                {t("review.targetStructureContract", { contract: targetFormat.structure_contract })}
+                {t("review.targetStructureContract", { contract: effectiveTarget.structure_contract })}
               </span>
             )}
             {isPdfTarget && (
@@ -918,7 +960,21 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
             )}
           </div>
           {isDocxTarget ? (
-            <p className="rv-target-panel__blocked">{t("review.targetDocxBlocked")}</p>
+            <>
+              <p className="rv-target-panel__blocked">{t("review.targetDocxBlocked")}</p>
+              <Dropzone
+                icon={<FileIcon size={28} className="dropzone__icon--green" />}
+                title={t("review.replaceTargetTitle")}
+                subtitle={t("review.replaceTargetSubtitle")}
+                file={null}
+                onFileSelected={(file) => { if (file) void replaceTarget(file) }}
+                accept=".pdf"
+                variant="secondary"
+                uploadLabel={t("review.replaceTargetBtn")}
+              />
+              {replaceBusy && <p className="rv-target-panel__next">{t("review.replaceTargetBusy")}</p>}
+              {replaceTypeError && <p className="upload-type-error" role="alert">{replaceTypeError}</p>}
+            </>
           ) : (
             <div className="rv-proof">
               <span className="rv-target-panel__next">{proofNextStep}</span>
@@ -935,14 +991,14 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
               </div>
             </div>
           )}
-          {targetFormat.unsupported_features.length > 0 && (
+          {effectiveTarget.unsupported_features.length > 0 && (
             <p className="rv-target-panel__warning">
-              {t("review.targetUnsupportedFeatures", { features: targetFormat.unsupported_features.join(", ") })}
+              {t("review.targetUnsupportedFeatures", { features: effectiveTarget.unsupported_features.join(", ") })}
             </p>
           )}
-          {targetFormat.analysis_warnings.length > 0 && (
+          {effectiveTarget.analysis_warnings.length > 0 && (
             <p className="rv-target-panel__warning">
-              {t("review.targetAnalysisWarnings", { warnings: targetFormat.analysis_warnings.join(" · ") })}
+              {t("review.targetAnalysisWarnings", { warnings: effectiveTarget.analysis_warnings.join(" · ") })}
             </p>
           )}
         </section>

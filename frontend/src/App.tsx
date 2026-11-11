@@ -65,6 +65,18 @@ export default function App() {
     return data.target_format
   }
 
+  // Replacing a blocked target re-analyzes against the same artifact, so the candidate processing
+  // already done stands while the target identity starts over.
+  async function handleReplaceTarget(artifact_id: string, targetFile: File): Promise<TargetFormatMetadata> {
+    const formData = new FormData()
+    formData.append("file", targetFile)
+    formData.append("artifact_id", artifact_id)
+    const res = await fetch("/api/target-format", { method: "POST", body: formData })
+    if (!res.ok) throw new Error(await formatApiError(res, "Target format error — "))
+    const data = (await res.json()) as TargetFormatUploadResponse
+    return data.target_format
+  }
+
   async function handleConvert(resumeFile: File, targetFile: File | null, mode: ConversionMode) {
     // An uploaded-target request never degrades to the built-in template.
     if (mode === "uploaded-target" && !targetFile) {
@@ -116,6 +128,7 @@ export default function App() {
         resumeFileName={state.fileName}
         formatName={state.targetFormatName}
         targetFormat={state.targetFormat}
+        onReplaceTarget={handleReplaceTarget}
         onBack={() => showUpload(state.mode)}
       />
     )
