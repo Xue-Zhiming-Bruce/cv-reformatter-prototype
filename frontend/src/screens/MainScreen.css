@@ -396,6 +396,76 @@
   animation: baa-after-form 5.5s ease-in-out infinite;
 }
 
+/* ── Presentation mode choice ─────────────────────────── */
+.mode-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  width: 100%;
+  margin: 0 0 28px;
+}
+
+.mode-choice__option {
+  flex: 1 1 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1.5px solid var(--color-border-strong);
+  background: #ffffff;
+  color: var(--color-text-secondary);
+  font-family: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.mode-choice__option:hover {
+  border-color: var(--color-accent-border);
+}
+
+.mode-choice__option--selected {
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
+  color: var(--color-text-primary);
+}
+
+.mode-choice__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mode-choice__mark {
+  color: var(--color-accent);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.mode-choice__label {
+  font-weight: 700;
+}
+
+.mode-choice__hint {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* Built-in template note — replaces the target dropzone in built-in mode */
+.step2__builtin {
+  width: 100%;
+  margin: 0;
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1.5px dashed var(--color-accent-border);
+  background: var(--color-accent-bg);
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  text-align: center;
+}
+
 /* ── Resume badge — shown after upload ───────────────── */
 .resume-badge {
   display: inline-flex;
@@ -921,6 +991,10 @@
 }
 
 @media (max-width: 480px) {
+  .mode-choice {
+    flex-direction: column;
+  }
+
   .hero-headline {
     font-size: 38px;
     letter-spacing: -1.5px;

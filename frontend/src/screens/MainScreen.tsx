@@ -4,6 +4,7 @@ import { Dropzone } from "../components/Dropzone"
 import { GridIcon, PencilIcon } from "../components/icons"
 import { SiteHeader } from "../components/SiteHeader"
 import { Footer } from "../components/Footer"
+import type { ConversionMode } from "../types"
 import "./MainScreen.css"
 
 // Insertion point: saved templates for logged-in users will be added to this array
@@ -25,7 +26,7 @@ const HOW_ICONS = [
 ]
 
 type MainScreenProps = {
-  onConvert: (resumeFile: File, targetFile: File) => void
+  onConvert: (resumeFile: File, targetFile: File | null, mode: ConversionMode) => void
   isLoading: boolean
   error: string | null
   onDismissError: () => void
@@ -34,6 +35,38 @@ type MainScreenProps = {
   onPricing: () => void
   onTerms: () => void
   onPrivacy: () => void
+}
+
+// Mutually exclusive presentation choice; exactly one option is selected at all times.
+function ModeChoice({ mode, onChange }: { mode: ConversionMode; onChange: (mode: ConversionMode) => void }) {
+  const { t } = useTranslation()
+  const options: Array<{ id: ConversionMode; label: string; hint: string }> = [
+    { id: "built-in", label: t("mode.builtInLabel"), hint: t("mode.builtInHint") },
+    { id: "uploaded-target", label: t("mode.uploadedTargetLabel"), hint: t("mode.uploadedTargetHint") },
+  ]
+  return (
+    <div className="mode-choice" role="radiogroup" aria-label={t("mode.groupLabel")}>
+      {options.map((option) => {
+        const selected = mode === option.id
+        return (
+          <button
+            key={option.id}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            className={`mode-choice__option${selected ? " mode-choice__option--selected" : ""}`}
+            onClick={() => onChange(option.id)}
+          >
+            <span className="mode-choice__head">
+              <span className="mode-choice__mark" aria-hidden="true">{selected ? "●" : "○"}</span>
+              <span className="mode-choice__label">{option.label}</span>
+            </span>
+            <span className="mode-choice__hint">{option.hint}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
 }
 
 function nl(text: string | string[]) {
@@ -45,6 +78,7 @@ function nl(text: string | string[]) {
 
 export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogin, onSignup, onPricing, onTerms, onPrivacy }: MainScreenProps) {
   const { t } = useTranslation()
+  const [mode, setMode] = useState<ConversionMode>("built-in")
   const [resumeFile, setResumeFile] = useState<File | null>(null)
   const [templateFile, setTemplateFile] = useState<File | null>(null)
   const [sampleLoading, setSampleLoading] = useState(false)
@@ -52,7 +86,7 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
   const [fileTypeError, setFileTypeError] = useState<string | null>(null)
   const resumeInputRef = useRef<HTMLInputElement>(null)
 
-  const canConvert = !!resumeFile && !!templateFile && !isLoading
+  const canConvert = !!resumeFile && !isLoading && (mode === "built-in" || !!templateFile)
 
   function isAllowedFile(file: File): boolean {
     const ext = file.name.split(".").pop()?.toLowerCase()
@@ -136,6 +170,8 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
             {t("hero.headlineBefore")} <span className="hero-headline__arrow">→</span> {t("hero.headlineAfter")}
           </h1>
           <p className="hero-sub">{t("hero.sub")}</p>
+
+          <ModeChoice mode={mode} onChange={setMode} />
 
           {!resumeFile ? (
             <div className="upload-zone">
@@ -242,16 +278,20 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
               <span className="step2__connector-label">{t("converter.connectorLabel")}</span>
             </div>
 
-            <Dropzone
-              icon={<GridIcon className="dropzone__icon--green" />}
-              title={t("converter.templateTitle")}
-              subtitle={t("converter.templateSubtitle")}
-              file={templateFile}
-              onFileSelected={setTemplateFile}
-              accept=".docx,.pdf"
-              variant="primary"
-              uploadLabel={t("converter.templateBtn")}
-            />
+            {mode === "uploaded-target" ? (
+              <Dropzone
+                icon={<GridIcon className="dropzone__icon--green" />}
+                title={t("converter.templateTitle")}
+                subtitle={t("converter.templateSubtitle")}
+                file={templateFile}
+                onFileSelected={setTemplateFile}
+                accept=".docx,.pdf"
+                variant="primary"
+                uploadLabel={t("converter.templateBtn")}
+              />
+            ) : (
+              <p className="step2__builtin">{t("converter.builtInNote")}</p>
+            )}
 
             {/* formats insertion point — logged-in users' saved templates render here */}
             {formats.length > 0 && (
@@ -274,12 +314,12 @@ export function MainScreen({ onConvert, isLoading, error, onDismissError, onLogi
                 type="button"
                 className={`convert-button${canConvert ? " convert-button--ready" : ""}`}
                 disabled={!canConvert}
-                onClick={() => resumeFile && templateFile && onConvert(resumeFile, templateFile)}
+                onClick={() => resumeFile && onConvert(resumeFile, mode === "uploaded-target" ? templateFile : null, mode)}
               >
                 {isLoading ? <span className="spinner" aria-hidden="true" /> : <PencilIcon />}
                 {isLoading ? t("converter.convertingBtn") : t("converter.convertBtn")}
               </button>
-              {!templateFile && !isLoading && (
+              {mode === "uploaded-target" && !templateFile && !isLoading && (
                 <p className="convert-hint">{t("converter.convertHint")}</p>
               )}
             </div>

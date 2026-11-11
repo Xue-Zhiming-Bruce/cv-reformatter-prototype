@@ -1,11 +1,12 @@
 import { useState } from "react"
+import { useTranslation } from "react-i18next"
 import { formatApiError } from "./apiError"
 import { MainScreen } from "./screens/MainScreen"
 import { ReviewScreen } from "./screens/ReviewScreen"
 import { AuthScreen } from "./screens/AuthScreen"
 import { PricingScreen } from "./screens/PricingScreen"
 import { LegalScreen } from "./screens/LegalScreen"
-import type { ProcessResponse, TargetFormatMetadata, TargetFormatUploadResponse } from "./types"
+import type { ConversionMode, ProcessResponse, TargetFormatMetadata, TargetFormatUploadResponse } from "./types"
 import "./App.css"
 
 type AuthFrom = "idle" | "pricing" | "terms" | "privacy"
@@ -17,59 +18,72 @@ type AppState =
   | { status: "privacy" }
   | { status: "login";  from: AuthFrom }
   | { status: "signup"; from: AuthFrom }
-  | { status: "loading"; fileName: string; targetFormatName: string }
+  | { status: "loading"; fileName: string; targetFormatName: string | null }
   | { status: "error"; message: string }
   | {
       status: "done"
       data: ProcessResponse
       fileName: string
-      targetFormatName: string
-      targetFormat: TargetFormatMetadata
+      targetFormatName: string | null
+      targetFormat: TargetFormatMetadata | null
       resumeFile: File
     }
 
 export default function App() {
+  const { t } = useTranslation()
   const [state, setState] = useState<AppState>({ status: "idle" })
 
-  async function handleConvert(resumeFile: File, targetFile: File) {
-    setState({ status: "loading", fileName: resumeFile.name, targetFormatName: targetFile.name })
-
+  async function processResume(resumeFile: File): Promise<ProcessResponse | null> {
     const formData = new FormData()
     formData.append("file", resumeFile)
+    const res = await fetch("/api/process", { method: "POST", body: formData })
+    if (!res.ok) {
+      const prefix = res.status === 400 ? "Unsupported file — " : "Server error — please try again. "
+      setState({ status: "error", message: await formatApiError(res, prefix) })
+      return null
+    }
+    return (await res.json()) as ProcessResponse
+  }
+
+  async function analyzeTarget(artifactId: string, targetFile: File): Promise<TargetFormatMetadata | null> {
+    const formData = new FormData()
+    formData.append("file", targetFile)
+    formData.append("artifact_id", artifactId)
+    const res = await fetch("/api/target-format", { method: "POST", body: formData })
+    if (!res.ok) {
+      setState({ status: "error", message: await formatApiError(res, "Target format error — ") })
+      return null
+    }
+    const data = (await res.json()) as TargetFormatUploadResponse
+    return data.target_format
+  }
+
+  async function handleConvert(resumeFile: File, targetFile: File | null, mode: ConversionMode) {
+    // An uploaded-target request never degrades to the built-in template.
+    if (mode === "uploaded-target" && !targetFile) {
+      setState({ status: "error", message: t("errors.targetRequired") })
+      return
+    }
+    const target = mode === "uploaded-target" ? targetFile : null
+    setState({ status: "loading", fileName: resumeFile.name, targetFormatName: target?.name ?? null })
 
     try {
-      const res = await fetch("/api/process", { method: "POST", body: formData })
-
-      if (!res.ok) {
-        const prefix = res.status === 400 ? "Unsupported file — " : "Server error — please try again. "
-        setState({ status: "error", message: await formatApiError(res, prefix) })
-        return
-      }
-
-      const data: ProcessResponse = await res.json()
-      const targetFormData = new FormData()
-      targetFormData.append("file", targetFile)
-      targetFormData.append("artifact_id", data.artifact_id)
-      const targetRes = await fetch("/api/target-format", { method: "POST", body: targetFormData })
-
-      if (!targetRes.ok) {
-        setState({ status: "error", message: await formatApiError(targetRes, "Target format error — ") })
-        return
-      }
-
-      const targetData: TargetFormatUploadResponse = await targetRes.json()
+      const data = await processResume(resumeFile)
+      if (!data) return
+      const targetFormat = target ? await analyzeTarget(data.artifact_id, target) : null
+      if (target && !targetFormat) return
       setState({
         status: "done",
         data,
         fileName: resumeFile.name,
-        targetFormatName: targetFile.name,
-        targetFormat: targetData.target_format,
+        targetFormatName: target?.name ?? null,
+        targetFormat,
         resumeFile,
       })
     } catch {
       setState({
         status: "error",
-        message: "Could not reach the server — check your connection and try again.",
+        message: t("errors.network"),
       })
     }
   }

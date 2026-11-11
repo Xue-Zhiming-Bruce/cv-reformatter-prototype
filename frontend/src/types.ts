@@ -1,3 +1,6 @@
+// Presentation chosen on the upload screen before processing: built-in template or an uploaded target.
+export type ConversionMode = "built-in" | "uploaded-target"
+
 export interface Language {
   name: string
   proficiency: string | null
