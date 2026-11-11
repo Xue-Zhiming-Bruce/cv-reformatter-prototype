@@ -19,12 +19,14 @@ from app.template_analysis.commercial.models import (
     NormalizedTextBlock,
 )
 from scripts.run_abc_live_matrix import (
+    _badge_failures,
     _body_size_failure,
     _measure_dominant_text_size,
     _measure_html_badges,
     _measure_pdf_rules,
     _rule_geometry_failures,
     _structure_failures,
+    _surface_drift,
 )
 from tests.helpers.synthetic_pdf import (
     build_banner_and_triangle_target_pdf,
@@ -304,7 +306,7 @@ def test_matrix_retains_successful_api_receipt_with_raw_target_differences(tmp_p
             return {"state": "approved"}
         if step == "layout_proofs":
             return {"variants": variants}
-        assert step == "generate"
+        assert step in {"generate", "generate_blind"}
         return {**dict.fromkeys(("profile_revision_id", "profile_sha256", "layout_template_version",
                  "layout_spec_sha256", "html_sha256", "pdf_sha256"), "synthetic"), "client_ready": False}
 
@@ -482,3 +484,276 @@ def test_enrich_measures_rectangular_chip_band(tmp_path: Path) -> None:
     assert cluster.height_pt == 20.0
     assert cluster.provenance.source == "local_pdf"
     assert cluster.provenance.provider == "pdfplumber"
+
+
+PROOF_VARIANTS = ("short", "medium", "long")
+CHIP_FILL = "#99F6E4"
+CHIP_TEXT = "#334155"
+
+
+def _badge_group_html(rows: list[int]) -> str:
+    """Renderer-shaped chip markup: one badge group and one row container per row."""
+    lines: list[str] = []
+    chip_index = 0
+    for group, count in enumerate(rows):
+        lines.append(f'<div data-node-id="section.02.badge_group.{group}">')
+        lines.append(
+            f'<div data-node-id="section.02.badge_group.{group}.row.0" '
+            'style="display:flex;gap:6pt;">'
+        )
+        for _ in range(count):
+            node_id = f"section.02.badge.skills.group.{group}.chip.{chip_index}"
+            lines.append(_chip(node_id, f"Skill {chip_index + 1}"))
+            chip_index += 1
+        lines.extend(["</div>", "</div>"])
+    return "\n".join(lines)
+
+
+def _badge_surface(count: int, rows: list[int]) -> dict:
+    """One measured surface as the fixture built it, never as the detector reads it."""
+    return {"count": count, "fill_colors": [CHIP_FILL], "text_colors": [CHIP_TEXT],
+            "items_per_line": list(rows)}
+
+
+def _agreeing_badge_surfaces(tmp_path: Path) -> dict[str, tuple[str, Path]]:
+    """18 chips on every generated surface: three rows of six, as built."""
+    pdf = build_rounded_chip_target_pdf(tmp_path / "chips_18.pdf", chip_count=18, per_row=6)
+    html = _badge_group_html([6, 6, 6])
+    return {"ordinary": (html, pdf), "blind": (html, pdf)}
+
+
+def _matrix_badge_artifact(tmp_path: Path, monkeypatch, *, target_pdf: Path,
+                           ordinary_pdf: Path) -> Path:
+    """Artifact holding the analysis files a stubbed pair reads; return its directory."""
+    import json
+    import shutil
+    from app.extraction.candidate_document_analyzer import NormalizedCandidateDocument
+    from app.template_analysis.visual_comparator import compare_pdf_layouts
+    from scripts import run_abc_live_matrix as matrix
+    from tests.helpers.pipeline_layout import product_template
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    build_styled_target_pdf(inputs / "resume_E.pdf")
+    shutil.copy2(target_pdf, inputs / "resume_B.pdf")
+    artifact = tmp_path / "run/transformations/resume_e__to__resume_b/artifacts/artifact_matrix"
+    artifact.mkdir(parents=True)
+    monkeypatch.setattr(matrix, "DATASET_DIR", inputs)
+    monkeypatch.setattr(matrix, "GENERATED_OUTPUTS_DIR", artifact.parent)
+    files = {
+        "normalized_layout_evidence.json": "{}", "target_layout_evidence.json": "{}",
+        "content_validation.json": json.dumps({"passed": True}),
+        "structure_validation.json": json.dumps({"passed": True}),
+        "client_render_context.json": "{}", "production_render_plan.json": "{}",
+        "normalized_candidate_document.json": NormalizedCandidateDocument(
+            source_text_sha256="0" * 64, blocks=[]).model_dump_json(),
+        "designs/d1/layout_template_spec.json": product_template().model_dump_json(),
+    }
+    for name, content in files.items():
+        (artifact / name).parent.mkdir(parents=True, exist_ok=True)
+        (artifact / name).write_text(content)
+    shutil.copy2(ordinary_pdf, artifact / "candidate_profile.pdf")
+    # A live run leaves the comparator report and its diff page in the artifact.
+    compare_pdf_layouts(inputs / "resume_B.pdf", artifact / "candidate_profile.pdf", artifact)
+    for variant in PROOF_VARIANTS:
+        proof = artifact / "layout_proofs" / variant
+        proof.mkdir(parents=True)
+        (proof / "proof.html").write_text("<h1>SYNTHETIC</h1>")
+        shutil.copy2(target_pdf, proof / "proof.pdf")
+    return artifact
+
+
+def _matrix_badge_receipts(artifact: Path, surfaces: dict[str, tuple[str, Path]],
+                           calls: list[tuple[str, bool | None]],
+                           writes: dict[str, dict]):
+    """Stub every API step; each generate writes the bytes its surface fixture built."""
+    import hashlib
+    import shutil
+
+    identity = dict.fromkeys(("profile_revision_id", "profile_sha256",
+                              "layout_template_version", "layout_spec_sha256"), "synthetic")
+    replies = {
+        "server": {"status": "ok"},
+        "process_source": {"artifact_id": artifact.name, "profile_revision_id": "initial",
+                           "profile": {"full_name": "Candidate Beta"}},
+        "save_revision": {"profile_revision_id": "saved"},
+        "upload_target": {"target_format": {"used_as_template_source": True}},
+        "request_design": {"design_id": "d1", "state": "ready"},
+        "approve_design": {"state": "approved"},
+        "layout_proofs": {"variants": [
+            {"variant": variant, "proof_id": variant, "html_filename": "proof.html",
+             "pdf_filename": "proof.pdf"} for variant in PROOF_VARIANTS]},
+    }
+
+    def receipts(_client, result, step, _method, path, **kwargs):
+        result["steps"][step] = {"status": "pass", "http_status": 200, "elapsed_seconds": 0.0}
+        if step not in {"generate", "generate_blind"}:
+            if path.endswith("/approve"):
+                return {"state": "approved"}
+            return replies[step]
+        calls.append((step, kwargs["json"].get("blind_profile")))
+        html, pdf = surfaces[step]
+        (artifact / "candidate_profile.html").write_text(html, encoding="utf-8")
+        shutil.copy2(pdf, artifact / "candidate_profile.pdf")
+        writes[step] = {
+            **identity,
+            "html_sha256": hashlib.sha256(
+                (artifact / "candidate_profile.html").read_bytes()).hexdigest(),
+            "pdf_sha256": hashlib.sha256(
+                (artifact / "candidate_profile.pdf").read_bytes()).hexdigest(),
+            "client_ready": False,
+        }
+        return writes[step]
+
+    return receipts
+
+
+def _run_matrix_badges(tmp_path: Path, monkeypatch, *, ordinary: tuple[str, Path],
+                       blind: tuple[str, Path]) -> tuple[dict, list, dict, Path]:
+    """Run one pair, with provider work stubbed and candidate surfaces built here."""
+    from scripts import run_abc_live_matrix as matrix
+
+    target_pdf = build_rounded_chip_target_pdf(
+        tmp_path / "resume_B.pdf", chip_count=18, per_row=6)
+    artifact = _matrix_badge_artifact(
+        tmp_path, monkeypatch, target_pdf=target_pdf, ordinary_pdf=ordinary[1])
+    calls: list[tuple[str, bool | None]] = []
+    writes: dict[str, dict] = {}
+    surfaces = {"generate": ordinary, "generate_blind": blind}
+    monkeypatch.setattr(
+        matrix, "_request", _matrix_badge_receipts(artifact, surfaces, calls, writes))
+    result = matrix._run_pair(matrix.TestClient(matrix.app), "E", "B")
+    return result, calls, writes, artifact
+
+
+def test_matrix_badge_report_lists_every_generated_surface(tmp_path: Path, monkeypatch) -> None:
+    surfaces = _agreeing_badge_surfaces(tmp_path)
+
+    result, _, _, _ = _run_matrix_badges(
+        tmp_path, monkeypatch, ordinary=surfaces["ordinary"], blind=surfaces["blind"])
+
+    assert list(result["badges"]) == [
+        "target", "generated_html", "generated_pdf",
+        "generated_blind_html", "generated_blind_pdf",
+    ]
+    # The retained target-vs-generated message keeps its shape and its reader.
+    assert _badge_failures(_badge_surface(18, [6, 6, 6]),
+                           _badge_surface(12, [6, 6])) == [
+        "badge count target=18 generated=12",
+        "badge items_per_line target=[6, 6, 6] generated=[6, 6]",
+    ]
+
+
+def test_matrix_measures_generated_pdf_badges(tmp_path: Path, monkeypatch) -> None:
+    surfaces = _agreeing_badge_surfaces(tmp_path)
+
+    result, _, _, _ = _run_matrix_badges(
+        tmp_path, monkeypatch, ordinary=surfaces["ordinary"], blind=surfaces["blind"])
+
+    # 18 chips in three rows of six: the builder's chip_count/per_row and the markup.
+    assert result["badges"]["generated_pdf"] == {
+        "count": 18, "fill_colors": [CHIP_FILL], "text_colors": [CHIP_TEXT],
+        "items_per_line": [6, 6, 6],
+    }
+
+
+def test_matrix_names_generated_html_pdf_badge_drift(tmp_path: Path, monkeypatch) -> None:
+    ordinary_pdf = build_rounded_chip_target_pdf(
+        tmp_path / "chips_12.pdf", chip_count=12, per_row=6)
+
+    result, _, _, _ = _run_matrix_badges(
+        tmp_path, monkeypatch, ordinary=(_badge_group_html([6, 6, 6]), ordinary_pdf),
+        blind=(_badge_group_html([6, 6, 6]), ordinary_pdf))
+
+    issues = result["fidelity_diagnostics"]["issues"]
+    assert "generated badge count html=18 pdf=12" in issues
+    assert [issue for issue in issues if "target=" in issue] == []
+
+
+def test_matrix_compares_blind_and_ordinary_badges(tmp_path: Path, monkeypatch) -> None:
+    ordinary_pdf = build_rounded_chip_target_pdf(
+        tmp_path / "chips_18.pdf", chip_count=18, per_row=6)
+    blind_pdf = build_rounded_chip_target_pdf(
+        tmp_path / "chips_17.pdf", chip_count=17, per_row=6)
+
+    result, _, _, _ = _run_matrix_badges(
+        tmp_path, monkeypatch, ordinary=(_badge_group_html([6, 6, 6]), ordinary_pdf),
+        blind=(_badge_group_html([6, 6, 5]), blind_pdf))
+
+    assert "blind badge count ordinary=18 blind=17" in result["fidelity_diagnostics"]["issues"]
+    assert result["badges"]["generated_blind_pdf"]["count"] == 17
+
+
+def test_matrix_reports_no_generated_surface_drift_when_surfaces_agree(
+    tmp_path: Path, monkeypatch
+) -> None:
+    surfaces = _agreeing_badge_surfaces(tmp_path)
+
+    result, _, _, _ = _run_matrix_badges(
+        tmp_path, monkeypatch, ordinary=surfaces["ordinary"], blind=surfaces["blind"])
+
+    assert [issue for issue in result["fidelity_diagnostics"]["issues"] if "badge" in issue] == []
+
+
+def test_matrix_compares_badge_rows_as_a_multiset() -> None:
+    # HTML groups rows by node container, the PDF clusters per page: the same
+    # row counts in another order are not a drift.
+    assert _surface_drift(
+        _badge_surface(6, [3, 2, 1]), _badge_surface(6, [1, 3, 2]),
+        scope="generated", left_label="html", right_label="pdf") == []
+    # A different grouping of fewer chips is one row drift plus the count drift.
+    drift = _surface_drift(
+        _badge_surface(18, [6, 6, 6]), _badge_surface(15, [4, 4, 6, 1]),
+        scope="generated", left_label="html", right_label="pdf")
+    assert [entry for entry in drift if "items_per_line" in entry] == [
+        "generated badge items_per_line html=[6, 6, 6] pdf=[1, 4, 4, 6]",
+    ]
+    assert "generated badge count html=18 pdf=15" in drift
+
+
+def test_matrix_generates_blind_before_ordinary(tmp_path: Path, monkeypatch) -> None:
+    import hashlib
+
+    ordinary_pdf = build_rounded_chip_target_pdf(
+        tmp_path / "chips_18.pdf", chip_count=18, per_row=6)
+    blind_pdf = build_rounded_chip_target_pdf(
+        tmp_path / "chips_17.pdf", chip_count=17, per_row=6)
+
+    result, calls, _, artifact = _run_matrix_badges(
+        tmp_path, monkeypatch, ordinary=(_badge_group_html([6, 6, 6]), ordinary_pdf),
+        blind=(_badge_group_html([6, 6, 5]), blind_pdf))
+
+    assert calls == [("generate_blind", True), ("generate", None)]
+    # The ordinary render runs last, so the artifact keeps the ordinary bytes.
+    assert hashlib.sha256(
+        (artifact / "candidate_profile.html").read_bytes()).hexdigest() == \
+        result["preview_identity"]["html_sha256"]
+    assert hashlib.sha256(
+        (artifact / "candidate_profile.pdf").read_bytes()).hexdigest() == \
+        result["preview_identity"]["pdf_sha256"]
+
+
+def test_matrix_review_projection_keeps_blind_and_ordinary_outputs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import hashlib
+    from scripts import run_abc_live_matrix as matrix
+
+    ordinary_pdf = build_rounded_chip_target_pdf(
+        tmp_path / "chips_18.pdf", chip_count=18, per_row=6)
+    blind_pdf = build_rounded_chip_target_pdf(
+        tmp_path / "chips_17.pdf", chip_count=17, per_row=6)
+
+    result, _, writes, artifact = _run_matrix_badges(
+        tmp_path, monkeypatch, ordinary=(_badge_group_html([6, 6, 6]), ordinary_pdf),
+        blind=(_badge_group_html([6, 6, 5]), blind_pdf))
+    run = artifact.parents[3]
+    matrix._write_review(run, {"pairs_requested": ["E:B"], "pairs": [result]})
+
+    generation = artifact.parents[1] / "generation"
+    for name, response in (("candidate_profile.html", writes["generate"]),
+                           ("candidate_profile.pdf", writes["generate"]),
+                           ("blind/candidate_profile.html", writes["generate_blind"]),
+                           ("blind/candidate_profile.pdf", writes["generate_blind"])):
+        digest = hashlib.sha256((generation / name).read_bytes()).hexdigest()
+        assert digest == response[name.rsplit(".", 1)[1] + "_sha256"]

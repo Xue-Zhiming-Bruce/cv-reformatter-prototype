@@ -46,6 +46,7 @@ STEPS = [
     "request_design",
     "approve_design",
     "layout_proofs",
+    "generate_blind",
     "generate",
 ]
 RULE_GEOMETRY_TOLERANCE_PT = 1.0
@@ -163,6 +164,30 @@ def _badge_failures(
                 f"badge {field} target={target[field]!r} generated={generated_html[field]!r}"
             )
     return failures
+
+
+def _surface_drift(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    *,
+    scope: str,
+    left_label: str,
+    right_label: str,
+) -> list[str]:
+    """Name each badge field that differs between two generated surfaces."""
+    drifts: list[str] = []
+    for field in ("count", "fill_colors", "text_colors", "items_per_line"):
+        left_value, right_value = left[field], right[field]
+        if field == "items_per_line":
+            # HTML groups rows by node container, the PDF clusters per page:
+            # compare row counts as a multiset.
+            left_value, right_value = sorted(left_value), sorted(right_value)
+        if left_value != right_value:
+            drifts.append(
+                f"{scope} badge {field} "
+                f"{left_label}={left_value!r} {right_label}={right_value!r}"
+            )
+    return drifts
 
 
 def _measure_pdf_structure(path: Path) -> dict[str, Any]:
@@ -745,6 +770,28 @@ def _run_pair(client: TestClient, source: str, target: str, *, target_evidence: 
         }
         return result
 
+    blind_dir = artifact_dir / "blind"
+    blind_generated = _request(
+        client,
+        result,
+        "generate_blind",
+        "POST",
+        "/api/generate",
+        json={
+            "artifact_id": artifact_id,
+            "profile_revision_id": version_id,
+            "design_id": design["design_id"],
+            "blind_profile": True,
+        },
+    )
+    if blind_generated is None:
+        return result
+    # The blind render writes the ordinary filenames: snapshot it before the
+    # ordinary generation below, which leaves the artifact in its final state.
+    blind_dir.mkdir(exist_ok=True)
+    for name in ("candidate_profile.html", "candidate_profile.pdf"):
+        shutil.copy2(artifact_dir / name, blind_dir / name)
+
     generated = _request(
         client,
         result,
@@ -868,12 +915,36 @@ def _run_pair(client: TestClient, source: str, target: str, *, target_evidence: 
     }
     failures.extend(_structure_failures(target_structure, generated_structure))
     target_badges = _measure_pdf_badges(target_path)
-    generated_badges = _measure_html_badges(artifact_dir / "candidate_profile.html")
+    generated_html_badges = _measure_html_badges(artifact_dir / "candidate_profile.html")
+    generated_pdf_badges = _measure_pdf_badges(final_pdf_path)
+    blind_html_badges = _measure_html_badges(blind_dir / "candidate_profile.html")
+    blind_pdf_badges = _measure_pdf_badges(blind_dir / "candidate_profile.pdf")
     result["badges"] = {
         "target": target_badges,
-        "generated_html": generated_badges,
+        "generated_html": generated_html_badges,
+        "generated_pdf": generated_pdf_badges,
+        "generated_blind_html": blind_html_badges,
+        "generated_blind_pdf": blind_pdf_badges,
     }
-    failures.extend(_badge_failures(target_badges, generated_badges))
+    failures.extend(
+        _surface_drift(
+            generated_html_badges,
+            generated_pdf_badges,
+            scope="generated",
+            left_label="html",
+            right_label="pdf",
+        )
+    )
+    failures.extend(
+        _surface_drift(
+            generated_html_badges,
+            blind_html_badges,
+            scope="blind",
+            left_label="ordinary",
+            right_label="blind",
+        )
+    )
+    failures.extend(_badge_failures(target_badges, generated_html_badges))
     result["fidelity_diagnostics"] = {"issues": failures, "human_review": "pending",
         "note": "Raw target comparisons are content-sensitive diagnostics, not API or product-validation results."}
     if failures:
@@ -952,6 +1023,8 @@ def _write_review(run_dir: Path, report: dict[str, Any]) -> None:
                               (artifact/"production_render_plan.json", "production_render_plan.json"),
                               (spec, "effective_layout_template_spec.json")):
                 shutil.copy2(src, generation/dest)
+            if (artifact/"blind").is_dir():
+                shutil.copytree(artifact/"blind", generation/"blind", dirs_exist_ok=True)
             from app.extraction.candidate_document_analyzer import NormalizedCandidateDocument, build_candidate_block_binding_plan
             from app.template_analysis.schemas import LayoutTemplateSpec
             document = NormalizedCandidateDocument.model_validate_json((artifact/"normalized_candidate_document.json").read_text())
