@@ -29,6 +29,7 @@ from scripts.run_abc_live_matrix import (
     _surface_drift,
 )
 from tests.helpers.badge_probe_pdfs import (
+    build_deep_label_inset_bars_pdf,
     build_outlined_chip_pdf,
     build_overflowing_chip_pdf,
     build_section_banner_pdf,
@@ -814,6 +815,29 @@ def test_enrich_rejects_a_chip_whose_label_hangs_over_its_edge(
     warnings = " ".join(enriched.warnings)
     assert "2 filled shape(s)" in warnings
     assert warnings.count("60x18 pt shape has its text run 2 pt outside its own edge") == 2
+    assert "unmeasured pending inspection" in warnings
+
+
+def test_enrich_warns_instead_of_raising_on_a_label_inset_past_the_ceiling(
+    tmp_path: Path,
+) -> None:
+    """Two 300x24 pt bars whose centred label spans 51% of the width are inset
+    73.3 pt, past the badge padding bound: a warning, never a ValidationError."""
+    import re
+
+    pdf = build_deep_label_inset_bars_pdf(tmp_path / "deep-inset.pdf")
+
+    enriched = enrich_badges_from_local_pdf(_evidence(), pdf)
+
+    assert enriched.badge_clusters == []
+    warnings = " ".join(enriched.warnings)
+    assert "2 filled shape(s)" in warnings
+    reason = (
+        "300x24 pt shape holds a label inset 73.3 pt, "
+        "past the 72 pt badge padding ceiling"
+    )
+    assert warnings.count(reason) == 2
+    assert len(set(re.findall(r"\(at (x=[^)]*)\)", warnings))) == 2
     assert "unmeasured pending inspection" in warnings
 
 

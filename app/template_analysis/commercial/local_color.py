@@ -330,12 +330,14 @@ def _shape_bounds(item: dict[str, object]) -> tuple[float, float, float, float]:
 # body lines up with one text line (10-30 pt high); a filled chip body covers its
 # box (a rounded box fills 79% or more of it, a triangle about half); a chip's
 # label sits inside its own edges; and a chip is a label with padding, so a box
-# many times wider than it is tall is a container unless its label spans it.
+# many times wider than it is tall is a container unless its label spans it. A
+# label inset sets the badge padding, which the cluster schema bounds at 72 pt.
 _MIN_BADGE_HEIGHT_PT = 10.0
 _MAX_BADGE_HEIGHT_PT = 30.0
 _MAX_CHIP_ASPECT_RATIO = 6.0
 _MIN_CHIP_LABEL_WIDTH_FRACTION = 0.5
 _MIN_CHIP_FILL_FRACTION = 2 / 3
+_MAX_CHIP_PADDING_PT = 72.0  # NormalizedBadgeCluster.horizontal_padding_pt bound
 
 
 def _in_chip_height_band(item: dict[str, object]) -> bool:
@@ -447,6 +449,12 @@ def _not_a_chip_reason(
         return say(
             f"is more than {_MAX_CHIP_ASPECT_RATIO:g}x wider than it is tall while "
             f"its label spans only {label_fraction:.0%} of that width"
+        )
+    inset = min(float(run["left"]), float(run["right"]))
+    if inset > _MAX_CHIP_PADDING_PT:
+        return say(
+            f"holds a label inset {inset:.1f} pt, past the "
+            f"{_MAX_CHIP_PADDING_PT:g} pt badge padding ceiling"
         )
     return None
 
