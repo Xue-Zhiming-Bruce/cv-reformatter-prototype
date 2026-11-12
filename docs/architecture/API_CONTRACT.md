@@ -668,14 +668,22 @@ its stored visual report names (`comparison_images[]`, each with `kind`
 target page that has no counterpart). Evidence that exists but cannot be read
 appears in `unavailable_variants[]` with a reason instead of in `variants[]`, so
 unavailable and never-created stay distinct and neither counts toward "created"
-or enables the decision. Every URL is an artifact-scoped API path.
+or enables the decision. Availability is judged from all of a variant's stored
+evidence, not one record: a missing `render_result.json`, a corrupt record, a
+contradictory page count, a changed file or a permission failure on read all
+leave the variant unavailable with a pathless reason, and the status request
+still answers 200. Only a variant with no evidence file at all is never created.
+Every URL is an artifact-scoped API path.
 
 The three resource routes serve only files the stored evidence names, never a
 request-named path: the variant's own `render_result.json` supplies the filename
 and checksum, the served bytes must hash to it, the real path must stay inside
 that variant's own proof or `visual/` directory, and the recorded `artifact_id`
-must match the requested artifact. `proof.pdf` is served `application/pdf`
-inline. Rejections return a structured `{error_code, message}` body with
+must match the requested artifact. The stored visual report names its comparison
+images but carries no digests, so the proof writer records them in
+`layout_proofs/variants/{variant}/comparison_checksums.json`; comparison images
+and the report are served only when their bytes hash to the recorded digest.
+`proof.pdf` is served `application/pdf` inline. Rejections return a structured `{error_code, message}` body with
 `layout_proof_resource_not_found` (404) or `layout_proof_resource_mismatch`
 (409) and never a filesystem path, the proof directory layout or a stack trace.
 Superseded proof directories and `pipeline_runs/` stay unreachable. Viewing a
@@ -686,7 +694,14 @@ resource changes no approval and no acceptance state.
 `expected_variant_proof_ids`, `expected_variant_pdf_checksums`). Any supplied
 identity that no longer resolves on disk rejects the decision with 409
 `layout_proof_mismatch`; the backend never approves or rejects a set the
-reviewer did not see.
+reviewer did not see, and a decision stays refused while any variant is
+unavailable or the stored set is invalidated.
+
+Generation from an uploaded target consults the same identities, not only the
+approval record: `require_layout_proof_approval` compares the approved
+variant proof ids with the ids that resolve now, for both the PostgreSQL and the
+legacy JSON approval store, and refuses with 409 `layout_proof_mismatch` when a
+variant was re-created or its current evidence cannot be read.
 
 ## Final Output Acceptance
 
