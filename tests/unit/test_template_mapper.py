@@ -365,3 +365,12 @@ def test_unhiding_restores_the_stored_source_value_verbatim() -> None:
         "98 High Street, Bristol, UK",
     )
     assert "Available upon request" not in str(context.model_dump())
+
+
+def test_a_hidden_name_uses_the_neutral_blind_label() -> None:
+    profile = CandidateProfile(**PERSONAL_INFORMATION, client_display_rules={"full_name": DisplayRule.HIDE})
+
+    context = build_client_render_context(profile)
+
+    assert context.candidate_heading == "Candidate A"
+    assert "Fictional Candidate" not in str(context.model_dump())

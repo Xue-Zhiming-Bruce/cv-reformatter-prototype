@@ -219,3 +219,33 @@ def test_hidden_value_gate_covers_only_explicit_hide_rules(tmp_path: Path) -> No
 
     assert report.passed is True
     assert report.hidden_fields == []
+
+
+def test_hiding_a_value_the_template_does_not_render_changes_nothing_else(tmp_path: Path) -> None:
+    from app.extraction.candidate_schema import DisplayRule
+    from app.template_analysis.schemas import built_in_layout_template_spec
+
+    profile = CandidateProfile(
+        full_name="Fictional Candidate",
+        email="fictional@example.test",
+        location="98 High Street, Bristol, UK",
+    )
+    spec = built_in_layout_template_spec()
+    spec.header = spec.header.model_copy(
+        update={"show_candidate_subheading": False, "contact_fields": ["email"]}
+    )
+    pdf_path = tmp_path / "no_address_slot.pdf"
+    build_text_pdf_pages(pdf_path, ["Fictional Candidate\nfictional@example.test"], **PAGE)
+    shown = validate_generated_content(
+        build_client_render_context(profile), pdf_path=pdf_path, layout_spec=spec
+    )
+    hidden = build_client_render_context(
+        profile.model_copy(update={"client_display_rules": {"location": DisplayRule.HIDE}})
+    )
+
+    report = validate_generated_content(hidden, pdf_path=pdf_path, layout_spec=spec)
+
+    assert report.passed is True
+    assert report.expected_item_count == shown.expected_item_count
+    assert hidden.candidate_subheading is None
+    assert [item.value for item in hidden.contact_items] == ["fictional@example.test"]
