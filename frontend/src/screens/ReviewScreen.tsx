@@ -226,6 +226,9 @@ function applyEditsToProfile(profile: CandidateProfile, edits: Record<string, st
   return copy as unknown as CandidateProfile
 }
 
+// The three proof variants a decision must cover (mirrors the backend enum).
+const PROOF_VARIANTS = ["short", "medium", "long"] as const
+
 export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, targetFormat, onReplaceTarget, onBack }: ReviewScreenProps) {
   const { t } = useTranslation()
   const [edits, setEdits] = useState<Record<string, string>>({})
@@ -362,12 +365,26 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         ? t("review.proofNextPending")
         : t("review.proofNextNone")
   const unavailableVariants = proofStatus?.unavailable_variants ?? []
-  // Approval and rejection stay disabled while any variant is unavailable: a decision
-  // must cover a complete, reviewable set, not the readable part of one.
-  const canDecideProofs = proofCreated
+  // A decision must cover the whole set the reviewer was shown: every variant available,
+  // no unavailable evidence, a complete identity for each variant, and no invalidated
+  // approval. The readable part of a set is never decided on its own.
+  const proofVariantsPresent = PROOF_VARIANTS.every((name) =>
+    (proofStatus?.variants ?? []).some((variant) => variant.variant === name))
+  const proofIdentitiesComplete = Boolean(proofStatus?.target_checksum && proofStatus?.layout_spec_checksum)
+    && (proofStatus?.variants ?? []).every((variant) => variant.proof_id.length > 0 && variant.pdf_checksum.length > 0)
+  const canDecideProofs = Boolean(proofStatus)
+    && proofVariantsPresent
+    && (proofStatus?.variants.length ?? 0) === PROOF_VARIANTS.length
     && unavailableVariants.length === 0
+    && proofIdentitiesComplete
+    && !proofStatus?.approval_invalidated
     && proofState !== "approved"
     && proofBusy === "idle"
+  const proofDecisionBlocked = Boolean(proofStatus)
+    && proofState !== "approved"
+    && unavailableVariants.length === 0
+    && !proofStatus?.approval_invalidated
+    && !canDecideProofs
 
   async function persistRevision(retry: RetryTarget): Promise<string | null> {
     const editVersionAtSave = editVersionRef.current
@@ -592,7 +609,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   }
 
   async function decideProofs(state: "approved" | "rejected") {
-    if (!isPdfTarget || proofBusy !== "idle" || !proofStatus) return
+    if (!isPdfTarget || !canDecideProofs || !proofStatus) return
     setActionError(null)
     setProofBusy("approving")
     const identity = proofIdentity(proofStatus)
@@ -940,6 +957,9 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
                   <span className="rv-target-panel__warning">
                     {t("review.proofUnavailableCount", { count: unavailableVariants.length })}
                   </span>
+                )}
+                {proofDecisionBlocked && (
+                  <span className="rv-target-panel__warning">{t("review.proofDecisionBlocked")}</span>
                 )}
                 <div className="rv-proof__actions">
                   <button type="button" className="rv-proof__btn" onClick={() => void handleCreateProofs()} disabled={proofBusy !== "idle"}>

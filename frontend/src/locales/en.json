@@ -302,7 +302,8 @@
     "proofUnavailableLabel": "Unavailable evidence",
     "proofUnavailableCount": "{{count}} variant(s) cannot be reviewed",
     "proofOpenNewTab": "Open in a new tab",
-    "proofViewClose": "Close viewer"
+    "proofViewClose": "Close viewer",
+    "proofDecisionBlocked": "Approval needs all three variants with complete proof identities."
   },
   "auth": {
     "loginTitle": "Welcome back",

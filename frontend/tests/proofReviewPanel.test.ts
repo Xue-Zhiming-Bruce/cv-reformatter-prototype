@@ -229,6 +229,65 @@ test("the panel serves each variant's proof and comparison evidence inline and b
   assert.equal(await decisionButton(app, copy("review.proofRejectBtn")).isDisabled(), true)
 })
 
+test("a decision needs all three variants with complete identities, not just readable ones", async (t) => {
+  // AC6/AC10: a set with two readable variants and no unavailable entry is still
+  // incomplete, so nothing may be approved or rejected from it.
+  const captured: Captured = { decisions: [] }
+  const status = proofStatus({ variants: [variant("short"), variant("medium")] })
+  const app = await launchApp(stubs(captured, status), PIN_ENGLISH)
+  t.after(() => app.close())
+
+  await openReviewWithPdfTarget(app)
+  assert.equal((await app.page.locator(".rv-proof-row").count()), 2)
+  assert.ok((await app.page.locator(".rv-target-panel").innerText()).includes(copy("review.proofDecisionBlocked")))
+  assert.equal(await decisionButton(app, copy("review.proofApproveBtn")).isDisabled(), true)
+  assert.equal(await decisionButton(app, copy("review.proofRejectBtn")).isDisabled(), true)
+  assert.deepEqual(captured.decisions, [])
+})
+
+test("an approval is not decidable when a shown proof identity is missing", async (t) => {
+  // AC5/AC6/AC10: every echoed identity must be complete, so a variant without a
+  // recorded proof id or PDF checksum blocks the decision instead of being sent.
+  const captured: Captured = { decisions: [] }
+  const identities = [variant("short"), { ...variant("medium"), proof_id: "" }, variant("long")]
+  const status = proofStatus({ variants: identities })
+  const app = await launchApp(stubs(captured, status), PIN_ENGLISH)
+  t.after(() => app.close())
+
+  await openReviewWithPdfTarget(app)
+  assert.equal(await decisionButton(app, copy("review.proofApproveBtn")).isDisabled(), true)
+  assert.equal(await decisionButton(app, copy("review.proofRejectBtn")).isDisabled(), true)
+  assert.deepEqual(captured.decisions, [])
+
+  const withoutTargetChecksum = proofStatus({ target_checksum: "" })
+  const second = await launchApp(stubs(captured, withoutTargetChecksum), PIN_ENGLISH)
+  t.after(() => second.close())
+  await openReviewWithPdfTarget(second)
+  assert.equal(await decisionButton(second, copy("review.proofApproveBtn")).isDisabled(), true)
+  assert.equal(await decisionButton(second, copy("review.proofRejectBtn")).isDisabled(), true)
+  assert.deepEqual(captured.decisions, [])
+})
+
+test("an invalidated approval alone disables decisions on a complete set", async (t) => {
+  // AC6/AC10: three readable variants are not enough while the set is invalidated.
+  const captured: Captured = { decisions: [] }
+  const reason = "the proof set was re-created after this approval: short"
+  const status = proofStatus({
+    approval_invalidated: true,
+    approval_invalidated_reason: reason,
+  })
+  const app = await launchApp(stubs(captured, status), PIN_ENGLISH)
+  t.after(() => app.close())
+
+  await openReviewWithPdfTarget(app)
+  const panelText = await app.page.locator(".rv-target-panel").innerText()
+  assert.ok(panelText.includes(copy("review.proofInvalidatedLabel")), panelText)
+  assert.ok(panelText.includes(reason), panelText)
+  assert.equal(await decisionButton(app, copy("review.proofApproveBtn")).isDisabled(), true)
+  assert.equal(await decisionButton(app, copy("review.proofRejectBtn")).isDisabled(), true)
+  assert.deepEqual(captured.decisions, [])
+})
+
 test("unavailable evidence and an invalidated approval are shown and cannot be decided", async (t) => {
   const captured: Captured = { decisions: [] }
   const unavailableReason = "the stored medium comparison evidence cannot be read"

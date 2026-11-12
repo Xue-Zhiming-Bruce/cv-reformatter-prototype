@@ -302,7 +302,8 @@
     "proofUnavailableLabel": "사용할 수 없는 증거",
     "proofUnavailableCount": "{{count}}개 변형을 검토할 수 없습니다",
     "proofOpenNewTab": "새 탭에서 열기",
-    "proofViewClose": "뷰어 닫기"
+    "proofViewClose": "뷰어 닫기",
+    "proofDecisionBlocked": "승인하려면 세 가지 변형 모두의 증빙 식별 정보가 완전해야 합니다."
   },
   "auth": {
     "loginTitle": "다시 오셨군요",
