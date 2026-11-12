@@ -11,7 +11,9 @@ import pdfplumber
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.extraction.candidate_document_analyzer import SourceCoverageLedger
+from app.extraction.candidate_schema import CandidateProfile, DisplayRule
 from app.generation.template_mapper import (
+    PERSONAL_INFORMATION_FIELDS,
     ClientFacingRenderContext,
     RenderAdditionalSection,
 )
@@ -145,6 +147,42 @@ def _check(
 def _read_pdf_text(path: Path) -> str:
     with pdfplumber.open(path) as pdf:
         return "\n".join(page.extract_text(use_text_flow=True) or "" for page in pdf.pages)
+
+
+class HiddenValueLeak(ContentValidationModel):
+    field: Literal["full_name", "email", "phone", "location"]
+    occurrences: int = Field(ge=1)
+
+
+class HiddenValueReport(ContentValidationModel):
+    schema_version: Literal["hidden-value-validation/1.0"] = "hidden-value-validation/1.0"
+    passed: bool
+    hidden_fields: list[str] = Field(default_factory=list)
+    leaks: list[HiddenValueLeak] = Field(default_factory=list)
+
+
+def validate_hidden_values_absent(
+    profile: CandidateProfile, *, pdf_path: str | Path,
+) -> HiddenValueReport:
+    """Fail closed when a value the recruiter hid still reaches the PDF text.
+
+    Only explicit ``hide`` rules count: the blind switch is not a disclosure
+    choice about a stored value, so it never enters this check.
+    """
+    text = _normalize(_read_pdf_text(Path(pdf_path)))
+    hidden_fields = [
+        field for field in PERSONAL_INFORMATION_FIELDS
+        if profile.client_display_rules.get(field) == DisplayRule.HIDE
+    ]
+    leaks = []
+    for field in hidden_fields:
+        value = _normalize(str(getattr(profile, field) or ""))
+        occurrences = text.count(value) if value else 0
+        if occurrences:
+            leaks.append(HiddenValueLeak(field=field, occurrences=occurrences))
+    return HiddenValueReport(
+        passed=not leaks, hidden_fields=list(hidden_fields), leaks=leaks
+    )
 
 
 def _normalize(value: str) -> str:

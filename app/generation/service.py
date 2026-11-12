@@ -42,6 +42,7 @@ from app.generation.artifact_manifest import (
 )
 from app.generation.content_validation import (
     validate_generated_content,
+    validate_hidden_values_absent,
     validate_output_structure,
 )
 from app.generation.contracts import (
@@ -1036,6 +1037,22 @@ def validate_generation(
                     for check in content_validation.checks
                     if not check.passed
                 ],
+            },
+        )
+
+    hidden_values = validate_hidden_values_absent(
+        prepared.reviewed_profile, pdf_path=rendered.pdf_path
+    )
+    hidden_values_path = artifact_dir / "hidden_value_validation.json"
+    write_json(hidden_values_path, hidden_values.model_dump(mode="json"))
+    prepared.debug_artifacts["hidden_value_validation"] = str(hidden_values_path)
+    if not hidden_values.passed:
+        raise GenerationError(
+            500,
+            {
+                "error_code": "hidden_value_leaked",
+                "message": "A value the recruiter hid still appears in the generated output.",
+                "leaks": [leak.model_dump(mode="json") for leak in hidden_values.leaks],
             },
         )
 

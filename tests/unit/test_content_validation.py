@@ -146,3 +146,76 @@ def test_candidate_content_can_reflow_with_wrapped_headings(tmp_path: Path, new_
     geometry = next(check for check in report.checks if check.section_heading == "page-geometry")
     assert not geometry.notes, geometry
     assert not geometry.issues, geometry
+
+
+def test_hidden_value_gate_passes_when_the_hidden_value_is_absent(tmp_path: Path) -> None:
+    from app.extraction.candidate_schema import DisplayRule
+    from app.generation.content_validation import validate_hidden_values_absent
+
+    profile = CandidateProfile(
+        full_name="Fictional Candidate",
+        email="fictional@example.test",
+        phone="+44 5555 0101",
+        location="98 High Street, Bristol, UK",
+        client_display_rules={"location": DisplayRule.HIDE},
+    )
+    pdf_path = tmp_path / "hidden.pdf"
+    build_text_pdf_pages(
+        pdf_path,
+        ["Candidate Profile", "Fictional Candidate", "Senior Engineer", "fictional@example.test\n+44 5555 0101"],
+        **PAGE,
+    )
+
+    report = validate_hidden_values_absent(profile, pdf_path=pdf_path)
+
+    assert report.passed is True
+    assert report.schema_version == "hidden-value-validation/1.0"
+    assert report.hidden_fields == ["location"]
+    assert report.leaks == []
+
+
+def test_hidden_value_gate_fails_every_repeated_verbatim_occurrence(tmp_path: Path) -> None:
+    from app.extraction.candidate_schema import DisplayRule
+    from app.generation.content_validation import validate_hidden_values_absent
+
+    profile = CandidateProfile(
+        full_name="Fictional Candidate",
+        location="98 High Street, Bristol, UK",
+        client_display_rules={"location": DisplayRule.HIDE},
+    )
+    pdf_path = tmp_path / "leaked.pdf"
+    build_text_pdf_pages(
+        pdf_path,
+        [
+            "Fictional Candidate\nSenior Engineer | 98 High Street, Bristol, UK",
+            "Location: 98 High Street, Bristol, UK",
+            "Summary\nBased at 98 High Street, Bristol, UK",
+        ],
+        **PAGE,
+    )
+
+    report = validate_hidden_values_absent(profile, pdf_path=pdf_path)
+
+    assert report.passed is False
+    assert [(leak.field, leak.occurrences) for leak in report.leaks] == [("location", 3)]
+
+
+def test_hidden_value_gate_covers_only_explicit_hide_rules(tmp_path: Path) -> None:
+    from app.extraction.candidate_schema import DisplayRule
+    from app.generation.content_validation import validate_hidden_values_absent
+
+    profile = CandidateProfile(
+        full_name="Fictional Candidate",
+        location="98 High Street, Bristol, UK",
+        client_display_rules={
+            "location": DisplayRule.AVAILABLE_UPON_REQUEST,
+            "email": DisplayRule.PENDING_CONFIRMATION,
+        },
+    )
+    pdf_path = tmp_path / "legacy.pdf"
+    build_text_pdf_pages(pdf_path, ["Fictional Candidate\n98 High Street, Bristol, UK"], **PAGE)
+
+    report = validate_hidden_values_absent(profile, pdf_path=pdf_path)
+
+    assert report.passed is True
+    assert report.hidden_fields == []
