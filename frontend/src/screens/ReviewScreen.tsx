@@ -248,11 +248,8 @@ function AdditionalSectionEditor({ section, index, edits, onEdit }: AdditionalSe
     <div className="rdoc-section" data-source-block-id={section.source_block_id}>
       <div className="rdoc-section__head">
         <EditableField value={section.source_heading} path={`${base}.source_heading`} edits={edits} onEdit={onEdit} />
-        <button
-          type="button"
-          className="rv-chip rv-chip--neutral"
-          onClick={() => onEdit(`${base}.disposition`, hidden ? "show" : "hide")}
-        >
+        <button type="button" className="rv-chip rv-chip--neutral"
+          onClick={() => onEdit(`${base}.disposition`, hidden ? "show" : "hide")}>
           {hidden ? t("review.additionalSectionRestore") : t("review.additionalSectionHide")}
         </button>
       </div>
