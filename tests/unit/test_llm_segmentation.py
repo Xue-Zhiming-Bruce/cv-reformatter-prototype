@@ -7,6 +7,7 @@ from app.extraction.coverage_audit import audit_segmentation_lines
 from app.extraction.llm_extractor import LLMExtractionError
 from app.extraction.llm_segmentation import (
     LLMSegmentationOutput,
+    LLMSegmentedSection,
     materialize_llm_segmentation,
     segment_and_extract_resume,
     segmentation_output_line_evidence,
@@ -156,3 +157,49 @@ def test_same_institution_with_different_degrees_remains_distinct() -> None:
         ]})
     profile, _ = materialize_llm_segmentation("Example University\nBSc\nMSc", LLMSegmentationOutput.model_validate(payload))
     assert [entry.degree for entry in profile.education] == ["BSc", "MSc"]
+
+
+def test_pdf_icon_glyph_marker_does_not_become_a_structured_contact_value() -> None:
+    # resume_E.pdf: the phone icon decodes to (cid:212) in the raw extracted text.
+    contact_line = "(cid:212) (000) 000-0000 (cid:16) example@example.com (cid:176) linkedin.com/in/example"
+    source = f"Daniel Phang\nSeattle, Washington\n{contact_line}"
+    output = LLMSegmentationOutput.model_validate({
+        "schema_version": "llm_segmentation/1",
+        "sections": [{
+            "heading": None,
+            "section_type": "contact",
+            "items": ["Daniel Phang", "Seattle, Washington", contact_line],
+            "full_name": "Daniel Phang",
+            "email": "(cid:16) example@example.com",
+            "phone": "(cid:212) (000) 000-0000",
+            "location": "Seattle, Washington",
+            "linkedin_url": "(cid:176) linkedin.com/in/example",
+        }],
+    })
+
+    profile, document = materialize_llm_segmentation(source, output)
+
+    assert profile.phone == "(000) 000-0000"
+    assert profile.email == "example@example.com"
+    assert str(profile.linkedin_url) == "https://linkedin.com/in/example"
+    # Raw extraction and verbatim evidence keep the markers for recruiter comparison.
+    assert document.blocks[0].raw_text == "Daniel Phang\nSeattle, Washington\n" + contact_line
+    assert document.blocks[0].items[2] == contact_line
+
+
+@pytest.mark.parametrize("field,value,expected", [
+    ("phone", "+44 (0)20 7946-0958", "+44 (0)20 7946-0958"),
+    ("phone", "(000) 000-0000", "(000) 000-0000"),
+    ("phone", "(cid:212)", None),
+    ("full_name", "Jane (cid:5) Candidate", "Jane (cid:5) Candidate"),
+    ("professional_summary", "Shipped (cid:5) services.", "Shipped (cid:5) services."),
+    ("linkedin_url", "https://linkedin.com/in/ex(cid:5)ample", "https://linkedin.com/in/ex(cid:5)ample"),
+])
+def test_glyph_marker_cleanup_stays_on_contact_value_edges(
+    field: str, value: str, expected: str | None,
+) -> None:
+    section = LLMSegmentedSection.model_validate({
+        "heading": None, "section_type": "contact", "items": [value], field: value,
+    })
+
+    assert getattr(section, field) == expected

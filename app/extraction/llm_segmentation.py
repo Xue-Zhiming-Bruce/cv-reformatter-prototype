@@ -37,6 +37,16 @@ from app.validation.missing_fields import apply_missing_field_detection
 
 LLM_SEGMENTATION_PROMPT_VERSION = "llm-segmentation/3"
 
+_LEADING_GLYPH_MARKERS = re.compile(r"^(?:\(cid:\d+\)\s*)+")
+
+
+def _strip_leading_glyph_markers(value: str) -> str:
+    """Drop decorative icon glyphs PDF decoding leaves in front of a value.
+
+    A marker inside the value is unresolved source text and stays untouched.
+    """
+    return _LEADING_GLYPH_MARKERS.sub("", value)
+
 
 class SegmentationRunMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -96,12 +106,19 @@ class LLMSegmentedSection(BaseModel):
     interview_availability: str | None = None
     additional_entries: list[AdditionalSectionEntry] = Field(default_factory=list)
 
+    @field_validator("email", "phone", "location")
+    @classmethod
+    def _normalize_contact_value(cls, value: str | None) -> str | None:
+        if not value:
+            return value
+        return _strip_leading_glyph_markers(value).strip() or None
+
     @field_validator("linkedin_url", "portfolio_url")
     @classmethod
     def _normalize_scheme_less_url(cls, value: str | None) -> str | None:
         if not value:
             return value
-        cleaned = re.sub(r"^(?:\(cid:\d+\))+", "", value).strip()
+        cleaned = _strip_leading_glyph_markers(value).strip()
         return cleaned if "://" in cleaned else f"https://{cleaned}"
 
     @model_validator(mode="after")
