@@ -1,0 +1,428 @@
+# Agentic call evidence and the one measured reduction (issue #39)
+
+Status: `Evaluation evidence` — analysis of the recorded 2026-11-12 agentic run,
+plus the one reduction implemented on top of it.
+
+Last reviewed: November 12, 2026.
+
+Scope: the three recorded Lane A layout proofs of
+`data/generated_outputs/qa_20261112_computer_use/` (short / medium / long).
+Recorded revision: `1064108`. Read this with
+[TEST_STRUCTURE](../testing/TEST_STRUCTURE.md) (which owns the canonical test
+workflow) and [DOCUMENT_PIPELINE](../architecture/DOCUMENT_PIPELINE.md) (which
+owns the agent roles). This document adds no workflow, runner, or result schema.
+
+## 1. Recorded basis
+
+| Proof | Layout proof id | Pipeline run | Candidate input | Target input |
+| --- | --- | --- | --- | --- |
+| short | `layout_proof_short_ef6d5055c79c58d1` | `6e70a4f7b6cf4274b36efd13a5f73fcb` | `resume_E.pdf` `83551af0…5e9a20bc9f8bc655dcd59e554f2deda0e5c81f` | `resume_B.pdf` `ca06d0a9…6fdae73bb8ae048ff2a859e02aac4047` |
+| medium | `layout_proof_medium_6d9372f69e8c4d20` | `ea8ea8f4881342648f0fc9e7b878020d` | same | same |
+| long | `layout_proof_long_678f0b17f5a8679f` | `12301955f17b445894c59e33d44739fa` | same | same |
+
+Both documents are the fictional/manufactured LANE inputs
+(`tests/local_datasets/local_datasets/cvparserpro_it_resumes/files/`), matching
+the [test contract](../testing/TEST_STRUCTURE.md#product-trials-use-document-inputs).
+Per run: `run_config.json` (frozen before the first live call), `prompts.json`,
+`agent_messages.jsonl` (one record per semantic agent call, with request and
+response parts and per-response usage), `trace.json` (39 / 50 / 72 entries),
+per-call `trace_NNNN_*.json` artifacts, `e5_lane_a_state.json` (per-lane
+measurement results), and the lane `render_{1,2}.pdf` + `render_{1,2}_plan.json`.
+
+Live stages: candidate extraction (`gpt-5.4-mini`), Lane A builder
+(`deepseek-flash`), attribution investigator (`deepseek-flash`), visual reviewer
+(`qwen3-vl-plus`). Deterministic stages: template compilation
+(`lane-a-product-subset/17`), HTML/PDF rendering (Chrome), structural checks,
+and the measurement controller (`header_contact_label_geometry/1`,
+`header_vertical_rule_geometry/2`).
+
+Candidate extraction is separate from every figure in this document: 5,181
+reported tokens for `it_cv_1.docx`
+(`artifact_b53f8ce42d714e9fba4ba09bb2c910be`) and 6,972 for `resume_E.pdf`
+(`artifact_29656ad7e9a84956952968b2e2b3e142`). The 28 requests / 171,022 input /
+8,574 output below are the three Lane A proof loops only.
+
+No request in the recording is called unnecessary because it found no defect. The
+reviewer's calls that produced no actionable finding still performed the
+whole-page review that AC4 requires, and the investigator's calls that ended
+`not_measurable` still bound every finding to an outcome; both are cost, neither
+is waste.
+
+Recorded terminal state, all three proofs: `ready_for_owner_review`,
+`gate_validation.gates` all true, selected variant
+`render-target_format_reference-laneA-v2`. `approval.json` state `pending` /
+`approval_69aef9119f044e9e` — the recorded proofs were never owner-approved, so
+this document reports machine evidence and claims no product acceptance.
+
+## 2. Per-request reconciliation
+
+Counting the same stage three ways gives the same totals but not the same
+semantic count, so every figure below is named by its counter.
+
+| Proof | `http_request_reserved` trace entries | provider responses (`usage.requests` sum) | `budget.global.model_request_count` | semantic agent calls (records with a response) | tool calls (`calls_by_tool` sum) |
+| --- | --- | --- | --- | --- | --- |
+| short | 7 | 7 | 7 | 5 | 8 |
+| medium | 9 | 9 | 9 | 7 | 7 |
+| long | 12 | 12 | 12 | 9 | 7 |
+| total | 28 | 28 | 28 | 21 | 22 |
+
+The 7 extra provider requests over 21 semantic calls are explained, not lost:
+
+- six are the attribution investigator's bounded three-step loop — one recorded
+  call whose three responses are `inspect_page_region`×2 → `measure_render_words`
+  → `final_result` (2 extra requests per proof, all three proofs);
+- one is the long proof's round-1 review of a page whose first response carried
+  an empty `final_result` tool return and was re-asked inside the same agent run
+  (`run_id 01a1cec6-5b06-…73ed`, input 5,564 → 6,967 tokens) — an agent-level
+  re-ask of one semantic page review;
+- actual SDK retries: **0**. `failed_attempts` is `null` on all 28 responses and
+  all 28 responses report `state: complete`.
+
+Not reproducible from the recording: the request **byte sizes**. Every
+`http_request_reserved` entry records `input: null`, so the
+`max_request_bytes: 512000` gate is enforced at reservation time but cannot be
+re-audited per request.
+
+## 3. Per-stage attribution (proof of what the run bought)
+
+Tokens are provider-reported (`usage` per response). `cache_read` and
+`cache_write` are reported fields; the vision model reports neither
+`details.prompt_cache_hit`/`miss` nor a cache write, so its cached figure is the
+reported `cache_read_tokens`. `cache_write` is 0 for every stage.
+
+| Stage | Requests | Input | Output | Cache read | Uncached input | Wall time |
+| --- | --- | --- | --- | --- | --- | --- |
+| Lane A builder, initial | 3 | 20,126 | 671 | 3,840 | 16,286 | 6.6 s |
+| Lane A builder, repair | 3 | 28,805 | 1,115 | 6,400 | 22,405 | 8.7 s |
+| Visual reviewer, 2 rounds | 13 | 74,483 | 5,013 | 4,224 | 70,259 | 232.4 s |
+| Attribution investigator | 9 | 47,608 | 1,775 | 30,720 | 16,888 | 34.0 s |
+| Deterministic measurement/attribution controller | 0 | 0 | 0 | 0 | 0 | unavailable (unrecorded) |
+| Total | 28 | 171,022 | 8,574 | 45,184 | 125,838 | 281.8 s |
+
+Per proof (same order as the issue's filing):
+
+| Proof | Requests | Input | Output | Cache read | Recorded elapsed | Final PDF sha256 | HTML sha256 | Terminal |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| short | 7 | 39,433 | 1,593 | 12,800 | 45.0 s | `5223286d9f2d02617aaec2e3885f59a9e09b14b6d98c6bb20ff49b222956ef20` (1 page) | `ee57df904cf08a5e0f6217b6788902b5adb108106bc24a2e90c557995854aeb8` | `ready_for_owner_review` |
+| medium | 9 | 54,320 | 2,310 | 15,104 | 75.1 s | `d5fcdb3bfb0255bba18f48e4305c405af7aef990aba88e2b2967eb2609f9a59b` (2 pages) | `241be7ea0e6268762aa74fec3371e70f718dc98d90a2fd5f884f992f5f59266e` | `ready_for_owner_review` |
+| long | 12 | 77,269 | 4,671 | 17,280 | 155.2 s | `ab206446ff462e25dd58d06f02682924ac0c312d112ce88c122985d60f39d550` (3 pages) | `bef23a04cdbacea6db4f3d0da3da2f284407a03484667242296fd546751f6f6e` | `ready_for_owner_review` |
+| total | 28 | 171,022 | 8,574 | 45,184 | 275.3 s | — | — | — |
+
+Reading of the attribution:
+
+- **The visual reviewer is both the largest token consumer (43.6 % of input,
+  58.5 % of output) and the dominant wall-time consumer.** It re-sends the same
+  page image and the same `review-presentation-facts/3` static facts once per
+  page per round; 13 of 28 requests carry 74,483 input tokens. Provider-side
+  time is not recorded, so this is local request→response interval, not a
+  provider latency profile.
+- **The attribution investigator is mostly cache reads and is derived work:**
+  64.5 % of its input is a cache read, and it runs only for findings the visual
+  reviewer reported findings. It issues no measurement of its own — the
+  deterministic controller does all six geometry measurements.
+- **The deterministic controller costs zero model requests.** Its 22 local tool
+  calls (7 `measure_header_contact_label_geometry`, 6 `render_and_checkpoint`,
+  6 `inspect_page_region`, 3 `measure_render_words`) are not a token or request
+  cost; they are a wall-time cost that the recording does not break out.
+
+### Deterministic measurement detail
+
+| Proof | `measurement_results` | confirmed | `not_measurable` | Label-geometry executions | Measured label delta (round 1 → round 2) |
+| --- | --- | --- | --- | --- | --- |
+| short | 3 | 3 | 0 | 3 | 36.375 pt → 0.0 pt |
+| medium | 4 | 2 | 2 | 2 | 88.05 pt → 0.0 pt |
+| long | 7 | 2 | 5 | 2 | 125.482 pt → 0.0 pt |
+
+Two filings in the issue do not reproduce and are corrected here:
+
+- `not_measurable` records: the issue filing says 6 (long 5, medium 1, short 0);
+  the artifacts hold **7** (`e5_lane_a_state.json` `measurement_results`, and the
+  same 7 `trace_NNNN_binding_unresolved.json` records: long 5, medium 2,
+  short 0). Each states `role-gap controller cannot execute metric
+  'unsupported'`. `summary.unbound_measurements` is 0 on all three proofs because
+  that counter tracks a different condition, so neither figure is a
+  `not_measurable` count by itself.
+- Redundant re-execution: of the seven label-geometry executions, **one** is a
+  re-execution of an identical measurement on unchanged bytes — the short proof's
+  round-2 finding (`trace_0036`, request `measure-la-003`) re-ran the metric on
+  the same promoted `render_2.pdf` (`5223286d…`) that had already been measured
+  in `trace_0028` (`measure-la-001`). Both recorded `target 0.0 / current 0.0 /
+  delta 0.0`. The other six executions had a genuine reason to run (first
+  measurement on a new render, or a new page/round with no prior result).
+
+Wall time in the tables is the local request→response interval, so it includes
+provider latency and local work and excludes provider-side time, which the
+recording does not separate. The long proof's round-1 review requests overlap, so
+the 281.8 s total is an upper bound and not comparable to the 275.3 s of
+per-proof elapsed time.
+
+## 4. The one optimization hypothesis
+
+> **Hypothesis H1 (the only one this document names).** Repeating a *deterministic
+> header geometry measurement* whose inputs are byte-identical to an already
+> confirmed execution buys no new evidence, so it can be served from the earlier
+> result instead of being re-executed.
+
+Records that support it: `trace_0028_measurement.json` and
+`trace_0036_measurement.json` (same method `header_contact_label_geometry/1`,
+same page 1, same region, same two PDF byte identities, identical result). The
+two records carry *different* request ids (`measure-la-001`, `measure-la-003`),
+which is why the reuse identity is a content hash and not a request id: the
+per-lane counter is not unique per render. Evidence that it is safe: the
+measurement reads only the two final PDFs, the declared layout state, the
+compiled render plan, and the request parameters — it holds no clock, no
+randomness, and no provider call (`app/pipeline/measurement.py`).
+
+Deliberately **not** named as a hypothesis here, because the recording cannot
+price them and acting on them would change prompts or review coverage: the
+reviewer's per-page static-fact re-send, compaction of the two review rounds, and
+the investigator's page-region inspections. The recorded output-sha256
+reconciliation and the verbosity concern are tracked separately (issues #37 and
+#38); no claim in this document depends on either.
+
+## 5. The change (AC3)
+
+`app/pipeline/measurement.py` gains `measurement_reuse_key(...)`: the sha256
+identity of one deterministic header-geometry measurement — method, metric, page,
+region, the four selection texts, both final PDF byte hashes, and the render
+version. The free-text `intent` is excluded because the metric does not consume
+it (that exclusion is exactly what makes the recorded duplicate a duplicate).
+
+`app/pipeline/service.py` gains one memo per lane (`_E5LaneState.measurement_reuse`)
+and `_e5_reuse_measurement(...)`, which serves a prior result **only when it is
+`confirmed`**, and always re-executes when the key misses, when the prior result
+was not confirmed, and when the caller passes `allow_reuse=False`. The two
+header-geometry branches of `_e5_execute_measurement` consult the memo; the
+`_e5_accepted_regions_hold` recheck passes `allow_reuse=False` so a proof that has
+to hold its accepted regions still genuinely re-measures. A reuse writes its own
+trace entry (`action: measurement_reused`, `input.reused_request_id`) so the
+recording shows what was served rather than silently omitting the call.
+
+Every other measurement path (`role_gap`, `unsupported`) is untouched and still
+executes and spends its tool budget as before.
+
+The key does not hash the layout state or the render plan; it relies on the two
+PDF byte identities plus the render version implying them, because a new state or
+plan is always rendered to a new version with new bytes in this loop. If that
+ever stops being true, the state and plan hashes belong in the key.
+
+## 6. Before / after on the recorded input
+
+Replay of the short proof's duplicated measurement, no provider call, both PDFs
+the recorded bytes (`ca06d0a9…` target, `5223286d…` current), state from
+`c2_layout_state.json`, plan from `render_2_plan.json`, 15 iterations on the same
+bytes:
+
+| Path | Median | Range |
+| --- | --- | --- |
+| before: re-execute the identical measurement | 205.1 ms | 160–344 ms |
+| after: serve the confirmed prior result | 0.405 ms | 0.30–5.65 ms |
+
+The served result is value-identical to the executed one
+(`MeasurementResult` minus `request_id`) and its evidence is byte-identical to
+the recorded `trace_0028` / `trace_0036` evidence
+(`{"status": "confirmed", "page": 1, "window_top_pt": 93.373, …,
+"label_widths_pt": {"location": 0.0}}`).
+
+Reproduce with the recorded artifacts (read-only, from the main checkout) and the
+lane checkout's virtualenv:
+
+```python
+# PYTHONPATH=. .venv/bin/python replay.py <recorded lane_a dir> <target_format_reference.pdf>
+import statistics, tempfile, time
+from pathlib import Path
+import app.pipeline.service as service
+from app.pipeline.layout_state import C2LayoutState
+from app.pipeline.render_plan import C2RenderPlan
+from app.pipeline.evidence import MeasurementRequest
+from app.pipeline.measurement import (HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
+    _measure_header_contact_label_geometry, measurement_reuse_key)
+from app.pipeline.runtime import RunTrace
+LANE = Path(__import__("sys").argv[1]); TARGET = Path(__import__("sys").argv[2])
+CURRENT = LANE / "render_2.pdf"
+state = C2LayoutState.model_validate_json((LANE.parent / "c2_layout_state.json").read_text())
+plan = C2RenderPlan.model_validate_json((LANE / "render_2_plan.json").read_text())
+trace = RunTrace(Path(tempfile.mkdtemp()))
+def request(rid):
+    return MeasurementRequest(request_id=rid, metric="header_contact_label_geometry", page=1,
+        region_id="header.product_contact", intent="replay")
+def key(req):
+    return measurement_reuse_key(method=HEADER_CONTACT_LABEL_MEASUREMENT_VERSION, request=req,
+        target_pdf=TARGET, current_pdf=CURRENT,
+        render_version="render-target_format_reference-laneA-v2")
+executed, reused = [], []
+memo = {}
+for run in range(15):
+    req = request(f"measure-la-{run:03d}")
+    t0 = time.perf_counter()
+    fresh = _measure_header_contact_label_geometry(req, target_pdf=TARGET, current_pdf=CURRENT,
+        state=state, plan=plan, current_name_text="SYNTHETIC_CANDIDATE_NAME")
+    executed.append(time.perf_counter() - t0)
+    memo[key(req)] = fresh
+    t0 = time.perf_counter()
+    served = service._e5_reuse_measurement(memo, trace, key(req), req.request_id,
+        "measure_header_contact_label_geometry")
+    reused.append(time.perf_counter() - t0)
+    assert served.model_dump(exclude={"request_id"}) == fresh.model_dump(exclude={"request_id"})
+print(statistics.median(executed) * 1000, statistics.median(reused) * 1000)
+```
+
+What this change does **not** reduce: model requests (28 unchanged), tokens
+(179,596 unchanged), review coverage, and the number of rounds. It removes local
+deterministic work only. The recorded long proof still spends one agent-level
+re-ask and all three proofs still spend their investigator loops; those are
+outside H1.
+
+## 7. Review coverage is unchanged (AC4)
+
+Recorded before the change, per proof, per round:
+
+| Proof | Reviewer calls | Pages in round 1 | Pages in round 2 | Reviewed PDF sha256 (both fully reviewed) |
+| --- | --- | --- | --- | --- |
+| short | 2 | 1 | 1 | `0ce16950…f4b41210`, `5223286d…2956ef20` |
+| medium | 4 | 2 | 2 | `8d0858a2…05af6544`, `d5fcdb3b…09f9a59b` |
+| long | 7 | 3 (+1 agent re-ask) | 3 | `22d501e6…202199c7`, `ab206446…39d550` |
+
+The change does not touch `_e5_review_this_round`, `ls.pages_reviewed`, the
+per-page reviewer loop, or `reviewed_render_fingerprints`; the full-review-once
+gate (`tests/integration/test_pipeline_loop.py::test_review_gate_full_review_once_per_render_fingerprint`)
+still passes. Every reuse is recorded as an extra, more granular trace entry, so
+trace detail is not reduced either.
+
+Limit: an *after* recording of per-page coverage would need a new live proof run
+(provider opt-in, the canonical `TEST_STRUCTURE` workflow) and none was made here.
+The coverage claim therefore rests on unchanged code plus the passing gate test,
+not on a second recording.
+
+## 8. Identity of both sides (AC5, AC8)
+
+| Identity | Recorded basis | After the change |
+| --- | --- | --- |
+| revision | `1064108` | `0ad1719` + the documentation commit of this file |
+| `agentic_renderer_version()` | `agentic-a/6+lane-a-product-subset/17+3db18fdc7f95b8e1` | identical (verified by executing it) |
+| renderer / compiler | `lane-a-product-subset/17` | unchanged |
+| review measurement contract | `review-measurement/2` | unchanged |
+| review presentation facts | `review-presentation-facts/3` | unchanged |
+| measurement methods | `header_contact_label_geometry/1`, `header_vertical_rule_geometry/2` | unchanged |
+| structural checks / privacy gate | `pdf_structure/2`, `candidate_fact_privacy/2` | unchanged |
+| client disclosure | `client_disclosure/2` | unchanged |
+| prompt / config / state | `prompts.json` `6a533289…e547ba2`, `run_config.json` `23dc4559…be6109`, `c2_layout_state.json` `5b75cc3f…e6932b9e` | no prompt, config, or state schema changed |
+| recorded model calls | `agent_messages.jsonl` `77430a53…0f1432` (short), `5669fcb7…f4212c` (medium), `f02cbc15…e2d7df` (long) | not re-recorded; no new prompt bytes |
+| recorded traces | `trace.json` `0cf8e673…40773b`, `a4742e0c…8df0f6`, `21ae7d1e…ad0348f` | same schema; new `measurement_reused` action only on reuse |
+
+Unavailable fields, stated rather than omitted: per-request provider-side
+latency and per-stage terminal state are not recorded (only per-proof elapsed and
+terminal state are); request byte sizes are `null` in the trace; a per-response
+output sha256 is not recorded (the sha256 identities above are the per-proof
+final PDF/HTML and the run artifacts); currency cost is **unknown** — the SDK's
+local price-table `cost` string exists on 15 of 28 responses and is a local
+estimate, not a billed amount, and 13 vision responses carry none, so 0.021193
+USD is not this run's cost.
+
+The accounting path did not change: `RunTrace`, `RunBudget`, the
+`agent_adapters` `_record_usage` sites, `agent_messages.jsonl` and
+`agentic_generation.json` are the same code as the recording, so the before side
+needs no re-measurement under new accounting. Both sides are counted from the
+same per-response `usage` objects.
+
+Mode declaration, stage by stage:
+
+| Stage | Before (recorded 2026-11-12) | After (this change) |
+| --- | --- | --- |
+| Candidate extraction | `live` | `replay` — **not rerun** (no provider call) |
+| Lane A builder, initial + repair | `live` | `replay` — **not rerun** |
+| Attribution investigator | `live` | `replay` — **not rerun** |
+| Visual reviewer | `live` | `replay` — **not rerun** |
+| Template compilation, HTML/PDF render, structural checks | `replay` of the recorded plan and PDFs | `replay` — **not rerun** |
+| Deterministic header-geometry measurement | `replay` on the recorded PDFs, state and plan (205.1 ms median) | `replay` plus the changed reuse path (0.405 ms median) |
+
+Only the deterministic measurement stage was re-executed here, on the recorded
+bytes. No stage produced a new provider request.
+
+Pairing the mode declaration with the identity table: nothing in the three
+identity-bearing areas changed. No prompt byte, no model configuration, no
+measurement method version, and no review policy is touched by this change; the
+reuse path only decides whether an already-identical deterministic measurement is
+re-executed, and it serves a value-identical `MeasurementResult` carrying the
+same `method`. The recorded proofs' identities therefore stay valid, and this
+document claims no new proof identity — and because no post-change proof was
+generated, no earlier approval is inherited either: `approval.json` stays
+`pending` (`approval_69aef9119f044e9e`), and the owners' separate acceptance of
+these artifacts is unchanged by this work.
+
+A later run that changes any identity above must not be read as a repeat of this
+recording.
+
+## 9. What this evidence does and does not claim (AC6, AC7, AC11)
+
+Measured, from the recorded lane proof `agentic_generation.json` and the proof
+variants: header label-geometry delta 36.375 / 88.05 / 125.482 pt → 0.0 pt on all
+three proofs; name font size 25.995 pt `LiberationSerif-Bold` (render) vs 26.0 pt
+`Times-Bold` (target) with following line 9.495 vs 9.5 pt; ordinary body colour
+`#2b2b2b` on both sides; the seven recorded gates all true
+(`candidate_content_accounting`, `content_gate`, `content_shapes_match_evidence`,
+`deterministic_render`, `no_blank_page`, `no_target_candidate_facts`,
+`section_order_matches_state`, with `blocking_failures: []` and
+`diagnostic_warnings: []`), content validation (`content-validation/1.0`, 15
+expected items, none missing), structure validation (`structure-gate/1.0`, every
+section heading matched), and the structural checks
+(`page_count_min`, `page_dimensions_pN`, `content_within_physical_page_pN`,
+`content_regions_pN`, `content_within_margins_pN`, `page_non_empty_pN`,
+`headings_present`, `synthetic_content_complete`); visual similarity 0.2172 /
+0.5634 / 0.3867 with page-count similarity 0.5 / 1.0 / 0.6667.
+
+Not claimed: that the reuse change improves any of those numbers (it cannot — it
+serves the identical result), that the recorded proofs are owner-approved (they
+are `pending`), and that the reviewer's repeated static facts are cheap to
+remove (no provider timing is recorded, and removing them would change prompt
+bytes and therefore every identity above). No parity, no winner, no savings
+percentage: metrics cannot establish arrangement preferences, which stay with
+#10/#13.
+
+Effect separation: this change saves local deterministic wall time only (~205 ms
+per redundant measurement). It adds no request and no token, and it neither
+includes nor claims #37's template-reuse onboarding savings or #38's job-recovery
+duplicate suppression. The cost this change leaves untouched is the cost above:
+28 requests, 171,022 input, 8,574 output.
+
+Owner-recognizable artifacts for a review-tab check (read-only, main checkout):
+
+```text
+data/generated_outputs/qa_20261112_computer_use/pdf_target_run/layout_proofs/layout_proof_short_ef6d5055c79c58d1/proof-short.pdf
+data/generated_outputs/qa_20261112_computer_use/pdf_target_run/layout_proofs/layout_proof_medium_6d9372f69e8c4d20/proof-medium.pdf
+data/generated_outputs/qa_20261112_computer_use/pdf_target_run/layout_proofs/layout_proof_long_678f0b17f5a8679f/proof-long.pdf
+data/generated_outputs/qa_20261112_computer_use/pdf_target_run/layout_proofs/variants/<proof>/visual/  (comparison PNGs)
+data/generated_outputs/qa_20261112_computer_use/pdf_target_run/layout_proofs/variants/<proof>/structural.json
+data/generated_outputs/qa_20261112_computer_use/pdf_target_run/layout_proofs/variants/<proof>/visual.json
+data/generated_outputs/qa_20261112_computer_use/pdf_target_run/layout_proofs/approval.json
+```
+
+## 10. Regression protection (AC9)
+
+`tests/integration/test_pipeline_loop.py`:
+
+- `test_identical_deterministic_measurement_is_reused_not_re_executed` — a second
+  identical request returns the confirmed first result value-for-value, spends no
+  tool budget, and records `measurement_reused`.
+- `test_changed_pdf_parameters_method_or_version_never_reuse_a_measurement` —
+  changed PDF bytes, changed page, changed region, changed method version, and
+  changed render version each miss; a non-confirmed prior result is never served.
+
+The tests use the suite's own deterministic fixture rather than the untracked
+2026-11-12 artifacts so they run on any checkout; the recorded-input equivalence
+is the replay in section 6.
+
+Do not weaken these to "the call did not happen": the observable contract is that
+a confirmed measurement's *value* is unchanged and a non-identical request still
+executes.
+
+## 11. Workflow bounds (AC10)
+
+This document is evidence, not a workflow. It adds no runner, corpus, result
+schema, or output directory; the canonical workflows in
+[TEST_STRUCTURE](../testing/TEST_STRUCTURE.md) still own verification, and the
+replay above is an ad hoc read-only replay of recorded artifacts, not a retained
+tool. No provider was contacted for this work: no corpus authorization or
+provider opt-in was exercised and no live proof run was made, so every number
+here comes from a saved recording or from re-executing a deterministic local
+function on saved bytes.
