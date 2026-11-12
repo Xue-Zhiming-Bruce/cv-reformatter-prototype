@@ -34,7 +34,8 @@ MAX_REQUEST_BYTES = 512000  # Two dense 900px page overviews, including Base64/J
 
 
 class AgenticGenerationError(RuntimeError):
-    pass
+    #: Pipeline terminal state when the run stopped on its own budget.
+    terminal: str | None = None
 
 
 class AgenticPresentationLabelError(AgenticGenerationError):
@@ -250,6 +251,8 @@ def render_agentic(
     target_pdf: Path, evidence_dir: Path, output_dir: Path,
     presentation_label_approval: Any = None,
     layout_proof_approval: Any = None,
+    max_model_requests: int | None = None,
+    max_tool_calls: int | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
     """Run A's real live loop; return a checked selected version, never the last attempt."""
     identity = agentic_renderer_version()
@@ -308,13 +311,17 @@ def render_agentic(
         layout_spec=layout_spec, live=True, lanes=("a",),
         max_repair_rounds=settings["max_repair_rounds"], builder_reserve_requests=4,
         presentation_label_approval=presentation_label_approval,
-        budget=RunBudget(max_model_requests=settings["max_model_requests"],
-            max_tool_calls=settings["max_tool_calls"], max_request_bytes=MAX_REQUEST_BYTES),
+        budget=RunBudget(
+            max_model_requests=max_model_requests or settings["max_model_requests"],
+            max_tool_calls=max_tool_calls or settings["max_tool_calls"],
+            max_request_bytes=MAX_REQUEST_BYTES),
     )
     record = E5LoopRecord.model_validate(raw_record)
     lane = record.lanes.get("a")
     if terminal != "ready_for_owner_review" or lane is None:
-        raise _no_reviewable_output(run_dir, terminal, record)
+        error = _no_reviewable_output(run_dir, terminal, record)
+        error.terminal = terminal
+        raise error
     version, stem, selection = run_artifacts._selected_lane_artifact(lane)
     if version is None or selection != "BEST" or not version.hard_gates_passed:
         raise AgenticGenerationError("Agentic run has no validated selected output")

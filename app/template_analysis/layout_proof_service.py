@@ -453,6 +453,8 @@ def create_proof_variant(
     target_checksum: str,
     variant: LengthVariant,
     presentation_label_approval: Any = None,
+    max_model_requests: int | None = None,
+    max_tool_calls: int | None = None,
 ) -> VariantProofEvidence:
     """Render, measure, validate and compare one proof variant.
 
@@ -469,7 +471,8 @@ def create_proof_variant(
     )
     result = render_layout_proof(request, output_dir=proofs_dir,
         target_pdf=Path(target_pdf),
-        presentation_label_approval=presentation_label_approval)
+        presentation_label_approval=presentation_label_approval,
+        max_model_requests=max_model_requests, max_tool_calls=max_tool_calls)
     proof_pdf = proofs_dir / result.proof_id / result.pdf_filename
     measurements = measure_pdf_geometry(proof_pdf)
     structural = validate_proof_structure(
@@ -590,6 +593,8 @@ def render_candidate_document(
     render_context: ClientFacingRenderContext,
     output_dir: str | Path = DEFAULT_CANDIDATE_OUTPUT_DIR,
     target_pdf: Path | None = None,
+    max_model_requests: int | None = None,
+    max_tool_calls: int | None = None,
 ) -> tuple[Path, Path]:
     """Render final candidate HTML/PDF only from an approved layout proof.
 
@@ -621,7 +626,8 @@ def render_candidate_document(
     try:
         html_path, pdf_path = render_generation_into(render_context, layout_spec, html_path,
             out_dir / "candidate_profile.pdf", target_pdf, renderer_version=approval.renderer_version,
-            layout_proof_approval=approval)
+            layout_proof_approval=approval,
+            max_model_requests=max_model_requests, max_tool_calls=max_tool_calls)
     except (RuntimeError, ValueError, OSError) as exc:
         raise LayoutProofRenderError(
             f"final candidate document could not be rendered: {exc}"

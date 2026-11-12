@@ -945,7 +945,10 @@ def prepare_generation(
     )
 
 
-def render_prepared_generation(prepared: PreparedGeneration) -> RenderedGeneration:
+def render_prepared_generation(
+    prepared: PreparedGeneration, *, max_model_requests: int | None = None,
+    max_tool_calls: int | None = None,
+) -> RenderedGeneration:
     """Render the prepared inputs with the current native or approved renderer."""
     artifact_id = prepared.artifact_id
     artifact_dir = prepared.artifact_dir
@@ -964,6 +967,8 @@ def render_prepared_generation(prepared: PreparedGeneration) -> RenderedGenerati
                 target_pdf=(
                     artifact_dir / prepared.target_format.stored_filename
                 ),
+                max_model_requests=max_model_requests,
+                max_tool_calls=max_tool_calls,
             )
             # Read the arrangement plan of the version that was just published;
             # a stale or unselected plan is reported as unknown, never used.
@@ -1249,10 +1254,13 @@ def record_generation(
 
 
 def generate_outputs(
-    request: GenerateRequest, *, settings: GenerationSettings
+    request: GenerateRequest, *, settings: GenerationSettings,
+    max_model_requests: int | None = None, max_tool_calls: int | None = None,
 ) -> GenerateResponse:
     """Prepare inputs → render → validate → record for one generation request."""
     prepared = prepare_generation(request, settings)
-    rendered = render_prepared_generation(prepared)
+    rendered = render_prepared_generation(
+        prepared, max_model_requests=max_model_requests, max_tool_calls=max_tool_calls
+    )
     validated = validate_generation(prepared, rendered)
     return record_generation(request, settings, prepared, rendered, validated)
