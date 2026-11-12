@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 from collections import Counter
@@ -9,11 +11,45 @@ from pathlib import Path
 from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from app.generation.template_mapper import CONTACT_FIELD_SLOTS, CONTACT_LABEL_FIELDS
-from app.pipeline.evidence import MeasurementRequest, MeasurementResult, _page_pt_size, _pdf_line_rows
+from app.pipeline.evidence import (
+    MeasurementRequest,
+    MeasurementResult,
+    _page_pt_size,
+    _pdf_line_rows,
+    _sha256_file,
+)
 from app.pipeline.rendering import _pinned_chrome_environment
 
 HEADER_VERTICAL_RULE_MEASUREMENT_VERSION = "header_vertical_rule_geometry/2"
 HEADER_CONTACT_LABEL_MEASUREMENT_VERSION = "header_contact_label_geometry/1"
+
+
+def measurement_reuse_key(
+    *, method: str, request: MeasurementRequest, target_pdf: Path,
+    current_pdf: Path, render_version: str,
+) -> str:
+    """Identity of ONE deterministic header-geometry measurement.
+
+    A repeat may reuse an earlier result only when the measurement method, every
+    request parameter the measurement consumes, BOTH final PDFs' bytes and the
+    render version are identical — the free-text `intent` is excluded because the
+    metric ignores it: in the 2026-11-12 recording the round-1 and round-2
+    reviewer findings asked the same label-presence question in different words
+    and the same measurement re-ran on the same promoted PDF
+    (`trace_0028_measurement.json` / `trace_0036_measurement.json`)."""
+    return hashlib.sha256(json.dumps({
+        "method": method,
+        "metric": request.metric,
+        "page": request.page,
+        "region_id": request.region_id,
+        "from_text": request.from_text,
+        "to_text": request.to_text,
+        "render_from_text": request.render_from_text,
+        "render_to_text": request.render_to_text,
+        "target_sha256": _sha256_file(target_pdf),
+        "current_sha256": _sha256_file(current_pdf),
+        "render_version": render_version,
+    }, sort_keys=True).encode()).hexdigest()
 
 SlotKind = Literal["name", "title", "tagline", "location", "phone", "envelope", "github", "linkedin"]
 

@@ -398,6 +398,76 @@ def test_review_gate_full_review_once_per_render_fingerprint() -> None:
     assert repair_policy._e5_review_this_round(reviewed, "pdf-hash-b") is False
 
 
+# --- identical deterministic measurement reuse (issue #39) ------------------
+
+def _reuse_key(tmp_path: Path, *, current_bytes: bytes = b"%PDF-1.4 render-a",
+    render_version: str = "render-laneA-v2",
+    method: str = "header_contact_label_geometry/1",
+    **request_overrides: object) -> str:
+    target = tmp_path/"target.pdf"
+    target.write_bytes(b"%PDF-1.4 target")
+    current = tmp_path/"render.pdf"
+    current.write_bytes(current_bytes)
+    request = evidence.MeasurementRequest(**{
+        "request_id": "measure-la-001", "metric": "header_contact_label_geometry", "page": 1,
+        "region_id": "header.product_contact",
+        "intent": "measure whether generated contact field labels are present",
+        **request_overrides,
+    })
+    return measurement.measurement_reuse_key(method=method, request=request,
+        target_pdf=target, current_pdf=current, render_version=render_version)
+
+
+def test_identical_deterministic_measurement_is_reused_not_re_executed(tmp_path: Path) -> None:
+    """The recorded 2026-11-12 short proof measured header label geometry three
+    times; the last two ran on the same promoted PDF and returned identical
+    evidence (`trace_0028_measurement.json` / `trace_0036_measurement.json`).
+    Such a repeat is served from the lane's confirmed result and the reuse is
+    traced with the request id it stands on."""
+    key = _reuse_key(tmp_path)
+    trace = RunTrace(tmp_path)
+    memo: dict[str, evidence.MeasurementResult] = {}
+    assert e._e5_reuse_measurement(memo, trace, key, "measure-la-003",
+        "measure_header_contact_label_geometry") is None
+    memo[key] = evidence.MeasurementResult(request_id="measure-la-001", status="confirmed",
+        target_value_pt=0.0, current_value_pt=0.0, delta_pt=0.0,
+        method="header_contact_label_geometry/1")
+    reused = e._e5_reuse_measurement(memo, trace, key, "measure-la-003",
+        "measure_header_contact_label_geometry")
+    assert reused is not None
+    assert reused.request_id == "measure-la-003"
+    assert (reused.status, reused.delta_pt, reused.method) == ("confirmed", 0.0, memo[key].method)
+    assert trace.entries[-1]["action"] == "measurement_reused"
+    assert trace.entries[-1]["input"] == {"reused_request_id": "measure-la-001"}
+
+
+def test_changed_pdf_parameters_method_or_version_never_reuse_a_measurement(tmp_path: Path) -> None:
+    """A changed final PDF, a changed measurement parameter, a changed method
+    version or a changed render version must reach a fresh execution, and an
+    earlier not-confirmed result is never reused at all."""
+    key = _reuse_key(tmp_path)
+    trace = RunTrace(tmp_path)
+    memo = {key: evidence.MeasurementResult(request_id="measure-la-001", status="confirmed",
+        target_value_pt=0.0, current_value_pt=0.0, delta_pt=0.0,
+        method="header_contact_label_geometry/1")}
+    stale = [
+        _reuse_key(tmp_path, current_bytes=b"%PDF-1.4 render-b"),
+        _reuse_key(tmp_path, page=2),
+        _reuse_key(tmp_path, region_id="header.product_name"),
+        _reuse_key(tmp_path, method="header_contact_label_geometry/2"),
+        _reuse_key(tmp_path, render_version="render-laneA-v3"),
+    ]
+    for changed in stale:
+        assert changed != key
+        assert e._e5_reuse_measurement(memo, trace, changed, "measure-la-004",
+            "measure_header_contact_label_geometry") is None
+    memo[key] = evidence.MeasurementResult(request_id="measure-la-001",
+        status="not_measurable", reason="label geometry requires one declared page-one contact row",
+        method="header_contact_label_geometry/1")
+    assert e._e5_reuse_measurement(memo, trace, key, "measure-la-005",
+        "measure_header_contact_label_geometry") is None
+
+
 def test_round_scheduling_uses_bounded_selection() -> None:
     """The selected loop defers work beyond the shared per-round cap."""
     findings = [_e5_finding(f"f{i}", f"region.{i}", "role_gap") for i in range(6)]

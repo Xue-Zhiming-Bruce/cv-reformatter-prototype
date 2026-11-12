@@ -37,6 +37,7 @@ from app.pipeline.measurement import (
     _measure_header_contact_label_geometry,
     _measure_header_vertical_rule_geometry,
     _measurement_improvement,
+    measurement_reuse_key,
     _pdf_lines_and_marks,
     _target_body_text_color_context,
     pinned_export_environment,
@@ -1258,6 +1259,10 @@ class _E5LaneState:
     quarantine_index: int | None = None
     findings: list[DefectFinding] = field(default_factory=list)
     measurement_results: list[MeasurementResult] = field(default_factory=list)
+    # measurement_reuse_key -> the CONFIRMED deterministic header-geometry result
+    # already taken on those exact inputs; the 2026-11-12 recording re-ran the
+    # same label-geometry measurement twice on one promoted PDF.
+    measurement_reuse: dict[str, MeasurementResult] = field(default_factory=dict)
     attributions: list[AttributionRecord] = field(default_factory=list)
     repair_attempts: list[dict[str, Any]] = field(default_factory=list)
     builder_candidates: list[dict[str, Any]] = field(default_factory=list)
@@ -1892,6 +1897,19 @@ def _e5_render_entry_texts(ls: _E5LaneState, region_id: str | None, plan: Any = 
         if leaf.kind in {"work_entry", "education_entry"} and leaf.text
     ][:4], []
 
+def _e5_reuse_measurement(memo: dict[str, MeasurementResult], trace: RunTrace,
+    key: str, request_id: str, tool: str) -> MeasurementResult | None:
+    """Serve one CONFIRMED deterministic measurement already taken on exactly
+    these inputs, and record the reuse instead of re-executing the tool."""
+    prior = memo.get(key)
+    if prior is None or prior.status != "confirmed":
+        return None
+    result = prior.model_copy(update={"request_id": request_id})
+    trace.add(agent="measure_controller", phase="measure", action="measurement_reused", tool=tool,
+        input={"reused_request_id": prior.request_id}, output=result.model_dump(mode="json"),
+        persist_output=True)
+    return result
+
 def _e5_execute_measurement(ls: _E5LaneState,
     finding: DefectFinding,
     pdf: Path,
@@ -1899,6 +1917,7 @@ def _e5_execute_measurement(ls: _E5LaneState,
     *,
     plan: Any = None,
     render_version: str = "",
+    allow_reuse: bool = True,
 ) -> tuple[MeasurementResult, MeasurementRequest]:
     section_id = _owning_section_id(ls.run.state, finding.region)
     span = ls.run.region_spans.get(section_id or finding.region)
@@ -1930,10 +1949,18 @@ def _e5_execute_measurement(ls: _E5LaneState,
                 reason="label geometry cannot measure other or compound contact dimensions",
                 method=HEADER_CONTACT_LABEL_MEASUREMENT_VERSION)
         else:
-            ls.lane_budget.spend_tool("measure_header_contact_label_geometry")
             request = request.model_copy(update={"region_id": finding.region})
-            result = _measure_header_contact_label_geometry(request, target_pdf=ls.run.target_pdf,
-                current_pdf=pdf, state=ls.run.state, plan=plan, current_name_text=ls.run.candidate_name_text)
+            key = measurement_reuse_key(
+                method=HEADER_CONTACT_LABEL_MEASUREMENT_VERSION, request=request,
+                target_pdf=ls.run.target_pdf, current_pdf=pdf, render_version=render_version,
+            )
+            result = _e5_reuse_measurement(ls.measurement_reuse, ls.trace, key, request_id,
+                "measure_header_contact_label_geometry") if allow_reuse else None
+            if result is None:
+                ls.lane_budget.spend_tool("measure_header_contact_label_geometry")
+                result = _measure_header_contact_label_geometry(request, target_pdf=ls.run.target_pdf,
+                    current_pdf=pdf, state=ls.run.state, plan=plan, current_name_text=ls.run.candidate_name_text)
+                ls.measurement_reuse[key] = result
         ls.trace.add(agent="measure_controller", phase="measure", action="measurement",
             tool="measure_header_contact_label_geometry", output=result.model_dump(mode="json"), persist_output=True)
         return result, request
@@ -1955,13 +1982,21 @@ def _e5_execute_measurement(ls: _E5LaneState,
                 method=HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
             )
         else:
-            ls.lane_budget.spend_tool("measure_header_vertical_rule_geometry")
-            result = _measure_header_vertical_rule_geometry(
-                request,
-                target_pdf=ls.run.target_pdf,
-                current_pdf=pdf,
-                current_name_text=ls.run.candidate_name_text,
+            key = measurement_reuse_key(
+                method=HEADER_VERTICAL_RULE_MEASUREMENT_VERSION, request=request,
+                target_pdf=ls.run.target_pdf, current_pdf=pdf, render_version=render_version,
             )
+            result = _e5_reuse_measurement(ls.measurement_reuse, ls.trace, key, request_id,
+                "measure_header_vertical_rule_geometry") if allow_reuse else None
+            if result is None:
+                ls.lane_budget.spend_tool("measure_header_vertical_rule_geometry")
+                result = _measure_header_vertical_rule_geometry(
+                    request,
+                    target_pdf=ls.run.target_pdf,
+                    current_pdf=pdf,
+                    current_name_text=ls.run.candidate_name_text,
+                )
+                ls.measurement_reuse[key] = result
         ls.trace.add(
             agent="measure_controller", phase="measure", action="measurement",
             tool="measure_header_vertical_rule_geometry",
@@ -2022,6 +2057,8 @@ def _e5_accepted_regions_hold(ls: _E5LaneState, candidate_pdf: Path) -> tuple[bo
             request.request_id,
             plan=ls.plan_by_version.get(ls.versions[-1].version_id),
             render_version=ls.versions[-1].version_id,
+            # This recheck exists to re-execute: a reused value would verify itself.
+            allow_reuse=False,
         )
         values_present = (
             repeat.current_value_pt is not None
