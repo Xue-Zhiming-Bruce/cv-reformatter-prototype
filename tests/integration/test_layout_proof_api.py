@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 from pathlib import Path
 
@@ -1583,30 +1582,35 @@ def test_status_separates_unavailable_evidence_from_never_created(tmp_path: Path
     assert set(unavailable) == {"short", "medium"}
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root can read mode-000 files")
-def test_unreadable_stored_evidence_is_unavailable_not_a_failure(tmp_path: Path) -> None:
+def test_unreadable_stored_evidence_is_unavailable_not_a_failure(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
     """AC4: files this process cannot read are reported, never raised as a 500."""
+    from app.template_analysis import layout_proof_artifacts
+
     artifact_id = "artifact_proof_unreadable_evidence"
     artifact_dir = tmp_path / artifact_id
     _upload_target(tmp_path, artifact_id)
     _create_proof_set(artifact_id)
     proofs_dir = artifact_dir / "layout_proofs"
-    variants_root = proofs_dir / "variants"
-    medium = json.loads(
-        (variants_root / "medium" / "render_result.json").read_text(encoding="utf-8")
-    )
-    # Evidence the status response reads itself.
-    status_evidence = {
-        "medium": proofs_dir / medium["proof_id"] / medium["pdf_filename"],
-        "long": variants_root / "long" / "structural.json",
-    }
-    for variant, path in status_evidence.items():
+    medium = _variant_entry(_proof_status(artifact_id), "medium")
+
+    # The proof PDF bytes are read by the digest helper; the stored records are
+    # read as text. Both fail here the way an unreadable file fails.
+    proof_pdf = proofs_dir / medium["proof_id"] / medium["pdf_filename"]
+    structural = proofs_dir / "variants" / "long" / "structural.json"
+    for variant, path, deny in (
+        ("medium", proof_pdf, _deny_digest_read(proof_pdf)),
+        ("long", structural, _deny_text_read(structural)),
+    ):
         assert path.is_file(), path.name
-        path.chmod(0o000)
-        try:
+        with monkeypatch.context() as denial:
+            denial.setattr(
+                layout_proof_artifacts if variant == "medium" else Path,
+                "file_sha256" if variant == "medium" else "read_text",
+                deny,
+            )
             available, unavailable = _review_state_lists(_proof_status(artifact_id))
-        finally:
-            path.chmod(0o644)
         # The unreadable variant is unavailable with a pathless reason; the rest
         # of the set stays reviewable through the same response.
         assert set(unavailable) == {variant}, (variant, unavailable)
@@ -1616,20 +1620,43 @@ def test_unreadable_stored_evidence_is_unavailable_not_a_failure(tmp_path: Path)
             assert str(tmp_path) not in reason
 
     # An unreadable comparison image is refused by its own route, structured.
-    image = variants_root / "short" / "visual" / "comparison_target_page_001.png"
-    image.chmod(0o000)
-    try:
+    image = proofs_dir / "variants" / "short" / "visual" / "comparison_target_page_001.png"
+    assert image.is_file()
+    with monkeypatch.context() as denial:
+        denial.setattr(
+            layout_proof_artifacts, "file_sha256", _deny_digest_read(image)
+        )
         refused = client.get(
             f"/api/artifacts/{artifact_id}/layout-proofs/variants/short"
             "/comparison/comparison_target_page_001.png"
         )
-    finally:
-        image.chmod(0o644)
     _assert_structured_resource_error(refused, statuses={409})
 
     available, unavailable = _review_state_lists(_proof_status(artifact_id))
     assert available == ["short", "medium", "long"]
     assert unavailable == {}
+
+
+def _deny_digest_read(path: Path):
+    from app.template_analysis.layout_proof_artifacts import file_sha256
+
+    def digest(candidate):
+        if Path(candidate) == path:
+            raise PermissionError(13, "Permission denied", str(candidate))
+        return file_sha256(candidate)
+
+    return digest
+
+
+def _deny_text_read(path: Path):
+    read_text = Path.read_text
+
+    def read(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return read_text(self, *args, **kwargs)
+
+    return read
 
 
 def test_approval_is_refused_while_a_variant_is_unavailable(tmp_path: Path) -> None:
