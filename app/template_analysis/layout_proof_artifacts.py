@@ -155,15 +155,25 @@ def resolve_proof_resource(
     else:
         filename, expected_checksum = result.html_filename, result.html_checksum
     proof_dir = layout_proofs_dir_for(artifact_dir) / result.proof_id
-    path = _contained_file(
-        proof_dir / filename, proof_dir, variant, f"proof {kind.upper()}"
-    )
-    if file_sha256(path) != expected_checksum:
+    label = f"proof {kind.upper()}"
+    path = _contained_file(proof_dir / filename, proof_dir, variant, label)
+    if _file_sha256_or_none(path, variant, label) != expected_checksum:
         raise LayoutProofResourceError(
             "layout_proof_resource_mismatch",
             f"the {variant.value} proof {kind.upper()} changed after it was recorded",
         )
     return path
+
+
+def _file_sha256_or_none(path: Path, variant: LengthVariant, label: str) -> str | None:
+    """The file's digest, or ``None`` when its bytes cannot be read at all."""
+    try:
+        return file_sha256(path)
+    except OSError as exc:
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the {variant.value} {label} cannot be read",
+        ) from exc
 
 
 def resolve_comparison_resource(

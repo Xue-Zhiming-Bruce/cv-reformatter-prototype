@@ -1856,8 +1856,11 @@ def _layout_proof_status(
     target_format = load_saved_target_format(artifact_dir)
     if target_format is not None:
         stored_path = artifact_dir / target_format.stored_filename
-        if stored_path.exists():
-            target_checksum = target_checksum_from_bytes(stored_path.read_bytes())
+        try:
+            if stored_path.exists():
+                target_checksum = target_checksum_from_bytes(stored_path.read_bytes())
+        except OSError:
+            target_checksum = ""
     layout_checksum = ""
     try:
         style_spec = _load_generation_style_spec(artifact_dir)
@@ -1906,6 +1909,8 @@ def _proof_approval_state(
         )
     except (LayoutProofMismatchError, LayoutProofValidationError) as exc:
         return None, True, str(exc)
+    except OSError:
+        return None, True, "the stored approval cannot be read"
     if approval is None:
         return None, False, None
     invalidation = _approval_invalidation(
@@ -1952,31 +1957,58 @@ def _current_proof_id(
         return load_layout_proof_render_result(
             artifact_dir, variant, artifact_id=artifact_id
         ).proof_id
-    except (LayoutProofIncompleteError, LayoutProofValidationError):
+    except (OSError, LayoutProofIncompleteError, LayoutProofValidationError):
         return None
+
+
+#: Any one of these means proofs were created for a variant, readable or not.
+_VARIANT_EVIDENCE_FILENAMES = ("render_result.json", "structural.json", "visual.json")
+
+
+def _has_variant_evidence(artifact_dir: Path, variant: LengthVariant) -> bool:
+    """Whether any stored evidence exists for this variant.
+
+    Presence is judged from every evidence file, not one of them: proofs whose
+    ``render_result.json`` went missing were still created, so they must be
+    reported as unavailable rather than never created.
+    """
+    directory = variant_dir_for(artifact_dir, variant)
+    if any((directory / name).exists() for name in _VARIANT_EVIDENCE_FILENAMES):
+        return True
+    try:
+        return any((directory / "visual").iterdir())
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
 
 
 def _reviewable_variants(
     artifact_id: str, artifact_dir: Path
 ) -> tuple[list[LayoutProofEvidenceSummary], list[LayoutProofUnavailableVariant]]:
-    """Available evidence and variants whose evidence exists but cannot be reviewed.
+    """Available evidence, and variants whose evidence exists but cannot be reviewed.
 
-    A variant with no recorded render result was never created and appears in
-    neither list.
+    Only a variant with no stored evidence at all was never created and appears
+    in neither list. Every other failure (missing or corrupt records, changed
+    bytes, files this process cannot read) is reported as unavailable with a
+    reason, never as created evidence.
     """
     variants: list[LayoutProofEvidenceSummary] = []
     unavailable: list[LayoutProofUnavailableVariant] = []
     for variant in LengthVariant:
-        if not (variant_dir_for(artifact_dir, variant) / "render_result.json").exists():
+        if not _has_variant_evidence(artifact_dir, variant):
             continue
         try:
             variants.append(_reviewable_variant(artifact_id, artifact_dir, variant))
         except LayoutProofResourceError as exc:
-            unavailable.append(
-                LayoutProofUnavailableVariant(
-                    variant=variant.value, reason=str(exc)
-                )
-            )
+            reason = str(exc)
+        except OSError:
+            reason = f"the stored {variant.value} evidence cannot be read"
+        else:
+            continue
+        unavailable.append(
+            LayoutProofUnavailableVariant(variant=variant.value, reason=reason)
+        )
     return variants, unavailable
 
 
@@ -1984,6 +2016,7 @@ def _reviewable_variant(
     artifact_id: str, artifact_dir: Path, variant: LengthVariant
 ) -> LayoutProofEvidenceSummary:
     """One variant's evidence summary, or the reason it cannot be reviewed."""
+    evidence = _load_reviewable_evidence(artifact_dir, variant)
     for kind in ("pdf", "html"):
         resolve_proof_resource(
             artifact_dir=artifact_dir,
@@ -1991,7 +2024,6 @@ def _reviewable_variant(
             variant=variant,
             kind=kind,
         )
-    evidence = _load_reviewable_evidence(artifact_dir, variant)
     return _evidence_summary(artifact_id, artifact_dir, variant, evidence)
 
 
@@ -2012,6 +2044,11 @@ def _load_reviewable_evidence(
             f"the stored {variant.value} validation evidence cannot be read",
         ) from exc
     if evidence is None:
+        if _has_variant_evidence(artifact_dir, variant):
+            raise LayoutProofResourceError(
+                "layout_proof_resource_mismatch",
+                f"the stored {variant.value} evidence is incomplete",
+            )
         raise LayoutProofResourceError(
             "layout_proof_resource_not_found",
             f"no {variant.value} proof is recorded for this artifact",

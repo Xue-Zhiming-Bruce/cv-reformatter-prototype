@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -1456,37 +1457,92 @@ def test_proof_resource_rejections_are_structured_and_pathless(tmp_path: Path) -
     )
 
 
+def _review_state_lists(body: dict) -> tuple[list[str], dict[str, str]]:
+    available = [entry["variant"] for entry in body["variants"]]
+    return available, {
+        item["variant"]: item["reason"] for item in body["unavailable_variants"]
+    }
+
+
 def test_status_separates_unavailable_evidence_from_never_created(tmp_path: Path) -> None:
-    """AC4: available, unavailable-with-reason, and never created stay distinct."""
+    """AC4: available, unavailable-with-reason, and never created stay distinct.
+
+    The three states are separated by the evidence that exists, not by the
+    presence of one record: a variant whose ``render_result.json`` is gone still
+    has created evidence and must be reported unavailable with a reason, while a
+    variant with no evidence file at all was never created and appears in
+    neither list.
+    """
     artifact_id = "artifact_proof_review_states"
     artifact_dir = tmp_path / artifact_id
     _upload_target(tmp_path, artifact_id)
     _create_proof_set(artifact_id)
-    assert [entry["variant"] for entry in _proof_status(artifact_id)["variants"]] == [
-        "short",
-        "medium",
-        "long",
-    ]
+    available, unavailable = _review_state_lists(_proof_status(artifact_id))
+    assert available == ["short", "medium", "long"]
+    assert unavailable == {}
 
     variants_root = artifact_dir / "layout_proofs" / "variants"
     (variants_root / "long" / "render_result.json").unlink()
     (variants_root / "medium" / "structural.json").write_text("{ not json", encoding="utf-8")
+    available, unavailable = _review_state_lists(_proof_status(artifact_id))
+    assert available == ["short"]
+    # Evidence that exists but cannot be read is unavailable, never never-created.
+    assert set(unavailable) == {"medium", "long"}
+    for reason in unavailable.values():
+        assert reason.strip()
+        assert str(tmp_path) not in reason
+        assert "layout_proofs" not in reason
+
+    # No evidence file at all for the long variant: it never counts as created.
+    shutil.rmtree(variants_root / "long")
     body = _proof_status(artifact_id)
-    assert [entry["variant"] for entry in body["variants"]] == ["short"]
-    assert [item["variant"] for item in body["unavailable_variants"]] == ["medium"]
-    reason = body["unavailable_variants"][0]["reason"]
-    assert "medium" in reason and str(tmp_path) not in reason
-    # The never-created variant is in neither list: it never counts as created.
-    listed = {entry["variant"] for entry in body["variants"]} | {
-        item["variant"] for item in body["unavailable_variants"]
-    }
-    assert "long" not in listed
+    available, unavailable = _review_state_lists(body)
+    assert available == ["short"]
+    assert set(unavailable) == {"medium"}
+    assert "long" not in set(available) | set(unavailable)
 
     # Missing comparison evidence makes otherwise readable evidence unavailable.
     (variants_root / "short" / "visual" / "comparison_page_001_diff.png").unlink()
-    body = _proof_status(artifact_id)
-    assert [entry["variant"] for entry in body["variants"]] == []
-    assert [item["variant"] for item in body["unavailable_variants"]] == ["short", "medium"]
+    available, unavailable = _review_state_lists(_proof_status(artifact_id))
+    assert available == []
+    assert set(unavailable) == {"short", "medium"}
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read mode-000 files")
+def test_unreadable_stored_evidence_is_unavailable_not_a_failure(tmp_path: Path) -> None:
+    """AC4: files this process cannot read are reported, never raised as a 500."""
+    artifact_id = "artifact_proof_unreadable_evidence"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    proofs_dir = artifact_dir / "layout_proofs"
+    variants_root = proofs_dir / "variants"
+    medium = json.loads(
+        (variants_root / "medium" / "render_result.json").read_text(encoding="utf-8")
+    )
+    # Evidence the status response reads itself.
+    status_evidence = {
+        "medium": proofs_dir / medium["proof_id"] / medium["pdf_filename"],
+        "long": variants_root / "long" / "structural.json",
+    }
+    for variant, path in status_evidence.items():
+        assert path.is_file(), path.name
+        path.chmod(0o000)
+        try:
+            available, unavailable = _review_state_lists(_proof_status(artifact_id))
+        finally:
+            path.chmod(0o644)
+        # The unreadable variant is unavailable with a pathless reason; the rest
+        # of the set stays reviewable through the same response.
+        assert set(unavailable) == {variant}, (variant, unavailable)
+        assert set(available) == {"short", "medium", "long"} - {variant}
+        for reason in unavailable.values():
+            assert reason.strip()
+            assert str(tmp_path) not in reason
+
+    available, unavailable = _review_state_lists(_proof_status(artifact_id))
+    assert available == ["short", "medium", "long"]
+    assert unavailable == {}
 
 
 def test_status_keeps_contradictory_variant_evidence_out_of_the_proof_set(
