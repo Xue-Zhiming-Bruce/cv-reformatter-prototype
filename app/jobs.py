@@ -7,13 +7,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.generation.artifact_manifest import Digest, FileIdentity
 from app.pipeline.run_models import PresentationLabelApproval
+from app.template_analysis.layout_proof_schemas import LengthVariant
 
 
 JobState = Literal["queued", "running", "succeeded", "failed", "cancelled", "needs_attention"]
 JobOperation = Literal["generate", "create_proofs", "generate_target"]
 JobStage = Literal["queued", "snapshot", "render", "validate", "publish", "review_ready"]
 VariantJobState = Literal["pending", "rendering", "rendered", "validated", "reused", "failed"]
-VariantName = Literal["short", "medium", "long"]
 JobError = Literal["cancelled", "deadline_exceeded", "attempts_exhausted", "inputs_changed",
                    "execution_failed", "worker_exit", "publication_conflict",
                    "provider_outcome_unknown", "budget_exceeded"]
@@ -32,6 +32,11 @@ TARGET_MAX_TOOL_CALLS = 72
 
 class JobModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+def _variant_states(value):
+    """Stored JSON carries variant names; parse them into ``LengthVariant``."""
+    return {LengthVariant(name): state for name, state in value.items()} if value else value
 
 
 class NativeGenerationPayload(JobModel):
@@ -71,7 +76,7 @@ class _TargetPayload(JobModel):
     layout_sha256: Digest
     design_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,100}$")
     presentation_label_catalog_sha256: Digest | None
-    presentation_labels: list[PresentationLabelApproval] = Field(default_factory=list, max_length=8)
+    presentation_label_approval: PresentationLabelApproval | None = None
     renderer_version: str = Field(min_length=1, max_length=100)
     component_source_sha256: dict[str, Digest] = Field(min_length=1, max_length=32)
     timeout_seconds: int = Field(default=TARGET_TIMEOUT_SECONDS, ge=60, le=3600)
@@ -84,9 +89,9 @@ class _TargetPayload(JobModel):
     def frozen_identity_agrees(self):
         if self.variant_timeout_seconds > self.timeout_seconds:
             raise ValueError("A stage deadline cannot exceed the overall job deadline")
-        if any(label.target_sha256 != self.target_sha256
-               or label.catalog_sha256 != self.presentation_label_catalog_sha256
-               for label in self.presentation_labels):
+        approval = self.presentation_label_approval
+        if approval is not None and (approval.target_sha256 != self.target_sha256
+                                     or approval.catalog_sha256 != self.presentation_label_catalog_sha256):
             raise ValueError("Presentation-label approval must cover this exact target and catalog")
         return self
 
@@ -151,12 +156,17 @@ class NativeJobCreate(LocalSyntheticJobCreate):
     blind_profile: bool = False
 
 
-class TargetProofJobCreate(LocalSyntheticJobCreate):
+class TargetJobCreate(LocalSyntheticJobCreate):
+    """A local synthetic uploaded-target request against an existing target."""
+
     design_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,100}$")
+
+
+class TargetProofJobCreate(TargetJobCreate):
     presentation_label_approval: PresentationLabelApproval | None = None
 
 
-class TargetGenerationJobCreate(TargetProofJobCreate):
+class TargetGenerationJobCreate(TargetJobCreate):
     proof_approval_id: str = Field(pattern=r"^approval_[0-9a-f]{16}$")
     blind_profile: bool = False
 
@@ -169,7 +179,7 @@ class JobRecord(JobModel):
     state: JobState
     progress: int = Field(ge=0, le=100)
     stage: JobStage | None = None
-    variants: dict[VariantName, VariantJobState] | None = None
+    variants: dict[LengthVariant, VariantJobState] | None = None
     attempt_count: int = Field(ge=0, le=3)
     cancel_requested: bool
     error_code: JobError | None
@@ -178,6 +188,8 @@ class JobRecord(JobModel):
     created_at: datetime
     updated_at: datetime
     deadline_at: datetime
+
+    _variants = field_validator("variants", mode="before")(_variant_states)
 
 
 class JobProgress(JobModel):
@@ -191,11 +203,13 @@ class JobProgress(JobModel):
 
     schema_version: Literal["job-progress/1"] = "job-progress/1"
     stage: JobStage
-    variants: dict[VariantName, VariantJobState] = Field(default_factory=dict)
+    variants: dict[LengthVariant, VariantJobState] = Field(default_factory=dict)
     provider_call_in_flight: bool = False
     model_requests: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
     error_code: JobError | None = None
+
+    _variants = field_validator("variants", mode="before")(_variant_states)
 
 
 class JobClaim(JobModel):

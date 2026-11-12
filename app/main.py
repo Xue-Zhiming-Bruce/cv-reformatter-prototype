@@ -102,7 +102,7 @@ from app.storage.repository import (
     layout_proof_repository,
     profile_revision_repository,
 )
-from app.jobs import JobRecord, NativeJobCreate
+from app.jobs import JobRecord, NativeJobCreate, TargetGenerationJobCreate, TargetProofJobCreate
 from app.template_analysis.docx_style_analyzer import (
     TargetDocxAnalysisError,
     analyze_target_docx,
@@ -1216,6 +1216,49 @@ def submit_generation_job(artifact_id: str, request: NativeJobCreate) -> JobReco
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code=409, detail={"error_code": "job_inputs_unavailable",
             "message": "The native job inputs could not be frozen."}) from exc
+    return queue.submit(submission)
+
+
+def _target_job_context(artifact_id: str, design_id: str | None):
+    _require_artifact(artifact_id)
+    directory = GENERATED_OUTPUTS_DIR / artifact_id
+    return directory, _layout_proof_context(directory, artifact_id, design_id)
+
+
+@app.post("/api/artifacts/{artifact_id}/layout-proof-jobs", response_model=JobRecord, status_code=202)
+def submit_target_proof_job(artifact_id: str, request: TargetProofJobCreate) -> JobRecord:
+    """Queue uploaded-target proof creation; the request does no render work."""
+    queue = _local_job_queue()
+    directory, (_target_format, layout_spec, target_pdf, target_checksum) = _target_job_context(
+        artifact_id, request.design_id)
+    revision = _require_profile_revision(artifact_dir=directory, artifact_id=artifact_id,
+                                         profile_revision_id=request.profile_revision_id)
+    from app.job_worker import target_proof_submission
+    try:
+        submission = target_proof_submission(directory, revision, request, layout_spec=layout_spec,
+                                             target_pdf=target_pdf, target_checksum=target_checksum)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=409, detail={"error_code": "job_inputs_unavailable",
+            "message": "The uploaded-target proof inputs could not be frozen."}) from exc
+    return queue.submit(submission)
+
+
+@app.post("/api/artifacts/{artifact_id}/target-generation-jobs", response_model=JobRecord, status_code=202)
+def submit_target_generation_job(artifact_id: str, request: TargetGenerationJobCreate) -> JobRecord:
+    """Queue a target-based generation from the approved proof set."""
+    queue = _local_job_queue()
+    directory, (_target_format, layout_spec, target_pdf, target_checksum) = _target_job_context(
+        artifact_id, request.design_id)
+    revision = _require_profile_revision(artifact_dir=directory, artifact_id=artifact_id,
+                                         profile_revision_id=request.profile_revision_id)
+    approval = load_layout_proof_approval(directory, repository=layout_proof_repository(DATABASE_URL))
+    from app.job_worker import target_generation_submission
+    try:
+        submission = target_generation_submission(directory, revision, request, layout_spec=layout_spec,
+            target_pdf=target_pdf, target_checksum=target_checksum, approval=approval)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=409, detail={"error_code": "job_inputs_unavailable",
+            "message": "The target generation inputs could not be frozen."}) from exc
     return queue.submit(submission)
 
 

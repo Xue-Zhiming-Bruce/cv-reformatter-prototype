@@ -529,18 +529,30 @@ def create_proof_variants(
             presentation_label_approval=presentation_label_approval,
         )
     if repository is not None:
-        pending = LayoutProofApproval(
-            approval_id=f"approval_{uuid.uuid4().hex[:16]}",
-            artifact_id=artifact_id,
-            target_checksum=target_checksum,
-            layout_spec_checksum=layout_spec_checksum(layout_spec),
-            renderer_version=active_renderer_version(),
-            state="pending",
-            variants=outcomes,
-        )
+        pending = pending_layout_proof_approval(artifact_id=artifact_id,
+            target_checksum=target_checksum, layout_spec=layout_spec, outcomes=outcomes)
         verify_approval_files(artifact_dir, pending)
         save_layout_proof_approval(artifact_dir, pending, repository=repository)
     return outcomes
+
+
+def pending_layout_proof_approval(
+    *,
+    artifact_id: str,
+    target_checksum: str,
+    layout_spec: TemplateStyleSpec | LayoutTemplateSpec,
+    outcomes: dict[LengthVariant, VariantProofEvidence],
+) -> LayoutProofApproval:
+    """The one unapproved aggregate a complete three-variant proof set produces."""
+    return LayoutProofApproval(
+        approval_id=f"approval_{uuid.uuid4().hex[:16]}",
+        artifact_id=artifact_id,
+        target_checksum=target_checksum,
+        layout_spec_checksum=layout_spec_checksum(layout_spec),
+        renderer_version=active_renderer_version(),
+        state="pending",
+        variants=outcomes,
+    )
 
 
 def reject_layout_proof(
