@@ -123,7 +123,7 @@ def test_postgres_migrations_are_explicit_reversible_and_match_repository(
     cli = subprocess.run([sys.executable, "-B", "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "current"],
         cwd=tmp_path, env={**os.environ, "DATABASE_URL": url, "PYTHONPATH": ""},
         capture_output=True, text=True, timeout=30)
-    assert cli.returncode == 0 and "0007_generation_bundles" in cli.stdout, cli.stderr
+    assert cli.returncode == 0 and "0008_target_job_operations" in cli.stdout, cli.stderr
     with engine.connect() as connection:
         assert compare_metadata(MigrationContext.configure(connection), metadata) == []
     _migrate(engine, "base", downgrade=True)

@@ -1,7 +1,7 @@
 """PostgreSQL workflow repositories; schema changes belong to Alembic."""
 
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import lru_cache
 import hashlib
 import json
@@ -156,6 +156,7 @@ workflow_jobs = Table(
     Column("payload", JSONB, nullable=False),
     Column("state", Text, nullable=False),
     Column("progress", Integer, nullable=False, server_default="0"),
+    Column("progress_detail", JSONB),
     Column("attempt_count", Integer, nullable=False, server_default="0"),
     Column("max_attempts", Integer, nullable=False),
     Column("cancel_requested", Boolean, nullable=False, server_default=text("false")),
@@ -163,6 +164,7 @@ workflow_jobs = Table(
     Column("lease_expires_at", DateTime(timezone=True)),
     Column("error_code", Text),
     Column("result_generation_id", Text),
+    Column("result_proof_approval_id", Text),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
     Column("deadline_at", DateTime(timezone=True), nullable=False),
@@ -170,12 +172,15 @@ workflow_jobs = Table(
         ["candidate_profile_revisions.artifact_id", "candidate_profile_revisions.profile_revision_id"], ondelete="CASCADE"),
     ForeignKeyConstraint(["artifact_id", "result_generation_id"],
         ["generation_versions.artifact_id", "generation_versions.generation_id"]),
+    ForeignKeyConstraint(["artifact_id", "result_proof_approval_id"],
+        ["layout_proof_approvals.artifact_id", "layout_proof_approvals.approval_id"], name="fk_job_result_proof"),
     UniqueConstraint("scope_id", "artifact_id", "operation", "idempotency_key", name="uq_workflow_job_request"),
-    CheckConstraint("scope_id = 'local-synthetic' AND operation = 'generate'", name="ck_job_local_scope"),
+    CheckConstraint("scope_id = 'local-synthetic' AND operation IN ('generate', 'create_proofs', 'generate_target')", name="ck_job_local_scope"),
+    CheckConstraint("progress_detail IS NULL OR jsonb_typeof(progress_detail) = 'object'", name="ck_job_progress_detail"),
     CheckConstraint("state IN ('queued', 'running', 'succeeded', 'failed', 'cancelled', 'needs_attention')", name="ck_job_state"),
     CheckConstraint("progress >= 0 AND progress <= 100 AND max_attempts >= 1 AND max_attempts <= 3 AND attempt_count >= 0 AND attempt_count <= max_attempts", name="ck_job_bounds"),
     CheckConstraint("(state = 'running') = (lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)", name="ck_job_lease"),
-    CheckConstraint("(state = 'succeeded') = (result_generation_id IS NOT NULL) AND (state != 'succeeded' OR progress = 100)", name="ck_job_result"),
+    CheckConstraint("(state = 'succeeded') = (result_generation_id IS NOT NULL OR result_proof_approval_id IS NOT NULL) AND (state != 'succeeded' OR progress = 100)", name="ck_job_result"),
     CheckConstraint("request_sha256 ~ '^[0-9a-f]{64}$' AND jsonb_typeof(payload) = 'object'", name="ck_job_payload"),
 )
 Index("ix_workflow_job_claim", workflow_jobs.c.state, workflow_jobs.c.created_at, workflow_jobs.c.job_id)
@@ -544,16 +549,17 @@ class PostgresLayoutProofRepository:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
 
-    def save(self, approval: LayoutProofApproval) -> None:
+    def save(self, approval: LayoutProofApproval, *, connection: Connection | None = None) -> None:
+        """Write the aggregate; a caller's transaction fences a job publication."""
         body = json.dumps(approval.model_dump(mode="json"), indent=2, ensure_ascii=False, sort_keys=True)
         try:
-            with self.engine.begin() as connection:
-                artifact = connection.execute(select(artifact_sessions.c.artifact_id).where(
+            with (self.engine.begin() if connection is None else nullcontext(connection)) as transaction:
+                artifact = transaction.execute(select(artifact_sessions.c.artifact_id).where(
                     artifact_sessions.c.artifact_id == approval.artifact_id,
                 ).with_for_update()).first()
                 if artifact is None:
                     raise ArtifactStoreConflict("Proof approval requires an existing artifact record.")
-                connection.execute(insert(layout_proof_approvals).values(
+                transaction.execute(insert(layout_proof_approvals).values(
                     artifact_id=approval.artifact_id, approval_id=approval.approval_id,
                     target_sha256=approval.target_checksum, layout_sha256=approval.layout_spec_checksum,
                     renderer_version=approval.renderer_version, state=approval.state,
