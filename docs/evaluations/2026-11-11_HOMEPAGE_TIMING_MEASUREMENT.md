@@ -126,10 +126,13 @@ rather than claimed away:
    builds and suites that had already finished. The window-start load was therefore
    low but not zero, and run 1's 1.583 s cold total is the visible cost of that
    residual.
-2. Unrelated processes were resident but idle: the Docker Desktop VM,
-   `WindowServer` (~40–45 % CPU), `fileproviderd`, three `vite` dev servers from
-   other checkouts, and other Compose projects (`knowledge-assistant-*`
-   including an `lgtm` container at ~10 % CPU, and a second Postgres). A
+2. Unrelated processes were resident throughout, some of them active: the
+   Docker Desktop VM, `WindowServer` (~40–45 % CPU), `fileproviderd`, three
+   `vite` dev servers from other checkouts, and other Compose projects
+   (`knowledge-assistant-*` including an `lgtm` container at ~10 % CPU, and a
+   second Postgres). They were neither started, stopped nor driven by this
+   measurement, but "resident" is not "idle": `WindowServer` alone was using
+   roughly half a core. A
    `docker stats --no-stream` sample showed `api 0.31 %`, `frontend 0.00 %`,
    `postgres 2.73 %` for this stack. None of these were started, stopped or
    reconfigured by this measurement.
