@@ -4,6 +4,8 @@ import { LogoIcon, PencilIcon, FileIcon } from "../components/icons"
 import { Dropzone, isPdfTargetFile } from "../components/Dropzone"
 import { reviewHasChanges } from "../reviewLeave"
 import type {
+  AdditionalSection,
+  AdditionalSectionEntry,
   CandidateProfile,
   FinalAcceptanceResponse,
   GenerateResponse,
@@ -187,6 +189,84 @@ function EditableField({ value, path, edits, onEdit, multiline, className }: Edi
       {effective}
       <PencilIcon className="ef__pencil" size={11} />
     </span>
+  )
+}
+
+type AdditionalSectionEditorProps = {
+  section: AdditionalSection
+  index: number
+  edits: Record<string, string>
+  onEdit: (path: string, value: string) => void
+}
+
+type AdditionalSectionEntryProps = {
+  entry: AdditionalSectionEntry
+  entryBase: string
+  edits: Record<string, string>
+  onEdit: (path: string, value: string) => void
+}
+
+// A title, link or bullet that the source does not have is simply absent: nothing is invented, and
+// the fields that do exist stay editable.
+function AdditionalSectionEntryEditor({ entry, entryBase, edits, onEdit }: AdditionalSectionEntryProps) {
+  const title = edits[`${entryBase}.title`] ?? entry.title
+  return (
+    <div className="rdoc-entry">
+      {title && (
+        <div className="rdoc-entry__top">
+          <span className="rdoc-entry__role">
+            <EditableField value={entry.title} path={`${entryBase}.title`} edits={edits} onEdit={onEdit} />
+          </span>
+        </div>
+      )}
+      {entry.links.map((link, linkIndex) => (
+        <div className="rdoc-entry__location" key={linkIndex}>
+          <EditableField value={link} path={`${entryBase}.links.${linkIndex}`} edits={edits} onEdit={onEdit} />
+        </div>
+      ))}
+      {entry.description.map((bullet, bulletIndex) => (
+        <div className="rdoc-entry__bullet" key={bulletIndex}>
+          <span className="rdoc-bullet-dot" aria-hidden="true">·</span>
+          <span>
+            <EditableField value={bullet} path={`${entryBase}.description.${bulletIndex}`} edits={edits} onEdit={onEdit} />
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// One renderer for every preserved custom section (ADR 0003 schema v2): the source heading, each
+// entry's title, links and description bullets are edited in place, and hide/restore is a
+// disposition edit like any other, so the dirty flag, output invalidation and the revision save
+// all keep working. Controls key off the section's position and source_block_id, never its heading.
+function AdditionalSectionEditor({ section, index, edits, onEdit }: AdditionalSectionEditorProps) {
+  const { t } = useTranslation()
+  const base = `additional_sections.${index}`
+  const hidden = (edits[`${base}.disposition`] ?? section.disposition) === "hide"
+  return (
+    <div className="rdoc-section" data-source-block-id={section.source_block_id}>
+      <div className="rdoc-section__head">
+        <EditableField value={section.source_heading} path={`${base}.source_heading`} edits={edits} onEdit={onEdit} />
+        <button type="button" className="rv-chip rv-chip--neutral"
+          onClick={() => onEdit(`${base}.disposition`, hidden ? "show" : "hide")}>
+          {hidden ? t("review.additionalSectionRestore") : t("review.additionalSectionHide")}
+        </button>
+      </div>
+      {hidden ? (
+        <span className="rv-chip rv-chip--neutral">{t("review.additionalSectionHiddenNote")}</span>
+      ) : (
+        section.entries.map((entry, entryIndex) => (
+          <AdditionalSectionEntryEditor
+            key={entryIndex}
+            entry={entry}
+            entryBase={`${base}.entries.${entryIndex}`}
+            edits={edits}
+            onEdit={onEdit}
+          />
+        ))
+      )}
+    </div>
   )
 }
 
@@ -1359,6 +1439,17 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
                   </div>
                 </div>
               </div>
+
+              {/* Preserved custom sections — headings, entries and hide/restore */}
+              {(profile.additional_sections ?? []).map((section, i) => (
+                <AdditionalSectionEditor
+                  key={section.source_block_id}
+                  section={section}
+                  index={i}
+                  edits={edits}
+                  onEdit={handleEdit}
+                />
+              ))}
 
               {SHOW_CONFIDENCE && null /* per-field confidence highlights rendered here when enabled */}
             </div>
