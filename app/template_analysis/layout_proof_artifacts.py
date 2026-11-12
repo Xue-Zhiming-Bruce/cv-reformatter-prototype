@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 from app.template_analysis.layout_proof_schemas import (
+    LayoutProofApproval,
     LengthVariant,
     LayoutProofRenderResult,
     VariantProofEvidence,
@@ -114,6 +115,30 @@ def _save_comparison_checksums(artifact_dir: str | Path, variant: LengthVariant)
         variant_dir_for(artifact_dir, variant) / COMPARISON_CHECKSUMS_FILENAME,
         {"files": files},
     )
+
+
+def stale_variant_proofs(
+    artifact_dir: str | Path,
+    artifact_id: str,
+    approval: LayoutProofApproval,
+) -> dict[str, str]:
+    """Approved variants whose current stored proof no longer matches the approval.
+
+    ``verify_approval_files`` re-hashes the proof files the approval recorded, so
+    a re-created set leaves those files intact while the artifact's current
+    ``render_result.json`` points at new proofs. Generation must refuse that
+    approval, so the comparison is made here against what resolves now.
+    """
+    stale: dict[str, str] = {}
+    for variant, evidence in approval.variants.items():
+        try:
+            current = _recorded_proof_result(artifact_dir, artifact_id, variant)
+        except LayoutProofResourceError:
+            stale[variant.value] = "cannot be read"
+            continue
+        if current.proof_id != evidence.render_result.proof_id:
+            stale[variant.value] = "was re-created"
+    return stale
 
 
 # -- reviewable proof resources -----------------------------------------------

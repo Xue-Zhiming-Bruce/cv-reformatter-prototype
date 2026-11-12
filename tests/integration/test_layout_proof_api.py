@@ -1761,6 +1761,63 @@ def test_status_reports_an_invalidated_approval_and_recovers_by_reapproval(
     assert reapproved.json()["approval_invalidated"] is False
 
 
+def test_recreated_proofs_block_generation_after_approval(tmp_path: Path) -> None:
+    """AC8: generation refuses an approval whose proof variants were re-created.
+
+    Re-creating the proof set leaves the approved proof files on disk, so
+    re-hashing them still succeeds; the gate must compare the approval with the
+    identities that resolve now.
+    """
+    artifact_id = "artifact_proof_gate_recreated"
+    artifact_dir = tmp_path / artifact_id
+    target_format = _upload_target(tmp_path, artifact_id)
+    version_id = _approve_profile(artifact_id, artifact_dir)
+    _create_and_approve(client, artifact_id, artifact_dir)
+    assert _proof_status(artifact_id)["state"] == "approved"
+
+    # Re-create the set behind the approval's back: new proof ids, same target,
+    # same layout spec, and the approved proof files still hash correctly.
+    _create_proof_set(artifact_id)
+    body = _proof_status(artifact_id)
+    assert body["state"] == "none"
+    assert body["approval_invalidated"] is True
+    assert "re-created" in (body["approval_invalidated_reason"] or "")
+
+    blocked = _generate_with_target(artifact_id, target_format, version_id)
+    assert blocked.status_code == 409, blocked.text
+    detail = blocked.json()["detail"]
+    assert detail["error_code"] == "layout_proof_mismatch"
+    assert "was re-created" in detail["message"]
+    assert "create_layout_proofs" in detail["options"]
+    assert not (artifact_dir / "candidate_profile.pdf").exists()
+
+
+def test_unreadable_approved_variant_evidence_blocks_generation(
+    tmp_path: Path,
+) -> None:
+    """AC8: an approval that cannot be verified against the stored set is refused."""
+    artifact_id = "artifact_proof_gate_unreadable"
+    artifact_dir = tmp_path / artifact_id
+    target_format = _upload_target(tmp_path, artifact_id)
+    version_id = _approve_profile(artifact_id, artifact_dir)
+    _create_and_approve(client, artifact_id, artifact_dir)
+
+    render_result = (
+        artifact_dir / "layout_proofs" / "variants" / "long" / "render_result.json"
+    )
+    recorded = render_result.read_bytes()
+    render_result.write_bytes(b"{ not json")
+    try:
+        blocked = _generate_with_target(artifact_id, target_format, version_id)
+    finally:
+        render_result.write_bytes(recorded)
+    assert blocked.status_code == 409, blocked.text
+    detail = blocked.json()["detail"]
+    assert detail["error_code"] == "layout_proof_mismatch"
+    assert "long cannot be read" in detail["message"]
+    assert not (artifact_dir / "candidate_profile.pdf").exists()
+
+
 def test_unavailable_or_invalidated_proofs_still_block_generation(tmp_path: Path) -> None:
     """AC8: the review surface never turns missing evidence into a passing gate."""
     artifact_id = "artifact_proof_gate_states"
