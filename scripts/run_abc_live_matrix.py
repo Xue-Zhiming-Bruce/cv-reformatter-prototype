@@ -944,6 +944,15 @@ def _run_pair(client: TestClient, source: str, target: str, *, target_evidence: 
             right_label="blind",
         )
     )
+    failures.extend(
+        _surface_drift(
+            generated_pdf_badges,
+            blind_pdf_badges,
+            scope="blind",
+            left_label="ordinary-pdf",
+            right_label="blind-pdf",
+        )
+    )
     failures.extend(_badge_failures(target_badges, generated_html_badges))
     result["fidelity_diagnostics"] = {"issues": failures, "human_review": "pending",
         "note": "Raw target comparisons are content-sensitive diagnostics, not API or product-validation results."}

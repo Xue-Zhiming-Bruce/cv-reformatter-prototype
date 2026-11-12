@@ -744,6 +744,29 @@ def test_matrix_generates_blind_before_ordinary(tmp_path: Path, monkeypatch) -> 
         result["preview_identity"]["pdf_sha256"]
 
 
+def test_matrix_reports_a_drift_that_only_the_blind_pdf_shows(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The blind PDF is compared too: a count that moves only there is named."""
+    ordinary_pdf = build_rounded_chip_target_pdf(
+        tmp_path / "ordinary_18.pdf", chip_count=18, per_row=6)
+    blind_pdf = build_rounded_chip_target_pdf(
+        tmp_path / "blind_17.pdf", chip_count=17, per_row=6)
+
+    result, _, _, _ = _run_matrix_badges(
+        tmp_path, monkeypatch,
+        ordinary=(_badge_group_html([6, 6, 6]), ordinary_pdf),
+        blind=(_badge_group_html([6, 6, 6]), blind_pdf))
+
+    issues = result["fidelity_diagnostics"]["issues"]
+    assert "blind badge count ordinary-pdf=18 blind-pdf=17" in issues
+    # The HTML pair agrees, so only the PDF comparison reports the drift.
+    assert [entry for entry in issues if "blind badge" in entry] == [
+        "blind badge count ordinary-pdf=18 blind-pdf=17",
+        "blind badge items_per_line ordinary-pdf=[6, 6, 6] blind-pdf=[5, 6, 6]",
+    ]
+
+
 def test_matrix_review_projection_keeps_blind_and_ordinary_outputs(
     tmp_path: Path, monkeypatch
 ) -> None:
