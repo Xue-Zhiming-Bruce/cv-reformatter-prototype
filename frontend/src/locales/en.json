@@ -187,6 +187,16 @@
     "uploadedResumeAlt": "Uploaded resume",
     "blindProfileLabel": "Blind profile",
     "blindProfileHint": "Hides identity from client",
+    "disclosureGroupLabel": "Personal information",
+    "disclosureHint": "A hidden value stays in the saved profile and leaves every client-facing output.",
+    "disclosureHidden": "Hidden",
+    "disclosureShown": "Shown",
+    "disclosure": {
+      "full_name": "Name",
+      "email": "Email",
+      "phone": "Phone",
+      "location": "Private address"
+    },
     "addStartDate": "Add start",
     "addEndDate": "Add end",
     "generate": "Generate files",

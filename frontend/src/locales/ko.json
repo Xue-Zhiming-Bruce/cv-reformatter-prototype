@@ -187,6 +187,16 @@
     "uploadedResumeAlt": "업로드한 이력서",
     "blindProfileLabel": "블라인드 프로필",
     "blindProfileHint": "클라이언트에게 신원 정보를 숨깁니다",
+    "disclosureGroupLabel": "개인 정보",
+    "disclosureHint": "숨긴 값은 저장된 프로필에 그대로 남고 클라이언트용 출력에서 제외됩니다.",
+    "disclosureHidden": "숨김",
+    "disclosureShown": "표시",
+    "disclosure": {
+      "full_name": "이름",
+      "email": "이메일",
+      "phone": "전화번호",
+      "location": "개인 주소"
+    },
     "addStartDate": "시작일 추가",
     "addEndDate": "종료일 추가",
     "generate": "파일 생성",

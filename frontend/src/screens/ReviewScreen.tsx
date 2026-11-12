@@ -194,11 +194,26 @@ function joinDefined(values: Array<string | null | undefined>, separator = " –
   return values.filter((v): v is string => Boolean(v?.trim())).join(separator)
 }
 
+// The four personal-information categories the review may hide independently of the blind switch.
+const DISCLOSURE_FIELDS = ["full_name", "email", "phone", "location"] as const
+type DisclosureField = (typeof DISCLOSURE_FIELDS)[number]
+type DisclosureChoices = Record<DisclosureField, boolean>
+
+function disclosureFromProfile(profile: CandidateProfile): DisclosureChoices {
+  return Object.fromEntries(
+    DISCLOSURE_FIELDS.map((field) => [field, profile.client_display_rules[field] === "hide"]),
+  ) as DisclosureChoices
+}
+
 function pdfViewerUrl(url: string): string {
   return `${url}${url.includes("#") ? "&" : "#"}toolbar=0&navpanes=0&view=FitH`
 }
 
-function applyEditsToProfile(profile: CandidateProfile, edits: Record<string, string>): CandidateProfile {
+function applyEditsToProfile(
+  profile: CandidateProfile,
+  edits: Record<string, string>,
+  disclosure: DisclosureChoices,
+): CandidateProfile {
   const copy = structuredClone(profile) as unknown as Record<string, unknown>
   for (const [path, value] of Object.entries(edits)) {
     if (path === "skills") {
@@ -222,6 +237,13 @@ function applyEditsToProfile(profile: CandidateProfile, edits: Record<string, st
       delete rules[parts[0]]
     }
   }
+  // An explicit choice replaces the stored rule so the saved revision carries it.
+  const stored = copy.client_display_rules
+  const rules: Record<string, unknown> = isRecord(stored) ? { ...stored } : {}
+  for (const field of DISCLOSURE_FIELDS) {
+    rules[field] = disclosure[field] ? "hide" : "show"
+  }
+  copy.client_display_rules = rules
   return copy as unknown as CandidateProfile
 }
 
@@ -229,6 +251,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   const { t } = useTranslation()
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [blindProfile, setBlindProfile] = useState(false)
+  const [hiddenFields, setHiddenFields] = useState<DisclosureChoices>(() => disclosureFromProfile(data.profile))
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false)
   const [exportState, setExportState] = useState<"idle" | "generating" | "error">("idle")
   const [dropdownOpen, setDropdownOpen] = useState(false)
@@ -259,6 +282,8 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   const isDocxTarget = effectiveTarget?.input_type === "docx"
   const targetBlocked = isDocxTarget
   const isAccepted = acceptanceState === "accepted" || generation?.client_ready === true
+  const storedDisclosure = disclosureFromProfile(profile)
+  const disclosureChanged = DISCLOSURE_FIELDS.some((field) => hiddenFields[field] !== storedDisclosure[field])
 
   const objectUrl = useMemo(() => URL.createObjectURL(resumeFile), [resumeFile])
   useEffect(() => () => URL.revokeObjectURL(objectUrl), [objectUrl])
@@ -303,7 +328,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   // discard the edits above silently. Deliberately unguarded: browser close/reload (beforeunload is
   // a separate decision) and the preview/HTML links, which open a new tab and unmount nothing.
   function requestLeave(): void {
-    if (reviewHasChanges(edits, blindProfile)) setLeaveConfirmOpen(true)
+    if (reviewHasChanges(edits, blindProfile, disclosureChanged)) setLeaveConfirmOpen(true)
     else onBack()
   }
 
@@ -331,6 +356,13 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
 
   function handleBlindChange(checked: boolean) {
     setBlindProfile(checked)
+    invalidateGeneratedOutput()
+  }
+
+  function handleDisclosureChange(field: DisclosureField, hidden: boolean) {
+    setHiddenFields((prev) => ({ ...prev, [field]: hidden }))
+    editVersionRef.current += 1
+    setProfileDirty(true)
     invalidateGeneratedOutput()
   }
 
@@ -366,7 +398,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
       const res = await fetch(`/api/artifacts/${data.artifact_id}/profiles/revisions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile: applyEditsToProfile(profile, edits) }),
+        body: JSON.stringify({ profile: applyEditsToProfile(profile, edits, hiddenFields) }),
       })
       if (!res.ok) {
         setActionError(await buildApiError(res, t("review.revisionSaveFailed"), retry))
@@ -771,6 +803,24 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
           </span>
         </label>
 
+        <div className="rv-disclosure" role="group" aria-label={t("review.disclosureGroupLabel")}>
+          <span className="rv-disclosure__title">{t("review.disclosureGroupLabel")}</span>
+          {DISCLOSURE_FIELDS.map((field) => (
+            <label className="rv-disclosure__toggle" key={field} title={t("review.disclosureHint")}>
+              <input
+                type="checkbox"
+                className={`rv-disclosure__check rv-disclosure__check--${field}`}
+                checked={hiddenFields[field]}
+                onChange={(e) => handleDisclosureChange(field, e.target.checked)}
+              />
+              <span className="rv-disclosure__label">{t(`review.disclosure.${field}`)}</span>
+              <span className="rv-disclosure__state">
+                {t(hiddenFields[field] ? "review.disclosureHidden" : "review.disclosureShown")}
+              </span>
+            </label>
+          ))}
+        </div>
+
         <button
           type="button"
           className={`rv-preview-btn${previewState === "error" ? " rv-preview-btn--error" : ""}`}
@@ -1068,7 +1118,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
               {/* Header — name + title subheading */}
               <div className={`rdoc-header${blindProfile ? " rdoc-header--blind" : ""}`}>
                 <div className="rdoc-name-row">
-                  {ef("full_name", profile.full_name)}
+                  {hiddenFields.full_name && !blindProfile ? "Candidate A" : ef("full_name", profile.full_name)}
                 </div>
                 {profile.work_experience[0]?.title && (
                   <div className="rdoc-title-row">
@@ -1081,17 +1131,19 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
               <div className="rdoc-section">
                 <div className="rdoc-section__head">{t("review.sectionContact")}</div>
                 <div className="rdoc-additional">
-                  <div className="rdoc-detail-row">
-                    <span className="rdoc-detail-label">Location</span>
-                    {ef("location", profile.location)}
-                  </div>
-                  {!blindProfile && (edits["email"] ?? profile.email) && (
+                  {!hiddenFields.location && (
+                    <div className="rdoc-detail-row">
+                      <span className="rdoc-detail-label">Location</span>
+                      {ef("location", profile.location)}
+                    </div>
+                  )}
+                  {!blindProfile && !hiddenFields.email && (edits["email"] ?? profile.email) && (
                     <div className="rdoc-detail-row">
                       <span className="rdoc-detail-label">Email</span>
                       {ef("email", profile.email)}
                     </div>
                   )}
-                  {!blindProfile && (edits["phone"] ?? profile.phone) && (
+                  {!blindProfile && !hiddenFields.phone && (edits["phone"] ?? profile.phone) && (
                     <div className="rdoc-detail-row">
                       <span className="rdoc-detail-label">Phone</span>
                       {ef("phone", profile.phone)}
