@@ -282,7 +282,25 @@
     "extractionMode": {
       "mock": "모의 추출 — 외부 AI 서비스가 호출되지 않았습니다.",
       "live": "실시간 AI 추출 — 설정된 AI 제공자가 이 이력서에서 정보를 추출했습니다."
-    }
+    },
+    "proofRejectBtn": "증명 반려",
+    "proofRejecting": "반려 중…",
+    "proofInvalidatedLabel": "승인 무효화됨:",
+    "proofPageCount": "페이지: {{count}}",
+    "proofPageCountUnknown": "페이지: 기록 없음",
+    "proofStructuralPassed": "구조 검사 통과",
+    "proofStructuralFailed": "구조 검사 실패: {{count}}",
+    "proofViewPdf": "PDF 보기",
+    "proofDownloadPdf": "PDF 내려받기",
+    "proofViewHtml": "HTML 보기",
+    "proofDownloadHtml": "HTML 내려받기",
+    "proofImageTarget": "대상",
+    "proofImageGenerated": "생성",
+    "proofImageDifference": "차이",
+    "proofImageReport": "시각 비교 보고서",
+    "proofDownloadNamed": "{{name}} 내려받기",
+    "proofUnavailableLabel": "사용할 수 없는 증거",
+    "proofUnavailableCount": "{{count}}개 변형을 검토할 수 없습니다"
   },
   "auth": {
     "loginTitle": "다시 오셨군요",

@@ -7,6 +7,7 @@ import type {
   CandidateProfile,
   FinalAcceptanceResponse,
   GenerateResponse,
+  LayoutProofComparisonImage,
   LayoutProofStatus,
   ProcessResponse,
   ProfileRevisionResponse,
@@ -358,7 +359,13 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
       : proofCreated || proofState === "pending"
         ? t("review.proofNextPending")
         : t("review.proofNextNone")
-  const canApproveProofs = proofCreated && proofState !== "approved" && proofBusy === "idle"
+  const unavailableVariants = proofStatus?.unavailable_variants ?? []
+  // Approval and rejection stay disabled while any variant is unavailable: a decision
+  // must cover a complete, reviewable set, not the readable part of one.
+  const canDecideProofs = proofCreated
+    && unavailableVariants.length === 0
+    && proofState !== "approved"
+    && proofBusy === "idle"
 
   async function persistRevision(retry: RetryTarget): Promise<string | null> {
     const editVersionAtSave = editVersionRef.current
@@ -561,20 +568,42 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
     }
   }
 
-  async function handleApproveProofs() {
-    if (!isPdfTarget || proofBusy !== "idle") return
+  // The decision echoes the identities that are on screen, so the backend rejects it
+  // (409 layout_proof_mismatch) instead of approving or rejecting a set nobody reviewed.
+  function proofIdentity(status: LayoutProofStatus) {
+    return {
+      expected_target_checksum: status.target_checksum,
+      expected_layout_spec_checksum: status.layout_spec_checksum,
+      expected_variant_proof_ids: Object.fromEntries(status.variants.map((variant) => [variant.variant, variant.proof_id])),
+      expected_variant_pdf_checksums: Object.fromEntries(status.variants.map((variant) => [variant.variant, variant.pdf_checksum])),
+    }
+  }
+
+  function comparisonLabel(image: LayoutProofComparisonImage): string {
+    if (image.kind === "report") return t("review.proofImageReport")
+    const kind = image.kind === "target"
+      ? t("review.proofImageTarget")
+      : image.kind === "generated"
+        ? t("review.proofImageGenerated")
+        : t("review.proofImageDifference")
+    return `${kind} ${image.page_number}`
+  }
+
+  async function decideProofs(state: "approved" | "rejected") {
+    if (!isPdfTarget || proofBusy !== "idle" || !proofStatus) return
     setActionError(null)
     setProofBusy("approving")
+    const identity = proofIdentity(proofStatus)
     try {
       const res = await fetch(`/api/artifacts/${data.artifact_id}/layout-proofs/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state: "approved", reviewer_id: "local-reviewer" }),
+        body: JSON.stringify({ state, reviewer_id: "local-reviewer", ...identity }),
       })
       if (!res.ok) {
         const error = await buildApiError(res, t("review.proofApproveFailed"), "approveProofs")
         if (error.options.length === 0) {
-          error.options = ["create_layout_proofs"]
+          error.options = ["create_layout_proofs", "approve_layout_proofs"]
         }
         setActionError(error)
         return
@@ -708,7 +737,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         await handleCreateProofs()
         return
       case "approve_layout_proofs":
-        await handleApproveProofs()
+        await decideProofs("approved")
         return
       case "reanalyze_target":
       case "upload_new_target":
@@ -724,7 +753,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
       case "preview": void handleFinalPreview(error.forceSaveRetry); break
       case "export": void doExport(error.forceSaveRetry); break
       case "createProofs": void handleCreateProofs(); break
-      case "approveProofs": void handleApproveProofs(); break
+      case "approveProofs": void decideProofs("approved"); break
     }
   }
 
@@ -897,20 +926,95 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
               {replaceTypeError && <p className="upload-type-error" role="alert">{replaceTypeError}</p>}
             </>
           ) : (
-            <div className="rv-proof">
-              <span className="rv-target-panel__next">{proofNextStep}</span>
-              <div className="rv-proof__actions">
-                <button type="button" className="rv-proof__btn" onClick={() => void handleCreateProofs()} disabled={proofBusy !== "idle"}>
-                  {proofBusy === "creating" ? t("review.proofCreating") : t("review.proofCreateBtn")}
-                </button>
-                <button type="button" className="rv-proof__btn" onClick={() => void loadProofStatus()} disabled={proofBusy !== "idle"}>
-                  {proofBusy === "loading" ? t("review.proofLoading") : t("review.proofRefreshBtn")}
-                </button>
-                <button type="button" className="rv-proof__btn" onClick={() => void handleApproveProofs()} disabled={!canApproveProofs}>
-                  {proofBusy === "approving" ? t("review.proofApproving") : t("review.proofApproveBtn")}
-                </button>
+            <>
+              <div className="rv-proof">
+                <span className="rv-target-panel__next">{proofNextStep}</span>
+                {proofStatus?.approval_invalidated && proofStatus.approval_invalidated_reason && (
+                  <span className="rv-target-panel__warning">
+                    {t("review.proofInvalidatedLabel")} {proofStatus.approval_invalidated_reason}
+                  </span>
+                )}
+                {unavailableVariants.length > 0 && (
+                  <span className="rv-target-panel__warning">
+                    {t("review.proofUnavailableCount", { count: unavailableVariants.length })}
+                  </span>
+                )}
+                <div className="rv-proof__actions">
+                  <button type="button" className="rv-proof__btn" onClick={() => void handleCreateProofs()} disabled={proofBusy !== "idle"}>
+                    {proofBusy === "creating" ? t("review.proofCreating") : t("review.proofCreateBtn")}
+                  </button>
+                  <button type="button" className="rv-proof__btn" onClick={() => void loadProofStatus()} disabled={proofBusy !== "idle"}>
+                    {proofBusy === "loading" ? t("review.proofLoading") : t("review.proofRefreshBtn")}
+                  </button>
+                  <button type="button" className="rv-proof__btn" onClick={() => void decideProofs("approved")} disabled={!canDecideProofs}>
+                    {proofBusy === "approving" ? t("review.proofApproving") : t("review.proofApproveBtn")}
+                  </button>
+                  <button type="button" className="rv-proof__btn" onClick={() => void decideProofs("rejected")} disabled={!canDecideProofs}>
+                    {proofBusy === "approving" ? t("review.proofRejecting") : t("review.proofRejectBtn")}
+                  </button>
+                </div>
               </div>
-            </div>
+              {proofStatus && (proofStatus.variants.length > 0 || unavailableVariants.length > 0) && (
+                <ul className="rv-proofs">
+                  {proofStatus.variants.map((variant) => (
+                    <li className="rv-proof-row" key={variant.proof_id}>
+                      <div className="rv-proof-row__head">
+                        <span className="rv-proof-row__variant">{variant.variant}</span>
+                        <span className="rv-proof-row__meta">
+                          {variant.page_count === null
+                            ? t("review.proofPageCountUnknown")
+                            : t("review.proofPageCount", { count: variant.page_count })}
+                        </span>
+                        <span className={variant.structural_passed ? "rv-proof-row__flag rv-proof-row__flag--ok" : "rv-proof-row__flag rv-proof-row__flag--fail"}>
+                          {variant.structural_passed
+                            ? t("review.proofStructuralPassed")
+                            : t("review.proofStructuralFailed", { count: variant.structural_error_count })}
+                        </span>
+                        <span className="rv-proof-row__actions">
+                          <a className="rv-proof-row__link" href={variant.proof_pdf_url} target="_blank" rel="noreferrer">
+                            {t("review.proofViewPdf")}
+                          </a>
+                          <a className="rv-proof-row__link" href={variant.proof_pdf_url} download={variant.pdf_filename}>
+                            {t("review.proofDownloadPdf")}
+                          </a>
+                          <a className="rv-proof-row__link" href={variant.proof_html_url} target="_blank" rel="noreferrer">
+                            {t("review.proofViewHtml")}
+                          </a>
+                          <a className="rv-proof-row__link" href={variant.proof_html_url} download={variant.html_filename}>
+                            {t("review.proofDownloadHtml")}
+                          </a>
+                        </span>
+                      </div>
+                      <div className="rv-proof-row__evidence">
+                        {variant.comparison_images.map((image) => (
+                          <span className="rv-proof-row__image" key={image.filename}>
+                            <a className="rv-proof-row__link" href={image.url} target="_blank" rel="noreferrer">
+                              {comparisonLabel(image)}
+                            </a>
+                            <a
+                              className="rv-proof-row__link rv-proof-row__save"
+                              href={image.url}
+                              download={image.filename}
+                              aria-label={t("review.proofDownloadNamed", { name: comparisonLabel(image) })}
+                            >
+                              ↓
+                            </a>
+                          </span>
+                        ))}
+                      </div>
+                    </li>
+                  ))}
+                  {unavailableVariants.map((item) => (
+                    <li className="rv-proof-row rv-proof-row--unavailable" key={`unavailable-${item.variant}`}>
+                      <span className="rv-proof-row__variant">{item.variant}</span>
+                      <span className="rv-proof-row__meta">
+                        {t("review.proofUnavailableLabel")}: {item.reason}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
           )}
           {effectiveTarget.unsupported_features.length > 0 && (
             <p className="rv-target-panel__warning">

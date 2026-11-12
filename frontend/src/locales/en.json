@@ -282,7 +282,25 @@
     "extractionMode": {
       "mock": "Mock extraction — no external AI service was called.",
       "live": "Live AI extraction — a configured AI provider extracted this resume."
-    }
+    },
+    "proofRejectBtn": "Reject proofs",
+    "proofRejecting": "Rejecting…",
+    "proofInvalidatedLabel": "Approval invalidated:",
+    "proofPageCount": "pages: {{count}}",
+    "proofPageCountUnknown": "pages: not recorded",
+    "proofStructuralPassed": "structural checks passed",
+    "proofStructuralFailed": "structural checks failed: {{count}}",
+    "proofViewPdf": "View PDF",
+    "proofDownloadPdf": "Download PDF",
+    "proofViewHtml": "View HTML",
+    "proofDownloadHtml": "Download HTML",
+    "proofImageTarget": "target",
+    "proofImageGenerated": "generated",
+    "proofImageDifference": "difference",
+    "proofImageReport": "visual report",
+    "proofDownloadNamed": "Download {{name}}",
+    "proofUnavailableLabel": "Unavailable evidence",
+    "proofUnavailableCount": "{{count}} variant(s) cannot be reviewed"
   },
   "auth": {
     "loginTitle": "Welcome back",
