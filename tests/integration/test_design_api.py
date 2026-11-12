@@ -304,6 +304,13 @@ def test_design_lifecycle_request_inspect_approve_generate(
     create_and_approve_proofs(
         client, artifact_id, artifact_dir, design_id=design_id
     )
+    # AC6: a design-scoped approval is compared against the design's own
+    # compiled spec, so the untouched design is approved, not invalidated.
+    proof_status = client.get(f"/api/artifacts/{artifact_id}/layout-proofs")
+    assert proof_status.status_code == 200, proof_status.text
+    assert proof_status.json()["state"] == "approved"
+    assert proof_status.json()["approval_invalidated"] is False
+    assert proof_status.json()["approval_invalidated_reason"] is None
 
     generate = client.post(
         "/api/generate",

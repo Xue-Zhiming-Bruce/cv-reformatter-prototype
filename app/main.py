@@ -1962,11 +1962,15 @@ def _approved_scope_layout_checksum(
     if not approval.design_id:
         return layout_checksum
     try:
-        return layout_spec_checksum(
-            _load_design_layout_spec(artifact_dir, approval.design_id)
+        _target, style_spec, _pdf, _checksum = resolve_layout_proof_context(
+            artifact_dir,
+            approval.artifact_id,
+            approval.design_id,
+            repository=design_repository(DATABASE_URL),
         )
-    except (HTTPException, TargetAnalysisArtifactError, OSError, ValueError):
+    except (LayoutProofContextError, HTTPException, OSError, ValueError):
         return approval.layout_spec_checksum
+    return layout_spec_checksum(style_spec)
 
 
 def _current_proof_id(
