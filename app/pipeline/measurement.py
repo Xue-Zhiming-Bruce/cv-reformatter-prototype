@@ -48,7 +48,10 @@ def measurement_reuse_key(
 
     Request ids are excluded because the per-lane counter is not unique per
     render: the 2026-11-12 recording measured one promoted PDF twice under
-    `measure-la-001` and `measure-la-003` (`trace_0028` / `trace_0036`)."""
+    `measure-la-001` and `measure-la-003` (`trace_0028` / `trace_0036`). Those two
+    requests carry DIFFERENT intents, so they are not the same key and nothing is
+    reused for them — including `intent` is what makes this guard correct and it
+    is also why the recorded pair is not an instance of the waste it prevents."""
     return hashlib.sha256(json.dumps({
         "method": method,
         "metric": request.metric,

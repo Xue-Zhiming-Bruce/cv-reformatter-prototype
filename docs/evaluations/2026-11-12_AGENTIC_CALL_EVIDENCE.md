@@ -1,7 +1,9 @@
-# Agentic call evidence and the one measured reduction (issue #39)
+# Agentic call evidence and the one reuse guard (issue #39)
 
 Status: `Evaluation evidence` — analysis of the recorded 2026-11-12 agentic run,
-plus the one reduction implemented on top of it.
+plus the one reuse guard implemented on top of it, whose measured effect on that
+recording is **zero** (the recording contains no repeat the guard accepts; see
+sections 3 and 6).
 
 Last reviewed: November 12, 2026.
 
@@ -142,13 +144,23 @@ Two filings in the issue do not reproduce and are corrected here:
   'unsupported'`. `summary.unbound_measurements` is 0 on all three proofs because
   that counter tracks a different condition, so neither figure is a
   `not_measurable` count by itself.
-- Redundant re-execution: of the seven label-geometry executions, **one** is a
-  re-execution of an identical measurement on unchanged bytes — the short proof's
+- Redundant re-execution: **the recording contains none that an identity safe for
+  both header metrics would accept.** The closest case is the short proof: its
   round-2 finding (`trace_0036`, request `measure-la-003`) re-ran the metric on
-  the same promoted `render_2.pdf` (`5223286d…`) that had already been measured
-  in `trace_0028` (`measure-la-001`). Both recorded `target 0.0 / current 0.0 /
-  delta 0.0`. The other six executions had a genuine reason to run (first
-  measurement on a new render, or a new page/round with no prior result).
+  the same promoted `render_2.pdf` (`5223286d…`) already measured in `trace_0028`
+  (`measure-la-001`), on the same page and region with the same state and plan,
+  and both recorded `target 0.0 / current 0.0 / delta 0.0`. But the two requests
+  carry **different intents** — "measure whether generated contact field labels
+  are present in the header contact row" versus "…labels (e.g., 'Email:',
+  'Phone:') are present…". Equalising only `intent` makes the shipped keys
+  identical (`9774b638…` for both); leaving the recorded intents makes them
+  differ (`813c5372…` / `bf16ea89…`). The medium pair (`trace_0016` 88.05 pt →
+  `trace_0035` 0.0 pt) and the long pair (`trace_0024` 125.482 pt → `trace_0046`
+  0.0 pt) re-run the *same* request on **different current PDF bytes** — the
+  metric is deterministic, so differing deltas can only come from differing
+  inputs — and the accepted-region recheck passes `allow_reuse=False` regardless.
+  The reviewer's presentation facts call the metric directly, without the lane
+  memo. Net: **0 reuses, 0 ms** on the recorded baseline.
 
 Wall time in the tables is the local span of one agent-message **record** (last
 response timestamp minus earliest request part), summed per stage; it includes
@@ -170,12 +182,23 @@ gates, shell). Provider-side time stays unknown.
 > confirmed execution buys no new evidence, so it can be served from the earlier
 > result instead of being re-executed.
 
-Records that support it: `trace_0028_measurement.json` and
-`trace_0036_measurement.json` (same method `header_contact_label_geometry/1`,
-same page 1, same region, same two PDF byte identities, identical result). The
-two records carry *different* request ids (`measure-la-001`, `measure-la-003`),
-which is why the reuse identity is a content hash and not a request id: the
-per-lane counter is not unique per render. Evidence that it is safe: the
+Records: **this recording does not contain one.** `trace_0028_measurement.json`
+and `trace_0036_measurement.json` come closest — same method
+`header_contact_label_geometry/1`, same page 1, same region, same two PDF byte
+identities, identical result — but their requests carry different `intent`
+values (section 3), so the guard as shipped refuses them and serves nothing.
+Substantively the pair is a repeat *for that metric*, which does not read
+`intent`; the key still hashes it because `header_vertical_rule_geometry/2` does
+read it and one identity covers both. Recovering that recorded instance would
+need a per-metric input set (drop `intent` for the label metric only), a further
+change with its own safety argument that this issue does not make. H1 therefore
+stays a hypothesis with **no supporting record in the baseline** and an effect of
+0 ms; sections 6 and 12 state that instead of claiming a saving.
+
+The two records carry *different* request ids (`measure-la-001`,
+`measure-la-003`), which is why the reuse identity is a content hash and not a
+request id: the per-lane counter is not unique per render. Evidence that it is
+safe: the
 measurement reads only the two final PDFs, the declared layout state, the
 compiled render plan, and the request parameters — it holds no clock, no
 randomness, and no provider call (`app/pipeline/measurement.py`).
@@ -187,7 +210,7 @@ the investigator's page-region inspections. The recorded output-sha256
 reconciliation and the verbosity concern are tracked separately (issues #37 and
 #38); no claim in this document depends on either.
 
-## 5. The change (AC3)
+## 5. The change (the AC3 candidate)
 
 `app/pipeline/measurement.py` gains `measurement_reuse_key(...)`: the sha256
 identity of one deterministic header-geometry measurement. It covers **every
@@ -221,25 +244,39 @@ recording shows what was served rather than silently omitting the call.
 Every other measurement path (`role_gap`, `unsupported`) is untouched and still
 executes and spends its tool budget as before.
 
-## 6. Before / after on the recorded input
+**Measured effect on the recorded baseline: none.** No request pair in the
+2026-11-12 set satisfies this identity, so the guard serves nothing there. The
+change is a correctness guard — it closes a fail-open path in which an
+unmeasurable request could be answered with a passing `confirmed` delta 0.0 — and
+a price limit: it makes a key-identical repeat (~180 ms of local work) nearly
+free if one ever occurs. It is not a runtime improvement measured against the
+recorded baseline, which is what AC3 asks for (section 12).
 
-Replay of the short proof's duplicated measurement, no provider call, both PDFs
-the recorded bytes (`ca06d0a9…` target, `5223286d…` current), state from
-`c2_layout_state.json`, plan from `render_2_plan.json`, 15 iterations on the same
-bytes:
+## 6. Micro-benchmark: the price of one key-identical repeat (absent from this recording)
 
-| Path | Median | Range |
+The 2026-11-12 recording contains no pair this identity accepts (section 3), so
+the shipped guard fires **zero times** on it: the change's measured effect on the
+recorded baseline is **0 reuses, 0 ms**. What can be priced is what one repeat
+*would* cost. Same-intent repeat of the short proof's label-geometry measurement
+on the recorded bytes — `ca06d0a9…` target, `5223286d…` current, state from
+`c2_layout_state.json`, plan from `render_2_plan.json` — 15 iterations:
+
+| Path | Median over 3 runs of the snippet below | Per-iteration range |
 | --- | --- | --- |
-| before: compute the key, re-execute the identical measurement | 178.8 ms | 158–233 ms (execution alone 178.6 ms) |
-| after: compute the key, serve the confirmed prior result | 0.669 ms | ≤ 0.891 ms |
+| key + re-execute that measurement | 177.4 / 181.7 / 195.9 ms | 158–233 ms (execution alone ≈ 177 ms of it) |
+| key + serve the confirmed prior result | 0.63 / 0.68 / 0.72 ms | ≤ 0.89 ms |
 
-Both rows include the reuse-key computation (0.228 ms median: two file hashes,
-the state and plan dumps, the request fields), because the shipped call site
-computes it on every measurement either way. The corrected key is stricter than
-the first version — it now covers `intent`, the layout state, the render plan and
-the name text — so it costs slightly more than the 0.405 ms that version measured,
-and still removes ~178 ms of local work per redundant measurement. Earlier
-figures (205.1 / 0.405 ms) were taken before the key covered those inputs.
+Both rows time the reuse-key computation (~0.23 ms: two file hashes, the state and
+plan dumps, the request fields), because the shipped call site computes it on
+every measurement either way — which is the only composition the snippet below
+measures. The three runs are independent executions on one machine, not a
+distribution: the local cost of this fixture drifts by roughly 10 %.
+
+Earlier figures (205.1 / 0.405 ms) came from the version of the key that still
+omitted `intent`, the state, the plan and the name text, and from a snippet that
+timed the key in only one row; both are superseded. This is a micro-benchmark on
+one synthetic same-intent repeat: it prices the guard, it does not measure a
+saving on the baseline.
 
 The served result is value-identical to the executed one
 (`MeasurementResult` minus `request_id`) and its evidence is byte-identical to
@@ -279,12 +316,14 @@ memo = {}
 for run in range(15):
     req = request(f"measure-la-{run:03d}")
     t0 = time.perf_counter()
+    k = key(req)  # timed in BOTH rows: the shipped call site always computes it
     fresh = _measure_header_contact_label_geometry(req, target_pdf=TARGET, current_pdf=CURRENT,
         state=state, plan=plan, current_name_text="SYNTHETIC_CANDIDATE_NAME")
     executed.append(time.perf_counter() - t0)
-    memo[key(req)] = fresh
+    memo[k] = fresh
     t0 = time.perf_counter()
-    served = service._e5_reuse_measurement(memo, trace, key(req), req.request_id,
+    k = key(req)
+    served = service._e5_reuse_measurement(memo, trace, k, req.request_id,
         "measure_header_contact_label_geometry")
     reused.append(time.perf_counter() - t0)
     assert served.model_dump(exclude={"request_id"}) == fresh.model_dump(exclude={"request_id"})
@@ -292,8 +331,11 @@ print(statistics.median(executed) * 1000, statistics.median(reused) * 1000)
 ```
 
 What this change does **not** reduce: model requests (28 unchanged), tokens
-(179,596 unchanged), review coverage, and the number of rounds. It removes local
-deterministic work only. The recorded long proof still spends one agent-level
+(179,596 unchanged), review coverage, and the number of rounds — and on this
+recording it reduces no local work either, for the reason in section 3. It can
+only remove local deterministic work for a repeat that is identical in intent,
+state, plan, name text and both PDF bytes. The recorded long proof still spends
+one agent-level
 re-ask and all three proofs still spend their investigator loops; those are
 outside H1.
 
@@ -359,7 +401,7 @@ Mode declaration, stage by stage:
 | Attribution investigator | `live` | `replay` — **not rerun** |
 | Visual reviewer | `live` | `replay` — **not rerun** |
 | Template compilation, HTML/PDF render, structural checks | `replay` of the recorded plan and PDFs | `replay` — **not rerun** |
-| Deterministic header-geometry measurement | `replay` on the recorded PDFs, state and plan (178.8 ms median, key included) | `replay` plus the changed reuse path (0.669 ms median, key included) |
+| Deterministic header-geometry measurement | `replay` on the recorded PDFs, state and plan: executed each time, 7 label-geometry executions total | `replay` through the changed path: **0 reuses**, because no recorded request pair shares a key; a key-identical repeat costs ~0.7 ms instead of ~180 ms (section 6, micro-benchmark) |
 
 Only the deterministic measurement stage was re-executed here, on the recorded
 bytes. No stage produced a new provider request.
@@ -405,11 +447,15 @@ bytes and therefore every identity above). No parity, no winner, no savings
 percentage: metrics cannot establish arrangement preferences, which stay with
 #10/#13.
 
-Effect separation: this change saves local deterministic wall time only (~178 ms
-per redundant measurement). It adds no request and no token, and it neither
-includes nor claims #37's template-reuse onboarding savings or #38's job-recovery
-duplicate suppression. The cost this change leaves untouched is the cost above:
-28 requests, 171,022 input, 8,574 output.
+Effect separation: on the recorded baseline this change removes **0 ms** — no
+recorded request pair satisfies the reuse identity (section 3), so nothing is
+served. Its value is a correctness guard (an unmeasurable request can no longer be
+answered with a passing `confirmed` delta 0.0) plus a price limit on a key-identical
+repeat: ~180 ms → ~0.7 ms, micro-benchmarked on one synthetic repeat (section 6),
+not a claimed saving. It adds no request and no token, and it neither includes nor
+claims #37's template-reuse onboarding savings or #38's job-recovery duplicate
+suppression. The cost this change leaves untouched is the cost above: 28 requests,
+171,022 input, 8,574 output, 244.3 s of recorded agent-record wall time.
 
 Owner-recognizable artifacts for a review-tab check (read-only, main checkout):
 
@@ -445,7 +491,9 @@ data/generated_outputs/qa_20261112_computer_use/pdf_target_run/layout_proofs/app
 
 The tests use the suite's own deterministic fixture rather than the untracked
 2026-11-12 artifacts so they run on any checkout; the recorded-input equivalence
-is the replay in section 6.
+is the replay in section 6. They matter more here than they would for a measured
+win: the recorded baseline never reaches the reuse branch, so these tests — not a
+recording — are what keeps the guard from regressing into an unsafe shortcut.
 
 Do not weaken these to "the call did not happen": the observable contract is that
 a confirmed measurement's *value* is unchanged and a non-identical request still
@@ -461,3 +509,28 @@ tool. No provider was contacted for this work: no corpus authorization or
 provider opt-in was exercised and no live proof run was made, so every number
 here comes from a saved recording or from re-executing a deterministic local
 function on saved bytes.
+
+## 12. AC3 status on this side: not satisfied as worded
+
+AC3 asks for "a justified runtime improvement measured against the recorded
+baseline". The only runtime change here is a correctness guard, and against the
+recorded baseline it removes 0 ms, because the recording contains no repeat its
+identity accepts (section 3). The guard is not deleted to manufacture a smaller
+claim: without it an unmeasurable request could be answered with a passing
+`confirmed` delta 0.0 whenever a prior confirmed result existed on otherwise
+matching inputs, which is a fail-open risk. It is also the cheapest of the three
+possible states of this code — no reuse at all, an unsafe reuse, a safe reuse —
+and only the third is shippable.
+
+So AC3 cannot be satisfied by this change as the issue words it. Options for the
+owner, none of which this lane chooses unilaterally:
+
+1. re-specify AC3 as "a justified reduction *capability* with its measured effect
+   on the recorded baseline stated honestly" — for this change that is 0 reuses /
+   0 ms on the recording, with a 0.7 ms price for a repeat;
+2. supply a dataset or recording that contains a key-identical repeat, so a saving
+   can be measured against it;
+3. name a different optimization to measure against this recording — the
+   candidates section 4 rules out (reviewer static-fact re-send, round compaction,
+   investigator inspections) all require new prompt bytes or new provider calls,
+   so they would need their own issue and an owner-authorized live run.

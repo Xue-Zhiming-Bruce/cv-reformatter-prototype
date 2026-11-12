@@ -1260,8 +1260,9 @@ class _E5LaneState:
     findings: list[DefectFinding] = field(default_factory=list)
     measurement_results: list[MeasurementResult] = field(default_factory=list)
     # measurement_reuse_key -> the CONFIRMED deterministic header-geometry result
-    # already taken on those exact inputs; the 2026-11-12 recording re-ran the
-    # same label-geometry measurement twice on one promoted PDF.
+    # already taken on those exact inputs. The 2026-11-12 recording re-ran the
+    # label-geometry metric twice on one promoted PDF but with different intents,
+    # so it misses this memo: the guard is a correctness measure, not a measured win.
     measurement_reuse: dict[str, MeasurementResult] = field(default_factory=dict)
     attributions: list[AttributionRecord] = field(default_factory=list)
     repair_attempts: list[dict[str, Any]] = field(default_factory=list)
