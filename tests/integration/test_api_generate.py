@@ -1188,3 +1188,211 @@ def test_replayed_target_urls_belong_to_current_artifact(tmp_path: Path, monkeyp
     response = client.post("/api/artifacts/artifact_replayed_target/layout-proofs", json={})
     assert response.status_code == 200, response.text
     assert {v["variant"] for v in response.json()["variants"]} == {"short", "medium", "long"}
+
+
+def _custom_section_profile() -> CandidateProfile:
+    return CandidateProfile(
+        full_name="Synthetic Section Candidate",
+        email="sections@example.test",
+        professional_summary="Builds document tooling.",
+        skills=["Python"],
+        additional_sections=[
+            {
+                "section_type": "projects",
+                "source_heading": "Projects",
+                "source_block_id": "block_projects",
+                "entries": [
+                    {
+                        "title": "Resume Builder",
+                        "links": ["https://sections.test/resume"],
+                        "description": ["Built the renderer."],
+                        "source_block_ids": ["block_projects"],
+                    },
+                    {
+                        "title": None,
+                        "links": ["https://sections.test/link-only"],
+                        "description": [],
+                        "source_block_ids": ["block_projects"],
+                    },
+                ],
+            },
+            {
+                "section_type": "awards",
+                "source_heading": "Achievements",
+                "source_block_id": "block_achievements",
+                "entries": [
+                    {
+                        "title": "Hackathon winner",
+                        "links": [],
+                        "description": ["Won the internal hackathon."],
+                        "source_block_ids": ["block_achievements"],
+                    }
+                ],
+            },
+        ],
+    )
+
+
+def _custom_section_artifact(
+    directory: Path, profile: CandidateProfile,
+) -> None:
+    """Write the preserved source evidence the review screen's saves are checked against."""
+    from app.extraction.candidate_document_analyzer import (
+        CandidateSourceBlock,
+        NormalizedCandidateDocument,
+    )
+
+    directory.mkdir()
+    (directory / "candidate_profile.json").write_text(
+        json.dumps(profile.model_dump(mode="json")), encoding="utf-8"
+    )
+    (directory / "raw_extracted_text.txt").write_text(
+        "Synthetic Section Candidate\nPROJECTS\nResume Builder\nACHIEVEMENTS\nHackathon winner",
+        encoding="utf-8",
+    )
+    document = NormalizedCandidateDocument(
+        source_text_sha256="0" * 64,
+        blocks=[
+            CandidateSourceBlock(
+                block_id="block_projects", order=1, classification="custom",
+                source_heading="Projects", normalized_heading="projects",
+                items=["Resume Builder", "Old Portfolio"],
+                raw_text="PROJECTS\nResume Builder\nhttps://sections.test/link-only",
+                source_line_start=2, source_line_end=4, confidence=0.9,
+            ),
+            CandidateSourceBlock(
+                block_id="block_achievements", order=2,
+                classification="recognized_optional",
+                source_heading="Achievements", normalized_heading="achievements",
+                optional_section_type="awards", items=["Hackathon winner"],
+                raw_text="ACHIEVEMENTS\nHackathon winner",
+                source_line_start=5, source_line_end=6, confidence=0.9,
+            ),
+        ],
+    )
+    (directory / "normalized_candidate_document.json").write_text(
+        document.model_dump_json(), encoding="utf-8"
+    )
+
+
+def _generated_text(directory: Path) -> tuple[str, str]:
+    import pdfplumber
+
+    html = (directory / "candidate_profile.html").read_text(encoding="utf-8")
+    with pdfplumber.open(directory / "candidate_profile.pdf") as document:
+        pdf = "\n".join(page.extract_text() or "" for page in document.pages)
+    return html, pdf
+
+
+def test_revision_route_persists_additional_section_edits_and_dispositions(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    """The review screen's section edits and hide/restore decisions are saved and rendered."""
+    from app.extraction.candidate_document_analyzer import (
+        NormalizedCandidateDocument,
+        build_source_coverage_ledger,
+    )
+    from app.extraction.candidate_schema import AdditionalSection
+    from app.profile_approval import load_current_approved_profile, load_profile_revision
+
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    artifact_id = "artifact_custom_sections"
+    directory = tmp_path / artifact_id
+    profile = _custom_section_profile()
+    _custom_section_artifact(directory, profile)
+    loaded = profile.additional_sections
+    revisions = f"/api/artifacts/{artifact_id}/profiles/revisions"
+
+    # A save with no edits returns the loaded sections unchanged (AC6).
+    untouched = client.post(revisions, json={"profile": profile.model_dump(mode="json")})
+    assert untouched.status_code == 200, untouched.text
+    same = load_profile_revision(directory, untouched.json()["profile_revision_id"])
+    assert same is not None and same.profile.additional_sections == loaded
+
+    # The review screen's own request shape: heading, title, link, bullet and disposition edits.
+    edited = profile.model_dump(mode="json")
+    projects = edited["additional_sections"][0]
+    projects["source_heading"] = "Portfolio Projects"
+    projects["entries"][0]["title"] = "Resume Builder 2"
+    projects["entries"][0]["links"] = ["https://sections.test/resume-builder"]
+    projects["entries"][0]["description"] = ["Built the renderer with tests."]
+    edited["additional_sections"][1]["disposition"] = "hide"
+    saved = client.post(revisions, json={"profile": edited})
+    assert saved.status_code == 200, saved.text
+    revision_id = saved.json()["profile_revision_id"]
+    stored = load_profile_revision(directory, revision_id)
+    assert stored is not None
+    sections = stored.profile.additional_sections
+    assert sections[0].source_heading == "Portfolio Projects"
+    assert sections[0].entries[0].title == "Resume Builder 2"
+    assert sections[0].entries[0].links == ["https://sections.test/resume-builder"]
+    assert sections[0].entries[0].description == ["Built the renderer with tests."]
+    # Source evidence, identity, ordering and untouched entries survive the save.
+    assert sections[0].source_block_id == "block_projects"
+    assert sections[0].entries[0].source_block_ids == ["block_projects"]
+    assert sections[0].entries[1] == loaded[0].entries[1]
+    assert [section.source_block_id for section in sections] == ["block_projects", "block_achievements"]
+    # A hide keeps the whole section and its evidence; nothing is deleted to hide it.
+    assert sections[1].disposition.value == "hide"
+    assert sections[1].entries == loaded[1].entries
+    assert sections[1].source_block_id == "block_achievements"
+
+    generated = client.post("/api/generate", json={
+        "artifact_id": artifact_id, "profile_revision_id": revision_id,
+    })
+    assert generated.status_code == 200, generated.text
+    html, pdf = _generated_text(directory)
+    for corrected in ("Portfolio Projects", "Resume Builder 2", "built the renderer with tests"):
+        assert corrected.lower() in html.lower(), corrected
+        assert corrected.lower() in pdf.lower(), corrected
+    for hidden in ("Achievements", "Hackathon winner"):
+        assert hidden not in html and hidden not in pdf, hidden
+    ledger = build_source_coverage_ledger(
+        stored.profile,
+        NormalizedCandidateDocument.model_validate_json(
+            (directory / "normalized_candidate_document.json").read_text(encoding="utf-8")
+        ),
+    )
+    statuses = {record.block_id: record.status for record in ledger.records}
+    assert statuses == {"block_projects": "mapped", "block_achievements": "explicitly_omitted"}
+    assert ledger.approvable
+
+    # Restoring the section puts the same entries back into the next generated output.
+    restored = stored.profile.model_copy(deep=True)
+    restored.additional_sections[1] = AdditionalSection.model_validate({
+        **restored.additional_sections[1].model_dump(), "disposition": "show",
+    })
+    restored_save = client.post(revisions, json={"profile": restored.model_dump(mode="json")})
+    assert restored_save.status_code == 200, restored_save.text
+    restored_output = client.post("/api/generate", json={
+        "artifact_id": artifact_id,
+        "profile_revision_id": restored_save.json()["profile_revision_id"],
+    })
+    assert restored_output.status_code == 200, restored_output.text
+    html, pdf = _generated_text(directory)
+    for shown in ("Achievements", "Hackathon winner", "Won the internal hackathon"):
+        assert shown.lower() in html.lower(), shown
+        assert shown.lower() in pdf.lower(), shown
+
+    # AC9: an entry whose title, links and description are all blank is rejected, and the rejected
+    # request leaves the previous revision current.
+    current_before = load_current_approved_profile(directory)
+    blanked = profile.model_dump(mode="json")
+    blanked["additional_sections"][0]["entries"][0] = {
+        "title": None, "links": [], "description": [],
+        "source_block_ids": ["block_projects"],
+    }
+    rejected = client.post(revisions, json={"profile": blanked})
+    assert rejected.status_code == 422, rejected.text
+    current_after = load_current_approved_profile(directory)
+    assert current_after is not None and current_before is not None
+    assert current_after.profile_version_id == current_before.profile_version_id
+
+    # AC10: the editor changes nothing about the gate — a section still awaiting review blocks the
+    # save with the existing 409, so no approvable profile is invented by editing.
+    pending = profile.model_dump(mode="json")
+    pending["additional_sections"][0]["review_state"] = "pending_review"
+    blocked = client.post(revisions, json={"profile": pending})
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"]["error_code"] == "source_content_unaccounted"
+    assert blocked.json()["detail"]["pending_review_sections"][0]["source_block_id"] == "block_projects"
