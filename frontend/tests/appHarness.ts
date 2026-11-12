@@ -67,7 +67,7 @@ export async function launchApp(
     if (options.localStorage) await pinLocalStorage(page, options.localStorage)
     // Registered first because Playwright runs the last matching route first, so /api keeps its own.
     await isolateToBaseUrl(page, baseUrl, external)
-    await stubApi(page, stubs, calls, unstubbed)
+    await stubApi(page, stubs, baseUrl, calls, unstubbed, external)
     await page.goto(baseUrl)
     return { page, calls, close: () => closeApp(page, browser, vite, baseUrl, unstubbed, external) }
   } catch (error) {
@@ -102,25 +102,37 @@ async function pinLocalStorage(page: Page, values: Record<string, string>): Prom
 
 // A request for another origin (font, CDN, telemetry added later) is aborted and named by close(),
 // the same loud failure an unstubbed /api/* path gets, instead of silently reaching the network.
+// Both handlers call this first: Playwright runs the most recently added route first, so an
+// off-origin */api/* URL would otherwise reach the stub handler and never reach the catch-all.
+async function abortIfOffOrigin(
+  route: Route,
+  baseUrl: string,
+  external: string[],
+): Promise<boolean> {
+  const url = route.request().url()
+  if (new URL(url).origin === baseUrl) return false
+  external.push(url)
+  await route.abort("blockedbyclient")
+  return true
+}
+
 async function isolateToBaseUrl(page: Page, baseUrl: string, external: string[]): Promise<void> {
   await page.route("**/*", async (route) => {
-    const url = route.request().url()
-    if (new URL(url).origin === baseUrl) {
-      await route.fallback()
-      return
-    }
-    external.push(url)
-    await route.abort("blockedbyclient")
+    if (await abortIfOffOrigin(route, baseUrl, external)) return
+    await route.fallback()
   })
 }
 
 async function stubApi(
   page: Page,
   stubs: Record<string, ApiStub>,
+  baseUrl: string,
   calls: string[],
   unstubbed: string[],
+  external: string[],
 ): Promise<void> {
   await page.route("**/api/**", async (route) => {
+    if (await abortIfOffOrigin(route, baseUrl, external)) return
     const pathname = new URL(route.request().url()).pathname
     const label = `${route.request().method()} ${pathname}`
     calls.push(label)
