@@ -14,7 +14,8 @@ step is PDF export (``make_proof_pdf_exporter``). No network, no credential.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import cast
 from pathlib import Path
 
 import httpx
@@ -118,30 +119,48 @@ def _measure_one(
 ) -> DocxCorpusMeasurement:
     """Drive one corpus file through the real process -> audit -> generate path."""
     sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    # The record is updated stage by stage, so a later stage raising keeps what
+    # earlier stages already measured instead of reporting zeros.
+    measured = DocxCorpusMeasurement(
+        path=path,
+        sha256=sha256,
+        process_status=None,
+        audit_status="not_run",
+        source_line_count=0,
+        matched_line_count=0,
+        missing_line_count=0,
+        invented_line_count=0,
+        generate_status=None,
+        generate_error_code=None,
+        pdf_sha256=None,
+    )
     try:
         with path.open("rb") as resume_file:
             response = client.post(
                 "/api/process",
                 files={"file": (path.name, resume_file, DOCX_MIME_TYPE)},
             )
+        measured = replace(
+            measured,
+            process_status=response.status_code,
+            generate_error_code=_error_code(response),
+        )
         if response.status_code != 200:
-            return DocxCorpusMeasurement(
-                path=path,
-                sha256=sha256,
-                process_status=response.status_code,
-                audit_status="not_run",
-                source_line_count=0,
-                matched_line_count=0,
-                missing_line_count=0,
-                invented_line_count=0,
-                generate_status=None,
-                generate_error_code=_error_code(response),
-                pdf_sha256=None,
-            )
+            return measured
         processed = response.json()
         artifact_dir = outputs_dir / processed["artifact_id"]
         audit = SegmentationCoverageAudit.model_validate_json(
             (artifact_dir / "segmentation_audit.json").read_text(encoding="utf-8")
+        )
+        measured = replace(
+            measured,
+            audit_status=audit.status,
+            source_line_count=audit.source_line_count,
+            matched_line_count=audit.matched_line_count,
+            missing_line_count=sum(item.count for item in audit.missing_lines),
+            invented_line_count=sum(
+                item.count for item in audit.invented_or_altered_lines
+            ),
         )
         # No target_format: the built-in template path, no target analysis.
         generated = client.post(
@@ -151,17 +170,8 @@ def _measure_one(
                 "profile_revision_id": processed["profile_revision_id"],
             },
         )
-        return DocxCorpusMeasurement(
-            path=path,
-            sha256=sha256,
-            process_status=response.status_code,
-            audit_status=audit.status,
-            source_line_count=audit.source_line_count,
-            matched_line_count=audit.matched_line_count,
-            missing_line_count=sum(item.count for item in audit.missing_lines),
-            invented_line_count=sum(
-                item.count for item in audit.invented_or_altered_lines
-            ),
+        measured = replace(
+            measured,
             generate_status=generated.status_code,
             generate_error_code=_error_code(generated),
             pdf_sha256=(
@@ -170,21 +180,9 @@ def _measure_one(
                 else None
             ),
         )
+        return measured
     except Exception as exc:  # one bad document must not hide the other 49
-        return DocxCorpusMeasurement(
-            path=path,
-            sha256=sha256,
-            process_status=None,
-            audit_status="not_run",
-            source_line_count=0,
-            matched_line_count=0,
-            missing_line_count=0,
-            invented_line_count=0,
-            generate_status=None,
-            generate_error_code=None,
-            pdf_sha256=None,
-            unhandled_error=type(exc).__name__,
-        )
+        return replace(measured, unhandled_error=type(exc).__name__)
 
 
 def _error_code(response: httpx.Response) -> str | None:
@@ -227,3 +225,42 @@ def _format_aggregate(measurements: list[DocxCorpusMeasurement]) -> str:
         f" source_lines={source_lines} matched_lines={matched_lines}"
         f" coverage={coverage:.4f}"
     )
+
+
+def test_a_generation_raise_keeps_the_stages_already_measured(tmp_path: Path) -> None:
+    """A late failure must not erase the stages that already succeeded."""
+    outputs_dir = tmp_path / "outputs"
+    artifact_dir = outputs_dir / "artifact-under-test"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "segmentation_audit.json").write_text(
+        SegmentationCoverageAudit(
+            status="passed",
+            source_line_count=21,
+            output_line_count=21,
+            matched_line_count=21,
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    docx_path = tmp_path / "it_cv_1.docx"
+    docx_path.write_bytes(b"not read: the client is stubbed")
+
+    class _ProcessedThenRaisingClient:
+        def post(self, url: str, **_: object) -> httpx.Response:
+            if url == "/api/process":
+                return httpx.Response(
+                    200,
+                    json={"artifact_id": "artifact-under-test", "profile_revision_id": "rev"},
+                    request=httpx.Request("POST", url),
+                )
+            raise RuntimeError("generation exploded")
+
+    measurement = _measure_one(
+        docx_path, cast(TestClient, _ProcessedThenRaisingClient()), outputs_dir
+    )
+
+    assert measurement.unhandled_error == "RuntimeError"
+    assert measurement.process_status == 200
+    assert measurement.audit_status == "passed"
+    assert measurement.source_line_count == 21
+    assert measurement.matched_line_count == 21
+    assert measurement.generate_status is None
