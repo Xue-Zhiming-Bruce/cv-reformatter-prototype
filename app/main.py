@@ -1211,6 +1211,7 @@ def approve_layout_proofs(
                 reviewer_note=body.reviewer_note,
                 presentation_label_catalog_sha256=body.catalog_sha256,
                 repository=layout_proof_repository(DATABASE_URL),
+                design_id=body.design_id,
             )
         else:
             reject_layout_proof(
@@ -1222,6 +1223,7 @@ def approve_layout_proofs(
                 reviewer_id=body.reviewer_id,
                 reviewer_note=body.reviewer_note,
                 repository=layout_proof_repository(DATABASE_URL),
+                design_id=body.design_id,
             )
     except LayoutProofIncompleteError as exc:
         raise HTTPException(
@@ -1920,9 +1922,13 @@ def _proof_approval_state(
         target_checksum=target_checksum,
         layout_checksum=layout_checksum,
     )
-    if invalidation is not None:
-        return None, True, invalidation
-    return approval, False, None
+    if invalidation is None:
+        return approval, False, None
+    # A rejection grants nothing, so evidence moving on cannot invalidate it
+    # away: the recorded refusal stays visible (and approval stays blocked).
+    if approval.state == "rejected":
+        return approval, True, invalidation
+    return None, True, invalidation
 
 
 def _approval_invalidation(
@@ -1936,7 +1942,8 @@ def _approval_invalidation(
     """Why the stored approval no longer covers what resolves on disk, if it does not."""
     if target_checksum and approval.target_checksum != target_checksum:
         return "the target changed after this proof set was approved"
-    if layout_checksum and approval.layout_spec_checksum != layout_checksum:
+    current = _approved_scope_layout_checksum(artifact_dir, approval, layout_checksum)
+    if layout_checksum and current and approval.layout_spec_checksum != current:
         return "the layout spec changed after this proof set was approved"
     recreated = sorted(
         variant.value
@@ -1947,6 +1954,26 @@ def _approval_invalidation(
     if not recreated:
         return None
     return "the proof set was re-created after this approval: " + ", ".join(recreated)
+
+
+def _approved_scope_layout_checksum(
+    artifact_dir: Path, approval: LayoutProofApproval, layout_checksum: str
+) -> str:
+    """The current checksum of the spec this approval was made against.
+
+    Design-driven proofs are approved against the design's compiled spec, not
+    the generation spec, so the two must not be compared to each other. A scope
+    that no longer resolves reports the recorded checksum: unverifiable is not
+    the same as changed.
+    """
+    if not approval.design_id:
+        return layout_checksum
+    try:
+        return layout_spec_checksum(
+            _load_design_layout_spec(artifact_dir, approval.design_id)
+        )
+    except (HTTPException, TargetAnalysisArtifactError, OSError, ValueError):
+        return approval.layout_spec_checksum
 
 
 def _current_proof_id(
