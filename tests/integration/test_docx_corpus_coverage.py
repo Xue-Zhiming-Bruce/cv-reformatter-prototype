@@ -140,11 +140,8 @@ def _measure_one(
                 "/api/process",
                 files={"file": (path.name, resume_file, DOCX_MIME_TYPE)},
             )
-        measured = replace(
-            measured,
-            process_status=response.status_code,
-            generate_error_code=_error_code(response),
-        )
+        measured = replace(measured, process_status=response.status_code)
+        measured = replace(measured, generate_error_code=_error_code(response))
         if response.status_code != 200:
             return measured
         processed = response.json()
@@ -170,9 +167,9 @@ def _measure_one(
                 "profile_revision_id": processed["profile_revision_id"],
             },
         )
+        measured = replace(measured, generate_status=generated.status_code)
         measured = replace(
             measured,
-            generate_status=generated.status_code,
             generate_error_code=_error_code(generated),
             pdf_sha256=(
                 generated.json().get("pdf_sha256")
@@ -186,7 +183,11 @@ def _measure_one(
 
 
 def _error_code(response: httpx.Response) -> str | None:
-    detail = response.json().get("detail")
+    """The structured code when the body has one; a non-JSON body has none."""
+    try:
+        detail = response.json().get("detail")
+    except ValueError:
+        return None
     return detail.get("error_code") if isinstance(detail, dict) else None
 
 
@@ -264,3 +265,24 @@ def test_a_generation_raise_keeps_the_stages_already_measured(tmp_path: Path) ->
     assert measurement.source_line_count == 21
     assert measurement.matched_line_count == 21
     assert measurement.generate_status is None
+
+
+def test_a_non_json_error_body_keeps_the_measured_status(tmp_path: Path) -> None:
+    """A plain-text 500 still records process=500; parsing its body must not raise."""
+    docx_path = tmp_path / "it_cv_1.docx"
+    docx_path.write_bytes(b"not read: the client is stubbed")
+
+    class _PlainTextErrorClient:
+        def post(self, url: str, **_: object) -> httpx.Response:
+            return httpx.Response(
+                500, text="upstream exploded", request=httpx.Request("POST", url)
+            )
+
+    measurement = _measure_one(
+        docx_path, cast(TestClient, _PlainTextErrorClient()), tmp_path / "outputs"
+    )
+
+    assert measurement.unhandled_error is None
+    assert measurement.process_status == 500
+    assert measurement.generate_error_code is None
+    assert measurement.audit_status == "not_run"
