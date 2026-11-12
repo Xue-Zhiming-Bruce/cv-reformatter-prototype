@@ -39,6 +39,7 @@ export const sampleReview: ProcessResponse = {
     notice_period: null,
     work_authorization: "Completed military service",
     interview_availability: null,
+    additional_sections: [],
     missing_fields: [
       { field_name: "salary_expectation", label: "Salary expectation", reason: "Not clearly present in the source resume." },
       { field_name: "notice_period", label: "Notice period", reason: "Not clearly present in the source resume." },

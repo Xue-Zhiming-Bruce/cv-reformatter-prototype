@@ -29,6 +29,29 @@ export interface Certification {
   date: string | null
 }
 
+// Mirrors app/extraction/candidate_schema.py (ADR 0003 schema v2) field for field.
+export type SectionType = "projects" | "awards" | "publications" | "volunteering" | "interests" | "other"
+
+export type SourceSectionDisposition = "show" | "hide"
+
+export type SectionReviewState = "reviewed" | "pending_review"
+
+export interface AdditionalSectionEntry {
+  title: string | null
+  links: string[]
+  description: string[]
+  source_block_ids: string[]
+}
+
+export interface AdditionalSection {
+  section_type: SectionType
+  source_heading: string
+  entries: AdditionalSectionEntry[]
+  source_block_id: string
+  disposition: SourceSectionDisposition
+  review_state: SectionReviewState
+}
+
 export interface MissingField {
   field_name: string
   label: string
@@ -54,6 +77,7 @@ export interface CandidateProfile {
   notice_period: string | null
   work_authorization: string | null
   interview_availability: string | null
+  additional_sections: AdditionalSection[]
   missing_fields: MissingField[]
   client_display_rules: Record<string, DisplayRule>
 }
