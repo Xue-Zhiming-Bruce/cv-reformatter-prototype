@@ -826,6 +826,7 @@ def recompute_variant_evidence(
     target_checksum: str,
     layout_spec: TemplateStyleSpec | LayoutTemplateSpec,
     target_pdf: str | Path,
+    require_current_scope: bool = True,
 ) -> VariantProofEvidence:
     """Recompute one variant's evidence from the authoritative render result
     and the actual proof files only.
@@ -837,25 +838,31 @@ def recompute_variant_evidence(
     visual comparison against the current target, and returns the freshly
     computed evidence. The caller decides whether a failed structural result
     blocks (approval) or is merely recorded (rejection).
+
+    ``require_current_scope=False`` lets a decision about a set whose target or
+    layout spec moved on still be recorded: the proof bytes are still verified
+    against the render result, and the evidence keeps the scope it was rendered
+    with (which the caller records on the decision).
     """
     result = load_layout_proof_render_result(
         artifact_dir, variant, artifact_id=artifact_id
     )
     require_current_renderer(result.renderer_version)
-    if result.target_checksum != target_checksum:
-        raise LayoutProofMismatchError(
-            f"{variant.value}: evidence target checksum does not match"
-        )
     layout_checksum = layout_spec_checksum(layout_spec)
-    if result.layout_spec_checksum != layout_checksum:
-        raise LayoutProofMismatchError(
-            f"{variant.value}: evidence layout spec checksum does not match"
-        )
-    if result.context_checksum != canonical_context_checksum(variant):
-        raise LayoutProofMismatchError(
-            f"{variant.value}: evidence synthetic-context checksum does not match "
-            "the canonical context"
-        )
+    if require_current_scope:
+        if result.target_checksum != target_checksum:
+            raise LayoutProofMismatchError(
+                f"{variant.value}: evidence target checksum does not match"
+            )
+        if result.layout_spec_checksum != layout_checksum:
+            raise LayoutProofMismatchError(
+                f"{variant.value}: evidence layout spec checksum does not match"
+            )
+        if result.context_checksum != canonical_context_checksum(variant):
+            raise LayoutProofMismatchError(
+                f"{variant.value}: evidence synthetic-context checksum does not match "
+                "the canonical context"
+            )
     proof_dir = layout_proofs_dir_for(artifact_dir) / result.proof_id
     html_path = proof_dir / result.html_filename
     pdf_path = proof_dir / result.pdf_filename

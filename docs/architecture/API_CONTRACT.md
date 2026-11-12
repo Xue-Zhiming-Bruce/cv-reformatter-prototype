@@ -719,8 +719,13 @@ resource changes no approval and no acceptance state.
 `expected_variant_proof_ids`, `expected_variant_pdf_checksums`). Any supplied
 identity that no longer resolves on disk rejects the decision with 409
 `layout_proof_mismatch`; the backend never approves or rejects a set the
-reviewer did not see, and a decision stays refused while any variant is
-unavailable or the stored set is invalidated.
+reviewer did not see. Approval stays refused while any variant is unavailable,
+an identity is incomplete, or the stored set is invalidated (changed target,
+changed layout spec, re-created proofs). A rejection is not a grant: the
+reviewer can still refuse the set they were shown once the target or layout spec
+moved on, and the recorded rejection keeps the scope the set was rendered with
+rather than the current one, so it remains visible as `state: "rejected"` with
+`approval_invalidated: true`.
 
 Generation from an uploaded target consults the same identities, not only the
 approval record: `require_layout_proof_approval` compares the approved

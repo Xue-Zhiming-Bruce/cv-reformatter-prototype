@@ -1815,6 +1815,49 @@ def test_status_reports_an_invalidated_approval_and_recovers_by_reapproval(
     assert reapproved.json()["approval_invalidated"] is False
 
 
+def test_a_stale_set_can_be_rejected_but_not_approved(tmp_path: Path) -> None:
+    """AC6: approval is refused once the layout spec moved on, refusal is not.
+
+    A reviewer must still be able to say "no" to the set they were shown: the
+    rejection is recorded against the scope the set was rendered with, while the
+    same set cannot be approved.
+    """
+    artifact_id = "artifact_proof_stale_reject"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_and_approve(client, artifact_id, artifact_dir)
+
+    spec_path = artifact_dir / LAYOUT_SPEC_FILENAME
+    spec = load_layout_template_spec(spec_path)
+    spec_path.write_text(
+        spec.model_copy(
+            update={"template_name": f"{spec.template_name} revised"}
+        ).model_dump_json()
+    )
+    body = _proof_status(artifact_id)
+    assert body["state"] == "none"
+    assert body["approval_invalidated"] is True
+    assert "layout spec changed" in (body["approval_invalidated_reason"] or "")
+
+    rejected = client.post(
+        f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+        json={"state": "rejected", "reviewer_id": "reviewer-stale"},
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["state"] == "rejected"
+    body = _proof_status(artifact_id)
+    assert body["state"] == "rejected"
+    assert body["approval_invalidated"] is True
+
+    approved = client.post(
+        f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+        json={"state": "approved", "reviewer_id": "reviewer-stale"},
+    )
+    assert approved.status_code == 409, approved.text
+    assert approved.json()["detail"]["error_code"] == "layout_proof_mismatch"
+    assert _proof_status(artifact_id)["state"] == "rejected"
+
+
 def test_recreated_proofs_block_generation_after_approval(tmp_path: Path) -> None:
     """AC8: generation refuses an approval whose proof variants were re-created.
 

@@ -482,25 +482,27 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         : t("review.proofNextNone")
   const unavailableVariants = proofStatus?.unavailable_variants ?? []
   // A decision must cover the whole set the reviewer was shown: every variant available,
-  // no unavailable evidence, a complete identity for each variant, and no invalidated
-  // approval. The readable part of a set is never decided on its own.
+  // no unavailable evidence, and a complete identity for each variant. The readable part
+  // of a set is never decided on its own. Approval additionally needs a set that still
+  // matches what is on disk; refusing a stale set stays possible.
   const proofVariantsPresent = PROOF_VARIANTS.every((name) =>
     (proofStatus?.variants ?? []).some((variant) => variant.variant === name))
   const proofIdentitiesComplete = Boolean(proofStatus?.target_checksum && proofStatus?.layout_spec_checksum)
     && (proofStatus?.variants ?? []).every((variant) => variant.proof_id.length > 0 && variant.pdf_checksum.length > 0)
-  const canDecideProofs = Boolean(proofStatus)
+  const proofSetReviewable = Boolean(proofStatus)
     && proofVariantsPresent
     && (proofStatus?.variants.length ?? 0) === PROOF_VARIANTS.length
     && unavailableVariants.length === 0
     && proofIdentitiesComplete
-    && !proofStatus?.approval_invalidated
     && proofState !== "approved"
     && proofBusy === "idle"
+  const canApproveProofs = proofSetReviewable && !proofStatus?.approval_invalidated
+  const canRejectProofs = proofSetReviewable
   const proofDecisionBlocked = Boolean(proofStatus)
     && proofState !== "approved"
     && unavailableVariants.length === 0
     && !proofStatus?.approval_invalidated
-    && !canDecideProofs
+    && !canApproveProofs
 
   async function persistRevision(retry: RetryTarget): Promise<string | null> {
     const editVersionAtSave = editVersionRef.current
@@ -744,7 +746,8 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   }
 
   async function decideProofs(state: "approved" | "rejected") {
-    if (!isPdfTarget || !canDecideProofs || !proofStatus) return
+    const decidable = state === "approved" ? canApproveProofs : canRejectProofs
+    if (!isPdfTarget || !decidable || !proofStatus) return
     setActionError(null)
     setProofBusy("approving")
     const identity = proofIdentity(proofStatus)
@@ -1127,10 +1130,10 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
                   <button type="button" className="rv-proof__btn" onClick={() => void loadProofStatus()} disabled={proofBusy !== "idle"}>
                     {proofBusy === "loading" ? t("review.proofLoading") : t("review.proofRefreshBtn")}
                   </button>
-                  <button type="button" className="rv-proof__btn" onClick={() => void decideProofs("approved")} disabled={!canDecideProofs}>
+                  <button type="button" className="rv-proof__btn" onClick={() => void decideProofs("approved")} disabled={!canApproveProofs}>
                     {proofBusy === "approving" ? t("review.proofApproving") : t("review.proofApproveBtn")}
                   </button>
-                  <button type="button" className="rv-proof__btn" onClick={() => void decideProofs("rejected")} disabled={!canDecideProofs}>
+                  <button type="button" className="rv-proof__btn" onClick={() => void decideProofs("rejected")} disabled={!canRejectProofs}>
                     {proofBusy === "approving" ? t("review.proofRejecting") : t("review.proofRejectBtn")}
                   </button>
                 </div>

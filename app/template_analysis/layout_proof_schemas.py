@@ -345,6 +345,10 @@ class LayoutProofApproval(LayoutProofModel):
     approved_at: str | None = None
     reviewer_id: str | None = None
     reviewer_note: str | None = None
+    # The design the set was rendered for, when the decision was made through a
+    # design scope: the status must compare it against that same spec, not the
+    # generation spec. Appended and defaulted so stored approvals stay readable.
+    design_id: str | None = None
 
     @model_validator(mode="after")
     def _all_required_variants_present(self) -> "LayoutProofApproval":

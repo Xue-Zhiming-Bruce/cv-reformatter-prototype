@@ -262,13 +262,15 @@ def _recompute_and_record(
     layout_spec: TemplateStyleSpec | LayoutTemplateSpec,
     target_pdf: str | Path,
     require_passing: bool,
+    require_current_scope: bool = True,
 ) -> dict[LengthVariant, VariantProofEvidence]:
     """Recompute every variant's evidence from the actual proof files and
     atomically replace the stored diagnostic evidence.
 
     ``require_passing`` is the lifecycle's policy difference between the two
     outcomes: a failed structural result blocks approval, while a rejection
-    records the same evidence either way.
+    records the same evidence either way. ``require_current_scope`` lets a
+    rejection still be recorded once the target or layout spec moved on.
     """
     recomputed: dict[LengthVariant, VariantProofEvidence] = {}
     for variant in LengthVariant:
@@ -279,6 +281,7 @@ def _recompute_and_record(
             target_checksum=target_checksum,
             layout_spec=layout_spec,
             target_pdf=target_pdf,
+            require_current_scope=require_current_scope,
         )
         if require_passing and not evidence.structural.passed:
             raise LayoutProofValidationError(
@@ -301,6 +304,7 @@ def approve_layout_proof(
     reviewer_note: str | None = None,
     presentation_label_catalog_sha256: str | None = None,
     repository: LayoutProofRepository | None = None,
+    design_id: str | None = None,
 ) -> LayoutProofApproval:
     """Approve a complete three-variant proof set by recomputing evidence.
 
@@ -342,6 +346,7 @@ def approve_layout_proof(
         approved_at=_now_iso(),
         reviewer_id=reviewer_id,
         reviewer_note=reviewer_note,
+        design_id=design_id,
     )
     verify_approval_files(artifact_dir, approval)
     save_layout_proof_approval(artifact_dir, approval, repository=repository)
@@ -565,6 +570,7 @@ def reject_layout_proof(
     reviewer_id: str | None = None,
     reviewer_note: str | None = None,
     repository: LayoutProofRepository | None = None,
+    design_id: str | None = None,
 ) -> LayoutProofApproval:
     """Persist an explicit rejection of the completed proof set.
 
@@ -573,6 +579,10 @@ def reject_layout_proof(
     recomputed evidence — whether or not it passes — is recorded in the
     rejected aggregate; final candidate generation remains blocked because
     ``is_approved`` is False.
+
+    Refusing a set stays possible after the target or layout spec moved on: the
+    proof bytes are still verified, and the rejection records the scope the set
+    was actually rendered with rather than the current one.
     """
     recomputed = _recompute_and_record(
         artifact_dir=artifact_dir,
@@ -581,17 +591,20 @@ def reject_layout_proof(
         layout_spec=layout_spec,
         target_pdf=target_pdf,
         require_passing=False,
+        require_current_scope=False,
     )
+    rendered = recomputed[LengthVariant.SHORT].render_result
     approval = LayoutProofApproval(
         approval_id=f"approval_{uuid.uuid4().hex[:16]}",
         artifact_id=artifact_id,
-        target_checksum=target_checksum,
-        layout_spec_checksum=layout_spec_checksum(layout_spec),
+        target_checksum=rendered.target_checksum,
+        layout_spec_checksum=rendered.layout_spec_checksum,
         state="rejected",
         renderer_version=active_renderer_version(),
         variants=recomputed,
         reviewer_id=reviewer_id,
         reviewer_note=reviewer_note,
+        design_id=design_id,
     )
     save_layout_proof_approval(artifact_dir, approval, repository=repository)
     return approval

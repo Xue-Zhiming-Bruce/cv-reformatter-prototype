@@ -268,8 +268,9 @@ test("an approval is not decidable when a shown proof identity is missing", asyn
   assert.deepEqual(captured.decisions, [])
 })
 
-test("an invalidated approval alone disables decisions on a complete set", async (t) => {
-  // AC6/AC10: three readable variants are not enough while the set is invalidated.
+test("an invalidated approval blocks approval while a rejection stays possible", async (t) => {
+  // AC6/AC10: three readable variants are not enough to approve a stale set, but the
+  // reviewer must still be able to refuse it.
   const captured: Captured = { decisions: [] }
   const reason = "the proof set was re-created after this approval: short"
   const status = proofStatus({
@@ -284,8 +285,19 @@ test("an invalidated approval alone disables decisions on a complete set", async
   assert.ok(panelText.includes(copy("review.proofInvalidatedLabel")), panelText)
   assert.ok(panelText.includes(reason), panelText)
   assert.equal(await decisionButton(app, copy("review.proofApproveBtn")).isDisabled(), true)
-  assert.equal(await decisionButton(app, copy("review.proofRejectBtn")).isDisabled(), true)
-  assert.deepEqual(captured.decisions, [])
+  assert.equal(await decisionButton(app, copy("review.proofRejectBtn")).isDisabled(), false)
+  await decisionButton(app, copy("review.proofRejectBtn")).click()
+  await app.page.locator(".rv-target-panel").filter({ hasText: copy("review.proofStateApproved") }).waitFor()
+  assert.equal(captured.decisions.length, 1)
+  const decision = captured.decisions[0]
+  assert.equal(decision.state, "rejected")
+  assert.equal(decision.expected_target_checksum, status.target_checksum)
+  assert.equal(decision.expected_layout_spec_checksum, status.layout_spec_checksum)
+  assert.deepEqual(decision.expected_variant_proof_ids, {
+    short: "layout_proof_short_0123456789abcdef",
+    medium: "layout_proof_medium_0123456789abcdef",
+    long: "layout_proof_long_0123456789abcdef",
+  })
 })
 
 test("unavailable evidence and an invalidated approval are shown and cannot be decided", async (t) => {
