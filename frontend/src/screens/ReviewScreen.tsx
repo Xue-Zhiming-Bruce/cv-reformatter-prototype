@@ -245,6 +245,8 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   const [acceptanceInvalidated, setAcceptanceInvalidated] = useState(false)
   const [actionError, setActionError] = useState<ActionError | null>(null)
   const [proofStatus, setProofStatus] = useState<LayoutProofStatus | null>(null)
+  // The evidence the reviewer is currently inspecting in the page: never a filesystem path.
+  const [proofView, setProofView] = useState<{ label: string; url: string; media: "pdf" | "image" } | null>(null)
   const [proofBusy, setProofBusy] = useState<"idle" | "loading" | "creating" | "approving">("idle")
   // A DOCX target is a dead end, so a replacement PDF becomes the run's target in place: the
   // candidate edits above stay local while the target identity, proofs and acceptance start over.
@@ -971,9 +973,13 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
                             : t("review.proofStructuralFailed", { count: variant.structural_error_count })}
                         </span>
                         <span className="rv-proof-row__actions">
-                          <a className="rv-proof-row__link" href={variant.proof_pdf_url} target="_blank" rel="noreferrer">
+                          <button
+                            type="button"
+                            className="rv-proof-row__link"
+                            onClick={() => setProofView({ label: `${variant.variant} ${t("review.proofViewPdf")}`, url: variant.proof_pdf_url, media: "pdf" })}
+                          >
                             {t("review.proofViewPdf")}
-                          </a>
+                          </button>
                           <a className="rv-proof-row__link" href={variant.proof_pdf_url} download={variant.pdf_filename}>
                             {t("review.proofDownloadPdf")}
                           </a>
@@ -988,9 +994,19 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
                       <div className="rv-proof-row__evidence">
                         {variant.comparison_images.map((image) => (
                           <span className="rv-proof-row__image" key={image.filename}>
-                            <a className="rv-proof-row__link" href={image.url} target="_blank" rel="noreferrer">
-                              {comparisonLabel(image)}
-                            </a>
+                            {image.kind === "report" ? (
+                              <a className="rv-proof-row__link" href={image.url} target="_blank" rel="noreferrer">
+                                {comparisonLabel(image)}
+                              </a>
+                            ) : (
+                              <button
+                                type="button"
+                                className="rv-proof-row__link"
+                                onClick={() => setProofView({ label: `${variant.variant} ${comparisonLabel(image)}`, url: image.url, media: "image" })}
+                              >
+                                {comparisonLabel(image)}
+                              </button>
+                            )}
                             <a
                               className="rv-proof-row__link rv-proof-row__save"
                               href={image.url}
@@ -1013,6 +1029,26 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
                     </li>
                   ))}
                 </ul>
+              )}
+              {proofView && (
+                <div className="rv-proof-viewer">
+                  <div className="rv-proof-viewer__head">
+                    <span className="rv-proof-viewer__label">{proofView.label}</span>
+                    <a className="rv-proof-row__link" href={proofView.url} target="_blank" rel="noreferrer">
+                      {t("review.proofOpenNewTab")}
+                    </a>
+                    <button type="button" className="rv-proof__btn" onClick={() => setProofView(null)}>
+                      {t("review.proofViewClose")}
+                    </button>
+                  </div>
+                  {proofView.media === "pdf" ? (
+                    <object data={pdfViewerUrl(proofView.url)} type="application/pdf" className="pdf-embed rv-proof-viewer__pdf">
+                      <p className="pane-fallback">{t("review.pdfFallback")}</p>
+                    </object>
+                  ) : (
+                    <img className="rv-proof-viewer__image" src={proofView.url} alt={proofView.label} />
+                  )}
+                </div>
               )}
             </>
           )}

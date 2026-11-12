@@ -171,32 +171,43 @@ test("the panel serves each variant's proof and comparison evidence inline and b
   for (const [index, entry] of status.variants.entries()) {
     const row = rows.nth(index)
     assert.equal((await row.locator(".rv-proof-row__variant").innerText()).toLowerCase(), entry.variant)
-    const links = row.locator("a")
-    const hrefs = await links.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href") ?? ""))
-    assert.deepEqual(
-      hrefs,
-      [entry.proof_pdf_url, entry.proof_pdf_url, entry.proof_html_url, entry.proof_html_url]
-        .concat(entry.comparison_images.flatMap((image) => [image.url, image.url])),
-      `row ${entry.variant} does not link the resources the status named`,
-    )
-    // AC1/AC2: every artifact is served from an artifact-scoped route, never a filesystem path.
+    // AC1/AC2/AC9: everything is served from an artifact-scoped route, never a filesystem path.
+    const hrefs = await row.locator("a").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href") ?? ""))
     for (const href of hrefs) assert.ok(href.startsWith(`/api/artifacts/${ARTIFACT}/`), href)
-    // Viewing opens inline; the same URL with `download` saves the file under its recorded name.
-    const downloads = await links.evaluateAll((nodes) =>
-      nodes.map((node) => node.getAttribute("download") ?? "").filter((value) => value !== ""),
-    )
+    // Downloading saves the same resource under the name the status recorded.
+    const downloads = await row
+      .locator("a[download]")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("download")))
     assert.deepEqual(downloads, [
       entry.pdf_filename,
       entry.html_filename,
       ...entry.comparison_images.map((image) => image.filename),
     ])
-    const openInNewTab = await links.evaluateAll((nodes) =>
-      nodes.map((node) => node.getAttribute("target") ?? ""),
-    )
-    assert.deepEqual(openInNewTab, ["_blank", "", "_blank", "", "_blank", "", "_blank", "", "_blank", "", "_blank", ""])
   }
 
-  // AC7: the decision carries the checksums and proof identities that are on screen.
+  // AC1/AC3: the recorded proof PDF opens in the page from its own route, not as an attachment.
+  const shortRow = rows.nth(0)
+  const short = status.variants[0]
+  await shortRow.locator("button").filter({ hasText: copy("review.proofViewPdf") }).click()
+  const pdfObject = app.page.locator(".rv-proof-viewer object[type='application/pdf']")
+  await pdfObject.waitFor()
+  assert.ok((await pdfObject.getAttribute("data") ?? "").startsWith(short.proof_pdf_url))
+  assert.equal(await pdfObject.getAttribute("type"), "application/pdf")
+
+  // AC2: a comparison image opens in the page too, from the URL the status named.
+  const difference = short.comparison_images.find((image) => image.kind === "difference")!
+  await shortRow
+    .locator("button")
+    .filter({ hasText: `${copy("review.proofImageDifference")} ${difference.page_number}` })
+    .click()
+  const image = app.page.locator(".rv-proof-viewer__image")
+  await image.waitFor()
+  assert.equal(await image.getAttribute("src"), difference.url)
+
+  // AC7: viewing resources sends no decision.
+  assert.deepEqual(captured.decisions, [])
+
+  // AC5/AC7: the decision carries the checksums and proof identities that are on screen.
   await decisionButton(app, copy("review.proofApproveBtn")).click()
   await app.page.locator(".rv-target-panel").filter({ hasText: copy("review.proofStateApproved") }).waitFor()
   assert.equal(captured.decisions.length, 1)

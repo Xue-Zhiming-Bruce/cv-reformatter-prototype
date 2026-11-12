@@ -300,7 +300,9 @@
     "proofImageReport": "visual report",
     "proofDownloadNamed": "Download {{name}}",
     "proofUnavailableLabel": "Unavailable evidence",
-    "proofUnavailableCount": "{{count}} variant(s) cannot be reviewed"
+    "proofUnavailableCount": "{{count}} variant(s) cannot be reviewed",
+    "proofOpenNewTab": "Open in a new tab",
+    "proofViewClose": "Close viewer"
   },
   "auth": {
     "loginTitle": "Welcome back",
