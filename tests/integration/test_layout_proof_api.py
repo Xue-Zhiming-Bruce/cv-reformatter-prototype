@@ -1632,6 +1632,33 @@ def test_unreadable_stored_evidence_is_unavailable_not_a_failure(tmp_path: Path)
     assert unavailable == {}
 
 
+def test_approval_is_refused_while_a_variant_is_unavailable(tmp_path: Path) -> None:
+    """AC4/AC6: unavailable evidence never enables approval."""
+    artifact_id = "artifact_proof_approval_unavailable"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    (
+        artifact_dir / "layout_proofs" / "variants" / "medium" / "render_result.json"
+    ).unlink()
+    available, unavailable = _review_state_lists(_proof_status(artifact_id))
+    assert available == ["short", "long"]
+    assert set(unavailable) == {"medium"}
+
+    refused = client.post(
+        f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+        json={"state": "approved", "reviewer_id": "reviewer-1"},
+    )
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["error_code"] in {
+        "layout_proof_incomplete",
+        "layout_proof_mismatch",
+        "layout_proof_validation_failed",
+    }
+    assert str(tmp_path) not in refused.text
+    assert _proof_status(artifact_id)["state"] == "none"
+
+
 def test_status_keeps_contradictory_variant_evidence_out_of_the_proof_set(
     tmp_path: Path,
 ) -> None:
