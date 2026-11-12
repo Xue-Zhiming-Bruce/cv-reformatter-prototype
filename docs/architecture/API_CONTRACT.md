@@ -4,8 +4,9 @@ Status: `Active contract`
 
 Owner: Backend
 
-Last reviewed: November 11, 2026 (source-faithful scope decision and known
-alignment gap; executable interface unchanged)
+Last reviewed: November 12, 2026 (independent personal-information hiding
+controls, disclosure precedence and the hidden-value gate; executable interface
+unchanged)
 
 This document records the current MVP-compatible backend interface used by the
 frontend. It is not a complete versioned OpenAPI replacement; the FastAPI
@@ -25,12 +26,26 @@ information only: it assigns no display rule and rendering prints no
 placeholder, so an absent fact stays absent, a present value renders as the
 source wrote it, and a hidden value stays hidden (issue #30). Legacy stored
 rules keep their enum values and stay valid. Existing schema values/response
-fields are not removed by this documentation change. The name currently
-follows the whole-profile blind switch; independent
-controls for all four personal-information categories remain to be verified.
-Existing blind-link privacy protections remain in force. The
-[roadmap](../roadmaps/BACKEND_ROADMAP.md#owner-scope-alignment--november-11-2026)
-owns the pending work.
+fields are not removed by this documentation change. Existing blind-link
+privacy protections remain in force. Independent controls for the four
+personal-information categories — name, private email, phone and private
+address — write `client_display_rules` for `full_name`, `email`, `phone` and
+`location` on the saved profile revision and are applied by the shared
+client-facing mapper (issue #33). Disclosure precedence:
+
+- an explicit `hide` removes every projection of that field, in every mode;
+- the blind switch keeps forcing `full_name`, `email` and `phone` hidden, so a
+  per-field `show` on those three does not re-expose them while blind is on —
+  the recruiter turns blind off instead;
+- the blind switch keeps LinkedIn hidden and keeps honouring an explicit
+  `client_display_rules.portfolio_url = show`;
+- the blind switch does not hide the private address, so hiding an address
+  requires the address control;
+- a hidden name renders the same neutral `Candidate A` label blind mode uses;
+  no substitute value is invented for any hidden field.
+
+The [roadmap](../roadmaps/BACKEND_ROADMAP.md#owner-scope-alignment--november-11-2026)
+owns the remaining work.
 
 ## Process Candidate Resume
 
@@ -236,6 +251,16 @@ Source blocks are also checked when their heading matches a contact section
 such as Links. A matching heading does not exempt their independent titles,
 URLs, descriptions or entry structure. Output that loses those facts fails the
 existing generation gates.
+
+Every generation also persists `hidden_value_validation.json`
+(`hidden-value-validation/1.0`). A value the recruiter explicitly hid
+(`full_name`, `email`, `phone`, `location`) must be absent from the exported PDF
+text, including retained source text that repeats it verbatim in a summary, a
+custom section or an entry description. A surviving occurrence fails the run
+before any output is published: HTTP 500 with
+`error_code=hidden_value_leaked` and the leaking `field`/`occurrences` pairs.
+The gate reads explicit `hide` rules only; a value the blind switch suppresses
+is not counted.
 
 No-target generation uses native `built-in-3` through the shared deterministic
 A template compiler/binder/HTML renderer (`lane-a-product-subset/17`). It projects
