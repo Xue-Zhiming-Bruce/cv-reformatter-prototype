@@ -48,6 +48,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from app.generation.contracts import TargetFormatMetadata
 from app.generation.template_mapper import ClientFacingRenderContext
 from app.template_analysis.artifacts import (
     LAYOUT_SPEC_FILENAME,
@@ -367,7 +368,6 @@ def resolve_layout_proof_context(
     entry points accept and reject exactly the same artifacts.
     """
     from app.generation.service import (
-        is_safe_design_id,
         load_saved_target_format,
         validate_target_format_reference,
     )

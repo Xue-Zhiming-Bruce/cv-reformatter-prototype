@@ -1581,9 +1581,6 @@ def _e5_lane_terminal(
         }
         probe_report[profile] = entry
         try:
-            index = next(
-                (i + 1 for i, v in enumerate(ls.versions) if v.version_id == selected_id), 0
-            )
             probe_html_path = ls.lane_dir / f"probe_{profile}.html"
             probe_pdf_path = ls.lane_dir / f"probe_{profile}.pdf"
             probe_pdf_second = ls.lane_dir / f"probe_{profile}_second.pdf"
@@ -3118,9 +3115,7 @@ def run_e5(
         )
     from app.pipeline.rendering import build_format_summary
 
-    from app.pipeline.render_plan import compile_render_plan
-    from app.pipeline.html_renderer import RENDERER_VERSION, render_html, render_layout_template
-    from app.pipeline import quality as c2r
+    from app.pipeline.html_renderer import RENDERER_VERSION, render_layout_template
     from app.pipeline.layout_state import state_bytes
     from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 

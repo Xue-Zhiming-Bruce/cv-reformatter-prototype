@@ -697,7 +697,7 @@ def validate_proof_structure(
         )
         completeness_ok = not mismatches and not unexpected
         detail = "content complete" if completeness_ok else (
-            f"missing/extra markers: "
+            "missing/extra markers: "
             + "; ".join(
                 f"{token} expected {exp} found {got}"
                 for token, (exp, got) in list(mismatches.items())[:5]

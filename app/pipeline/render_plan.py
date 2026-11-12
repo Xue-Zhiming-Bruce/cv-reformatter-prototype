@@ -876,7 +876,6 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
     rules_dict = {rule.rule_id: rule for rule in state.rules}
     header_rows = [node for node in state.nodes if node.kind == "header_row"]
     sections = [node for node in state.nodes if node.kind == "section"]
-    style_of = {node.node_id: node.style_id for node in state.nodes}
 
     def heading_of(section_node_id: str):
         return by_id.get(f"{section_node_id}.heading")
@@ -1764,7 +1763,6 @@ def compile_render_plan(state: C2LayoutState, candidate: CandidateDocument) -> C
                     }
                 )
             continue
-        target = mapped_roles.get(candidate_section.source)
         section_plan = SectionPlan(
             node_id=f"candidate_only.{candidate_section.section_id}",
             label=candidate_section.heading or candidate_section.section_id,

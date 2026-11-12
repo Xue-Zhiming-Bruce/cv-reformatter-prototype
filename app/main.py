@@ -61,7 +61,6 @@ from app.generation.service import (
     requested_profile_revision_id,
     require_profile_revision,
     validate_profile_source_review,
-    validate_target_format_reference,
     write_json,
     write_profile_debug_artifacts,
 )
@@ -85,7 +84,6 @@ from app.profile_approval import (
     ProfileApprovalError,
     ProfileRevisionRepository,
     draft_sha256,
-    profile_sha256,
     save_approved_profile,
     save_profile_revision,
 )

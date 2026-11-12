@@ -9,12 +9,16 @@ from pathlib import Path
 from typing import Any
 from app.ingestion.pdf_reader import read_pdf_text
 from app.pipeline.candidate_content import CandidateDocument
-from app.pipeline.rendering import _sha256, _line_stability, _html_text, _hyphen_free
+from app.pipeline.rendering import _line_stability, _sha256, _html_text, _hyphen_free
 from app.pipeline.layout_state import C2LayoutState, Column
 from app.pipeline.layout_compiler import _below_heading_rule, _resolve_above_heading_rule
 from app.pipeline.render_plan import C2RenderPlan, section_groups
 from app.pipeline.html_renderer import _pt, _class_for
 from app.pipeline.render_plan import _inline_separator
+
+#: Re-exported for the pipeline service and the layout-proof API test, which
+#: patches ``quality._line_stability``; the helpers live in rendering.
+__all__ = ["_line_stability", "_sha256"]
 
 PDF_STRUCTURE_VALIDATION_VERSION = "pdf_structure/2"
 
@@ -554,8 +558,6 @@ def candidate_accounting_gate(
     """
     rendered_leaf_ids = set(plan.leaf_ledger)
     overflow_fields = list(plan.header_overflow.fields) if plan.header_overflow else []
-    overflow_ids = {field.leaf_id for field in overflow_fields}
-    routed_unroutable = sorted(overflow_ids & rendered_leaf_ids)
     # A render-disposition record is resolved when its overflow field is
     # actually rendered. A record may be leaf-bound (the field carries the
     # ORIGINAL candidate leaf id) or record-only (the documented
@@ -1238,16 +1240,6 @@ def content_shape_verification(
             geometry_consumed = matched_extent_index is not None
             if matched_extent_index is not None:
                 consumed_rule_extents.add(matched_extent_index)
-            consumed_rule = bool(
-                state_rule
-                and evidence_rule
-                and state_rule.placement == evidence_rule["placement"]
-                and abs(state_rule.stroke_pt - evidence_rule["stroke_pt"]) <= CSS_EXTENT_TOLERANCE_PT
-                and state_rule.color_hex == evidence_rule["color_hex"]
-                and border_present
-                and extent_consumed
-                and geometry_consumed
-            )
             check(
                 "rule",
                 True,

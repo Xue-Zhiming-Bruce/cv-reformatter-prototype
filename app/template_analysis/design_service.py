@@ -40,7 +40,6 @@ from app.template_analysis.design_evidence import (
 from app.template_analysis.design_schemas import (
     APPROVABLE_DESIGN_STATES,
     DESIGN_COMPILER_VERSION,
-    DESIGN_REQUEST_SCHEMA_VERSION,
     CandidateSectionRole,
     DesignArtifactState,
     DesignDecisionTrace,

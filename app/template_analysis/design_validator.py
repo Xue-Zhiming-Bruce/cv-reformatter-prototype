@@ -16,9 +16,6 @@ from app.template_analysis.design_evidence import target_body_texts
 from app.template_analysis.design_schemas import (
     APPROVED_DEFAULT_STYLE_ROLES,
     REVIEW_CONFIDENCE_THRESHOLD,
-    SUPPORTED_LAYOUT_CLASSES,
-    SUPPORTED_MAPPING_ACTIONS,
-    SUPPORTED_OVERFLOW_POLICIES,
     DesignProposal,
     DesignRequest,
     DesignValidationResult,

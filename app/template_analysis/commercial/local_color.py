@@ -108,7 +108,7 @@ def enrich_colors_from_local_pdf(
         return normalized
 
     def with_color(block: NormalizedTextBlock) -> NormalizedTextBlock:
-        counter = votes.get((page_number := block.page_number, block.element_id))
+        counter = votes.get((block.page_number, block.element_id))
         if counter is None or block.color_hex is not None:
             return block
         hex_color, _count = counter.most_common(1)[0]

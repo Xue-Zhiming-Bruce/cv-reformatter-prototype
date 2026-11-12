@@ -347,7 +347,6 @@ class AnthropicClaudeDesigner(TemplateDesigner):
         # are confirmed.
         client = Anthropic(api_key=self.api_key, timeout=self.timeout_seconds)
         user_payload = _external_payload(request)
-        started = time.perf_counter()
         try:
             response = client.messages.create(
                 model=self.model,
@@ -376,7 +375,6 @@ class AnthropicClaudeDesigner(TemplateDesigner):
             raise DesignerProviderCallError(
                 "Claude design call failed."
             ) from exc
-        latency = time.perf_counter() - started
         self.last_usage = {
             "input_tokens": getattr(response.usage, "input_tokens", None),
             "output_tokens": getattr(response.usage, "output_tokens", None),

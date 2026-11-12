@@ -121,6 +121,10 @@ backup/restore are complete. See the roadmap for what is actually implemented.
   adding runners, corpora, result schemas, or output directories. A new
   top-level workflow or a second runner for an existing responsibility needs
   explicit user approval and a contract update in the same change.
+- Report the backend gate from [`README.md`](README.md#validate-changes):
+  `.venv/bin/ruff check app` and the `tests/unit tests/integration` lane, run
+  once offline and again with `TEST_DATABASE_URL` so the PostgreSQL-gated cases
+  execute instead of skipping.
 - Commit each verified milestone as
   `c1: <what closed/changed> (run <id>)`; update the roadmap only when progress
   or status materially changed, and the product contract or an ADR only when

@@ -301,22 +301,52 @@ virtualenv from the earlier setup steps.
 
 ## Validate Changes
 
-Run the canonical offline checks:
+The backend gate is a static check plus the pytest lane, run offline and again
+against the isolated local PostgreSQL database:
 
 ```bash
-python -m pytest -m "not local_dataset and not live_provider" tests/unit tests/integration
+.venv/bin/ruff check app
+.venv/bin/python -m pytest tests/unit tests/integration -q -m "not local_dataset and not live_provider"
 ```
+
+`ruff` is part of the `dev` extra and configured in [pyproject.toml](pyproject.toml)
+(`[tool.ruff.lint] select = ["F"]`), so `python -m pip install -e ".[dev]"`
+provides it. Only the F rules are enforced — undefined names, unused
+imports/variables, and `f`-strings without placeholders — and they are a
+required gate, not an optional cleanup: an undefined name passes import,
+collection and every test that does not execute the line, so this check is the
+only one that fails on it. Style and formatting are deliberately not checked.
 
 Keep behavior regressions when consolidating implementations. See [the test contract](docs/testing/TEST_STRUCTURE.md) for focused,
 local-corpus and live lanes, and [tests/README.md](tests/README.md) for the
 explicit local inputs used by retained pipeline regressions. Pytest terminal
 output belongs under `tests/test_results/pytest/` and remains uncommitted.
 
-Local PostgreSQL integration checks extend the same pytest lane. Set
-`TEST_DATABASE_URL` to a separate local database named `cv_reformatter_test*`;
-the fixture creates and drops only its own random schemas. Without that variable,
-these checks skip. They cover migrations, real process/generate/acceptance APIs,
-a fresh-process read and concurrent reference updates:
+### PostgreSQL-Gated Cases
+
+Without `TEST_DATABASE_URL` these 40 cases skip, so an offline green run says
+nothing about the design-scoped approve → status → generate paths or the durable
+job and storage boundaries:
+
+| File | Gated cases |
+| --- | --- |
+| `tests/integration/test_postgres_storage.py` | all 12 cases: migrations, real process/generate/acceptance APIs, fresh-process reads, concurrent reference updates, job claims/expiry/cancellation, revalidation-before-commit |
+| `tests/integration/test_job_worker.py` | 23 `native_jobs`/`target_jobs` cases, including the two `restore` variants that also need `TEST_POSTGRES_CONTAINER` |
+| `tests/integration/test_layout_proof_api.py` | 4: the `postgres-uploaded`, `postgres-designer` and `postgres-restore-designer` parametrisations of `test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed`, and `test_create_layout_proofs_returns_all_variants[postgres]` |
+| `tests/integration/test_design_api.py` | 1: `test_postgres_design_history_supersedes_atomically_and_preserves_source` |
+
+Create an isolated database whose name starts with `cv_reformatter_test`, then
+run the same lane with `TEST_DATABASE_URL` set; the fixture creates and drops
+only its own random schemas:
+
+```bash
+docker exec cv-reformatter-postgres-20261026 psql -U postgres \
+  -c "CREATE DATABASE cv_reformatter_test_issue40"
+TEST_DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:65150/cv_reformatter_test_issue40 \
+  .venv/bin/python -m pytest tests/unit tests/integration -q -m "not local_dataset and not live_provider"
+```
+
+To focus on one gated file:
 
 ```bash
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -p no:cacheprovider tests/integration/test_postgres_storage.py -q

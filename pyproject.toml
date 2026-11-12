@@ -32,7 +32,16 @@ dependencies = [
 dev = [
     "pytest>=8.2.0",
     "reportlab>=4.4.0",
+    "ruff>=0.17",
 ]
+
+[tool.ruff]
+# The backend static gate: undefined names, unused imports/variables and
+# empty f-strings only (F). Style and formatting are not enforced.
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["F"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

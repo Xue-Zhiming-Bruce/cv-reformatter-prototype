@@ -54,7 +54,8 @@ were retired on October 19, 2026; its source remains in Git.
 
 | Responsibility | Canonical entry point | Inputs | Results |
 | --- | --- | --- | --- |
-| Automated backend tests | `pytest tests/unit tests/integration` | synthetic fixtures | `tests/test_results/pytest/` terminal log |
+| Backend static check | `.venv/bin/ruff check app` (`F` rules only, configured in `pyproject.toml`) | `app/` sources | terminal output; no artifact |
+| Automated backend tests | `pytest tests/unit tests/integration`, plus the same lane with `TEST_DATABASE_URL` naming a local `cv_reformatter_test*` database for the 40 PostgreSQL-gated cases listed in the [README](../../README.md#postgresql-gated-cases) | synthetic fixtures | `tests/test_results/pytest/` terminal log |
 | Explicit live smoke tests | pytest tests under `tests/live/` with `live_provider` marker and opt-in | synthetic or authorized input | `tests/test_results/pytest/` terminal log |
 | Resume transformation matrix | `scripts/run_abc_live_matrix.py` (API-driven; supersedes the retired `run_block_aware_matrix.py` offline runner) | authorized `tests/local_datasets/resume_matrix/` inputs | versioned matrix run defined by `TEST_RESULT_FORMAT.md`; run reports under `data/generated_outputs/abc_live_matrix/` |
 | Frontend UI behaviour | `cd frontend && npm test` (Node's built-in runner; the UI files drive the app in Chromium through the `playwright` library, never `playwright test`) | Vite-served app with `/api/*` stubbed in the page | terminal output only; no artifact directory or result schema |

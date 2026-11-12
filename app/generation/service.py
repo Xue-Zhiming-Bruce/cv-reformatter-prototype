@@ -66,7 +66,6 @@ from app.profile_approval import (
     is_current_approved_profile,
     load_current_approved_profile,
     load_profile_revision,
-    profile_sha256,
 )
 from app.storage.artifact_store import ArtifactStoreError
 from app.storage.repository import (

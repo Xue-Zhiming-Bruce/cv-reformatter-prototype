@@ -17,6 +17,7 @@ from app.pipeline.measurement import (
 import pdfplumber as _pdfplumber
 from app.pipeline.evidence import (
     DefectFinding,
+    DualSourcePod,
     E5AgentAuditSpec,
     MeasurementRequest,
     MeasurementResult,
@@ -205,7 +206,7 @@ class MeasureController:
     page numbers always carried. Nothing synthetic stands in for the measured
     object."""
 
-    def __init__(self, pod: "DualSourcePod", budget: RunBudget, trace: RunTrace) -> None:
+    def __init__(self, pod: DualSourcePod, budget: RunBudget, trace: RunTrace) -> None:
         self.pod = pod
         self.budget = budget
         self.trace = trace
@@ -518,11 +519,6 @@ def compile_two_column_state(
     # Entry geometry: measured bullet-text column (the LI/LBody leaves) and
     # the measured content right edge (widest main-column row x1).
     bullet_tiers = _two_column_bullet_tiers(lines, summary)
-    body_style = _line_style_of(
-        target_pdf, 1,
-        {"top": 335.0, "bottom": 345.0, "x0": 178.0},
-        summary,
-    ) or {"font_family": "Arial", "font_size_pt": 10.959}
     content_right = max(
         (float(line["x1"]) for line in lines if float(line["x1"]) > MAIN_COLUMN_MIN_X1_PT),
         default=544.876,

@@ -7,7 +7,6 @@ import json
 import os
 import time
 import zipfile
-from collections import Counter
 from pathlib import Path
 from typing import Any
 

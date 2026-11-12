@@ -159,7 +159,7 @@ def build_synthetic_context(variant: LengthVariant) -> SyntheticPlaceholderRende
     return SyntheticPlaceholderRenderContext(
         variant=variant,
         candidate_heading=_SYNTHETIC_NAME,
-        candidate_subheading=f"SYNTHETIC_JOB_TITLE_1 | SYNTHETIC_CITY_1",
+        candidate_subheading="SYNTHETIC_JOB_TITLE_1 | SYNTHETIC_CITY_1",
         contact_lines=list(profile.contact_lines),
         professional_summary=_summary(profile.summary_sentences),
         skills=_skills(profile.skill_count),
