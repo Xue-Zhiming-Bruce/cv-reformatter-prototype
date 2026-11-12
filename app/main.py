@@ -116,10 +116,12 @@ from app.template_analysis.layout_proof_rendering import (
     active_renderer_version,
 )
 from app.template_analysis.layout_proof_service import (
+    LayoutProofContextError,
     approve_layout_proof,
     create_proof_variants,
     load_layout_proof_approval,
     reject_layout_proof,
+    resolve_layout_proof_context,
 )
 from app.template_analysis.layout_proof_validation import (
     LayoutProofIncompleteError,
@@ -132,7 +134,6 @@ from app.template_analysis.artifacts import (
     NORMALIZED_LAYOUT_FILENAME,
     STYLE_SPEC_FILENAME,
     TARGET_EVIDENCE_FILENAME,
-    TargetAnalysisArtifactError,
     load_layout_template_spec,
 )
 from app.template_analysis.schemas import LayoutTemplateSpec, TemplateStyleSpec
@@ -1596,26 +1597,6 @@ def _load_generation_style_spec(
     return load_layout_template_spec(artifact_dir / LAYOUT_SPEC_FILENAME)
 
 
-def _load_design_layout_spec(artifact_dir: Path, design_id: str) -> LayoutTemplateSpec:
-    if not is_safe_design_id(design_id):
-        raise HTTPException(status_code=404, detail="Design not found.")
-    try:
-        state = load_design_state(design_dir_for(artifact_dir, design_id), repository=design_repository(DATABASE_URL))
-    except DesignServiceError as exc:
-        raise HTTPException(status_code=404, detail="Design not found.") from exc
-    if state.layout_spec_json is None:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "layout_proof_required",
-                "message": "The referenced design has no compiled LayoutTemplateSpec.",
-            },
-        )
-    return load_layout_template_spec(
-        design_dir_for(artifact_dir, design_id) / "layout_template_spec.json"
-    )
-
-
 def _layout_proof_context(
     artifact_dir: Path,
     artifact_id: str,
@@ -1623,44 +1604,13 @@ def _layout_proof_context(
 ) -> tuple[TargetFormatMetadata, LayoutTemplateSpec, Path, str]:
     """Resolve target metadata, the template spec, the visual-comparison target
     PDF, and the target checksum for layout-proof operations."""
-    target_format = load_saved_target_format(artifact_dir)
-    if target_format is None:
-        raise HTTPException(
-            status_code=400, detail="No target format for this artifact."
-        )
-    if not target_format.used_as_template_source:
-        raise HTTPException(
-            status_code=400,
-            detail="The target format is not used as a template source.",
-        )
-    validate_target_format_reference(artifact_id, artifact_dir, target_format)
-    stored_path = artifact_dir / target_format.stored_filename
     try:
-        style_spec = (
-            _load_design_layout_spec(artifact_dir, design_id)
-            if design_id is not None
-            else _load_generation_style_spec(artifact_dir)
+        return resolve_layout_proof_context(
+            artifact_dir, artifact_id, design_id, repository=design_repository(DATABASE_URL)
         )
-    except TargetAnalysisArtifactError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="The uploaded target format has no valid analyzed LayoutTemplateSpec.",
-        ) from exc
-    if target_format.role == "pdf_reference":
-        target_pdf = stored_path
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error_code": "pdf_target_required_for_layout_proof",
-                "message": (
-                    "Layout-proof visual comparison requires a target PDF; "
-                    "the retired LibreOffice path no longer converts target DOCX files."
-                ),
-            },
-        )
-    target_checksum = target_checksum_from_bytes(stored_path.read_bytes())
-    return target_format, style_spec, target_pdf, target_checksum
+    except LayoutProofContextError as exc:
+        detail = str(exc) if exc.error_code is None else {"error_code": exc.error_code, "message": str(exc)}
+        raise HTTPException(status_code=exc.status_code, detail=detail) from exc
 
 
 def _layout_proof_status(

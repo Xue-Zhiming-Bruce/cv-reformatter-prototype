@@ -49,6 +49,18 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from app.generation.template_mapper import ClientFacingRenderContext
+from app.template_analysis.artifacts import (
+    LAYOUT_SPEC_FILENAME,
+    TargetAnalysisArtifactError,
+    load_layout_template_spec,
+)
+from app.template_analysis.design_evidence import target_checksum_from_bytes
+from app.template_analysis.design_service import (
+    DesignRepository,
+    DesignServiceError,
+    design_dir_for,
+    load_design_state,
+)
 from app.template_analysis.layout_proof_artifacts import (
     DEFAULT_CANDIDATE_OUTPUT_DIR,
     approval_path_for,
@@ -85,9 +97,21 @@ from app.template_analysis.layout_proof_validation import (
 )
 from app.template_analysis.schemas import LayoutTemplateSpec, TemplateStyleSpec
 
-
 class LayoutProofNotApprovedError(RuntimeError):
     """Raised when final candidate generation lacks an approved layout proof."""
+
+
+class LayoutProofContextError(RuntimeError):
+    """The artifact cannot resolve its target, spec and checksum context.
+
+    ``error_code`` is set only for the structured (dict detail) failures the
+    API contract already names; plain message failures leave it ``None``.
+    """
+
+    def __init__(self, message: str, *, status_code: int = 400, error_code: str | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
 
 
 class LayoutProofRepository(Protocol):
@@ -324,6 +348,72 @@ def approve_layout_proof(
     return approval
 
 
+def resolve_layout_proof_context(
+    artifact_dir: Path,
+    artifact_id: str,
+    design_id: str | None,
+    *,
+    repository: DesignRepository | None = None,
+) -> tuple[TargetFormatMetadata, LayoutTemplateSpec, Path, str]:
+    """Resolve target metadata, the template spec, the visual-comparison target
+    PDF, and the target checksum for proof and target-generation work.
+
+    Shared by the synchronous routes and the durable job submissions so both
+    entry points accept and reject exactly the same artifacts.
+    """
+    from app.generation.service import (
+        is_safe_design_id,
+        load_saved_target_format,
+        validate_target_format_reference,
+    )
+
+    target_format = load_saved_target_format(artifact_dir)
+    if target_format is None:
+        raise LayoutProofContextError("No target format for this artifact.")
+    if not target_format.used_as_template_source:
+        raise LayoutProofContextError("The target format is not used as a template source.")
+    validate_target_format_reference(artifact_id, artifact_dir, target_format)
+    stored_path = artifact_dir / target_format.stored_filename
+    try:
+        style_spec = (
+            _design_layout_spec(artifact_dir, design_id, repository)
+            if design_id is not None
+            else load_layout_template_spec(artifact_dir / LAYOUT_SPEC_FILENAME)
+        )
+    except TargetAnalysisArtifactError as exc:
+        raise LayoutProofContextError(
+            "The uploaded target format has no valid analyzed LayoutTemplateSpec."
+        ) from exc
+    if target_format.role != "pdf_reference":
+        raise LayoutProofContextError(
+            "Layout-proof visual comparison requires a target PDF; "
+            "the retired LibreOffice path no longer converts target DOCX files.",
+            error_code="pdf_target_required_for_layout_proof",
+        )
+    return target_format, style_spec, stored_path, target_checksum_from_bytes(stored_path.read_bytes())
+
+
+def _design_layout_spec(artifact_dir: Path, design_id: str,
+                        repository: DesignRepository | None) -> LayoutTemplateSpec:
+    """Load the design's compiled spec; the API maps these errors to 404/409."""
+    from app.generation.service import is_safe_design_id
+
+    if not is_safe_design_id(design_id):
+        raise LayoutProofContextError("Design not found.", status_code=404)
+    design_dir = design_dir_for(artifact_dir, design_id)
+    try:
+        state = load_design_state(design_dir, repository=repository)
+    except DesignServiceError as exc:
+        raise LayoutProofContextError("Design not found.", status_code=404) from exc
+    if state.layout_spec_json is None:
+        raise LayoutProofContextError(
+            "The referenced design has no compiled LayoutTemplateSpec.",
+            status_code=409,
+            error_code="layout_proof_required",
+        )
+    return load_layout_template_spec(design_dir / "layout_template_spec.json")
+
+
 def require_compilable_layout_spec(
     layout_spec: TemplateStyleSpec | LayoutTemplateSpec,
     *,
@@ -354,6 +444,55 @@ def require_compilable_layout_spec(
         ) from exc
 
 
+def create_proof_variant(
+    *,
+    artifact_dir: str | Path,
+    artifact_id: str,
+    layout_spec: TemplateStyleSpec | LayoutTemplateSpec,
+    target_pdf: str | Path,
+    target_checksum: str,
+    variant: LengthVariant,
+    presentation_label_approval: Any = None,
+) -> VariantProofEvidence:
+    """Render, measure, validate and compare one proof variant.
+
+    This is the bounded unit a job repeats per variant: it writes only that
+    variant's immutable evidence, so a later stage or a resumed attempt can
+    reuse a completed variant instead of rendering it again.
+    """
+    proofs_dir = layout_proofs_dir_for(artifact_dir)
+    request = LayoutProofRenderRequest(
+        artifact_id=artifact_id,
+        layout_spec=layout_spec,
+        variant=variant,
+        target_checksum=target_checksum,
+    )
+    result = render_layout_proof(request, output_dir=proofs_dir,
+        target_pdf=Path(target_pdf),
+        presentation_label_approval=presentation_label_approval)
+    proof_pdf = proofs_dir / result.proof_id / result.pdf_filename
+    measurements = measure_pdf_geometry(proof_pdf)
+    structural = validate_proof_structure(
+        layout_spec=layout_spec,
+        measurements=measurements,
+        expected_headings=expected_heading_labels(layout_spec, variant),
+        variant=variant,
+        include_unmapped_sections=result.renderer_version.startswith("agentic-a/"),
+    )
+    visual = build_visual_comparison_evidence(
+        target_pdf=target_pdf,
+        generated_pdf=proof_pdf,
+        output_dir=variant_dir_for(artifact_dir, variant) / "visual",
+    )
+    evidence = build_variant_evidence(
+        render_result=result,
+        structural=structural,
+        visual=visual,
+    )
+    save_variant_evidence(artifact_dir, evidence)
+    return evidence
+
+
 def create_proof_variants(
     *,
     artifact_dir: str | Path,
@@ -375,39 +514,17 @@ def create_proof_variants(
     require_compilable_layout_spec(
         layout_spec, target_pdf=Path(target_pdf), target_checksum=target_checksum
     )
-    proofs_dir = layout_proofs_dir_for(artifact_dir)
     outcomes: dict[LengthVariant, VariantProofEvidence] = {}
     for variant in LengthVariant:
-        request = LayoutProofRenderRequest(
+        outcomes[variant] = create_proof_variant(
+            artifact_dir=artifact_dir,
             artifact_id=artifact_id,
             layout_spec=layout_spec,
-            variant=variant,
-            target_checksum=target_checksum,
-        )
-        result = render_layout_proof(request, output_dir=proofs_dir,
-            target_pdf=Path(target_pdf),
-            presentation_label_approval=presentation_label_approval)
-        proof_pdf = proofs_dir / result.proof_id / result.pdf_filename
-        measurements = measure_pdf_geometry(proof_pdf)
-        structural = validate_proof_structure(
-            layout_spec=layout_spec,
-            measurements=measurements,
-            expected_headings=expected_heading_labels(layout_spec, variant),
-            variant=variant,
-            include_unmapped_sections=result.renderer_version.startswith("agentic-a/"),
-        )
-        visual = build_visual_comparison_evidence(
             target_pdf=target_pdf,
-            generated_pdf=proof_pdf,
-            output_dir=variant_dir_for(artifact_dir, variant) / "visual",
+            target_checksum=target_checksum,
+            variant=variant,
+            presentation_label_approval=presentation_label_approval,
         )
-        evidence = build_variant_evidence(
-            render_result=result,
-            structural=structural,
-            visual=visual,
-        )
-        save_variant_evidence(artifact_dir, evidence)
-        outcomes[variant] = evidence
     if repository is not None:
         pending = LayoutProofApproval(
             approval_id=f"approval_{uuid.uuid4().hex[:16]}",
