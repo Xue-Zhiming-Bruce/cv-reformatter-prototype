@@ -20,6 +20,7 @@ from app.template_analysis import layout_proof_rendering
 from app.template_analysis.artifacts import LAYOUT_SPEC_FILENAME, load_layout_template_spec
 from app.template_analysis.layout_proof_schemas import LengthVariant
 from app.template_analysis.visual_comparator import COMPARISON_FILENAME
+from app.template_analysis.layout_proof_artifacts import save_variant_evidence
 from app.template_analysis.layout_proof_validation import (
     load_layout_proof_render_result,
     load_variant_evidence,
@@ -1336,21 +1337,36 @@ def test_proof_resources_serve_the_recorded_pdf_html_and_comparisons(
 def test_a_target_page_without_a_counterpart_comparison_is_viewable(
     tmp_path: Path,
 ) -> None:
-    """AC3: the report may name a target page that has no difference image."""
+    """AC3: a target page with no generated counterpart is still viewable."""
     artifact_id = "artifact_proof_target_only_page"
     artifact_dir = tmp_path / artifact_id
     _upload_target(tmp_path, artifact_id)
     _create_proof_set(artifact_id)
-    visual_dir = artifact_dir / "layout_proofs" / "variants" / "short" / "visual"
-    extra_page = visual_dir / "comparison_target_page_999.png"
-    shutil.copyfile(visual_dir / "comparison_target_page_001.png", extra_page)
-    visual_path = artifact_dir / "layout_proofs" / "variants" / "short" / "visual.json"
-    payload = json.loads(visual_path.read_text(encoding="utf-8"))
-    payload["report"]["target_page_filenames"].append(extra_page.name)
-    visual_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    body = _proof_status(artifact_id)
-    entry = _variant_entry(body, "short")
+    # A stored proof run records every comparison file it wrote, so a target-only
+    # page is added the way the writer adds one: the image plus its recorded digest.
+    evidence = load_variant_evidence(artifact_dir, LengthVariant("short"))
+    assert evidence is not None
+    report = evidence.visual.report
+    visual_dir = artifact_dir / "layout_proofs" / "variants" / "short" / "visual"
+    extra_page = visual_dir / "comparison_target_page_002.png"
+    shutil.copyfile(visual_dir / report.target_page_filenames[0], extra_page)
+    target_only_report = report.model_copy(
+        update={
+            "target_page_count": report.target_page_count + 1,
+            "target_page_filenames": [*report.target_page_filenames, extra_page.name],
+        }
+    )
+    save_variant_evidence(
+        artifact_dir,
+        evidence.model_copy(
+            update={
+                "visual": evidence.visual.model_copy(update={"report": target_only_report})
+            }
+        ),
+    )
+
+    entry = _variant_entry(_proof_status(artifact_id), "short")
     target_only = [
         image
         for image in entry["comparison_images"]
@@ -1359,7 +1375,7 @@ def test_a_target_page_without_a_counterpart_comparison_is_viewable(
     assert target_only, entry["comparison_images"]
     assert client.get(target_only[0]["url"]).status_code == 200
     assert not any(
-        image["kind"] != "target" and image["filename"] == extra_page.name
+        image["filename"] == extra_page.name and image["kind"] != "target"
         for image in entry["comparison_images"]
     )
 
@@ -1457,6 +1473,65 @@ def test_proof_resource_rejections_are_structured_and_pathless(tmp_path: Path) -
     )
 
 
+def test_comparison_resource_bytes_are_verified_against_the_recorded_digests(
+    tmp_path: Path,
+) -> None:
+    """AC9: changed, unreadable or unrecorded comparison bytes are refused.
+
+    The stored visual report names its images but carries no digests, so the
+    proof writer records them; a set whose bytes or digests do not match what the
+    writer recorded is refused instead of served.
+    """
+    artifact_id = "artifact_proof_comparison_bytes"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    entry = _variant_entry(_proof_status(artifact_id), "short")
+    visual_dir = artifact_dir / "layout_proofs" / "variants" / "short" / "visual"
+    image = next(item for item in entry["comparison_images"] if item["kind"] == "difference")
+    image_path = visual_dir / image["filename"]
+    assert client.get(image["url"]).status_code == 200
+
+    # Changed comparison bytes are refused, and the variant stops counting as
+    # reviewable evidence: the panel never shows an image it cannot verify.
+    recorded = image_path.read_bytes()
+    image_path.write_bytes(recorded + b"\nchanged")
+    _assert_structured_resource_error(client.get(image["url"]), statuses={409})
+    available, unavailable = _review_state_lists(_proof_status(artifact_id))
+    assert available == ["medium", "long"]
+    assert set(unavailable) == {"short"}
+    assert str(tmp_path) not in unavailable["short"]
+    image_path.write_bytes(recorded)
+    assert client.get(image["url"]).status_code == 200
+
+    # The visual report is served from the same digest check.
+    report_url = next(
+        item["url"] for item in entry["comparison_images"] if item["kind"] == "report"
+    )
+    report_path = visual_dir / COMPARISON_FILENAME
+    recorded_report = report_path.read_bytes()
+    report_path.write_bytes(recorded_report + b"\n")
+    _assert_structured_resource_error(client.get(report_url), statuses={409})
+    report_path.write_bytes(recorded_report)
+    assert client.get(report_url).status_code == 200
+
+    # A set whose comparison digests were never recorded is not servable, and it
+    # stops counting toward "created".
+    manifest = (
+        artifact_dir
+        / "layout_proofs"
+        / "variants"
+        / "short"
+        / "comparison_checksums.json"
+    )
+    manifest.unlink()
+    _assert_structured_resource_error(client.get(image["url"]), statuses={409})
+    available, unavailable = _review_state_lists(_proof_status(artifact_id))
+    assert available == ["medium", "long"]
+    assert "recorded checksums" in unavailable["short"]
+    assert str(tmp_path) not in unavailable["short"]
+
+
 def _review_state_lists(body: dict) -> tuple[list[str], dict[str, str]]:
     available = [entry["variant"] for entry in body["variants"]]
     return available, {
@@ -1539,6 +1614,18 @@ def test_unreadable_stored_evidence_is_unavailable_not_a_failure(tmp_path: Path)
         for reason in unavailable.values():
             assert reason.strip()
             assert str(tmp_path) not in reason
+
+    # An unreadable comparison image is refused by its own route, structured.
+    image = variants_root / "short" / "visual" / "comparison_target_page_001.png"
+    image.chmod(0o000)
+    try:
+        refused = client.get(
+            f"/api/artifacts/{artifact_id}/layout-proofs/variants/short"
+            "/comparison/comparison_target_page_001.png"
+        )
+    finally:
+        image.chmod(0o644)
+    _assert_structured_resource_error(refused, statuses={409})
 
     available, unavailable = _review_state_lists(_proof_status(artifact_id))
     assert available == ["short", "medium", "long"]
