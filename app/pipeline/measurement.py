@@ -24,24 +24,37 @@ HEADER_VERTICAL_RULE_MEASUREMENT_VERSION = "header_vertical_rule_geometry/2"
 HEADER_CONTACT_LABEL_MEASUREMENT_VERSION = "header_contact_label_geometry/1"
 
 
+def _canonical_digest(value: Any) -> str:
+    """Digest of a pydantic input, or "none" when the caller passed nothing."""
+    if value is None:
+        return "none"
+    return hashlib.sha256(value.model_dump_json().encode()).hexdigest()
+
+
 def measurement_reuse_key(
     *, method: str, request: MeasurementRequest, target_pdf: Path,
-    current_pdf: Path, render_version: str,
+    current_pdf: Path, render_version: str, state: Any = None, plan: Any = None,
+    current_name_text: str | None = None,
 ) -> str:
     """Identity of ONE deterministic header-geometry measurement.
 
-    A repeat may reuse an earlier result only when the measurement method, every
-    request parameter the measurement consumes, BOTH final PDFs' bytes and the
-    render version are identical — the free-text `intent` is excluded because the
-    metric ignores it: in the 2026-11-12 recording the round-1 and round-2
-    reviewer findings asked the same label-presence question in different words
-    and the same measurement re-ran on the same promoted PDF
-    (`trace_0028_measurement.json` / `trace_0036_measurement.json`)."""
+    The key covers every input the header metrics read, so an identical key
+    means an identical measurement: the request parameters INCLUDING the
+    free-text `intent` (`_measure_header_vertical_rule_geometry` refuses a
+    request whose intent lacks its keywords, so two requests differing only in
+    intent must not share a result), both final PDFs' bytes, the render version,
+    and the layout state, render plan and candidate name text the contract-label
+    metric reads. A superset can only cost a re-execution, never a wrong reuse.
+
+    Request ids are excluded because the per-lane counter is not unique per
+    render: the 2026-11-12 recording measured one promoted PDF twice under
+    `measure-la-001` and `measure-la-003` (`trace_0028` / `trace_0036`)."""
     return hashlib.sha256(json.dumps({
         "method": method,
         "metric": request.metric,
         "page": request.page,
         "region_id": request.region_id,
+        "intent": request.intent,
         "from_text": request.from_text,
         "to_text": request.to_text,
         "render_from_text": request.render_from_text,
@@ -49,6 +62,9 @@ def measurement_reuse_key(
         "target_sha256": _sha256_file(target_pdf),
         "current_sha256": _sha256_file(current_pdf),
         "render_version": render_version,
+        "state_sha256": _canonical_digest(state),
+        "plan_sha256": _canonical_digest(plan),
+        "current_name_text": current_name_text,
     }, sort_keys=True).encode()).hexdigest()
 
 SlotKind = Literal["name", "title", "tagline", "location", "phone", "envelope", "github", "linkedin"]

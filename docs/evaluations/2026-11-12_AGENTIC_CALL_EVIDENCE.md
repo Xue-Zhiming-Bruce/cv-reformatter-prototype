@@ -94,10 +94,10 @@ reported `cache_read_tokens`. `cache_write` is 0 for every stage.
 | --- | --- | --- | --- | --- | --- | --- |
 | Lane A builder, initial | 3 | 20,126 | 671 | 3,840 | 16,286 | 6.6 s |
 | Lane A builder, repair | 3 | 28,805 | 1,115 | 6,400 | 22,405 | 8.7 s |
-| Visual reviewer, 2 rounds | 13 | 74,483 | 5,013 | 4,224 | 70,259 | 232.4 s |
-| Attribution investigator | 9 | 47,608 | 1,775 | 30,720 | 16,888 | 34.0 s |
+| Visual reviewer, 2 rounds | 13 | 74,483 | 5,013 | 4,224 | 70,259 | 209.8 s |
+| Attribution investigator | 9 | 47,608 | 1,775 | 30,720 | 16,888 | 19.2 s |
 | Deterministic measurement/attribution controller | 0 | 0 | 0 | 0 | 0 | unavailable (unrecorded) |
-| Total | 28 | 171,022 | 8,574 | 45,184 | 125,838 | 281.8 s |
+| Total | 28 | 171,022 | 8,574 | 45,184 | 125,838 | 244.3 s |
 
 Per proof (same order as the issue's filing):
 
@@ -150,11 +150,18 @@ Two filings in the issue do not reproduce and are corrected here:
   delta 0.0`. The other six executions had a genuine reason to run (first
   measurement on a new render, or a new page/round with no prior result).
 
-Wall time in the tables is the local request→response interval, so it includes
+Wall time in the tables is the local span of one agent-message **record** (last
+response timestamp minus earliest request part), summed per stage; it includes
 provider latency and local work and excludes provider-side time, which the
-recording does not separate. The long proof's round-1 review requests overlap, so
-the 281.8 s total is an upper bound and not comparable to the 275.3 s of
-per-proof elapsed time.
+recording does not separate. The span rule matters: a record can hold 2–3
+provider requests (the investigator always does), so timing each response from
+its record's first request triple-counts that record. Corrected totals:
+investigator 19.2 s (not 34.0 s) and reviewer 209.8 s (not 232.4 s, whose
+long-proof round-1 record made two requests), i.e. 244.3 s (not 281.8 s).
+Reviewer records never overlap — the measured overlap between distinct reviewer
+intervals is 0 s on all three proofs — and the remaining 275.3 s − 244.3 s =
+31.0 s of recorded elapsed sits outside the agent records (compile, render,
+gates, shell). Provider-side time stays unknown.
 
 ## 4. The one optimization hypothesis
 
@@ -183,28 +190,36 @@ reconciliation and the verbosity concern are tracked separately (issues #37 and
 ## 5. The change (AC3)
 
 `app/pipeline/measurement.py` gains `measurement_reuse_key(...)`: the sha256
-identity of one deterministic header-geometry measurement — method, metric, page,
-region, the four selection texts, both final PDF byte hashes, and the render
-version. The free-text `intent` is excluded because the metric does not consume
-it (that exclusion is exactly what makes the recorded duplicate a duplicate).
+identity of one deterministic header-geometry measurement. It covers **every
+input the two header metrics read**, so an identical key means an identical
+measurement:
 
-`app/pipeline/service.py` gains one memo per lane (`_E5LaneState.measurement_reuse`)
-and `_e5_reuse_measurement(...)`, which serves a prior result **only when it is
-`confirmed`**, and always re-executes when the key misses, when the prior result
-was not confirmed, and when the caller passes `allow_reuse=False`. The two
-header-geometry branches of `_e5_execute_measurement` consult the memo; the
-`_e5_accepted_regions_hold` recheck passes `allow_reuse=False` so a proof that has
-to hold its accepted regions still genuinely re-measures. A reuse writes its own
+- request parameters including the free-text `intent` — `_measure_header_vertical_rule_geometry`
+  refuses a request whose intent lacks its keywords, so a key without `intent`
+  would answer an unmeasurable request with a `confirmed` delta 0.0;
+- both final PDF byte hashes, the method version and the render version;
+- the layout state, render plan and candidate name text that the contact-label
+  metric reads (digested through their pydantic dumps).
+
+This is a superset: a stricter key can only cost a re-execution, never a wrong
+reuse. Request ids are excluded because the per-lane counter is not unique per
+render.
+
+`app/pipeline/service.py` gains one memo per lane (`_E5LaneState.measurement_reuse`),
+`_e5_reuse_measurement(...)` and one policy helper `_e5_reusable_measurement(...)`
+that serves a prior result **only when it is `confirmed`** and otherwise executes
+once, spends the tool budget and remembers the result. All re-execution triggers
+(key miss, non-confirmed prior, `allow_reuse=False`) live in that single helper.
+The two header-geometry branches were extracted into
+`_e5_contact_label_measurement` / `_e5_vertical_rule_measurement`, so
+`_e5_execute_measurement` is 59 lines instead of the 96 it started at.
+`_e5_accepted_regions_hold` passes `allow_reuse=False`, so a proof that has to
+hold its accepted regions still genuinely re-measures. A reuse writes its own
 trace entry (`action: measurement_reused`, `input.reused_request_id`) so the
 recording shows what was served rather than silently omitting the call.
 
 Every other measurement path (`role_gap`, `unsupported`) is untouched and still
 executes and spends its tool budget as before.
-
-The key does not hash the layout state or the render plan; it relies on the two
-PDF byte identities plus the render version implying them, because a new state or
-plan is always rendered to a new version with new bytes in this loop. If that
-ever stops being true, the state and plan hashes belong in the key.
 
 ## 6. Before / after on the recorded input
 
@@ -215,8 +230,16 @@ bytes:
 
 | Path | Median | Range |
 | --- | --- | --- |
-| before: re-execute the identical measurement | 205.1 ms | 160–344 ms |
-| after: serve the confirmed prior result | 0.405 ms | 0.30–5.65 ms |
+| before: compute the key, re-execute the identical measurement | 178.8 ms | 158–233 ms (execution alone 178.6 ms) |
+| after: compute the key, serve the confirmed prior result | 0.669 ms | ≤ 0.891 ms |
+
+Both rows include the reuse-key computation (0.228 ms median: two file hashes,
+the state and plan dumps, the request fields), because the shipped call site
+computes it on every measurement either way. The corrected key is stricter than
+the first version — it now covers `intent`, the layout state, the render plan and
+the name text — so it costs slightly more than the 0.405 ms that version measured,
+and still removes ~178 ms of local work per redundant measurement. Earlier
+figures (205.1 / 0.405 ms) were taken before the key covered those inputs.
 
 The served result is value-identical to the executed one
 (`MeasurementResult` minus `request_id`) and its evidence is byte-identical to
@@ -249,7 +272,8 @@ def request(rid):
 def key(req):
     return measurement_reuse_key(method=HEADER_CONTACT_LABEL_MEASUREMENT_VERSION, request=req,
         target_pdf=TARGET, current_pdf=CURRENT,
-        render_version="render-target_format_reference-laneA-v2")
+        render_version="render-target_format_reference-laneA-v2",
+        state=state, plan=plan, current_name_text="SYNTHETIC_CANDIDATE_NAME")
 executed, reused = [], []
 memo = {}
 for run in range(15):
@@ -289,10 +313,11 @@ gate (`tests/integration/test_pipeline_loop.py::test_review_gate_full_review_onc
 still passes. Every reuse is recorded as an extra, more granular trace entry, so
 trace detail is not reduced either.
 
-Limit: an *after* recording of per-page coverage would need a new live proof run
-(provider opt-in, the canonical `TEST_STRUCTURE` workflow) and none was made here.
-The coverage claim therefore rests on unchanged code plus the passing gate test,
-not on a second recording.
+**AC4 status on this side: blocked, not satisfied.** An *after* recording of
+per-page coverage needs an owner-authorized live proof run (provider opt-in, the
+canonical `TEST_STRUCTURE` workflow); this issue authorizes no provider call and
+none was made. The rule itself is protected by unchanged code plus the passing
+gate test, but that is not the second recording the criterion asks for.
 
 ## 8. Identity of both sides (AC5, AC8)
 
@@ -334,7 +359,7 @@ Mode declaration, stage by stage:
 | Attribution investigator | `live` | `replay` — **not rerun** |
 | Visual reviewer | `live` | `replay` — **not rerun** |
 | Template compilation, HTML/PDF render, structural checks | `replay` of the recorded plan and PDFs | `replay` — **not rerun** |
-| Deterministic header-geometry measurement | `replay` on the recorded PDFs, state and plan (205.1 ms median) | `replay` plus the changed reuse path (0.405 ms median) |
+| Deterministic header-geometry measurement | `replay` on the recorded PDFs, state and plan (178.8 ms median, key included) | `replay` plus the changed reuse path (0.669 ms median, key included) |
 
 Only the deterministic measurement stage was re-executed here, on the recorded
 bytes. No stage produced a new provider request.
@@ -363,8 +388,9 @@ three proofs; name font size 25.995 pt `LiberationSerif-Bold` (render) vs 26.0 p
 (`candidate_content_accounting`, `content_gate`, `content_shapes_match_evidence`,
 `deterministic_render`, `no_blank_page`, `no_target_candidate_facts`,
 `section_order_matches_state`, with `blocking_failures: []` and
-`diagnostic_warnings: []`), content validation (`content-validation/1.0`, 15
-expected items, none missing), structure validation (`structure-gate/1.0`, every
+`diagnostic_warnings: []`), content validation (`content-validation/1.0`, 15 /
+35 / 79 expected items for short / medium / long, none missing), structure
+validation (`structure-gate/1.0`, every
 section heading matched), and the structural checks
 (`page_count_min`, `page_dimensions_pN`, `content_within_physical_page_pN`,
 `content_regions_pN`, `content_within_margins_pN`, `page_non_empty_pN`,
@@ -379,7 +405,7 @@ bytes and therefore every identity above). No parity, no winner, no savings
 percentage: metrics cannot establish arrangement preferences, which stay with
 #10/#13.
 
-Effect separation: this change saves local deterministic wall time only (~205 ms
+Effect separation: this change saves local deterministic wall time only (~178 ms
 per redundant measurement). It adds no request and no token, and it neither
 includes nor claims #37's template-reuse onboarding savings or #38's job-recovery
 duplicate suppression. The cost this change leaves untouched is the cost above:
@@ -405,8 +431,17 @@ data/generated_outputs/qa_20261112_computer_use/pdf_target_run/layout_proofs/app
   identical request returns the confirmed first result value-for-value, spends no
   tool budget, and records `measurement_reused`.
 - `test_changed_pdf_parameters_method_or_version_never_reuse_a_measurement` —
-  changed PDF bytes, changed page, changed region, changed method version, and
-  changed render version each miss; a non-confirmed prior result is never served.
+  changed PDF bytes, changed page, changed region, changed method version,
+  changed render version, changed `intent`, changed layout state, changed render
+  plan and changed candidate name text each miss; a non-confirmed prior result is
+  never served.
+- `test_intent_only_difference_never_reuses_a_header_measurement` — drives
+  `_e5_execute_measurement` itself so the call site is covered: a seeded
+  `confirmed` prior is served for the matching request, while a request that
+  differs only in `intent` reaches the metric and keeps its `not_measurable`
+  verdict instead of being answered with a passing delta 0.0.
+- `test_layout_state_only_difference_never_reuses_a_header_measurement` — the
+  same, for a layout state that differs only in its styles.
 
 The tests use the suite's own deterministic fixture rather than the untracked
 2026-11-12 artifacts so they run on any checkout; the recorded-input equivalence
