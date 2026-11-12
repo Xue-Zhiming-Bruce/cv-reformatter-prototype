@@ -7,10 +7,11 @@ Last reviewed: November 12, 2026
 
 Measured build revision: `1e8584f77f7a5e4ee2f0b68ae2ac654b7159f714`
 
-Judged code revision: `1e8584f77f7a5e4ee2f0b68ae2ac654b7159f714` — the only
-change between this revision and the judged head is this note, and
-`git diff --name-only 1e8584f..HEAD -- app/ migrations/`, printed after this note
-was committed, outputs nothing:
+Judged code revision: `1e8584f77f7a5e4ee2f0b68ae2ac654b7159f714` — no
+application or migration file changed between this revision and the judged head
+(the commits in between touch this note, other issues' documentation and the
+frontend test harness), and `git diff --name-only 1e8584f..HEAD -- app/
+migrations/`, printed after this note was committed, outputs nothing:
 
 ```text
 $ git diff --name-only 1e8584f..HEAD -- app/ migrations/
