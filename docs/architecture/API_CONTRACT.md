@@ -624,8 +624,11 @@ match the aggregate and active implementation. A version mismatch blocks both
 approval and target-based generation with HTTP 409 `layout_proof_mismatch`.
 Create new short/medium/long proofs and explicitly approve them to resume;
 rendering the proofs alone never grants approval. Status treats a stale approval
-as unavailable (`state=none`) while retaining the old variant versions for
-inspection. Clients cannot select a renderer through proof requests.
+as unavailable (`state` is never `approved`, with the old variant versions
+retained for inspection) and reports it as `approval_invalidated` with an
+`approval_invalidated_reason`, which keeps an invalidated approval distinct from
+one that was never granted. Clients cannot select a renderer through proof
+requests.
 
 Stored records without `renderer_version` retain the fixed historical identity
 `product-html/1`; they are never interpreted as whichever renderer is active or
@@ -671,6 +674,59 @@ by `POST /api/process` and is never rewritten or deleted by generation. A
 request-supplied `original_text` on `POST /api/generate` is ignored — the
 legacy field is accepted for compatibility but is not trusted source evidence
 — so both evidence files remain byte-for-byte identical across generations.
+
+### Layout-proof review resources
+
+```text
+GET /api/artifacts/{artifact_id}/layout-proofs
+GET /api/artifacts/{artifact_id}/layout-proofs/variants/{variant}/proof.pdf
+GET /api/artifacts/{artifact_id}/layout-proofs/variants/{variant}/proof.html
+GET /api/artifacts/{artifact_id}/layout-proofs/variants/{variant}/comparison/{filename}
+POST /api/artifacts/{artifact_id}/layout-proofs/approve
+```
+
+The status response is the review surface for the current stored proof set. Each
+available variant reports `proof_pdf_url`, `proof_html_url`, the recorded
+`page_count` (never an assumed one), `pdf_checksum` and the comparison resources
+its stored visual report names (`comparison_images[]`, each with `kind`
+`target|generated|difference|report` and the page it belongs to, including a
+target page that has no counterpart). Evidence that exists but cannot be read
+appears in `unavailable_variants[]` with a reason instead of in `variants[]`, so
+unavailable and never-created stay distinct and neither counts toward "created"
+or enables the decision. Availability is judged from all of a variant's stored
+evidence, not one record: a missing `render_result.json`, a corrupt record, a
+contradictory page count, a changed file or a permission failure on read all
+leave the variant unavailable with a pathless reason, and the status request
+still answers 200. Only a variant with no evidence file at all is never created.
+Every URL is an artifact-scoped API path.
+
+The three resource routes serve only files the stored evidence names, never a
+request-named path: the variant's own `render_result.json` supplies the filename
+and checksum, the served bytes must hash to it, the real path must stay inside
+that variant's own proof or `visual/` directory, and the recorded `artifact_id`
+must match the requested artifact. The stored visual report names its comparison
+images but carries no digests, so the proof writer records them in
+`layout_proofs/variants/{variant}/comparison_checksums.json`; comparison images
+and the report are served only when their bytes hash to the recorded digest.
+`proof.pdf` is served `application/pdf` inline. Rejections return a structured `{error_code, message}` body with
+`layout_proof_resource_not_found` (404) or `layout_proof_resource_mismatch`
+(409) and never a filesystem path, the proof directory layout or a stack trace.
+Superseded proof directories and `pipeline_runs/` stay unreachable. Viewing a
+resource changes no approval and no acceptance state.
+
+`POST .../layout-proofs/approve` accepts the identity echo the client displayed
+(`expected_target_checksum`, `expected_layout_spec_checksum`,
+`expected_variant_proof_ids`, `expected_variant_pdf_checksums`). Any supplied
+identity that no longer resolves on disk rejects the decision with 409
+`layout_proof_mismatch`; the backend never approves or rejects a set the
+reviewer did not see, and a decision stays refused while any variant is
+unavailable or the stored set is invalidated.
+
+Generation from an uploaded target consults the same identities, not only the
+approval record: `require_layout_proof_approval` compares the approved
+variant proof ids with the ids that resolve now, for both the PostgreSQL and the
+legacy JSON approval store, and refuses with 409 `layout_proof_mismatch` when a
+variant was re-created or its current evidence cannot be read.
 
 ## Final Output Acceptance
 

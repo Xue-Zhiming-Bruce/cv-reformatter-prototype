@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,8 @@ from app.main import app
 from app.template_analysis import layout_proof_rendering
 from app.template_analysis.artifacts import LAYOUT_SPEC_FILENAME, load_layout_template_spec
 from app.template_analysis.layout_proof_schemas import LengthVariant
+from app.template_analysis.visual_comparator import COMPARISON_FILENAME
+from app.template_analysis.layout_proof_artifacts import save_variant_evidence
 from app.template_analysis.layout_proof_validation import (
     load_layout_proof_render_result,
     load_variant_evidence,
@@ -1228,3 +1232,663 @@ def test_repairable_gate_failure_is_not_reported_as_a_ceiling() -> None:
     error = agentic._required_gate_failure("render-target-v1", gates, details)
     assert "Representation ceiling" not in str(error)
     assert "content_gate" in str(error)
+
+
+# ===========================================================================
+# AC1-AC9: reviewable proof resources (PDF, HTML, comparison evidence) and the
+# per-variant review states the panel shows before a decision.
+# ===========================================================================
+
+
+def _create_proof_set(artifact_id: str) -> None:
+    response = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})
+    assert response.status_code == 200, response.text
+
+
+def _proof_status(artifact_id: str) -> dict[str, object]:
+    response = client.get(f"/api/artifacts/{artifact_id}/layout-proofs")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _variant_entry(body: dict, variant: str) -> dict:
+    entries = {entry["variant"]: entry for entry in body["variants"]}
+    assert variant in entries, f"{variant} is not available evidence: {body['variants']}"
+    return entries[variant]
+
+
+def _named_evidence(artifact_dir: Path, variant: str) -> set[str]:
+    """The filenames the stored visual report names for this variant."""
+    variant_dir = artifact_dir / "layout_proofs" / "variants" / variant
+    report = json.loads(
+        (variant_dir / "visual.json").read_text(encoding="utf-8")
+    )["report"]
+    return {
+        COMPARISON_FILENAME,
+        *report["target_page_filenames"],
+        *report["generated_page_filenames"],
+        *(page["difference_filename"] for page in report["pages"]),
+    }
+
+
+def _assert_structured_resource_error(response, *, statuses: set[int]) -> None:
+    """A rejection carries {error_code, message} and no filesystem path."""
+    assert response.status_code in statuses, response.text
+    detail = response.json()["detail"]
+    assert detail["error_code"] in {
+        "layout_proof_resource_not_found",
+        "layout_proof_resource_mismatch",
+    }, response.text
+    assert detail["message"].strip()
+    assert "generated_outputs" not in response.text
+    assert "layout_proofs" not in response.text
+    assert "Traceback" not in response.text
+
+
+def test_proof_resources_serve_the_recorded_pdf_html_and_comparisons(
+    tmp_path: Path,
+) -> None:
+    """AC1-AC3: every variant's PDF, HTML, comparison images and report resolve."""
+    artifact_id = "artifact_proof_resources"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    body = _proof_status(artifact_id)
+
+    assert {entry["variant"] for entry in body["variants"]} == {"short", "medium", "long"}
+    assert body["unavailable_variants"] == []
+    for entry in body["variants"]:
+        proof_dir = artifact_dir / "layout_proofs" / entry["proof_id"]
+        pdf = client.get(entry["proof_pdf_url"])
+        assert pdf.status_code == 200, pdf.text
+        assert pdf.headers["content-type"] == "application/pdf"
+        assert "inline" in pdf.headers["content-disposition"]
+        assert pdf.content == (proof_dir / entry["pdf_filename"]).read_bytes()
+        assert hashlib.sha256(pdf.content).hexdigest() == entry["pdf_checksum"]
+        html = client.get(entry["proof_html_url"])
+        assert html.status_code == 200, html.text
+        assert html.headers["content-type"].startswith("text/html")
+        assert html.content == (proof_dir / entry["html_filename"]).read_bytes()
+        # A recorded count is reported as recorded; it is never derived from nothing.
+        assert entry["page_count"] is not None
+        kinds = {image["kind"] for image in entry["comparison_images"]}
+        assert kinds == {"target", "generated", "difference", "report"}
+        expected_media = {
+            "target": "image/png",
+            "generated": "image/png",
+            "difference": "image/png",
+            "report": "application/json",
+        }
+        for image in entry["comparison_images"]:
+            served = client.get(image["url"])
+            assert served.status_code == 200, (entry["variant"], image["filename"])
+            assert served.headers["content-type"] == expected_media[image["kind"]]
+            assert image["url"].startswith(f"/api/artifacts/{artifact_id}/")
+        # AC3: every target page the report names is viewable, whether or not the
+        # variant generated a counterpart page (see the target-only page test).
+        assert any(image["kind"] == "target" for image in entry["comparison_images"])
+        assert any(image["kind"] == "difference" for image in entry["comparison_images"])
+        assert {image["filename"] for image in entry["comparison_images"]} == _named_evidence(
+            artifact_dir, entry["variant"]
+        )
+
+
+def test_a_target_page_without_a_counterpart_comparison_is_viewable(
+    tmp_path: Path,
+) -> None:
+    """AC3: a target page with no generated counterpart is still viewable."""
+    artifact_id = "artifact_proof_target_only_page"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+
+    # A stored proof run records every comparison file it wrote, so a target-only
+    # page is added the way the writer adds one: the image plus its recorded digest.
+    evidence = load_variant_evidence(artifact_dir, LengthVariant("short"))
+    assert evidence is not None
+    report = evidence.visual.report
+    visual_dir = artifact_dir / "layout_proofs" / "variants" / "short" / "visual"
+    extra_page = visual_dir / "comparison_target_page_002.png"
+    shutil.copyfile(visual_dir / report.target_page_filenames[0], extra_page)
+    target_only_report = report.model_copy(
+        update={
+            "target_page_count": report.target_page_count + 1,
+            "target_page_filenames": [*report.target_page_filenames, extra_page.name],
+        }
+    )
+    save_variant_evidence(
+        artifact_dir,
+        evidence.model_copy(
+            update={
+                "visual": evidence.visual.model_copy(update={"report": target_only_report})
+            }
+        ),
+    )
+
+    entry = _variant_entry(_proof_status(artifact_id), "short")
+    target_only = [
+        image
+        for image in entry["comparison_images"]
+        if image["kind"] == "target" and image["filename"] == extra_page.name
+    ]
+    assert target_only, entry["comparison_images"]
+    assert client.get(target_only[0]["url"]).status_code == 200
+    assert not any(
+        image["filename"] == extra_page.name and image["kind"] != "target"
+        for image in entry["comparison_images"]
+    )
+
+
+def test_proof_resource_rejections_are_structured_and_pathless(tmp_path: Path) -> None:
+    """AC9: foreign, unknown, escaped and changed resources are rejected."""
+    from app.template_analysis.layout_proof_artifacts import (
+        LayoutProofResourceError,
+        resolve_comparison_resource,
+    )
+
+    artifact_id = "artifact_proof_containment"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    entry = _proof_status(artifact_id)["variants"][0]
+    base = f"/api/artifacts/{artifact_id}/layout-proofs/variants/short"
+
+    for url in (
+        # Unknown artifact, unsafe artifact id, unknown variant, unnamed file.
+        "/api/artifacts/artifact_not_here/layout-proofs/variants/short/proof.pdf",
+        "/api/artifacts/artifact.bad!/layout-proofs/variants/short/proof.pdf",
+        f"/api/artifacts/{artifact_id}/layout-proofs/variants/tiny/proof.pdf",
+        f"{base}/comparison/comparison_target_page_009.png",
+        f"{base}/comparison/visual.json",
+    ):
+        _assert_structured_resource_error(client.get(url), statuses={404, 409})
+
+    # A hidden file inside the visual directory is still not a named resource.
+    (artifact_dir / "layout_proofs" / "variants" / "short" / "visual" / "notes.txt").write_text(
+        "hidden", encoding="utf-8"
+    )
+    _assert_structured_resource_error(
+        client.get(f"{base}/comparison/notes.txt"), statuses={409}
+    )
+
+    # A traversal-shaped or deeper path never resolves: it stays a structured rejection.
+    for url in (
+        f"{base}/comparison/%2e%2e%2fproof.pdf",
+        f"{base}/comparison/a/b/c.png",
+        f"{base}/comparison/%2Fetc%2Fpasswd",
+        f"{base}/proof.pdf/extra",
+        f"{base}/",
+    ):
+        _assert_structured_resource_error(client.get(url), statuses={409})
+    # A client that normalizes "../" sends a different, still artifact-scoped request, so
+    # only the unnormalizable forms are asserted here; the resolver check below covers the rest.
+
+    # A resolver-level escape attempt never returns a path outside the directory.
+    for filename in ("../approval.json", "/etc/passwd", "visual/../../approval.json"):
+        with pytest.raises(LayoutProofResourceError) as raised:
+            resolve_comparison_resource(
+                artifact_dir=artifact_dir,
+                artifact_id=artifact_id,
+                variant=LengthVariant.SHORT,
+                filename=filename,
+            )
+        assert raised.value.error_code == "layout_proof_resource_mismatch"
+        assert str(tmp_path) not in str(raised.value)
+
+    # A symlink that resolves outside the variant's own directory is refused.
+    named_page = artifact_dir / "layout_proofs" / "variants" / "short" / "visual" / "generated_page_001.png"
+    outside = artifact_dir / "target_format.json"
+    named_page.unlink()
+    named_page.symlink_to(outside)
+    _assert_structured_resource_error(
+        client.get(f"{base}/comparison/generated_page_001.png"), statuses={409}
+    )
+
+    # Changed proof bytes are refused, and the same request succeeds again only
+    # with the recorded bytes.
+    proof_pdf = (
+        artifact_dir / "layout_proofs" / entry["proof_id"] / entry["pdf_filename"]
+    )
+    recorded = proof_pdf.read_bytes()
+    proof_pdf.write_bytes(recorded + b"\nchanged")
+    _assert_structured_resource_error(
+        client.get(f"/api/artifacts/{artifact_id}/layout-proofs/variants/short/proof.pdf"),
+        statuses={409},
+    )
+    proof_pdf.write_bytes(recorded)
+    assert client.get(
+        f"/api/artifacts/{artifact_id}/layout-proofs/variants/short/proof.pdf"
+    ).status_code == 200
+
+    # Evidence recorded for another artifact cannot be served here.
+    render_result_path = artifact_dir / "layout_proofs" / "variants" / "short" / "render_result.json"
+    render_result = json.loads(render_result_path.read_text(encoding="utf-8"))
+    render_result_path.write_text(
+        json.dumps({**render_result, "artifact_id": "artifact_other"}), encoding="utf-8"
+    )
+    _assert_structured_resource_error(
+        client.get(f"/api/artifacts/{artifact_id}/layout-proofs/variants/short/proof.pdf"),
+        statuses={409},
+    )
+
+
+def test_comparison_resource_bytes_are_verified_against_the_recorded_digests(
+    tmp_path: Path,
+) -> None:
+    """AC9: changed, unreadable or unrecorded comparison bytes are refused.
+
+    The stored visual report names its images but carries no digests, so the
+    proof writer records them; a set whose bytes or digests do not match what the
+    writer recorded is refused instead of served.
+    """
+    artifact_id = "artifact_proof_comparison_bytes"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    entry = _variant_entry(_proof_status(artifact_id), "short")
+    visual_dir = artifact_dir / "layout_proofs" / "variants" / "short" / "visual"
+    image = next(item for item in entry["comparison_images"] if item["kind"] == "difference")
+    image_path = visual_dir / image["filename"]
+    assert client.get(image["url"]).status_code == 200
+
+    # Changed comparison bytes are refused, and the variant stops counting as
+    # reviewable evidence: the panel never shows an image it cannot verify.
+    recorded = image_path.read_bytes()
+    image_path.write_bytes(recorded + b"\nchanged")
+    _assert_structured_resource_error(client.get(image["url"]), statuses={409})
+    available, unavailable = _review_state_lists(_proof_status(artifact_id))
+    assert available == ["medium", "long"]
+    assert set(unavailable) == {"short"}
+    assert str(tmp_path) not in unavailable["short"]
+    image_path.write_bytes(recorded)
+    assert client.get(image["url"]).status_code == 200
+
+    # The visual report is served from the same digest check.
+    report_url = next(
+        item["url"] for item in entry["comparison_images"] if item["kind"] == "report"
+    )
+    report_path = visual_dir / COMPARISON_FILENAME
+    recorded_report = report_path.read_bytes()
+    report_path.write_bytes(recorded_report + b"\n")
+    _assert_structured_resource_error(client.get(report_url), statuses={409})
+    report_path.write_bytes(recorded_report)
+    assert client.get(report_url).status_code == 200
+
+    # A set whose comparison digests were never recorded is not servable, and it
+    # stops counting toward "created".
+    manifest = (
+        artifact_dir
+        / "layout_proofs"
+        / "variants"
+        / "short"
+        / "comparison_checksums.json"
+    )
+    manifest.unlink()
+    _assert_structured_resource_error(client.get(image["url"]), statuses={409})
+    available, unavailable = _review_state_lists(_proof_status(artifact_id))
+    assert available == ["medium", "long"]
+    assert "recorded checksums" in unavailable["short"]
+    assert str(tmp_path) not in unavailable["short"]
+
+
+def _review_state_lists(body: dict) -> tuple[list[str], dict[str, str]]:
+    available = [entry["variant"] for entry in body["variants"]]
+    return available, {
+        item["variant"]: item["reason"] for item in body["unavailable_variants"]
+    }
+
+
+def test_status_separates_unavailable_evidence_from_never_created(tmp_path: Path) -> None:
+    """AC4: available, unavailable-with-reason, and never created stay distinct.
+
+    The three states are separated by the evidence that exists, not by the
+    presence of one record: a variant whose ``render_result.json`` is gone still
+    has created evidence and must be reported unavailable with a reason, while a
+    variant with no evidence file at all was never created and appears in
+    neither list.
+    """
+    artifact_id = "artifact_proof_review_states"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    available, unavailable = _review_state_lists(_proof_status(artifact_id))
+    assert available == ["short", "medium", "long"]
+    assert unavailable == {}
+
+    variants_root = artifact_dir / "layout_proofs" / "variants"
+    (variants_root / "long" / "render_result.json").unlink()
+    (variants_root / "medium" / "structural.json").write_text("{ not json", encoding="utf-8")
+    available, unavailable = _review_state_lists(_proof_status(artifact_id))
+    assert available == ["short"]
+    # Evidence that exists but cannot be read is unavailable, never never-created.
+    assert set(unavailable) == {"medium", "long"}
+    for reason in unavailable.values():
+        assert reason.strip()
+        assert str(tmp_path) not in reason
+        assert "layout_proofs" not in reason
+
+    # No evidence file at all for the long variant: it never counts as created.
+    shutil.rmtree(variants_root / "long")
+    body = _proof_status(artifact_id)
+    available, unavailable = _review_state_lists(body)
+    assert available == ["short"]
+    assert set(unavailable) == {"medium"}
+    assert "long" not in set(available) | set(unavailable)
+
+    # Missing comparison evidence makes otherwise readable evidence unavailable.
+    (variants_root / "short" / "visual" / "comparison_page_001_diff.png").unlink()
+    available, unavailable = _review_state_lists(_proof_status(artifact_id))
+    assert available == []
+    assert set(unavailable) == {"short", "medium"}
+
+
+def test_unreadable_stored_evidence_is_unavailable_not_a_failure(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """AC4: files this process cannot read are reported, never raised as a 500."""
+    from app.template_analysis import layout_proof_artifacts
+
+    artifact_id = "artifact_proof_unreadable_evidence"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    proofs_dir = artifact_dir / "layout_proofs"
+    medium = _variant_entry(_proof_status(artifact_id), "medium")
+
+    # The proof PDF bytes are read by the digest helper; the stored records are
+    # read as text. Both fail here the way an unreadable file fails.
+    proof_pdf = proofs_dir / medium["proof_id"] / medium["pdf_filename"]
+    structural = proofs_dir / "variants" / "long" / "structural.json"
+    for variant, path, deny in (
+        ("medium", proof_pdf, _deny_digest_read(proof_pdf)),
+        ("long", structural, _deny_text_read(structural)),
+    ):
+        assert path.is_file(), path.name
+        with monkeypatch.context() as denial:
+            denial.setattr(
+                layout_proof_artifacts if variant == "medium" else Path,
+                "file_sha256" if variant == "medium" else "read_text",
+                deny,
+            )
+            available, unavailable = _review_state_lists(_proof_status(artifact_id))
+        # The unreadable variant is unavailable with a pathless reason; the rest
+        # of the set stays reviewable through the same response.
+        assert set(unavailable) == {variant}, (variant, unavailable)
+        assert set(available) == {"short", "medium", "long"} - {variant}
+        for reason in unavailable.values():
+            assert reason.strip()
+            assert str(tmp_path) not in reason
+
+    # An unreadable comparison image is refused by its own route, structured.
+    image = proofs_dir / "variants" / "short" / "visual" / "comparison_target_page_001.png"
+    assert image.is_file()
+    with monkeypatch.context() as denial:
+        denial.setattr(
+            layout_proof_artifacts, "file_sha256", _deny_digest_read(image)
+        )
+        refused = client.get(
+            f"/api/artifacts/{artifact_id}/layout-proofs/variants/short"
+            "/comparison/comparison_target_page_001.png"
+        )
+    _assert_structured_resource_error(refused, statuses={409})
+
+    available, unavailable = _review_state_lists(_proof_status(artifact_id))
+    assert available == ["short", "medium", "long"]
+    assert unavailable == {}
+
+
+def _deny_digest_read(path: Path):
+    from app.template_analysis.layout_proof_artifacts import file_sha256
+
+    def digest(candidate):
+        if Path(candidate) == path:
+            raise PermissionError(13, "Permission denied", str(candidate))
+        return file_sha256(candidate)
+
+    return digest
+
+
+def _deny_text_read(path: Path):
+    read_text = Path.read_text
+
+    def read(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return read_text(self, *args, **kwargs)
+
+    return read
+
+
+def test_approval_is_refused_while_a_variant_is_unavailable(tmp_path: Path) -> None:
+    """AC4/AC6: unavailable evidence never enables approval."""
+    artifact_id = "artifact_proof_approval_unavailable"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    (
+        artifact_dir / "layout_proofs" / "variants" / "medium" / "render_result.json"
+    ).unlink()
+    available, unavailable = _review_state_lists(_proof_status(artifact_id))
+    assert available == ["short", "long"]
+    assert set(unavailable) == {"medium"}
+
+    refused = client.post(
+        f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+        json={"state": "approved", "reviewer_id": "reviewer-1"},
+    )
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["error_code"] in {
+        "layout_proof_incomplete",
+        "layout_proof_mismatch",
+        "layout_proof_validation_failed",
+    }
+    assert str(tmp_path) not in refused.text
+    assert _proof_status(artifact_id)["state"] == "none"
+
+
+def test_status_keeps_contradictory_variant_evidence_out_of_the_proof_set(
+    tmp_path: Path,
+) -> None:
+    """AC4: contradictory stored records are unavailable with a reason, never a 500.
+
+    A re-render that dies between the two atomic writes leaves
+    ``render_result.json`` and ``structural.json`` disagreeing, which the evidence
+    model rejects; that must not take the whole status response down.
+    """
+    artifact_id = "artifact_proof_contradictory"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    variants_root = artifact_dir / "layout_proofs" / "variants"
+    structural_path = variants_root / "medium" / "structural.json"
+    structural = json.loads(structural_path.read_text(encoding="utf-8"))
+    structural["page_count"] = structural["page_count"] + 1
+    structural_path.write_text(json.dumps(structural), encoding="utf-8")
+    render_path = variants_root / "long" / "render_result.json"
+    render_result = json.loads(render_path.read_text(encoding="utf-8"))
+    render_result["page_count"] = None
+    render_path.write_text(json.dumps(render_result), encoding="utf-8")
+
+    body = _proof_status(artifact_id)
+    assert [entry["variant"] for entry in body["variants"]] == ["short"]
+    reasons = {
+        item["variant"]: item["reason"] for item in body["unavailable_variants"]
+    }
+    assert set(reasons) == {"medium", "long"}
+    for reason in reasons.values():
+        assert reason.strip()
+        assert str(tmp_path) not in reason
+        assert "layout_proofs" not in reason
+    assert body["state"] != "approved"
+    # The readable variant stays fully reviewable through the same response.
+    assert _variant_entry(body, "short")["proof_pdf_url"]
+
+
+def test_decision_echoes_the_reviewed_identities(tmp_path: Path) -> None:
+    """AC5: approval and rejection refer to the identities that were shown."""
+    artifact_id = "artifact_proof_identity_echo"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    body = _proof_status(artifact_id)
+    identity = {
+        "expected_target_checksum": body["target_checksum"],
+        "expected_layout_spec_checksum": body["layout_spec_checksum"],
+        "expected_variant_proof_ids": {
+            entry["variant"]: entry["proof_id"] for entry in body["variants"]
+        },
+        "expected_variant_pdf_checksums": {
+            entry["variant"]: entry["pdf_checksum"] for entry in body["variants"]
+        },
+    }
+
+    def decide(state: str, **overrides: object):
+        return client.post(
+            f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+            json={"state": state, "reviewer_id": "reviewer-echo", **identity, **overrides},
+        )
+
+    for overrides in (
+        {"expected_target_checksum": "0" * 64},
+        {"expected_layout_spec_checksum": "0" * 64},
+        {"expected_variant_proof_ids": {"short": "layout_proof_short_0000000000000000"}},
+        {"expected_variant_pdf_checksums": {"medium": "0" * 64}},
+        {"expected_variant_proof_ids": {"tiny": "layout_proof_tiny_0000000000000000"}},
+    ):
+        for state in ("approved", "rejected"):
+            rejected = decide(state, **overrides)
+            assert rejected.status_code == 409, rejected.text
+            assert rejected.json()["detail"]["error_code"] == "layout_proof_mismatch"
+            assert str(tmp_path) not in rejected.text
+
+    approved = decide("approved")
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["state"] == "approved"
+    assert approved.json()["approval_invalidated"] is False
+    # A rejected decision echoes the same identities.
+    rejected = decide("rejected")
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["state"] == "rejected"
+
+
+def test_status_reports_an_invalidated_approval_and_recovers_by_reapproval(
+    tmp_path: Path,
+) -> None:
+    """AC6: a stale approval is a distinct state, not never-approved."""
+    artifact_id = "artifact_proof_invalidation"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_and_approve(client, artifact_id, artifact_dir)
+    body = _proof_status(artifact_id)
+    assert body["state"] == "approved"
+    assert body["approval_invalidated"] is False
+    assert body["approval_invalidated_reason"] is None
+
+    entry = body["variants"][0]
+    proof_pdf = artifact_dir / "layout_proofs" / entry["proof_id"] / entry["pdf_filename"]
+    recorded = proof_pdf.read_bytes()
+    proof_pdf.write_bytes(recorded + b"\nchanged")
+    body = _proof_status(artifact_id)
+    assert body["state"] != "approved"
+    assert body["approval_invalidated"] is True
+    assert body["approval_invalidated_reason"]
+    assert str(tmp_path) not in body["approval_invalidated_reason"]
+
+    # The stale set cannot be re-approved; new proofs make it reviewable again.
+    stale = client.post(
+        f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+        json={"state": "approved", "reviewer_id": "reviewer-stale"},
+    )
+    assert stale.status_code == 409, stale.text
+    proof_pdf.write_bytes(recorded)
+    assert _proof_status(artifact_id)["state"] == "approved"
+    _create_proof_set(artifact_id)
+    body = _proof_status(artifact_id)
+    assert body["approval_invalidated"] is True
+    assert "re-created" in body["approval_invalidated_reason"]
+    reapproved = client.post(
+        f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+        json={"state": "approved", "reviewer_id": "reviewer-fresh"},
+    )
+    assert reapproved.status_code == 200, reapproved.text
+    assert reapproved.json()["state"] == "approved"
+    assert reapproved.json()["approval_invalidated"] is False
+
+
+def test_recreated_proofs_block_generation_after_approval(tmp_path: Path) -> None:
+    """AC8: generation refuses an approval whose proof variants were re-created.
+
+    Re-creating the proof set leaves the approved proof files on disk, so
+    re-hashing them still succeeds; the gate must compare the approval with the
+    identities that resolve now.
+    """
+    artifact_id = "artifact_proof_gate_recreated"
+    artifact_dir = tmp_path / artifact_id
+    target_format = _upload_target(tmp_path, artifact_id)
+    version_id = _approve_profile(artifact_id, artifact_dir)
+    _create_and_approve(client, artifact_id, artifact_dir)
+    assert _proof_status(artifact_id)["state"] == "approved"
+
+    # Re-create the set behind the approval's back: new proof ids, same target,
+    # same layout spec, and the approved proof files still hash correctly.
+    _create_proof_set(artifact_id)
+    body = _proof_status(artifact_id)
+    assert body["state"] == "none"
+    assert body["approval_invalidated"] is True
+    assert "re-created" in (body["approval_invalidated_reason"] or "")
+
+    blocked = _generate_with_target(artifact_id, target_format, version_id)
+    assert blocked.status_code == 409, blocked.text
+    detail = blocked.json()["detail"]
+    assert detail["error_code"] == "layout_proof_mismatch"
+    assert "was re-created" in detail["message"]
+    assert "create_layout_proofs" in detail["options"]
+    assert not (artifact_dir / "candidate_profile.pdf").exists()
+
+
+def test_unreadable_approved_variant_evidence_blocks_generation(
+    tmp_path: Path,
+) -> None:
+    """AC8: an approval that cannot be verified against the stored set is refused."""
+    artifact_id = "artifact_proof_gate_unreadable"
+    artifact_dir = tmp_path / artifact_id
+    target_format = _upload_target(tmp_path, artifact_id)
+    version_id = _approve_profile(artifact_id, artifact_dir)
+    _create_and_approve(client, artifact_id, artifact_dir)
+
+    render_result = (
+        artifact_dir / "layout_proofs" / "variants" / "long" / "render_result.json"
+    )
+    recorded = render_result.read_bytes()
+    render_result.write_bytes(b"{ not json")
+    try:
+        blocked = _generate_with_target(artifact_id, target_format, version_id)
+    finally:
+        render_result.write_bytes(recorded)
+    assert blocked.status_code == 409, blocked.text
+    detail = blocked.json()["detail"]
+    assert detail["error_code"] == "layout_proof_mismatch"
+    assert "long cannot be read" in detail["message"]
+    assert not (artifact_dir / "candidate_profile.pdf").exists()
+
+
+def test_unavailable_or_invalidated_proofs_still_block_generation(tmp_path: Path) -> None:
+    """AC8: the review surface never turns missing evidence into a passing gate."""
+    artifact_id = "artifact_proof_gate_states"
+    artifact_dir = tmp_path / artifact_id
+    target_format = _upload_target(tmp_path, artifact_id)
+    version_id = _approve_profile(artifact_id, artifact_dir)
+    _create_proof_set(artifact_id)
+    blocked = _generate_with_target(artifact_id, target_format, version_id)
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"]["error_code"] in {
+        "layout_proof_required",
+        "layout_proof_approval_required",
+    }
+    body = _proof_status(artifact_id)
+    assert body["state"] != "approved"
+    assert body["variants"] and body["unavailable_variants"] == []
+    # Viewing a resource changes no approval or acceptance state.
+    assert client.get(body["variants"][0]["proof_pdf_url"]).status_code == 200
+    assert _proof_status(artifact_id)["state"] == body["state"]
+    assert not (artifact_dir / "final_acceptance.json").exists()

@@ -14,12 +14,20 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 from app.template_analysis.layout_proof_schemas import (
+    LayoutProofApproval,
     LengthVariant,
+    LayoutProofRenderResult,
     VariantProofEvidence,
+    VisualComparisonEvidence,
 )
-from app.template_analysis.schemas import LayoutTemplateSpec
+from app.template_analysis.schemas import LayoutTemplateSpec, VisualComparisonReport
+from app.template_analysis.visual_comparator import COMPARISON_FILENAME
+
+#: Digests of a variant's comparison images and visual report, recorded at write time.
+COMPARISON_CHECKSUMS_FILENAME = "comparison_checksums.json"
 
 #: Repository-approved debug artifact location for standalone proof renders.
 DEFAULT_PROOF_OUTPUT_DIR = Path("data/generated_outputs") / "layout_proofs"
@@ -64,7 +72,7 @@ def save_variant_evidence(
     artifact_dir: str | Path,
     evidence: VariantProofEvidence,
 ) -> None:
-    """Persist per-variant evidence (strict JSON, atomic writes)."""
+    """Persist per-variant evidence and the comparison digests it names."""
     directory = variant_dir_for(artifact_dir, evidence.variant)
     write_json_atomic(
         directory / "render_result.json",
@@ -78,6 +86,274 @@ def save_variant_evidence(
         directory / "visual.json",
         evidence.visual.model_dump(mode="json"),
     )
+    _save_comparison_checksums(artifact_dir, evidence.variant)
+
+
+def _save_comparison_checksums(artifact_dir: str | Path, variant: LengthVariant) -> None:
+    """Record the digest of every comparison file written for this variant.
+
+    The stored visual report names its images but carries no digests, so a
+    changed comparison image or report would otherwise stay servable. Digests
+    live beside the variant's evidence, outside the served ``visual/`` directory.
+    """
+    visual_dir = variant_dir_for(artifact_dir, variant) / "visual"
+    from app.template_analysis.layout_proof_validation import (
+        LayoutProofValidationError,
+    )
+
+    try:
+        files = {
+            path.name: file_sha256(path)
+            for path in sorted(visual_dir.iterdir())
+            if path.is_file()
+        }
+    except OSError as exc:
+        raise LayoutProofValidationError(
+            f"comparison evidence for variant '{variant.value}' cannot be read: {exc}"
+        ) from exc
+    write_json_atomic(
+        variant_dir_for(artifact_dir, variant) / COMPARISON_CHECKSUMS_FILENAME,
+        {"files": files},
+    )
+
+
+def stale_variant_proofs(
+    artifact_dir: str | Path,
+    artifact_id: str,
+    approval: LayoutProofApproval,
+) -> dict[str, str]:
+    """Approved variants whose current stored proof no longer matches the approval.
+
+    ``verify_approval_files`` re-hashes the proof files the approval recorded, so
+    a re-created set leaves those files intact while the artifact's current
+    ``render_result.json`` points at new proofs. Generation must refuse that
+    approval, so the comparison is made here against what resolves now.
+    """
+    stale: dict[str, str] = {}
+    for variant, evidence in approval.variants.items():
+        try:
+            current = _recorded_proof_result(artifact_dir, artifact_id, variant)
+        except LayoutProofResourceError:
+            stale[variant.value] = "cannot be read"
+            continue
+        if current.proof_id != evidence.render_result.proof_id:
+            stale[variant.value] = "was re-created"
+    return stale
+
+
+# -- reviewable proof resources -----------------------------------------------
+
+
+class LayoutProofResourceError(RuntimeError):
+    """A proof resource request that must not be served.
+
+    ``error_code`` is the structured API error the route returns. Messages name
+    the variant and what is wrong, never a filesystem path, the proof directory
+    layout, or a stack trace.
+    """
+
+    def __init__(
+        self,
+        error_code: Literal[
+            "layout_proof_resource_not_found", "layout_proof_resource_mismatch"
+        ],
+        message: str,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
+
+def _recorded_proof_result(
+    artifact_dir: str | Path, artifact_id: str, variant: LengthVariant
+) -> LayoutProofRenderResult:
+    """The variant's recorded render result, strictly validated for this artifact.
+
+    ``layout_proof_validation`` imports this module, so the loader is imported
+    here rather than at module scope.
+    """
+    from app.template_analysis.layout_proof_validation import (
+        LayoutProofIncompleteError,
+        LayoutProofValidationError,
+        load_layout_proof_render_result,
+    )
+
+    try:
+        return load_layout_proof_render_result(
+            artifact_dir, variant, artifact_id=artifact_id
+        )
+    except LayoutProofIncompleteError as exc:
+        raise LayoutProofResourceError(
+            "layout_proof_resource_not_found",
+            f"no {variant.value} proof is recorded for this artifact",
+        ) from exc
+    except LayoutProofValidationError as exc:
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the recorded {variant.value} proof cannot be read",
+        ) from exc
+
+
+def resolve_proof_resource(
+    *,
+    artifact_dir: str | Path,
+    artifact_id: str,
+    variant: LengthVariant,
+    kind: Literal["pdf", "html"],
+) -> Path:
+    """The variant's recorded proof ``pdf`` or ``html`` file, checksum-verified.
+
+    The filename comes from the variant's own ``render_result.json`` (never from
+    a request), the real file must stay inside that variant's proof directory,
+    and its bytes must hash to the recorded checksum.
+    """
+    result = _recorded_proof_result(artifact_dir, artifact_id, variant)
+    if kind == "pdf":
+        filename, expected_checksum = result.pdf_filename, result.pdf_checksum
+    else:
+        filename, expected_checksum = result.html_filename, result.html_checksum
+    proof_dir = layout_proofs_dir_for(artifact_dir) / result.proof_id
+    label = f"proof {kind.upper()}"
+    path = _contained_file(proof_dir / filename, proof_dir, variant, label)
+    if _file_sha256_or_none(path, variant, label) != expected_checksum:
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the {variant.value} proof {kind.upper()} changed after it was recorded",
+        )
+    return path
+
+
+def _file_sha256_or_none(path: Path, variant: LengthVariant, label: str) -> str | None:
+    """The file's digest, or ``None`` when its bytes cannot be read at all."""
+    try:
+        return file_sha256(path)
+    except OSError as exc:
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the {variant.value} {label} cannot be read",
+        ) from exc
+
+
+def comparison_filenames(report: VisualComparisonReport) -> list[str]:
+    """The comparison files a variant's stored visual report names."""
+    return list(
+        dict.fromkeys(
+            (
+                COMPARISON_FILENAME,
+                *report.target_page_filenames,
+                *report.generated_page_filenames,
+                *(page.difference_filename for page in report.pages),
+            )
+        )
+    )
+
+
+def resolve_comparison_resource(
+    *,
+    artifact_dir: str | Path,
+    artifact_id: str,
+    variant: LengthVariant,
+    filename: str,
+) -> Path:
+    """One comparison image or the visual report the variant's evidence names.
+
+    ``filename`` must be the report filename or a page image named by the
+    variant's own ``visual.json``, the real file must stay inside that variant's
+    ``visual/`` directory, and its bytes must hash to the digest recorded when
+    the proof set was created.
+    """
+    _recorded_proof_result(artifact_dir, artifact_id, variant)
+    report = _recorded_visual_report(artifact_dir, variant)
+    if filename not in comparison_filenames(report):
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the {variant.value} comparison evidence does not name this file",
+        )
+    recorded = _recorded_comparison_checksums(artifact_dir, variant)
+    if filename not in recorded:
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the {variant.value} comparison evidence has no recorded checksum for this file",
+        )
+    visual_dir = variant_dir_for(artifact_dir, variant) / "visual"
+    path = _contained_file(
+        visual_dir / filename, visual_dir, variant, "comparison resource"
+    )
+    if _file_sha256_or_none(path, variant, "comparison resource") != recorded[filename]:
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the {variant.value} comparison resource changed after it was recorded",
+        )
+    return path
+
+
+def _recorded_comparison_checksums(
+    artifact_dir: str | Path, variant: LengthVariant
+) -> dict[str, str]:
+    """The variant's recorded comparison digests, or nothing servable."""
+    path = variant_dir_for(artifact_dir, variant) / COMPARISON_CHECKSUMS_FILENAME
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the {variant.value} comparison evidence has no recorded checksums",
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the {variant.value} comparison evidence cannot be read",
+        ) from exc
+    files = payload.get("files") if isinstance(payload, dict) else None
+    if not isinstance(files, dict) or not all(
+        isinstance(name, str) and isinstance(digest, str)
+        for name, digest in files.items()
+    ):
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the {variant.value} comparison evidence cannot be read",
+        )
+    return files
+
+
+def _recorded_visual_report(
+    artifact_dir: str | Path, variant: LengthVariant
+) -> VisualComparisonReport:
+    path = variant_dir_for(artifact_dir, variant) / "visual.json"
+    try:
+        evidence = VisualComparisonEvidence.model_validate_json(
+            path.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as exc:
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the stored {variant.value} comparison evidence cannot be read",
+        ) from exc
+    return evidence.report
+
+
+def _contained_file(
+    path: Path, directory: Path, variant: LengthVariant, label: str
+) -> Path:
+    """Resolve ``path`` only when its real file stays inside ``directory``."""
+    try:
+        resolved_path = path.resolve()
+        resolved_directory = directory.resolve()
+    except OSError as exc:
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the {variant.value} {label} cannot be resolved",
+        ) from exc
+    if not resolved_path.is_relative_to(resolved_directory):
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the {variant.value} {label} does not resolve inside its own directory",
+        )
+    if not resolved_path.is_file():
+        raise LayoutProofResourceError(
+            "layout_proof_resource_not_found",
+            f"the {variant.value} {label} is not available",
+        )
+    return resolved_path
 
 
 def write_json_atomic(path: Path, payload: object, *, canonical: bool = False) -> None:

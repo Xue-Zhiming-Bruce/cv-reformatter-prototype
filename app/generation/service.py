@@ -96,7 +96,10 @@ from app.template_analysis.design_service import (
     get_design_strategy,
     load_design_state,
 )
-from app.template_analysis.layout_proof_artifacts import layout_spec_checksum
+from app.template_analysis.layout_proof_artifacts import (
+    layout_spec_checksum,
+    stale_variant_proofs,
+)
 from app.template_analysis.layout_proof_rendering import (
     LayoutProofMismatchError,
     LayoutProofRenderError,
@@ -545,6 +548,20 @@ def require_layout_proof_approval(
             {
                 "error_code": "layout_proof_mismatch",
                 "message": "The layout-proof approval does not cover this LayoutTemplateSpec.",
+            },
+        )
+    stale = stale_variant_proofs(artifact_dir, artifact_id, approval)
+    if stale:
+        raise GenerationError(
+            409,
+            {
+                "error_code": "layout_proof_mismatch",
+                "message": (
+                    "The layout-proof approval no longer covers the stored proof set: "
+                    + ", ".join(f"{variant} {reason}" for variant, reason in stale.items())
+                    + ". Create and approve the proof set again."
+                ),
+                "options": ["create_layout_proofs", "approve_layout_proofs"],
             },
         )
     return approval

@@ -158,6 +158,14 @@ export interface GenerateResponse {
   client_ready: boolean
 }
 
+export interface LayoutProofComparisonImage {
+  filename: string
+  kind: "target" | "generated" | "difference" | "report"
+  page_number: number | null
+  // Artifact-scoped path the backend serves inline; a browser downloads it with `download`.
+  url: string
+}
+
 export interface LayoutProofVariant {
   variant: string
   proof_id: string
@@ -168,6 +176,16 @@ export interface LayoutProofVariant {
   visual_similarity: number | null
   html_filename: string
   pdf_filename: string
+  pdf_checksum: string
+  proof_pdf_url: string
+  proof_html_url: string
+  comparison_images: LayoutProofComparisonImage[]
+}
+
+// A variant whose files exist but whose recorded evidence cannot be reviewed.
+export interface LayoutProofUnavailableVariant {
+  variant: string
+  reason: string
 }
 
 export interface LayoutProofStatus {
@@ -177,6 +195,9 @@ export interface LayoutProofStatus {
   target_checksum: string
   layout_spec_checksum: string
   variants: LayoutProofVariant[]
+  unavailable_variants: LayoutProofUnavailableVariant[]
+  approval_invalidated: boolean
+  approval_invalidated_reason: string | null
   approval_id: string | null
   approved_at: string | null
   reviewer_id: string | null

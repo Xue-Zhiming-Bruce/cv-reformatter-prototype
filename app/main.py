@@ -7,13 +7,14 @@ import tempfile
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 import httpx
 
 from app.extraction.candidate_document_analyzer import build_candidate_field_evidence
@@ -107,8 +108,19 @@ from app.template_analysis.docx_style_analyzer import (
     TargetDocxAnalysisError,
     analyze_target_docx,
 )
-from app.template_analysis.layout_proof_artifacts import layout_spec_checksum
-from app.template_analysis.layout_proof_schemas import LengthVariant
+from app.template_analysis.layout_proof_artifacts import (
+    LayoutProofResourceError,
+    layout_spec_checksum,
+    resolve_comparison_resource,
+    resolve_proof_resource,
+    variant_dir_for,
+)
+from app.template_analysis.layout_proof_schemas import (
+    LayoutProofApproval,
+    LayoutProofRenderResult,
+    LengthVariant,
+    VariantProofEvidence,
+)
 from app.template_analysis.layout_proof_rendering import (
     LayoutProofMismatchError,
     LayoutProofPresentationLabelError,
@@ -124,6 +136,7 @@ from app.template_analysis.layout_proof_service import (
 from app.template_analysis.layout_proof_validation import (
     LayoutProofIncompleteError,
     LayoutProofValidationError,
+    load_layout_proof_render_result,
     load_variant_evidence,
 )
 from app.template_analysis.artifacts import (
@@ -135,7 +148,11 @@ from app.template_analysis.artifacts import (
     TargetAnalysisArtifactError,
     load_layout_template_spec,
 )
-from app.template_analysis.schemas import LayoutTemplateSpec, TemplateStyleSpec
+from app.template_analysis.schemas import (
+    LayoutTemplateSpec,
+    TemplateStyleSpec,
+    VisualComparisonReport,
+)
 from app.template_analysis.visual_comparator import COMPARISON_FILENAME
 from app.template_analysis.design_evidence import (
     candidate_sections_from_profile,
@@ -445,6 +462,15 @@ class LayoutProofRequestCreate(BaseModel):
     presentation_label_approval: PresentationLabelApproval | None = None
 
 
+class LayoutProofComparisonImage(BaseModel):
+    """One viewable comparison resource of a variant's proof; never a paths."""
+
+    filename: str
+    kind: Literal["target", "generated", "difference", "report"]
+    page_number: int | None
+    url: str
+
+
 class LayoutProofEvidenceSummary(BaseModel):
     """Per-variant proof evidence summary. Never exposes absolute paths."""
 
@@ -457,6 +483,17 @@ class LayoutProofEvidenceSummary(BaseModel):
     visual_similarity: float | None
     html_filename: str
     pdf_filename: str
+    pdf_checksum: str
+    proof_pdf_url: str
+    proof_html_url: str
+    comparison_images: list[LayoutProofComparisonImage] = Field(default_factory=list)
+
+
+class LayoutProofUnavailableVariant(BaseModel):
+    """A variant whose files exist but whose recorded evidence cannot be reviewed."""
+
+    variant: str
+    reason: str
 
 
 class LayoutProofStatusResponse(BaseModel):
@@ -466,6 +503,9 @@ class LayoutProofStatusResponse(BaseModel):
     target_checksum: str
     layout_spec_checksum: str
     variants: list[LayoutProofEvidenceSummary] = Field(default_factory=list)
+    unavailable_variants: list[LayoutProofUnavailableVariant] = Field(default_factory=list)
+    approval_invalidated: bool = False
+    approval_invalidated_reason: str | None = None
     approval_id: str | None = None
     approved_at: str | None = None
     reviewer_id: str | None = None
@@ -480,6 +520,13 @@ class LayoutProofApproveRequest(BaseModel):
     # The presentation-label catalog the caller believes it is approving; it
     # must be the catalog the proof runs actually validated.
     catalog_sha256: str | None = None
+    # The identities the reviewer saw. Any supplied identity that no longer
+    # matches what resolves on disk rejects the decision
+    # (409 layout_proof_mismatch) instead of approving a set nobody reviewed.
+    expected_target_checksum: str | None = None
+    expected_layout_spec_checksum: str | None = None
+    expected_variant_proof_ids: dict[str, str] | None = None
+    expected_variant_pdf_checksums: dict[str, str] | None = None
 
 
 DESIGN_ARTIFACT_FILENAMES = {
@@ -1145,6 +1192,13 @@ def approve_layout_proofs(
     _target_format, style_spec, target_pdf, target_checksum = _layout_proof_context(
         artifact_dir, artifact_id, body.design_id
     )
+    _require_echoed_identity(
+        body,
+        artifact_dir=artifact_dir,
+        artifact_id=artifact_id,
+        target_checksum=target_checksum,
+        layout_checksum=layout_spec_checksum(style_spec),
+    )
     try:
         if body.state == "approved":
             approve_layout_proof(
@@ -1178,10 +1232,7 @@ def approve_layout_proofs(
             },
         ) from exc
     except LayoutProofMismatchError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"error_code": "layout_proof_mismatch", "message": str(exc)},
-        ) from exc
+        raise _layout_proof_mismatch(str(exc)) from exc
     except LayoutProofValidationError as exc:
         raise HTTPException(
             status_code=409,
@@ -1191,6 +1242,141 @@ def approve_layout_proofs(
             },
         ) from exc
     return _layout_proof_status(artifact_id, artifact_dir)
+
+
+# -- reviewable proof resources -----------------------------------------------
+# Only the current stored proof set is servable: every file is resolved inside
+# the requested artifact's own proof directory, named by that variant's own
+# stored evidence, and checked against its recorded checksum.
+
+_PROOF_RESOURCE_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".html": "text/html; charset=utf-8",
+    ".png": "image/png",
+    ".json": "application/json",
+}
+
+
+@app.get("/api/artifacts/{artifact_id}/layout-proofs/variants/{variant}/proof.pdf")
+def get_layout_proof_pdf(artifact_id: str, variant: str) -> FileResponse:
+    """The variant's recorded proof PDF, inline so the reviewer can page it."""
+    return _proof_resource_response(
+        artifact_id,
+        variant,
+        lambda artifact_dir, parsed: resolve_proof_resource(
+            artifact_dir=artifact_dir,
+            artifact_id=artifact_id,
+            variant=parsed,
+            kind="pdf",
+        ),
+    )
+
+
+@app.get("/api/artifacts/{artifact_id}/layout-proofs/variants/{variant}/proof.html")
+def get_layout_proof_html(artifact_id: str, variant: str) -> FileResponse:
+    """The proof HTML alternative; it never stands in for the recorded PDF."""
+    return _proof_resource_response(
+        artifact_id,
+        variant,
+        lambda artifact_dir, parsed: resolve_proof_resource(
+            artifact_dir=artifact_dir,
+            artifact_id=artifact_id,
+            variant=parsed,
+            kind="html",
+        ),
+    )
+
+
+@app.get(
+    "/api/artifacts/{artifact_id}/layout-proofs/variants/{variant}/comparison/{filename}"
+)
+def get_layout_proof_comparison(
+    artifact_id: str, variant: str, filename: str
+) -> FileResponse:
+    """One comparison image, or the stored visual report, for a variant."""
+    return _proof_resource_response(
+        artifact_id,
+        variant,
+        lambda artifact_dir, parsed: resolve_comparison_resource(
+            artifact_dir=artifact_dir,
+            artifact_id=artifact_id,
+            variant=parsed,
+            filename=filename,
+        ),
+    )
+
+
+def _proof_resource_response(
+    artifact_id: str,
+    variant: str,
+    resolve: Callable[[Path, LengthVariant], Path],
+) -> FileResponse:
+    """Serve one proof resource, mapping every rejection to a structured error."""
+    try:
+        artifact_dir, parsed = _proof_scope(artifact_id, variant)
+        path = resolve(artifact_dir, parsed)
+    except LayoutProofResourceError as exc:
+        raise _proof_resource_http_error(exc) from exc
+    return _proof_resource_file(path)
+
+
+def _proof_resource_http_error(exc: LayoutProofResourceError) -> HTTPException:
+    """The structured error for one refused proof resource."""
+    status_code = 404 if exc.error_code == "layout_proof_resource_not_found" else 409
+    return HTTPException(
+        status_code=status_code,
+        detail={"error_code": exc.error_code, "message": str(exc)},
+    )
+
+
+def _proof_resource_file(path: Path) -> FileResponse:
+    """The inline response for one verified proof resource file."""
+    media_type = _PROOF_RESOURCE_MEDIA_TYPES.get(path.suffix.lower())
+    if media_type is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "layout_proof_resource_mismatch",
+                "message": "the recorded proof resource type cannot be served",
+            },
+        )
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=path.name,
+        content_disposition_type="inline",
+    )
+
+
+@app.get("/api/artifacts/{artifact_id}/layout-proofs/variants/{variant}/{rest:path}")
+def get_layout_proof_unserved_resource(
+    artifact_id: str, variant: str, rest: str
+) -> None:
+    """Any other shape beneath a variant's resources is refused, never resolved."""
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error_code": "layout_proof_resource_mismatch",
+            "message": "this layout proof resource is not one the stored evidence names",
+        },
+    )
+
+
+def _proof_scope(artifact_id: str, variant: str) -> tuple[Path, LengthVariant]:
+    """The artifact directory and parsed variant, or a structured rejection."""
+    artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
+    if not is_safe_artifact_id(artifact_id) or not artifact_dir.exists():
+        raise LayoutProofResourceError(
+            "layout_proof_resource_not_found",
+            "this artifact has no recorded layout proof",
+        )
+    try:
+        return artifact_dir, LengthVariant(variant)
+    except ValueError as exc:
+        raise LayoutProofResourceError(
+            "layout_proof_resource_not_found",
+            "this artifact has no recorded layout proof for that variant",
+        ) from exc
 
 
 def _local_job_queue():
@@ -1666,43 +1852,28 @@ def _layout_proof_context(
 def _layout_proof_status(
     artifact_id: str, artifact_dir: Path
 ) -> LayoutProofStatusResponse:
-    try:
-        approval = load_layout_proof_approval(artifact_dir, repository=layout_proof_repository(DATABASE_URL))
-    except (LayoutProofMismatchError, LayoutProofValidationError):
-        approval = None
     target_checksum = ""
     target_format = load_saved_target_format(artifact_dir)
     if target_format is not None:
         stored_path = artifact_dir / target_format.stored_filename
-        if stored_path.exists():
-            target_checksum = target_checksum_from_bytes(stored_path.read_bytes())
+        try:
+            if stored_path.exists():
+                target_checksum = target_checksum_from_bytes(stored_path.read_bytes())
+        except OSError:
+            target_checksum = ""
     layout_checksum = ""
     try:
         style_spec = _load_generation_style_spec(artifact_dir)
         layout_checksum = layout_spec_checksum(style_spec)
     except Exception:
         pass
-    variants: list[LayoutProofEvidenceSummary] = []
-    for variant in LengthVariant:
-        try:
-            evidence = load_variant_evidence(artifact_dir, variant)
-        except LayoutProofValidationError:
-            evidence = None
-        if evidence is not None:
-            result = evidence.render_result
-            variants.append(
-                LayoutProofEvidenceSummary(
-                    variant=variant.value,
-                    proof_id=result.proof_id,
-                    renderer_version=result.renderer_version,
-                    page_count=result.page_count,
-                    structural_passed=evidence.structural.passed,
-                    structural_error_count=len(evidence.structural.errors),
-                    visual_similarity=evidence.visual.report.average_layout_similarity,
-                    html_filename=result.html_filename,
-                    pdf_filename=result.pdf_filename,
-                )
-            )
+    approval, invalidated, invalidation_reason = _proof_approval_state(
+        artifact_dir,
+        artifact_id=artifact_id,
+        target_checksum=target_checksum,
+        layout_checksum=layout_checksum,
+    )
+    variants, unavailable = _reviewable_variants(artifact_id, artifact_dir)
     return LayoutProofStatusResponse(
         artifact_id=artifact_id,
         renderer_version=active_renderer_version(),
@@ -1710,10 +1881,314 @@ def _layout_proof_status(
         target_checksum=target_checksum,
         layout_spec_checksum=layout_checksum,
         variants=variants,
+        unavailable_variants=unavailable,
+        approval_invalidated=invalidated,
+        approval_invalidated_reason=invalidation_reason,
         approval_id=approval.approval_id if approval is not None else None,
         approved_at=approval.approved_at if approval is not None else None,
         reviewer_id=approval.reviewer_id if approval is not None else None,
         reviewer_note=approval.reviewer_note if approval is not None else None,
     )
+
+
+def _proof_approval_state(
+    artifact_dir: Path,
+    *,
+    artifact_id: str,
+    target_checksum: str,
+    layout_checksum: str,
+) -> tuple[LayoutProofApproval | None, bool, str | None]:
+    """The stored approval, or why a stored approval no longer verifies.
+
+    An invalidated approval (changed target or spec, new renderer, altered proof
+    bytes, re-created proofs) is distinct from one that was never granted.
+    """
+    try:
+        approval = load_layout_proof_approval(
+            artifact_dir, repository=layout_proof_repository(DATABASE_URL)
+        )
+    except (LayoutProofMismatchError, LayoutProofValidationError) as exc:
+        return None, True, str(exc)
+    except OSError:
+        return None, True, "the stored approval cannot be read"
+    if approval is None:
+        return None, False, None
+    invalidation = _approval_invalidation(
+        artifact_dir,
+        artifact_id=artifact_id,
+        approval=approval,
+        target_checksum=target_checksum,
+        layout_checksum=layout_checksum,
+    )
+    if invalidation is not None:
+        return None, True, invalidation
+    return approval, False, None
+
+
+def _approval_invalidation(
+    artifact_dir: Path,
+    *,
+    artifact_id: str,
+    approval: LayoutProofApproval,
+    target_checksum: str,
+    layout_checksum: str,
+) -> str | None:
+    """Why the stored approval no longer covers what resolves on disk, if it does not."""
+    if target_checksum and approval.target_checksum != target_checksum:
+        return "the target changed after this proof set was approved"
+    if layout_checksum and approval.layout_spec_checksum != layout_checksum:
+        return "the layout spec changed after this proof set was approved"
+    recreated = sorted(
+        variant.value
+        for variant, evidence in approval.variants.items()
+        if _current_proof_id(artifact_dir, artifact_id, variant)
+        not in (None, evidence.render_result.proof_id)
+    )
+    if not recreated:
+        return None
+    return "the proof set was re-created after this approval: " + ", ".join(recreated)
+
+
+def _current_proof_id(
+    artifact_dir: Path, artifact_id: str, variant: LengthVariant
+) -> str | None:
+    """The proof id this artifact's stored evidence records, when it is readable."""
+    try:
+        return load_layout_proof_render_result(
+            artifact_dir, variant, artifact_id=artifact_id
+        ).proof_id
+    except (OSError, LayoutProofIncompleteError, LayoutProofValidationError):
+        return None
+
+
+#: Any one of these means proofs were created for a variant, readable or not.
+_VARIANT_EVIDENCE_FILENAMES = ("render_result.json", "structural.json", "visual.json")
+
+
+def _has_variant_evidence(artifact_dir: Path, variant: LengthVariant) -> bool:
+    """Whether any stored evidence exists for this variant.
+
+    Presence is judged from every evidence file, not one of them: proofs whose
+    ``render_result.json`` went missing were still created, so they must be
+    reported as unavailable rather than never created.
+    """
+    directory = variant_dir_for(artifact_dir, variant)
+    if any((directory / name).exists() for name in _VARIANT_EVIDENCE_FILENAMES):
+        return True
+    try:
+        return any((directory / "visual").iterdir())
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
+def _reviewable_variants(
+    artifact_id: str, artifact_dir: Path
+) -> tuple[list[LayoutProofEvidenceSummary], list[LayoutProofUnavailableVariant]]:
+    """Available evidence, and variants whose evidence exists but cannot be reviewed.
+
+    Only a variant with no stored evidence at all was never created and appears
+    in neither list. Every other failure (missing or corrupt records, changed
+    bytes, files this process cannot read) is reported as unavailable with a
+    reason, never as created evidence.
+    """
+    variants: list[LayoutProofEvidenceSummary] = []
+    unavailable: list[LayoutProofUnavailableVariant] = []
+    for variant in LengthVariant:
+        if not _has_variant_evidence(artifact_dir, variant):
+            continue
+        try:
+            variants.append(_reviewable_variant(artifact_id, artifact_dir, variant))
+        except LayoutProofResourceError as exc:
+            reason = str(exc)
+        except OSError:
+            reason = f"the stored {variant.value} evidence cannot be read"
+        else:
+            continue
+        unavailable.append(
+            LayoutProofUnavailableVariant(variant=variant.value, reason=reason)
+        )
+    return variants, unavailable
+
+
+def _reviewable_variant(
+    artifact_id: str, artifact_dir: Path, variant: LengthVariant
+) -> LayoutProofEvidenceSummary:
+    """One variant's evidence summary, or the reason it cannot be reviewed."""
+    evidence = _load_reviewable_evidence(artifact_dir, variant)
+    for kind in ("pdf", "html"):
+        resolve_proof_resource(
+            artifact_dir=artifact_dir,
+            artifact_id=artifact_id,
+            variant=variant,
+            kind=kind,
+        )
+    return _evidence_summary(artifact_id, artifact_dir, variant, evidence)
+
+
+def _load_reviewable_evidence(
+    artifact_dir: Path, variant: LengthVariant
+) -> VariantProofEvidence:
+    """A variant's stored evidence, or a pathless reason it cannot be read.
+
+    Contradictory stored records (a re-render that died between two atomic
+    writes) fail model validation, not just the loader, so both are reported as
+    unavailable evidence rather than failing the whole status response.
+    """
+    try:
+        evidence = load_variant_evidence(artifact_dir, variant)
+    except (LayoutProofValidationError, ValidationError) as exc:
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the stored {variant.value} validation evidence cannot be read",
+        ) from exc
+    if evidence is None:
+        if _has_variant_evidence(artifact_dir, variant):
+            raise LayoutProofResourceError(
+                "layout_proof_resource_mismatch",
+                f"the stored {variant.value} evidence is incomplete",
+            )
+        raise LayoutProofResourceError(
+            "layout_proof_resource_not_found",
+            f"no {variant.value} proof is recorded for this artifact",
+        )
+    return evidence
+
+
+def _evidence_summary(
+    artifact_id: str,
+    artifact_dir: Path,
+    variant: LengthVariant,
+    evidence: VariantProofEvidence,
+) -> LayoutProofEvidenceSummary:
+    """The reviewable summary of one variant's validated stored evidence."""
+    result = evidence.render_result
+    return LayoutProofEvidenceSummary(
+        variant=variant.value,
+        proof_id=result.proof_id,
+        renderer_version=result.renderer_version,
+        page_count=result.page_count,
+        structural_passed=evidence.structural.passed,
+        structural_error_count=len(evidence.structural.errors),
+        visual_similarity=evidence.visual.report.average_layout_similarity,
+        html_filename=result.html_filename,
+        pdf_filename=result.pdf_filename,
+        pdf_checksum=result.pdf_checksum,
+        proof_pdf_url=_proof_variant_url(artifact_id, variant, "proof.pdf"),
+        proof_html_url=_proof_variant_url(artifact_id, variant, "proof.html"),
+        comparison_images=_comparison_images(
+            artifact_id, artifact_dir, variant, evidence.visual.report
+        ),
+    )
+
+
+def _proof_variant_url(artifact_id: str, variant: LengthVariant, resource: str) -> str:
+    return (
+        f"/api/artifacts/{quote(artifact_id, safe='')}"
+        f"/layout-proofs/variants/{variant.value}/{resource}"
+    )
+
+
+def _comparison_images(
+    artifact_id: str,
+    artifact_dir: Path,
+    variant: LengthVariant,
+    report: VisualComparisonReport,
+) -> list[LayoutProofComparisonImage]:
+    """Every comparison resource the stored report names, verified as servable."""
+    entries = [
+        _comparison_image(
+            artifact_id, artifact_dir, variant, kind, page_number, filename
+        )
+        for kind, filenames in (
+            ("target", report.target_page_filenames),
+            ("generated", report.generated_page_filenames),
+            ("difference", [page.difference_filename for page in report.pages]),
+        )
+        for page_number, filename in enumerate(filenames, start=1)
+    ]
+    return [
+        *entries,
+        _comparison_image(
+            artifact_id, artifact_dir, variant, "report", None, COMPARISON_FILENAME
+        ),
+    ]
+
+
+def _comparison_image(
+    artifact_id: str,
+    artifact_dir: Path,
+    variant: LengthVariant,
+    kind: Literal["target", "generated", "difference", "report"],
+    page_number: int | None,
+    filename: str,
+) -> LayoutProofComparisonImage:
+    resolve_comparison_resource(
+        artifact_dir=artifact_dir,
+        artifact_id=artifact_id,
+        variant=variant,
+        filename=filename,
+    )
+    return LayoutProofComparisonImage(
+        filename=filename,
+        kind=kind,
+        page_number=page_number,
+        url=_proof_variant_url(
+            artifact_id, variant, f"comparison/{quote(filename, safe='')}"
+        ),
+    )
+
+
+def _layout_proof_mismatch(message: str) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={"error_code": "layout_proof_mismatch", "message": message},
+    )
+
+
+def _require_echoed_identity(
+    body: LayoutProofApproveRequest,
+    *,
+    artifact_dir: Path,
+    artifact_id: str,
+    target_checksum: str,
+    layout_checksum: str,
+) -> None:
+    """Refuse a decision whose echoed identities no longer match the stored set."""
+    if body.expected_target_checksum not in (None, target_checksum):
+        raise _layout_proof_mismatch(
+            "the target changed after the reviewer opened the proofs"
+        )
+    if body.expected_layout_spec_checksum not in (None, layout_checksum):
+        raise _layout_proof_mismatch(
+            "the layout spec changed after the reviewer opened the proofs"
+        )
+    for variant, proof_id in (body.expected_variant_proof_ids or {}).items():
+        if _recorded_proof_identity(artifact_dir, artifact_id, variant).proof_id != proof_id:
+            raise _layout_proof_mismatch(
+                f"the {variant} proof changed after the reviewer opened it"
+            )
+    for variant, pdf_checksum in (body.expected_variant_pdf_checksums or {}).items():
+        if (
+            _recorded_proof_identity(artifact_dir, artifact_id, variant).pdf_checksum
+            != pdf_checksum
+        ):
+            raise _layout_proof_mismatch(
+                f"the {variant} proof PDF changed after the reviewer opened it"
+            )
+
+
+def _recorded_proof_identity(
+    artifact_dir: Path, artifact_id: str, variant: str
+) -> LayoutProofRenderResult:
+    try:
+        return load_layout_proof_render_result(
+            artifact_dir, LengthVariant(variant), artifact_id=artifact_id
+        )
+    except (ValueError, LayoutProofIncompleteError, LayoutProofValidationError) as exc:
+        raise _layout_proof_mismatch(
+            "the recorded proof set no longer matches this artifact"
+        ) from exc
 
 
