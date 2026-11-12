@@ -162,6 +162,39 @@ def load_variant_evidence(
     )
 
 
+def reusable_variant_evidence(
+    artifact_dir: str | Path,
+    variant: LengthVariant,
+    *,
+    target_checksum: str,
+    layout_sha256: str,
+    renderer_version: str,
+) -> VariantProofEvidence | None:
+    """A stored variant is reusable only while its frozen identities still match.
+
+    Reuse requires the recorded target, layout and renderer identities plus the
+    proof HTML/PDF checksums to agree; anything else forces a fresh render.
+    """
+    try:
+        evidence = load_variant_evidence(artifact_dir, variant)
+    except LayoutProofValidationError:
+        return None
+    if evidence is None:
+        return None
+    result = evidence.render_result
+    if (result.variant != variant or result.target_checksum != target_checksum
+            or result.layout_spec_checksum != layout_sha256
+            or result.renderer_version != renderer_version):
+        return None
+    proof_dir = layout_proofs_dir_for(artifact_dir) / result.proof_id
+    for filename, expected in ((result.html_filename, result.html_checksum),
+                                (result.pdf_filename, result.pdf_checksum)):
+        path = proof_dir / filename
+        if not path.is_file() or file_sha256(path) != expected:
+            return None
+    return evidence
+
+
 def _load_evidence_json(path: Path, model):
     """Load and strictly revalidate a stored JSON record (untrusted input)."""
     try:

@@ -783,7 +783,7 @@ publication, a killed parent with a completed orphan child, distinct-attempt
 recovery and real DB/file deletion/restoration (33 files, eight structured rows,
 47 constraints/seven triggers/three functions/16 indexes). The portable upgrade
 case additionally passes in 4.01s, exit 0. ADR 0008 records commands, initial
-failure causes and scope. Provider/target jobs,
+failure causes and scope. Provider-backed target jobs stay gated by B1A;
 workflow-wide import/rollback/policy, private storage and production reliability
 remain open; B1A/P1/P2 stay unchecked. No paid provider calls or hosted-data claim.
 
@@ -796,6 +796,31 @@ worker cases including recovery (53.24s, exit 0):
 `tests/test_results/pytest/20261027T174314Z_adr8_retired_job_config_final.txt`.
 Full verification belongs to `5df422c`; it was not repeated after that focused
 guard change. ADR 0008 records both source/validation boundaries.
+
+Issue #38 uploaded-target operations: migration `0008_target_job_operations`
+widens the local job operations to `create_proofs`/`generate_target`, adds a
+`progress_detail` JSONB stage/variant record and a fenced
+`result_proof_approval_id`. Target payloads freeze artifact/profile/target/
+analysis/layout/renderer identities, a presentation-label decision and the
+900 s/300 s/attempts-3/36-request/72-tool envelope; no candidate facts or
+document bytes enter the queue. The existing worker child snapshots the target,
+seeds reusable variant checkpoints, writes `progress.json`, and the supervisor
+copies stage/variant state into the job between heartbeats, so a reload reads
+persisted progress and finished variants stay reviewable. Publication inserts
+the pending proof aggregate or the generation bundle in the same fenced
+transaction; a stale lease, deadline, cancellation or crash publishes nothing.
+Focused PostgreSQL evidence on this lane: the canonical
+`tests/integration/test_postgres_storage.py tests/integration/test_job_worker.py`
+command passes **34** (58.51 s, exit 0) against the isolated
+`cv_reformatter_test_issue38` database, `tests/unit` passes **429** with 2
+skips, and the synchronous proof/generation suites pass **121** with 4 skips.
+Artifacts: `tests/test_results/pytest/20261112T094859Z_issue38_jobs_postgres.txt`,
+`..._issue38_unit.txt`, `..._issue38_proof_sync.txt`. No live provider call was
+made: B1A gates still block live enablement, so the envelope is exercised with
+offline renderer seams and the measured 291 s/28-request live behaviour and cost
+budget remain unverified. The full backend suite was not re-run in this lane
+(shared machine) and private artifact adapters, versioned API errors and
+production reliability remain open, so P2 and B1A stay unchecked.
 
 ### P3 — Authentication, Organizations And Candidate Privacy
 

@@ -103,7 +103,7 @@ from app.storage.repository import (
     layout_proof_repository,
     profile_revision_repository,
 )
-from app.jobs import JobRecord, NativeJobCreate
+from app.jobs import JobRecord, NativeJobCreate, TargetGenerationJobCreate, TargetProofJobCreate
 from app.template_analysis.docx_style_analyzer import (
     TargetDocxAnalysisError,
     analyze_target_docx,
@@ -128,10 +128,12 @@ from app.template_analysis.layout_proof_rendering import (
     active_renderer_version,
 )
 from app.template_analysis.layout_proof_service import (
+    LayoutProofContextError,
     approve_layout_proof,
     create_proof_variants,
     load_layout_proof_approval,
     reject_layout_proof,
+    resolve_layout_proof_context,
 )
 from app.template_analysis.layout_proof_validation import (
     LayoutProofIncompleteError,
@@ -145,7 +147,6 @@ from app.template_analysis.artifacts import (
     NORMALIZED_LAYOUT_FILENAME,
     STYLE_SPEC_FILENAME,
     TARGET_EVIDENCE_FILENAME,
-    TargetAnalysisArtifactError,
     load_layout_template_spec,
 )
 from app.template_analysis.schemas import (
@@ -1404,6 +1405,49 @@ def submit_generation_job(artifact_id: str, request: NativeJobCreate) -> JobReco
     return queue.submit(submission)
 
 
+def _target_job_context(artifact_id: str, design_id: str | None):
+    _require_artifact(artifact_id)
+    directory = GENERATED_OUTPUTS_DIR / artifact_id
+    return directory, _layout_proof_context(directory, artifact_id, design_id)
+
+
+@app.post("/api/artifacts/{artifact_id}/layout-proof-jobs", response_model=JobRecord, status_code=202)
+def submit_target_proof_job(artifact_id: str, request: TargetProofJobCreate) -> JobRecord:
+    """Queue uploaded-target proof creation; the request does no render work."""
+    queue = _local_job_queue()
+    directory, (_target_format, layout_spec, target_pdf, target_checksum) = _target_job_context(
+        artifact_id, request.design_id)
+    revision = _require_profile_revision(artifact_dir=directory, artifact_id=artifact_id,
+                                         profile_revision_id=request.profile_revision_id)
+    from app.job_worker import target_proof_submission
+    try:
+        submission = target_proof_submission(directory, revision, request, layout_spec=layout_spec,
+                                             target_pdf=target_pdf, target_checksum=target_checksum)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=409, detail={"error_code": "job_inputs_unavailable",
+            "message": "The uploaded-target proof inputs could not be frozen."}) from exc
+    return queue.submit(submission)
+
+
+@app.post("/api/artifacts/{artifact_id}/target-generation-jobs", response_model=JobRecord, status_code=202)
+def submit_target_generation_job(artifact_id: str, request: TargetGenerationJobCreate) -> JobRecord:
+    """Queue a target-based generation from the approved proof set."""
+    queue = _local_job_queue()
+    directory, (_target_format, layout_spec, target_pdf, target_checksum) = _target_job_context(
+        artifact_id, request.design_id)
+    revision = _require_profile_revision(artifact_dir=directory, artifact_id=artifact_id,
+                                         profile_revision_id=request.profile_revision_id)
+    approval = load_layout_proof_approval(directory, repository=layout_proof_repository(DATABASE_URL))
+    from app.job_worker import target_generation_submission
+    try:
+        submission = target_generation_submission(directory, revision, request, layout_spec=layout_spec,
+            target_pdf=target_pdf, target_checksum=target_checksum, approval=approval)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=409, detail={"error_code": "job_inputs_unavailable",
+            "message": "The target generation inputs could not be frozen."}) from exc
+    return queue.submit(submission)
+
+
 @app.get("/api/artifacts/{artifact_id}/jobs/{job_id}", response_model=JobRecord)
 def get_generation_job(artifact_id: str, job_id: str) -> JobRecord:
     queue = _local_job_queue()
@@ -1782,26 +1826,6 @@ def _load_generation_style_spec(
     return load_layout_template_spec(artifact_dir / LAYOUT_SPEC_FILENAME)
 
 
-def _load_design_layout_spec(artifact_dir: Path, design_id: str) -> LayoutTemplateSpec:
-    if not is_safe_design_id(design_id):
-        raise HTTPException(status_code=404, detail="Design not found.")
-    try:
-        state = load_design_state(design_dir_for(artifact_dir, design_id), repository=design_repository(DATABASE_URL))
-    except DesignServiceError as exc:
-        raise HTTPException(status_code=404, detail="Design not found.") from exc
-    if state.layout_spec_json is None:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error_code": "layout_proof_required",
-                "message": "The referenced design has no compiled LayoutTemplateSpec.",
-            },
-        )
-    return load_layout_template_spec(
-        design_dir_for(artifact_dir, design_id) / "layout_template_spec.json"
-    )
-
-
 def _layout_proof_context(
     artifact_dir: Path,
     artifact_id: str,
@@ -1809,44 +1833,13 @@ def _layout_proof_context(
 ) -> tuple[TargetFormatMetadata, LayoutTemplateSpec, Path, str]:
     """Resolve target metadata, the template spec, the visual-comparison target
     PDF, and the target checksum for layout-proof operations."""
-    target_format = load_saved_target_format(artifact_dir)
-    if target_format is None:
-        raise HTTPException(
-            status_code=400, detail="No target format for this artifact."
-        )
-    if not target_format.used_as_template_source:
-        raise HTTPException(
-            status_code=400,
-            detail="The target format is not used as a template source.",
-        )
-    validate_target_format_reference(artifact_id, artifact_dir, target_format)
-    stored_path = artifact_dir / target_format.stored_filename
     try:
-        style_spec = (
-            _load_design_layout_spec(artifact_dir, design_id)
-            if design_id is not None
-            else _load_generation_style_spec(artifact_dir)
+        return resolve_layout_proof_context(
+            artifact_dir, artifact_id, design_id, repository=design_repository(DATABASE_URL)
         )
-    except TargetAnalysisArtifactError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="The uploaded target format has no valid analyzed LayoutTemplateSpec.",
-        ) from exc
-    if target_format.role == "pdf_reference":
-        target_pdf = stored_path
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error_code": "pdf_target_required_for_layout_proof",
-                "message": (
-                    "Layout-proof visual comparison requires a target PDF; "
-                    "the retired LibreOffice path no longer converts target DOCX files."
-                ),
-            },
-        )
-    target_checksum = target_checksum_from_bytes(stored_path.read_bytes())
-    return target_format, style_spec, target_pdf, target_checksum
+    except LayoutProofContextError as exc:
+        detail = str(exc) if exc.error_code is None else {"error_code": exc.error_code, "message": str(exc)}
+        raise HTTPException(status_code=exc.status_code, detail=detail) from exc
 
 
 def _layout_proof_status(

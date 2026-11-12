@@ -821,14 +821,46 @@ ADR 0008 adds explicitly enabled local synthetic jobs. Both API and worker need
 | Operation | Route | Behavior |
 | --- | --- | --- |
 | Submit native generation | `POST /api/artifacts/{artifact_id}/generation-jobs` | 202 with `job/1`; strict body requires boolean `local_synthetic: true`, saved `profile_revision_id`, `idempotency_key`, optional `blind_profile`. |
-| Read job | `GET /api/artifacts/{artifact_id}/jobs/{job_id}` | Artifact-scoped status, progress, attempts, deadline, safe error code and result generation reference; no lease token or physical path. |
+| Submit layout proofs | `POST /api/artifacts/{artifact_id}/layout-proof-jobs` | 202 with `job/1`; strict body requires boolean `local_synthetic: true`, saved `profile_revision_id`, `idempotency_key`, optional `design_id` and `presentation_label_approval`. Freezes the same proof context the synchronous route resolves, so both accept and reject identically. |
+| Submit target generation | `POST /api/artifacts/{artifact_id}/target-generation-jobs` | 202 with `job/1`; same strict body plus `proof_approval_id` (approved proof set for the same target/layout/renderer) and optional `blind_profile`. An unapproved or superseded proof set is rejected before submission. |
+| Read job | `GET /api/artifacts/{artifact_id}/jobs/{job_id}` | Artifact-scoped status, progress, attempts, deadline, safe error code, `stage`, per-variant state and the result reference (`result_generation_id` for generation, `result_proof_approval_id` for proofs); no lease token or physical path. |
 | Request cancellation | `POST /api/artifacts/{artifact_id}/jobs/{job_id}/cancel` | Queued jobs cancel immediately; running workers check cancellation before publication. Completed work remains completed. |
 
 States are `queued`, `running`, `succeeded`, `failed`, `cancelled` and
 `needs_attention`. An idempotency key binds the artifact, operation and frozen
-input/configuration checksum; differing reuse returns 409. Local jobs permit
-deterministic native no-target generation only; any uploaded-target metadata
-returns an explicit conflict, without provider calls or template fallback.
+input/configuration checksum; differing reuse returns 409, and repeating the
+same request returns the stored job instead of new work. `generation-jobs` still
+permits deterministic native no-target generation only; any uploaded-target
+metadata returns an explicit conflict, without provider calls or template
+fallback; uploaded-target work uses the two operations below instead.
+
+Uploaded-target operations report the same `job/1` record plus additive `stage`
+(`queued`, `snapshot`, `render`, `validate`, `publish`, `review_ready`) and
+`variants` (`short`/`medium`/`long` → `pending`, `rendering`, `rendered`,
+`validated`, `reused`, `failed`). The child writes them to the attempt bundle
+and the worker copies them into `progress_detail`, so reloading or reconnecting
+reads persisted state and never restarts finished work. Outputs completed before
+the latest stage stay reviewable: `GET .../layout-proofs` keeps its existing
+shape while later variants continue, and generation keeps the previously
+published output current until a new attempt publishes.
+Their frozen envelope is a 900-second overall deadline, a 300-second stage
+deadline, three attempts and 36 model requests/72 tool calls per attempt. Basis
+is the measured issue #38 run (~291 s, 28 requests, 7/9/12 per variant); the
+native 180-second/two-attempt policy is untouched and no nginx/proxy timeout is
+enlarged, because a queued job is never held by a synchronous request. A
+resumed attempt re-runs only variants whose recorded target/layout/renderer or
+file checksums no longer match; matched variants resume from their immutable
+checkpoint evidence, and any changed frozen artifact/target/layout/renderer
+identity ends the attempt `inputs_changed`. `provider_outcome_unknown` and
+`budget_exceeded` are terminal: a possibly-charged request is never silently
+retried, and the job stops in `needs_attention` or `failed` with that safe code.
+Cancellation is checked between variants, before validation and before the
+publication transaction, so a cancel that arrives after the last provider call
+still publishes nothing; a provider request already sent cannot be undone or
+un-billed, and cancellation grants no acceptance.
+`POST /api/artifacts/{artifact_id}/layout-proofs`, `.../layout-proofs/approve`
+and `POST /api/generate` remain the deliberate synchronous paths with unchanged
+request/response shapes and no fallback between them and the job operations.
 The server currently freezes a 180-second overall deadline and two attempts.
 Retired or unknown `GENERATION_STRATEGY` configuration is rejected before
 submission/execution, consistent with the synchronous entry point.

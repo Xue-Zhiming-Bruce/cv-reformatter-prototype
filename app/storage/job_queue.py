@@ -13,7 +13,8 @@ from sqlalchemy import Connection, Engine, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.jobs import JobClaim, JobError, JobRecord, JobSubmission, NativeGenerationPayload
+from app.jobs import (JobClaim, JobError, JobPayload, JobRecord, JobStage, JobSubmission,
+                      OPERATION_BY_SCHEMA, PAYLOAD_BY_SCHEMA)
 from app.storage.artifact_store import ArtifactStoreConflict, ArtifactStoreError
 from app.storage.postgres import artifact_sessions, job_attempts, profile_revisions, workflow_jobs
 
@@ -26,18 +27,27 @@ def _digest(body: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def _payload(row: Mapping[str, Any]) -> NativeGenerationPayload:
-    payload = NativeGenerationPayload.model_validate_json(json.dumps(row["payload"]))
+def _payload(row: Mapping[str, Any]) -> JobPayload:
+    schema_version = row["payload"].get("schema_version") if isinstance(row["payload"], dict) else None
+    model = PAYLOAD_BY_SCHEMA.get(schema_version)
+    if model is None:
+        raise ValueError("Unsupported job payload schema version")
+    payload = model.model_validate_json(json.dumps(row["payload"]))
     if (_digest(row["payload"]) != row["request_sha256"]
             or payload.artifact_id != row["artifact_id"]
             or payload.profile_revision_id != row["profile_revision_id"]
-            or payload.max_attempts != row["max_attempts"]):
+            or payload.max_attempts != row["max_attempts"]
+            or OPERATION_BY_SCHEMA[schema_version] != row["operation"]):
         raise ValueError("Job payload identity mismatch")
     return payload
 
 
 def _record(row: Mapping[str, Any]) -> JobRecord:
-    return JobRecord.model_validate({key: row[key] for key in JobRecord.model_fields if key in row})
+    detail = row["progress_detail"] or {}
+    return JobRecord.model_validate({
+        **{key: row[key] for key in JobRecord.model_fields if key in row},
+        "stage": detail.get("stage"), "variants": detail.get("variants"),
+    })
 
 
 class PostgresJobQueue:
@@ -54,19 +64,21 @@ class PostgresJobQueue:
 
     def submit(self, submission: JobSubmission) -> JobRecord:
         payload = submission.payload
+        operation = OPERATION_BY_SCHEMA[payload.schema_version]
         body = payload.model_dump(mode="json")
         digest = _digest(body)
         with self._transaction() as connection:
             artifact = connection.execute(select(artifact_sessions).where(
                 artifact_sessions.c.artifact_id == payload.artifact_id).with_for_update()).mappings().first()
             existing = connection.execute(select(workflow_jobs).where(
-                workflow_jobs.c.scope_id == "local-synthetic", workflow_jobs.c.operation == "generate",
+                workflow_jobs.c.scope_id == "local-synthetic", workflow_jobs.c.operation == operation,
                 workflow_jobs.c.artifact_id == payload.artifact_id,
                 workflow_jobs.c.idempotency_key == submission.idempotency_key)).mappings().first()
             if existing is not None:
                 _payload(existing)
                 if existing["request_sha256"] != digest:
-                    raise ArtifactStoreConflict("The idempotency key already refers to different inputs or execution settings.")
+                    raise ArtifactStoreConflict(
+                        f"The idempotency key already refers to different {operation} inputs or execution settings.")
                 return _record(existing)
             revision = connection.execute(select(profile_revisions).where(
                 profile_revisions.c.artifact_id == payload.artifact_id,
@@ -79,7 +91,7 @@ class PostgresJobQueue:
             now = connection.scalar(select(func.clock_timestamp()))
             row = connection.execute(insert(workflow_jobs).values(
                 job_id="job_" + uuid.uuid4().hex, artifact_id=payload.artifact_id,
-                profile_revision_id=payload.profile_revision_id, scope_id="local-synthetic", operation="generate",
+                profile_revision_id=payload.profile_revision_id, scope_id="local-synthetic", operation=operation,
                 idempotency_key=submission.idempotency_key, request_sha256=digest, payload=body,
                 state="queued", max_attempts=payload.max_attempts,
                 deadline_at=now + timedelta(seconds=payload.timeout_seconds),
@@ -179,7 +191,8 @@ class PostgresJobQueue:
         _payload(row)
         return row
 
-    def heartbeat(self, claim: JobClaim, *, progress: int, lease_seconds: int = 30) -> bool:
+    def heartbeat(self, claim: JobClaim, *, progress: int, stage: JobStage | None = None,
+                  variants: dict[str, str] | None = None, lease_seconds: int = 30) -> bool:
         if not 0 <= progress <= 99 or not 1 <= lease_seconds <= 60:
             raise ValueError("Invalid running progress or lease duration")
         with self._transaction() as connection:
@@ -188,20 +201,29 @@ class PostgresJobQueue:
                 self._finish(connection, row, state="cancelled", error="cancelled")
                 return False
             now = connection.scalar(select(func.clock_timestamp()))
-            connection.execute(update(workflow_jobs).where(workflow_jobs.c.job_id == row["job_id"]).values(
-                progress=max(progress, row["progress"]), updated_at=now,
-                lease_expires_at=min(now + timedelta(seconds=lease_seconds), row["deadline_at"])))
+            values: dict[str, Any] = {"progress": max(progress, row["progress"]), "updated_at": now,
+                "lease_expires_at": min(now + timedelta(seconds=lease_seconds), row["deadline_at"])}
+            if stage is not None or variants is not None:
+                detail = row["progress_detail"] or {}
+                values["progress_detail"] = {
+                    "stage": stage or detail.get("stage"),
+                    "variants": detail.get("variants", {}) if variants is None else variants,
+                }
+            connection.execute(update(workflow_jobs).where(workflow_jobs.c.job_id == row["job_id"]).values(**values))
             return True
 
     def _finish(self, connection: Connection, row: Mapping[str, Any], *, state: str,
-                error: JobError | None, generation_id: str | None = None) -> JobRecord:
+                error: JobError | None, result: str | None = None) -> JobRecord:
         now = connection.scalar(select(func.clock_timestamp()))
         connection.execute(update(job_attempts).where(
             job_attempts.c.job_id == row["job_id"], job_attempts.c.attempt_number == row["attempt_count"],
         ).values(state=state, error_code=error, finished_at=now))
+        result_column = (workflow_jobs.c.result_proof_approval_id if row["operation"] == "create_proofs"
+                         else workflow_jobs.c.result_generation_id)
         updated = connection.execute(update(workflow_jobs).where(workflow_jobs.c.job_id == row["job_id"]).values(
-            state=state, error_code=error, result_generation_id=generation_id, lease_token=None,
+            state=state, error_code=error, lease_token=None,
             lease_expires_at=None, updated_at=now, progress=100 if state == "succeeded" else row["progress"],
+            **{result_column.key: result},
         ).returning(workflow_jobs)).mappings().one()
         return _record(updated)
 
@@ -215,11 +237,15 @@ class PostgresJobQueue:
                                 error="cancelled" if row["cancel_requested"] else error)
 
     def complete(self, claim: JobClaim, publish: Callable[[Connection], str]) -> JobRecord:
-        """Publication and successful completion share the same fenced transaction."""
+        """Publication and successful completion share the same fenced transaction.
+
+        ``publish`` returns the frozen result identity for this operation: a
+        generation id, or the proof approval id for proof creation.
+        """
         with self._transaction() as connection:
             row = self._owned(connection, claim)
             if row["cancel_requested"]:
                 return self._finish(connection, row, state="cancelled", error="cancelled")
-            generation_id = publish(connection)
+            result = publish(connection)
             self._owned(connection, claim)  # A slow publication must not outlive its lease.
-            return self._finish(connection, row, state="succeeded", error=None, generation_id=generation_id)
+            return self._finish(connection, row, state="succeeded", error=None, result=result)

@@ -70,6 +70,7 @@ def render_generation_into(
     html_path: Path, pdf_path: Path, target_pdf: Path | None,
     *, renderer_version: str, presentation_label_approval: Any = None,
     layout_proof_approval: LayoutProofApproval | None = None,
+    max_model_requests: int | None = None, max_tool_calls: int | None = None,
 ) -> tuple[Path, Path]:
     from app.generation.agentic import AgenticGenerationError, render_agentic
 
@@ -81,6 +82,7 @@ def render_generation_into(
         evidence_dir=target_pdf.parent, output_dir=html_path.parent/"pipeline_runs"/uuid.uuid4().hex,
         presentation_label_approval=presentation_label_approval,
         layout_proof_approval=layout_proof_approval,
+        max_model_requests=max_model_requests, max_tool_calls=max_tool_calls,
     )
     require_current_renderer(renderer_version)
     # Finish every validation and stage both files before replacing a previous preview.
@@ -129,6 +131,7 @@ def render_layout_proof(
     output_dir: str | Path = DEFAULT_PROOF_OUTPUT_DIR,
     target_pdf: Path | None = None,
     presentation_label_approval: Any = None,
+    max_model_requests: int | None = None, max_tool_calls: int | None = None,
 ) -> LayoutProofRenderResult:
     """Render one synthetic layout proof through the configured renderer.
 
@@ -141,6 +144,7 @@ def render_layout_proof(
     return _render_layout_proof_with_context(
         request, context, output_dir=output_dir, target_pdf=target_pdf,
         presentation_label_approval=presentation_label_approval,
+        max_model_requests=max_model_requests, max_tool_calls=max_tool_calls,
     )
 
 
@@ -151,6 +155,7 @@ def _render_layout_proof_with_context(
     output_dir: str | Path,
     target_pdf: Path | None = None,
     presentation_label_approval: Any = None,
+    max_model_requests: int | None = None, max_tool_calls: int | None = None,
 ) -> LayoutProofRenderResult:
     """Private test-only seam: render a proof from an explicit context.
 
@@ -192,7 +197,8 @@ def _render_layout_proof_with_context(
         html_path, pdf_path = render_generation_into(context.to_render_context(), request.layout_spec,
             html_path, proof_dir / f"proof-{request.variant.value}.pdf", target_pdf,
             renderer_version=renderer_version,
-            presentation_label_approval=presentation_label_approval)
+            presentation_label_approval=presentation_label_approval,
+            max_model_requests=max_model_requests, max_tool_calls=max_tool_calls)
     except AgenticPresentationLabelError as exc:
         raise LayoutProofPresentationLabelError(
             str(exc), catalog=exc.catalog
