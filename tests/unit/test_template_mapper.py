@@ -289,3 +289,79 @@ def test_render_context_does_not_repeat_field_already_present_in_degree() -> Non
 
     assert education.degree == "B.Sc. in Computer Science"
     assert education.field_of_study is None
+
+
+PERSONAL_INFORMATION = {
+    "full_name": "Fictional Candidate",
+    "email": "fictional@example.test",
+    "phone": "+44 5555 0101",
+    "location": "98 High Street, Bristol, UK",
+}
+
+
+@pytest.mark.parametrize("blind", [False, True])
+@pytest.mark.parametrize("field", ["full_name", "email", "phone", "location"])
+def test_an_explicit_hide_removes_every_projection_of_that_field(field: str, blind: bool) -> None:
+    profile = CandidateProfile(
+        **PERSONAL_INFORMATION,
+        work_experience=[WorkExperience(title="IT Support Engineer")],
+        client_display_rules={field: DisplayRule.HIDE},
+    )
+
+    context = build_client_render_context(profile, blind_profile=blind)
+
+    assert PERSONAL_INFORMATION[field] not in str(context.model_dump())
+    assert profile.model_dump()[field] == PERSONAL_INFORMATION[field]
+
+
+@pytest.mark.parametrize("field", ["full_name", "email", "phone", "linkedin_url"])
+def test_blind_switch_overrides_a_per_field_show(field: str) -> None:
+    profile = CandidateProfile(
+        **PERSONAL_INFORMATION,
+        linkedin_url="https://www.linkedin.com/in/fictional-candidate",
+        client_display_rules={field: DisplayRule.SHOW},
+    )
+
+    context = build_client_render_context(profile, blind_profile=True)
+
+    contact_text = "\n".join(context.contact_lines)
+    assert context.candidate_heading == "Candidate A"
+    assert "fictional@example.test" not in contact_text
+    assert "+44 5555 0101" not in contact_text
+    assert "linkedin.com" not in contact_text
+
+
+def test_blind_switch_does_not_hide_the_address() -> None:
+    context = build_client_render_context(CandidateProfile(**PERSONAL_INFORMATION), blind_profile=True)
+
+    assert "98 High Street, Bristol, UK" in str(context.model_dump())
+
+
+def test_hidden_address_leaves_both_of_its_projections_without_rewriting_the_value() -> None:
+    profile = CandidateProfile(
+        **PERSONAL_INFORMATION,
+        work_experience=[WorkExperience(title="IT Support Engineer")],
+        client_display_rules={"location": DisplayRule.HIDE},
+    )
+
+    context = build_client_render_context(profile)
+
+    assert context.candidate_subheading == "IT Support Engineer"
+    assert [(item.field, item.value) for item in context.contact_items] == [
+        ("email", "fictional@example.test"),
+        ("phone", "+44 5555 0101"),
+    ]
+
+
+def test_unhiding_restores_the_stored_source_value_verbatim() -> None:
+    hidden = CandidateProfile(**PERSONAL_INFORMATION, client_display_rules={"location": DisplayRule.HIDE})
+    shown = hidden.model_copy(update={"client_display_rules": {"location": DisplayRule.SHOW}})
+
+    context = build_client_render_context(shown)
+
+    assert context.candidate_subheading == "98 High Street, Bristol, UK"
+    assert [(item.field, item.value) for item in context.contact_items][0] == (
+        "location",
+        "98 High Street, Bristol, UK",
+    )
+    assert "Available upon request" not in str(context.model_dump())

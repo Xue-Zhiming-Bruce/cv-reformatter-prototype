@@ -24,6 +24,11 @@ CONTACT_FIELD_SLOTS = {
     "linkedin_url": "linkedin", "portfolio_url": "portfolio",
 }
 
+#: The four fields the recruiter may hide independently of the blind switch.
+PERSONAL_INFORMATION_FIELDS: tuple[
+    Literal["full_name", "email", "phone", "location"], ...
+] = ("full_name", "email", "phone", "location")
+
 
 class RenderModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -98,7 +103,7 @@ def build_client_render_context(
     template_name: str = DEFAULT_TEMPLATE_NAME,
 ) -> ClientFacingRenderContext:
     """Map internal candidate truth into safe client-facing display values."""
-    heading = "Candidate A" if blind_profile else _display_or_none(profile.full_name) or "Candidate"
+    heading = _candidate_heading(profile, blind_profile=blind_profile)
     subheading = _join_display_values(
         [
             _display_or_none(profile.work_experience[0].title) if profile.work_experience else None,
@@ -136,6 +141,13 @@ def build_client_render_context(
         additional_sections=_build_additional_sections(profile, blind_profile=blind_profile),
         blind_profile=blind_profile,
     )
+
+
+def _candidate_heading(profile: CandidateProfile, *, blind_profile: bool) -> str:
+    """Blind mode and an explicit name hide share one neutral label."""
+    if blind_profile or profile.client_display_rules.get("full_name") == DisplayRule.HIDE:
+        return "Candidate A"
+    return _display_or_none(profile.full_name) or "Candidate"
 
 
 def _web_host(value: str) -> str:
