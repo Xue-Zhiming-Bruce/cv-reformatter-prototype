@@ -763,12 +763,23 @@ the latest stage stay reviewable: `GET .../layout-proofs` keeps its existing
 shape while later variants continue, and generation keeps the previously
 published output current until a new attempt publishes.
 Their frozen envelope is a 900-second overall deadline, a 300-second stage
-deadline, three attempts and 36 model requests/72 tool calls per attempt. A
+deadline, three attempts and 36 model requests/72 tool calls per attempt. Basis
+is the measured issue #38 run (~291 s, 28 requests, 7/9/12 per variant); the
+native 180-second/two-attempt policy is untouched and no nginx/proxy timeout is
+enlarged, because a queued job is never held by a synchronous request. A
 resumed attempt re-runs only variants whose recorded target/layout/renderer or
 file checksums no longer match; matched variants resume from their immutable
-checkpoint evidence. `provider_outcome_unknown` and `budget_exceeded` are
-terminal: a possibly-charged request is never silently retried, and the job
-stops in `needs_attention` or `failed` with that safe code.
+checkpoint evidence, and any changed frozen artifact/target/layout/renderer
+identity ends the attempt `inputs_changed`. `provider_outcome_unknown` and
+`budget_exceeded` are terminal: a possibly-charged request is never silently
+retried, and the job stops in `needs_attention` or `failed` with that safe code.
+Cancellation is checked between variants, before validation and before the
+publication transaction, so a cancel that arrives after the last provider call
+still publishes nothing; a provider request already sent cannot be undone or
+un-billed, and cancellation grants no acceptance.
+`POST /api/artifacts/{artifact_id}/layout-proofs`, `.../layout-proofs/approve`
+and `POST /api/generate` remain the deliberate synchronous paths with unchanged
+request/response shapes and no fallback between them and the job operations.
 The server currently freezes a 180-second overall deadline and two attempts.
 Retired or unknown `GENERATION_STRATEGY` configuration is rejected before
 submission/execution, consistent with the synchronous entry point.

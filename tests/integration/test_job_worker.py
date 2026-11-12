@@ -362,6 +362,7 @@ def test_target_proof_job_reports_progress_and_survives_reconnect(target_jobs):
     endpoint = f"/api/artifacts/{ctx['artifact_id']}"
     submitted = ctx["client"].post(endpoint + "/layout-proof-jobs", json=_target_body(ctx, "proof-1"))
     assert submitted.status_code == 202, submitted.text
+    assert not (ctx["directory"] / "layout_proofs").exists()
     job = submitted.json()
     assert job["operation"] == "create_proofs" and job["state"] == "queued" and job["progress"] == 0
     assert TestClient(main.app).get(endpoint + f"/jobs/{job['job_id']}").json() == job
@@ -377,6 +378,13 @@ def test_target_proof_job_reports_progress_and_survives_reconnect(target_jobs):
     assert json.loads((bundle / "progress.json").read_text())["stage"] == "review_ready"
     proofs = ctx["client"].get(endpoint + "/layout-proofs").json()
     assert proofs["state"] == "pending" and len(proofs["variants"]) == 3
+    with ctx["engine"].connect() as connection:
+        stored = json.dumps(connection.scalar(select(workflow_jobs.c.payload).where(
+            workflow_jobs.c.job_id == job["job_id"])))
+    requested = (bundle / "job_request.json").read_text()
+    for recorded in (stored, requested):
+        assert "Synthetic Target Candidate" not in recorded and "target@example.invalid" not in recorded
+    assert "profile_sha256" in stored and "target_sha256" in stored and "renderer_version" in stored
     # One changed frozen identity under the same key is an explicit conflict.
     edited = ctx["client"].post(f"/api/artifacts/{ctx['artifact_id']}/profiles/revisions",
         json={"profile": {**ctx["profile"].model_dump(mode="json"), "full_name": "Synthetic Revised"}})
@@ -473,7 +481,13 @@ def test_target_proof_job_reports_budget_and_unknown_provider_outcome(target_job
     ctx = target_jobs
     endpoint = f"/api/artifacts/{ctx['artifact_id']}"
 
-    def refuse(**_kwargs):
+    real = layout_proof_service.create_proof_variant
+    rendered: list[str] = []
+
+    def refuse(**kwargs):
+        rendered.append(kwargs["variant"].value)
+        if len(rendered) == 1:
+            return real(**kwargs)
         if blocked == "budget":
             error = AgenticGenerationError("synthetic budget stop")
             error.terminal = "budget_exhausted"
@@ -481,11 +495,19 @@ def test_target_proof_job_reports_budget_and_unknown_provider_outcome(target_job
         raise TimeoutError("synthetic provider timeout after the request was sent")
 
     monkeypatch.setattr(layout_proof_service, "create_proof_variant", refuse)
-    ctx["client"].post(endpoint + "/layout-proof-jobs", json=_target_body(ctx, "proof-blocked"))
+    job = ctx["client"].post(endpoint + "/layout-proof-jobs", json=_target_body(ctx, "proof-blocked")).json()
     stopped = ctx["worker"].run_once()
     assert stopped.error_code == ("budget_exceeded" if blocked == "budget" else "provider_outcome_unknown")
     assert stopped.state == ("failed" if blocked == "budget" else "needs_attention")
     assert not (ctx["directory"] / "layout_proofs" / "approval.json").exists()
+    # The completed variant stays inspectable in the attempt bundle, but no
+    # complete aggregate exists, so the artifact cannot be approved.
+    attempt = next((ctx["directory"] / "jobs" / job["job_id"]).glob("attempt_*/*"))
+    assert (attempt / "layout_proofs" / "variants" / "short").is_dir()
+    approve = ctx["client"].post(endpoint + "/layout-proofs/approve",
+                                 json={"state": "approved", "reviewer_id": "reviewer-1"})
+    assert approve.status_code != 200
+    assert ctx["client"].get(endpoint + "/layout-proofs").json()["state"] == "none"
 
 
 def test_target_proof_job_stage_deadline_stops_the_child(target_jobs, monkeypatch):
@@ -533,6 +555,38 @@ def test_target_proof_job_stage_deadline_stops_the_child(target_jobs, monkeypatc
     assert ctx["queue"].claim() is None
 
 
+def test_concurrent_target_proof_submissions_create_exactly_one_job(target_jobs):
+    import threading
+
+    ctx = target_jobs
+    endpoint = f"/api/artifacts/{ctx['artifact_id']}"
+    answers: list[dict] = []
+
+    def submit():
+        answers.append(ctx["client"].post(endpoint + "/layout-proof-jobs",
+                                          json=_target_body(ctx, "proof-concurrent")).json())
+
+    threads = [threading.Thread(target=submit) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len({answer["job_id"] for answer in answers}) == 1
+    with ctx["engine"].connect() as connection:
+        assert len(connection.execute(select(workflow_jobs.c.job_id)).all()) == 1
+
+
+def test_target_job_whose_frozen_input_changed_ends_inputs_changed(target_jobs):
+    ctx = target_jobs
+    endpoint = f"/api/artifacts/{ctx['artifact_id']}"
+    ctx["client"].post(endpoint + "/layout-proof-jobs", json=_target_body(ctx, "proof-drift"))
+    (ctx["directory"] / "target_format_reference.pdf").write_bytes(b"tampered target")
+    drifted = ctx["worker"].run_once()
+    assert drifted.state == "failed" and drifted.error_code == "inputs_changed", drifted
+    assert not (ctx["directory"] / "layout_proofs").exists()
+    assert not ctx["queue"].claim()
+
+
 def test_stale_target_job_lease_cannot_publish(target_jobs):
     from app.storage.job_queue import JobLeaseLost
 
@@ -563,6 +617,7 @@ def test_target_generation_job_publishes_and_keeps_prior_output_on_failure(targe
     assert completed.state == "succeeded", completed
     assert _current_generation(ctx) == completed.result_generation_id
     published = ctx["client"].get(endpoint + "/candidate_profile.pdf").content
+    assert not ctx["client"].get(endpoint + "/metadata").json()["client_ready"]
     # A failing later job leaves that published output current and readable.
     from app.generation import service as generation_service_module
 
