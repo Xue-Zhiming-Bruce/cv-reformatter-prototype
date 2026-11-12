@@ -58,9 +58,10 @@ implementation alignment is not complete:
 - [x] Remove automatic missing-value placeholders from the ordinary conversion
       workflow, including retained saved disclosure states. Preserve wire/schema
       compatibility deliberately; do not silently rename/remove stored contracts.
-      `apply_missing_field_detection` still assigns `pending_confirmation`,
-      and `_field_display` can turn it into client-facing text. Conversion must
-      accept absent facts while still rejecting omitted/unaccounted source facts.
+      Before this change `apply_missing_field_detection` assigned
+      `pending_confirmation` and `_field_display` could turn it into
+      client-facing text; conversion had to accept absent facts while still
+      rejecting omitted/unaccounted source facts.
       Closed by #30: `23f113d` stops the rule assignment and removes both label
       producers (`_field_display` now hides or shows the source value only, and
       `DisplayRule`, `MissingField`, `missing_fields` and the label-free
