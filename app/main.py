@@ -14,7 +14,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 import httpx
 
 from app.extraction.candidate_document_analyzer import build_candidate_field_evidence
@@ -119,6 +119,7 @@ from app.template_analysis.layout_proof_schemas import (
     LayoutProofApproval,
     LayoutProofRenderResult,
     LengthVariant,
+    VariantProofEvidence,
 )
 from app.template_analysis.layout_proof_rendering import (
     LayoutProofMismatchError,
@@ -1315,13 +1316,21 @@ def _proof_resource_response(
         artifact_dir, parsed = _proof_scope(artifact_id, variant)
         path = resolve(artifact_dir, parsed)
     except LayoutProofResourceError as exc:
-        status_code = (
-            404 if exc.error_code == "layout_proof_resource_not_found" else 409
-        )
-        raise HTTPException(
-            status_code=status_code,
-            detail={"error_code": exc.error_code, "message": str(exc)},
-        ) from exc
+        raise _proof_resource_http_error(exc) from exc
+    return _proof_resource_file(path)
+
+
+def _proof_resource_http_error(exc: LayoutProofResourceError) -> HTTPException:
+    """The structured error for one refused proof resource."""
+    status_code = 404 if exc.error_code == "layout_proof_resource_not_found" else 409
+    return HTTPException(
+        status_code=status_code,
+        detail={"error_code": exc.error_code, "message": str(exc)},
+    )
+
+
+def _proof_resource_file(path: Path) -> FileResponse:
+    """The inline response for one verified proof resource file."""
     media_type = _PROOF_RESOURCE_MEDIA_TYPES.get(path.suffix.lower())
     if media_type is None:
         raise HTTPException(
@@ -1888,9 +1897,8 @@ def _proof_approval_state(
 ) -> tuple[LayoutProofApproval | None, bool, str | None]:
     """The stored approval, or why a stored approval no longer verifies.
 
-    A set that was approved and later invalidated (changed target, recompiled
-    spec, new renderer, altered proof bytes, re-created proofs) is distinct
-    from one never approved.
+    An invalidated approval (changed target or spec, new renderer, altered proof
+    bytes, re-created proofs) is distinct from one that was never granted.
     """
     try:
         approval = load_layout_proof_approval(
@@ -1900,24 +1908,40 @@ def _proof_approval_state(
         return None, True, str(exc)
     if approval is None:
         return None, False, None
+    invalidation = _approval_invalidation(
+        artifact_dir,
+        artifact_id=artifact_id,
+        approval=approval,
+        target_checksum=target_checksum,
+        layout_checksum=layout_checksum,
+    )
+    if invalidation is not None:
+        return None, True, invalidation
+    return approval, False, None
+
+
+def _approval_invalidation(
+    artifact_dir: Path,
+    *,
+    artifact_id: str,
+    approval: LayoutProofApproval,
+    target_checksum: str,
+    layout_checksum: str,
+) -> str | None:
+    """Why the stored approval no longer covers what resolves on disk, if it does not."""
     if target_checksum and approval.target_checksum != target_checksum:
-        return None, True, "the target changed after this proof set was approved"
+        return "the target changed after this proof set was approved"
     if layout_checksum and approval.layout_spec_checksum != layout_checksum:
-        return None, True, "the layout spec changed after this proof set was approved"
+        return "the layout spec changed after this proof set was approved"
     recreated = sorted(
         variant.value
         for variant, evidence in approval.variants.items()
         if _current_proof_id(artifact_dir, artifact_id, variant)
         not in (None, evidence.render_result.proof_id)
     )
-    if recreated:
-        return (
-            None,
-            True,
-            "the proof set was re-created after this approval: "
-            + ", ".join(recreated),
-        )
-    return approval, False, None
+    if not recreated:
+        return None
+    return "the proof set was re-created after this approval: " + ", ".join(recreated)
 
 
 def _current_proof_id(
@@ -1967,9 +1991,22 @@ def _reviewable_variant(
             variant=variant,
             kind=kind,
         )
+    evidence = _load_reviewable_evidence(artifact_dir, variant)
+    return _evidence_summary(artifact_id, artifact_dir, variant, evidence)
+
+
+def _load_reviewable_evidence(
+    artifact_dir: Path, variant: LengthVariant
+) -> VariantProofEvidence:
+    """A variant's stored evidence, or a pathless reason it cannot be read.
+
+    Contradictory stored records (a re-render that died between two atomic
+    writes) fail model validation, not just the loader, so both are reported as
+    unavailable evidence rather than failing the whole status response.
+    """
     try:
         evidence = load_variant_evidence(artifact_dir, variant)
-    except LayoutProofValidationError as exc:
+    except (LayoutProofValidationError, ValidationError) as exc:
         raise LayoutProofResourceError(
             "layout_proof_resource_mismatch",
             f"the stored {variant.value} validation evidence cannot be read",
@@ -1979,6 +2016,16 @@ def _reviewable_variant(
             "layout_proof_resource_not_found",
             f"no {variant.value} proof is recorded for this artifact",
         )
+    return evidence
+
+
+def _evidence_summary(
+    artifact_id: str,
+    artifact_dir: Path,
+    variant: LengthVariant,
+    evidence: VariantProofEvidence,
+) -> LayoutProofEvidenceSummary:
+    """The reviewable summary of one variant's validated stored evidence."""
     result = evidence.render_result
     return LayoutProofEvidenceSummary(
         variant=variant.value,

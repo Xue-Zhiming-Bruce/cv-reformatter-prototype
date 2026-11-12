@@ -1489,6 +1489,44 @@ def test_status_separates_unavailable_evidence_from_never_created(tmp_path: Path
     assert [item["variant"] for item in body["unavailable_variants"]] == ["short", "medium"]
 
 
+def test_status_keeps_contradictory_variant_evidence_out_of_the_proof_set(
+    tmp_path: Path,
+) -> None:
+    """AC4: contradictory stored records are unavailable with a reason, never a 500.
+
+    A re-render that dies between the two atomic writes leaves
+    ``render_result.json`` and ``structural.json`` disagreeing, which the evidence
+    model rejects; that must not take the whole status response down.
+    """
+    artifact_id = "artifact_proof_contradictory"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    variants_root = artifact_dir / "layout_proofs" / "variants"
+    structural_path = variants_root / "medium" / "structural.json"
+    structural = json.loads(structural_path.read_text(encoding="utf-8"))
+    structural["page_count"] = structural["page_count"] + 1
+    structural_path.write_text(json.dumps(structural), encoding="utf-8")
+    render_path = variants_root / "long" / "render_result.json"
+    render_result = json.loads(render_path.read_text(encoding="utf-8"))
+    render_result["page_count"] = None
+    render_path.write_text(json.dumps(render_result), encoding="utf-8")
+
+    body = _proof_status(artifact_id)
+    assert [entry["variant"] for entry in body["variants"]] == ["short"]
+    reasons = {
+        item["variant"]: item["reason"] for item in body["unavailable_variants"]
+    }
+    assert set(reasons) == {"medium", "long"}
+    for reason in reasons.values():
+        assert reason.strip()
+        assert str(tmp_path) not in reason
+        assert "layout_proofs" not in reason
+    assert body["state"] != "approved"
+    # The readable variant stays fully reviewable through the same response.
+    assert _variant_entry(body, "short")["proof_pdf_url"]
+
+
 def test_decision_echoes_the_reviewed_identities(tmp_path: Path) -> None:
     """AC5: approval and rejection refer to the identities that were shown."""
     artifact_id = "artifact_proof_identity_echo"
