@@ -22,9 +22,18 @@ owns the agent roles). This document adds no workflow, runner, or result schema.
 | medium | `layout_proof_medium_6d9372f69e8c4d20` | `ea8ea8f4881342648f0fc9e7b878020d` | same | same |
 | long | `layout_proof_long_678f0b17f5a8679f` | `12301955f17b445894c59e33d44739fa` | same | same |
 
-Both documents are the fictional/manufactured LANE inputs
-(`tests/local_datasets/local_datasets/cvparserpro_it_resumes/files/`), matching
-the [test contract](../testing/TEST_STRUCTURE.md#product-trials-use-document-inputs).
+Both documents are the fictional/manufactured LANE matrix inputs at
+`tests/local_datasets/resume_matrix/resume_E.pdf` and `resume_B.pdf`, the
+locations listed in the [input inventory](../../tests/local_datasets/README.md).
+In a lane worktree the dataset tree is a symlink at
+`tests/local_datasets/local_datasets`, and reading the files there gives the same
+`83551af0…` / `ca06d0a9…`. They are **not** in
+`cvparserpro_it_resumes/files/`: that directory holds the `it_cv_*.docx` corpus
+cited below and contains no `resume_E.pdf`. Both are the fictional/manufactured
+LANE inputs the
+[test contract](../testing/TEST_STRUCTURE.md#product-trials-use-document-inputs)
+requires.
+
 Per run: `run_config.json` (frozen before the first live call), `prompts.json`,
 `agent_messages.jsonl` (one record per semantic agent call, with request and
 response parts and per-response usage), `trace.json` (39 / 50 / 72 entries),
@@ -152,9 +161,17 @@ Two filings in the issue do not reproduce and are corrected here:
   and both recorded `target 0.0 / current 0.0 / delta 0.0`. But the two requests
   carry **different intents** — "measure whether generated contact field labels
   are present in the header contact row" versus "…labels (e.g., 'Email:',
-  'Phone:') are present…". Equalising only `intent` makes the shipped keys
-  identical (`9774b638…` for both); leaving the recorded intents makes them
-  differ (`813c5372…` / `bf16ea89…`). The medium pair (`trace_0016` 88.05 pt →
+  'Phone:') are present…". With the recorded name text they hash
+  `989cf94e06a3…` / `e359061a22b5…`; setting both requests' `intent` to the
+  section-6 snippet's `"replay"` makes them `9104d1c2939b…` twice. Everything else
+  is already identical — page, region, the four selection texts, target PDF,
+  promoted `render_2.pdf`, state, plan and render version — so `intent` alone
+  separates the recorded pair. Two other compositions are reachable and are **not**
+  the recorded pair: passing no name text gives `813c5372…` / `bf16ea89…`
+  (`cc38eb9a…` with `intent="replay"`), and an earlier version of this document
+  quoted that synthetic pair as if it were the recorded one. The recorded values
+  are the ones above; the section-6 snippet reproduces them by substituting the
+  two recorded intents. The medium pair (`trace_0016` 88.05 pt →
   `trace_0035` 0.0 pt) and the long pair (`trace_0024` 125.482 pt → `trace_0046`
   0.0 pt) re-run the *same* request on **different current PDF bytes** — the
   metric is deterministic, so differing deltas can only come from differing
@@ -241,6 +258,16 @@ hold its accepted regions still genuinely re-measures. A reuse writes its own
 trace entry (`action: measurement_reused`, `input.reused_request_id`) so the
 recording shows what was served rather than silently omitting the call.
 
+A reuse also skips `spend_tool`, so a reusing run reports one less
+`tool_call_count` and one less `calls_by_tool` entry for the reused tool than the
+pre-change code for the same logical work: `run_artifacts` copies those
+counters straight from the lane budget, and nothing cross-checks them against the
+trace, where the call still appears — as `measurement`, or as `measurement_reused`
+when it was served. The `max_tool_calls` cap is looser by exactly one per reuse,
+which cannot run away: a reuse needs a prior memo entry, and entries are only
+created by an execution that does spend. On this recording the counter delta is
+zero, because there are no reuses.
+
 Every other measurement path (`role_gap`, `unsupported`) is untouched and still
 executes and spends its tool budget as before.
 
@@ -276,7 +303,10 @@ Earlier figures (205.1 / 0.405 ms) came from the version of the key that still
 omitted `intent`, the state, the plan and the name text, and from a snippet that
 timed the key in only one row; both are superseded. This is a micro-benchmark on
 one synthetic same-intent repeat: it prices the guard, it does not measure a
-saving on the baseline.
+saving on the baseline. `SYNTHETIC_CANDIDATE_NAME` in the snippet is the recorded
+candidate name text — the candidate profile's `header_field` / `name` leaf that
+`service.py` passes as `current_name_text`, also the first header line of
+`proof-short.pdf` — not a placeholder.
 
 The served result is value-identical to the executed one
 (`MeasurementResult` minus `request_id`) and its evidence is byte-identical to
@@ -373,7 +403,8 @@ gate test, but that is not the second recording the criterion asks for.
 | measurement methods | `header_contact_label_geometry/1`, `header_vertical_rule_geometry/2` | unchanged |
 | structural checks / privacy gate | `pdf_structure/2`, `candidate_fact_privacy/2` | unchanged |
 | client disclosure | `client_disclosure/2` | unchanged |
-| prompt / config / state | `prompts.json` `6a533289…e547ba2`, `run_config.json` `23dc4559…be6109`, `c2_layout_state.json` `5b75cc3f…e6932b9e` | no prompt, config, or state schema changed |
+| prompt / state | `prompts.json` `6a533289ab914455045fe5177d5f2fb1df3d0f9993070ed53c93799a4e547ba2` and `c2_layout_state.json` `5b75cc3fff6470096e0a6408cdb83c6ec54bc08e7623cc2cab0aa8e6932b9e13`, byte-identical on all three proofs | no prompt or state schema changed |
+| `run_config.json`, **per proof** | short `23dc4559035e3a818b04ee6cf69f6cb4555299240bfcca75e7146d87bcbe6109`, medium `d2a2263434e7a3404499ec8f44848db23089218366d5345f898fd31103338b89`, long `a915657c467340452bd92144747df79349f14760306f62fb3ee589367c523d84`. The only differing field is `candidate_input.sha256` — `2f7e36d5…` / `fd5d49d0…` / `803b7fa1…`, each proof's own reviewed candidate render context; every other field is identical | same schema; no proof re-run |
 | recorded model calls | `agent_messages.jsonl` `77430a53…0f1432` (short), `5669fcb7…f4212c` (medium), `f02cbc15…e2d7df` (long) | not re-recorded; no new prompt bytes |
 | recorded traces | `trace.json` `0cf8e673…40773b`, `a4742e0c…8df0f6`, `21ae7d1e…ad0348f` | same schema; new `measurement_reused` action only on reuse |
 
