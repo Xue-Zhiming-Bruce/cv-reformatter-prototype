@@ -72,12 +72,20 @@ implementation alignment is not complete:
       or follow-up output. Existing UI copy still asks users to fill gaps;
       frontend work belongs to the co-founder. Do not expand missing-field
       detection to language proficiency or links to satisfy the superseded spec.
-- [ ] Verify the four personal-information hiding controls in actual HTML/PDF,
+- [x] Verify the four personal-information hiding controls in actual HTML/PDF,
       including repeated occurrences, without changing internal source evidence.
       The current name projection uses the whole-profile blind toggle; this
       documentation decision does not establish independent field controls.
       Preserve existing blind-link safeguards; no employer-sensitivity classifier
       or automatic address generalization is required.
+      Closed by #33: the review writes `client_display_rules` for `full_name`,
+      `email`, `phone` and `location` on the saved revision, the shared mapper
+      applies them (blind still forces name/email/phone hidden and never hides
+      the address), and generation fails closed with `hidden_value_leaked` when
+      a hidden value survives in the PDF. Verified on the filed case with live
+      extraction of the inventoried DOCX: the private address occurs twice in
+      the ordinary HTML/PDF and zero times in the address-hidden pair, while the
+      stored value and extraction evidence stay byte-identical.
 - [ ] Report measured font-size/spacing differences for supported target roles
       alongside the actual files. Preserve existing checks; do not invent a new
       global numerical threshold or treat the frozen diagnostics as acceptance.
