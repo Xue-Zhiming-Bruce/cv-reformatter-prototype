@@ -1257,6 +1257,16 @@ def test_hidden_private_address_leaves_both_output_occurrences(
     assert regenerated.json()["html_sha256"] == hidden.json()["html_sha256"] != ordinary.json()["html_sha256"]
     assert _output_text(artifact_dir)[1].count(FILED_PRIVATE_ADDRESS) == 0
 
+    # Showing the value again restores the stored fact verbatim, with no placeholder text.
+    shown = client.post(f"/api/artifacts/{artifact_id}/profiles/revisions", json={
+        "profile": {**profile, "client_display_rules": {"location": "show"}},
+    })
+    assert shown.status_code == 200, shown.text
+    assert _generate_from_revision(artifact_id, shown.json()["profile_revision_id"]).status_code == 200
+    assert [text.count(FILED_PRIVATE_ADDRESS) for text in _output_text(artifact_dir)] == [2, 2]
+    for placeholder in ("Available upon request", "To be confirmed"):
+        assert placeholder not in _output_text(artifact_dir)[1]
+
     stored = json.loads((artifact_dir / "candidate_profile.json").read_text())
     assert stored["location"] == FILED_PRIVATE_ADDRESS and stored["client_display_rules"] == {}
     assert {name: (artifact_dir / name).read_bytes() for name in preserved} == preserved

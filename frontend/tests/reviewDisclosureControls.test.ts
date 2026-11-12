@@ -157,3 +157,26 @@ test("showing a value again writes show and clears the generated preview", async
   ])
   assert.equal(copy("review.disclosureShown"), "Shown")
 })
+
+test("legacy disclosure rules display as shown and need no migration", async (t) => {
+  const legacy = {
+    ...PROCESS_RESPONSE,
+    profile: {
+      ...PROCESS_RESPONSE.profile,
+      client_display_rules: { location: "pending_confirmation", email: "available_upon_request" },
+    },
+  }
+  const app = await launchApp({
+    "/api/process": (route) => route.fulfill(jsonRoute(legacy)),
+  }, PIN_LANGUAGE)
+  t.after(() => app.close())
+
+  await openReview(app)
+
+  for (const field of ["full_name", "email", "phone", "location"]) {
+    const control = app.page.locator(`input.rv-disclosure__check--${field}`)
+    assert.equal(await control.isChecked(), false, `${field} must display as shown`)
+  }
+  assert.ok((await app.page.locator(".rdoc").innerText()).includes(PRIVATE_ADDRESS))
+  assert.ok((await app.page.locator(".rdoc").innerText()).includes(PROCESS_RESPONSE.profile.email))
+})
