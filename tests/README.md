@@ -343,6 +343,9 @@ Offline fixtures do not prove live extraction quality.
 Exact duplicate structured work, education and certification entries are rejected
 within/across source sections before materialization. Repeated evidence lines
 remain covered independently; different degrees at one institution stay valid.
+A leading PDF icon marker (`(cid:212)`) is dropped from structured email/phone/
+location values while raw extracted text, verbatim items and field evidence keep
+it; markers inside a value, name, summary or URL stay untouched.
 The header-rule regression covers two rule-free PDFs with different names,
 required-rule deletion, additive/valid repairs and mismatched measurement method
 versions. Measurement policy also participates in API proof identity.
