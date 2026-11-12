@@ -117,7 +117,11 @@ DOCX corpus coverage: files=50 process_ok=50 audit_passed=50 generate_ok=50 sour
 ## Stages Not Executed
 
 - Live extraction provider. Extraction is the production factory's `mock`
-  branch; no `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` is read, no network call is
+  branch: no provider client is constructed from `OPENAI_API_KEY`/
+  `ANTHROPIC_API_KEY` and no credential value reaches the run. `app.main`
+  imports `load_dotenv()`, so a local `.env` file is loaded into the process
+  environment before the fixtures run — the keys are present in the
+  environment, they are simply never read into a request. No network call is
   made and no paid budget is spent. This run is not evidence of provider
   extraction quality.
 - Chrome/Chromium HTML→PDF export. PDF export is the shared helper stub, so no
