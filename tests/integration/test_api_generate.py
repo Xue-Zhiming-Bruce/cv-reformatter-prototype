@@ -1188,3 +1188,97 @@ def test_replayed_target_urls_belong_to_current_artifact(tmp_path: Path, monkeyp
     response = client.post("/api/artifacts/artifact_replayed_target/layout-proofs", json={})
     assert response.status_code == 200, response.text
     assert {v["variant"] for v in response.json()["variants"]} == {"short", "medium", "long"}
+
+
+LOCAL_DOCX = Path("tests/local_datasets/cvparserpro_it_resumes/files/it_cv_1.docx")
+FILED_PRIVATE_ADDRESS = "98 High Street, Bristol, UK"
+
+
+def _process_local_docx(tmp_path: Path, monkeypatch: MonkeyPatch) -> dict:
+    """Ingest the inventoried DOCX through the real route; only the model call is a stub."""
+    if not LOCAL_DOCX.exists():
+        pytest.skip(f"Local DOCX input is not available at {LOCAL_DOCX}.")
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    with LOCAL_DOCX.open("rb") as resume:
+        processed = client.post("/api/process", files={"file": (LOCAL_DOCX.name, resume,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document")})
+    assert processed.status_code == 200, processed.text
+    return processed.json()
+
+
+def _save_hidden_address_revision(artifact_id: str, profile: dict, **edits: str) -> str:
+    response = client.post(f"/api/artifacts/{artifact_id}/profiles/revisions", json={
+        "profile": {**profile, **edits, "client_display_rules": {"location": "hide"}},
+    })
+    assert response.status_code == 200, response.text
+    return response.json()["profile_revision_id"]
+
+
+def _generate_from_revision(artifact_id: str, revision_id: str) -> dict:
+    """AC2: the request carries the revision only, never request-side disclosure rules."""
+    return client.post("/api/generate", json={
+        "artifact_id": artifact_id, "profile_revision_id": revision_id,
+    })
+
+
+def _output_text(artifact_dir: Path) -> tuple[str, str]:
+    import pdfplumber
+
+    with pdfplumber.open(artifact_dir / "candidate_profile.pdf") as document:
+        pdf = "\n".join(page.extract_text() or "" for page in document.pages)
+    return (artifact_dir / "candidate_profile.html").read_text(), pdf
+
+
+@pytest.mark.local_dataset
+def test_hidden_private_address_leaves_both_output_occurrences(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    processed = _process_local_docx(tmp_path, monkeypatch)
+    artifact_id, profile = processed["artifact_id"], processed["profile"]
+    assert profile["location"] == FILED_PRIVATE_ADDRESS
+    artifact_dir = tmp_path / artifact_id
+    preserved = {name: (artifact_dir / name).read_bytes()
+                 for name in ("candidate_profile.json", "raw_extracted_text.txt")}
+
+    ordinary = _generate_from_revision(artifact_id, processed["profile_revision_id"])
+    assert ordinary.status_code == 200, ordinary.text
+    assert [text.count(FILED_PRIVATE_ADDRESS) for text in _output_text(artifact_dir)] == [2, 2]
+
+    hidden = _generate_from_revision(artifact_id, _save_hidden_address_revision(artifact_id, profile))
+    assert hidden.status_code == 200, hidden.text
+    assert [text.count(FILED_PRIVATE_ADDRESS) for text in _output_text(artifact_dir)] == [0, 0]
+    assert json.loads((artifact_dir / "hidden_value_validation.json").read_text()) == {
+        "schema_version": "hidden-value-validation/1.0", "passed": True,
+        "hidden_fields": ["location"], "leaks": [],
+    }
+
+    regenerated = _generate_from_revision(artifact_id, hidden.json()["profile_revision_id"])
+    assert regenerated.json()["html_sha256"] == hidden.json()["html_sha256"] != ordinary.json()["html_sha256"]
+    assert _output_text(artifact_dir)[1].count(FILED_PRIVATE_ADDRESS) == 0
+
+    stored = json.loads((artifact_dir / "candidate_profile.json").read_text())
+    assert stored["location"] == FILED_PRIVATE_ADDRESS and stored["client_display_rules"] == {}
+    assert {name: (artifact_dir / name).read_bytes() for name in preserved} == preserved
+
+
+@pytest.mark.local_dataset
+def test_retained_source_text_repeating_a_hidden_address_fails_closed(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    processed = _process_local_docx(tmp_path, monkeypatch)
+    artifact_id, profile = processed["artifact_id"], processed["profile"]
+    summary = f"Lives at {FILED_PRIVATE_ADDRESS}. {profile['professional_summary']}"
+    revision_id = _save_hidden_address_revision(artifact_id, profile, professional_summary=summary)
+
+    response = _generate_from_revision(artifact_id, revision_id)
+
+    assert response.status_code == 500, response.text
+    assert response.json()["detail"]["error_code"] == "hidden_value_leaked"
+    assert response.json()["detail"]["leaks"] == [{"field": "location", "occurrences": 1}]
+    artifact_dir = tmp_path / processed["artifact_id"]
+    assert json.loads((artifact_dir / "hidden_value_validation.json").read_text()) == {
+        "schema_version": "hidden-value-validation/1.0", "passed": False,
+        "hidden_fields": ["location"], "leaks": [{"field": "location", "occurrences": 1}],
+    }
+    assert not (artifact_dir / "artifact_manifest.json").exists()
