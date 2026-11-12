@@ -1339,6 +1339,20 @@ def _proof_resource_response(
     )
 
 
+@app.get("/api/artifacts/{artifact_id}/layout-proofs/variants/{variant}/{rest:path}")
+def get_layout_proof_unserved_resource(
+    artifact_id: str, variant: str, rest: str
+) -> None:
+    """Any other shape beneath a variant's resources is refused, never resolved."""
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error_code": "layout_proof_resource_mismatch",
+            "message": "this layout proof resource is not one the stored evidence names",
+        },
+    )
+
+
 def _proof_scope(artifact_id: str, variant: str) -> tuple[Path, LengthVariant]:
     """The artifact directory and parsed variant, or a structured rejection."""
     artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id

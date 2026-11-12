@@ -1395,6 +1395,18 @@ def test_proof_resource_rejections_are_structured_and_pathless(tmp_path: Path) -
         client.get(f"{base}/comparison/notes.txt"), statuses={409}
     )
 
+    # A traversal-shaped or deeper path never resolves: it stays a structured rejection.
+    for url in (
+        f"{base}/comparison/%2e%2e%2fproof.pdf",
+        f"{base}/comparison/a/b/c.png",
+        f"{base}/comparison/%2Fetc%2Fpasswd",
+        f"{base}/proof.pdf/extra",
+        f"{base}/",
+    ):
+        _assert_structured_resource_error(client.get(url), statuses={409})
+    # A client that normalizes "../" sends a different, still artifact-scoped request, so
+    # only the unnormalizable forms are asserted here; the resolver check below covers the rest.
+
     # A resolver-level escape attempt never returns a path outside the directory.
     for filename in ("../approval.json", "/etc/passwd", "visual/../../approval.json"):
         with pytest.raises(LayoutProofResourceError) as raised:
