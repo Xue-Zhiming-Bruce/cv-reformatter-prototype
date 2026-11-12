@@ -10,8 +10,11 @@ import hashlib
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 import app.pipeline.quality as quality
 import app.pipeline.service as e
@@ -396,6 +399,188 @@ def test_review_gate_full_review_once_per_render_fingerprint() -> None:
     assert repair_policy._e5_review_this_round(reviewed, "pdf-hash-b") is True
     reviewed.add("pdf-hash-b")
     assert repair_policy._e5_review_this_round(reviewed, "pdf-hash-b") is False
+
+
+# --- identical deterministic measurement reuse (issue #39) ------------------
+
+class _ReuseState(BaseModel):
+    """Stand-in for C2LayoutState: the reuse key digests a pydantic dump and the
+    contact-label metric reads `nodes`/`styles`."""
+
+    nodes: list[Any] = []
+    styles: list[Any] = []
+
+
+class _ReusePlan(BaseModel):
+    header_rows: list[Any] = []
+
+
+def _reuse_key(tmp_path: Path, *, current_bytes: bytes = b"%PDF-1.4 render-a",
+    render_version: str = "render-laneA-v2",
+    method: str = "header_contact_label_geometry/1",
+    state: Any = None, plan: Any = None,
+    current_name_text: str | None = None,
+    **request_overrides: object) -> str:
+    target = tmp_path/"target.pdf"
+    target.write_bytes(b"%PDF-1.4 target")
+    current = tmp_path/"render.pdf"
+    current.write_bytes(current_bytes)
+    request = evidence.MeasurementRequest(**{
+        "request_id": "measure-la-001", "metric": "header_contact_label_geometry", "page": 1,
+        "region_id": "header.product_contact",
+        "intent": "measure whether generated contact field labels are present",
+        **request_overrides,
+    })
+    return measurement.measurement_reuse_key(method=method, request=request,
+        target_pdf=target, current_pdf=current, render_version=render_version,
+        state=state, plan=plan, current_name_text=current_name_text)
+
+
+def test_identical_deterministic_measurement_is_reused_not_re_executed(tmp_path: Path) -> None:
+    """The recorded 2026-11-12 short proof measured header label geometry three
+    times; the last two ran on the same promoted PDF and returned identical
+    evidence (`trace_0028_measurement.json` / `trace_0036_measurement.json`).
+    Such a repeat is served from the lane's confirmed result and the reuse is
+    traced with the request id it stands on."""
+    key = _reuse_key(tmp_path)
+    trace = RunTrace(tmp_path)
+    memo: dict[str, evidence.MeasurementResult] = {}
+    assert e._e5_reuse_measurement(memo, trace, key, "measure-la-003",
+        "measure_header_contact_label_geometry") is None
+    memo[key] = evidence.MeasurementResult(request_id="measure-la-001", status="confirmed",
+        target_value_pt=0.0, current_value_pt=0.0, delta_pt=0.0,
+        method="header_contact_label_geometry/1")
+    reused = e._e5_reuse_measurement(memo, trace, key, "measure-la-003",
+        "measure_header_contact_label_geometry")
+    assert reused is not None
+    assert reused.request_id == "measure-la-003"
+    assert (reused.status, reused.delta_pt, reused.method) == ("confirmed", 0.0, memo[key].method)
+    assert trace.entries[-1]["action"] == "measurement_reused"
+    assert trace.entries[-1]["input"] == {"reused_request_id": "measure-la-001"}
+
+
+def test_changed_pdf_parameters_method_or_version_never_reuse_a_measurement(tmp_path: Path) -> None:
+    """A changed final PDF, a changed measurement parameter, a changed method
+    version or a changed render version must reach a fresh execution, and an
+    earlier not-confirmed result is never reused at all."""
+    key = _reuse_key(tmp_path)
+    trace = RunTrace(tmp_path)
+    memo = {key: evidence.MeasurementResult(request_id="measure-la-001", status="confirmed",
+        target_value_pt=0.0, current_value_pt=0.0, delta_pt=0.0,
+        method="header_contact_label_geometry/1")}
+    stale = [
+        _reuse_key(tmp_path, current_bytes=b"%PDF-1.4 render-b"),
+        _reuse_key(tmp_path, page=2),
+        _reuse_key(tmp_path, region_id="header.product_name"),
+        _reuse_key(tmp_path, method="header_contact_label_geometry/2"),
+        _reuse_key(tmp_path, render_version="render-laneA-v3"),
+        # every input the header metrics read is part of the identity
+        _reuse_key(tmp_path, intent="count the list items under LANGUAGES"),
+        _reuse_key(tmp_path, state=_ReuseState(styles=[{"style_id": "s1", "font_size_pt": 9.0}])),
+        _reuse_key(tmp_path, plan=_ReusePlan(header_rows=[{"node_id": "header.product_contact"}])),
+        _reuse_key(tmp_path, current_name_text="OTHER CANDIDATE NAME"),
+    ]
+    for changed in stale:
+        assert changed != key
+        assert e._e5_reuse_measurement(memo, trace, changed, "measure-la-004",
+            "measure_header_contact_label_geometry") is None
+    memo[key] = evidence.MeasurementResult(request_id="measure-la-001",
+        status="not_measurable", reason="label geometry requires one declared page-one contact row",
+        method="header_contact_label_geometry/1")
+    assert e._e5_reuse_measurement(memo, trace, key, "measure-la-005",
+        "measure_header_contact_label_geometry") is None
+
+
+def _measurement_lane(tmp_path: Path, *, state: Any,
+    name_text: str = "SYNTHETIC_CANDIDATE_NAME") -> Any:
+    """Only the lane surface `_e5_execute_measurement` reads."""
+    target = tmp_path/"target.pdf"
+    target.write_bytes(b"%PDF-1.4 target")
+    return SimpleNamespace(
+        run=SimpleNamespace(state=state, target_pdf=target, candidate_name_text=name_text,
+            region_spans={}, pod=None),
+        trace=RunTrace(tmp_path), lane_budget=RunBudget(), measurement_reuse={},
+    )
+
+
+def _header_finding(dimension: str, metric: str, intent: str) -> evidence.DefectFinding:
+    return evidence.DefectFinding(
+        finding_id="finding-la-001", target_version="target-v1", render_version="render-v1",
+        page=1, region="header.product_name",
+        observation=f"Observed {dimension} mismatch", suspected_dimension=dimension,
+        requested_measurement=evidence.MeasurementRequest(
+            request_id="measure-la-001", metric=metric, page=1, intent=intent),
+        severity="high", confidence=0.8, reviewer="scripted",
+    )
+
+
+def _confirmed(delta_pt: float, method: str) -> evidence.MeasurementResult:
+    return evidence.MeasurementResult(request_id="measure-la-001", status="confirmed",
+        target_value_pt=0.0, current_value_pt=delta_pt, delta_pt=delta_pt, method=method)
+
+
+def _trace_actions(ls: Any) -> list[str]:
+    return [entry["action"] for entry in ls.trace.entries]
+
+
+def test_intent_only_difference_never_reuses_a_header_measurement(tmp_path: Path) -> None:
+    """`header_vertical_rule_geometry` refuses a request whose `intent` lacks its
+    keywords, so a confirmed result must not answer a request that differs only
+    in `intent` — through the shipped call site, not just the helper."""
+    ls = _measurement_lane(tmp_path, state=_ReuseState())
+    render = tmp_path/"render.pdf"
+    render.write_bytes(b"%PDF-1.4 render-a")
+    finding = _header_finding("header_vertical_rule", "header_vertical_rule_geometry",
+        "compare the header name vertical rule")
+    key = measurement.measurement_reuse_key(
+        method=measurement.HEADER_VERTICAL_RULE_MEASUREMENT_VERSION,
+        request=finding.requested_measurement, target_pdf=ls.run.target_pdf,
+        current_pdf=render, render_version="render-laneA-v2",
+        current_name_text=ls.run.candidate_name_text)
+    ls.measurement_reuse[key] = _confirmed(0.0, measurement.HEADER_VERTICAL_RULE_MEASUREMENT_VERSION)
+
+    served, _ = e._e5_execute_measurement(ls, finding, render, "measure-la-002",
+        render_version="render-laneA-v2")
+    assert (served.status, served.delta_pt) == ("confirmed", 0.0)
+    assert served.request_id == "measure-la-002"
+    assert _trace_actions(ls).count("measurement_reused") == 1
+
+    reworded = finding.model_copy(update={"requested_measurement":
+        finding.requested_measurement.model_copy(
+            update={"intent": "count the list items under the LANGUAGES heading"})})
+    refused, _ = e._e5_execute_measurement(ls, reworded, render, "measure-la-003",
+        render_version="render-laneA-v2")
+    assert refused.status == "not_measurable"
+    assert "intent" in (refused.reason or "")
+    assert _trace_actions(ls).count("measurement_reused") == 1
+
+
+def test_layout_state_only_difference_never_reuses_a_header_measurement(tmp_path: Path) -> None:
+    """The contact-label metric reads the layout state, so a changed state must
+    reach a fresh execution instead of a confirmed prior — through the call site."""
+    state = _ReuseState()
+    ls = _measurement_lane(tmp_path, state=state)
+    render = tmp_path/"render.pdf"
+    render.write_bytes(b"%PDF-1.4 render-a")
+    finding = _header_finding("header_contact_labels", "header_contact_label_geometry",
+        "measure whether generated contact field labels are present")
+    key = measurement.measurement_reuse_key(
+        method=measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
+        request=finding.requested_measurement.model_copy(update={"region_id": finding.region}),
+        target_pdf=ls.run.target_pdf, current_pdf=render, render_version="render-laneA-v2",
+        state=state, plan=None, current_name_text=ls.run.candidate_name_text)
+    ls.measurement_reuse[key] = _confirmed(0.0, measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION)
+
+    served, _ = e._e5_execute_measurement(ls, finding, render, "measure-la-002",
+        render_version="render-laneA-v2")
+    assert served.status == "confirmed"
+    assert _trace_actions(ls).count("measurement_reused") == 1
+
+    ls.run.state = _ReuseState(styles=[{"style_id": "s1", "font_size_pt": 9.0}])
+    refused, _ = e._e5_execute_measurement(ls, finding, render, "measure-la-003",
+        render_version="render-laneA-v2")
+    assert refused.status == "not_measurable"
+    assert _trace_actions(ls).count("measurement_reused") == 1
 
 
 def test_round_scheduling_uses_bounded_selection() -> None:

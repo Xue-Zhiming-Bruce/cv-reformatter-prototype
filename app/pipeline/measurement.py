@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 from collections import Counter
@@ -9,11 +11,64 @@ from pathlib import Path
 from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from app.generation.template_mapper import CONTACT_FIELD_SLOTS, CONTACT_LABEL_FIELDS
-from app.pipeline.evidence import MeasurementRequest, MeasurementResult, _page_pt_size, _pdf_line_rows
+from app.pipeline.evidence import (
+    MeasurementRequest,
+    MeasurementResult,
+    _page_pt_size,
+    _pdf_line_rows,
+    _sha256_file,
+)
 from app.pipeline.rendering import _pinned_chrome_environment
 
 HEADER_VERTICAL_RULE_MEASUREMENT_VERSION = "header_vertical_rule_geometry/2"
 HEADER_CONTACT_LABEL_MEASUREMENT_VERSION = "header_contact_label_geometry/1"
+
+
+def _canonical_digest(value: Any) -> str:
+    """Digest of a pydantic input, or "none" when the caller passed nothing."""
+    if value is None:
+        return "none"
+    return hashlib.sha256(value.model_dump_json().encode()).hexdigest()
+
+
+def measurement_reuse_key(
+    *, method: str, request: MeasurementRequest, target_pdf: Path,
+    current_pdf: Path, render_version: str, state: Any = None, plan: Any = None,
+    current_name_text: str | None = None,
+) -> str:
+    """Identity of ONE deterministic header-geometry measurement.
+
+    The key covers every input the header metrics read, so an identical key
+    means an identical measurement: the request parameters INCLUDING the
+    free-text `intent` (`_measure_header_vertical_rule_geometry` refuses a
+    request whose intent lacks its keywords, so two requests differing only in
+    intent must not share a result), both final PDFs' bytes, the render version,
+    and the layout state, render plan and candidate name text the contract-label
+    metric reads. A superset can only cost a re-execution, never a wrong reuse.
+
+    Request ids are excluded because the per-lane counter is not unique per
+    render: the 2026-11-12 recording measured one promoted PDF twice under
+    `measure-la-001` and `measure-la-003` (`trace_0028` / `trace_0036`). Those two
+    requests carry DIFFERENT intents, so they are not the same key and nothing is
+    reused for them — including `intent` is what makes this guard correct and it
+    is also why the recorded pair is not an instance of the waste it prevents."""
+    return hashlib.sha256(json.dumps({
+        "method": method,
+        "metric": request.metric,
+        "page": request.page,
+        "region_id": request.region_id,
+        "intent": request.intent,
+        "from_text": request.from_text,
+        "to_text": request.to_text,
+        "render_from_text": request.render_from_text,
+        "render_to_text": request.render_to_text,
+        "target_sha256": _sha256_file(target_pdf),
+        "current_sha256": _sha256_file(current_pdf),
+        "render_version": render_version,
+        "state_sha256": _canonical_digest(state),
+        "plan_sha256": _canonical_digest(plan),
+        "current_name_text": current_name_text,
+    }, sort_keys=True).encode()).hexdigest()
 
 SlotKind = Literal["name", "title", "tagline", "location", "phone", "envelope", "github", "linkedin"]
 
