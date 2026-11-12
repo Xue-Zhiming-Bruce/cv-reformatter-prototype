@@ -262,6 +262,9 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   const [revisionId, setRevisionId] = useState(data.profile_revision_id)
   const [profileDirty, setProfileDirty] = useState(false)
   const editVersionRef = useRef(0)
+  // Bumped whenever the output is invalidated: a generation whose token is older than this one lost
+  // its result, so a response that lands after an edit/disclosure change installs nothing.
+  const generationTokenRef = useRef(0)
   const [generation, setGeneration] = useState<GenerateResponse | null>(null)
   const [acceptanceState, setAcceptanceState] = useState<"idle" | "submitting" | "accepted">("idle")
   const [acceptanceInvalidated, setAcceptanceInvalidated] = useState(false)
@@ -333,6 +336,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   }
 
   function invalidateGeneratedOutput() {
+    generationTokenRef.current += 1
     if (generation?.client_ready || acceptanceState === "accepted") {
       setAcceptanceInvalidated(true)
     }
@@ -476,12 +480,17 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
   async function runGeneration(source: "preview" | "export", forceSave: boolean): Promise<GenerateResponse | null> {
     if (targetBlocked) return null
     setActionError(null)
+    // Bound to the state at send: once an edit or disclosure change supersedes this chain it must
+    // neither issue a generate for the revision it started with nor install that revision's output.
+    const generationToken = generationTokenRef.current
+    const superseded = () => generationToken !== generationTokenRef.current
     let revisionToUse = revisionId
     if (profileDirty || forceSave || !revisionToUse) {
       const saved = await persistRevision(source)
       if (!saved) return null
       revisionToUse = saved
     }
+    if (superseded()) return null
     // No-target defense: layout proofs are only consulted for an uploaded target.
     if (effectiveTarget) {
       const status = await loadProofStatus()
@@ -491,6 +500,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         setActionError(gateError)
         return null
       }
+      if (superseded()) return null
     }
     try {
       const res = await fetch("/api/generate", {
@@ -503,6 +513,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         }),
       })
       if (!res.ok) {
+        if (superseded()) return null
         setActionError(await buildApiError(
           res,
           source === "preview" ? t("review.previewFailedTitle") : t("review.exportFailedTitle"),
@@ -511,6 +522,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         return null
       }
       const result = (await res.json()) as GenerateResponse
+      if (superseded()) return null
       setGeneration(result)
       setPreviewUrl(result.pdf_preview_url)
       setAcceptanceState(result.client_ready ? "accepted" : "idle")
@@ -530,9 +542,15 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
 
   async function handleFinalPreview(forceSave = false) {
     if (previewState === "generating" || targetBlocked) return
+    const requestToken = generationTokenRef.current
     setPreviewState("generating")
     setPreviewMode(false)
     const result = await runGeneration("preview", forceSave)
+    if (requestToken !== generationTokenRef.current) {
+      // A control or edit change superseded this preview: stay in the invalidated state.
+      setPreviewState("idle")
+      return
+    }
     if (result) {
       setPreviewMode(true)
       setPreviewState("idle")
@@ -544,8 +562,13 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
 
   async function doExport(forceSave = false) {
     if (targetBlocked) return
+    const requestToken = generationTokenRef.current
     setExportState("generating")
     const result = await runGeneration("export", forceSave)
+    if (requestToken !== generationTokenRef.current) {
+      setExportState("idle")
+      return
+    }
     if (!result) {
       setExportState("error")
       setTimeout(() => setExportState("idle"), 3500)
@@ -634,6 +657,7 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
       return
     }
     setActionError(null)
+    const requestToken = generationTokenRef.current
     setAcceptanceState("submitting")
     try {
       const res = await fetch(`/api/artifacts/${data.artifact_id}/final-acceptance`, {
@@ -657,6 +681,11 @@ export function ReviewScreen({ data, resumeFile, resumeFileName, formatName, tar
         return
       }
       const accepted = (await res.json()) as FinalAcceptanceResponse
+      if (requestToken !== generationTokenRef.current) {
+        // The output this acceptance belongs to was invalidated while the request was in flight.
+        setAcceptanceState("idle")
+        return
+      }
       if (!accepted.client_ready) {
         setActionError(profileActionError(
           t("review.acceptanceFailed"),

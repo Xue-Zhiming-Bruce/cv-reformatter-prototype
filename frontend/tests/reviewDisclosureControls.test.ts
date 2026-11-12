@@ -180,3 +180,116 @@ test("legacy disclosure rules display as shown and need no migration", async (t)
   assert.ok((await app.page.locator(".rdoc").innerText()).includes(PRIVATE_ADDRESS))
   assert.ok((await app.page.locator(".rdoc").innerText()).includes(PROCESS_RESPONSE.profile.email))
 })
+
+function deferred(): { promise: Promise<void>; release: () => void } {
+  let release = () => {}
+  const promise = new Promise<void>((resolve) => { release = resolve })
+  return { promise, release }
+}
+
+const READY_GENERATE_RESPONSE = {
+  ...GENERATE_RESPONSE,
+  profile_revision_id: "revision-2",
+  html_surface_url: "/generated/surface.html",
+  pdf_preview_url: "/generated/preview.pdf",
+  pdf_download_url: "/generated/download.pdf",
+  profile_sha256: "stub-profile-sha256",
+  client_ready: true,
+}
+
+test("a control change during generation keeps the late response out of the review", async (t) => {
+  const captured: Captured = { revisions: [], generates: [] }
+  const inFlight = deferred()
+  const app = await launchApp({
+    ...stubs(captured),
+    "/api/generate": async (route) => {
+      captured.generates.push(route.request().postDataJSON())
+      await inFlight.promise
+      return route.fulfill(jsonRoute(READY_GENERATE_RESPONSE))
+    },
+  }, PIN_LANGUAGE)
+  t.after(() => app.close())
+
+  await openReview(app)
+  await app.page.locator("input.rv-disclosure__check--location").check()
+  await app.page.locator(".rv-preview-btn").click()
+  await app.page.locator(".rv-preview-btn[disabled]").waitFor()
+
+  // The recruiter changes another control while the client-ready response is still in flight.
+  await app.page.locator("input.rv-disclosure__check--email").check()
+  inFlight.release()
+  // The superseded response is dropped, so the preview button leaves the generating state without
+  // installing anything: the wait below is the "response handled" signal for the assertions.
+  await app.page.locator(".rv-preview-btn:not([disabled])").waitFor()
+
+  assert.equal(captured.generates.length, 1, "the in-flight request was still issued")
+  assert.equal(await app.page.locator(".rv-preview-back-btn").count(), 0, "no preview after the invalidation")
+  assert.equal(await app.page.locator(".rv-acceptance").count(), 0, "no acceptance row or download links")
+  assert.equal(await app.page.locator(".pdf-embed").count(), 0, "no generated PDF is embedded")
+  const document = await app.page.locator(".rdoc").innerText()
+  assert.ok(!document.includes(PRIVATE_ADDRESS), "the pane keeps the hidden address hidden")
+  assert.ok(!document.includes(PROCESS_RESPONSE.profile.email), "the pane keeps the hidden email hidden")
+})
+
+test("a control change during the save never generates from the superseded revision", async (t) => {
+  const captured: Captured = { revisions: [], generates: [] }
+  const inFlight = deferred()
+  let saves = 0
+  const app = await launchApp({
+    "/api/process": (route) => route.fulfill(jsonRoute(PROCESS_RESPONSE)),
+    [REVISIONS_PATH]: async (route) => {
+      captured.revisions.push(route.request().postDataJSON())
+      saves += 1
+      if (saves === 1) await inFlight.promise
+      return route.fulfill(jsonRoute({
+        profile_revision_id: `revision-${saves + 1}`,
+        artifact_id: ARTIFACT,
+        schema_version: "1",
+        profile_sha256: "stub-profile-sha256",
+        source_draft_sha256: "stub-draft-sha256",
+        created_at: "2026-07-26T00:00:00Z",
+      }))
+    },
+    "/api/generate": (route) => {
+      captured.generates.push(route.request().postDataJSON())
+      return route.fulfill(jsonRoute(READY_GENERATE_RESPONSE))
+    },
+  }, PIN_LANGUAGE)
+  t.after(() => app.close())
+
+  await openReview(app)
+  await app.page.locator("input.rv-disclosure__check--location").check()
+  await app.page.locator(".rv-preview-btn").click()
+  await app.page.locator(".rv-preview-btn[disabled]").waitFor()
+  while (captured.revisions.length === 0) await app.page.waitForTimeout(10)
+
+  // The save carries the pre-change disclosure, so issuing a generate for its revision would ship
+  // an output the recruiter has already superseded.
+  await app.page.locator("input.rv-disclosure__check--email").check()
+  inFlight.release()
+  await app.page.locator(".rv-preview-btn:not([disabled])").waitFor()
+
+  assert.deepEqual(captured.revisions[0].profile.client_display_rules, {
+    full_name: "show",
+    email: "show",
+    phone: "show",
+    location: "hide",
+  })
+  assert.equal(captured.generates.length, 0, "the superseded revision must not reach /api/generate")
+  assert.equal(await app.page.locator(".rv-acceptance").count(), 0)
+
+  // The next generate saves the current disclosure and binds that revision, not the stale one.
+  await app.page.locator(".rv-preview-btn").click()
+  await app.page.locator(".rv-preview-back-btn").waitFor()
+
+  assert.equal(captured.revisions.length, 2)
+  assert.deepEqual(captured.revisions[1].profile.client_display_rules, {
+    full_name: "show",
+    email: "hide",
+    phone: "show",
+    location: "hide",
+  })
+  assert.equal(captured.generates.length, 1)
+  assert.equal(captured.generates[0].profile_revision_id, "revision-3")
+  assert.notEqual(captured.generates[0].profile_revision_id, "revision-2")
+})
