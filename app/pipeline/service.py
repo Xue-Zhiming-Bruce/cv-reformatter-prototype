@@ -420,6 +420,29 @@ def _candidate_compatible_draft(
     }
 
 
+def _header_contact_label_control(candidate: Any, state: Any) -> dict[str, Any]:
+    """Whether the bounded generated-label primitive applies to THIS lane.
+
+    The primitive rewrites one compiled header row's field text, so it needs
+    structured contact items in the declared header slots and no flat `contact`
+    slot (that flat row cannot carry them). The Builder evidence package and
+    the pre-render proposal validator read this single answer."""
+    header_slots = {
+        field.slot for node in state.nodes if node.kind == "header_row"
+        for field in node.fields
+    }
+    contact_leaves = [
+        leaf for leaf in candidate.leaves if leaf.kind == "header_field"
+        and leaf.slot in header_slots and leaf.slot in CONTACT_FIELD_SLOTS.values()
+    ]
+    return {
+        "supported": bool(contact_leaves)
+        and all(leaf.contact_item is not None for leaf in contact_leaves)
+        and "contact" not in header_slots,
+        "structured_field_count": len(contact_leaves),
+        "allowed_changes": "generated header labels only; source values/order/delimiters/body contacts stay unchanged",
+    }
+
 def _e5_builder_evidence_package(
     *,
     draft: TargetStructureDraft,
@@ -482,15 +505,9 @@ def _e5_builder_evidence_package(
     }
     if candidate is not None:
         package["candidate_layout_footprint"] = _candidate_layout_footprint(candidate)
-        header_slots = {field.slot for node in state.nodes if node.kind == "header_row" for field in node.fields}
-        contact_leaves = [leaf for leaf in candidate.leaves if leaf.kind == "header_field"
-            and leaf.slot in header_slots and leaf.slot in CONTACT_FIELD_SLOTS.values()]
-        package["lane_a_header_contact_label_control"] = {
-            "supported": bool(contact_leaves) and all(leaf.contact_item is not None for leaf in contact_leaves)
-                and "contact" not in header_slots,
-            "structured_field_count": len(contact_leaves),
-            "allowed_changes": "generated header labels only; source values/order/delimiters/body contacts stay unchanged",
-        }
+        package["lane_a_header_contact_label_control"] = _header_contact_label_control(
+            candidate, state
+        )
     if candidate_compatible_labels is not None:
         package["candidate_compatible_labels"] = candidate_compatible_labels
     if body_color_context is not None:
@@ -557,8 +574,18 @@ def _e5_default_attribution(
     finding: DefectFinding,
     result: MeasurementResult,
     request: MeasurementRequest,
+    *,
+    label_control_supported: bool = False,
 ) -> AttributionRecord:
-    """Explicit non-live/fallback state without inventing a causal owner."""
+    """Explicit non-live/fallback state without inventing a causal owner.
+
+    One bounded exception: `header_contact_label_geometry` measures ONLY the
+    generated label prefixes of the declared header contact row, and the single
+    typed primitive `header_contact_labels` is the only property that changes
+    them. A confirmed uniform presence mismatch therefore HAS a deterministic
+    owner — but only when this lane's candidate can really express the change
+    (structured contact fields, no flat `contact` slot); otherwise it stays
+    unresolved for the reviewer."""
     if result.status == "confirmed" and result.delta_pt is not None:
         if abs(result.delta_pt) <= E2_IMPROVEMENT_TOLERANCE_PT:
             return AttributionRecord(
@@ -570,6 +597,23 @@ def _e5_default_attribution(
                 repair_owner="none",
                 evidence=[result.request_id],
                 reason="measured final-PDF property matches the target within the documented tolerance",
+            )
+        if label_control_supported and request.metric == "header_contact_label_geometry":
+            target_mode = (result.target_evidence[0] if result.target_evidence else {}).get("label_mode")
+            current_mode = (result.current_evidence[0] if result.current_evidence else {}).get("label_mode")
+            return AttributionRecord(
+                finding_id=finding.finding_id,
+                render_version=finding.render_version,
+                measurement_request_id=request.request_id,
+                attribution="render_plan",
+                hypothesis_status="confirmed",
+                repair_owner="builder",
+                evidence=[result.request_id],
+                reason=(
+                    "the metric binds only generated header-contact label prefixes, and "
+                    "header_contact_labels is the only primitive that changes them "
+                    f"(target label_mode={target_mode}, render label_mode={current_mode})"
+                ),
             )
         return AttributionRecord(
             finding_id=finding.finding_id,
@@ -763,11 +807,22 @@ def _apply_lane_a_structure(plan: Any, proposal: LaneAStructureProposal | None) 
     )
 
 def _validate_lane_a_proposal(
-    proposal: LaneAStructureProposal, state: Any
+    proposal: LaneAStructureProposal, state: Any, candidate: Any | None = None
 ) -> str | None:
     """Shell-side Lane A validation: section ids must exist in the compiled
     state; no candidate text may appear anywhere in the proposal (candidate
-    facts are never editable); rail widths are bounded by the model."""
+    facts are never editable); rail widths are bounded by the model. A
+    generated-label change is rejected here — BEFORE rendering — when this lane
+    has no structured header contact row to express it."""
+    if (
+        proposal.header_contact_labels is not None
+        and candidate is not None
+        and not _header_contact_label_control(candidate, state)["supported"]
+    ):
+        return (
+            "header_contact_labels requires structured header contact fields "
+            "in the declared contact slots"
+        )
     known = {node.node_id for node in state.nodes}
     unknown = [item.section_node_id for item in proposal.sections if item.section_node_id not in known]
     if unknown:
@@ -2066,7 +2121,12 @@ def _e5_attribute(ls: _E5LaneState,
     result: MeasurementResult,
     request: MeasurementRequest,
 ) -> AttributionRecord:
-    attribution = _e5_default_attribution(finding, result, request)
+    attribution = _e5_default_attribution(
+        finding, result, request,
+        label_control_supported=_header_contact_label_control(
+            ls.run.candidate, ls.run.state
+        )["supported"],
+    )
     ls.attributions.append(attribution)
     # Single source of defect state: the attribution (and its
     # measurement request) is written back to the owning ledger
@@ -2741,7 +2801,7 @@ def _e5_round_build_candidate(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopSte
             )
         else:
             rs.proposal = _scripted_lane_a_proposal(ls.run.state, ls.run.derived)
-        validation_error = _validate_lane_a_proposal(rs.proposal, ls.run.state)
+        validation_error = _validate_lane_a_proposal(rs.proposal, ls.run.state, ls.run.candidate)
         rs.candidate_audit_index = _e5_record_builder_candidate(ls,
             rs.proposal,
             stage="repair",
@@ -3088,7 +3148,7 @@ def _e5_run_lane(run: _E5RunState, lane: str) -> E5LaneRecord:
                     image_refs=_e5_image_refs(run.out_dir, run.shared_target_images, "target"),
                 ),
             )
-            validation_error = _validate_lane_a_proposal(proposal, run.state)
+            validation_error = _validate_lane_a_proposal(proposal, run.state, run.candidate)
             candidate_audit_index = _e5_record_builder_candidate(
                 ls,
                 proposal,
