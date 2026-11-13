@@ -174,6 +174,7 @@ def agentic_renderer_version() -> str:
         "pdf_structure_checks": quality.PDF_STRUCTURE_VALIDATION_VERSION,
         "candidate_fact_privacy": quality.PRIVACY_GATE_VERSION,
         "client_disclosure": template_mapper.CLIENT_DISCLOSURE_VERSION,
+        "repair_attribution_policy": repair_policy.E5_ATTRIBUTION_POLICY,
         "repair_budget_review_policy": {
             "identity": repair_policy.E5_BUDGET_REVIEW_POLICY,
             "builder_reserve_model_requests": AGENTIC_BUILDER_RESERVE_REQUESTS,

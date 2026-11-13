@@ -891,6 +891,47 @@ inputs are documented in [the test index](../../tests/README.md). Changes belong
 in these production modules and canonical tests, with Git retaining previous
 versions instead of parallel experiment sources or ledgers.
 
+### Reviewer Observation Capability Map — November 14, 2026
+
+The Reviewer is asked for typography, spacing, alignment, rules, color and
+structure observations (`app/pipeline/prompts.py::E5_REVIEWER_INSTRUCTIONS`),
+but only a measured dimension can become an automatic repair. This table is the
+current mapping; it is the existing capability record, not a second schema.
+
+| Reviewer observation | Status | Code that decides it |
+| --- | --- | --- |
+| Generated header-contact label presence | measurable + automatically repairable | `measurement.py::_measure_header_contact_label_geometry` measures the render's own glyph prefixes in the declared contact row; a confirmed uniform presence mismatch is bound to the Builder by `service.py::_e5_attribute` (via `_header_contact_label_control`), and `run_models.py::LaneAStructureProposal.header_contact_labels` is applied by `service.py::_apply_lane_a_structure` |
+| Section heading-in-rail, rail width/alignment, entry metadata placement | automatically repairable | `run_models.py::E5LaneASection` bounds the values (`rail_label_width_pt` 20–400 pt); `_validate_lane_a_proposal` + `_apply_lane_a_structure` apply them |
+| Header/name vertical-rule geometry | measurable, owner review required | `measurement.py::_measure_header_vertical_rule_geometry` measures the rule sets, but no typed primitive changes header rules |
+| Entry/list vertical spacing (`role_gap`) | measurable, safe trial only | `measurement.py::_bind_role_gap_anchors`; an unproven region may only enter `layout_trial_regions` and never selects automatically (`repair_policy.py::_next_e5_repair_finding`) |
+| Target sidebar/body color, font size, font family, paragraph/line spacing, arbitrary CSS | not measurable by a general metric, owner review required | the Reviewer is directed to `metric='unsupported'`; `LaneAStructureProposal` (`extra="forbid"`) has no field for them |
+| Target page images as backgrounds, sample-page reuse | never repairable | product non-negotiables; no renderer or proposal path exists |
+| Candidate facts, values, disclosure, target-person exclusions | not repairable by any lane | `CandidateProfile` authority plus the mandatory content/privacy gates |
+| Any other dimension | not measurable, owner review required | `MeasurementRequest.metric` is a closed literal (`role_gap`, `header_vertical_rule_geometry`, `header_contact_label_geometry`, `unsupported`) |
+
+A repair is selectable only through `repair_policy.py::_next_e5_repair_finding`
+after `service.py::_e5_attribute` bound a confirmed owner, the identical
+re-measurement in `measurement.py::_measurement_improvement` decreased the actual
+final-PDF error, `service.py::_e5_accepted_regions_hold` re-checked every accepted
+region, and `repair_policy.py::_repair_capacity_available` reserved a review of
+the whole selected final PDF. A changed label policy, measurement method, or
+attribution binding invalidates affected older lane A proofs; nothing is
+inherited.
+
+Remaining unsupported cases for the header contact label slice, each visible to
+the owner with its reason and never converted into a passing measurement:
+
+- the target declares only some label keys, or a declared key has width 0.0 pt
+  (the measured render omits it) — mixed per-field presence is `ambiguous`;
+- an unrecognized header prefix such as `E-mail:` — `not_measurable`;
+- no text binds to the declared contact font/window — `evidence_missing`;
+- a flat `contact` slot instead of structured contact items — the proposal is
+  rejected before rendering (`_validate_lane_a_proposal`);
+- the contact row's vertical position and general contact typography — no typed
+  primitive, owner review;
+- a label whose *text* differs from the target wording — the metric measures
+  presence only, owner review.
+
 ### Real Measured-Template Consumption — October 25, 2026
 
 The A product projection now retains measured PostScript face identity in an

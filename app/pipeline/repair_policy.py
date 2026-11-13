@@ -32,6 +32,11 @@ E5_BUILDER_RESERVE_REQUESTS = 40
 # reservation or review rule never inherits an old approval.
 E5_BUDGET_REVIEW_POLICY = "builder-reserve-protected+whole-final-pdf-review/1"
 
+# Which measurements may be attributed to the bounded Builder primitive without
+# a live model. Changing this changes repair selection, so it is part of the
+# proof identity and never inherits an approval made under the old rule.
+E5_ATTRIBUTION_POLICY = "header-contact-label-confirmed/1"
+
 def _e5_gate_classification(
     lane: str,
     gates: dict[str, Any],

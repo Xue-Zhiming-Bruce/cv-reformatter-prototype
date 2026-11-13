@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from typing import Any
+
 import pdfplumber
 import pytest
 
@@ -580,6 +582,195 @@ def test_header_contact_label_geometry_uses_actual_scoped_prefixes(tmp_path: Pat
         wrong_region = measurement._measure_header_contact_label_geometry(request.model_copy(update={"region_id": "header.product_name"}),
             target_pdf=inputs["target_pdf"], current_pdf=repaired_pdf, state=state, plan=repaired, current_name_text=context.candidate_heading)
         assert wrong_region.status == "not_measurable" and wrong_region.delta_pt is None
+
+
+def _header_label_scene(tmp_path: Path) -> tuple[dict, Any, Any, Any, Any]:
+    """Real target/render PDFs plus the compiled state of one structured
+    header contact row; target declares values only (label_mode=false)."""
+    import hashlib
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline.candidate_content import candidate_document_from_context
+    from app.pipeline.html_renderer import render_layout_template
+    from tests.helpers.pipeline import header_contact_inputs
+
+    inputs, spec, profile = header_contact_inputs(tmp_path)
+    context = build_client_render_context(profile)
+    candidate = candidate_document_from_context(context, candidate_id="label-loop", include_subheading=False)
+    state, base, _ = render_layout_template(spec, candidate,
+        target_sha256=hashlib.sha256(inputs["target_pdf"].read_bytes()).hexdigest(), page_count=1)
+    return inputs, context, state, base, candidate
+
+
+def _render_label_choice(tmp_path: Path, name: str, state: Any, base: Any, visible: bool) -> tuple[Any, str, Path]:
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+    from app.pipeline import run_models, service
+    from app.pipeline.html_renderer import render_html
+
+    plan = service._apply_lane_a_structure(base, run_models.LaneAStructureProposal(
+        proposal_id=name, agent="scripted", sections=[], header_contact_labels=visible))
+    html = render_html(state, plan)
+    path = tmp_path / f"{name}.html"
+    path.write_text(html)
+    return plan, html, export_html_to_pdf(path, tmp_path / f"{name}.pdf")
+
+
+def _label_measurement(target_pdf: Path, pdf: Path, state: Any, plan: Any, name_text: str) -> Any:
+    return measurement._measure_header_contact_label_geometry(measurement.MeasurementRequest(
+        request_id="header-labels", metric="header_contact_label_geometry", page=1,
+        region_id="header.product_contact", intent="compare generated header contact label presence"),
+        target_pdf=target_pdf, current_pdf=pdf, state=state, plan=plan, current_name_text=name_text)
+
+
+EVIDENCE_LABEL = "offline controlled evidence - not live discovery, no fidelity winner inferred"
+
+
+def _retain_header_label_evidence(before_pdf: Path, after_pdf: Path, target_pdf: Path,
+                                  before: Any, after: Any) -> Path | None:
+    """AC7: copy the before/after proofs next to their overviews and a manifest
+    when HEADER_LABEL_EVIDENCE_DIR names a directory; otherwise write nothing."""
+    import hashlib
+    import os
+    import shutil
+    from datetime import datetime, timezone
+    from app.pipeline import evidence
+
+    root = os.environ.get("HEADER_LABEL_EVIDENCE_DIR")
+    if not root:
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out = Path(root) / f"header_contact_labels_{stamp}"
+    out.mkdir(parents=True, exist_ok=True)
+    for name, source in (("target_reference.pdf", target_pdf), ("before_labels_on.pdf", before_pdf),
+                         ("after_labels_off.pdf", after_pdf)):
+        shutil.copy2(source, out / name)
+    before_overview = evidence._overview_pngs(out / "before_labels_on.pdf", out, "before")
+    after_overview = evidence._overview_pngs(out / "after_labels_off.pdf", out, "after")
+    evidence._side_by_side(
+        [(f"before v1 labels on delta {before.delta_pt} pt", before_overview[0]),
+         (f"after v2 labels off delta {after.delta_pt} pt", after_overview[0])],
+        out / "before_after_comparison.png")
+
+    files = {}
+    for path in sorted(out.iterdir()):
+        entry = {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "bytes": path.stat().st_size}
+        if path.suffix == ".pdf":
+            with pdfplumber.open(path) as document:
+                entry["pages"] = len(document.pages)
+        files[path.name] = entry
+    manifest = {
+        "label": EVIDENCE_LABEL,
+        "generated_at": stamp,
+        "measurement_request_id": before.request_id,
+        "measurement_method": before.method,
+        "render_versions": {"before": "v1", "after": "v2"},
+        "render_version_note": "deterministic render order in this run, the same v{n} ids the lane assigns",
+        "header_contact_labels": {"before": True, "after": False},
+        "target_value_pt": before.target_value_pt,
+        "delta_pt": {"before": before.delta_pt, "after": after.delta_pt},
+        "measured_improvement": measurement._measurement_improvement(before, after)[0],
+        "files": files,
+    }
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    return out
+
+
+def _label_finding() -> Any:
+    from app.pipeline.evidence import DefectFinding, MeasurementRequest
+    return DefectFinding(
+        finding_id="finding-la-r1-p1.01", target_version="target-v1", render_version="render-v1",
+        page=1, region="header.product_contact",
+        observation="The render adds generated labels in the header contact row; the target shows values only.",
+        suspected_dimension="header_contact_labels",
+        requested_measurement=MeasurementRequest(
+            request_id="header-labels", metric="header_contact_label_geometry", page=1,
+            region_id="header.product_contact",
+            intent="compare generated header contact label presence"),
+        severity="medium", confidence=0.9, reviewer="scripted")
+
+
+def test_confirmed_header_label_mismatch_has_one_deterministic_owner(tmp_path: Path) -> None:
+    """A confirmed uniform label-presence mismatch binds to the ONLY primitive
+    that can change generated prefixes; a lane that cannot express the change
+    keeps the identical measurement unresolved for the reviewer."""
+    from types import SimpleNamespace
+    from app.pipeline import repair_policy, run_models, service
+    from app.pipeline.defect_ledger import DefectLedger
+    from app.pipeline.runtime import RunTrace
+
+    inputs, context, state, base, candidate = _header_label_scene(tmp_path)
+    plan, _html, pdf = _render_label_choice(tmp_path, "before", state, base, True)
+    finding = _label_finding()
+    result = _label_measurement(inputs["target_pdf"], pdf, state, plan, context.candidate_heading)
+    assert result.status == "confirmed" and result.delta_pt > 20
+    assert service._header_contact_label_control(candidate, state)["supported"] is True
+
+    lane = SimpleNamespace(run=SimpleNamespace(state=state, candidate=candidate),
+        attributions=[], ledger=DefectLedger(), trace=RunTrace(tmp_path))
+    attribution = service._e5_attribute(lane, finding, result, finding.requested_measurement)
+    assert (attribution.repair_owner, attribution.hypothesis_status) == ("builder", "confirmed")
+    assert "target label_mode=False" in attribution.reason
+    selected, _stalled = repair_policy._next_e5_repair_finding(
+        [finding], {finding.finding_id: (result, finding.requested_measurement)},
+        lane.attributions, [])
+    assert selected is not None and selected[3] is attribution
+
+    flat = candidate.model_copy(update={"leaves": [
+        leaf.model_copy(update={"contact_item": None}) if leaf.kind == "header_field" else leaf
+        for leaf in candidate.leaves]})
+    assert service._header_contact_label_control(flat, state)["supported"] is False
+    proposal = run_models.LaneAStructureProposal(
+        proposal_id="labels", agent="scripted", sections=[], header_contact_labels=False)
+    assert service._validate_lane_a_proposal(proposal, state, candidate) is None
+    rejection = service._validate_lane_a_proposal(proposal, state, flat)
+    assert rejection is not None and "structured header contact fields" in rejection
+    unresolved = service._e5_default_attribution(
+        finding, result, finding.requested_measurement, label_control_supported=False)
+    assert (unresolved.repair_owner, unresolved.hypothesis_status) == ("reviewer", "unresolved")
+
+
+def test_header_label_repair_needs_measured_improvement_and_another_region_must_hold(tmp_path: Path) -> None:
+    """The label primitive is selected on the IDENTICAL re-measurement only:
+    the fix removes the measured error, the opposite direction does not, and a
+    candidate that improves labels while dropping a contact value fails the
+    content region and can never be promoted."""
+    from app.pipeline import run_models, service
+    from app.pipeline.quality import content_gate
+
+    inputs, context, state, base, _candidate = _header_label_scene(tmp_path)
+    before_plan, _before_html, before_pdf = _render_label_choice(tmp_path, "before", state, base, True)
+    before = _label_measurement(inputs["target_pdf"], before_pdf, state, before_plan, context.candidate_heading)
+    after_plan, after_html, after_pdf = _render_label_choice(tmp_path, "after", state, base, False)
+    after = _label_measurement(inputs["target_pdf"], after_pdf, state, after_plan, context.candidate_heading)
+    assert before.status == after.status == "confirmed"
+    assert before.delta_pt > 20 and after.delta_pt == 0
+    assert measurement._measurement_improvement(before, after)[0] is True
+    assert measurement._measurement_improvement(after, before)[0] is False  # re-enabling labels is not an improvement
+    assert content_gate(after_plan, after_html, after_pdf)["passed"]
+    retained = _retain_header_label_evidence(before_pdf, after_pdf, inputs["target_pdf"], before, after)
+    assert retained is None or json.loads((retained / "manifest.json").read_text())["delta_pt"] == {
+        "before": before.delta_pt, "after": after.delta_pt}
+
+    dropped = [field.slot for row in after_plan.header_rows for field in row.fields][-1]
+    damaged_rows = [
+        row.model_copy(update={"fields": [
+            field.model_copy(update={"text": ""}) if field.slot == dropped else field
+            for field in row.fields]})
+        if any(field.slot == dropped for field in row.fields) else row
+        for row in after_plan.header_rows
+    ]
+    damaged_plan = after_plan.model_copy(update={"header_rows": damaged_rows})
+    from app.pipeline.html_renderer import render_html
+    from app.generation.chrome_html_to_pdf import export_html_to_pdf
+    damaged_html = render_html(state, damaged_plan)
+    damaged_path = tmp_path / "damaged.html"
+    damaged_path.write_text(damaged_html)
+    damaged_pdf = export_html_to_pdf(damaged_path, tmp_path / "damaged.pdf")
+    damaged = _label_measurement(inputs["target_pdf"], damaged_pdf, state, damaged_plan, context.candidate_heading)
+    # the improved label presence alone cannot carry the candidate: the dropped
+    # contact value breaks the re-measurement AND the content region
+    assert damaged.status == "evidence_missing"
+    assert measurement._measurement_improvement(before, damaged)[0] is False
+    assert not content_gate(damaged_plan, damaged_html, damaged_pdf)["passed"]
 
 
 @pytest.mark.parametrize("dimension", ["header_contact_labels", "contact_row_styling"])
