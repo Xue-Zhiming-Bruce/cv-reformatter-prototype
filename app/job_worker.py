@@ -709,6 +709,7 @@ def render_target_snapshot(bundle: Path) -> None:
             settings=GenerationSettings(outputs_dir=bundle.parent, database_url=None,
                                         local_database_path=bundle.parent / "execution.sqlite3"),
             max_model_requests=payload.max_model_requests, max_tool_calls=payload.max_tool_calls,
+            required_execution="offline-renderer/1",
         )
     except BaseException as exc:
         record_failure(bundle, "budget_exceeded" if budget_exhausted(exc) else

@@ -708,7 +708,8 @@ class ValidatedGeneration:
 
 
 def prepare_generation(
-    request: GenerateRequest, settings: GenerationSettings
+    request: GenerateRequest, settings: GenerationSettings,
+    *, required_execution: str = "agentic-provider/1",
 ) -> PreparedGeneration:
     """Resolve the artifact, saved revision, template, and proof; no rendering."""
     try:
@@ -871,6 +872,7 @@ def prepare_generation(
             artifact_id=artifact_id,
             target_format=target_format,
             style_spec=style_spec,
+            required_execution=required_execution,
         )
     else:
         layout_proof_approval = None
@@ -1300,9 +1302,14 @@ def record_generation(
 def generate_outputs(
     request: GenerateRequest, *, settings: GenerationSettings,
     max_model_requests: int | None = None, max_tool_calls: int | None = None,
+    required_execution: str = "agentic-provider/1",
 ) -> GenerateResponse:
-    """Prepare inputs → render → validate → record for one generation request."""
-    prepared = prepare_generation(request, settings)
+    """Prepare inputs → render → validate → record for one generation request.
+
+    ``required_execution`` is the proof provenance this caller accepts: the
+    synchronous agentic route accepts agentic evidence, an offline job child
+    accepts only the offline renderer's own evidence."""
+    prepared = prepare_generation(request, settings, required_execution=required_execution)
     rendered = render_prepared_generation(
         prepared, max_model_requests=max_model_requests, max_tool_calls=max_tool_calls
     )
