@@ -126,10 +126,10 @@ neutral and name the recruiter-visible step, not the module that runs it.
 | Stage key | Recruiter action / entry | External I/O | Covered | Dimensions reserved before dispatch |
 | --- | --- | --- | --- | --- |
 | `candidate_extraction` | `POST /api/process` (`app/main.py:589`) | one live model call (`llm_segmentation.py:195`) | yes, see [Decision 2](#decisions-required-from-the-owner) | `model_requests`, `tool_calls`, observed tokens |
-| `target_analysis` | `POST /api/upload-target` PDF branch (`app/main.py:740`, call at `:763`) | one Adobe Extract operation (`adobe.py:211`) | yes | `analyzer_operations`, observed duration |
-| `layout_proofs` | `POST /api/layout-proofs` or layout-proof job | short/medium/long renders (`layout_proof_service.py:526-535`) | yes — one child allocation per variant | `model_requests`, `tool_calls`, observed tokens |
+| `target_analysis` | `POST /api/target-format` PDF branch (`app/main.py:739-740`, call at `:763`) | one Adobe Extract operation (`adobe.py:211`) | yes | `analyzer_operations`, observed duration |
+| `layout_proofs` | `POST /api/artifacts/{artifact_id}/layout-proofs` (`app/main.py:1120`) or the layout-proof job | short/medium/long renders (`layout_proof_service.py:526-535`) | yes — one child allocation per variant | `model_requests`, `tool_calls`, observed tokens |
 | `repair_review` | inside each render loop | Builder repairs and Reviewer visual review (`repair_policy.py:28`, `run_artifacts.py:43`) | yes — **protected** allocation, see [Decision 8](#decisions-required-from-the-owner) | `model_requests` (reserved, not spendable by another stage) |
-| `candidate_generation` | `POST /api/generate` or target-generation job (`layout_proof_service.py:613`) | one final candidate render | yes | `model_requests`, `tool_calls`, observed tokens |
+| `candidate_generation` | `POST /api/generate` (`app/main.py:1471`) or the target-generation job (`layout_proof_service.py:613`) | one final candidate render | yes | `model_requests`, `tool_calls`, observed tokens |
 
 Excluded from the envelope because they dispatch nothing external, and charge
 only wall clock (which the deadline covers): measured-template compilation, HTML
