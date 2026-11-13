@@ -27,6 +27,11 @@ E5_REPRESENTATION_CEILING_GATES = ("content_shapes_match_evidence",)
 
 E5_BUILDER_RESERVE_REQUESTS = 40
 
+# Identity of the effective repair budget/review policy. It is frozen in the
+# run config and participates in the agentic proof identity, so changing the
+# reservation or review rule never inherits an old approval.
+E5_BUDGET_REVIEW_POLICY = "builder-reserve-protected+whole-final-pdf-review/1"
+
 def _e5_gate_classification(
     lane: str,
     gates: dict[str, Any],
@@ -317,13 +322,44 @@ def _e5_attribution_batches(
         groups.setdefault(finding.region, []).append(finding)
     return [part[i : i + 3] for part in groups.values() for i in range(0, len(part), 3)]
 
+def _attribution_request_allowance(
+    budget: RunBudget, reserve_requests: int = E5_BUILDER_RESERVE_REQUESTS,
+) -> int:
+    """Requests attribution may spend: everything above the protected Builder
+    reserve. The reserve itself is never available to diagnosis."""
+    return max(0, budget.remaining_model_requests() - reserve_requests)
+
+def _attribution_budget(
+    budget: RunBudget, reserve_requests: int = E5_BUILDER_RESERVE_REQUESTS,
+) -> RunBudget:
+    """Attribution's protected sub-budget. Passed as the batch budget, so its
+    tool turns and SDK retries all stop at the same boundary while every spend
+    still counts against the lane's global ceiling."""
+    return budget.protected(_attribution_request_allowance(budget, reserve_requests))
+
 def _builder_reserve_intact(
     budget: RunBudget, reserve_requests: int = E5_BUILDER_RESERVE_REQUESTS,
 ) -> bool:
     """Phase 0 Builder budget reservation: live attribution may only run when
     the lane budget still covers the Builder reserve (diagnosis must not eat
     the budget before the Builder can act)."""
-    return budget.remaining_model_requests() > reserve_requests
+    return _attribution_request_allowance(budget, reserve_requests) > 0
+
+def _repair_request_requirement(
+    builder_requests: int, review_page_count: int,
+) -> int:
+    """Requests a scheduled repair must still have left: one full Builder turn
+    plus one Reviewer request per page of the whole final PDF."""
+    return builder_requests + max(1, review_page_count)
+
+def _repair_capacity_available(
+    budget: RunBudget, *, builder_requests: int, review_page_count: int,
+) -> bool:
+    """A repair is scheduled only when its whole final-PDF review still fits;
+    an unreviewable repair would never be publishable."""
+    return budget.remaining_model_requests() >= _repair_request_requirement(
+        builder_requests, review_page_count
+    )
 
 def _best_valid_version_id(
     versions: list[RenderVersion], excluded: set[str] | None = None

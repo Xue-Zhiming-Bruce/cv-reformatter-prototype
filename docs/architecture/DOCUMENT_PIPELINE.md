@@ -274,7 +274,7 @@ target and designer-template generation retain the approval-aware product path.
 | Persistent defect state (dedup keys, observation classes, reopen, open/closed, attribution binding) | `defect_ledger.py` |
 | Stored E5 run records, Lane A structure and label-approval contracts | `run_models.py` |
 | Presentation-label catalog, canonical identity, approval projection, recognition | `presentation_labels.py` |
-| Repair/selection policy (gate classification, representation ceilings, quarantine eligibility, bounded round work, Builder reserve, best-version selection) | `repair_policy.py` |
+| Repair/selection policy (gate classification, representation ceilings, quarantine eligibility, bounded round work, Builder reserve the protected attribution sub-budget cannot spend, whole-final-PDF review capacity before a repair is scheduled, best-version selection) | `repair_policy.py` |
 | Builder, Reviewer and attribution prompt constants, at their exact existing bytes | `prompts.py` |
 | Provider/model I/O adapters (connection retry, live Builder and attribution calls, their tool registration and call audit) and their request ceilings | `agent_adapters.py` |
 | Frozen run configuration, selected-source identity, and lane/comparison/owner-review artifact writers | `run_artifacts.py` |
