@@ -621,6 +621,59 @@ def _label_measurement(target_pdf: Path, pdf: Path, state: Any, plan: Any, name_
         target_pdf=target_pdf, current_pdf=pdf, state=state, plan=plan, current_name_text=name_text)
 
 
+EVIDENCE_LABEL = "offline controlled evidence - not live discovery, no fidelity winner inferred"
+
+
+def _retain_header_label_evidence(before_pdf: Path, after_pdf: Path, target_pdf: Path,
+                                  before: Any, after: Any) -> Path | None:
+    """AC7: copy the before/after proofs next to their overviews and a manifest
+    when HEADER_LABEL_EVIDENCE_DIR names a directory; otherwise write nothing."""
+    import hashlib
+    import os
+    import shutil
+    from datetime import datetime, timezone
+    from app.pipeline import evidence
+
+    root = os.environ.get("HEADER_LABEL_EVIDENCE_DIR")
+    if not root:
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out = Path(root) / f"header_contact_labels_{stamp}"
+    out.mkdir(parents=True, exist_ok=True)
+    for name, source in (("target_reference.pdf", target_pdf), ("before_labels_on.pdf", before_pdf),
+                         ("after_labels_off.pdf", after_pdf)):
+        shutil.copy2(source, out / name)
+    before_overview = evidence._overview_pngs(out / "before_labels_on.pdf", out, "before")
+    after_overview = evidence._overview_pngs(out / "after_labels_off.pdf", out, "after")
+    evidence._side_by_side(
+        [(f"before v1 labels on delta {before.delta_pt} pt", before_overview[0]),
+         (f"after v2 labels off delta {after.delta_pt} pt", after_overview[0])],
+        out / "before_after_comparison.png")
+
+    files = {}
+    for path in sorted(out.iterdir()):
+        entry = {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "bytes": path.stat().st_size}
+        if path.suffix == ".pdf":
+            with pdfplumber.open(path) as document:
+                entry["pages"] = len(document.pages)
+        files[path.name] = entry
+    manifest = {
+        "label": EVIDENCE_LABEL,
+        "generated_at": stamp,
+        "measurement_request_id": before.request_id,
+        "measurement_method": before.method,
+        "render_versions": {"before": "v1", "after": "v2"},
+        "render_version_note": "deterministic render order in this run, the same v{n} ids the lane assigns",
+        "header_contact_labels": {"before": True, "after": False},
+        "target_value_pt": before.target_value_pt,
+        "delta_pt": {"before": before.delta_pt, "after": after.delta_pt},
+        "measured_improvement": measurement._measurement_improvement(before, after)[0],
+        "files": files,
+    }
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    return out
+
+
 def _label_finding() -> Any:
     from app.pipeline.evidence import DefectFinding, MeasurementRequest
     return DefectFinding(
@@ -693,6 +746,9 @@ def test_header_label_repair_needs_measured_improvement_and_another_region_must_
     assert measurement._measurement_improvement(before, after)[0] is True
     assert measurement._measurement_improvement(after, before)[0] is False  # re-enabling labels is not an improvement
     assert content_gate(after_plan, after_html, after_pdf)["passed"]
+    retained = _retain_header_label_evidence(before_pdf, after_pdf, inputs["target_pdf"], before, after)
+    assert retained is None or json.loads((retained / "manifest.json").read_text())["delta_pt"] == {
+        "before": before.delta_pt, "after": after.delta_pt}
 
     dropped = [field.slot for row in after_plan.header_rows for field in row.fields][-1]
     damaged_rows = [
