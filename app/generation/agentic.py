@@ -32,6 +32,11 @@ from app.template_analysis.schemas import LayoutTemplateSpec
 
 MAX_REQUEST_BYTES = 512000  # Two dense 900px page overviews, including Base64/JSON overhead.
 
+#: Requests one bounded Builder repair turn may use. It is passed to the E5
+#: lane and frozen into the proof identity, so the effective reserve cannot
+#: change without invalidating old proofs.
+AGENTIC_BUILDER_RESERVE_REQUESTS = 4
+
 
 class AgenticGenerationError(RuntimeError):
     #: Pipeline terminal state when the run stopped on its own budget.
@@ -169,6 +174,10 @@ def agentic_renderer_version() -> str:
         "pdf_structure_checks": quality.PDF_STRUCTURE_VALIDATION_VERSION,
         "candidate_fact_privacy": quality.PRIVACY_GATE_VERSION,
         "client_disclosure": template_mapper.CLIENT_DISCLOSURE_VERSION,
+        "repair_budget_review_policy": {
+            "identity": repair_policy.E5_BUDGET_REVIEW_POLICY,
+            "builder_reserve_model_requests": AGENTIC_BUILDER_RESERVE_REQUESTS,
+        },
         "renderer": RENDERER_VERSION, "settings": {**_settings(), "max_request_bytes": MAX_REQUEST_BYTES},
         "models": _model_identity(),
         "prompts": [prompts.E5_LANE_A_BUILDER_INSTRUCTIONS, prompts.E5_REVIEWER_INSTRUCTIONS,
@@ -309,7 +318,8 @@ def render_agentic(
         target_pdf, output_dir/"pipeline", candidate=candidate, adobe_json=raw_path,
         normalized_evidence=normalized_path, structure_draft=draft_path,
         layout_spec=layout_spec, live=True, lanes=("a",),
-        max_repair_rounds=settings["max_repair_rounds"], builder_reserve_requests=4,
+        max_repair_rounds=settings["max_repair_rounds"],
+        builder_reserve_requests=AGENTIC_BUILDER_RESERVE_REQUESTS,
         presentation_label_approval=presentation_label_approval,
         budget=RunBudget(
             max_model_requests=max_model_requests or settings["max_model_requests"],

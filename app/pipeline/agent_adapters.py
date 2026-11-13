@@ -45,6 +45,16 @@ E5_BUILDER_MAX_REQUESTS = 4
 
 E5_ATTRIBUTION_MAX_REQUESTS = 8  # floor only; the batch envelope is derived below
 
+def _budget_cause(error: BaseException) -> BudgetExhausted | None:
+    """The budget failure behind an SDK-wrapped error, if any (older SDKs wrap
+    request-hook failures in APIConnectionError; current ones raise bare)."""
+    cause: BaseException | None = error
+    while cause is not None:
+        if isinstance(cause, BudgetExhausted):
+            return cause
+        cause = cause.__cause__
+    return None
+
 def _with_connection_retry(call, *, trace: RunTrace, what: str, attempts: int = 3):
     """Bounded retry for transient provider Connection errors (observed on
     long multimodal review calls); every retry is traced, and a persistent
@@ -58,11 +68,9 @@ def _with_connection_retry(call, *, trace: RunTrace, what: str, attempts: int = 
         except Exception as error:  # noqa: BLE001 - retried only when transient
             # A request-hook budget failure arrives either bare (current SDK) or
             # wrapped in APIConnectionError (older SDK); never retry it.
-            cause: BaseException | None = error
-            while cause is not None:
-                if isinstance(cause, BudgetExhausted):
-                    raise cause from None
-                cause = cause.__cause__
+            budget_failure = _budget_cause(error)
+            if budget_failure is not None:
+                raise budget_failure from None
             if "connection" not in str(error).casefold():
                 raise
             last = error
@@ -151,7 +159,9 @@ def _live_attribution_batch(
 ) -> list[LiveAttributionHypothesis]:
     """Phase 0 batched live attribution: findings that share the same region
     (and likely owning layer) are traced in ONE bounded call, ordered like
-    the input findings list."""
+    the input findings list. The caller passes the protected sub-budget (what
+    remains above the Builder reserve), so this call, its tool turns and its
+    SDK retries all stop at that boundary."""
     from pydantic_ai import Agent, Tool
 
     from app.pipeline.runtime import _live_model
@@ -212,6 +222,12 @@ def _live_attribution_batch(
                 run_result=None, error=f"{type(error).__name__}: {error}",
                 model_name=model_name,
             )
+        budget_failure = _budget_cause(error)
+        if budget_failure is not None:
+            # The SDK may wrap the request-hook failure; surface the budget
+            # failure itself so the lane evidence names it and nothing retries
+            # the same batch with a larger limit.
+            raise budget_failure from None
         raise
     if audit is not None:
         _e5_agent_audit_record(

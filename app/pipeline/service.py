@@ -43,10 +43,13 @@ from app.pipeline.measurement import (
     pinned_export_environment,
 )
 from app.pipeline.repair_policy import (
+    E5_BUDGET_REVIEW_POLICY,
     E5_BUILDER_RESERVE_REQUESTS,
     E5_MAX_ROUND_ATTRIBUTION_FINDINGS,
     E5_REPRESENTATION_CEILING_GATES,
     LANE_A_OUTPUT_GATES,
+    _attribution_budget,
+    _attribution_request_allowance,
     _best_defect_level_version_id,
     _best_valid_version_id,
     _builder_reserve_intact,
@@ -59,6 +62,8 @@ from app.pipeline.repair_policy import (
     _e5_review_this_round,
     _e5_select_round_work,
     _next_e5_repair_finding,
+    _repair_capacity_available,
+    _repair_request_requirement,
 )
 from app.pipeline.agent_adapters import (
     E5_BUILDER_MAX_REQUESTS,
@@ -2461,9 +2466,36 @@ def _e5_round_measure_and_attribute(ls: _E5LaneState, rs: _E5RoundState) -> _E5L
     if ls.run.live and batches and _builder_reserve_intact(ls.lane_budget, ls.run.builder_reserve_requests):
         ls.run.pod.render_pdf = rs.current_pdf
         for group in batches:
+            # The protected reserve, re-derived before EVERY group: attribution
+            # may spend what remains above the Builder reserve, never into it.
+            allowance = _attribution_request_allowance(
+                ls.lane_budget, ls.run.builder_reserve_requests
+            )
+            if allowance < 1:
+                _e5_escalate(ls, "attribution_stopped_at_builder_reserve")
+                ls.trace.add(
+                    agent="shell", phase="attribute",
+                    action="attribution_reserve_boundary",
+                    output={
+                        "remaining_model_requests": ls.lane_budget.remaining_model_requests(),
+                        "builder_reserve_model_requests": ls.run.builder_reserve_requests,
+                        "attribution_request_allowance": allowance,
+                        "prevented": "attribution batch provider call",
+                    },
+                    note=(
+                        "the protected Builder reserve stays intact; remaining "
+                        "groups fall through to deterministic attribution"
+                    ),
+                    persist_output=True,
+                )
+                break
             try:
                 hypotheses = _live_attribution_batch(
-                    ls.run.pod, ls.lane_budget, ls.trace,
+                    # The protected sub-budget: the batch, its tool turns and
+                    # its SDK retries cannot spend the Builder reserve.
+                    ls.run.pod,
+                    _attribution_budget(ls.lane_budget, ls.run.builder_reserve_requests),
+                    ls.trace,
                     findings=group,
                     results=[measured[f.finding_id][0] for f in group],
                     lane=ls.lane,
@@ -2590,6 +2622,41 @@ def _e5_round_select_repair(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
             else f"round{rs.round_no}:no_repairable_bound_finding_continue_review"
         )
         return _E5_RETRY
+    # REVIEW CAPACITY BEFORE REPAIR: a repair is only scheduled when the rest
+    # of the budget still covers one full Builder turn AND the whole final-PDF
+    # review it will require. Otherwise the unreviewed repair would never be
+    # publishable, so the lane stops here and the reviewed prior output stays
+    # the selected one.
+    review_pages = rs.repair_base_version.page_count
+    if not _repair_capacity_available(
+        ls.lane_budget,
+        builder_requests=E5_BUILDER_MAX_REQUESTS,
+        review_page_count=review_pages,
+    ):
+        required = _repair_request_requirement(
+            E5_BUILDER_MAX_REQUESTS, review_pages
+        )
+        _e5_escalate(
+            ls, f"repair_waits_for_final_review_capacity:{required}>{ls.lane_budget.remaining_model_requests()}"
+        )
+        ls.trace.add(
+            agent="shell", phase="repair", action="review_capacity_blocked",
+            output={
+                "finding": rs.repair_finding[0].finding_id,
+                "remaining_model_requests": ls.lane_budget.remaining_model_requests(),
+                "required_model_requests": required,
+                "builder_requests": E5_BUILDER_MAX_REQUESTS,
+                "final_review_pages": review_pages,
+                "final_review_policy": E5_BUDGET_REVIEW_POLICY,
+                "prevented": "builder repair whose final PDF could not be reviewed whole",
+            },
+            note=(
+                "insufficient capacity for one full Builder turn plus the "
+                "whole-final-PDF review; no unreviewed repair is built"
+            ),
+            persist_output=True,
+        )
+        return _e5_stop("budget_exhausted", "review_capacity")
     return _E5_NEXT
 
 

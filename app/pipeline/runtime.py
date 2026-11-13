@@ -55,6 +55,17 @@ class RunBudget:
     def remaining_model_requests(self) -> int:
         return self.max_model_requests - self.model_requests
 
+    def protected(self, requests: int) -> "RunBudget":
+        """A child budget capped at the requests the caller allocates, for work
+        that must not eat a reserved part of this budget. Every spend is still
+        charged to this budget's own global ceiling (``parent`` propagation)."""
+        return RunBudget(
+            max_model_requests=max(0, requests),
+            max_tool_calls=max(0, self.max_tool_calls - self.tool_calls),
+            max_request_bytes=self.max_request_bytes,
+            parent=self,
+        )
+
     def spend_model(
         self, agent: str, requests: int = 1, usage: Any = None, mode: str = "scripted"
     ) -> None:

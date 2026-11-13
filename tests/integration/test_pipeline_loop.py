@@ -198,6 +198,182 @@ def test_live_builder_budget_is_reserved() -> None:
     assert repair_policy._builder_reserve_intact(small, agent_adapters.E5_BUILDER_MAX_REQUESTS) is False
 
 
+def _offline_attribution_budget(monkeypatch) -> RunBudget:
+    """A lane that has spent 7 of 12 requests: one request is left above the
+    4-request Builder reserve, and the reserve itself must stay untouched."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "synthetic-secret")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://deepseek.invalid")
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+    budget = RunBudget(max_model_requests=12, max_tool_calls=24)
+    budget.spend_model("prior", requests=7)
+    return budget
+
+
+def test_attribution_cannot_spend_the_builder_reserve(tmp_path, monkeypatch) -> None:
+    """Issue #41: live attribution is bounded to what remains above the
+    protected Builder reserve, across batches. The real SDK and wire-level
+    budget hook are exercised; every request the transport sees is spent."""
+    import httpx
+    from pydantic_ai.exceptions import UsageLimitExceeded
+    from app.pipeline.runtime import CheckpointBudgetExceeded
+    from tests.helpers.pipeline import _pod
+
+    sent = []
+
+    def respond(request):
+        sent.append(request)
+        if len(sent) == 1:
+            return httpx.Response(200, json={
+                "id": "chatcmpl-1", "object": "chat.completion", "created": 0,
+                "model": "deepseek-flash",
+                "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                    "role": "assistant", "content": None,
+                    "tool_calls": [{
+                        "id": "call_1", "type": "function",
+                        "function": {"name": "inspect_page_overview", "arguments": "{\"page_number\": 1}"},
+                    }],
+                }}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            })
+        return httpx.Response(200, json={
+            "id": "chatcmpl-2", "object": "chat.completion", "created": 0,
+            "model": "deepseek-flash",
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {
+                "role": "assistant", "content": "[]",
+            }}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        })
+
+    class OfflineClient(httpx.AsyncClient):
+        def __init__(self, **kwargs):
+            super().__init__(transport=httpx.MockTransport(respond), **kwargs)
+
+    budget = _offline_attribution_budget(monkeypatch)
+    monkeypatch.setattr(httpx, "AsyncClient", OfflineClient)
+    pod = _pod(tmp_path)
+
+    # The batch would have used a second request (tool turn + final output),
+    # but the protected sub-budget the lane passes is one request.
+    with pytest.raises(UsageLimitExceeded):
+        agent_adapters._live_attribution_batch(
+            pod, repair_policy._attribution_budget(budget, 4), RunTrace(tmp_path),
+            findings=[], results=[],
+        )
+    assert len(sent) == 1
+    assert budget.model_requests == 8
+    assert budget.calls_by_agent["attribution_investigator"] == 1
+    assert budget.remaining_model_requests() == 4
+
+    # A second batch at the reserve boundary performs no provider I/O at all.
+    exhausted = repair_policy._attribution_budget(budget, 4)
+    assert exhausted.remaining_model_requests() == 0
+    with pytest.raises(CheckpointBudgetExceeded):
+        agent_adapters._live_attribution_batch(
+            pod, exhausted, RunTrace(tmp_path), findings=[], results=[],
+        )
+    assert len(sent) == 1
+    assert budget.model_requests == 8
+
+
+def test_repair_waits_for_whole_final_pdf_review_capacity(tmp_path, monkeypatch) -> None:
+    """Issue #41: a repair is scheduled only when the rest of the lane budget
+    still covers one full Builder turn AND the whole-final-PDF review it needs.
+    Otherwise the lane stops with that reason, so no unreviewed repair is built
+    and the already-reviewed output stays the selected one."""
+    finding = evidence.DefectFinding(
+        finding_id="finding-la-r1",
+        target_version="target-v1",
+        render_version="render-target-laneA-v1",
+        page=1,
+        region="section.04",
+        observation="The entry head text nearly touches the meta column.",
+        suspected_dimension="local_spacing",
+        requested_measurement=evidence.MeasurementRequest(
+            request_id="m1", metric="role_gap", page=1, intent="entry head gap",
+        ),
+        severity="high",
+        confidence=0.6,
+        reviewer="scripted",
+    )
+    monkeypatch.setattr(
+        e, "_next_e5_repair_finding",
+        lambda *_args, **_kwargs: ((finding, None, None, None, "fingerprint"), False),
+    )
+    trace = RunTrace(tmp_path)
+    lane = SimpleNamespace(
+        run=SimpleNamespace(max_repair_rounds=1, live=True),
+        lane_budget=RunBudget(max_model_requests=12, max_tool_calls=24),
+        measured_by_finding={},
+        attributions=[],
+        fingerprints=[],
+        layout_trial_regions=set(),
+        trace=trace,
+        attempted_strategies=[],
+    )
+    round_state = SimpleNamespace(
+        round_no=1,
+        repair_scope_versions=(),
+        findings_new=False,
+        selected=[],
+        repair_base_version=SimpleNamespace(page_count=1),
+    )
+
+    # 4 requests left: enough for the Builder turn, not for the 1-page review.
+    lane.lane_budget.spend_model("prior", requests=8)
+    step = e._e5_round_select_repair(lane, round_state)
+    assert (step.action, step.stop_state, step.stop_reason) == (
+        "stop", "budget_exhausted", "review_capacity",
+    )
+    blocked = trace.entries[-1]
+    assert blocked["action"] == "review_capacity_blocked"
+    assert json.loads((tmp_path / blocked["output_artifact"]).read_text()) == {
+        "finding": "finding-la-r1",
+        "remaining_model_requests": 4,
+        "required_model_requests": 5,
+        "builder_requests": agent_adapters.E5_BUILDER_MAX_REQUESTS,
+        "final_review_pages": 1,
+        "final_review_policy": repair_policy.E5_BUDGET_REVIEW_POLICY,
+        "prevented": "builder repair whose final PDF could not be reviewed whole",
+    }
+    assert lane.attempted_strategies[-1].startswith("repair_waits_for_final_review_capacity")
+
+    # 5 requests left: builder turn (4) + whole-final-PDF review (1) fits.
+    lane.lane_budget = RunBudget(max_model_requests=12, max_tool_calls=24)
+    lane.lane_budget.spend_model("prior", requests=7)
+    assert e._e5_round_select_repair(lane, round_state).action == "next"
+
+
+def test_attribution_sdk_retry_stops_at_the_protected_allowance(tmp_path, monkeypatch) -> None:
+    """Issue #41: SDK-level retries of a failing attribution request are spent
+    through the same boundary, so they cannot consume the Builder reserve and
+    are never retried with a larger limit."""
+    import httpx
+    from app.pipeline.runtime import BudgetExhausted
+    from tests.helpers.pipeline import _pod
+
+    sent = []
+
+    def respond(request):
+        sent.append(request)
+        return httpx.Response(503, json={"error": {"message": "transient failure"}})
+
+    class OfflineClient(httpx.AsyncClient):
+        def __init__(self, **kwargs):
+            super().__init__(transport=httpx.MockTransport(respond), **kwargs)
+
+    budget = _offline_attribution_budget(monkeypatch)
+    monkeypatch.setattr(httpx, "AsyncClient", OfflineClient)
+
+    with pytest.raises(BudgetExhausted, match="budget exhausted"):
+        agent_adapters._live_attribution_batch(
+            _pod(tmp_path), repair_policy._attribution_budget(budget, 4),
+            RunTrace(tmp_path), findings=[], results=[],
+        )
+    assert len(sent) == 1  # the second wire attempt is blocked before transport
+    assert budget.model_requests == 8
+    assert budget.remaining_model_requests() == 4
+
+
 def test_live_attribution_serializes_native_pdf_tools(tmp_path, monkeypatch) -> None:
     """PDFium is process-global and not thread safe, even across documents.
     Exercise actual PydanticAI scheduling without risking a native crash.

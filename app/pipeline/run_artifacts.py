@@ -31,7 +31,11 @@ from app.pipeline.evidence import (
     assert_no_signed_strings,
 )
 from app.pipeline.presentation_labels import _presentation_label_listing
-from app.pipeline.repair_policy import E5_BUILDER_RESERVE_REQUESTS, _e5_blocking_gates
+from app.pipeline.repair_policy import (
+    E5_BUDGET_REVIEW_POLICY,
+    E5_BUILDER_RESERVE_REQUESTS,
+    _e5_blocking_gates,
+)
 from app.pipeline.rendering import ROOT, _render_pages
 from app.pipeline.run_models import E5LaneRecord, E5LoopRecord
 from app.pipeline.runtime import RunBudget
@@ -210,6 +214,9 @@ def _freeze_e5_config(
                 "max_request_bytes": budget.max_request_bytes if budget else None,
                 "max_repair_rounds": max_repair_rounds,
                 "builder_reserve_model_requests": builder_reserve_requests,
+                # Effective repair budget/review policy: a changed execution
+                # contract never inherits an earlier run's evidence.
+                "budget_review_policy": E5_BUDGET_REVIEW_POLICY,
                 "per_agent_run_max_requests": {
                     "visual_reviewer": E5_REVIEWER_MAX_REQUESTS,
                     "builder": E5_BUILDER_MAX_REQUESTS,
