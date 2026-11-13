@@ -560,6 +560,19 @@ remain valid without retroactive manifests:
 `tests/test_results/pytest/20261026T140311Z_b1a_preserved_baseline.txt`.
 New paid provider calls: zero. No new fidelity or production-readiness acceptance.
 
+November 14 (issue #44): the durable job boundary now records execution mode
+additively (`native-local/1`, `proof-local/1`, `target-local/1`) and proof
+review/checkpoint reuse verifies recorded evidence provenance, so offline
+evidence cannot inherit an agentic or live-reviewed approval. The offline lane
+is delivered under the existing job restrictions. The live lane is **blocked,
+not implemented**: [ADR 0011](../decisions/0011-live-target-job-execution-contract.md)
+adds versioned `proof-live/1`/`target-live/1` payloads that require the
+still-unimplemented `ProviderPolicy`/authorization object, and every live
+submission is refused before I/O with a structured 409. No credential or
+environment switch enables it. Provider policy, live execution, live
+cost/Reviewer evidence and a bounded live trial remain open, so B1A stays
+unchecked.
+
 ### B2 — Analyzer Operational Readiness
 
 Status: analyzer decision accepted (ADR 0002); operational readiness `[ ]`.
@@ -752,6 +765,16 @@ Concurrency/restart/history/rollback evidence and limits are recorded in ADR
 0008. The publication callback is a transaction boundary; actual generation
 worker/bundle publication, job endpoints and crash/recovery evidence remain
 required. B1A/P1/P2 remain unchecked.
+
+November 14 (issue #44): uploaded-target proof and target-generation jobs are
+implemented on the existing fenced queue/child boundary, but their child swaps
+in the deterministic offline renderer. Succeeded target jobs therefore evidence
+controlled offline rendering, gates, checkpoint reuse and reviewed publication
+only; they do not evidence the Builder/Reviewer/measurement/repair provider
+workflow. `job/1` exposes the additive `execution` value and proof evidence
+exposes `execution_mode`, so the two lanes stay distinguishable. Live target
+execution is refused before I/O until the B1A policy/authorization object,
+#43 envelope and #41 reservations exist. [ADR 0011](../decisions/0011-live-target-job-execution-contract.md)
 
 Status: `[ ]` Builds on B1A and P1.
 

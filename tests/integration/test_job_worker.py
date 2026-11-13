@@ -63,6 +63,23 @@ def test_job_api_requires_explicit_local_postgres_enablement(monkeypatch: pytest
     assert client.get("/api/artifacts/unknown/jobs/job_unknown").status_code == 503
 
 
+@pytest.mark.parametrize("operation", ["layout-proof-jobs", "target-generation-jobs"])
+def test_live_target_job_request_is_refused_before_any_input_io(monkeypatch: pytest.MonkeyPatch, operation: str):
+    """A live request is refused before queue/DB enablement or artifact lookup."""
+    monkeypatch.delenv("LOCAL_JOBS_ENABLED", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "synthetic-credential")
+    body = {"local_synthetic": True, "profile_revision_id": "revision",
+            "idempotency_key": "live-1", "execution": "live"}
+    if operation == "target-generation-jobs":
+        body["proof_approval_id"] = "approval_0000000000000000"
+    response = TestClient(main.app).post(f"/api/artifacts/unknown/{operation}", json=body)
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "live_execution_blocked"
+    assert detail["reason"] == "provider_policy_missing"
+    assert "credentials alone never authorize" in detail["message"]
+
+
 @pytest.mark.parametrize("recovery", [False, True], ids=["normal", "restore"])
 def test_native_child_publishes_bundle_and_reads_ignore_loose_files(native_jobs, request: pytest.FixtureRequest, recovery: bool):
     ctx = native_jobs
@@ -365,6 +382,7 @@ def test_target_proof_job_reports_progress_and_survives_reconnect(target_jobs):
     assert not (ctx["directory"] / "layout_proofs").exists()
     job = submitted.json()
     assert job["operation"] == "create_proofs" and job["state"] == "queued" and job["progress"] == 0
+    assert job["execution"] == "proof-local/1"
     assert TestClient(main.app).get(endpoint + f"/jobs/{job['job_id']}").json() == job
     assert ctx["client"].post(endpoint + "/layout-proof-jobs", json=_target_body(ctx, "proof-1")).json() == job
     completed = ctx["worker"].run_once()
@@ -420,14 +438,26 @@ def test_proof_child_reuses_matched_evidence_and_rerenders_drift(target_jobs, mo
     shutil.copytree(directory, bundle)
     (bundle / "job_request.json").write_text(payload.model_dump_json())
     (bundle / "layout_proofs" / "approval.json").unlink()
+    # The copied bundle must look like an offline job's checkpoints, not the
+    # synchronous agentic proofs create_and_approve_proofs rendered.
+    for result_path in (bundle / "layout_proofs" / "variants").glob("*/render_result.json"):
+        result = json.loads(result_path.read_text())
+        result["execution_mode"] = "offline-renderer/1"
+        result_path.write_text(json.dumps(result))
     checksum, layout, renderer = payload.target_sha256, payload.layout_sha256, payload.renderer_version
     for variant in ("short", "medium", "long"):
         assert reusable_variant_evidence(bundle, LengthVariant(variant), target_checksum=checksum,
-                                         layout_sha256=layout, renderer_version=renderer) is not None
+                                         layout_sha256=layout, renderer_version=renderer,
+                                         execution_mode="offline-renderer/1") is not None
     assert reusable_variant_evidence(bundle, LengthVariant.SHORT, target_checksum="0" * 64,
-                                     layout_sha256=layout, renderer_version=renderer) is None
+                                     layout_sha256=layout, renderer_version=renderer,
+                                     execution_mode="offline-renderer/1") is None
     assert reusable_variant_evidence(bundle, LengthVariant.SHORT, target_checksum=checksum,
-                                     layout_sha256="0" * 64, renderer_version=renderer) is None
+                                     layout_sha256="0" * 64, renderer_version=renderer,
+                                     execution_mode="offline-renderer/1") is None
+    assert reusable_variant_evidence(bundle, LengthVariant.LONG, target_checksum=checksum,
+                                     layout_sha256=layout, renderer_version=renderer,
+                                     execution_mode="agentic-provider/1") is None
 
     real = layout_proof_service.create_proof_variant
 
@@ -441,7 +471,8 @@ def test_proof_child_reuses_matched_evidence_and_rerenders_drift(target_jobs, mo
     proof_pdf = next((bundle / "layout_proofs").glob("*/proof-medium.pdf"))
     proof_pdf.write_bytes(b"tampered proof")
     assert reusable_variant_evidence(bundle, LengthVariant.MEDIUM, target_checksum=checksum,
-                                     layout_sha256=layout, renderer_version=renderer) is None
+                                     layout_sha256=layout, renderer_version=renderer,
+                                     execution_mode="offline-renderer/1") is None
     (bundle / "layout_proofs" / "approval.json").unlink(missing_ok=True)
     rendered: list[str] = []
     monkeypatch.setattr(layout_proof_service, "create_proof_variant",
@@ -613,6 +644,7 @@ def test_target_generation_job_publishes_and_keeps_prior_output_on_failure(targe
     submitted = ctx["client"].post(endpoint + "/target-generation-jobs", json=body)
     assert submitted.status_code == 202, submitted.text
     assert submitted.json()["operation"] == "generate_target"
+    assert submitted.json()["execution"] == "target-local/1"
     completed = ctx["worker"].run_once()
     assert completed.state == "succeeded", completed
     assert _current_generation(ctx) == completed.result_generation_id
@@ -631,3 +663,28 @@ def test_target_generation_job_publishes_and_keeps_prior_output_on_failure(targe
     assert failed.state == "failed"
     assert _current_generation(ctx) == completed.result_generation_id
     assert ctx["client"].get(endpoint + "/candidate_profile.pdf").content == published
+
+
+def test_offline_proof_approval_cannot_answer_a_live_review_requirement(target_jobs):
+    """Matching target/layout/renderer identities never erase execution provenance."""
+    from app.template_analysis.layout_proof_rendering import LayoutProofMismatchError
+    from app.template_analysis.layout_proof_service import (load_layout_proof_approval,
+                                                            require_review_evidence)
+
+    ctx = target_jobs
+    endpoint = f"/api/artifacts/{ctx['artifact_id']}"
+    ctx["client"].post(endpoint + "/layout-proof-jobs", json=_target_body(ctx, "proof-offline"))
+    assert ctx["worker"].run_once().state == "succeeded"
+    approved = ctx["client"].post(endpoint + "/layout-proofs/approve",
+                                  json={"state": "approved", "reviewer_id": "reviewer-1"})
+    assert approved.status_code == 200, approved.text
+    status = ctx["client"].get(endpoint + "/layout-proofs").json()
+    assert {variant["execution_mode"] for variant in status["variants"]} == {"offline-renderer/1"}
+    approval = load_layout_proof_approval(ctx["directory"])
+    assert approval is not None and approval.is_approved
+    require_review_evidence(approval, required_execution="offline-renderer/1")
+    with pytest.raises(LayoutProofMismatchError, match="cannot satisfy"):
+        require_review_evidence(approval, required_execution="live-provider/1")
+    # The local synthetic job keeps its existing restriction and may use it.
+    body = {**_target_body(ctx, "generation-offline"), "proof_approval_id": approval.approval_id}
+    assert ctx["client"].post(endpoint + "/target-generation-jobs", json=body).status_code == 202
