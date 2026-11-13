@@ -1056,6 +1056,33 @@ with no bundle use their original path; a missing bundle is an explicit failure.
 Provider execution/policy, production isolation, retention, observability and
 broader recovery/scale checks remain separate roadmap requirements.
 
+### Conversion Execution Envelope — Proposed, Not Implemented
+
+The stages above are dispatched as separate executions, and the request/tool
+ceiling belongs to one execution: `render_agentic` builds a new `RunBudget` per
+call (`app/generation/agentic.py:314-317`), so three proof variants are three
+ceilings (`app/template_analysis/layout_proof_service.py:504-535`) and none of
+that covers candidate extraction, uploaded-target analysis or candidate
+generation. Token counts and provider cost are observations recorded after the
+response (`app/pipeline/runtime.py:46-53`, `:153-170`;
+`app/pipeline/service.py:1100-1127` returns no cost without verified pricing);
+Adobe analysis has its own operation unit and is not counted at all
+(`app/template_analysis/commercial/adobe.py:211`). An overall wall clock exists
+only for uploaded-target jobs (`app/job_worker.py:473-496`); synchronous routes
+have per-request timeouts (`app/pipeline/runtime.py:220`).
+
+[ADR 0010](../decisions/0010-conversion-execution-envelope.md) proposes one
+provider-neutral envelope per artifact spanning candidate extraction, target
+analysis, every proof variant, repair/review and candidate generation, with
+reservation before external I/O, child stage allocations bounded by the parent
+balance, append-only consumption that is never reset by reload, resubmission or
+job retry, the protected repair/review reserve from issue #41, one
+deadline/cancellation boundary, and a structured refusal that preserves eligible
+prior output. Nothing of it is implemented: this section records the boundary the
+current code does not have, and stage 2 stays blocked on the owner's answers
+recorded in that ADR. No conversion token, currency or runtime bound may be
+claimed until it is accepted and enforced.
+
 ## Independent Quality Gates
 
 - **Content gate:** output text and structured values match the approved render

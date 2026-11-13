@@ -849,7 +849,10 @@ the latest stage stay reviewable: `GET .../layout-proofs` keeps its existing
 shape while later variants continue, and generation keeps the previously
 published output current until a new attempt publishes.
 Their frozen envelope is a 900-second overall deadline, a 300-second stage
-deadline, three attempts and 36 model requests/72 tool calls per attempt. Basis
+deadline, three attempts and 36 model requests/72 tool calls per variant render:
+the payload ceiling is passed into each of the three variant renders
+(`app/job_worker.py:743`), so it bounds a variant, not the attempt, and covers no
+candidate extraction, target analysis or candidate generation. Basis
 is the measured issue #38 run (~291 s, 28 requests, 7/9/12 per variant); the
 native 180-second/two-attempt policy is untouched and no nginx/proxy timeout is
 enlarged, because a queued job is never held by a synchronous request. A
@@ -863,6 +866,19 @@ Cancellation is checked between variants, before validation and before the
 publication transaction, so a cancel that arrives after the last provider call
 still publishes nothing; a provider request already sent cannot be undone or
 un-billed, and cancellation grants no acceptance.
+
+Proposed, not implemented (issue #43, [ADR 0010](../decisions/0010-conversion-execution-envelope.md)):
+this contract has no whole-conversion limit. The observable limits today are the
+per-execution request/tool ceilings above, the uploaded-target job
+deadline/attempts and per-request provider timeouts; token totals, currency and
+elapsed time are recorded observations, never enforced caps. If ADR 0010 is
+accepted, stage 2 would add three additive surfaces: the refusal detail
+(`error_code` `budget_exceeded` plus `stage`, `dimension`, `limit`, `reserved`,
+`consumed`, `provider_outcome` in `none_sent`/`confirmed`/`unknown`), an
+`envelope` block on job reads, and an optional read-only
+`GET /api/artifacts/{artifact_id}/conversion-envelope`. None of them exists yet;
+clients must not depend on them, and no conversion token, currency or runtime
+bound may be promised before then.
 `POST /api/artifacts/{artifact_id}/layout-proofs`, `.../layout-proofs/approve`
 and `POST /api/generate` remain the deliberate synchronous paths with unchanged
 request/response shapes and no fallback between them and the job operations.
