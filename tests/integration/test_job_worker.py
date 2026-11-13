@@ -688,3 +688,8 @@ def test_offline_proof_approval_cannot_answer_a_live_review_requirement(target_j
     # The local synthetic job keeps its existing restriction and may use it.
     body = {**_target_body(ctx, "generation-offline"), "proof_approval_id": approval.approval_id}
     assert ctx["client"].post(endpoint + "/target-generation-jobs", json=body).status_code == 202
+    # The child must accept the offline evidence it was submitted against: the
+    # submission gate already required offline-renderer/1, so the generation
+    # child has to demand the same provenance rather than the agentic default.
+    generation = ctx["worker"].run_once()
+    assert generation.state == "succeeded", generation.error
