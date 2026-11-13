@@ -121,6 +121,32 @@ class LayoutProofRepository(Protocol):
     def current(self, artifact_id: str) -> LayoutProofApproval | None: ...
 
 
+#: Minimum proof-evidence provenance a review requirement accepts. A lower
+#: rank never stands in for a higher requirement, even when target, layout and
+#: renderer identities match: only a policy-authorized live execution records
+#: ``live-provider/1``.
+REVIEW_EVIDENCE_RANK = {"unrecorded/1": 0, "offline-renderer/1": 0,
+                        "agentic-provider/1": 1, "live-provider/1": 2}
+
+
+def require_review_evidence(approval: LayoutProofApproval, *, required_execution: str) -> None:
+    """Refuse an approval whose recorded evidence does not meet the requirement.
+
+    The check reads the actual per-variant render provenance, so an offline
+    artifact can never satisfy a live-review requirement or inherit a
+    live-reviewed approval merely because its settings match.
+    """
+    recorded = {evidence.render_result.execution_mode for evidence in approval.variants.values()}
+    if len(recorded) != 1:
+        raise LayoutProofMismatchError(
+            "the proof set mixes execution provenance: " + ", ".join(sorted(recorded)))
+    mode = recorded.pop()
+    if REVIEW_EVIDENCE_RANK[mode] < REVIEW_EVIDENCE_RANK[required_execution]:
+        raise LayoutProofMismatchError(
+            f"the proof set was rendered by '{mode}', which cannot satisfy a "
+            f"'{required_execution}' review requirement")
+
+
 def save_layout_proof_approval(
     artifact_dir: str | Path,
     approval: LayoutProofApproval,

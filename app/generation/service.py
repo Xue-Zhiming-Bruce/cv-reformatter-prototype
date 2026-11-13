@@ -107,6 +107,7 @@ from app.template_analysis.layout_proof_rendering import (
 from app.template_analysis.layout_proof_service import (
     load_layout_proof_approval,
     render_candidate_document,
+    require_review_evidence,
 )
 from app.template_analysis.layout_proof_validation import LayoutProofValidationError
 from app.template_analysis.schemas import (
@@ -480,11 +481,15 @@ def require_layout_proof_approval(
     artifact_id: str,
     target_format: TargetFormatMetadata,
     style_spec: TemplateStyleSpec | LayoutTemplateSpec,
+    required_execution: str = "agentic-provider/1",
 ) -> Any:
     """Load and validate the persisted layout-proof approval for generation.
 
     Returns the approved ``LayoutProofApproval`` or raises a 409 generation
-    error. Never falls back to an unapproved template.
+    error. Never falls back to an unapproved template. The proof evidence must
+    also meet ``required_execution``: the shared agentic route will not inherit
+    an offline job's approval because the target/layout/renderer identities
+    happen to match.
     """
     try:
         approval = load_layout_proof_approval(
@@ -563,6 +568,12 @@ def require_layout_proof_approval(
                 "options": ["create_layout_proofs", "approve_layout_proofs"],
             },
         )
+    try:
+        require_review_evidence(approval, required_execution=required_execution)
+    except LayoutProofMismatchError as exc:
+        raise GenerationError(
+            409, {"error_code": "layout_proof_mismatch", "message": str(exc)}
+        ) from exc
     return approval
 
 
@@ -697,7 +708,8 @@ class ValidatedGeneration:
 
 
 def prepare_generation(
-    request: GenerateRequest, settings: GenerationSettings
+    request: GenerateRequest, settings: GenerationSettings,
+    *, required_execution: str = "agentic-provider/1",
 ) -> PreparedGeneration:
     """Resolve the artifact, saved revision, template, and proof; no rendering."""
     try:
@@ -860,6 +872,7 @@ def prepare_generation(
             artifact_id=artifact_id,
             target_format=target_format,
             style_spec=style_spec,
+            required_execution=required_execution,
         )
     else:
         layout_proof_approval = None
@@ -1289,9 +1302,14 @@ def record_generation(
 def generate_outputs(
     request: GenerateRequest, *, settings: GenerationSettings,
     max_model_requests: int | None = None, max_tool_calls: int | None = None,
+    required_execution: str = "agentic-provider/1",
 ) -> GenerateResponse:
-    """Prepare inputs → render → validate → record for one generation request."""
-    prepared = prepare_generation(request, settings)
+    """Prepare inputs → render → validate → record for one generation request.
+
+    ``required_execution`` is the proof provenance this caller accepts: the
+    synchronous agentic route accepts agentic evidence, an offline job child
+    accepts only the offline renderer's own evidence."""
+    prepared = prepare_generation(request, settings, required_execution=required_execution)
     rendered = render_prepared_generation(
         prepared, max_model_requests=max_model_requests, max_tool_calls=max_tool_calls
     )

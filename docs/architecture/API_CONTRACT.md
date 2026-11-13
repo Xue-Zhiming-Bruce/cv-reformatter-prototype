@@ -698,6 +698,12 @@ evidence, not one record: a missing `render_result.json`, a corrupt record, a
 contradictory page count, a changed file or a permission failure on read all
 leave the variant unavailable with a pathless reason, and the status request
 still answers 200. Only a variant with no evidence file at all is never created.
+Each variant also reports additive `execution_mode`: `offline-renderer/1` for
+local job proofs, `agentic-provider/1` for synchronous agentic proofs,
+`live-provider/1` only for policy-authorized live execution, and
+`unrecorded/1` for evidence stored before the field existed. It names what
+actually rendered the proof and is never inferred from a matching target,
+layout or renderer identity.
 Every URL is an artifact-scoped API path.
 
 The three resource routes serve only files the stored evidence names, never a
@@ -731,7 +737,12 @@ Generation from an uploaded target consults the same identities, not only the
 approval record: `require_layout_proof_approval` compares the approved
 variant proof ids with the ids that resolve now, for both the PostgreSQL and the
 legacy JSON approval store, and refuses with 409 `layout_proof_mismatch` when a
-variant was re-created or its current evidence cannot be read.
+variant was re-created or its current evidence cannot be read. It also verifies
+the recorded `execution_mode` against the route's requirement: the shared
+agentic route requires `agentic-provider/1`, while local synthetic generation
+keeps requiring `offline-renderer/1`. Matching identities never let an offline
+proof set satisfy a live-review requirement or inherit a live-reviewed
+approval (ADR 0011).
 
 ## Final Output Acceptance
 
@@ -828,8 +839,23 @@ ADR 0008 adds explicitly enabled local synthetic jobs. Both API and worker need
 | Submit native generation | `POST /api/artifacts/{artifact_id}/generation-jobs` | 202 with `job/1`; strict body requires boolean `local_synthetic: true`, saved `profile_revision_id`, `idempotency_key`, optional `blind_profile`. |
 | Submit layout proofs | `POST /api/artifacts/{artifact_id}/layout-proof-jobs` | 202 with `job/1`; strict body requires boolean `local_synthetic: true`, saved `profile_revision_id`, `idempotency_key`, optional `design_id` and `presentation_label_approval`. Freezes the same proof context the synchronous route resolves, so both accept and reject identically. |
 | Submit target generation | `POST /api/artifacts/{artifact_id}/target-generation-jobs` | 202 with `job/1`; same strict body plus `proof_approval_id` (approved proof set for the same target/layout/renderer) and optional `blind_profile`. An unapproved or superseded proof set is rejected before submission. |
-| Read job | `GET /api/artifacts/{artifact_id}/jobs/{job_id}` | Artifact-scoped status, progress, attempts, deadline, safe error code, `stage`, per-variant state and the result reference (`result_generation_id` for generation, `result_proof_approval_id` for proofs); no lease token or physical path. |
+| Read job | `GET /api/artifacts/{artifact_id}/jobs/{job_id}` | Artifact-scoped status, progress, attempts, deadline, safe error code, `stage`, `execution`, per-variant state and the result reference (`result_generation_id` for generation, `result_proof_approval_id` for proofs); no lease token or physical path. |
 | Request cancellation | `POST /api/artifacts/{artifact_id}/jobs/{job_id}/cancel` | Queued jobs cancel immediately; running workers check cancellation before publication. Completed work remains completed. |
+
+`job/1` gained an additive `execution` field naming what actually ran:
+`native-local/1`, `proof-local/1` or `target-local/1`. All three are the
+accepted offline lane; a stored job is never re-read as live.
+
+ADR 0011 reserves explicit live payload versions (`proof-live/1` /
+`target-live/1`, schemas `target-proof-job/2` / `target-generation-job/2`) that
+require an approved `ProviderPolicy`/authorization object. That object does not
+exist, so neither route can create live work: an explicit `execution: "live"`
+request is refused before queue enablement, artifact lookup or submission
+building with HTTP 409 and `{"error_code": "live_execution_blocked",
+"reason": "provider_policy_missing", "message"}`. Credentials, adapter
+configuration and environment variables never authorize a live job, and there
+is no enablement switch. The frozen `proof-local/1`/`target-local/1` meanings
+are unchanged.
 
 States are `queued`, `running`, `succeeded`, `failed`, `cancelled` and
 `needs_attention`. An idempotency key binds the artifact, operation and frozen

@@ -21,7 +21,7 @@ from app.generation.render_plan import layout_spec_sha256
 from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME
 from app.jobs import (JobClaim, JobError, JobProgress, JobRecord, JobSubmission, NativeChildExit,
                       NativeGenerationPayload, NativeJobCreate, TargetGenerationPayload,
-                      TargetProofPayload)
+                      TargetProofPayload, refuse_live_execution)
 from app.profile_approval import ApprovedProfileVersion, load_profile_revision
 from app.storage.artifact_store import ArtifactStoreConflict, ArtifactStoreError
 from app.storage.job_queue import JobLeaseLost, PostgresJobQueue
@@ -94,6 +94,8 @@ def target_proof_submission(directory: Path, revision: ApprovedProfileVersion, r
     """Freeze every identity an uploaded-target proof job depends on."""
     from app.template_analysis.layout_proof_rendering import active_renderer_version
 
+    if request.execution == "live":
+        refuse_live_execution()
     approval = request.presentation_label_approval
     return JobSubmission(idempotency_key=request.idempotency_key, payload=TargetProofPayload(
         artifact_id=directory.name, profile_revision_id=revision.profile_revision_id,
@@ -112,9 +114,13 @@ def target_generation_submission(directory: Path, revision: ApprovedProfileVersi
                                  target_checksum: str, approval) -> JobSubmission:
     """Freeze the target generation plus the approved proof set it renders from."""
     from app.template_analysis.layout_proof_rendering import active_renderer_version
+    from app.template_analysis.layout_proof_service import require_review_evidence
 
+    if request.execution == "live":
+        refuse_live_execution()
     if approval is None or approval.approval_id != request.proof_approval_id or not approval.is_approved:
         raise ValueError("Target generation requires the approved proof set named by this request")
+    require_review_evidence(approval, required_execution="offline-renderer/1")
     inputs = capture_generation_inputs(directory, revision_id=revision.profile_revision_id,
                                        layout_path=target_layout_path(directory, request.design_id),
                                        target_filename=target_pdf.name)
@@ -231,7 +237,8 @@ class NativeJobWorker:
                 evidence = reusable_variant_evidence(attempt, _variant(variant),
                                                      target_checksum=payload.target_sha256,
                                                      layout_sha256=payload.layout_sha256,
-                                                     renderer_version=payload.renderer_version)
+                                                     renderer_version=payload.renderer_version,
+                                                     execution_mode="offline-renderer/1")
                 if evidence is None:
                     continue
                 proof_id = evidence.render_result.proof_id
@@ -510,6 +517,9 @@ class NativeJobWorker:
         approval = load_layout_proof_approval(bundle)
         if approval is None or approval.state != "pending":
             raise ValueError("The attempt has no complete pending proof set")
+        if {evidence.render_result.execution_mode for evidence in approval.variants.values()} \
+                != {"offline-renderer/1"}:
+            raise ValueError("An offline proof job can only publish offline-rendered evidence")
         if (approval.artifact_id != claim.payload.artifact_id
                 or approval.target_checksum != claim.payload.target_sha256
                 or approval.layout_spec_checksum != claim.payload.layout_sha256
@@ -604,6 +614,9 @@ def install_offline_renderer() -> None:
         return source, chrome_html_to_pdf.export_html_to_pdf(source, directory / "render.pdf"), {
             "execution": "local-job/offline", "model_requests": 0, "tool_calls": 0}
 
+    # The proof/render evidence records the renderer that actually ran; the
+    # offline substitution is never mistaken for the agentic provider owner.
+    render.execution_mode = "offline-renderer/1"
     agentic.render_agentic = render
     # The offline lane runs no model loop, so its manifest records the real
     # deterministic execution instead of agentic provenance it cannot have.
@@ -696,6 +709,7 @@ def render_target_snapshot(bundle: Path) -> None:
             settings=GenerationSettings(outputs_dir=bundle.parent, database_url=None,
                                         local_database_path=bundle.parent / "execution.sqlite3"),
             max_model_requests=payload.max_model_requests, max_tool_calls=payload.max_tool_calls,
+            required_execution="offline-renderer/1",
         )
     except BaseException as exc:
         record_failure(bundle, "budget_exceeded" if budget_exhausted(exc) else
@@ -731,7 +745,8 @@ def render_proof_snapshot(bundle: Path) -> None:
         outcomes = {}
         for variant in LengthVariant:
             reused = reusable_variant_evidence(bundle, variant, target_checksum=payload.target_sha256,
-                layout_sha256=payload.layout_sha256, renderer_version=payload.renderer_version)
+                layout_sha256=payload.layout_sha256, renderer_version=payload.renderer_version,
+                execution_mode="offline-renderer/1")
             if reused is not None:
                 outcomes[variant], variants[variant.value] = reused, "reused"
             else:

@@ -66,6 +66,15 @@ LAYOUT_PROOF_VISUAL_SCHEMA_VERSION = "layout/proof/visual/1"
 LAYOUT_PROOF_VARIANT_SCHEMA_VERSION = "layout/proof/variant/1"
 LAYOUT_PROOF_APPROVAL_SCHEMA_VERSION = "layout/proof/approval/2"
 
+#: Provenance of the renderer that produced stored proof evidence. This is
+#: additive to the render contract: ``unrecorded/1`` is the safe default for
+#: evidence stored before the field existed, and it never satisfies a
+#: live-review requirement. Only a policy-authorized live execution may record
+#: ``live-provider/1``.
+ProofExecutionMode = Literal[
+    "unrecorded/1", "offline-renderer/1", "agentic-provider/1", "live-provider/1"
+]
+
 
 class LayoutProofModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -245,6 +254,9 @@ class LayoutProofRenderResult(LayoutProofModel):
     html_checksum: str
     pdf_checksum: str
     page_count: int | None = Field(default=None, ge=0)
+    #: Appended and defaulted so stored render results stay readable; the
+    #: recorded provenance is what review-required reuse must verify.
+    execution_mode: ProofExecutionMode = "unrecorded/1"
 
 
 class StructuralCheck(LayoutProofModel):

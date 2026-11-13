@@ -1083,6 +1083,26 @@ current code does not have, and stage 2 stays blocked on the owner's answers
 recorded in that ADR. No conversion token, currency or runtime bound may be
 claimed until it is accepted and enforced.
 
+Issue #38's uploaded-target job path runs the same queue/child boundary for
+`target-proof-job/1` (`proof-local/1`) and `target-generation-job/1`
+(`target-local/1`). Its child installs the deterministic offline renderer, so a
+succeeded job proves controlled HTML/Chrome rendering, structure/visual gates,
+checkpoint reuse and reviewed publication — not that the Builder/Reviewer/
+measurement/repair provider workflow ran. `job/1` exposes the additive
+`execution` value and manifests keep the existing `execution.mode`,
+`model_requests`, renderer/component identities and frozen `job_request`, so the
+effective lane is inspectable. Proof evidence records `execution_mode`
+(`offline-renderer/1`, `agentic-provider/1`, `live-provider/1` or legacy
+`unrecorded/1`); approval reuse and checkpoint reuse verify it explicitly, so
+matching target/layout/renderer identities cannot let offline evidence satisfy
+a live review. [ADR 0011](../decisions/0011-live-target-job-execution-contract.md)
+adds versioned `proof-live/1`/`target-live/1` payloads requiring an approved
+`ProviderPolicy`/authorization envelope; because that policy does not exist,
+live submissions are refused before any I/O (409 `live_execution_blocked`) and
+no environment variable or credential enables them. Live provider execution,
+cost/Reviewer coverage evidence and the bounded live trial remain blocked on
+B1A/#43/#41.
+
 ## Independent Quality Gates
 
 - **Content gate:** output text and structured values match the approved render

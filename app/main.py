@@ -101,7 +101,8 @@ from app.storage.repository import (
     layout_proof_repository,
     profile_revision_repository,
 )
-from app.jobs import JobRecord, NativeJobCreate, TargetGenerationJobCreate, TargetProofJobCreate
+from app.jobs import (JobRecord, LiveExecutionRefused, NativeJobCreate, TargetGenerationJobCreate,
+                      TargetJobCreate, TargetProofJobCreate, refuse_live_execution)
 from app.template_analysis.docx_style_analyzer import (
     TargetDocxAnalysisError,
     analyze_target_docx,
@@ -476,6 +477,8 @@ class LayoutProofEvidenceSummary(BaseModel):
     variant: str
     proof_id: str
     renderer_version: str
+    #: Recorded renderer provenance; additive and defaulted for old readers.
+    execution_mode: str = "unrecorded/1"
     page_count: int | None
     structural_passed: bool
     structural_error_count: int
@@ -1380,6 +1383,17 @@ def _proof_scope(artifact_id: str, variant: str) -> tuple[Path, LengthVariant]:
         ) from exc
 
 
+def _local_target_execution(request: TargetJobCreate) -> None:
+    """Refuse a live target request before any artifact or queue I/O."""
+    if request.execution != "live":
+        return
+    try:
+        refuse_live_execution()
+    except LiveExecutionRefused as exc:
+        raise HTTPException(status_code=409, detail={
+            "error_code": exc.error_code, "reason": exc.reason, "message": str(exc)}) from exc
+
+
 def _local_job_queue():
     if os.getenv("LOCAL_JOBS_ENABLED") != "1" or DATABASE_URL is None:
         raise HTTPException(status_code=503, detail={"error_code": "jobs_unavailable",
@@ -1414,6 +1428,7 @@ def _target_job_context(artifact_id: str, design_id: str | None):
 @app.post("/api/artifacts/{artifact_id}/layout-proof-jobs", response_model=JobRecord, status_code=202)
 def submit_target_proof_job(artifact_id: str, request: TargetProofJobCreate) -> JobRecord:
     """Queue uploaded-target proof creation; the request does no render work."""
+    _local_target_execution(request)
     queue = _local_job_queue()
     directory, (_target_format, layout_spec, target_pdf, target_checksum) = _target_job_context(
         artifact_id, request.design_id)
@@ -1432,6 +1447,7 @@ def submit_target_proof_job(artifact_id: str, request: TargetProofJobCreate) -> 
 @app.post("/api/artifacts/{artifact_id}/target-generation-jobs", response_model=JobRecord, status_code=202)
 def submit_target_generation_job(artifact_id: str, request: TargetGenerationJobCreate) -> JobRecord:
     """Queue a target-based generation from the approved proof set."""
+    _local_target_execution(request)
     queue = _local_job_queue()
     directory, (_target_format, layout_spec, target_pdf, target_checksum) = _target_job_context(
         artifact_id, request.design_id)
@@ -2090,6 +2106,7 @@ def _evidence_summary(
         variant=variant.value,
         proof_id=result.proof_id,
         renderer_version=result.renderer_version,
+        execution_mode=result.execution_mode,
         page_count=result.page_count,
         structural_passed=evidence.structural.passed,
         structural_error_count=len(evidence.structural.errors),

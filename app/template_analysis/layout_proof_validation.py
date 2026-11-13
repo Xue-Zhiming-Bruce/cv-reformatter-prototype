@@ -169,11 +169,14 @@ def reusable_variant_evidence(
     target_checksum: str,
     layout_sha256: str,
     renderer_version: str,
+    execution_mode: str,
 ) -> VariantProofEvidence | None:
     """A stored variant is reusable only while its frozen identities still match.
 
-    Reuse requires the recorded target, layout and renderer identities plus the
-    proof HTML/PDF checksums to agree; anything else forces a fresh render.
+    Reuse requires the recorded target, layout, renderer and execution
+    provenance identities plus the proof HTML/PDF checksums to agree; anything
+    else forces a fresh render. Matching target/layout/renderer never lets an
+    offline artifact stand in for a live execution.
     """
     try:
         evidence = load_variant_evidence(artifact_dir, variant)
@@ -184,7 +187,8 @@ def reusable_variant_evidence(
     result = evidence.render_result
     if (result.variant != variant or result.target_checksum != target_checksum
             or result.layout_spec_checksum != layout_sha256
-            or result.renderer_version != renderer_version):
+            or result.renderer_version != renderer_version
+            or result.execution_mode != execution_mode):
         return None
     proof_dir = layout_proofs_dir_for(artifact_dir) / result.proof_id
     for filename, expected in ((result.html_filename, result.html_checksum),

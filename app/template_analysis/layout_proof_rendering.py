@@ -65,6 +65,17 @@ def active_renderer_version() -> str:
     return agentic_renderer_version()
 
 
+def active_execution_mode() -> str:
+    """The provenance of the renderer actually installed in this process.
+
+    The job child installs a marked offline renderer; every other path runs the
+    shared agentic owner. Evidence with no recorded mode stays unrecorded.
+    """
+    from app.generation.agentic import render_agentic
+
+    return getattr(render_agentic, "execution_mode", "agentic-provider/1")
+
+
 def render_generation_into(
     context: ClientFacingRenderContext, spec: TemplateStyleSpec | LayoutTemplateSpec,
     html_path: Path, pdf_path: Path, target_pdf: Path | None,
@@ -221,6 +232,7 @@ def _render_layout_proof_with_context(
         html_checksum=file_sha256(html_path),
         pdf_checksum=file_sha256(pdf_path),
         page_count=pdf_page_count(pdf_path),
+        execution_mode=active_execution_mode(),
     )
 
 

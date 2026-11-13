@@ -14,7 +14,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.jobs import (JobClaim, JobError, JobPayload, JobRecord, JobStage, JobSubmission,
-                      OPERATION_BY_SCHEMA, PAYLOAD_BY_SCHEMA)
+                      LIVE_PAYLOAD_TYPES, OPERATION_BY_SCHEMA, PAYLOAD_BY_SCHEMA, refuse_live_execution)
 from app.storage.artifact_store import ArtifactStoreConflict, ArtifactStoreError
 from app.storage.postgres import artifact_sessions, job_attempts, profile_revisions, workflow_jobs
 
@@ -44,9 +44,11 @@ def _payload(row: Mapping[str, Any]) -> JobPayload:
 
 def _record(row: Mapping[str, Any]) -> JobRecord:
     detail = row["progress_detail"] or {}
+    payload = row["payload"] if isinstance(row["payload"], dict) else {}
     return JobRecord.model_validate({
         **{key: row[key] for key in JobRecord.model_fields if key in row},
         "stage": detail.get("stage"), "variants": detail.get("variants"),
+        "execution": payload.get("execution"),
     })
 
 
@@ -64,6 +66,11 @@ class PostgresJobQueue:
 
     def submit(self, submission: JobSubmission) -> JobRecord:
         payload = submission.payload
+        # A live request has no approved policy/authorization object to verify;
+        # refuse it before any transaction or artifact I/O. Credentials and
+        # environment configuration are never an enablement switch.
+        if isinstance(payload, LIVE_PAYLOAD_TYPES):
+            refuse_live_execution()
         operation = OPERATION_BY_SCHEMA[payload.schema_version]
         body = payload.model_dump(mode="json")
         digest = _digest(body)

@@ -17,7 +17,34 @@ VariantJobState = Literal["pending", "rendering", "rendered", "validated", "reus
 JobError = Literal["cancelled", "deadline_exceeded", "attempts_exhausted", "inputs_changed",
                    "execution_failed", "worker_exit", "publication_conflict",
                    "provider_outcome_unknown", "budget_exceeded"]
+JobExecution = Literal["native-local/1", "proof-local/1", "target-local/1",
+                       "proof-live/1", "target-live/1"]
 JobId = Annotated[str, Field(pattern=r"^job_[0-9a-f]{32}$")]
+
+LIVE_EXECUTION_ERROR_CODE = "live_execution_blocked"
+LIVE_EXECUTION_REASON = "provider_policy_missing"
+
+
+class LiveExecutionRefused(RuntimeError):
+    """A live target job was refused: the B1A policy/authorization object is absent.
+
+    Credentials, environment variables and adapter configuration never construct
+    that object, so nothing here is an enablement switch.
+    """
+
+    error_code = LIVE_EXECUTION_ERROR_CODE
+    reason = LIVE_EXECUTION_REASON
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Live target jobs require an approved B1A provider policy and authorization "
+            "object; credentials alone never authorize execution."
+        )
+
+
+def refuse_live_execution() -> None:
+    """Refuse every live job until the approved B1A policy/authorization object exists."""
+    raise LiveExecutionRefused()
 
 #: Frozen execution envelope for the uploaded-target operations. Basis is the
 #: measured 291 s / 28 model request / 7-9-12 per-variant run in issue #38. A
@@ -120,7 +147,41 @@ class TargetGenerationPayload(_TargetPayload):
         return self
 
 
-JobPayload = NativeGenerationPayload | TargetProofPayload | TargetGenerationPayload
+class LiveExecutionAuthorization(JobModel):
+    """The approved B1A policy identity a live job must carry; never credentials.
+
+    No instance of this object exists in this repository. Its presence in a
+    payload is a frozen contract shape, not an authorization to execute.
+    """
+
+    policy_version: str = Field(min_length=1, max_length=100)
+    policy_sha256: Digest
+    authorization_id: str = Field(pattern=r"^authz_[0-9a-f]{16}$")
+    execution_envelope_sha256: Digest
+
+
+class LiveTargetProofPayload(TargetProofPayload):
+    """Additive live proof contract; refused before any I/O until B1A exists."""
+
+    schema_version: Literal["target-proof-job/2"] = "target-proof-job/2"
+    execution: Literal["proof-live/1"] = "proof-live/1"
+    authorization: LiveExecutionAuthorization
+
+
+class LiveTargetGenerationPayload(TargetGenerationPayload):
+    """Additive live generation contract; requires a live-reviewed proof set."""
+
+    schema_version: Literal["target-generation-job/2"] = "target-generation-job/2"
+    execution: Literal["target-live/1"] = "target-live/1"
+    authorization: LiveExecutionAuthorization
+    required_review_evidence: Literal["live-provider/1"] = "live-provider/1"
+
+
+JobPayload = (NativeGenerationPayload | TargetProofPayload | TargetGenerationPayload
+              | LiveTargetProofPayload | LiveTargetGenerationPayload)
+#: Schema versions with no executable contract. Submitting one is refused before
+#: any storage or artifact I/O, so no live job can be stored or claimed today.
+LIVE_PAYLOAD_TYPES = (LiveTargetProofPayload, LiveTargetGenerationPayload)
 #: The queue operation each payload schema version belongs to.
 OPERATION_BY_SCHEMA: dict[str, JobOperation] = {
     "native-generation-job/1": "generate",
@@ -160,6 +221,8 @@ class TargetJobCreate(LocalSyntheticJobCreate):
     """A local synthetic uploaded-target request against an existing target."""
 
     design_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,100}$")
+    #: Additive explicit mode; ``live`` is refused with a structured reason.
+    execution: Literal["local", "live"] = "local"
 
 
 class TargetProofJobCreate(TargetJobCreate):
@@ -176,6 +239,8 @@ class JobRecord(JobModel):
     job_id: JobId
     artifact_id: str
     operation: JobOperation
+    #: Effective execution contract; additive and derived from the stored payload.
+    execution: JobExecution | None = None
     state: JobState
     progress: int = Field(ge=0, le=100)
     stage: JobStage | None = None
