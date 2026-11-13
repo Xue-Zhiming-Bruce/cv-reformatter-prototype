@@ -527,6 +527,18 @@ generation manifest slice is implemented; the production exit remains open.
       renderer/fonts, disclosure/blind settings and independent check results.
       Validate support states (`ready`, `ready_with_review`, `unsupported`,
       `provider_failed`, `fallback_requires_approval`) at the workflow boundary.
+- [ ] Enforce one provider-neutral conversion execution envelope across candidate
+      extraction, target analysis, every proof variant, repair/review and candidate
+      generation: reserve request/tool/analyzer-operation capacity before external
+      I/O, bound each stage allocation by the parent balance, count retries and
+      failed/unknown-outcome attempts without resetting on reload, resubmission or
+      job retry, reuse #41's protected repair/review reserve, and apply one
+      deadline/cancellation boundary. Token and currency values stay observed
+      unless a strict bound is explicitly approved and reserved before dispatch.
+      This also closes this section's performance/cost-budget item. Design:
+      [ADR 0010](../decisions/0010-conversion-execution-envelope.md) (`Proposed`).
+      Stage 2 is blocked until the owner answers that ADR and it is `Accepted`; no
+      whole-conversion enforcement exists today.
 
 Exit: provider failure/retry preserves state, provenance and policy boundaries.
 Current opt-in local integration is not acceptance of these production controls.
@@ -558,7 +570,22 @@ An independent checksum audit verifies 72 frozen file references, all six accept
 HTML/PDF snapshots and source font hashes; three existing blind final acceptances
 remain valid without retroactive manifests:
 `tests/test_results/pytest/20261026T140311Z_b1a_preserved_baseline.txt`.
+
 New paid provider calls: zero. No new fidelity or production-readiness acceptance.
+
+November 13 issue #43 design slice: [ADR 0010](../decisions/0010-conversion-execution-envelope.md)
+records a `Proposed` conversion execution envelope and is the only change in this
+item. It states what the tree actually enforces and what it only observes: the
+request/tool ceiling belongs to one execution (`app/pipeline/runtime.py:29-88`),
+three proof variants therefore mean three ceilings
+(`app/template_analysis/layout_proof_service.py:504-535`), the uploaded-target
+payload ceiling is applied per variant (`app/job_worker.py:743`), token totals
+and provider cost are post-response observations
+(`app/pipeline/runtime.py:46-53`, `:153-170`), Adobe analysis is not counted, and
+only jobs have a deadline and attempt bound (`app/jobs.py:22-30`). Nothing was
+implemented, no provider call was made and no test changed; P2's
+performance/cost-budget verification stays open until stage 2 is authorized and
+then separately validated with a bounded inventoried run. B1A/P2 remain unchecked.
 
 ### B2 — Analyzer Operational Readiness
 
