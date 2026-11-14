@@ -955,7 +955,7 @@ def test_ruby_annotation_text_blocks_approval_and_names_the_gap(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """Ruby base and annotation text sit in nested runs, so it is named, not lost."""
+    """The ruby base is read; its annotation is visible text the reader names."""
     monkeypatch.setenv("API_LLM_PROVIDER", "mock")
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
     resume_path = tmp_path / "resume.docx"
@@ -986,10 +986,10 @@ def test_ruby_annotation_text_blocks_approval_and_names_the_gap(
 
     assert response.status_code == 200
     body = response.json()
-    assert "田中" not in body["original_text"]
+    assert "田中" in body["original_text"]
     assert "タナカ" not in body["original_text"]
     (limitation,) = body["ingestion_limitations"]
-    assert "base and annotation text is not read" in limitation
+    assert "pronunciation annotation is not read" in limitation
     audit = json.loads(
         (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
             encoding="utf-8"
@@ -1207,6 +1207,125 @@ def test_table_wrapper_the_reader_cannot_descend_is_named(
 
     assert approval.status_code == 409, approval.text
     assert approval.json()["detail"]["error_code"] == "source_text_unread"
+
+
+@pytest.mark.usefixtures("a_generation_without_model_loop")
+def test_symbol_source_content_is_reported_without_blocking_generation(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Issue #49: a w:sym renders a character, so it is read and reported, not dropped."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    exporter = make_proof_pdf_exporter()
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", exporter)
+    monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", exporter)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    contact = document.add_paragraph("Contact: ")
+    contact.add_run()._r.append(
+        parse_xml(f'<w:sym {nsdecls("w")} w:font="Wingdings" w:char="F028"/>')
+    )
+    contact.add_run(" 555-0100 ")
+    contact.add_run()._r.append(
+        parse_xml(f'<w:sym {nsdecls("w")} w:font="Segoe UI Symbol" w:char="2713"/>')
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    # Both code points reach the text; only the font-specific one is reported.
+    assert "\uf028" in body["original_text"]
+    assert "\u2713" in body["original_text"]
+    (limitation,) = body["ingestion_limitations"]
+    assert "Wingdings" in limitation
+    assert "font-specific" in limitation
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["unread_source_content"] == body["ingestion_limitations"]
+    assert audit["unread_text_source_content"] == []
+    assert audit["status"] == "passed"
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 200, approval.text
+
+    generated = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": body["artifact_id"],
+            "approved_profile_version_id": approval.json()["profile_version_id"],
+            "template_name": "apex_standard",
+        },
+    )
+    assert generated.status_code == 200, generated.text
+
+
+def test_hyphen_characters_reach_the_source_text_without_a_limitation(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Issue #49: soft and no-break hyphens render characters, so nothing is unread."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    hyphenated = document.add_paragraph("Worked pre")
+    hyphenated.add_run()._r.append(parse_xml(f'<w:softHyphen {nsdecls("w")}/>'))
+    hyphenated.add_run("post and no")
+    hyphenated.add_run()._r.append(
+        parse_xml(f'<w:noBreakHyphen {nsdecls("w")}/>')
+    )
+    hyphenated.add_run("break coverage")
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "pre\u00adpost and no\u2011break coverage" in body["original_text"]
+    assert body["ingestion_limitations"] == []
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "passed"
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 200, approval.text
 
 
 def test_process_rejects_pdf_without_extractable_text(tmp_path: Path) -> None:

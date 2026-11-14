@@ -1,3 +1,4 @@
+from collections import Counter
 from pathlib import Path
 import base64
 import io
@@ -610,8 +611,8 @@ def test_read_docx_skips_the_alternative_branch_it_does_not_read(tmp_path: Path)
     assert content.limitations == []
 
 
-def test_read_docx_reports_ruby_text_instead_of_dropping_it(tmp_path: Path) -> None:
-    """Ruby base and annotation sit in nested runs, so a run's text misses them."""
+def test_read_docx_reads_ruby_base_text_and_reports_the_annotation(tmp_path: Path) -> None:
+    """The base is the text in the line; the annotation is visible, unread text."""
     path = tmp_path / "resume.docx"
     document = Document()
     paragraph = document.add_paragraph("Name: ")
@@ -629,11 +630,11 @@ def test_read_docx_reports_ruby_text_instead_of_dropping_it(tmp_path: Path) -> N
 
     content = read_docx(path)
 
-    assert content.plain_text.splitlines() == ["Name:"]
+    assert content.plain_text.splitlines() == ["Name: 田中"]
     assert [(item.kind, item.location, item.count) for item in content.limitations] == [
         ("ruby", "body child 1", 1)
     ]
-    assert "base and annotation text is not read" in content.limitations[0].message
+    assert "pronunciation annotation is not read" in content.limitations[0].message
     assert content.limitations[0].blocks_source_review is True
 
 
@@ -673,6 +674,153 @@ def test_read_docx_reads_runs_hyperlinks_and_revisions_without_inline_noise(
     assert [(item.kind, item.location, item.count) for item in content.limitations] == [
         ("tracked_change", "body", 2)
     ]
+
+
+def test_read_docx_decides_every_element_of_the_inline_content_model(
+    tmp_path: Path,
+) -> None:
+    """Guard: every inline element has a decision, so none can be dropped silently.
+
+    Each element of the enumerated model is placed in its own paragraph. The walk
+    must render, descend, count, ignore or report each one; an element added to
+    the model without a decision fails here instead of in a review round.
+    """
+    from app.ingestion.docx_reader import _INLINE_CONTENT_TAGS, _INLINE_DECISIONS
+
+    assert set(_INLINE_DECISIONS) == _INLINE_CONTENT_TAGS
+
+    rendered = {
+        "t": "",
+        "tab": "\t",
+        "ptab": "\t",
+        "br": "\n",
+        "cr": "\n",
+        "noBreakHyphen": "\u2011",
+        "softHyphen": "\u00ad",
+        "sym": "",
+        "lastRenderedPageBreak": "",
+    }
+    counted = {
+        "drawing": "visual_element",
+        "pict": "visual_element",
+        "sdt": "content_control",
+        "fldSimple": "field",
+        "ins": "tracked_change",
+        "del": "tracked_change",
+        "moveFrom": "tracked_change",
+        "moveTo": "tracked_change",
+        "altChunk": "alt_chunk",
+        "subDoc": "alt_chunk",
+    }
+    path = tmp_path / "resume.docx"
+    document = Document()
+    order: list[tuple[str, str, str]] = []
+    for index, (tag, decision) in enumerate(_INLINE_DECISIONS.items(), start=1):
+        name = _local_name(tag)
+        paragraph = document.add_paragraph("A")
+        paragraph.add_run()._r.append(_bare_element(tag))
+        paragraph.add_run("B")
+        order.append((name, decision, f"body child {index}"))
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == [
+        f"A{rendered[name] if decision == 'render' else ''}B"
+        for name, decision, _ in order
+    ]
+    inline = {item.location: item for item in content.limitations if item.location != "body"}
+    part_counted = {
+        item.kind: item.count for item in content.limitations if item.location == "body"
+    }
+    for name, decision, location in order:
+        if decision == "render" or decision == "descend" or decision == "empty":
+            assert location not in inline, inline[location].message
+        elif decision == "report":
+            assert inline[location].kind == "unknown_inline"
+            assert inline[location].element == name
+        else:
+            assert counted[name], name
+            assert location not in inline
+    assert part_counted == dict(
+        Counter(counted[name] for name, decision, _ in order if decision == "counted")
+    )
+
+
+def test_read_docx_renders_symbol_characters_without_dropping_a_glyph(
+    tmp_path: Path,
+) -> None:
+    """A w:sym is a character in the font's code page, never a silent omission."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Contact: ")
+    paragraph.add_run()._r.append(
+        parse_xml(
+            f'<w:sym {nsdecls("w")} w:font="Wingdings" w:char="F028"/>'
+        )
+    )
+    paragraph.add_run(" 555-0100 ")
+    paragraph.add_run()._r.append(
+        parse_xml(f'<w:sym {nsdecls("w")} w:font="Segoe UI Symbol" w:char="2713"/>')
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Contact: \uf028 555-0100 \u2713"]
+    # Only the font-specific code page is reported: its glyph is not Unicode text.
+    (limitation,) = content.limitations
+    assert (limitation.kind, limitation.location, limitation.element) == (
+        "symbol",
+        "body child 1",
+        "Wingdings",
+    )
+    assert "font-specific" in limitation.message
+    # The code point did reach the text, so this is reported but never blocking.
+    assert limitation.blocks_source_review is False
+
+
+def test_read_docx_keeps_hyphen_characters_in_the_read_text(tmp_path: Path) -> None:
+    """A soft or no-break hyphen renders a character, so the run text keeps it."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph()
+    for text in ("pre", "post"):
+        paragraph.add_run(text)
+        if text == "pre":
+            paragraph.add_run()._r.append(
+                parse_xml(f'<w:softHyphen {nsdecls("w")}/>')
+            )
+    paragraph.add_run(" and no")
+    paragraph.add_run()._r.append(parse_xml(f'<w:noBreakHyphen {nsdecls("w")}/>'))
+    paragraph.add_run("break")
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["pre\u00adpost and no\u2011break"]
+    assert content.limitations == []
+
+
+def test_read_docx_reports_a_run_child_outside_the_content_model(
+    tmp_path: Path,
+) -> None:
+    """An unanticipated run child is named whether or not it holds a w:t."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Jane Candidate")
+    paragraph.add_run()._r.append(
+        parse_xml(f'<w:futureRunContent {nsdecls("w")}/>')
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Jane Candidate"]
+    assert [(item.kind, item.location, item.element) for item in content.limitations] == [
+        ("unknown_inline", "body child 1", "futureRunContent")
+    ]
+    assert content.limitations[0].blocks_source_review is True
 
 
 def test_read_docx_reports_an_unrecognized_block_wrapper(tmp_path: Path) -> None:
@@ -860,6 +1008,20 @@ def test_validate_docx_rejects_corrupted_file(tmp_path: Path) -> None:
 
     with pytest.raises(CorruptedFileError, match="corrupted"):
         validate_docx_file(path)
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _bare_element(tag: str) -> object:
+    name = _local_name(tag)
+    if name == "AlternateContent":
+        return parse_xml(
+            '<mc:AlternateContent '
+            'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"/>'
+        )
+    return parse_xml(f'<w:{name} {nsdecls("w")}/>')
 
 
 def _content_control(inner_xml: str) -> object:

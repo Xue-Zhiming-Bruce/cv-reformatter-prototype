@@ -35,13 +35,17 @@ What this reader reads (the whole read set):
   in the position the control occupies, nested controls included;
 - any other block wrapper whose own children are only paragraphs, tables or
   content controls (``w:customXml`` and friends), read in place recursively;
-- inline text, by one walk that reads each child in the position it occupies:
-  run text (python-docx's own rendering of tabs and breaks, so wrapped text keeps
-  its spacing), runs held by a hyperlink or a pass-through wrapper
-  (``w:customXml``, ``w:smartTag``, ``w:dir``, ``w:bdo``), and run text inside a
-  selected alternative branch. Reading and reporting are one traversal, so a
-  wrapper holding a wrapper is named where it is declined rather than read by one
-  pass and audited by another;
+- inline text, by one walk with one explicit decision per element of the inline
+  content model (``_INLINE_DECISIONS``): a character the element renders is
+  appended (``w:t``, ``w:tab``/``w:ptab`` as a tab, ``w:br``/``w:cr`` as the break
+  python-docx renders, ``w:noBreakHyphen`` as U+2011, ``w:softHyphen`` as U+00AD,
+  ``w:sym`` as the code point its ``w:char`` names, a ruby's base text); a
+  container whose content is read in place is descended (a run, a hyperlink, a
+  pass-through wrapper such as ``w:customXml``/``w:smartTag``/``w:dir``/``w:bdo``,
+  a ruby's base, the selected alternative branch, and further runs inside any of
+  them); markup that holds no visible character is ignored. Reading and reporting
+  are one traversal, so a wrapper holding a wrapper is named where it is declined
+  rather than read by one pass and audited by another;
 - one branch of an inline markup-compatibility alternative
   (``mc:AlternateContent``): the ``mc:Choice`` whose ``Requires`` namespaces are
   all declared in the document, otherwise the ``mc:Fallback``. The branches are
@@ -65,20 +69,28 @@ location):
 - a block wrapper, or a table child, holding text in a shape that is not the
   blocks, rows or cells this reader handles — reported one per element with its
   name and child position;
-- an inline element holding text that the inline walk does not read, at whatever
-  depth it sits — reported one per element with its name and paragraph position,
-  so a wrapper inside a pass-through wrapper, or inside the selected alternative
-  branch, is named instead of disappearing;
-- a ruby annotation (``w:r/w:ruby``): its base and annotation text sit in nested
-  runs that python-docx's run text does not read, and guessing whether the base
-  or the annotation is the text to keep would be a product decision;
+- an inline element the walk does not read, at whatever depth it sits — reported
+  one per element with its name and paragraph position, so a wrapper inside a
+  pass-through wrapper, or inside the selected alternative branch, is named
+  instead of disappearing. That includes every element with a ``report`` decision
+  in the table (date-field parts such as ``w:dayShort``, ``w:pgNum``, a stray
+  ``w:delText``, ``w:contentPart``, an embedded ``w:object``, an equation) and
+  every element outside the model, whether or not it happens to hold a ``w:t``:
+  ``w:sym`` and ``w:softHyphen`` render characters without one, which is why the
+  decision is a table rather than a test for ``w:t``;
+- a ruby annotation (``w:ruby/w:rt``): the base text is read, and the smaller
+  pronunciation printed above it is reported rather than guessed into the line;
 - a simple field's cached visible result (``w:fldSimple``);
 - an embedded alternate-format chunk (``w:altChunk``) or included subdocument
   (``w:subDoc``), whose text lives in another part entirely;
 - images, drawings and charts, one entry per part with the count found: their
   text, if any, is pixels or an embedded chart or worksheet part, and OCR is out
   of scope, so the reader never supplies it. Reported only: not reading pixels is
-  not lost text, so these do not block approval.
+  not lost text, so these do not block approval;
+- a symbol character whose ``w:char`` is a private-use code point (Wingdings,
+  Symbol and other font-specific code pages), one entry per part naming the font:
+  its code point is in the text, but the glyph it draws is the font's, so the
+  meaning is font-specific. Reported only, for the same reason as an image.
 
 Inline content-control runs and ``w:fldSimple`` results are reported, not read:
 reading them would need a second, hand-written paragraph-text parser beside
@@ -90,13 +102,16 @@ left source content unread. Every inline element the walk declines is named from
 the decision that declines it, so the read set and the reported set stay
 complementary at any nesting depth.
 
-Shapes outside both lists above are outside this reader's detection: comment
-bodies live in ``comments.xml``, and OLE-object text lives in an embedded part,
-so no ``w:t`` in the main document marks either. A chart is named through the
-drawing that holds it, but the chart's own text lives in a chart part this
-reader never opens. An empty ``limitations`` therefore means "none of the listed
-shapes was found", never "the source was read completely". Source bytes and
-stored profiles are untouched: this module only reads.
+Shapes outside both lists above are outside this reader's detection: footnote,
+endnote and comment bodies live in ``footnotes.xml``, ``endnotes.xml`` and
+``comments.xml``, which this reader never opens — the marks that point at them
+(``w:footnoteReference``, ``w:commentRangeStart`` and friends) carry no text of
+their own and are ignored, so such a body is not reported. A chart is named
+through the drawing that holds it, but the chart's own text lives in a chart part
+this reader never opens, and the same is true of a worksheet behind an embedded
+object. An empty ``limitations`` therefore means "none of the listed shapes was
+found", never "the source was read completely". Source bytes and stored profiles
+are untouched: this module only reads.
 """
 
 from dataclasses import dataclass, field
@@ -134,7 +149,19 @@ _CONTENT_CONTROL = f"{_W}sdt"
 _CONTROL_CONTENT = f"{_W}sdtContent"
 _FIELD = f"{_W}fldSimple"
 _RUBY = f"{_W}ruby"
+_RUBY_BASE = f"{_W}rubyBase"
+_RUBY_TEXT = f"{_W}rt"
 _OBJECT = f"{_W}object"
+_TAB = f"{_W}tab"
+_POSITIONED_TAB = f"{_W}ptab"
+_BREAK = f"{_W}br"
+_CARRIAGE_RETURN = f"{_W}cr"
+_NO_BREAK_HYPHEN = f"{_W}noBreakHyphen"
+_SOFT_HYPHEN = f"{_W}softHyphen"
+_SYMBOL = f"{_W}sym"
+_SYMBOL_CHARACTER = f"{_W}char"
+_SYMBOL_FONT = f"{_W}font"
+_PAGE_BREAK_MARK = f"{_W}lastRenderedPageBreak"
 _ALTERNATE_CONTENT = f"{_MC}AlternateContent"
 _CHOICE = f"{_MC}Choice"
 _FALLBACK = f"{_MC}Fallback"
@@ -146,23 +173,179 @@ _READ_CHILD_TAGS = frozenset({_PARAGRAPH, _TABLE, _CONTENT_CONTROL})
 _TRACKED_WRAPPERS = frozenset({_INSERTED, _DELETED, _MOVED_FROM, _MOVED_TO})
 #: Wrappers Word puts around runs, rows or cells without owning their content.
 _STRUCTURAL_WRAPPERS = frozenset({f"{_W}customXml", f"{_W}smartTag"})
-#: Inline containers whose children are read in the position they occupy.
-_INLINE_TRANSPARENT = frozenset(
-    {_RUN, _HYPERLINK, f"{_W}dir", f"{_W}bdo"}
-) | _STRUCTURAL_WRAPPERS
-#: Inline elements whose text a part-level count already names, so the inline
-#: walk must skip them instead of naming the same loss twice.
-_INLINE_NAMED_ELSEWHERE = _TRACKED_WRAPPERS | {
-    _CONTENT_CONTROL,
-    _FIELD,
-    _DRAWING,
-    _PICTURE,
-    _OBJECT,
-}
-#: Run children python-docx renders as text; ``str()`` of each is that rendering.
-_RUN_TEXT_TAGS = frozenset(
-    {_TEXT, f"{_W}tab", f"{_W}br", f"{_W}cr", f"{_W}noBreakHyphen", f"{_W}ptab"}
+#: The elements the inline content model allows in a paragraph or a run.
+#: Enumerated from ECMA-376 (``EG_PContent`` and ``EG_RunInnerContent``) plus the
+#: markup-compatibility alternative, so ``_INLINE_DECISIONS`` can be checked
+#: against a model rather than against itself.
+_INLINE_CONTENT_TAGS = frozenset(
+    {
+        # paragraph content
+        _RUN,
+        _HYPERLINK,
+        _FIELD,
+        _CONTENT_CONTROL,
+        _ALT_CHUNK,
+        _SUB_DOCUMENT,
+        _ALTERNATE_CONTENT,
+        f"{_W}pPr",
+        f"{_W}oMath",
+        f"{_W}oMathPara",
+        # run content
+        _TEXT,
+        _TAB,
+        _POSITIONED_TAB,
+        _BREAK,
+        _CARRIAGE_RETURN,
+        _NO_BREAK_HYPHEN,
+        _SOFT_HYPHEN,
+        _SYMBOL,
+        _PAGE_BREAK_MARK,
+        _RUBY,
+        _DRAWING,
+        _PICTURE,
+        _OBJECT,
+        f"{_W}rPr",
+        f"{_W}contentPart",
+        f"{_W}delText",
+        f"{_W}fldChar",
+        f"{_W}instrText",
+        f"{_W}delInstrText",
+        f"{_W}dayShort",
+        f"{_W}dayLong",
+        f"{_W}monthShort",
+        f"{_W}monthLong",
+        f"{_W}yearShort",
+        f"{_W}yearLong",
+        f"{_W}pgNum",
+        f"{_W}annotationRef",
+        f"{_W}footnoteRef",
+        f"{_W}endnoteRef",
+        f"{_W}separator",
+        f"{_W}continuationSeparator",
+        f"{_W}footnoteReference",
+        f"{_W}endnoteReference",
+        f"{_W}commentReference",
+        # typed wrappers and zero-width markup
+        *_STRUCTURAL_WRAPPERS,
+        f"{_W}dir",
+        f"{_W}bdo",
+        *_TRACKED_WRAPPERS,
+        f"{_W}proofErr",
+        f"{_W}bookmarkStart",
+        f"{_W}bookmarkEnd",
+        f"{_W}commentRangeStart",
+        f"{_W}commentRangeEnd",
+        f"{_W}moveFromRangeStart",
+        f"{_W}moveFromRangeEnd",
+        f"{_W}moveToRangeStart",
+        f"{_W}moveToRangeEnd",
+        f"{_W}customXmlInsRangeStart",
+        f"{_W}customXmlInsRangeEnd",
+        f"{_W}customXmlDelRangeStart",
+        f"{_W}customXmlDelRangeEnd",
+        f"{_W}customXmlMoveFromRangeStart",
+        f"{_W}customXmlMoveFromRangeEnd",
+        f"{_W}customXmlMoveToRangeStart",
+        f"{_W}customXmlMoveToRangeEnd",
+        f"{_W}permStart",
+        f"{_W}permEnd",
+    }
 )
+
+InlineDecision = Literal["render", "descend", "counted", "empty", "report"]
+
+#: One explicit decision per inline content element, and the whole reason this is
+#: a table: deciding by "does it happen to hold a ``w:t``" drops every element
+#: that renders a character without one (``w:sym``, ``w:softHyphen``, date-field
+#: parts). An element outside this table is reported, never dropped, so an
+#: unanticipated shape costs a limitation instead of text.
+_INLINE_DECISIONS: dict[str, InlineDecision] = {
+    # Characters the element itself renders.
+    _TEXT: "render",
+    _TAB: "render",
+    _POSITIONED_TAB: "render",
+    _BREAK: "render",
+    _CARRIAGE_RETURN: "render",
+    _NO_BREAK_HYPHEN: "render",
+    _SOFT_HYPHEN: "render",
+    _SYMBOL: "render",
+    _PAGE_BREAK_MARK: "render",
+    # Containers whose own content the walk reads in place.
+    _RUN: "descend",
+    _HYPERLINK: "descend",
+    _RUBY: "descend",
+    _ALTERNATE_CONTENT: "descend",
+    **{tag: "descend" for tag in _STRUCTURAL_WRAPPERS},
+    f"{_W}dir": "descend",
+    f"{_W}bdo": "descend",
+    # Content a part-level count already names, so the walk must not name it twice.
+    _DRAWING: "counted",
+    _PICTURE: "counted",
+    _ALT_CHUNK: "counted",
+    _SUB_DOCUMENT: "counted",
+    _CONTENT_CONTROL: "counted",
+    _FIELD: "counted",
+    **{tag: "counted" for tag in _TRACKED_WRAPPERS},
+    # Markup and field structure with no visible character of its own.
+    f"{_W}pPr": "empty",
+    f"{_W}rPr": "empty",
+    f"{_W}proofErr": "empty",
+    # a complex field's result is ordinary runs, so only its structure is here
+    f"{_W}fldChar": "empty",
+    f"{_W}instrText": "empty",
+    f"{_W}delInstrText": "empty",
+    f"{_W}bookmarkStart": "empty",
+    f"{_W}bookmarkEnd": "empty",
+    f"{_W}commentRangeStart": "empty",
+    f"{_W}commentRangeEnd": "empty",
+    f"{_W}commentReference": "empty",
+    f"{_W}moveFromRangeStart": "empty",
+    f"{_W}moveFromRangeEnd": "empty",
+    f"{_W}moveToRangeStart": "empty",
+    f"{_W}moveToRangeEnd": "empty",
+    f"{_W}customXmlInsRangeStart": "empty",
+    f"{_W}customXmlInsRangeEnd": "empty",
+    f"{_W}customXmlDelRangeStart": "empty",
+    f"{_W}customXmlDelRangeEnd": "empty",
+    f"{_W}customXmlMoveFromRangeStart": "empty",
+    f"{_W}customXmlMoveFromRangeEnd": "empty",
+    f"{_W}customXmlMoveToRangeStart": "empty",
+    f"{_W}customXmlMoveToRangeEnd": "empty",
+    f"{_W}permStart": "empty",
+    f"{_W}permEnd": "empty",
+    # Marks pointing at content held in another part this reader never opens
+    # (footnotes.xml, endnotes.xml, comments.xml); see the module docstring.
+    f"{_W}footnoteReference": "empty",
+    f"{_W}endnoteReference": "empty",
+    f"{_W}annotationRef": "empty",
+    f"{_W}footnoteRef": "empty",
+    f"{_W}endnoteRef": "empty",
+    f"{_W}separator": "empty",
+    f"{_W}continuationSeparator": "empty",
+    # Visible content this walk does not read: reported by name.
+    f"{_W}dayShort": "report",
+    f"{_W}dayLong": "report",
+    f"{_W}monthShort": "report",
+    f"{_W}monthLong": "report",
+    f"{_W}yearShort": "report",
+    f"{_W}yearLong": "report",
+    f"{_W}pgNum": "report",
+    f"{_W}delText": "report",
+    f"{_W}contentPart": "report",
+    f"{_W}oMath": "report",
+    f"{_W}oMathPara": "report",
+    _OBJECT: "report",  # an embedded object's own text lives in another part
+}
+
+#: Run-content characters rendered as a fixed string, python-docx's own mapping.
+_RUN_CHARACTERS: dict[str, str] = {
+    _TAB: "\t",
+    _POSITIONED_TAB: "\t",
+    _CARRIAGE_RETURN: "\n",
+    _NO_BREAK_HYPHEN: "\u2011",
+    _SOFT_HYPHEN: "\u00ad",
+    _PAGE_BREAK_MARK: "",
+}
 
 LimitationKind = Literal[
     "nested_table",
@@ -174,6 +357,7 @@ LimitationKind = Literal[
     "unknown_block",
     "unknown_inline",
     "ruby",
+    "symbol",
     "visual_element",
 ]
 
@@ -192,14 +376,20 @@ _UNSUPPORTED_CONTENT_REVIEW: dict[LimitationKind, str] = {
     "unknown_inline": (
         "an inline element this reader does not recognize is not read"
     ),
-    "ruby": "a ruby (furigana) annotation's base and annotation text is not read",
+    "ruby": "a ruby (furigana) pronunciation annotation is not read",
+    "symbol": (
+        "a symbol character from a font's own code page is emitted as its code "
+        "point; the glyph it draws is font-specific"
+    ),
     "visual_element": "image, drawing and chart text is not read; OCR is out of scope",
 }
 
 #: Kinds where visible text is known to be lost, so approval and generation fail
-#: closed. ``visual_element`` is reported only: its content is pixels or an
-#: embedded chart part, the reader never claims to read it, and OCR is out of
-#: scope, so refusing the document would reject ordinary resumes for a headshot.
+#: closed. ``visual_element`` and ``symbol`` are reported only: the first is
+#: pixels or an embedded chart part (OCR is out of scope), and the second is a
+#: font-glyph code point that did reach the text with its meaning intact as far
+#: as this reader can tell, so refusing the document would reject ordinary
+#: resumes for a headshot or a Wingdings bullet.
 _BLOCKING_KINDS: frozenset[LimitationKind] = frozenset(
     {
         "nested_table",
@@ -510,30 +700,28 @@ def _read_inline(
     namespaces: Mapping[str, str],
     account: _ReadAccount,
 ) -> None:
-    """Append one inline container's text in authored order, naming what it declines.
+    """Append one inline container's text in authored order, deciding every child.
 
-    A child is read (text), descended (a run, a hyperlink, a structural wrapper),
-    skipped because a part-level count already names its loss (revisions, fields,
-    controls, drawings), reported (ruby, an element holding text this walk does
-    not read), or passed over because it holds no text at all.
+    A paragraph, a run and a chosen alternative branch are all inline containers,
+    and each child takes one exit from ``_INLINE_DECISIONS``: render a character,
+    descend, leave to a part-level count, ignore markup that holds no visible
+    character, or report it by name. A child missing from that table is reported,
+    so an element nobody anticipated costs a limitation rather than its text.
     """
     for child in container.iterchildren():
-        tag = child.tag
-        if tag in _RUN_TEXT_TAGS:
-            pieces.append(str(child))
-        elif tag == _ALTERNATE_CONTENT:
-            branch = _live_branch(child, namespaces, account)
-            if branch is not None:
-                _read_inline(branch, pieces, limitations, location, namespaces, account)
-        elif tag in _INLINE_TRANSPARENT:
-            _read_inline(child, pieces, limitations, location, namespaces, account)
-        elif tag in _INLINE_NAMED_ELSEWHERE:
-            continue
-        elif tag == _RUBY:
-            limitations.append(
-                ExtractedContentLimitation(kind="ruby", location=location, count=1)
-            )
-        elif child.find(f".//{_TEXT}") is not None:
+        decision = _INLINE_DECISIONS.get(child.tag, "report")
+        if decision == "render":
+            _render_character(child, pieces, limitations, location)
+        elif decision == "descend":
+            if child.tag == _RUBY:
+                _read_ruby(child, pieces, limitations, location, namespaces, account)
+            elif child.tag == _ALTERNATE_CONTENT:
+                branch = _live_branch(child, namespaces, account)
+                if branch is not None:
+                    _read_inline(branch, pieces, limitations, location, namespaces, account)
+            else:
+                _read_inline(child, pieces, limitations, location, namespaces, account)
+        elif decision == "report":
             limitations.append(
                 ExtractedContentLimitation(
                     kind="unknown_inline",
@@ -542,6 +730,77 @@ def _read_inline(
                     count=1,
                 )
             )
+
+
+def _render_character(
+    element: BaseOxmlElement,
+    pieces: list[str],
+    limitations: list[ExtractedContentLimitation],
+    location: str,
+) -> None:
+    """Append the character one run-content element renders.
+
+    ``w:sym`` is not Unicode text: ``w:char`` is a slot in the named font's own
+    code page, so a private-use code point is emitted and reported as a symbol
+    whose visible glyph this reader cannot vouch for.
+    """
+    tag = element.tag
+    if tag == _TEXT:
+        pieces.append(element.text or "")
+    elif tag == _BREAK:
+        # python-docx renders a text-wrapping break as a newline and a page or
+        # column break as nothing.
+        pieces.append(str(element))
+    elif tag == _SYMBOL:
+        character = _symbol_character(element)
+        pieces.append(character)
+        if _is_private_use(character):
+            limitations.append(
+                ExtractedContentLimitation(
+                    kind="symbol",
+                    location=location,
+                    element=element.get(_SYMBOL_FONT),
+                    count=1,
+                )
+            )
+    else:
+        pieces.append(_RUN_CHARACTERS[tag])
+
+
+def _symbol_character(element: BaseOxmlElement) -> str:
+    """The character a ``w:sym`` renders, decoded from its hexadecimal ``w:char``."""
+    try:
+        return chr(int(element.get(_SYMBOL_CHARACTER) or "", 16))
+    except ValueError:
+        return ""
+
+
+def _is_private_use(character: str) -> bool:
+    """True when a code point is a font glyph slot rather than Unicode text."""
+    return bool(character) and "\ue000" <= character <= "\uf8ff"
+
+
+def _read_ruby(
+    ruby: BaseOxmlElement,
+    pieces: list[str],
+    limitations: list[ExtractedContentLimitation],
+    location: str,
+    namespaces: Mapping[str, str],
+    account: _ReadAccount,
+) -> None:
+    """Read a ruby's base text and report its pronunciation annotation.
+
+    The base is the text shown in the line, so it is read; ``w:rt`` is the small
+    annotation printed above it, which is visible content this reader keeps out of
+    the line rather than guess where it belongs.
+    """
+    base = ruby.find(_RUBY_BASE)
+    if base is not None:
+        _read_inline(base, pieces, limitations, location, namespaces, account)
+    if ruby.find(_RUBY_TEXT) is not None:
+        limitations.append(
+            ExtractedContentLimitation(kind="ruby", location=location, count=1)
+        )
 
 
 def _live_branch(
