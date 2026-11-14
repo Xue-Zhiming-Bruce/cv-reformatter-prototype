@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 import app.pipeline.repair_policy as repair_policy
+from app.pipeline.evidence import RenderVersion
 from app.pipeline.runtime import BudgetExhausted, RunBudget
 
 
@@ -60,3 +61,43 @@ def test_repair_requires_a_builder_turn_plus_whole_final_pdf_review() -> None:
     assert repair_policy._repair_capacity_available(
         roomy, builder_requests=4, review_page_count=2
     ) is False
+
+
+def _repair_base(html_sha256: str) -> RenderVersion:
+    return RenderVersion(
+        version_id="render-target-laneA-v1",
+        html_sha256=html_sha256,
+        pdf_sha256="b" * 64,
+        page_count=1,
+        hard_gates_passed=True,
+        note="initial",
+    )
+
+
+def test_identical_rendered_html_is_never_exported_again() -> None:
+    """Issue #48: the repair candidate's own rendered HTML sha256 is the only
+    key. A proposal that differs only in ``proposal_id`` renders the same HTML,
+    so it is a no-op; one changed byte is not."""
+    identical = "a" * 64
+    duplicate, reason = repair_policy._e5_duplicate_render_export(
+        _repair_base(identical), identical
+    )
+    assert duplicate is True
+    assert "render-target-laneA-v1" in reason and identical in reason
+    assert repair_policy.E5_RENDER_EXPORT_POLICY == (
+        "skip-duplicate-export-on-identical-render/1"
+    )
+    changed, reason = repair_policy._e5_duplicate_render_export(
+        _repair_base(identical), "a" * 63 + "b"
+    )
+    assert changed is False
+    assert "differs" in reason
+
+
+def test_unknown_repair_base_identity_fails_open_to_exporting() -> None:
+    """Issue #48: no base (the initial render) or a base without a recorded
+    html_sha256 exports exactly as before — never a skip."""
+    assert repair_policy._e5_duplicate_render_export(None, "a" * 64)[0] is False
+    assert repair_policy._e5_duplicate_render_export(
+        _repair_base(""), "a" * 64
+    )[0] is False

@@ -34,6 +34,7 @@ from app.pipeline.presentation_labels import _presentation_label_listing
 from app.pipeline.repair_policy import (
     E5_BUDGET_REVIEW_POLICY,
     E5_BUILDER_RESERVE_REQUESTS,
+    E5_RENDER_EXPORT_POLICY,
     _e5_blocking_gates,
 )
 from app.pipeline.rendering import ROOT, _render_pages
@@ -217,6 +218,9 @@ def _freeze_e5_config(
                 # Effective repair budget/review policy: a changed execution
                 # contract never inherits an earlier run's evidence.
                 "budget_review_policy": E5_BUDGET_REVIEW_POLICY,
+                # Effective duplicate-render export rule: the proof names the
+                # rule that decided whether a repair candidate was exported.
+                "render_export_policy": E5_RENDER_EXPORT_POLICY,
                 "per_agent_run_max_requests": {
                     "visual_reviewer": E5_REVIEWER_MAX_REQUESTS,
                     "builder": E5_BUILDER_MAX_REQUESTS,
