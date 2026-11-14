@@ -285,8 +285,8 @@ def inventory_pdf(path: Path, pages: list[list[str]]) -> Path:
 
 def test_output_inventory_locates_each_section_on_the_renders_own_pages(tmp_path: Path) -> None:
     """The render's section/page map comes from the render's own PDF. A later
-    section's heading does not end the earlier one on the page they share: that
-    page still carries the earlier section above the new heading."""
+    section's heading that starts PARTWAY DOWN a page does not take over at the
+    top of it: that page still carries the earlier section above the heading."""
     pdf = inventory_pdf(tmp_path / "render.pdf", [
         ["SUMMARY", "EXPERIENCE", "body line of page 1"],
         ["body line of page 2", "EDUCATION", "body line of page 2b"],
@@ -308,18 +308,32 @@ def test_output_inventory_spans_two_sections_sharing_one_page(tmp_path: Path) ->
     ) == {"section.01": [1], "section.02": [1]}
 
 
-def test_output_inventory_never_pads_the_last_section_past_the_last_page(
+def test_output_inventory_ends_before_a_heading_that_starts_a_page(
     tmp_path: Path,
 ) -> None:
-    """The earlier section runs through the page the next one starts on, and the
-    last section stops at the last page that carries content, never one page
-    past it."""
+    """A heading that is the FIRST line of page 2 takes over at the top of it, so
+    the section before it owns page 1 only. The last section cannot be excluded
+    from a later page: its content runs on past the heading with no later heading
+    to take over, so it owns through the last page that carries a line — page 2
+    here, and never a page 3 the render does not have."""
     pdf = inventory_pdf(tmp_path / "render.pdf", [
-        ["SUMMARY", "body line of page 1"], ["EDUCATION"],
+        ["SUMMARY", "body line of page 1"], ["EDUCATION", "body line of page 2"],
     ])
     assert measurement.section_page_locations(
         pdf, inventory_state("Summary", "Education")
-    ) == {"section.01": [1, 2], "section.02": [2]}
+    ) == {"section.01": [1], "section.02": [2]}
+
+
+def test_output_inventory_never_ends_a_section_before_it_starts(tmp_path: Path) -> None:
+    """A heading whose page is not after this section's start cannot shorten the
+    range: EXPERIENCE starts on page 2, so the out-of-order SUMMARY heading on
+    page 1 leaves it carrying page 2."""
+    pdf = inventory_pdf(tmp_path / "render.pdf", [
+        ["SUMMARY", "body line of page 1"], ["EXPERIENCE", "body line of page 2"],
+    ])
+    assert measurement.section_page_locations(
+        pdf, inventory_state("Experience", "Summary")
+    ) == {"section.01": [2], "section.02": [1, 2]}
 
 
 def test_region_catalog_reports_each_sides_own_pages() -> None:

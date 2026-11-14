@@ -191,6 +191,11 @@ class BodyScaffold(BaseModel):
 
 BULLET_GLYPHS = frozenset({"•", "◦", "·", "▪", "‣", "●", "∙"})
 
+#: Two words within this vertical distance belong to one extracted line. The
+#: same tolerance decides whether a heading is the first line of its page.
+LINE_CLUSTER_TOLERANCE_PT = 1.5
+
+
 def _pdf_lines_and_marks(pdf: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Cluster extractable words into lines; line x0 includes glyph prefixes.
 
@@ -212,7 +217,9 @@ def _pdf_lines_and_marks(pdf: Path) -> tuple[list[dict[str, Any]], list[dict[str
             ]
             clusters: list[list[dict[str, Any]]] = []
             for word in sorted(page.extract_words(), key=lambda word: float(word["top"])):
-                if clusters and abs(float(word["top"]) - float(clusters[-1][0]["top"])) <= 1.5:
+                if clusters and abs(
+                    float(word["top"]) - float(clusters[-1][0]["top"])
+                ) <= LINE_CLUSTER_TOLERANCE_PT:
                     clusters[-1].append(word)
                 else:
                     clusters.append([word])
@@ -797,30 +804,32 @@ def _measure_header_vertical_rule_geometry(
 def section_page_locations(pdf: Path, state: Any) -> dict[str, list[int]]:
     """section node id -> sorted 1-based pages of THIS pdf carrying the section.
 
-    A section is carried from the page that shows one of its measured heading
-    labels until the page a LATER section's heading starts on -- that page still
-    carries this section above the new heading, so it is included. A section whose
-    label never starts a line in this pdf is absent from the result: that is the
-    whole-output absence the disposition owner must keep unresolved, so a
-    page-local claim is checked against the render's own pages instead of the
-    target's.
+    A section owns the page its heading starts on and keeps owning pages until a
+    LATER section's heading takes over. A heading takes over only when it is the
+    first line at the top of its page; one that starts partway down leaves the
+    current section carried above it on that same page. The last section runs to
+    the last page carrying a line, because no later heading can take over. A
+    section whose label never starts a line in this pdf is absent from the
+    result: that is the whole-output absence the disposition owner must keep
+    unresolved, so a page-local claim is checked against the render's own pages
+    instead of the target's.
     """
     lines, _marks = _pdf_lines_and_marks(pdf)
-    starts = _section_start_pages(lines, state)
+    headings = _section_heading_lines(lines, state)
     page_count = max((int(line["page"]) for line in lines), default=0)
     locations: dict[str, list[int]] = {}
-    for index, (node_id, start) in enumerate(starts):
-        end = starts[index + 1][1] if index + 1 < len(starts) else page_count
-        locations[node_id] = _page_range(start, end)
+    for index, (node_id, page, _top) in enumerate(headings):
+        later = headings[index + 1] if index + 1 < len(headings) else None
+        locations[node_id] = _section_pages(lines, page, later, page_count)
     return locations
 
 
-def _section_start_pages(
+def _section_heading_lines(
     lines: list[dict[str, Any]], state: Any
-) -> list[tuple[str, int]]:
-    """(section node id, first page one of its heading labels starts a line) in
-    reading order; a section whose label starts no line is omitted."""
-    starts: list[tuple[str, int]] = []
+) -> list[tuple[str, int, float]]:
+    """(section node id, page, top) of the first line one of its heading labels
+    starts, in reading order; a section whose label starts no line is omitted."""
+    headings: list[tuple[str, int, float]] = []
     for section in sorted(
         (node for node in state.nodes if node.kind == "section"),
         key=lambda node: node.reading_order,
@@ -834,19 +843,39 @@ def _section_start_pages(
             )
             if key
         ]
-        pages = [
-            int(line["page"]) for line in lines
+        matches = [
+            (int(line["page"]), float(line["top"])) for line in lines
             if any(_line_key(line["text"]).startswith(label) for label in labels)
         ]
-        if pages:
-            starts.append((section.node_id, min(pages)))
-    return starts
+        if matches:
+            headings.append((section.node_id, *min(matches)))
+    return headings
 
 
-def _page_range(start: int, end: int) -> list[int]:
-    """The inclusive pages start..end; an out-of-order heading page can never end
-    a section before it starts."""
+def _section_pages(
+    lines: list[dict[str, Any]], start: int,
+    later: tuple[str, int, float] | None, page_count: int,
+) -> list[int]:
+    """The pages this section owns: its own start page through the page before the
+    later heading that takes over from the top, or through the page the later
+    heading shares with this section's continuing content."""
+    end = page_count
+    if later is not None:
+        _node_id, page, top = later
+        end = page - 1 if _takes_over_at_top(lines, page, top) else page
+    # A heading whose page is not after this section's start can never shorten
+    # the range below the start page.
     return list(range(start, max(start, end) + 1))
+
+
+def _takes_over_at_top(lines: list[dict[str, Any]], page: int, top: float) -> bool:
+    """Whether `top` is the first line of `page`, clustered the way the line
+    extraction clusters words (1.5 pt)."""
+    return not any(
+        int(line["page"]) == page
+        and float(line["top"]) < top - LINE_CLUSTER_TOLERANCE_PT
+        for line in lines
+    )
 
 
 def _line_key(text: str) -> str:
