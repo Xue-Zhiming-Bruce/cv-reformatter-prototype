@@ -148,6 +148,7 @@ from app.template_analysis.layout_proof_validation import (
     load_layout_proof_render_result,
     load_variant_evidence,
 )
+from app.target_publication import publish_target_set
 from app.template_analysis.artifacts import (
     ADOBE_RAW_FILENAME,
     LAYOUT_SPEC_FILENAME,
@@ -885,22 +886,25 @@ def _new_target_staging_dir() -> Path:
     return Path(tempfile.mkdtemp(prefix="target-", dir=staging_root))
 
 
-def _publish_target_files(
+def _publish_staged_target(
     artifact_id: str,
     staging_dir: Path,
-    filenames: tuple[str, ...],
     metadata: TargetFormatMetadata,
+    filenames: tuple[str, ...],
+    abandoned: threading.Event,
 ) -> None:
-    """Rename one request's staged target files into the artifact directory.
+    """Write the metadata last, then publish the whole set in one rename.
 
-    The metadata is renamed last: a reader that finds ``target_format.json``
-    must find every file it points at already published. Each upload stages
-    privately, so a concurrent request can only replace a complete file.
+    Nothing is visible to a reader until the switch, so the metadata never
+    describes a source from a different upload.
     """
     write_json(staging_dir / TARGET_FORMAT_FILENAME, metadata.model_dump(mode="json"))
-    artifact_dir = _prepare_artifact_dir(artifact_id, allow_existing=True)
-    for filename in (*filenames, TARGET_FORMAT_FILENAME):
-        os.replace(staging_dir / filename, artifact_dir / filename)
+    publish_target_set(
+        _resolve_artifact_dir(artifact_id),
+        staging_dir,
+        (*filenames, TARGET_FORMAT_FILENAME),
+        abandoned,
+    )
 
 
 def _stage_target_upload(
@@ -937,13 +941,13 @@ def _publish_pdf_target(
         metadata = _analyzed_target_metadata(
             target_format, artifact_id, spec, _pdf_target_warnings(normalized, adobe_raw)
         )
-        if not abandoned.is_set():
-            _publish_target_files(
-                artifact_id,
-                staging_dir,
-                (target_format.stored_filename, *PDF_TARGET_EVIDENCE_FILENAMES),
-                metadata,
-            )
+        _publish_staged_target(
+            artifact_id,
+            staging_dir,
+            metadata,
+            (target_format.stored_filename, *PDF_TARGET_EVIDENCE_FILENAMES),
+            abandoned,
+        )
         return metadata, spec
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -968,13 +972,13 @@ def _publish_docx_target(
         metadata = _analyzed_target_metadata(
             target_format, artifact_id, spec, list(spec.warnings)
         )
-        if not abandoned.is_set():
-            _publish_target_files(
-                artifact_id,
-                staging_dir,
-                (target_format.stored_filename, LAYOUT_SPEC_FILENAME),
-                metadata,
-            )
+        _publish_staged_target(
+            artifact_id,
+            staging_dir,
+            metadata,
+            (target_format.stored_filename, LAYOUT_SPEC_FILENAME),
+            abandoned,
+        )
         return metadata, spec
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -985,8 +989,8 @@ async def _publish_off_loop(
 ) -> _T:
     """Run one target publish unit off the loop; a cancelled caller abandons it.
 
-    The worker checks ``abandoned`` after the analysis, so a cancelled handler
-    publishes nothing new; a publication already under way still completes.
+    The worker checks ``abandoned`` before the single publication rename, so a
+    cancelled handler either publishes nothing or leaves a complete set.
     """
     try:
         return await _run_off_loop(call, *args, abandoned)

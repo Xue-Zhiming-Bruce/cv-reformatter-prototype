@@ -130,8 +130,12 @@ class GenerationRepository(Protocol):
 
 
 def identify_file(directory: Path, path: Path) -> FileIdentity:
+    # Containment is checked on the resolved path; the recorded name is the
+    # published one, so a target set published behind a symlink keeps a stable
+    # identity while its content is still hashed from the real file.
     root, resolved = directory.resolve(), path.resolve()
-    relative = resolved.relative_to(root).as_posix()
+    resolved.relative_to(root)
+    relative = Path(path).relative_to(Path(directory)).as_posix()
     return FileIdentity(path=relative, sha256=file_sha256(resolved), size_bytes=resolved.stat().st_size)
 
 

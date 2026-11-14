@@ -171,11 +171,19 @@ The `target_format` object includes:
 
 Generation can reload the saved target format using the same `artifact_id`.
 
-Publication is all-or-nothing per request: each upload stages privately, and the
-analyzed files are renamed into the artifact directory only after the analysis
-succeeds, with `target_format.json` renamed last. A failed, refused or cancelled
-upload therefore publishes no partial target files, and no upload can delete
-another request's staged source.
+Publication is all-or-nothing per request. Each upload stages privately under
+`.staging`, writes the complete analyzed set into an immutable set directory
+under the artifact, and then makes that set current with one rename of the
+artifact's `current` pointer, which `target_format.json`, the stored source and
+the analysis files follow as symlinks. A reader therefore sees either the
+previous complete set or the new complete set: never one upload's metadata
+beside another upload's source. Uploads for the same `artifact_id` serialize on
+a per-artifact lock, so the later one publishes over the earlier one and the
+superseded set stops being published — after a PDF target supersedes a DOCX
+target, the DOCX template URL is no longer part of the current target. A
+refused, failed or cancelled upload publishes nothing, including a cancellation
+that lands while it was publishing, and no upload can delete another request's
+staged source.
 
 ## Document Resource Limits — Both Uploads (issue #53)
 
