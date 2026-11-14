@@ -5,8 +5,9 @@ import json
 from pathlib import Path
 import pytest
 import app.pipeline.evidence as e
-from app.pipeline.runtime import RunBudget, BudgetExhausted
-from tests.helpers.pipeline import _pod, _scan_source_for_hardcoded_target_data
+from app.pipeline.runtime import RunBudget, BudgetExhausted, RunTrace
+from tests.helpers.pipeline import _pod, _scan_source_for_hardcoded_target_data, synthetic_pipeline_inputs
+from tests.helpers.synthetic_pdf import _write_single_page_pdf
 
 pytestmark = pytest.mark.integration
 
@@ -163,6 +164,201 @@ def test_render_crop_without_a_render_is_unavailable_not_faked(tmp_path: Path) -
     assert payload["status"] == "unavailable"
     assert "no candidate render" in payload["reason"]
     assert next(r for r in pod.records if r.kind == "region_crop").status == "unavailable"
+
+
+# A render crop reads the render the pod is bound to. These cases keep the render
+# and target pixels distinguishable on purpose: the target page is blank inside
+# the box and the render paints a solid marker there.
+_RENDER_BBOX = [20.0, 400.0, 120.0, 440.0]  # [x0, top, x1, bottom] in PDF points
+
+
+def _dual_pod(tmp_path: Path, *, render_pdf: Path | None = None):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    return e.DualSourcePod(inputs["target_pdf"], inputs["adobe_json"], tmp_path, render_pdf=render_pdf)
+
+
+def _marked_render_pdf(
+    path: Path, *, page_size: tuple[float, float] = (612, 792), fill: str = "1 0 0"
+) -> Path:
+    """A render PDF whose cropped region is a solid marker, larger than the bbox."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    x0, top, x1, bottom = _RENDER_BBOX
+    width, height = page_size
+    marker = (
+        f"q {fill} rg {x0 - 10} {height - bottom - 10} "
+        f"{x1 - x0 + 20} {bottom - top + 20} re f Q"
+    )
+    return _write_single_page_pdf(path, [marker], width_pt=width, height_pt=height)
+
+
+def _attribution_tools(pod, out_dir: Path):
+    budget = RunBudget(max_model_requests=4, max_tool_calls=8)
+    trace = RunTrace(out_dir)
+    tools = {
+        tool.__name__: tool
+        for tool in e._pod_tools(pod, budget, trace, agent_name="attribution_investigator")
+    }
+    return tools, budget, trace
+
+
+def test_dual_render_crop_without_a_render_is_unavailable_not_faked(tmp_path: Path) -> None:
+    pod = _dual_pod(tmp_path)
+    parts = pod.inspect_page_region(1, list(_RENDER_BBOX), source="render")
+    payload = json.loads(str(parts[0]))
+    assert payload["status"] == "unavailable"
+    assert payload["reason"] == "no candidate render exists at this checkpoint"
+    record = next(r for r in pod.records if r.kind == "region_crop")
+    assert record.status == "unavailable" and record.reason and record.artifact is None
+    assert not list(tmp_path.glob("region_*.png"))
+
+
+def test_render_crop_returns_the_bound_render_with_render_provenance(tmp_path: Path) -> None:
+    from PIL import Image, ImageChops
+    from pydantic_ai import BinaryContent
+
+    render = _marked_render_pdf(tmp_path / "render_1.pdf")
+    pod = _dual_pod(tmp_path, render_pdf=render)
+
+    parts = pod.inspect_page_region(1, list(_RENDER_BBOX), source="render", note="render header contact row")
+
+    assert len(parts) == 2
+    assert isinstance(parts[1], BinaryContent) and parts[1].media_type == "image/png"
+    header = json.loads(str(parts[0]).split("\n", 1)[1])
+    record = next(r for r in pod.records if r.kind == "region_crop")
+    assert record.status == "available" and record.reason is None
+    assert record.tool == "inspect_page_region" and record.source_path == render.name
+    assert header["evidence_id"] == record.evidence_id
+    artifact = tmp_path / str(record.artifact)
+    assert artifact.exists() and artifact.stat().st_size > 0
+
+    assert header["source_kind"] == "render"
+    assert header["source_sha256"] == hashlib.sha256(render.read_bytes()).hexdigest()
+    page_png = tmp_path / header["source_artifact"]
+    assert page_png.name.startswith("render_") and page_png.name.endswith("_page_1.png")
+    assert page_png.exists() and page_png.stat().st_size > 0
+    assert header["page_size_pt"] == [612.0, 792.0]
+    assert header["is_original_resolution"] is True
+
+    # The image is the render's pixels: an independent render of the same PDF,
+    # cropped at the reported box, is identical, and the marker is fully inside.
+    independent_dir = tmp_path / "independent"
+    independent_dir.mkdir()
+    independent = e._render_pages(render, independent_dir, "independent")[0]
+    with Image.open(independent) as page, Image.open(artifact) as crop:
+        expected = page.convert("RGB").crop(tuple(header["crop_box_px"]))
+        assert ImageChops.difference(expected, crop.convert("RGB")).getbbox() is None
+        assert crop.convert("RGB").getextrema() == ((255, 255), (0, 0), (0, 0))  # every pixel
+
+    # The same bbox for source="target" still returns the target, not the render.
+    target_header = json.loads(str(pod.inspect_page_region(1, list(_RENDER_BBOX))[0]).split("\n", 1)[1])
+    assert target_header["source_kind"] == "target_pdf"
+    assert target_header["target_sha256"] == hashlib.sha256(pod.target_pdf.read_bytes()).hexdigest()
+    with Image.open(tmp_path / str(pod.records[-1].artifact)) as target_crop:
+        assert ImageChops.difference(target_crop.convert("RGB"), expected).getbbox() is not None
+
+
+def test_render_crop_uses_the_render_page_geometry(tmp_path: Path) -> None:
+    """A render page size different from the target's locates the crop where the
+    render's own page size predicts, not where the target's does."""
+    from PIL import Image
+
+    page_size = (595.28, 841.89)
+    render = _marked_render_pdf(tmp_path / "render_1.pdf", page_size=page_size)
+    pod = _dual_pod(tmp_path, render_pdf=render)
+    assert pod.page_sizes[1] == (612.0, 792.0)
+
+    header = json.loads(str(pod.inspect_page_region(1, list(_RENDER_BBOX), source="render")[0]).split("\n", 1)[1])
+    assert header["page_size_pt"] == pytest.approx(list(page_size), abs=0.01)
+    full_w, full_h = header["full_page_pixels"]
+    x0, top, _x1, _bottom = header["crop_box_px"]
+    assert abs(x0 / full_w - _RENDER_BBOX[0] / page_size[0]) < 1 / full_w
+    assert abs(top / full_h - _RENDER_BBOX[1] / page_size[1]) < 1 / full_h
+    with Image.open(tmp_path / str(pod.records[-1].artifact)) as crop:
+        assert crop.convert("RGB").getextrema() == ((255, 255), (0, 0), (0, 0))  # every pixel
+
+
+def test_rebinding_a_render_cannot_reuse_the_cached_crop(tmp_path: Path) -> None:
+    from PIL import Image
+
+    first = _marked_render_pdf(tmp_path / "a" / "render_1.pdf", fill="1 0 0")
+    second = _marked_render_pdf(tmp_path / "b" / "render_1.pdf", fill="0 0 1")
+    pod = _dual_pod(tmp_path, render_pdf=first)
+
+    pod.inspect_page_region(1, list(_RENDER_BBOX), source="render")
+    pod.render_pdf = second
+    header = json.loads(str(pod.inspect_page_region(1, list(_RENDER_BBOX), source="render")[0]).split("\n", 1)[1])
+
+    assert header["source_sha256"] == hashlib.sha256(second.read_bytes()).hexdigest()
+    assert header["source_sha256"] != hashlib.sha256(first.read_bytes()).hexdigest()
+    for record, expected in ((pod.records[0], ((255, 255), (0, 0), (0, 0))), (pod.records[1], ((0, 0), (0, 0), (255, 255)))):
+        with Image.open(tmp_path / str(record.artifact)) as crop:
+            assert crop.convert("RGB").getextrema() == expected
+
+
+@pytest.mark.parametrize(
+    "bbox, message",
+    [([100.0, 100.0, 50.0, 50.0], "x0 < x1"), ([0.0, 0.0, 900.0, 900.0], "region too large")],
+)
+def test_render_crop_rejects_invalid_bounds_like_the_target(tmp_path: Path, bbox, message) -> None:
+    pod = _dual_pod(tmp_path, render_pdf=_marked_render_pdf(tmp_path / "render_1.pdf"))
+    with pytest.raises(ValueError, match=message):
+        pod.inspect_page_region(1, list(bbox))
+    with pytest.raises(ValueError, match=message):
+        pod.inspect_page_region(1, list(bbox), source="render")
+    assert not list(tmp_path.glob("region_*.png"))
+
+
+def test_render_crop_rejects_a_page_past_the_bound_render(tmp_path: Path) -> None:
+    pod = _dual_pod(tmp_path, render_pdf=_marked_render_pdf(tmp_path / "render_1.pdf"))
+    tools, _budget, _trace = _attribution_tools(pod, tmp_path)
+    result = tools["inspect_page_region"](2, list(_RENDER_BBOX), source="render")
+    assert result["status"] == "error" and result["tool"] == "inspect_page_region"
+    assert "page 2 outside 1..1" in result["error"]
+    assert not list(tmp_path.glob("region_*.png"))
+    assert [record for record in pod.records if record.kind == "region_crop"] == []
+
+
+def test_render_crop_runs_through_the_attribution_tool_boundary(tmp_path: Path) -> None:
+    from PIL import Image
+    from pydantic_ai import BinaryContent
+
+    pod = _dual_pod(tmp_path, render_pdf=_marked_render_pdf(tmp_path / "render_1.pdf"))
+    tools, budget, trace = _attribution_tools(pod, tmp_path)
+
+    parts = tools["inspect_page_region"](
+        1, list(_RENDER_BBOX), source="render", note="render header contact row"
+    )
+    assert len(parts) == 2 and isinstance(parts[1], BinaryContent)
+    assert budget.tool_calls == 1 and budget.calls_by_tool["inspect_page_region"] == 1
+    entry = trace.entries[-1]
+    assert entry["action"] == "tool_call" and entry["tool"] == "inspect_page_region"
+    assert entry["phase"] == "target_understanding" and entry["agent"] == "attribution_investigator"
+    # The available crop is persisted as a run artifact (a reviewer re-inspects
+    # exactly these bytes); the refusal below persists no image at all.
+    crop = tmp_path / str(next(item for item in pod.records if item.kind == "region_crop").artifact)
+    assert crop.exists() and crop.stat().st_size > 0
+    with Image.open(crop) as decoded:
+        assert decoded.format == "PNG"
+    record = next(item for item in pod.records if item.kind == "region_crop")
+    assert record.request == {
+        "page": 1,
+        "bbox_pt": list(_RENDER_BBOX),
+        "source": "render",
+        "note": "render header contact row",
+    }
+
+    refusal_pod = _dual_pod(tmp_path / "refusal")
+    refusal_tools, refusal_budget, refusal_trace = _attribution_tools(refusal_pod, tmp_path / "refusal")
+    result = refusal_tools["inspect_page_region"](1, list(_RENDER_BBOX), source="render")
+    assert len(result) == 1 and json.loads(result[0])["status"] == "unavailable"
+    assert not any(isinstance(part, BinaryContent) for part in result)
+    assert refusal_budget.tool_calls == 1 and refusal_budget.calls_by_tool["inspect_page_region"] == 1
+    refusal_entry = refusal_trace.entries[-1]
+    assert refusal_entry["action"] == "tool_call" and refusal_entry["tool"] == "inspect_page_region"
+    assert refusal_entry["phase"] == "target_understanding"
+    assert next(item for item in refusal_pod.records if item.kind == "region_crop").artifact is None
+    assert not list((tmp_path / "refusal").glob("region_*.png"))
 
 
 def test_local_measurement_is_provenanced_and_not_an_analyzer_fallback(tmp_path: Path) -> None:
