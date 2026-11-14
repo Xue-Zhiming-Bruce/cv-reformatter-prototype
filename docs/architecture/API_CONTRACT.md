@@ -208,6 +208,16 @@ refused, failed or cancelled upload publishes nothing, including a cancellation
 that lands while it was publishing, and no upload can delete another request's
 staged source.
 
+Consistency is per logical read, not across time. A reader that needs more than
+one file (metadata plus source, a proof plus its render, a worker input
+snapshot) pins the current set once — `app.target_publication.TargetSet` — and
+reads every file from that pinned epoch; a writer never writes through a public
+name, because a set is immutable once published. Two *separate* reads issued on
+either side of a publication may therefore legitimately see different sets;
+what cannot happen is one read mixing upload A's metadata with upload B's bytes.
+A pinned set is retained while it is live and one publication after it, so a
+view pinned before two later uploads resolves nothing rather than stale bytes.
+
 ## Document Resource Limits — Both Uploads (issue #53)
 
 Both upload operations share one application-enforced policy, owned by
