@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import time
 import zipfile
 from pathlib import Path
@@ -35,6 +36,12 @@ CLEANUP_EVIDENCE_ATTRIBUTE = "adobe_asset_cleanup"
 # A retry-later answer means the DELETE was not applied, not that the server
 # refused the asset: the aggregate state is ``pending`` for these.
 RETRY_LATER_STATUSES = frozenset({408, 425, 429})
+
+# Adobe asset ids are opaque provider tokens (URN or UUID shaped). Anything
+# else, for example a URL-shaped value carrying a signed token, is recorded
+# redacted instead of verbatim (issue #54 AC4).
+ASSET_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,200}")
+REDACTED_ASSET_ID = "redacted"
 
 
 def normalize_adobe_layout(raw: dict[str, Any]) -> NormalizedLayoutEvidence:
@@ -233,7 +240,10 @@ def run_adobe_layout(pdf_path: Path) -> tuple[NormalizedLayoutEvidence, dict[str
     known_assets: list[dict[str, str]] = []
     cleanup: dict[str, Any] = {"cleanup_state": "unknown", "assets": [], "limitations": []}
     headers: dict[str, str] = {}
-    submitted_job = False
+    # Tri-state: an unanswered submission is ambiguous, never "not submitted".
+    submission_state = "not_attempted"
+    recorded_input_id: str | None = None
+    recorded_result_id: str | None = None
     try:
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             try:
@@ -252,33 +262,40 @@ def run_adobe_layout(pdf_path: Path) -> tuple[NormalizedLayoutEvidence, dict[str
                 asset = created.json()
                 asset_id, upload_uri = asset.get("assetID"), asset.get("uploadUri")
                 if asset_id:
-                    known_assets.append({"role": "input", "asset_id": str(asset_id)})
+                    identity = _asset_identity("input", asset_id)
+                    known_assets.append(identity)
+                    recorded_input_id = identity["asset_id"]
                 if not asset_id or not upload_uri:
                     raise AdobeAdapterError("Adobe asset response omitted assetID or uploadUri.")
                 uploaded = client.put(upload_uri, headers={"Content-Type": "application/pdf"}, content=pdf_path.read_bytes())
                 _raise_http(uploaded, "Adobe asset upload")
+                # The paid Extract job may start even when the answer is lost, so
+                # the attempt is recorded before the request is sent.
+                submission_state = "attempted_unknown"
                 submitted = client.post(
                     f"{base_url}/operation/extractpdf", headers={**headers, "Content-Type": "application/json"},
                     json={"assetID": asset_id, "elementsToExtract": ["text", "tables"], "renditionsToExtract": ["tables", "figures"], "getCharBounds": True, "includeStyling": True},
                 )
                 _raise_http(submitted, "Adobe extract submission")
-                submitted_job = True
+                submission_state = "accepted"
                 status_url = submitted.headers.get("location")
                 if not status_url:
                     raise AdobeAdapterError("Adobe did not return a job status URL.")
                 status = _poll(client, status_url, headers, timeout)
                 download_uri, result_id = _result_location(status)
                 if result_id:
-                    known_assets.append({"role": "result", "asset_id": str(result_id)})
+                    identity = _asset_identity("result", result_id)
+                    known_assets.append(identity)
+                    recorded_result_id = identity["asset_id"]
                 if not download_uri:
                     raise AdobeAdapterError("Adobe completed without a result URI.")
                 downloaded = client.get(download_uri)
                 _raise_http(downloaded, "Adobe result download")
                 zip_bytes = downloaded.content
             finally:
-                cleanup = _cleanup_remote_assets(client, base_url, headers, known_assets, submitted_job)
+                cleanup = _cleanup_remote_assets(client, base_url, headers, known_assets, submission_state)
         structured = _structured_json(zip_bytes)
-        raw = {"status": status, "input_asset_id": asset_id, "result_asset_id": result_id, "asset_cleanup": cleanup, "structured_data": structured}
+        raw = {"status": status, "input_asset_id": recorded_input_id, "result_asset_id": recorded_result_id, "asset_cleanup": cleanup, "structured_data": structured}
         return normalize_adobe_layout(raw), raw, zip_bytes
     except Exception as exc:
         # The provider failure stays primary; cleanup evidence only rides along.
@@ -291,20 +308,20 @@ def _cleanup_remote_assets(
     base_url: str,
     headers: dict[str, str],
     known_assets: list[dict[str, str]],
-    submitted_job: bool,
+    submission_state: str,
 ) -> dict[str, Any]:
     """Attempt one bounded DELETE per known asset and classify the outcome.
 
     Never raises and never retries: an unresolved deletion is reported, not
     repaired, so the primary provider result or failure stays attributable.
+    An ambiguous submission is reported as a limitation, never as confirmed.
     """
     assets: list[dict[str, Any]] = []
     for known in known_assets:
-        record: dict[str, Any] = {
-            "role": known["role"], "asset_id": known["asset_id"],
-            "outcome": "unknown", "http_status": None,
-        }
-        if not headers:
+        record: dict[str, Any] = {**known, "outcome": "unknown", "http_status": None}
+        if known.get("asset_id_kind"):
+            record["reason"] = "asset identity was not a bounded opaque token; deletion not attempted"
+        elif not headers:
             record["reason"] = "no authenticated client at cleanup time"
         else:
             try:
@@ -316,10 +333,21 @@ def _cleanup_remote_assets(
                 record["outcome"] = _delete_outcome(response.status_code)
         assets.append(record)
     limitations: list[str] = []
-    if submitted_job and not any(record["role"] == "result" for record in assets):
+    if submission_state == "attempted_unknown":
+        limitations.append(
+            "Extract submission outcome is unknown: the request was sent but Adobe's answer was "
+            "never received, so the paid Extract job may still be running remotely. Discovering "
+            "or cancelling it would require further paid work, which is not done automatically."
+        )
+    elif submission_state == "accepted" and not any(record["role"] == "result" for record in assets):
         limitations.append(
             "Extract job was submitted but Adobe returned no result asset identity; "
             "that asset's remote state is unknown and the paid operation was not resubmitted."
+        )
+    if any(record["asset_id"] == REDACTED_ASSET_ID for record in assets):
+        limitations.append(
+            "An Adobe asset identity was not a bounded opaque token, so it is recorded redacted; "
+            "its deletion was not attempted and it may still exist remotely."
         )
     outcomes = {record["outcome"] for record in assets}
     # An unanswered DELETE (transport failure) or 5xx may have been applied and
@@ -339,6 +367,19 @@ def _cleanup_remote_assets(
     return {"cleanup_state": state, "assets": assets, "limitations": limitations}
 
 
+def _asset_identity(role: str, value: Any) -> dict[str, Any]:
+    """Record a provider identity only when it is a bounded opaque token."""
+    text = str(value)
+    if ASSET_ID_PATTERN.fullmatch(text):
+        return {"role": role, "asset_id": text}
+    return {
+        "role": role,
+        "asset_id": REDACTED_ASSET_ID,
+        "asset_id_kind": "url" if "://" in text else "unrecognized",
+        "asset_id_length": len(text),
+    }
+
+
 def _delete_outcome(status_code: int) -> str:
     """Classify one DELETE response; 404/410 mean absent, not deletion by us."""
     if 200 <= status_code < 300:
@@ -350,21 +391,30 @@ def _delete_outcome(status_code: int) -> str:
     return "transient"
 
 
+def _display_token(value: Any) -> str:
+    """Show a value only when it is a bounded opaque token, else a marker."""
+    text = str(value)
+    return text if ASSET_ID_PATTERN.fullmatch(text) else REDACTED_ASSET_ID
+
+
 def describe_asset_cleanup(cleanup: dict[str, Any] | None) -> str:
     """Render cleanup evidence as one safe line for an error or warning surface.
 
     Only role/identity/outcome/status and the recorded limitations are
-    included: never credentials, authorization headers or signed URLs.
+    included: never credentials, authorization headers or signed URLs. Every
+    rendered value is re-validated here, so a hostile identity handed in
+    directly cannot reach a caller's output.
     """
     if not cleanup:
         return "Adobe asset cleanup: unknown (no cleanup evidence recorded)."
     assets = cleanup.get("assets") or []
     known = ", ".join(
-        f"{item['role']} asset {item['asset_id']} {item['outcome']}"
-        + (f" (HTTP {item['http_status']})" if item.get("http_status") is not None else "")
+        f"{_display_token(item.get('role'))} asset {_display_token(item.get('asset_id'))} "
+        f"{_display_token(item.get('outcome'))}"
+        + (f" (HTTP {item['http_status']})" if isinstance(item.get("http_status"), int) else "")
         for item in assets
     ) or "none"
-    parts = [f"Adobe asset cleanup: {cleanup.get('cleanup_state', 'unknown')}; known assets: {known}"]
+    parts = [f"Adobe asset cleanup: {_display_token(cleanup.get('cleanup_state', 'unknown'))}; known assets: {known}"]
     parts.extend(cleanup.get("limitations") or [])
     return "; ".join(parts)
 
