@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import quote
 
+import anyio
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -606,6 +607,22 @@ def _segmentation_failed(exc: LLMExtractionError) -> HTTPException:
     )
 
 
+def _document_refusal(
+    error_code: str, message: str, *, status_code: int = 400
+) -> HTTPException:
+    """The one shape every refused-document answer uses, refusal or reader error."""
+    return HTTPException(
+        status_code=status_code,
+        detail={"error_code": error_code, "message": message},
+    )
+
+
+PDF_NO_TEXT_MESSAGE = (
+    "This PDF has no extractable text. Scanned PDFs are not supported in the MVP; "
+    "please upload a text-based PDF or DOCX resume."
+)
+
+
 @app.post("/api/process")
 async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
     if not file.filename:
@@ -616,9 +633,9 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
 
     suffix = Path(file.filename).suffix.lower()
     if suffix not in {".docx", ".pdf"}:
-        raise HTTPException(
-            status_code=400,
-            detail="Only .docx and text-based .pdf candidate resumes are supported in this milestone.",
+        raise _document_refusal(
+            "document_type_unsupported",
+            "Only .docx and text-based .pdf candidate resumes are supported in this milestone.",
         )
 
     contents = await read_upload_bounded(file)
@@ -628,21 +645,21 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
 
     try:
         try:
-            extracted_text, ingestion_limitations = read_ingested_document(tmp_path)
-        except (UnsupportedFileTypeError, CorruptedFileError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # The parse is a bounded child process; waiting for it in this
+            # coroutine would stall every other request for its duration.
+            extracted_text, ingestion_limitations = await anyio.to_thread.run_sync(
+                read_ingested_document, tmp_path
+            )
+        except UnsupportedFileTypeError as exc:
+            raise _document_refusal("document_type_unsupported", str(exc)) from exc
         except UnsupportedPdfTypeError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _document_refusal("pdf_type_unsupported", str(exc)) from exc
+        except CorruptedFileError as exc:
+            raise _document_refusal("docx_corrupted", str(exc)) from exc
         except CorruptedPdfError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _document_refusal("pdf_corrupted", str(exc)) from exc
         except EmptyPdfTextError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "This PDF has no extractable text. Scanned PDFs are not supported in the MVP; "
-                    "please upload a text-based PDF or DOCX resume."
-                ),
-            ) from exc
+            raise _document_refusal("pdf_no_extractable_text", PDF_NO_TEXT_MESSAGE) from exc
 
         provider = os.getenv("API_LLM_PROVIDER")
         llm_client = _build_extraction_client(provider)
@@ -769,14 +786,15 @@ async def upload_target_format(
 
     suffix = Path(file.filename).suffix.lower()
     if suffix not in {".docx", ".pdf"}:
-        raise HTTPException(
-            status_code=400,
-            detail="Only .docx target templates and .pdf visual reference samples are supported in the MVP.",
+        raise _document_refusal(
+            "document_type_unsupported",
+            "Only .docx target templates and .pdf visual reference samples are supported in the MVP.",
         )
 
     resolved_artifact_id = artifact_id or new_artifact_id()
     contents = await read_upload_bounded(file)
-    enforce_uploaded_document(contents, suffix)
+    # Same bounded child as the candidate parse; keep it off the event loop.
+    await anyio.to_thread.run_sync(enforce_uploaded_document, contents, suffix)
     artifact_dir = _prepare_artifact_dir(resolved_artifact_id, allow_existing=True)
     analyzed_style_spec: LayoutTemplateSpec | None = None
     if suffix == ".pdf":

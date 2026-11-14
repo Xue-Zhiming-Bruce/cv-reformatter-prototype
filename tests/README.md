@@ -331,12 +331,19 @@ do not establish visible-source extraction accuracy.
 `unit/test_resource_limits.py` and `unit/test_ingest_document.py` cover the
 issue #53 document resource envelope: an upload refused while it arrives, ZIP
 entry count/expansion/forged-size refusal without allocating the declared size,
-page count and declared geometry refusal, the raster pixel budget, and a
-bounded parse child that is killed on timeout. Each case uses bytes built in the
-test, not a corpus file, so they run offline and cannot exhaust machine memory.
-The API-side assertions live in `integration/test_api_process.py` (a chunked
-direct upload above the app limit) and `integration/test_api_generate.py` (a
-target upload refused before provider analysis keeps the prior target output).
+page count and declared geometry refusal read from the page tree before any text
+extraction (the test counts `extract_text` calls), the raster pixel budget and
+per-page geometry, and a bounded parse child that is killed on timeout. Package
+refusals report entry position and size, never an entry name. Each case uses
+bytes built in the test, not a corpus file, so they run offline and cannot
+exhaust machine memory. `integration/test_pipeline_rendering.py` covers both
+rasterizers (page count, page side, and removal of pages written before a budget
+refusal) and `integration/test_pipeline_loop.py` covers the diagnostic target
+preflight; `integration/test_api_process.py` covers a chunked direct upload above
+the app limit, the structured reader-error shape and an event-loop ticker kept
+ticking during a slow parse; `integration/test_api_generate.py` covers a target
+upload refused before provider analysis that keeps the prior target output and
+names no archive entry.
 
 The matrix retains the actual generation API receipt. Raw target rule counts,
 header wording, section inventory and comparison metrics are content-sensitive

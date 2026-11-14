@@ -1670,47 +1670,80 @@ def test_only_the_pdfium_owner_imports_and_opens_documents() -> None:
     }, f"documents opened outside the serialized owner functions: {sorted(open_sites)}"
 
 
-def test_render_pages_refuses_past_the_document_pixel_budget_before_allocating(
-    tmp_path: Path,
-) -> None:
-    """Issue #53: the shared rasterization owner refuses before a bitmap exists."""
-    from app.pipeline import rendering
-    from app.resource_limits import DocumentLimitError
-    from tests.helpers.synthetic_pdf import _write_single_page_pdf
+# Both owners that allocate page bitmaps, each through its own entry point.
+_RASTERIZERS = {"pipeline": _rasterize, "visual_comparator": _compare}
 
-    huge = _write_single_page_pdf(
-        tmp_path / "huge.pdf",
-        ["BT 0 0 0 rg /F1 12 Tf 72 720 Td (Rendered page) Tj ET"],
-        width_pt=12000,
-        height_pt=12000,
+
+def _rasterizer_module(owner: str):
+    if owner == "pipeline":
+        from app.pipeline import rendering
+
+        return rendering
+    from app.template_analysis import visual_comparator
+
+    return visual_comparator
+
+
+def _paged_pdf(path: Path, page_count: int, *, width_pt: float = 595.3, height_pt: float = 841.9) -> Path:
+    from tests.helpers.synthetic_pdf import _write_multi_page_text_pdf
+
+    return _write_multi_page_text_pdf(
+        path,
+        [[f"BT 0 0 0 rg /F1 12 Tf 72 720 Td (Page {index + 1}) Tj ET"] for index in range(page_count)],
+        width_pt=width_pt,
+        height_pt=height_pt,
     )
+
+
+@pytest.mark.parametrize("owner", _RASTERIZERS)
+def test_rasterizer_refuses_a_document_above_the_page_count(owner: str, tmp_path: Path) -> None:
+    """Issue #53: a rasterizer applies the page-count limit, not only the pixel cap."""
+    from app.resource_limits import DocumentLimitError
+
+    pdf = _paged_pdf(tmp_path / "long.pdf", 21)
     output_dir = tmp_path / "pages"
     output_dir.mkdir()
 
     with pytest.raises(DocumentLimitError) as refusal:
-        rendering._render_pages(huge, output_dir, "target")
+        _RASTERIZERS[owner](pdf, output_dir)
 
-    assert refusal.value.error_code == "raster_pixel_limit"
-    assert list(output_dir.iterdir()) == [], "a refused page allocates and writes nothing"
+    assert refusal.value.error_code == "pdf_page_count"
+    assert list(output_dir.iterdir()) == []
 
 
-def test_visual_comparison_refuses_past_the_document_pixel_budget(tmp_path: Path) -> None:
-    """The comparison rasterizer applies the same pixel policy as the pipeline one."""
+@pytest.mark.parametrize("owner", _RASTERIZERS)
+def test_rasterizer_refuses_a_page_above_the_side_limit(owner: str, tmp_path: Path) -> None:
+    """Issue #53: page geometry is a rasterizer precondition, not only a pixel count."""
     from app.resource_limits import DocumentLimitError
-    from app.template_analysis import visual_comparator
-    from tests.helpers.synthetic_pdf import _write_single_page_pdf
 
-    huge = _write_single_page_pdf(
-        tmp_path / "huge.pdf",
-        ["BT 0 0 0 rg /F1 12 Tf 72 720 Td (Rendered page) Tj ET"],
-        width_pt=12000,
-        height_pt=12000,
-    )
-    output_dir = tmp_path / "comparison"
+    pdf = _paged_pdf(tmp_path / "wide.pdf", 1, width_pt=2001, height_pt=2001)
+    output_dir = tmp_path / "pages"
     output_dir.mkdir()
 
     with pytest.raises(DocumentLimitError) as refusal:
-        visual_comparator._render_pdf(huge, output_dir, filename_prefix="generated_page", dpi=144)
+        _RASTERIZERS[owner](pdf, output_dir)
+
+    assert refusal.value.error_code == "pdf_page_geometry"
+    assert list(output_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("owner", _RASTERIZERS)
+def test_rasterizer_removes_written_pages_when_the_pixel_budget_refuses(
+    owner: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #53: a refusal on a later page leaves no partial raster set behind."""
+    from app.resource_limits import DocumentLimitError, RasterPixelBudget
+
+    pdf = _paged_pdf(tmp_path / "two-pages.pdf", 2)
+    output_dir = tmp_path / "pages"
+    output_dir.mkdir()
+    # One A4 page at 2x is ~2.0 MP, so the second page is the one refused.
+    monkeypatch.setattr(
+        _rasterizer_module(owner), "RasterPixelBudget", lambda: RasterPixelBudget(max_pixels=3_000_000)
+    )
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        _RASTERIZERS[owner](pdf, output_dir)
 
     assert refusal.value.error_code == "raster_pixel_limit"
-    assert list(output_dir.iterdir()) == []
+    assert list(output_dir.iterdir()) == [], "the page written before the refusal was removed"

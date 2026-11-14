@@ -16,7 +16,7 @@ from typing import Any
 import pdfplumber
 from app import pdfium_native
 from app.generation.chrome_html_to_pdf import HtmlToPdfExportError, _find_chrome
-from app.resource_limits import RasterPixelBudget
+from app.resource_limits import DocumentLimitError, RasterPixelBudget, check_pdf_page_count
 from app.template_analysis.commercial.adobe import _flatten_text_elements
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 
@@ -607,11 +607,19 @@ def _render_pages(pdf_path: Path, output_dir: Path, prefix: str) -> list[Path]:
     paths: list[Path] = []
     budget = RasterPixelBudget()
     with pdfium_native.native_lifetime(), closing(pdfium_native.pdfium.PdfDocument(pdf_path)) as document:
-        for index, page in enumerate(document):
-            path = output_dir / f"{prefix}_page_{index + 1}.png"
-            with closing(page):
-                budget.reserve(*page.get_size(), scale=2)
-                with closing(page.render(scale=2)) as bitmap:
-                    bitmap.to_pil().convert("RGB").save(path)
-            paths.append(path)
+        check_pdf_page_count(len(document))
+        try:
+            for index, page in enumerate(document):
+                path = output_dir / f"{prefix}_page_{index + 1}.png"
+                with closing(page):
+                    # Page geometry and the document pixel budget are checked
+                    # before this page allocates a bitmap.
+                    budget.reserve(*page.get_size(), scale=2)
+                    with closing(page.render(scale=2)) as bitmap:
+                        bitmap.to_pil().convert("RGB").save(path)
+                paths.append(path)
+        except DocumentLimitError:
+            for written in paths:
+                written.unlink(missing_ok=True)
+            raise
     return paths

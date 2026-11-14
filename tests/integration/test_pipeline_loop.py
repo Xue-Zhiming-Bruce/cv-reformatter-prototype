@@ -4298,3 +4298,32 @@ def test_agentic_block_names_the_presentation_label_catalog(tmp_path: Path) -> N
         "details": {"no_target_candidate_facts": {"leaked_target_lines": ["Target Person"]}},
     }))
     assert agentic._presentation_label_block(run_dir) is None
+
+
+def test_diagnostic_run_refuses_an_over_limit_target_before_parsing(tmp_path: Path) -> None:
+    """Issue #53: the diagnostic target takes the same page policy as an upload
+    before any in-process pdfplumber parse, instead of being parsed unbounded."""
+    from pypdf import PdfWriter
+
+    from app.pipeline import service
+    from app.resource_limits import DocumentLimitError
+
+    target = tmp_path / "long-target.pdf"
+    writer = PdfWriter()
+    for _ in range(21):
+        writer.add_blank_page(width=612, height=792)
+    with target.open("wb") as output:
+        writer.write(output)
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        service.run_e5(
+            target,
+            tmp_path / "run",
+            candidate=synthetic_pipeline_candidate("Synthetic Candidate"),
+            adobe_json=LOCAL_INPUTS / "resume_I.adobe.json",
+            normalized_evidence=LOCAL_INPUTS / "resume_I.normalized.json",
+            structure_draft=LOCAL_INPUTS / "resume_I.draft.json",
+        )
+
+    assert refusal.value.error_code == "pdf_page_count"
+    assert not (tmp_path / "run").exists(), "a refused target created no run directory"

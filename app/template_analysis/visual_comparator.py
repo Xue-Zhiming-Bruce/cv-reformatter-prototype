@@ -7,7 +7,11 @@ from pathlib import Path
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 from app import pdfium_native
-from app.resource_limits import DocumentLimitError, RasterPixelBudget
+from app.resource_limits import (
+    DocumentLimitError,
+    RasterPixelBudget,
+    check_pdf_page_count,
+)
 from app.template_analysis.schemas import PageComparison, VisualComparisonReport
 
 
@@ -253,14 +257,19 @@ def _render_pdf(
         scale = dpi / 72
         budget = RasterPixelBudget()
         with pdfium_native.native_lifetime(), closing(pdfium_native.pdfium.PdfDocument(str(path))) as document:
+            check_pdf_page_count(len(document))
             for page_index in range(len(document)):
                 filename = f"{filename_prefix}_{page_index + 1:03d}.png"
                 with closing(document[page_index]) as page:
+                    # Page geometry and the document pixel budget are checked
+                    # before this page allocates a bitmap.
                     budget.reserve(*page.get_size(), scale=scale)
                     with closing(page.render(scale=scale)) as bitmap:
                         bitmap.to_pil().convert("RGB").save(output_dir / filename, format="PNG")
                 filenames.append(filename)
     except DocumentLimitError:
+        for written in filenames:
+            (output_dir / written).unlink(missing_ok=True)
         raise
     except Exception as exc:
         raise VisualComparisonError(f"PDF pages could not be rendered for comparison: {path}") from exc
