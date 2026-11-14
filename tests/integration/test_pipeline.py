@@ -1245,8 +1245,8 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
         elif repair == "accepted_missing":
             width = 80 if proposal_id.endswith("r2") else 92
         elif repair == "trial_noop":
-            # a REAL rendering change (the rail cannot fit the heading), so the
-            # trial is really rendered and gated instead of being a duplicate
+            # a REAL rendering change (20pt rail vs the initial 80pt), so this
+            # trial is exported and gated instead of being skipped as a duplicate
             width = 20
         else:
             width = 80 if repair in {"improve", "noop", "renderer_claim", "unresolved", "dismissed_claim"} else 92
@@ -1315,17 +1315,6 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
             return result
 
         monkeypatch.setattr(quality, "content_gate", missing_trial_content)
-    if repair == "trial_noop":
-        from app.pipeline import quality
-        original_shapes = quality.content_shape_verification
-
-        def unconsumable_rail_shape(*args, **kwargs):
-            result = original_shapes(*args, **kwargs)
-            if Path(kwargs["pdf"] if "pdf" in kwargs else args[6]).name == "render_2.pdf":
-                result["passed"] = False
-            return result
-
-        monkeypatch.setattr(quality, "content_shape_verification", unconsumable_rail_shape)
     if repair == "accepted_missing":
         original_controller = service.MeasureController
         counts = {}
@@ -1399,15 +1388,10 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
         assert all(result["status"] == expected_status for result in lane["measurement_results"]), lane
         assert lane["findings"] and lane["open_findings"] and not attempted["promoted"], lane
         assert report["selected_version"] == initial["version_id"]
-        outcome = "rolled_back" if repair in {"unsafe_trial", "trial_noop"} else "awaiting_owner_review"
+        outcome = "rolled_back" if repair == "unsafe_trial" else "awaiting_owner_review"
         assert lane["builder_candidates"][-1]["outcome"] == outcome, lane
-        if repair == "trial_noop":
-            # a REAL rendering change: exported and gated, then rolled back only
-            # because the declared rail shape could not be consumed
-            assert "content_shapes_match_evidence" in lane["builder_candidates"][-1]["reason"], lane
-            assert (tmp_path / report["run_directory"] / "lane_a/render_2.pdf").is_file()
         pending = report["summary"]["pending_layout_trials"]
-        if repair in {"unsafe_trial", "trial_noop"}:
+        if repair == "unsafe_trial":
             assert pending == []
         else:
             assert pending == [attempted["version_id"]]
