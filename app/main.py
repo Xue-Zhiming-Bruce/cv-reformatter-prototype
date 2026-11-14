@@ -309,6 +309,9 @@ class ProcessResponse(BaseModel):
     debug_artifacts: dict[str, str] = Field(default_factory=dict)
     artifact_metadata_url: str
     extraction_mode: ExtractionMode
+    # Visible source content the reader could not read (issue #49); a passing
+    # line-coverage audit cannot report these, so they are returned for review.
+    ingestion_limitations: list[str] = Field(default_factory=list)
 
 
 class TargetFormatUploadResponse(BaseModel):
@@ -610,7 +613,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
 
     try:
         try:
-            extracted_text = _read_candidate_resume_text(tmp_path)
+            extracted_text, ingestion_limitations = _read_candidate_resume_text(tmp_path)
         except (UnsupportedFileTypeError, CorruptedFileError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except UnsupportedPdfTypeError as exc:
@@ -728,6 +731,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
         debug_artifacts=debug_artifacts,
         artifact_metadata_url=artifact_metadata_url(artifact_id),
         extraction_mode=llm_client.extraction_mode,
+        ingestion_limitations=ingestion_limitations,
     )
 
 
@@ -1606,10 +1610,12 @@ def _build_ledger(profile: CandidateProfile) -> LedgerSummary:
     return LedgerSummary(extracted=extracted_count, placed=extracted_count, needs_review=needs_review)
 
 
-def _read_candidate_resume_text(path: Path) -> str:
+def _read_candidate_resume_text(path: Path) -> tuple[str, list[str]]:
+    """Extraction text plus the source content the reader could not read."""
     if path.suffix.lower() == ".pdf":
-        return read_pdf_text(path)
-    return read_docx(path).plain_text
+        return read_pdf_text(path), []
+    content = read_docx(path)
+    return content.plain_text, [limitation.message for limitation in content.limitations]
 
 
 def _count_populated(value: Any) -> int:

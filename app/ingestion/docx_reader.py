@@ -1,9 +1,58 @@
+"""Read candidate DOCX text without losing source order or hiding source gaps.
+
+Reading policy (issue #49):
+
+- Body content is read through ``Document.iter_inner_content()``, so paragraphs
+  and tables keep their authored order. Collecting every paragraph and every
+  table separately and joining them paragraph-first moved table text to the end,
+  which detaches a company/role row from the bullets it describes.
+- Section headers and footers are read with their source location
+  (``ExtractedHeaderFooter``). Header text joins ``plain_text`` ahead of the body
+  and footer text after it: that is page order, not an invented one.
+- A header/footer is read once, in the section that defines it. A section linked
+  to the previous one inherits an already-read definition, and a header repeated
+  on every page is a presentation fact rather than more source text; emitting
+  either again would duplicate candidate facts and invent reading order.
+- Supported visible shapes are body paragraphs, top-level tables, and the same
+  two inside a header/footer. Other visible content this reader cannot read
+  (nested tables, text boxes, tracked insertions/deletions) is returned as an
+  ``ExtractedContentLimitation`` with its location instead of disappearing.
+  A passing source-coverage audit only proves that the text this reader supplied
+  reached the output, never that the reader supplied everything visible.
+- Images carry no extractable text and OCR is out of scope, so images are not a
+  limitation here. Source bytes and stored profiles are untouched: this module
+  only reads.
+"""
+
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from docx import Document
+from docx.oxml.xmlchemy import BaseOxmlElement
+from docx.table import Table
+from docx.text.paragraph import Paragraph
 
 from app.ingestion.file_validator import validate_docx_file
+
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_TABLE = f"{_W}tbl"
+_TEXT_BOX = f"{_W}txbxContent"
+_INSERTED = f"{_W}ins"
+_DELETED = f"{_W}del"
+
+LimitationKind = Literal["nested_table", "text_box", "tracked_change"]
+
+_UNSUPPORTED_CONTENT_REVIEW: dict[LimitationKind, str] = {
+    "nested_table": "a table inside a table cell is not read",
+    "text_box": "text-box content is not read",
+    "tracked_change": "tracked insertions/deletions are not resolved",
+}
+
+
+@dataclass(frozen=True)
+class ExtractedParagraph:
+    text: str
 
 
 @dataclass(frozen=True)
@@ -12,35 +61,150 @@ class ExtractedTable:
 
 
 @dataclass(frozen=True)
+class ExtractedHeaderFooter:
+    """Header/footer text and the section whose definition supplied it."""
+
+    location: Literal["header", "footer"]
+    section_index: int
+    text: str
+
+
+@dataclass(frozen=True)
+class ExtractedContentLimitation:
+    """Visible content this reader cannot read, attributed to where it sits."""
+
+    kind: LimitationKind
+    location: str
+    count: int
+
+    @property
+    def message(self) -> str:
+        return (
+            f"{self.location}: {self.count} {self.kind.replace('_', ' ')} found; "
+            f"{_UNSUPPORTED_CONTENT_REVIEW[self.kind]}. Review the source document "
+            "before approving this profile."
+        )
+
+
+@dataclass(frozen=True)
 class ExtractedDocxContent:
     source_path: Path
-    paragraphs: list[str]
-    tables: list[ExtractedTable] = field(default_factory=list)
+    blocks: list[ExtractedParagraph | ExtractedTable] = field(default_factory=list)
+    header_footer: list[ExtractedHeaderFooter] = field(default_factory=list)
+    limitations: list[ExtractedContentLimitation] = field(default_factory=list)
+
+    @property
+    def paragraphs(self) -> list[str]:
+        return [block.text for block in self.blocks if isinstance(block, ExtractedParagraph)]
+
+    @property
+    def tables(self) -> list[ExtractedTable]:
+        return [block for block in self.blocks if isinstance(block, ExtractedTable)]
 
     @property
     def plain_text(self) -> str:
-        parts: list[str] = []
-        parts.extend(self.paragraphs)
-        for table in self.tables:
-            for row in table.rows:
-                parts.append(" | ".join(cell for cell in row if cell))
-        return "\n".join(part for part in parts if part).strip()
+        parts = [
+            section.text for section in self.header_footer if section.location == "header"
+        ]
+        parts.extend(_block_text(block) for block in self.blocks)
+        parts.extend(
+            section.text for section in self.header_footer if section.location == "footer"
+        )
+        return "\n".join(parts).strip()
 
 
 def read_docx(path: str | Path) -> ExtractedDocxContent:
     file_path = validate_docx_file(path)
     document = Document(str(file_path))
 
-    paragraphs = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
-    tables: list[ExtractedTable] = []
+    blocks: list[ExtractedParagraph | ExtractedTable] = []
+    for block in document.iter_inner_content():
+        if isinstance(block, Paragraph):
+            text = block.text.strip()
+            if text:
+                blocks.append(ExtractedParagraph(text=text))
+            continue
+        table = _read_table(block)
+        if table.rows:
+            blocks.append(table)
 
-    for table in document.tables:
-        rows: list[list[str]] = []
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells]
-            if any(cells):
-                rows.append(cells)
-        if rows:
-            tables.append(ExtractedTable(rows=rows))
+    header_footer: list[ExtractedHeaderFooter] = []
+    limitations = _find_limitations(document.element.body, "body")
+    for section_index, section in enumerate(document.sections, start=1):
+        for location, content in (
+            ("header", section.header),
+            ("footer", section.footer),
+        ):
+            if content.is_linked_to_previous:
+                continue
+            lines = [
+                paragraph.text.strip()
+                for paragraph in content.paragraphs
+                if paragraph.text.strip()
+            ]
+            for table in content.tables:
+                lines.extend(_table_lines(_read_table(table)))
+            if lines:
+                header_footer.append(
+                    ExtractedHeaderFooter(
+                        location=location,
+                        section_index=section_index,
+                        text="\n".join(lines),
+                    )
+                )
+            limitations.extend(
+                _find_limitations(
+                    content.part.element, f"{location} of section {section_index}"
+                )
+            )
 
-    return ExtractedDocxContent(source_path=file_path, paragraphs=paragraphs, tables=tables)
+    return ExtractedDocxContent(
+        source_path=file_path,
+        blocks=blocks,
+        header_footer=header_footer,
+        limitations=limitations,
+    )
+
+
+def _read_table(table: Table) -> ExtractedTable:
+    rows: list[list[str]] = []
+    for row in table.rows:
+        cells = [cell.text.strip() for cell in row.cells]
+        if any(cells):
+            rows.append(cells)
+    return ExtractedTable(rows=rows)
+
+
+def _table_lines(table: ExtractedTable) -> list[str]:
+    return [" | ".join(cell for cell in row if cell) for row in table.rows]
+
+
+def _block_text(block: ExtractedParagraph | ExtractedTable) -> str:
+    if isinstance(block, ExtractedParagraph):
+        return block.text
+    return "\n".join(_table_lines(block))
+
+
+def _find_limitations(
+    element: BaseOxmlElement, location: str
+) -> list[ExtractedContentLimitation]:
+    counts: dict[LimitationKind, int] = {
+        "nested_table": sum(1 for table in element.iter(_TABLE) if _has_table_ancestor(table)),
+        "text_box": len(element.findall(f".//{_TEXT_BOX}")),
+        "tracked_change": len(element.findall(f".//{_INSERTED}"))
+        + len(element.findall(f".//{_DELETED}")),
+    }
+    return [
+        ExtractedContentLimitation(kind=kind, location=location, count=count)
+        for kind, count in counts.items()
+        if count
+    ]
+
+
+def _has_table_ancestor(element: BaseOxmlElement) -> bool:
+    parent = element.getparent()
+    while parent is not None:
+        if parent.tag == _TABLE:
+            return True
+        parent = parent.getparent()
+    return False
