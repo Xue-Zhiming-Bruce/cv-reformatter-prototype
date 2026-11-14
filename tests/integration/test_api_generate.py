@@ -27,6 +27,7 @@ from tests.helpers.synthetic_pdf import build_styled_target_pdf
 from tests.helpers.event_loop_probe import (
     HOLD_TIMEOUT_SECONDS,
     assert_health_answers,
+    occupied_blocking_work,
 )
 
 client = TestClient(app)
@@ -1151,6 +1152,38 @@ def test_target_format_upload_keeps_event_loop_responsive_during_pdf_analysis(
     # The provider failure still reaches the caller through the boundary.
     assert response.status_code == 503
     assert "service unavailable" in response.json()["detail"].lower()
+
+
+DOCX_TARGET_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+
+
+@pytest.mark.parametrize(
+    ("filename", "upload_type"),
+    [("target.pdf", "application/pdf"), ("target.docx", DOCX_TARGET_TYPE)],
+)
+def test_target_format_reports_busy_without_creating_an_artifact(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    filename: str,
+    upload_type: str,
+) -> None:
+    """Issue #51: a saturated refusal stores nothing, on either target branch."""
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")
+
+    with occupied_blocking_work():
+        response = client.post(
+            "/api/target-format",
+            data={"artifact_id": "artifact_saturated_target"},
+            files={"file": (filename, b"%PDF-1.4\n", upload_type)},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["error_code"] == "server_busy"
+    assert response.headers["retry-after"] == "5"
+    # Refused before any storage: no artifact directory for the caller.
+    assert not (tmp_path / "outputs").exists()
 
 
 def test_target_format_upload_rejects_unsupported_files(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

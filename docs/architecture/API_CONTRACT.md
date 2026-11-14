@@ -107,13 +107,20 @@ and `candidate_profile.json`; both files are immutable after extraction.
 
 `POST /api/process` and `POST /api/target-format` run their file parsing and
 provider work on a bounded worker pool (capacity `API_BLOCKING_WORK_CAPACITY`,
-default 4) instead of the request event loop, so one upload cannot delay health,
-status or other requests while an SDK call or provider polling runs. When every
-slot is busy the upload is refused before any work starts: HTTP 503 with
+an integer from 1 to 64, default 4; an invalid value fails at startup) instead of
+the request event loop, so one upload cannot delay health, status or other
+requests while an SDK call or provider polling runs. When every slot is busy the
+upload is refused before any work starts: HTTP 503 with
 `{"error_code": "server_busy", "message": ...}` and `Retry-After: 5`. That
 refusal is capacity, not a provider failure: no artifact is created, nothing was
-sent to a provider, and no paid work is retried automatically. A cancelled
-request (client disconnect) cannot recall a provider call already dispatched.
+sent to a provider, and no paid work is retried automatically.
+
+A refusal can land on the second hop: `POST /api/process` that already passed
+file parsing can be refused on the extraction hop, so the caller gets the 503
+with no parsed draft and must upload the candidate file again. Cancellation
+(server shutdown or explicit task cancellation; a non-streaming JSON handler is
+not cancelled by a client disconnect) cannot recall a provider call already
+dispatched, and the slot stays in use until that call returns.
 
 ## Upload Target Format
 

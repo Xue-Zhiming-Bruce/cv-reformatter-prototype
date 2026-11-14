@@ -1,4 +1,3 @@
-import asyncio
 import json
 import tempfile
 import threading
@@ -26,6 +25,7 @@ from app.generation import service as generation_service
 from tests.helpers.event_loop_probe import (
     HOLD_TIMEOUT_SECONDS,
     assert_health_answers,
+    occupied_blocking_work,
 )
 
 client = TestClient(app)
@@ -717,39 +717,16 @@ def test_process_reports_busy_when_blocking_capacity_is_saturated(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     """Issue #51: bounded capacity answers saturation instead of queueing."""
-    from app import blocking_work
-
     monkeypatch.setenv("API_LLM_PROVIDER", "mock")
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")
-    release, occupied = threading.Event(), threading.Event()
-    lock = threading.Lock()
-    running = 0
-
-    def hold() -> None:
-        nonlocal running
-        with lock:
-            running += 1
-            if running == blocking_work.BLOCKING_WORK_CAPACITY:
-                occupied.set()
-        assert release.wait(HOLD_TIMEOUT_SECONDS), "the held slots were never released"
-
-    async def occupy() -> None:
-        capacity = blocking_work.BLOCKING_WORK_CAPACITY
-        await asyncio.gather(*(blocking_work.run_blocking(hold) for _ in range(capacity)))
-
-    holder = threading.Thread(target=lambda: asyncio.run(occupy()), daemon=True)
-    holder.start()
     resume_path = tmp_path / "resume.docx"
     _build_resume_docx(resume_path)
-    try:
-        assert occupied.wait(HOLD_TIMEOUT_SECONDS), "the slots were never filled"
+
+    with occupied_blocking_work():
         response = client.post(
             "/api/process",
             files={"file": ("resume.docx", resume_path.read_bytes(), DOCX_UPLOAD_TYPE)},
         )
-    finally:
-        release.set()
-        holder.join(HOLD_TIMEOUT_SECONDS)
 
     assert response.status_code == 503
     detail = response.json()["detail"]

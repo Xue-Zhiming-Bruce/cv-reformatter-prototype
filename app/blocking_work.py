@@ -7,10 +7,14 @@ answers saturation instead of queueing without limit: when every slot is busy
 the caller gets :class:`BlockingWorkSaturated` and no work is started.
 
 The pool is process-wide and bounded by ``API_BLOCKING_WORK_CAPACITY`` (read
-once, at import). Cancelling the awaiting handler — a client disconnect or
-server shutdown — cannot undo work already dispatched: a provider request in
-flight runs to completion and its result is discarded. Nothing here retries;
-repeating paid work stays an explicit caller decision made outside this module.
+once, at import): an integer from 1 to 64, defaulting to 4. An invalid value
+fails loudly at startup instead of silently resizing the boundary.
+
+Cancelling the awaiting handler — server shutdown or an explicit task
+cancellation, since a non-streaming JSON handler is not cancelled by a client
+disconnect — cannot undo work already dispatched: a provider request in flight
+runs to completion and its result is discarded. Nothing here retries; repeating
+paid work stays an explicit caller decision made outside this module.
 
 PDFium keeps its own process-wide serialization in ``app/pdfium_native.py``;
 this module adds capacity, not a second native lock.
@@ -33,13 +37,34 @@ from typing import Any, TypeVar
 
 __all__ = (
     "BLOCKING_WORK_CAPACITY",
+    "MAX_BLOCKING_WORK_CAPACITY",
+    "MIN_BLOCKING_WORK_CAPACITY",
     "BlockingWorkSaturated",
     "run_blocking",
 )
 
 T = TypeVar("T")
 
-BLOCKING_WORK_CAPACITY = int(os.getenv("API_BLOCKING_WORK_CAPACITY", "4"))
+MIN_BLOCKING_WORK_CAPACITY = 1
+MAX_BLOCKING_WORK_CAPACITY = 64
+
+
+def _capacity_from(raw: str | None) -> int:
+    """Read the configured capacity, naming the setting and range when invalid."""
+    value = "4" if raw is None or not raw.strip() else raw.strip()
+    try:
+        capacity = int(value)
+    except ValueError:
+        capacity = None
+    if capacity is None or not MIN_BLOCKING_WORK_CAPACITY <= capacity <= MAX_BLOCKING_WORK_CAPACITY:
+        raise ValueError(
+            "API_BLOCKING_WORK_CAPACITY must be an integer from "
+            f"{MIN_BLOCKING_WORK_CAPACITY} to {MAX_BLOCKING_WORK_CAPACITY}, got {raw!r}"
+        )
+    return capacity
+
+
+BLOCKING_WORK_CAPACITY = _capacity_from(os.getenv("API_BLOCKING_WORK_CAPACITY"))
 
 _BUSY_SLOTS = threading.BoundedSemaphore(BLOCKING_WORK_CAPACITY)
 _WORKERS = ThreadPoolExecutor(

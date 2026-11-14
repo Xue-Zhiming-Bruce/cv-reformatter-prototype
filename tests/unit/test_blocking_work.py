@@ -1,4 +1,4 @@
-"""Bounded capacity, saturation and slot release for app.blocking_work."""
+"""Bounded capacity, saturation, cancellation and slot release for app.blocking_work."""
 
 from __future__ import annotations
 
@@ -8,8 +8,7 @@ import threading
 import pytest
 
 from app import blocking_work
-
-HOLD_TIMEOUT_SECONDS = 15
+from tests.helpers.event_loop_probe import HOLD_TIMEOUT_SECONDS, occupied_blocking_work
 
 
 async def _answer() -> str:
@@ -18,39 +17,95 @@ async def _answer() -> str:
 
 def test_saturation_rejects_without_starting_the_call() -> None:
     """Every slot busy: the next caller is rejected instead of queued unbounded."""
-    release, occupied = threading.Event(), threading.Event()
     started = threading.Event()
-    lock = threading.Lock()
-    running = 0
 
-    def hold() -> None:
+    def rejected() -> None:
+        started.set()
+
+    with occupied_blocking_work():
+        with pytest.raises(blocking_work.BlockingWorkSaturated):
+            asyncio.run(blocking_work.run_blocking(rejected))
+        assert not started.is_set()
+
+    assert asyncio.run(_answer()) == "done"
+
+
+async def _free_slot_call() -> str:
+    """Wait for a free slot without assuming an ordering between threads."""
+
+    async def attempt() -> str:
+        while True:
+            try:
+                return await blocking_work.run_blocking(lambda: "done")
+            except blocking_work.BlockingWorkSaturated:
+                await asyncio.sleep(0.001)
+
+    return await asyncio.wait_for(attempt(), timeout=HOLD_TIMEOUT_SECONDS)
+
+
+def _hold_every_slot(
+    release: threading.Event, occupied: threading.Event
+) -> list[asyncio.Future[str]]:
+    """Start one held call per slot; ``occupied`` is set once all are running."""
+    capacity = blocking_work.BLOCKING_WORK_CAPACITY
+    running = 0
+    lock = threading.Lock()
+
+    def hold() -> str:
         nonlocal running
         with lock:
             running += 1
-            if running == blocking_work.BLOCKING_WORK_CAPACITY:
+            if running == capacity:
                 occupied.set()
-        assert release.wait(HOLD_TIMEOUT_SECONDS), "the held slots were never released"
+        assert release.wait(HOLD_TIMEOUT_SECONDS), "the workers were never released"
+        return "held"
 
-    async def occupy() -> None:
-        capacity = blocking_work.BLOCKING_WORK_CAPACITY
-        await asyncio.gather(*(blocking_work.run_blocking(hold) for _ in range(capacity)))
+    return [
+        asyncio.ensure_future(blocking_work.run_blocking(hold))
+        for _ in range(capacity)
+    ]
 
-    holder = threading.Thread(target=lambda: asyncio.run(occupy()), daemon=True)
-    holder.start()
-    try:
-        assert occupied.wait(HOLD_TIMEOUT_SECONDS), "the slots were never filled"
 
-        def rejected() -> None:
-            started.set()
+async def _cancel_one_awaiter_while_its_worker_runs(
+    held: list[asyncio.Future[str]], release: threading.Event
+) -> None:
+    """Cancel one awaiter, then prove its worker's slot is still held."""
+    held[0].cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await held[0]
 
-        with pytest.raises(blocking_work.BlockingWorkSaturated):
-            asyncio.run(blocking_work.run_blocking(rejected))
-    finally:
-        release.set()
-        holder.join(HOLD_TIMEOUT_SECONDS)
+    with pytest.raises(blocking_work.BlockingWorkSaturated):
+        await blocking_work.run_blocking(lambda: "extra")
 
-    assert not started.is_set()
-    assert asyncio.run(_answer()) == "done"
+    release.set()
+    await asyncio.gather(*held[1:])
+
+
+def test_cancelling_the_awaiter_keeps_the_slot_until_the_worker_finishes() -> None:
+    """A cancelled awaiter must not free a slot whose worker is still running."""
+    release, occupied = threading.Event(), threading.Event()
+
+    async def scenario() -> None:
+        held = _hold_every_slot(release, occupied)
+        try:
+            assert await asyncio.to_thread(occupied.wait, HOLD_TIMEOUT_SECONDS)
+            await _cancel_one_awaiter_while_its_worker_runs(held, release)
+            assert await _free_slot_call() == "done"
+        finally:
+            release.set()
+
+    asyncio.run(scenario())
+
+
+def test_invalid_capacity_names_the_setting_and_range() -> None:
+    """A bad API_BLOCKING_WORK_CAPACITY fails at startup instead of a bare ValueError."""
+    for raw in ("abc", "0", "-2", "65", "3.5"):
+        with pytest.raises(ValueError, match="API_BLOCKING_WORK_CAPACITY.*1 to 64"):
+            blocking_work._capacity_from(raw)
+
+    assert blocking_work._capacity_from("1") == 1
+    assert blocking_work._capacity_from(None) == 4
+    assert blocking_work._capacity_from(" 8 ") == 8
 
 
 def test_a_failed_call_releases_its_slot() -> None:

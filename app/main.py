@@ -61,6 +61,7 @@ from app.generation.service import (
     prepare_artifact_dir,
     requested_profile_revision_id,
     require_profile_revision,
+    resolve_artifact_dir,
     validate_profile_source_review,
     write_json,
     write_profile_debug_artifacts,
@@ -253,6 +254,11 @@ def _generation_settings() -> GenerationSettings:
 
 def _prepare_artifact_dir(artifact_id: str, *, allow_existing: bool = False) -> Path:
     return prepare_artifact_dir(GENERATED_OUTPUTS_DIR, artifact_id, allow_existing=allow_existing)
+
+
+def _resolve_artifact_dir(artifact_id: str) -> Path:
+    """Validate the artifact id and path without creating the directory."""
+    return resolve_artifact_dir(GENERATED_OUTPUTS_DIR, artifact_id)
 
 
 def _require_profile_revision(
@@ -665,7 +671,8 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
         segmentation_started = time.monotonic()
         try:
             # The provider request is dispatched here. Cancelling this handler
-            # (client disconnect) cannot undo it and nothing retries it.
+            # (server shutdown or explicit task cancellation, not a client
+            # disconnect) cannot undo it and nothing retries it.
             segmentation_output = await _run_off_loop(
                 segment_and_extract_resume, extracted_text, llm_client
             )
@@ -809,6 +816,35 @@ def _analyze_pdf_target(
     )
 
 
+def _store_and_analyze_docx_target(
+    artifact_id: str,
+    input_filename: str,
+    suffix: str,
+    contents: bytes,
+) -> tuple[TargetFormatMetadata, LayoutTemplateSpec]:
+    """Store and analyze one uploaded DOCX target off the event loop.
+
+    The artifact directory is created here, once a slot is secured, so a
+    saturated refusal stores nothing for the caller.
+    """
+    artifact_dir = _prepare_artifact_dir(artifact_id, allow_existing=True)
+    target_format = _store_target_format(
+        artifact_id=artifact_id,
+        artifact_dir=artifact_dir,
+        input_filename=input_filename,
+        suffix=suffix,
+        contents=contents,
+    )
+    try:
+        spec = analyze_target_docx(
+            artifact_dir / target_format.stored_filename, artifact_dir
+        )
+    except (TargetDocxAnalysisError, FileNotFoundError):
+        (artifact_dir / target_format.stored_filename).unlink(missing_ok=True)
+        raise
+    return target_format, spec
+
+
 @app.post("/api/target-format")
 async def upload_target_format(
     file: UploadFile = File(...),
@@ -825,7 +861,9 @@ async def upload_target_format(
         )
 
     resolved_artifact_id = artifact_id or new_artifact_id()
-    artifact_dir = _prepare_artifact_dir(resolved_artifact_id, allow_existing=True)
+    # Validation only: the directory is created after the blocking work so a
+    # saturated refusal leaves nothing behind for the caller.
+    artifact_dir = _resolve_artifact_dir(resolved_artifact_id)
     contents = await file.read()
     analyzed_style_spec: LayoutTemplateSpec | None = None
     if suffix == ".pdf":
@@ -860,6 +898,7 @@ async def upload_target_format(
             else []
         )
 
+        artifact_dir = _prepare_artifact_dir(resolved_artifact_id, allow_existing=True)
         target_format = _store_target_format(
             artifact_id=resolved_artifact_id,
             artifact_dir=artifact_dir,
@@ -900,21 +939,15 @@ async def upload_target_format(
             }
         )
     else:
-        target_format = _store_target_format(
-            artifact_id=resolved_artifact_id,
-            artifact_dir=artifact_dir,
-            input_filename=file.filename,
-            suffix=suffix,
-            contents=contents,
-        )
         try:
-            analyzed_style_spec = await _run_off_loop(
-                analyze_target_docx,
-                artifact_dir / target_format.stored_filename,
-                artifact_dir,
+            target_format, analyzed_style_spec = await _run_off_loop(
+                _store_and_analyze_docx_target,
+                resolved_artifact_id,
+                file.filename,
+                suffix,
+                contents,
             )
         except (TargetDocxAnalysisError, FileNotFoundError) as exc:
-            (artifact_dir / target_format.stored_filename).unlink(missing_ok=True)
             _raise_docx_target_error(exc)
         target_format = target_format.model_copy(
             update={
