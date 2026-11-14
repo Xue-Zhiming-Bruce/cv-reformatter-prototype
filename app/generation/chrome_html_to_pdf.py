@@ -17,10 +17,12 @@ data-URI web fonts) settles. Without it, date-column widths varied up to ~3.7pt
 between renders of the same artifact (owner ruling 2026-09-10, E→F thirteenth
 freeze).
 
-:func:`chrome_environment` is the recorded identity: executable, how it was
-resolved, its version, the profile and the bundled font assets. The agentic
-renderer identity hashes it, so a browser or font change invalidates
-incompatible proof approval through the existing identity check.
+:func:`chrome_environment` records the export identity: profile, browser
+version, flags, locale/timezone, bundled font assets and installed fallback-font
+package versions. The agentic renderer identity hashes it, so a browser or font
+change invalidates incompatible proof approval through the existing identity
+check. The executable path and how it was resolved are provenance only: the same
+build renders the same PDF whether it was found through CHROME_BIN or PATH.
 """
 
 from __future__ import annotations
@@ -53,13 +55,17 @@ _CHROME_CANDIDATES = (
     "chrome-headless-shell",
 )
 _MACOS_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-#: Fields that change rendered output, i.e. that must invalidate a proof. The
-#: process timeout and the executable path are excluded: they do not change
-#: rendered output, and the path differs across hosts running the same build.
+_FALLBACK_FONT_PACKAGES = ("fonts-dejavu-core", "fonts-liberation")
+_MISSING_BROWSER = "No Chrome/Chromium binary found for HTML-to-PDF export. Install Chrome/Chromium or set CHROME_BIN."
+#: Fields that change rendered output, i.e. that must invalidate a proof.
+#: ``executable``, ``resolution`` and ``timeout_seconds`` are provenance only:
+#: the same browser build renders identically whether it was found through
+#: CHROME_BIN or PATH, so the path and how it was discovered are recorded but
+#: are not identity.
 _IDENTITY_FIELDS = (
     "contract", "profile", "page_contract", "background_contract",
-    "font_readiness", "resolution", "version", "flags", "locale", "timezone",
-    "fonts",
+    "font_readiness", "version", "flags", "locale", "timezone",
+    "fonts", "fallback_fonts",
 )
 
 
@@ -110,6 +116,11 @@ PROFILE = ChromeExportProfile(
 def _find_chrome() -> ChromeBinary:
     override = os.getenv("CHROME_BIN") or os.getenv("CHROME_EXECUTABLE")
     if override:
+        if not Path(override).is_file():
+            raise HtmlToPdfExportError(
+                f"CHROME_BIN/CHROME_EXECUTABLE points to {override}, which does "
+                f"not exist. {_MISSING_BROWSER}"
+            )
         return ChromeBinary(override, "override")
     if Path(_MACOS_CHROME).exists():
         return ChromeBinary(_MACOS_CHROME, "macos_default")
@@ -117,10 +128,16 @@ def _find_chrome() -> ChromeBinary:
         found = shutil.which(name)
         if found:
             return ChromeBinary(found, "system")
-    raise HtmlToPdfExportError(
-        "No Chrome/Chromium binary found for HTML-to-PDF export. Install "
-        "Chrome/Chromium or set CHROME_BIN."
-    )
+    raise HtmlToPdfExportError(_MISSING_BROWSER)
+
+
+def require_chrome_binary() -> ChromeBinary:
+    """Resolve the browser or raise the actionable error.
+
+    Lanes call this before provider work: a missing browser is a precondition,
+    and waiting until the lane wants a PDF spends paid model requests first.
+    """
+    return _find_chrome()
 
 
 @functools.lru_cache(maxsize=8)
@@ -144,11 +161,27 @@ def font_asset_identity() -> dict[str, Any]:
         digest.update(path.name.encode("utf-8"))
         digest.update(path.read_bytes())
     directory = FONT_ASSET_DIR.relative_to(Path(__file__).resolve().parents[2])
-    return {
-        "directory": directory.as_posix(),
-        "sha256": digest.hexdigest(),
-        "files": [path.name for path in files],
-    }
+    return {"directory": directory.as_posix(), "sha256": digest.hexdigest(), "files": [path.name for path in files]}
+
+
+@functools.lru_cache(maxsize=1)
+def fallback_font_identity() -> dict[str, str]:
+    """Installed fallback-font package versions, where the host reports them.
+
+    Chrome draws glyphs the bundled woff2 assets do not cover from these fonts,
+    so a version change changes rendered glyphs and must invalidate a proof.
+    Hosts without dpkg (macOS) report none and are outside this identity.
+    """
+    try:
+        result = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Package}=${Version}\n", *_FALLBACK_FONT_PACKAGES],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    return dict(
+        line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+    )
 
 
 def timeout_seconds() -> float:
@@ -176,6 +209,7 @@ def _environment(binary: ChromeBinary | None) -> dict[str, Any]:
         "timezone": PROFILE.timezone,
         "timeout_seconds": timeout_seconds(),
         "fonts": font_asset_identity(),
+        "fallback_fonts": fallback_font_identity(),
     }
     identity = {field: record[field] for field in _IDENTITY_FIELDS}
     record["digest"] = hashlib.sha256(
@@ -208,6 +242,8 @@ def _print_to_pdf(
     environment: Mapping[str, Any], html_path: Path, staged: Path
 ) -> None:
     timeout = float(environment["timeout_seconds"])
+    if not environment.get("executable"):
+        raise HtmlToPdfExportError(_MISSING_BROWSER)
     command = [
         str(environment["executable"]),
         *environment["flags"],
@@ -227,6 +263,8 @@ def _print_to_pdf(
         raise HtmlToPdfExportError(
             f"Chrome print-to-pdf timed out after {timeout} seconds."
         ) from exc
+    except OSError as exc:
+        raise HtmlToPdfExportError(f"Chrome print-to-pdf could not start: {exc}") from exc
     if result.returncode != 0:
         raise HtmlToPdfExportError(
             f"Chrome print-to-pdf failed (exit {result.returncode}): "

@@ -10,6 +10,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
+from app.generation import chrome_html_to_pdf
 from app.generation.template_mapper import CONTACT_FIELD_SLOTS, CONTACT_LABEL_FIELDS
 from app.pipeline.evidence import (
     MeasurementRequest,
@@ -344,13 +345,16 @@ def header_contact_label_evidence(
 
 
 def pinned_export_environment(summary: dict[str, Any]) -> dict[str, Any]:
-    """The pipeline lane's recorded export environment.
+    """The pipeline lane's recorded export environment, or the actionable
+    missing-browser error.
 
     The virtual-time budget that keeps asynchronously decoded data-URI web
     fonts from shifting geometry (~3.7pt date-column drift between renders,
     thirteenth freeze) is part of the shared export profile, not a lane-only
-    flag appended here.
+    flag appended here. Resolving the browser happens before the lane starts,
+    so a missing renderer fails before any provider request is spent.
     """
+    chrome_html_to_pdf.require_chrome_binary()
     return _pinned_chrome_environment(summary)
 
 def _bind_role_gap_anchors(

@@ -52,6 +52,14 @@ class _FakeRun:
         )
 
 
+@pytest.fixture(autouse=True)
+def _fresh_fallback_fonts():
+    """The fallback-package lookup is cached per process; each test reads fresh."""
+    mod.fallback_font_identity.cache_clear()
+    yield
+    mod.fallback_font_identity.cache_clear()
+
+
 @pytest.fixture()
 def fake_chrome(monkeypatch: pytest.MonkeyPatch) -> _FakeRun:
     fake = _FakeRun()
@@ -118,7 +126,39 @@ def test_environment_records_browser_resolution_and_font_assets(
     fonts = environment["fonts"]
     assert "lato-regular.woff2" in fonts["files"] and "lato.css" in fonts["files"]
     assert len(fonts["sha256"]) == 64
+    # The stubbed subprocess reports no dpkg packages on this host.
+    assert environment["fallback_fonts"] == {}
     assert mod.chrome_environment()["digest"] == environment["digest"]
+
+
+def test_fallback_font_package_change_changes_the_validity_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mod, "_find_chrome", lambda: mod.ChromeBinary("/fake/chrome", "override"))
+    monkeypatch.setattr(mod, "_binary_version", lambda _path: "FakeChrome 1.0")
+
+    def packages(version: str):
+        stdout = f"fonts-dejavu-core={version}\nfonts-liberation=1:2.1.5-3\n"
+        return lambda _command, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout=stdout, stderr=""
+        )
+
+    monkeypatch.setattr(mod.subprocess, "run", packages("2.37-6"))
+    mod.fallback_font_identity.cache_clear()
+    before = mod.chrome_environment()
+    assert before["fallback_fonts"]["fonts-dejavu-core"] == "2.37-6"
+    monkeypatch.setattr(mod.subprocess, "run", packages("2.37-7"))
+    mod.fallback_font_identity.cache_clear()
+    assert mod.chrome_environment()["digest"] != before["digest"]
+
+
+def test_resolution_is_provenance_not_identity() -> None:
+    """The same build found through CHROME_BIN or PATH renders identically, so
+    proof validity must not hinge on how the binary was discovered."""
+    override = mod._environment(mod.ChromeBinary("/fake/chrome", "override"))
+    system = mod._environment(mod.ChromeBinary("/fake/chrome", "system"))
+    assert override["resolution"] != system["resolution"]
+    assert override["digest"] == system["digest"]
 
 
 def test_changed_browser_version_changes_the_validity_digest(
@@ -204,9 +244,41 @@ def test_stale_pre_existing_file_is_not_a_successful_export(
     assert stale.read_bytes() == b"%PDF-1.4 STALE EXPORT"
 
 
-def test_chrome_bin_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CHROME_BIN", "/opt/custom/chrome")
-    assert mod._find_chrome() == mod.ChromeBinary("/opt/custom/chrome", "override")
+def test_chrome_bin_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    binary = tmp_path / "chrome"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("CHROME_BIN", str(binary))
+    assert mod._find_chrome() == mod.ChromeBinary(str(binary), "override")
+
+
+def test_chrome_bin_override_must_exist(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """QA #52 finding 2: a bad override fails with the actionable message and
+    the override path, not a later FileNotFoundError on a None executable."""
+    missing = tmp_path / "not-a-chrome"
+    monkeypatch.setenv("CHROME_BIN", str(missing))
+    with pytest.raises(mod.HtmlToPdfExportError) as error:
+        mod.require_chrome_binary()
+    message = str(error.value)
+    assert str(missing) in message and "No Chrome/Chromium binary found" in message
+
+
+def test_recorded_unresolved_environment_cannot_be_exported(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A recorded environment without a binary must fail with the browser
+    message, never stringify ``None`` into the command."""
+
+    def missing() -> mod.ChromeBinary:
+        raise mod.HtmlToPdfExportError("No Chrome/Chromium binary found")
+
+    monkeypatch.setattr(mod, "_find_chrome", missing)
+    environment = mod.chrome_environment()
+    with pytest.raises(mod.HtmlToPdfExportError, match="No Chrome/Chromium binary found"):
+        mod.export_html_to_pdf(
+            _write_html(tmp_path), tmp_path / "out.pdf", environment=environment
+        )
 
 
 def test_no_chrome_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:

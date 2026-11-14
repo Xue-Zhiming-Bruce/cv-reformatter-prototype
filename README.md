@@ -270,7 +270,10 @@ bundled `app/pipeline/assets/fonts` woff2 assets (Lato, Charter, Roboto), and
 fontconfig fallbacks from `fonts-liberation`/`fonts-dejavu-core`. Docker installs
 exactly `chromium=156.0.8078.79-1~deb12u1`; a browser or bundled-font bump is a
 deliberate reviewed pin change that carries its own rendering evidence, and the
-resulting browser/font identity change invalidates stored layout proofs. Frontend
+resulting browser/font identity change invalidates stored layout proofs. The
+image's installed fallback-font package versions are recorded in the export
+environment too, so a drift in those apt packages is not silently ignored.
+Frontend
 `node:22-alpine` builds the existing `package-lock.json` with `npm ci`; nginx
 `1.29-alpine` serves it; `postgres:17` provides the database. The image is not
 a pixel-identity claim: glyph shapes and antialiasing still differ across Linux,

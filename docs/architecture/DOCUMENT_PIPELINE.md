@@ -253,9 +253,15 @@ from that same HTML; there is no DOCX renderer or corner approximation.
 rule still decides page size and margins), background and color printing,
 header/footer suppression, locale/timezone, font readiness, timeout and cleanup,
 and the native, agentic and offline-worker paths call it instead of assembling
-their own flags. Each export records browser identity (version plus how it was
-resolved: explicit override, system path or vendor default) and the bundled-font
-asset digest. Those records feed the existing manifest and proof identity, so a
+their own flags. A missing browser fails with the actionable message before a
+lane starts, not after provider requests were spent on a run that cannot render.
+
+Each export records browser identity (version; how it was resolved — explicit
+override, system path or vendor default — is provenance only, because the same
+build renders the same PDF however it was found), the bundled-font asset digest
+and the installed fallback-font package versions where the host reports them
+(dpkg/apt; hosts without dpkg record none, so their fallback fonts stay outside
+the identity). Those records feed the existing manifest and proof identity, so a
 changed browser or font set invalidates stored layout proofs through the normal
 renderer-version check; it never silently reuses or relabels them. Exports write a
 temporary file and replace the target only on success, so a timeout or crash
