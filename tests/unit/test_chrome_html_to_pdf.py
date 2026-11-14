@@ -53,14 +53,6 @@ class _FakeRun:
         )
 
 
-@pytest.fixture(autouse=True)
-def _fresh_fallback_fonts():
-    """The fallback-package lookup is cached per process; each test reads fresh."""
-    mod.fallback_font_identity.cache_clear()
-    yield
-    mod.fallback_font_identity.cache_clear()
-
-
 @pytest.fixture()
 def fake_chrome(monkeypatch: pytest.MonkeyPatch) -> _FakeRun:
     fake = _FakeRun()
@@ -135,6 +127,9 @@ def test_environment_records_browser_resolution_and_font_assets(
 def test_fallback_font_package_change_changes_the_validity_digest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Issue #52 judge finding: the recorded package versions are re-read, so a
+    version swapped between two identity reads in one process changes both the
+    version and the identity a proof is bound to."""
     monkeypatch.setattr(mod, "_find_chrome", lambda: mod.ChromeBinary("/fake/chrome", "override"))
     monkeypatch.setattr(mod, "_binary_version", lambda _path: "FakeChrome 1.0")
 
@@ -145,12 +140,13 @@ def test_fallback_font_package_change_changes_the_validity_digest(
         )
 
     monkeypatch.setattr(mod.subprocess, "run", packages("2.37-6"))
-    mod.fallback_font_identity.cache_clear()
     before = mod.chrome_environment()
     assert before["fallback_fonts"]["fonts-dejavu-core"] == "2.37-6"
     monkeypatch.setattr(mod.subprocess, "run", packages("2.37-7"))
-    mod.fallback_font_identity.cache_clear()
-    assert mod.chrome_environment()["digest"] != before["digest"]
+    after = mod.chrome_environment()
+    assert after["fallback_fonts"]["fonts-dejavu-core"] == "2.37-7"
+    assert after["digest"] != before["digest"]
+    assert mod.chrome_export_identity()["fallback_fonts"] == after["fallback_fonts"]
 
 
 def test_resolution_is_provenance_not_identity() -> None:

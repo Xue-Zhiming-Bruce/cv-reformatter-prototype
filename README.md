@@ -274,7 +274,8 @@ resulting browser/font identity change invalidates stored layout proofs. The
 recorded version is re-probed whenever the browser file changes, so replacing or
 upgrading it in place cannot keep the old identity. The
 image's installed fallback-font package versions are recorded in the export
-environment too, so a drift in those apt packages is not silently ignored.
+environment too and re-read on every identity check, so a drift in those apt
+packages is not silently ignored.
 Frontend
 `node:22-alpine` builds the existing `package-lock.json` with `npm ci`; nginx
 `1.29-alpine` serves it; `postgres:17` provides the database. The image is not
