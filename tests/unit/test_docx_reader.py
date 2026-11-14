@@ -8,7 +8,7 @@ from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.opc.packuri import PackURI
 from docx.opc.part import Part
 from docx.oxml import parse_xml
-from docx.oxml.ns import nsdecls
+from docx.oxml.ns import nsdecls, qn
 from docx.shared import Inches
 
 from app.extraction.coverage_audit import audit_segmentation_lines
@@ -210,7 +210,10 @@ def test_read_docx_reports_inline_content_controls(tmp_path: Path) -> None:
     assert [(item.kind, item.location, item.count) for item in content.limitations] == [
         ("content_control", "body", 2)
     ]
-    assert "a content control inside a paragraph" in content.limitations[0].message
+    assert (
+        "content inside a content control this reader cannot read in place"
+        in content.limitations[0].message
+    )
     assert "Review the source document" in content.limitations[0].message
     # The coverage audit measures only the text the reader supplied, so it reports
     # `incomplete` here instead of passing over the missing control text.
@@ -368,6 +371,115 @@ def test_read_docx_reads_a_wrapped_paragraph_inside_a_table_cell(tmp_path: Path)
         "CELL_WRAPPED | CELL_CONTROL",
     ]
     assert content.limitations == []
+
+
+def test_read_docx_reads_rows_and_cells_a_content_control_wraps(tmp_path: Path) -> None:
+    """A control around a whole row or cell holds table text python-docx skips."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    table = document.add_table(rows=2, cols=2)
+    table.rows[0].cells[0].text = "Acme"
+    table.rows[0].cells[1].text = "Engineer"
+    table.rows[1].cells[0].text = "Led the migration"
+    table.rows[1].cells[1].text = "2024"
+    # ``Table.rows`` and ``Row.cells`` return only direct members, so a control
+    # around one of them took its text out of the reader's reach.
+    first_row, second_row = table._tbl.findall(qn("w:tr"))
+    first_row.replace(
+        first_row.findall(qn("w:tc"))[0],
+        _content_control(
+            "<w:tc><w:p><w:r><w:t>Cell wrapped</w:t></w:r></w:p></w:tc>"
+        ),
+    )
+    table._tbl.replace(
+        second_row,
+        _content_control(
+            "<w:tr><w:tc><w:p><w:r><w:t>Row wrapped</w:t></w:r></w:p></w:tc></w:tr>"
+        ),
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.tables[0].rows == [
+        ["Cell wrapped", "Engineer"],
+        ["Row wrapped"],
+    ]
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_header_table_row_a_content_control_wraps(
+    tmp_path: Path,
+) -> None:
+    """The header walk reaches a wrapped table row the same way the body walk does."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    header = document.sections[0].header
+    header.paragraphs[0].text = "Jane Candidate"
+    table = header.add_table(rows=1, cols=1, width=Inches(6))
+    table.rows[0].cells[0].text = "Contact row"
+    table._tbl.replace(
+        table._tbl.findall(qn("w:tr"))[0],
+        _content_control(
+            "<w:tr><w:tc><w:p><w:r><w:t>Header wrapped</w:t></w:r></w:p></w:tc></w:tr>"
+        ),
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert "Header wrapped" in content.plain_text
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_content_control_around_a_whole_table(tmp_path: Path) -> None:
+    """A control holding a table is a block control, read in the position it occupies."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    before = document.add_paragraph("Before table")
+    before._p.addnext(
+        _content_control(
+            "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Controlled entry</w:t></w:r></w:p>"
+            "</w:tc></w:tr></w:tbl>"
+        )
+    )
+    document.add_paragraph("After table")
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Before table",
+        "Controlled entry",
+        "After table",
+    ]
+    assert content.limitations == []
+
+
+def test_read_docx_names_a_table_wrapper_it_cannot_descend(tmp_path: Path) -> None:
+    """A table child holding text that is not a row or known wrapper is named."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    table = document.add_table(rows=1, cols=1)
+    table.rows[0].cells[0].text = "Readable cell"
+    table._tbl.append(
+        parse_xml(
+            f'<w:unknownWrapper {nsdecls("w")}>'
+            "<w:tr><w:tc><w:p><w:r><w:t>Unreachable row</w:t></w:r></w:p></w:tc>"
+            "</w:tr></w:unknownWrapper>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate", "Readable cell"]
+    (limitation,) = content.limitations
+    assert (limitation.kind, limitation.element) == ("unknown_block", "unknownWrapper")
+    assert limitation.location.startswith("body table child ")
+    assert limitation.blocks_source_review is True
 
 
 def test_read_docx_reads_one_alternate_content_branch(tmp_path: Path) -> None:
