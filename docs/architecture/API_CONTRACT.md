@@ -71,8 +71,8 @@ Response fields:
 - `original_text` — the preserved extracted text, stored as
   `raw_extracted_text.txt`. For DOCX it keeps the authored body order (a table
   stays between the paragraphs around it) and carries section header text ahead
-  of the body and footer text after it, read once per defining section rather
-  than once per linked section or page;
+  of the body and footer text after it, read once per section and variant that
+  displays it rather than once per linked section or page;
 - `original_pdf_preview_url`;
 - `original_preview_error`;
 - `debug_artifacts`;
@@ -81,16 +81,18 @@ Response fields:
   mock extraction client or a configured AI provider. It carries no provider
   name, model id, endpoint, credential or region;
 - `ingestion_limitations` — one attributed review requirement per visible DOCX
-  shape the reader cannot read (nested table, text box, tracked
-  insertion/deletion, content control inside a paragraph or table cell, simple
-  field result, text-bearing block wrapper it cannot read in place), naming its
-  location and, for a wrapper, the element name and child position; empty for
-  PDFs and for DOCX files inside the supported shapes. The line-coverage audit
-  only measures the text the reader supplied, so a passed audit never implies
-  this list is empty. The reader's module docstring carries the enumerated read
-  set — authored body order, block wrappers of paragraphs/tables, and the
-  default, enabled first-page and enabled even-page headers/footers — and
-  states that shapes outside it are not detectable.
+  shape the reader cannot read (nested table, text box, tracked insertion,
+  deletion or move, content control inside a paragraph, simple field result,
+  embedded `w:altChunk`, text-bearing block wrapper it cannot read in place),
+  naming its location and, for a wrapper, the element name and child position;
+  empty for PDFs and for DOCX files inside the supported shapes. The
+  `segmentation_audit.json` line-coverage audit only measures the text the
+  reader supplied, so it reports `incomplete` rather than `passed` whenever this
+  list is non-empty and never implies the source was read completely. The
+  reader's module docstring carries the enumerated read set — authored body
+  order, block wrappers of paragraphs/tables, runs held by a transparent inline
+  wrapper, and the default, displayed first-page and enabled even-page
+  headers/footers — and states that shapes outside it are not detectable.
 
 In addition to `raw_extracted_text.txt` and `candidate_profile.json`, processing
 persists two immutable source-analysis artifacts:

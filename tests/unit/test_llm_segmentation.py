@@ -67,6 +67,33 @@ def test_coverage_audit_catches_missing_and_invented_lines() -> None:
     assert [item.line for item in audit.invented_or_altered_lines] == ["Rust"]
 
 
+def test_coverage_audit_cannot_pass_while_source_stays_unread() -> None:
+    """A reader that knows it left content out cannot hand back a passing audit."""
+    unread = [
+        "body: 1 text box found; text-box content is not read. Review the source "
+        "document before approving this profile."
+    ]
+
+    assert audit_segmentation_lines("Jane Candidate\n", ["Jane Candidate"]).status == (
+        "passed"
+    )
+
+    audit = audit_segmentation_lines(
+        "Jane Candidate\n", ["Jane Candidate"], unread_source_content=unread
+    )
+
+    assert audit.status == "incomplete"
+    assert audit.approval_blocked is False
+    assert audit.unread_source_content == unread
+    assert audit.detail is not None and "could not read" in audit.detail
+    assert (
+        audit_segmentation_lines(
+            "Jane Candidate\nPython\n", ["Jane Candidate"], unread_source_content=unread
+        ).status
+        == "failed"
+    )
+
+
 def test_segmentation_schema_rejects_malformed_output() -> None:
     payload = _output().model_dump(mode="json")
     payload["sections"][0]["unexpected"] = "not allowed"

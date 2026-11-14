@@ -4,6 +4,9 @@ import io
 
 import pytest
 from docx import Document
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from docx.opc.packuri import PackURI
+from docx.opc.part import Part
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
 from docx.shared import Inches
@@ -205,10 +208,14 @@ def test_read_docx_reports_inline_content_controls(tmp_path: Path) -> None:
     ]
     assert "a content control inside a paragraph" in content.limitations[0].message
     assert "Review the source document" in content.limitations[0].message
-    # The coverage audit measures only the text the reader supplied, so its pass
-    # cannot stand in for the missing control text.
-    audit = audit_segmentation_lines(content.plain_text, content.plain_text.splitlines())
-    assert audit.status == "passed"
+    # The coverage audit measures only the text the reader supplied, so it reports
+    # `incomplete` here instead of passing over the missing control text.
+    audit = audit_segmentation_lines(
+        content.plain_text,
+        content.plain_text.splitlines(),
+        [limitation.message for limitation in content.limitations],
+    )
+    assert audit.status == "incomplete"
 
 
 def test_read_docx_reports_a_field_result(tmp_path: Path) -> None:
@@ -231,8 +238,12 @@ def test_read_docx_reports_a_field_result(tmp_path: Path) -> None:
         ("field", "body", 1)
     ]
     assert "cached visible result is not read" in content.limitations[0].message
-    audit = audit_segmentation_lines(content.plain_text, content.plain_text.splitlines())
-    assert audit.status == "passed"
+    audit = audit_segmentation_lines(
+        content.plain_text,
+        content.plain_text.splitlines(),
+        [limitation.message for limitation in content.limitations],
+    )
+    assert audit.status == "incomplete"
 
 
 def test_read_docx_reads_only_enabled_header_variants(tmp_path: Path) -> None:
@@ -357,6 +368,125 @@ def test_read_docx_reports_an_unrecognized_block_wrapper(tmp_path: Path) -> None
     assert limitation.element == "customXml"
     assert "body child 2 (customXml)" in limitation.message
     assert "does not recognize is not read" in limitation.message
+
+
+def test_read_docx_reads_a_first_page_header_defined_before_its_using_section(
+    tmp_path: Path,
+) -> None:
+    """A definition parked in an earlier section is read where Word displays it."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.sections[0].first_page_header.paragraphs[0].text = "Inherited first page"
+    document.add_paragraph("Section one body")
+    document.add_section()
+    document.sections[1].different_first_page_header_footer = True
+    document.add_paragraph("Section two body")
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert [
+        (item.location, item.variant, item.section_index, item.text)
+        for item in content.header_footer
+    ] == [("header", "first_page", 2, "Inherited first page")]
+    assert content.plain_text.splitlines()[0] == "Inherited first page"
+    assert content.limitations == []
+
+
+def test_read_docx_reads_runs_inside_an_inline_wrapper(tmp_path: Path) -> None:
+    """A structural wrapper around runs keeps its text and its position."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    citizenship = document.add_paragraph("Citizenship: ")
+    citizenship._p.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="field">'
+            "<w:r><w:t>Inline wrapped</w:t></w:r></w:customXml>"
+        )
+    )
+    middle = document.add_paragraph("Before ")
+    middle._p.append(
+        parse_xml(
+            f'<w:smartTag {nsdecls("w")} w:element="tag">'
+            "<w:r><w:t>middle</w:t></w:r></w:smartTag>"
+        )
+    )
+    middle._p.append(
+        parse_xml(f'<w:r {nsdecls("w")}><w:t xml:space="preserve"> after</w:t></w:r>')
+    )
+    table = document.add_table(rows=1, cols=1)
+    table.rows[0].cells[0].paragraphs[0]._p.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="field">'
+            "<w:r><w:t>In cell</w:t></w:r></w:customXml>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Citizenship: Inline wrapped",
+        "Before middle after",
+        "In cell",
+    ]
+    assert content.limitations == []
+
+
+def test_read_docx_reports_tracked_moves(tmp_path: Path) -> None:
+    """A moved block is a tracked revision, so it is reported like an insertion."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    body = document.element.body
+    for revision_id, tag in enumerate(("moveFrom", "moveTo"), start=1):
+        body.insert(
+            len(body) - 1,
+            parse_xml(
+                f'<w:{tag} {nsdecls("w")} w:id="{revision_id}" w:author="recruiter" '
+                'w:date="2026-01-01T00:00:00Z">'
+                "<w:p><w:r><w:t>Moved line</w:t></w:r></w:p>"
+                f"</w:{tag}>"
+            ),
+        )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert "Moved line" not in content.plain_text
+    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
+        ("tracked_change", "body", 2)
+    ]
+    assert "moves are not resolved" in content.limitations[0].message
+
+
+def test_read_docx_reports_an_embedded_alt_chunk(tmp_path: Path) -> None:
+    """An alternate-format chunk holds text outside the body text stream."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    chunk = Part(
+        PackURI("/word/chunk0.html"),
+        "text/html",
+        b"<html><body><p>Chunk text</p></body></html>",
+        document.part.package,
+    )
+    chunk_id = document.part.relate_to(chunk, RT.A_F_CHUNK)
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        parse_xml(f'<w:altChunk {nsdecls("w", "r")} r:id="{chunk_id}"/>'),
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate"]
+    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
+        ("alt_chunk", "body", 1)
+    ]
+    assert "alternate-format chunk" in content.limitations[0].message
+    assert "Review the source document" in content.limitations[0].message
 
 
 def test_read_docx_with_embedded_image_preserves_text_extraction(tmp_path: Path) -> None:

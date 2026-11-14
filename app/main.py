@@ -637,6 +637,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
             audit = audit_segmentation_lines(
                 extracted_text,
                 segmentation_output_line_evidence(segmentation_output),
+                unread_source_content=ingestion_limitations,
             )
             profile, normalized_document = materialize_llm_segmentation(
                 extracted_text, segmentation_output
