@@ -37,6 +37,7 @@ is preserved under that name rather than given a second verdict path.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.pipeline.evidence import (
@@ -102,96 +103,166 @@ def dispose_finding(
     output_section_pages: dict[str, list[int]],
     measurement: MeasurementResult | None = None,
 ) -> FindingDisposition:
-    """One deterministic disposition for one finding: kind, reason, evidence."""
-    claim = finding.claimed_difference
-    roles = _region_roles(candidate_scope, finding.region)
+    """One deterministic disposition for one finding: kind, reason, evidence.
+
+    The rules are tried in order and the FIRST decided one wins; a step returns
+    None when its rule does not apply to this claim.
+    """
+    claim = _claim(finding, candidate_scope, output_section_pages)
+    evidence = _evidence(claim, candidate_scope, measurement)
+    decided = (
+        _measured(claim, measurement, evidence)
+        or _matching_claim(claim, evidence)
+        or _page_placement(claim, evidence)
+        or _header_content_value(claim, candidate_scope, evidence)
+        or _candidate_content_value(claim, candidate_scope, evidence)
+    )
+    # Nothing the shell holds disposes this presentation property yet, so it
+    # stays payable and is never dropped.
+    return decided or _dispose("unresolved", "presentation_property_needs_its_measurement", evidence)
+
+
+@dataclass(frozen=True)
+class _Claim:
+    """The structured facts one disposition reads, resolved once per finding:
+    the typed claim, the candidate roles/kind its region resolves to, and the
+    pages the render itself carries that section on."""
+
+    finding: DefectFinding
+    claim: str
+    roles: list[str]
+    region_kind: str | None
+    section: str | None
+    pages: list[int]
+
+
+def _claim(
+    finding: DefectFinding,
+    candidate_scope: dict[str, Any],
+    output_section_pages: dict[str, list[int]],
+) -> _Claim:
     region_kind = (candidate_scope.get("region_kinds") or {}).get(finding.region)
     section = _owning_node(finding.region, output_section_pages)
     if section is None and region_kind == "section":
         # The region IS a section: an inventory without it means the render
         # carries that section on no page.
         section = finding.region
-    pages = [int(page) for page in output_section_pages.get(section) or ()] if section else []
+    return _Claim(
+        finding=finding,
+        claim=finding.claimed_difference,
+        roles=_region_roles(candidate_scope, finding.region),
+        region_kind=region_kind,
+        section=section,
+        pages=[int(page) for page in output_section_pages.get(section) or ()] if section else [],
+    )
+
+
+def _evidence(
+    claim: _Claim, candidate_scope: dict[str, Any], measurement: MeasurementResult | None
+) -> list[str]:
     evidence = [
-        f"claim:{claim}",
-        f"region:{finding.region}:kind={region_kind or 'unknown'}",
+        f"claim:{claim.claim}",
+        f"region:{claim.finding.region}:kind={claim.region_kind or 'unknown'}",
     ]
-    if roles:
+    if claim.roles:
         content_kinds = candidate_scope.get("content_kinds_by_role") or {}
         leaf_kinds = candidate_scope.get("available_leaf_kinds_by_role") or {}
         evidence.extend(
             "candidate_role:"
             f"{role}:content_kinds={'/'.join(content_kinds.get(role) or ()) or 'none'}"
             f":leaf_kinds={'/'.join(leaf_kinds.get(role) or ()) or 'none'}"
-            for role in roles
+            for role in claim.roles
         )
-    if section:
-        evidence.append(f"output_section_pages:{section}={pages}")
+    if claim.section:
+        evidence.append(f"output_section_pages:{claim.section}={claim.pages}")
     if measurement is not None:
         evidence.append(f"measurement:{measurement.request_id}:status={measurement.status}")
+    return evidence
 
-    # 1) A recorded measurement decides a property on the actual final PDF: it
-    #    is the only evidence that can confirm or refute it, and it decides only
-    #    the property it measured (a separate finding keeps its own checks). A
-    #    content_value claim is never decided here: a delta proves a value
-    #    differs, never that the candidate's own value is wrong.
-    if (measurement is not None and claim != "content_value"
-            and measurement.status == "confirmed" and measurement.delta_pt is not None):
-        evidence.insert(0, f"measurement:{measurement.request_id}:delta_pt={measurement.delta_pt}")
-        if abs(measurement.delta_pt) <= E2_IMPROVEMENT_TOLERANCE_PT:
-            return _dispose("confirmed_matching", "measured_property_matches_within_tolerance", evidence)
-        return _dispose("suspected_defect", "measured_property_differs_beyond_tolerance", evidence)
 
-    # 2) An observation that itself reports matching presentation on both sides
-    #    is confirmed matching while no measurement contradicts it (step 1).
-    if claim == "matching":
-        return _dispose("confirmed_matching", "observation_reports_matching_presentation", evidence)
+def _measured(
+    claim: _Claim, measurement: MeasurementResult | None, evidence: list[str]
+) -> FindingDisposition | None:
+    """Rule 1: a recorded measurement decides the property it measured on the
+    actual final PDF, and only that property. A content_value claim is never
+    decided here: a delta proves a value differs, never that the candidate's own
+    value is wrong."""
+    if (
+        measurement is None or claim.claim == "content_value"
+        or measurement.status != "confirmed" or measurement.delta_pt is None
+    ):
+        return None
+    evidence.insert(0, f"measurement:{measurement.request_id}:delta_pt={measurement.delta_pt}")
+    if abs(measurement.delta_pt) <= E2_IMPROVEMENT_TOLERANCE_PT:
+        return _dispose("confirmed_matching", "measured_property_matches_within_tolerance", evidence)
+    return _dispose("suspected_defect", "measured_property_differs_beyond_tolerance", evidence)
 
-    # 3) Page placement is decided by the render's OWN section/page inventory:
-    #    a section carried elsewhere in the output is reflow, never missing
-    #    content, and a section carried nowhere keeps its normal checks.
-    if claim == "page_placement":
-        if section is None:
-            return _dispose("unresolved", "region_is_not_a_render_section", evidence)
-        if not pages:
-            return _dispose("unresolved", "section_absent_from_whole_output", evidence)
-        if finding.page in pages:
-            return _dispose("expected_variation", "page_placement_disproved_by_output_inventory", evidence)
-        return _dispose("expected_variation", "page_local_global_missing_section_assertion", evidence)
 
-    # 4) Candidate-owned content values, counts and key sets are not required to
-    #    match the target's; target-person content is diagnostic evidence only.
-    if claim == "content_value":
-        if region_kind == "header_row":
-            if "name" in ((candidate_scope.get("region_slots") or {}).get(finding.region) or ()):
-                # The candidate name is one atomic string (`_slot_shape_contract`
-                # candidate:name), so splitting or re-casing it is a
-                # representation limit, not a candidate content change.
-                return _dispose("expected_variation", "representation_limit:atomic_candidate_name", evidence)
-            if not candidate_scope.get("has_structured_header_contacts"):
-                # The candidate's contacts are one flat joined string: it cannot
-                # express per-field labels/values at all.
-                return _dispose("expected_variation", "representation_limit:flat_candidate_contact", evidence)
-            return _dispose("unresolved", "header_contact_values_need_the_declared_measurement", evidence)
-        if not roles:
-            # This is where the retired `target_person_fact_or_value` keyword
-            # reason lands: the same verdict, decided by structure.
-            return _dispose("expected_variation", "target_person_content_presence", evidence)
-        content_kinds = candidate_scope.get("content_kinds_by_role") or {}
-        available = candidate_scope.get("available_section_roles") or []
-        if not any(role in content_kinds or role in available for role in roles):
-            if "languages" in roles and not candidate_scope.get("has_language_proficiency_entries"):
-                return _dispose(
-                    "expected_variation", "candidate_content_shape_absent:language_proficiency", evidence
-                )
-            return _dispose("expected_variation", "target_section_without_candidate_content", evidence)
-        if not pages:
-            return _dispose("unresolved", "section_absent_from_whole_output", evidence)
-        return _dispose("expected_variation", "candidate_content_owned", evidence)
+def _matching_claim(claim: _Claim, evidence: list[str]) -> FindingDisposition | None:
+    """Rule 2: an observation that itself reports matching presentation on both
+    sides, while no measurement contradicts it (rule 1)."""
+    if claim.claim != "matching":
+        return None
+    return _dispose("confirmed_matching", "observation_reports_matching_presentation", evidence)
 
-    # 5) Any other presentation property keeps its normal checks: nothing the
-    #    shell holds disposes it yet, so it stays payable and is never dropped.
-    return _dispose("unresolved", "presentation_property_needs_its_measurement", evidence)
+
+def _page_placement(claim: _Claim, evidence: list[str]) -> FindingDisposition | None:
+    """Rule 3: page placement is decided by the render's OWN section/page
+    inventory — a section carried elsewhere in the output is reflow, never
+    missing content, and a section carried nowhere keeps its normal checks."""
+    if claim.claim != "page_placement":
+        return None
+    if claim.section is None:
+        return _dispose("unresolved", "region_is_not_a_render_section", evidence)
+    if not claim.pages:
+        return _dispose("unresolved", "section_absent_from_whole_output", evidence)
+    if claim.finding.page in claim.pages:
+        return _dispose("expected_variation", "page_placement_disproved_by_output_inventory", evidence)
+    return _dispose("expected_variation", "page_local_global_missing_section_assertion", evidence)
+
+
+def _header_content_value(
+    claim: _Claim, candidate_scope: dict[str, Any], evidence: list[str]
+) -> FindingDisposition | None:
+    """Rule 4a: header content values are limited by the candidate's own header
+    shape, never by the target's labels."""
+    if claim.claim != "content_value" or claim.region_kind != "header_row":
+        return None
+    slots = (candidate_scope.get("region_slots") or {}).get(claim.finding.region) or ()
+    if "name" in slots:
+        # The candidate name is one atomic string (`service._slot_shape_contract`
+        # candidate:name), so splitting or re-casing it is a representation
+        # limit, not a candidate content change.
+        return _dispose("expected_variation", "representation_limit:atomic_candidate_name", evidence)
+    if not candidate_scope.get("has_structured_header_contacts"):
+        # The candidate's contacts are one flat joined string: it cannot express
+        # per-field labels/values at all.
+        return _dispose("expected_variation", "representation_limit:flat_candidate_contact", evidence)
+    return _dispose("unresolved", "header_contact_values_need_the_declared_measurement", evidence)
+
+
+def _candidate_content_value(
+    claim: _Claim, candidate_scope: dict[str, Any], evidence: list[str]
+) -> FindingDisposition | None:
+    """Rule 4b: candidate-owned values, counts and key sets are not required to
+    match the target's; target-person content is diagnostic evidence only."""
+    if claim.claim != "content_value" or claim.region_kind == "header_row":
+        return None
+    if not claim.roles:
+        # This is where the retired `target_person_fact_or_value` keyword reason
+        # lands: the same verdict, decided by structure.
+        return _dispose("expected_variation", "target_person_content_presence", evidence)
+    content_kinds = candidate_scope.get("content_kinds_by_role") or {}
+    available = candidate_scope.get("available_section_roles") or []
+    if not any(role in content_kinds or role in available for role in claim.roles):
+        if "languages" in claim.roles and not candidate_scope.get("has_language_proficiency_entries"):
+            return _dispose(
+                "expected_variation", "candidate_content_shape_absent:language_proficiency", evidence
+            )
+        return _dispose("expected_variation", "target_section_without_candidate_content", evidence)
+    if not claim.pages:
+        return _dispose("unresolved", "section_absent_from_whole_output", evidence)
+    return _dispose("expected_variation", "candidate_content_owned", evidence)
 
 
 def _dispose(kind: DispositionKind, reason: str, evidence: list[str]) -> FindingDisposition:
