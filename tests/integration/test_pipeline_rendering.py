@@ -2,9 +2,13 @@
 from __future__ import annotations
 import json
 import re
+import threading
+import time
 from html.parser import HTMLParser
 from pathlib import Path
 import pytest
+from PIL import Image
+from pypdf import PdfReader
 import app.pipeline.quality as quality_module
 from app.pipeline.candidate_content import CandidateDocument, CandidateLeaf, CandidateSection, UnroutableContent
 from app.pipeline.layout_state import C2LayoutState, SectionContent, state_bytes
@@ -13,6 +17,7 @@ from app.pipeline.html_renderer import render_html
 from app.pipeline.quality import blank_page_gate, candidate_accounting_gate, content_gate, content_shape_verification, privacy_gate, structure_gate
 from tests.helpers.pipeline_layout import BODY, BULLET_TIERS, FULL_COVERAGE_LABELS, SUMMARY, compile_synthetic
 from tests.helpers.pipeline_rendering import _leaf, rich_candidate
+from tests.helpers.synthetic_pdf import build_plain_target_pdf, build_two_page_overflow_pdf
 
 pytestmark = pytest.mark.integration
 
@@ -1412,3 +1417,185 @@ def test_structure_gate_uses_semantic_boundary_when_title_equals_heading(tmp_pat
     html_path.write_text(html, encoding="utf-8")
     report = validate_output_structure(context, html_path=html_path, layout_spec=spec)
     assert report.passed, report.model_dump()
+
+
+# -- the one process-wide PDFium owner -------------------------------------
+#
+# The substitute below stands in for the native calls so overlap and leaked
+# handles are observable without ever touching PDFium from two threads, which
+# is exactly what the real library forbids and can crash on.
+
+
+class _SubstitutePdfium:
+    """A safe native-call substitute: records every lifetime it is given."""
+
+    def __init__(self, *, render_seconds: float = 0.05, fail_on_render: int | None = None,
+                 fail_how: str | None = None):
+        self.render_seconds = render_seconds
+        self.fail_on_render = fail_on_render
+        self.fail_how = fail_how
+        self.render_calls = 0
+        self.intervals: list[tuple[float, float]] = []
+        self.documents: list[_SubstituteDocument] = []
+        self.pages: list[_SubstitutePage] = []
+        self.bitmaps: list[_SubstituteBitmap] = []
+
+    def PdfDocument(self, path):  # the name production calls
+        document = _SubstituteDocument(self, page_count=len(PdfReader(path).pages))
+        self.documents.append(document)
+        return document
+
+
+class _SubstituteDocument:
+    def __init__(self, substitute: _SubstitutePdfium, page_count: int = 2):
+        self.substitute = substitute
+        self.page_count = page_count
+        self.closed = False
+
+    def __len__(self) -> int:
+        return self.page_count
+
+    def __iter__(self):
+        for index in range(self.page_count):
+            yield self[index]
+
+    def __getitem__(self, index: int) -> "_SubstitutePage":
+        page = _SubstitutePage(self.substitute)
+        self.substitute.pages.append(page)
+        return page
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _SubstitutePage:
+    def __init__(self, substitute: _SubstitutePdfium):
+        self.substitute = substitute
+        self.closed = False
+
+    def render(self, *, scale: float) -> "_SubstituteBitmap":
+        substitute = self.substitute
+        substitute.render_calls += 1
+        failing = substitute.render_calls == substitute.fail_on_render
+        if failing and substitute.fail_how == "render":
+            raise RuntimeError("synthetic native render failure")
+        started = time.monotonic()
+        time.sleep(substitute.render_seconds)  # a real render holds the page this long
+        substitute.intervals.append((started, time.monotonic()))
+        bitmap = _SubstituteBitmap(
+            substitute, fail_to_pil=bool(failing and substitute.fail_how == "to_pil")
+        )
+        substitute.bitmaps.append(bitmap)
+        return bitmap
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _SubstituteBitmap:
+    def __init__(self, substitute: _SubstitutePdfium, *, fail_to_pil: bool):
+        self.substitute = substitute
+        self.fail_to_pil = fail_to_pil
+        self.closed = False
+
+    def to_pil(self):
+        if self.fail_to_pil:
+            raise RuntimeError("synthetic image conversion failure")
+        return Image.new("RGB", (8, 8), "white")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _substituted_pdfium(monkeypatch: pytest.MonkeyPatch, substitute: _SubstitutePdfium) -> None:
+    from app import pdfium_native
+
+    monkeypatch.setattr(pdfium_native, "pdfium", substitute)
+
+
+def _rasterize(pdf: Path, output_dir: Path) -> None:
+    from app.pipeline import rendering
+
+    rendering._render_pages(pdf, output_dir, "target")
+
+
+def _compare(pdf: Path, output_dir: Path) -> None:
+    from app.template_analysis import visual_comparator
+
+    visual_comparator._render_pdf(pdf, output_dir, filename_prefix="generated_page", dpi=144)
+
+
+def test_two_independent_pdfium_operations_never_overlap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rasterization and a comparison started independently in one process
+    never hold PDFium at the same time; without the shared owner their recorded
+    native intervals intersect."""
+    substitute = _SubstitutePdfium()
+    _substituted_pdfium(monkeypatch, substitute)
+    target = build_two_page_overflow_pdf(tmp_path / "target.pdf")
+    generated = build_plain_target_pdf(tmp_path / "generated.pdf")
+    output_dir = tmp_path / "pages"
+    output_dir.mkdir()
+    ready = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def execute(operation, pdf: Path) -> None:
+        try:
+            ready.wait()
+            operation(pdf, output_dir)
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [
+        threading.Thread(target=execute, args=(operation, pdf))
+        for operation, pdf in ((_rasterize, target), (_compare, generated))
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert substitute.render_calls == 3
+    ordered = sorted(substitute.intervals)
+    overlaps = [
+        (earlier, later) for earlier, later in zip(ordered, ordered[1:]) if later[0] < earlier[1]
+    ]
+    assert overlaps == [], f"independent PDFium lifetimes overlapped: {overlaps}"
+
+
+@pytest.mark.parametrize("failure", ["render", "to_pil", "save"])
+@pytest.mark.parametrize("owner", ["rasterize", "compare"])
+def test_a_failed_pdfium_lifetime_leaks_no_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner: str, failure: str
+) -> None:
+    """A page failure, an image-conversion failure and a save failure all leave
+    every opened document, page and bitmap closed and the boundary free."""
+    from app.template_analysis import visual_comparator
+
+    substitute = _SubstitutePdfium(fail_on_render=2, fail_how=None if failure == "save" else failure)
+    _substituted_pdfium(monkeypatch, substitute)
+    pdf = build_two_page_overflow_pdf(tmp_path / "target.pdf")
+    output_dir = tmp_path / "pages"
+    if failure != "save":
+        output_dir.mkdir()
+
+    operation = _rasterize if owner == "rasterize" else _compare
+    expected = {
+        ("rasterize", "render"): RuntimeError,
+        ("rasterize", "to_pil"): RuntimeError,
+        ("rasterize", "save"): FileNotFoundError,
+        ("compare", "render"): visual_comparator.VisualComparisonError,
+        ("compare", "to_pil"): visual_comparator.VisualComparisonError,
+        ("compare", "save"): visual_comparator.VisualComparisonError,
+    }[(owner, failure)]
+    with pytest.raises(expected):
+        operation(pdf, output_dir)
+
+    assert substitute.documents and all(document.closed for document in substitute.documents)
+    assert substitute.pages and all(page.closed for page in substitute.pages)
+    assert substitute.bitmaps and all(bitmap.closed for bitmap in substitute.bitmaps)
+    # The boundary was released on the failure path, so a later lifetime still runs.
+    substitute.fail_on_render = None
+    substitute.fail_how = None
+    output_dir.mkdir(exist_ok=True)
+    _rasterize(pdf, output_dir)

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
+from app import pdfium_native
 from app.template_analysis.schemas import PageComparison, VisualComparisonReport
 
 
@@ -245,27 +247,15 @@ def _render_pdf(
     filename_prefix: str,
     dpi: int,
 ) -> list[str]:
-    try:
-        import pypdfium2 as pdfium
-    except ImportError as exc:  # pragma: no cover - dependency installation issue.
-        raise VisualComparisonError(
-            "pypdfium2 is required for generated-vs-target PDF comparison."
-        ) from exc
-
     filenames: list[str] = []
     try:
-        document = pdfium.PdfDocument(str(path))
         scale = dpi / 72
-        for page_index in range(len(document)):
-            page = document[page_index]
-            bitmap = page.render(scale=scale)
-            image = bitmap.to_pil().convert("RGB")
-            filename = f"{filename_prefix}_{page_index + 1:03d}.png"
-            image.save(output_dir / filename, format="PNG")
-            filenames.append(filename)
-            bitmap.close()
-            page.close()
-        document.close()
+        with pdfium_native.native_lifetime(), closing(pdfium_native.pdfium.PdfDocument(str(path))) as document:
+            for page_index in range(len(document)):
+                filename = f"{filename_prefix}_{page_index + 1:03d}.png"
+                with closing(document[page_index]) as page, closing(page.render(scale=scale)) as bitmap:
+                    bitmap.to_pil().convert("RGB").save(output_dir / filename, format="PNG")
+                filenames.append(filename)
     except Exception as exc:
         raise VisualComparisonError(f"PDF pages could not be rendered for comparison: {path}") from exc
     return filenames

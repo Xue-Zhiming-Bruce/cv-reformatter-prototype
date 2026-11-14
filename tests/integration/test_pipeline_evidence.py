@@ -725,3 +725,30 @@ def test_color_model_request_preserves_pixels_and_fits_existing_wire_cap(tmp_pat
     assert len(images) == count
     assert all(image["media_type"] == "image/webp" and image["path"] == prepared.name
                and image["sha256"] == hashlib.sha256(prepared.read_bytes()).hexdigest() for image in images)
+
+
+def test_two_real_documents_rasterize_sequentially_with_their_own_pages(tmp_path: Path) -> None:
+    """Two real PDFs rasterized one after the other in one process keep their own
+    page count, page order, fixed scale and bytes."""
+    from PIL import Image
+    from tests.helpers.synthetic_pdf import build_plain_target_pdf, build_two_page_overflow_pdf
+
+    two_page = build_two_page_overflow_pdf(tmp_path / "two_page.pdf")
+    one_page = build_plain_target_pdf(tmp_path / "one_page.pdf")
+
+    first = e._render_pages(two_page, tmp_path, "first")
+    second = e._render_pages(one_page, tmp_path, "second")
+
+    assert [path.name for path in first] == ["first_page_1.png", "first_page_2.png"]
+    assert [path.name for path in second] == ["second_page_1.png"]
+    with Image.open(first[0]) as page, Image.open(second[0]) as other_page:
+        assert page.size == (1224, 1584)  # 612x792pt at the fixed scale=2
+        assert other_page.size == (1224, 1584)
+    # Page order is the document's own: the two pages are different pixels.
+    assert first[0].read_bytes() != first[1].read_bytes()
+    # Repeating the same sequential pair reproduces the same pixels.
+    repeat_dir = tmp_path / "repeat"
+    repeat_dir.mkdir()
+    assert [path.read_bytes() for path in e._render_pages(two_page, repeat_dir, "first")] == [
+        path.read_bytes() for path in first
+    ]
