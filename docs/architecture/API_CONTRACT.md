@@ -103,12 +103,17 @@ Response fields:
   enumerated read set — authored body order, table rows and cells walked on the
   table's own XML so a control or structural wrapper around either is read,
   cells read through the same block walk, block wrappers of paragraphs/tables,
-  runs held by a pass-through inline wrapper, one branch of an inline
-  `mc:AlternateContent`, and the default, displayed first-page and enabled
-  even-page headers/footers — and states that shapes outside it are not
-  detectable. Every content control in a part that no walk descended is counted
-  as a limitation, so a control in a position the reader cannot traverse is
-  named rather than skipped.
+  inline text read by one walk (runs, hyperlinks, pass-through inline wrappers
+  and the runs of the selected `mc:AlternateContent` branch), and the default,
+  displayed first-page and enabled even-page headers/footers — and states that
+  shapes outside it are not detectable. Reading and reporting are one traversal:
+  every inline element the walk declines is named where it is declined, at any
+  nesting depth, and a wrapper or ruby annotation holding text is reported rather
+  than dropped. A branch of `mc:AlternateContent` that was not chosen is neither
+  read nor reported, and no shape inside it is counted, because it renders what
+  was read. Every content control in a part that no walk descended is counted as
+  a limitation, so a control in a position the reader cannot traverse is named
+  rather than skipped.
 
 In addition to `raw_extracted_text.txt` and `candidate_profile.json`, processing
 persists two immutable source-analysis artifacts:

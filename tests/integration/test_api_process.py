@@ -882,6 +882,187 @@ def test_unread_field_text_blocks_approval_and_names_the_text(
     assert detail["unread_text_source_content"] == body["ingestion_limitations"]
 
 
+def test_wrapper_inside_a_wrapper_is_named_at_the_endpoint(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Issue #49: read and report are one walk, so a nested wrapper cannot vanish."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    nested = document.add_paragraph()
+    nested._p.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="odd">'
+            "<w:unknownWrapper><w:r><w:t>Nested visible</w:t></w:r></w:unknownWrapper>"
+            "</w:customXml>"
+        )
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "Nested visible" not in body["original_text"]
+    (limitation,) = body["ingestion_limitations"]
+    assert "unknownWrapper" in limitation
+    assert "unknown inline" in limitation
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "incomplete"
+    assert audit["unread_text_source_content"] == body["ingestion_limitations"]
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+
+    assert approval.status_code == 409, approval.text
+    assert approval.json()["detail"]["error_code"] == "source_text_unread"
+
+
+def test_ruby_annotation_text_blocks_approval_and_names_the_gap(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Ruby base and annotation text sit in nested runs, so it is named, not lost."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    named = document.add_paragraph("Name: ")
+    named._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")}><w:ruby><w:rubyPr><w:lid w:val="ja-JP"/></w:rubyPr>'
+            "<w:rt><w:r><w:t>タナカ</w:t></w:r></w:rt>"
+            "<w:rubyBase><w:r><w:t>田中</w:t></w:r></w:rubyBase>"
+            "</w:ruby></w:r>"
+        )
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "田中" not in body["original_text"]
+    assert "タナカ" not in body["original_text"]
+    (limitation,) = body["ingestion_limitations"]
+    assert "base and annotation text is not read" in limitation
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "incomplete"
+    assert audit["unread_text_source_content"] == body["ingestion_limitations"]
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+
+    assert approval.status_code == 409, approval.text
+    assert approval.json()["detail"]["error_code"] == "source_text_unread"
+
+
+@pytest.mark.usefixtures("a_generation_without_model_loop")
+def test_alternative_branch_that_was_not_read_is_not_reported(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The unread branch renders the same content, so approval is not blocked by it."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    exporter = make_proof_pdf_exporter()
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", exporter)
+    monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", exporter)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    alternative = document.add_paragraph("Tagline: ")
+    alternative._p.append(
+        parse_xml(
+            '<mc:AlternateContent '
+            'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+            f'{nsdecls("w")}>'
+            '<mc:Choice Requires="wps"><w:r><w:t>Modern</w:t></w:r></mc:Choice>'
+            "<mc:Fallback>"
+            "<w:sdt><w:sdtContent><w:r><w:t>Legacy</w:t></w:r></w:sdtContent></w:sdt>"
+            "</mc:Fallback>"
+            "</mc:AlternateContent>"
+        )
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "Tagline: Modern" in body["original_text"]
+    assert "Legacy" not in body["original_text"]
+    assert body["ingestion_limitations"] == []
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "passed"
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 200, approval.text
+
+    generated = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": body["artifact_id"],
+            "approved_profile_version_id": approval.json()["profile_version_id"],
+            "template_name": "apex_standard",
+        },
+    )
+    assert generated.status_code == 200, generated.text
+
+
 @pytest.mark.usefixtures("a_generation_without_model_loop")
 def test_table_rows_and_cells_held_by_a_content_control_are_read(
     tmp_path: Path,

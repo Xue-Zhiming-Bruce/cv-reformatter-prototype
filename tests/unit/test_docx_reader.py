@@ -534,6 +534,147 @@ def test_read_docx_reports_an_unrecognized_inline_wrapper(tmp_path: Path) -> Non
     )
 
 
+def test_read_docx_names_a_wrapper_inside_a_pass_through_wrapper(tmp_path: Path) -> None:
+    """Read and report are one walk: a wrapper inside a wrapper is named, not lost."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Jane Candidate")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="odd">'
+            "<w:foo><w:r><w:t>Nested visible</w:t></w:r></w:foo>"
+            "</w:customXml>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate"]
+    assert [(item.kind, item.location, item.element) for item in content.limitations] == [
+        ("unknown_inline", "body child 1", "foo")
+    ]
+    assert content.limitations[0].blocks_source_review is True
+
+
+def test_read_docx_names_a_wrapper_inside_the_branch_it_reads(tmp_path: Path) -> None:
+    """The chosen alternative branch is inspected, so its own wrapper is named."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Alternative: ")
+    paragraph._p.append(
+        parse_xml(
+            '<mc:AlternateContent '
+            'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+            f'{nsdecls("w")}>'
+            '<mc:Choice Requires="wps">'
+            "<w:foo><w:r><w:t>CHOICE WRAPPED</w:t></w:r></w:foo>"
+            "</mc:Choice>"
+            "<mc:Fallback><w:r><w:t>FALLBACK</w:t></w:r></mc:Fallback>"
+            "</mc:AlternateContent>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Alternative:"]
+    assert [(item.kind, item.location, item.element) for item in content.limitations] == [
+        ("unknown_inline", "body child 1", "foo")
+    ]
+
+
+def test_read_docx_skips_the_alternative_branch_it_does_not_read(tmp_path: Path) -> None:
+    """The unread branch renders what was read, so its shapes are not reported."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Alternative: ")
+    paragraph._p.append(
+        parse_xml(
+            '<mc:AlternateContent '
+            'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+            f'{nsdecls("w")}>'
+            '<mc:Choice Requires="wps"><w:r><w:t>CHOICE</w:t></w:r></mc:Choice>'
+            "<mc:Fallback><w:sdt><w:sdtContent>"
+            "<w:r><w:t>FALLBACK</w:t></w:r>"
+            "<w:fldSimple w:instr='PAGE'><w:r><w:t>1</w:t></w:r></w:fldSimple>"
+            "</w:sdtContent></w:sdt></mc:Fallback>"
+            "</mc:AlternateContent>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Alternative: CHOICE"]
+    assert content.limitations == []
+
+
+def test_read_docx_reports_ruby_text_instead_of_dropping_it(tmp_path: Path) -> None:
+    """Ruby base and annotation sit in nested runs, so a run's text misses them."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Name: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")}><w:ruby><w:rubyPr>'
+            "<w:lid w:val=\"ja-JP\"/><w:dirty w:val=\"0\"/>"
+            "</w:rubyPr>"
+            "<w:rt><w:r><w:t>タナカ</w:t></w:r></w:rt>"
+            "<w:rubyBase><w:r><w:t>田中</w:t></w:r></w:rubyBase>"
+            "</w:ruby></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Name:"]
+    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
+        ("ruby", "body child 1", 1)
+    ]
+    assert "base and annotation text is not read" in content.limitations[0].message
+    assert content.limitations[0].blocks_source_review is True
+
+
+def test_read_docx_reads_runs_hyperlinks_and_revisions_without_inline_noise(
+    tmp_path: Path,
+) -> None:
+    """Run text, tabs, hyperlinks and revisions stay on their existing paths."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Jane ")
+    run = paragraph.add_run("Candidate")
+    run.add_tab()
+    run.add_text("Berlin")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:hyperlink {nsdecls("w")}>'
+            "<w:r><w:t>Linked</w:t></w:r></w:hyperlink>"
+        )
+    )
+    paragraph._p.append(
+        parse_xml(
+            f'<w:ins {nsdecls("w")} w:id="1" w:author="a" w:date="2024-01-01T00:00:00Z">'
+            "<w:r><w:t>Inserted</w:t></w:r></w:ins>"
+        )
+    )
+    paragraph._p.append(
+        parse_xml(
+            f'<w:del {nsdecls("w")} w:id="2" w:author="a" w:date="2024-01-01T00:00:00Z">'
+            "<w:r><w:delText>Deleted</w:delText></w:r></w:del>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Jane Candidate\tBerlinLinked"]
+    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
+        ("tracked_change", "body", 2)
+    ]
+
+
 def test_read_docx_reports_an_unrecognized_block_wrapper(tmp_path: Path) -> None:
     """A wrapper this reader cannot read in place is named, never skipped."""
     path = tmp_path / "resume.docx"
