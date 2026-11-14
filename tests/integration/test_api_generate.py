@@ -1498,3 +1498,35 @@ def test_revision_route_persists_additional_section_edits_and_dispositions(
     assert blocked.status_code == 409, blocked.text
     assert blocked.json()["detail"]["error_code"] == "source_content_unaccounted"
     assert blocked.json()["detail"]["pending_review_sections"][0]["source_block_id"] == "block_projects"
+
+
+def test_unread_source_content_blocks_generation(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #49: an audit over a partly read source names the gap, not a pass."""
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    profile = CandidateProfile(full_name="Jane Candidate", skills=["Python"])
+    artifact_id = "artifact_generate_unread"
+    artifact_dir = tmp_path / artifact_id
+    artifact_dir.mkdir()
+    version_id = _approve_profile_via_api(artifact_dir, profile, artifact_id)
+    unread = ["body: 1 text box found; text-box content is not read."]
+    (artifact_dir / "segmentation_audit.json").write_text(
+        json.dumps({"status": "incomplete", "unread_source_content": unread}),
+        encoding="utf-8",
+    )
+
+    response = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": artifact_id,
+            "approved_profile_version_id": version_id,
+            "template_name": "apex_standard",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "source_content_unread"
+    assert detail["unread_source_content"] == unread
+    assert not (artifact_dir / "candidate_profile.html").exists()

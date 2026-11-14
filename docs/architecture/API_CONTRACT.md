@@ -83,16 +83,23 @@ Response fields:
 - `ingestion_limitations` — one attributed review requirement per visible DOCX
   shape the reader cannot read (nested table, text box, tracked insertion,
   deletion or move, content control inside a paragraph, simple field result,
-  embedded `w:altChunk`, text-bearing block wrapper it cannot read in place),
-  naming its location and, for a wrapper, the element name and child position;
-  empty for PDFs and for DOCX files inside the supported shapes. The
-  `segmentation_audit.json` line-coverage audit only measures the text the
-  reader supplied, so it reports `incomplete` rather than `passed` whenever this
-  list is non-empty and never implies the source was read completely. The
-  reader's module docstring carries the enumerated read set — authored body
-  order, block wrappers of paragraphs/tables, runs held by a transparent inline
-  wrapper, and the default, displayed first-page and enabled even-page
-  headers/footers — and states that shapes outside it are not detectable.
+  embedded `w:altChunk` or `w:subDoc`, text-bearing block or inline wrapper it
+  cannot read in place, and images/drawings/charts counted per part because OCR
+  is out of scope), naming its location and, for a wrapper, the element name
+  and child position; empty for PDFs and for DOCX files inside the supported
+  shapes. The `segmentation_audit.json` line-coverage audit only measures the
+  text the reader supplied, so it reports `incomplete` rather than `passed`
+  whenever this list is non-empty and never implies the source was read
+  completely. An `incomplete` audit blocks profile revision saving, approval and
+  generation with 409 `source_content_unread` naming the unread content: no
+  acknowledgment path for unread source content exists yet, so such an artifact
+  has to be re-supplied with the unread content removed instead of being
+  approved on a partial read. The reader's module docstring carries the
+  enumerated read set — authored body order, table cells read through the same
+  block walk, block wrappers of paragraphs/tables, runs held by a pass-through
+  inline wrapper, one branch of an inline `mc:AlternateContent`, and the
+  default, displayed first-page and enabled even-page headers/footers — and
+  states that shapes outside it are not detectable.
 
 In addition to `raw_extracted_text.txt` and `candidate_profile.json`, processing
 persists two immutable source-analysis artifacts:
@@ -623,6 +630,7 @@ profile revision. Existing `approved_profile_*` error codes remain compatible:
 | Revision belongs to a different artifact | 400 | `approved_profile_artifact_mismatch` |
 | Artifact's extraction draft changed since revision creation | 400 | `approved_profile_draft_mismatch` |
 | Optional/custom source content is unaccounted for or pending review | 409 | `source_content_unaccounted` |
+| The reader reported visible source content it could not read (`segmentation_audit.status=incomplete`) | 409 | `source_content_unread` |
 | Uploaded target analysis is unsupported (`analysis_status=fallback_to_built_in`) | 409 | `uploaded_target_fallback_removed` |
 | Uploaded target has only a legacy v1 artifact-level spec (`structure_contract=legacy`) | 409 | `measured_layout_spec_required` |
 | Designer strategy (`claude_designer`/`openai_designer`) without an approved design or without explicit `allow_existing_template=true` | 409 | `fallback_requires_approval` |

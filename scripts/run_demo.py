@@ -46,10 +46,14 @@ def main() -> None:
     if resume_path == DEFAULT_INPUT and not resume_path.exists():
         create_synthetic_resume(resume_path)
 
-    resume_text = read_resume_text(resume_path)
+    resume_text, unread_source_content = read_resume_text(resume_path)
     llm_client = MockLLMClient() if args.mock else build_llm_client()
     output = segment_and_extract_resume(resume_text, llm_client)
-    audit = audit_segmentation_lines(resume_text, segmentation_output_line_evidence(output))
+    audit = audit_segmentation_lines(
+        resume_text,
+        segmentation_output_line_evidence(output),
+        unread_source_content,
+    )
     profile, document = materialize_llm_segmentation(resume_text, output)
     followup_message = generate_followup_message(profile)
 
@@ -80,10 +84,12 @@ def main() -> None:
     print(f"Artifacts: {OUTPUT_DIR}")
 
 
-def read_resume_text(path: Path) -> str:
+def read_resume_text(path: Path) -> tuple[str, list[str]]:
+    """Source text and the visible content the reader could not read."""
     if path.suffix.lower() == ".pdf":
-        return read_pdf_text(path)
-    return read_docx(path).plain_text
+        return read_pdf_text(path), []
+    content = read_docx(path)
+    return content.plain_text, [limitation.message for limitation in content.limitations]
 
 
 def create_synthetic_resume(path: Path) -> None:

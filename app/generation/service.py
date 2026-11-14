@@ -271,6 +271,25 @@ def validate_profile_source_review(
                     ],
                 },
             )
+        if segmentation_audit.unread_source_content:
+            # No acknowledgment path exists yet for content the reader never
+            # supplied, so unread source content fails closed instead of passing.
+            raise GenerationError(
+                409,
+                {
+                    "error_code": "source_content_unread",
+                    "message": (
+                        "The ingestion reader reported visible source content it could "
+                        "not read, so this profile cannot be approved or generated. No "
+                        "acknowledgment path for unread source content exists yet: the "
+                        "content must be removed from the source document, or an "
+                        "acknowledgment mechanism must be approved first."
+                    ),
+                    "unread_source_content": list(
+                        segmentation_audit.unread_source_content
+                    ),
+                },
+            )
     normalized_document = load_normalized_candidate_document(artifact_dir)
     missing_blocks = unaccounted_source_blocks(profile, normalized_document)
     unreviewed_blocks = unreviewed_source_blocks(profile, normalized_document)
