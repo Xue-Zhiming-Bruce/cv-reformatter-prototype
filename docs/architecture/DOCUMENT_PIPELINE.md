@@ -914,7 +914,17 @@ after `service.py::_e5_attribute` bound a confirmed owner, the identical
 re-measurement in `measurement.py::_measurement_improvement` decreased the actual
 final-PDF error, `service.py::_e5_accepted_regions_hold` re-checked every accepted
 region, and `repair_policy.py::_repair_capacity_available` reserved a review of
-the whole selected final PDF. A changed label policy, measurement method, or
+the whole selected final PDF.
+
+An attribution the Investigator could not decide is not authority to skip a
+decidable repair. `service.py::_e5_findings_needing_fallback_attribution`
+re-offers every finding whose current attribution is `unresolved`, so the
+deterministic rule decides the owner wherever the measurement alone proves it;
+the live record stays in the lane as the audit trail and the deciding record is
+appended with a trace note. A `confirmed` or `rejected` record is never
+re-decided, and where the rule cannot decide either, the live record is kept and
+no duplicate is written. Covered by
+`tests/integration/test_pipeline.py::test_live_unresolved_attribution_cannot_suppress_a_deterministically_proven_owner`. A changed label policy, measurement method, or
 attribution binding invalidates affected older lane A proofs; nothing is
 inherited.
 
@@ -931,6 +941,21 @@ the owner with its reason and never converted into a passing measurement:
   primitive, owner review;
 - a label whose *text* differs from the target wording — the metric measures
   presence only, owner review.
+
+What closing this slice deliberately does **not** resolve (unchanged):
+
+- **Reviewer false positives about synthetic/candidate content** — the
+  `section_presence` and invented list-item/entry-text findings recorded in the
+  authorized live trial. Content is candidate-owned (`CandidateProfile`
+  authority) and the row "Candidate facts, values, disclosure, target-person
+  exclusions" above stays `not repairable by any lane`; no measurement or
+  primitive was added, and the pipeline still cannot tell a reviewer error from
+  a real content gap, so those findings remain open for owner review.
+- **Reviewer false positives about normal pagination** — a target of 1–2 pages
+  against a 3-page render is still unmeasured: there is no pagination metric in
+  `MeasurementRequest.metric` and no typed primitive that changes page count, so
+  the comparison remains a documented mapping for the owner, never an automatic
+  repair.
 
 ### Real Measured-Template Consumption — October 25, 2026
 

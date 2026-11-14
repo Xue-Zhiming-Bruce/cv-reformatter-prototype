@@ -1688,9 +1688,14 @@ def test_valid_full_batch_with_reordered_hypotheses_still_enters_the_flow() -> N
         )
         for finding, hypothesis in bound
     ]
+    # `f1`'s confirmed builder record is final (never re-decided). `f2`'s
+    # renderer claim has no shell proof, so it is retained as unresolved — and an
+    # unresolved record no longer suppresses the deterministic rule, which gets
+    # another chance at it.
     assert e._e5_findings_needing_fallback_attribution(
         [first, second], measured, records
-    ) == []
+    ) == [second]
+    assert [record.hypothesis_status for record in records] == ["confirmed", "unresolved"]
     selected, stalled = repair_policy._next_e5_repair_finding(
         [first, second], measured, records, []
     )

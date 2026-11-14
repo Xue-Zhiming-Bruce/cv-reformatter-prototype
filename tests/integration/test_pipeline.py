@@ -842,6 +842,131 @@ def test_agentic_header_label_repair_requires_scoped_measured_improvement(tmp_pa
         assert not lane["repair_attempts"] and html.name == "render_1.html"
 
 
+def test_live_unresolved_attribution_cannot_suppress_a_deterministically_proven_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live `unresolved` answer is not authority to skip a repair.
+
+    Full flow over the real loop: the Investigator is scripted to answer
+    `unresolved` for a confirmed header-contact-label defect that the
+    measurement alone proves is owned by the one bounded primitive. The live
+    record is kept as the audit trail, the deterministic rule decides the owner
+    in the same round, and the Builder still runs and is measured. Before this
+    regression a live record — even an unresolved one — removed the finding from
+    the fallback set, so the loop stopped with the defect open.
+
+    Control: the same live answer on a lane that cannot express the change stays
+    unresolved with no duplicate record and no repair authority.
+    """
+    import shutil
+    from types import SimpleNamespace
+    from app.generation.agentic import render_agentic
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline import run_models, service
+    from app.pipeline.defect_ledger import DefectLedger
+    from app.pipeline.runtime import RunTrace
+    from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
+    from tests.helpers.pipeline import header_contact_inputs
+
+    inputs, spec, profile = header_contact_inputs(tmp_path)
+    for key, filename in (("adobe_json", ADOBE_RAW_FILENAME), ("normalized_evidence", NORMALIZED_LAYOUT_FILENAME)):
+        shutil.copy2(inputs[key], tmp_path / filename)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-model-boundary")
+    monkeypatch.setenv("AGENTIC_MAX_REPAIR_ROUNDS", "1")
+    monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "12")
+    monkeypatch.setenv("AGENTIC_MAX_TOOL_CALLS", "24")
+    phases: list[str] = []
+    asked: list[str] = []
+
+    def builder(_budget, _trace, *, payload, images, proposal_id, audit):
+        phases.append(audit.phase)
+        return run_models.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[],
+            header_contact_labels=False if audit.phase == "repair" else None)
+
+    def reviewer(_images, **kwargs):
+        if not kwargs["render_version"].endswith("v1"):
+            return []
+        return [service.DefectFinding(finding_id=kwargs["finding_id"], target_version=kwargs["target_version"],
+            render_version=kwargs["render_version"], page=1, region="header.product_contact",
+            observation="The render adds field labels in the header contact row; the target presents values only.",
+            suspected_dimension="header_contact_labels", requested_measurement=service.MeasurementRequest(
+                request_id="labels", metric="header_contact_label_geometry", page=1,
+                intent="compare generated header contact label presence"),
+            severity="medium", confidence=.9, reviewer="llm")]
+
+    def attribute(_pod, _budget, _trace, *, findings, results, lane, audit, current_representation, compiled_layout):
+        assert all(result.status == "confirmed" and result.delta_pt > 20 for result in results), results
+        asked.extend(finding.finding_id for finding in findings)
+        return [service.LiveAttributionHypothesis(finding_id=finding.finding_id, attribution="measurement_failure",
+            hypothesis_status="unresolved", repair_owner="reviewer",
+            reason="The live Investigator cannot tell the label prefix from the value.",
+            evidence_ids=[results[index].request_id]) for index, finding in enumerate(findings)]
+
+    monkeypatch.setattr(service, "_live_lane_a_builder", builder)
+    monkeypatch.setattr(service, "_live_reviewer_findings", reviewer)
+    monkeypatch.setattr(service, "_live_attribution_batch", attribute)
+    html, pdf, report = render_agentic(context=build_client_render_context(profile), layout_spec=spec,
+        target_pdf=inputs["target_pdf"], evidence_dir=tmp_path, output_dir=tmp_path / "run")
+    lane = json.loads((tmp_path / report["run_directory"] / "e5_state.json").read_text())["lanes"]["a"]
+
+    # the live `unresolved` answer really happened, and it is still on record
+    assert asked == [lane["findings"][0]["finding_id"]]
+    live = [item for item in lane["attributions"] if item["hypothesis_status"] == "unresolved"
+            and item["repair_owner"] == "reviewer"]
+    assert live and len(live) == 1, lane["attributions"]
+    # ... and it did not stop the deterministic rule from deciding the owner
+    decided = [item for item in lane["attributions"]
+               if item["attribution"] == "render_plan" and item["hypothesis_status"] == "confirmed"
+               and item["repair_owner"] == "builder"]
+    assert decided and decided[-1]["measurement_request_id"] == live[0]["measurement_request_id"]
+    assert "only primitive that changes them" in decided[-1]["reason"]
+    # the repair ran on that decision and was measured, not assumed
+    assert phases == ["initial", "repair"], phases
+    assert report["selected_version"].endswith("v2") and pdf.name == "render_2.pdf"
+    before, after = lane["measurement_results"][:2]
+    assert before["delta_pt"] > 20 and after["delta_pt"] == 0
+    assert lane["render_versions"][-1]["promoted"] and not report["open_findings"]
+    assert "Email:" not in html.read_text() and "Location:" not in html.read_text()
+    assert "alpha@example.test" in html.read_text() and "Office: West" in html.read_text()
+    trace = json.loads((tmp_path / report["run_directory"] / "lane_a/trace.json").read_text())
+    assert any("supersedes the live unresolved hypothesis" in (item.get("note") or "") for item in trace)
+
+    # Control: the same live answer where the change is not expressible stays
+    # unresolved — no duplicate guess, no repair authority.
+    _inputs_scene, control_context, state, base, candidate = _header_label_scene(tmp_path)
+    control_plan, _control_html, control_pdf = _render_label_choice(tmp_path, "control", state, base, True)
+    finding = _label_finding()
+    result = _label_measurement(inputs["target_pdf"], control_pdf, state, control_plan, control_context.candidate_heading)
+    unresolved = service._e5_default_attribution(
+        finding, result, finding.requested_measurement, label_control_supported=False)
+    flat = candidate.model_copy(update={"leaves": [
+        leaf.model_copy(update={"contact_item": None}) if leaf.kind == "header_field" else leaf
+        for leaf in candidate.leaves]})
+    lane_state = SimpleNamespace(run=SimpleNamespace(state=state, candidate=flat),
+        attributions=[unresolved.model_copy(update={"reason": "live: cannot decide"})],
+        ledger=DefectLedger(), trace=RunTrace(tmp_path))
+    returned = service._e5_attribute(lane_state, finding, result, finding.requested_measurement)
+    assert returned.reason == "live: cannot decide"
+    assert lane_state.attributions == [unresolved.model_copy(update={"reason": "live: cannot decide"})]
+
+    # The fallback set is exactly "no record yet" + "record says unresolved":
+    # a confirmed record is never re-decided, and an unresolved one is.
+    bound = {finding.finding_id: (result, finding.requested_measurement)}
+    from app.pipeline.evidence import AttributionRecord
+    confirmed_record = AttributionRecord(
+        finding_id=finding.finding_id, render_version=finding.render_version,
+        measurement_request_id=finding.requested_measurement.request_id,
+        attribution="render_plan", hypothesis_status="confirmed", repair_owner="builder",
+        reason="deterministic owner")
+    unresolved_record = unresolved.model_copy(
+        update={"measurement_request_id": finding.requested_measurement.request_id})
+    assert service._e5_findings_needing_fallback_attribution([finding], bound, []) == [finding]
+    assert service._e5_findings_needing_fallback_attribution(
+        [finding], bound, [unresolved_record]) == [finding]
+    assert service._e5_findings_needing_fallback_attribution(
+        [finding], bound, [confirmed_record]) == []
+
+
 @pytest.mark.parametrize("mode", ["basic", "sidebar", "blind", "hidden", "collision", "partitioned", "legacy"])
 def test_product_contact_details_preserve_roles_and_source_sections(tmp_path: Path, mode: str) -> None:
     import re

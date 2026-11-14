@@ -690,22 +690,27 @@ def _e5_findings_needing_fallback_attribution(
     attributions: list[AttributionRecord],
 ) -> list[DefectFinding]:
     """Findings with no attribution for the CURRENT identity
-    ``finding_id + render_version + measurement_request_id``. An older
-    measurement's attribution NEVER satisfies a new measurement."""
-    attributed_keys = {
-        (item.finding_id, item.render_version, item.measurement_request_id)
+    ``finding_id + render_version + measurement_request_id``, plus findings
+    whose current attribution is still ``unresolved``. An older measurement's
+    attribution NEVER satisfies a new measurement, and a live hypothesis that
+    admits it could not decide the owner never suppresses the deterministic
+    rule: where the measurement alone proves the owning layer, the owner is
+    decided here, not by the model's answer."""
+    current = {
+        (item.finding_id, item.render_version, item.measurement_request_id): item
         for item in attributions
     }
-    return [
-        finding
-        for finding in actionable
-        if (
+    needing: list[DefectFinding] = []
+    for finding in actionable:
+        key = (
             finding.finding_id,
             finding.render_version,
             measured[finding.finding_id][1].request_id,
         )
-        not in attributed_keys
-    ]
+        attribution = current.get(key)
+        if attribution is None or attribution.hypothesis_status == "unresolved":
+            needing.append(finding)
+    return needing
 
 
 
@@ -2127,6 +2132,19 @@ def _e5_attribute(ls: _E5LaneState,
             ls.run.candidate, ls.run.state
         )["supported"],
     )
+    key = (finding.finding_id, finding.render_version, request.request_id)
+    prior = next(
+        (
+            item
+            for item in reversed(ls.attributions)
+            if (item.finding_id, item.render_version, item.measurement_request_id) == key
+        ),
+        None,
+    )
+    if prior is not None and attribution.hypothesis_status == "unresolved":
+        # The deterministic rule cannot decide either: keep the live record
+        # (its evidence and reason) instead of appending a duplicate guess.
+        return prior
     ls.attributions.append(attribution)
     # Single source of defect state: the attribution (and its
     # measurement request) is written back to the owning ledger
@@ -2135,6 +2153,12 @@ def _e5_attribute(ls: _E5LaneState,
     ls.trace.add(
         agent="attribution_investigator", phase="attribute", action="attribution",
         output=attribution.model_dump(mode="json"),
+        note=(
+            "deterministic attribution supersedes the live unresolved hypothesis: "
+            f"{attribution.attribution}/{attribution.repair_owner}"
+            if prior is not None
+            else None
+        ),
     )
     return attribution
 
@@ -2507,7 +2531,8 @@ def _e5_round_schedule(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
 def _e5_round_measure_and_attribute(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
     """Measure and attribute the SELECTED findings only: identical requests bound
     to this render version, then one attribution per finding (live batches
-    first, deterministic fallback second)."""
+    first, deterministic rule second — the second also re-decides a live
+    `unresolved` answer wherever the measurement proves the owner)."""
 
     # Bind -> measure -> attribute for the SELECTED findings only.
     measured: dict[str, tuple[MeasurementResult, MeasurementRequest]] = {}
