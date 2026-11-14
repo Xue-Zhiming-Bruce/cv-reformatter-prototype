@@ -69,14 +69,25 @@ Response fields:
 - `profile`;
 - `ledger`;
 - `original_text` — the preserved extracted text, stored as
-  `raw_extracted_text.txt`;
+  `raw_extracted_text.txt`. For DOCX it keeps the authored body order (a table
+  stays between the paragraphs around it) and carries section header text ahead
+  of the body and footer text after it, read once per defining section rather
+  than once per linked section or page;
 - `original_pdf_preview_url`;
 - `original_preview_error`;
 - `debug_artifacts`;
 - `artifact_metadata_url`;
 - `extraction_mode` — `mock` or `live`: whether this run used the deterministic
   mock extraction client or a configured AI provider. It carries no provider
-  name, model id, endpoint, credential or region.
+  name, model id, endpoint, credential or region;
+- `ingestion_limitations` — one attributed review requirement per visible DOCX
+  shape the reader cannot read (nested table, text box, tracked
+  insertion/deletion, content control it does not descend into, simple field
+  result), naming its location; empty for PDFs and for DOCX files inside the
+  supported shapes. The line-coverage audit only measures the text the reader
+  supplied, so a passed audit never implies this list is empty. The reader's
+  module docstring carries the enumerated read set and states that shapes
+  outside it are not detectable.
 
 In addition to `raw_extracted_text.txt` and `candidate_profile.json`, processing
 persists two immutable source-analysis artifacts:
