@@ -24,7 +24,7 @@ from app.pipeline.html_renderer import RENDERER_VERSION, render_layout_template
 from app.pipeline.layout_state import C2LayoutState
 from app.pipeline.runtime import RunBudget
 from app.pipeline.run_models import E5LoopRecord, PresentationLabelApproval
-from app.pipeline import measurement, presentation_labels, prompts, quality, repair_policy, review, run_artifacts, service
+from app.pipeline import finding_disposition, measurement, presentation_labels, prompts, quality, repair_policy, review, run_artifacts, service
 from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from app.template_analysis.schemas import LayoutTemplateSpec
@@ -161,9 +161,11 @@ def _settings() -> dict[str, int]:
     return result
 
 
-def agentic_renderer_version() -> str:
-    # Approval covers the renderer, prompts, models and execution envelope.
-    contract = {
+def renderer_contract() -> dict[str, Any]:
+    """The provider-neutral surfaces approval covers: renderer, prompts, models,
+    policies and the execution envelope. `agentic_renderer_version` hashes it,
+    so a changed rule never inherits an approval made under the old one."""
+    return {
         "image_encoding": "lossless-grayscale-png/1",
         "review_image_encoding": review.REVIEW_IMAGE_ENCODING_VERSION,
         "builder_image_encoding": review.REVIEW_IMAGE_ENCODING_VERSION,
@@ -171,6 +173,7 @@ def agentic_renderer_version() -> str:
         "header_contact_label_policy": measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
         "review_measurement_contract": review.REVIEW_MEASUREMENT_CONTRACT_VERSION,
         "review_presentation_facts": review.REVIEW_PRESENTATION_FACTS_VERSION,
+        "finding_disposition_policy": finding_disposition.DISPOSITION_POLICY_VERSION,
         "pdf_structure_checks": quality.PDF_STRUCTURE_VALIDATION_VERSION,
         "candidate_fact_privacy": quality.PRIVACY_GATE_VERSION,
         "client_disclosure": template_mapper.CLIENT_DISCLOSURE_VERSION,
@@ -188,7 +191,12 @@ def agentic_renderer_version() -> str:
             os.getenv("VISUAL_API_BASE") or "",
         )],
     }
-    digest = hashlib.sha256(json.dumps(contract, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def agentic_renderer_version() -> str:
+    digest = hashlib.sha256(
+        json.dumps(renderer_contract(), sort_keys=True).encode()
+    ).hexdigest()[:16]
     return f"agentic-a/6+{RENDERER_VERSION}+{digest}"
 
 

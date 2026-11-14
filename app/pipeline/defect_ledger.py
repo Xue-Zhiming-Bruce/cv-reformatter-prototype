@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from app.pipeline.evidence import AttributionRecord, DefectFinding, EvidenceModel
+from app.pipeline.evidence import AttributionRecord, DefectFinding, EvidenceModel, FindingDisposition
 
 
 class E5LedgerEntry(EvidenceModel):
@@ -34,6 +34,11 @@ class E5LedgerEntry(EvidenceModel):
     measurement_request_id: str | None = None
     observation_class: str = ""
     last_measured_version: str = ""
+    # The shell's single recorded disposition for this defect, with its reason
+    # and evidence. A disposed entry stays visible and is never closed as
+    # repaired; its status still says only what the attribution/closure rules
+    # said, so "not a defect" stays distinguishable from "not measured".
+    disposition: FindingDisposition | None = None
 
 
 def _observation_class(observation: str) -> str:
@@ -56,7 +61,8 @@ class DefectLedger:
     """Persistent defect ledger (Phase 0). `observe` returns one of:
     'new' (first observation), 'dedup' (unchanged finding; existing
     attribution/measurement reused), or 'reopened' (the finding CHANGED after
-    a repair — new observation class)."""
+    a repair — new observation class). The shell's `disposition` for the
+    observation is stored on the entry, whatever its status."""
 
     def __init__(self) -> None:
         self.entries: dict[str, E5LedgerEntry] = {}
@@ -66,6 +72,7 @@ class DefectLedger:
         finding: DefectFinding,
         *,
         resolved: bool = False,
+        disposition: FindingDisposition | None = None,
     ) -> tuple[E5LedgerEntry, str]:
         key = _ledger_key(finding)
         existing = self.entries.get(key)
@@ -78,11 +85,14 @@ class DefectLedger:
                 status="resolved" if resolved else "open",
                 observation_class=_observation_class(finding.observation),
                 last_measured_version=finding.render_version,
+                disposition=disposition,
             )
             self.entries[key] = entry
             return entry, "new"
         previous_version = existing.last_seen_version
         existing.last_seen_version = finding.render_version
+        if disposition is not None:
+            existing.disposition = disposition
         # A changed observation REOPENS only when the RENDER changed: the
         # reopen semantics mean "the defect changed after a repair". The
         # reviewer paraphrasing the SAME defect on the SAME render is a dedup

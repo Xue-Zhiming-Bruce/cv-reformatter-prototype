@@ -1068,11 +1068,36 @@ class DefectFinding(EvidenceModel):
     region: str
     observation: str
     suspected_dimension: str
+    # The difference the observation CLAIMS, declared by the Reviewer. It is a
+    # claim, never a verdict: the shell's disposition owner verifies it against
+    # the candidate inventory, the render's section/page inventory and the
+    # recorded measurement. Defaulted for stored findings from earlier runs; the
+    # default is the only one that can never suppress a finding.
+    claimed_difference: Literal[
+        "presentation_property", "content_value", "page_placement", "matching"
+    ] = "presentation_property"
     proposed_cause: str | None = None  # hypothesis only; attribution decides
     requested_measurement: MeasurementRequest
     severity: Literal["low", "medium", "high"]
     confidence: float = Field(ge=0.0, le=1.0)
     reviewer: Literal["scripted", "llm"]
+
+FINDING_DISPOSITION_SCHEMA_VERSION = "finding-disposition/1"
+
+class FindingDisposition(EvidenceModel):
+    """The shell's ONE recorded answer for one finding, written by
+    `finding_disposition.dispose_finding` and persisted on the defect-ledger
+    entry. `suspected_defect` and `unresolved` keep the finding's normal checks;
+    `expected_variation` and `confirmed_matching` are recorded and cost no paid
+    attribution request and no Builder turn. `reason` and `evidence` name the
+    structured facts the decision used, so no reader has to interpret prose."""
+
+    schema_version: Literal["finding-disposition/1"] = FINDING_DISPOSITION_SCHEMA_VERSION
+    kind: Literal[
+        "suspected_defect", "expected_variation", "confirmed_matching", "unresolved"
+    ]
+    reason: str
+    evidence: list[str] = Field(default_factory=list)
 
 class AttributionRecord(EvidenceModel):
     """One confirmed mismatch's causal trace (plan §8.3). The observation

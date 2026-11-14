@@ -1429,7 +1429,25 @@ def test_measurement_alone_never_confirms_template_compilation() -> None:
     assert attribution.repair_owner == "reviewer"
 
 
+def _disposed(
+    finding: evidence.DefectFinding,
+    scope: dict[str, object],
+    catalog: list[dict[str, object]],
+    pages: dict[str, list[int]],
+) -> evidence.FindingDisposition:
+    from app.pipeline import finding_disposition
+
+    return finding_disposition.dispose_finding(
+        finding,
+        candidate_scope=finding_disposition.disposition_scope(scope, catalog),
+        output_section_pages=pages,
+    )
+
+
 def test_reviewer_does_not_request_target_only_candidate_sections() -> None:
+    """A content claim about a target section the candidate has no content for
+    is disposed expected, while a layout claim in the same pair keeps its
+    normal checks (the retired keyword boundary replaced by one owner)."""
     from tests.helpers.pipeline_candidates import candidate_resume_E
 
     labels = [
@@ -1445,65 +1463,70 @@ def test_reviewer_does_not_request_target_only_candidate_sections() -> None:
     assert scope["content_kinds_by_role"]["skills"] == ["item_list"]
     assert scope["has_language_proficiency_entries"] is False
     assert scope["skills_only_skill_group"] is True
-    valid = _e5_finding("f1", "experience", "alignment")
-    invalid = _e5_finding("f2", "publications", "content")
-    invalid = invalid.model_copy(update={
-        "observation": "The render is missing the PUBLICATIONS section from the target."
-    })
-    target_facts = _e5_finding("f3", "skills", "content_completeness").model_copy(update={
-        "observation": "The target's Klingon language entries are absent from the render."
-    })
-    assert e5._candidate_aware_findings([valid, invalid, target_facts], scope) == [valid]
+    catalog = [
+        {"region_id": "section.01", "kind": "section", "source": ["work_experience"]},
+        {"region_id": "section.01.list", "kind": "list_row", "source": ["work_experience"]},
+        # A target section whose binding has no candidate content at all.
+        {"region_id": "section.02", "kind": "section", "source": ["additional_details"]},
+        {"region_id": "section.03", "kind": "section", "source": ["skills"]},
+    ]
+    pages = {"section.01": [1, 2], "section.02": [1], "section.03": [1]}
+    content_owned = _e5_finding("f1", "section.01.list", "list_item_text").model_copy(
+        update={"claimed_difference": "content_value"}
+    )
+    assert _disposed(content_owned, scope, catalog, pages).kind == "expected_variation"
+    assert _disposed(content_owned, scope, catalog, pages).reason == "candidate_content_owned"
+    target_only = _e5_finding("f2", "section.02", "content").model_copy(
+        update={"claimed_difference": "content_value"}
+    )
+    assert _disposed(target_only, scope, catalog, pages).reason == (
+        "target_section_without_candidate_content"
+    )
+    # A layout claim is never disposed from prose: it keeps its measurement.
+    layout = _e5_finding("f3", "section.03", "spacing")
+    assert _disposed(layout, scope, catalog, pages).kind == "unresolved"
 
 
 def test_candidate_shape_filter_keeps_real_skills_layout_and_page_local_residuals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The recorded dispositions: candidate-content-shape and page-placement
+    claims are expected variations, a real layout observation keeps its checks."""
     from tests.helpers.pipeline_candidates import candidate_resume_E
 
     scope = e5._candidate_review_scope(candidate_resume_E(), [])
-    no_language_shape = _e5_finding("f1", "skills", "content_presence").model_copy(update={
-        "observation": "The target language proficiency dots are missing from Skills."
-    })
-    no_dot_rating_shape = _e5_finding("f1b", "skills", "structure").model_copy(update={
-        "observation": "The target has dot-rating glyphs and a Languages sub-block."
-    })
-    skill_layout = _e5_finding("f2", "skills", "spacing").model_copy(update={
-        "observation": "Candidate skill groups are rendered as an overly dense block."
-    })
-    global_missing = _e5_finding("f3", "education", "content_presence").model_copy(update={
-        "observation": "The render is missing the Education section."
-    })
-    page_local = _e5_finding("f4", "education", "pagination").model_copy(update={
-        "observation": (
-            "Education is on target page 1 but not current page 1; this may be a "
-            "pagination or layout-flow difference."
-        )
-    })
-    valid_composite = _e5_finding("f5", "experience", "alignment").model_copy(update={
-        "observation": (
-            "The EXPERIENCE heading is misaligned with its candidate content; "
-            "the target also shows ABOUT ME elsewhere."
-        )
-    })
-    bullet_layout = _e5_finding("f6", "experience", "typography").model_copy(update={
-        "observation": "A doubled bullet marker is present in the render but not present in the target."
-    })
-    assert e5._candidate_aware_findings(
-        [
-            no_language_shape, no_dot_rating_shape, skill_layout, global_missing, page_local,
-            valid_composite, bullet_layout,
-        ], scope
-    ) == [skill_layout, page_local, valid_composite, bullet_layout]
-    assert e5._candidate_boundary_filter_reason(no_language_shape, scope) == (
+    catalog = [
+        {"region_id": "section.03", "kind": "section", "source": ["skills"]},
+        {"region_id": "section.04", "kind": "section", "source": ["education"]},
+        {"region_id": "section.05", "kind": "section", "source": ["languages"]},
+    ]
+    # LANGUAGES is carried by the render on page 3 only: a page-local absence
+    # claim is reflow, and a training-shape claim has no candidate leaves.
+    pages = {"section.03": [1], "section.04": [1, 2], "section.05": [3]}
+    no_language_shape = _e5_finding("f1", "section.05", "content_presence").model_copy(
+        update={"claimed_difference": "content_value"}
+    )
+    assert _disposed(no_language_shape, scope, catalog, pages).reason == (
         "candidate_content_shape_absent:language_proficiency"
     )
-    assert e5._candidate_boundary_filter_reason(no_dot_rating_shape, scope) == (
-        "candidate_content_shape_absent:language_proficiency"
+    skill_layout = _e5_finding("f2", "section.03", "spacing")
+    assert _disposed(skill_layout, scope, catalog, pages).kind == "unresolved"
+    page_local = _e5_finding("f4", "section.05", "pagination").model_copy(
+        update={"claimed_difference": "page_placement", "page": 2}
     )
-    assert e5._candidate_boundary_filter_reason(global_missing, scope) == (
-        "page_local_global_missing_section_assertion"
+    disposed_page_local = _disposed(page_local, scope, catalog, pages)
+    assert disposed_page_local.kind == "expected_variation"
+    assert disposed_page_local.reason == "page_local_global_missing_section_assertion"
+    # A section the render carries NOWHERE is never disposed as reflow: it stays
+    # unresolved and keeps its normal checks.
+    missing_whole_output = _e5_finding("f5", "section.04", "pagination").model_copy(
+        update={"claimed_difference": "page_placement", "page": 3}
     )
+    assert _disposed(missing_whole_output, scope, catalog, {}).reason == (
+        "section_absent_from_whole_output"
+    )
+    bullet_layout = _e5_finding("f6", "section.03", "typography")
+    assert _disposed(bullet_layout, scope, catalog, pages).kind == "unresolved"
 
     entry_header_gap = _e5_finding("f7", "experience", "role_gap").model_copy(update={
         "requested_measurement": evidence.MeasurementRequest(
@@ -1519,6 +1542,195 @@ def test_candidate_shape_filter_keeps_real_skills_layout_and_page_local_residual
         region_span=None,
         render_leaf_texts=[],
     ).status == "evidence_missing"
+
+
+def _replay_finding(
+    finding_id: str, region: str, dimension: str, *, claim: str, observation: str,
+    page: int = 1, metric: str = "role_gap",
+) -> evidence.DefectFinding:
+    """One recorded recording: the prose is the model's, kept verbatim, and the
+    typed claim beside it was typed once by hand from the 2026-11 recording.
+    Nothing here reads the prose."""
+    return _e5_finding(finding_id, region, dimension).model_copy(update={
+        "page": page,
+        "observation": observation,
+        "claimed_difference": claim,
+        "requested_measurement": evidence.MeasurementRequest(
+            request_id=f"measure-{finding_id}", metric=metric, page=page,
+            intent="compare the recorded regions on the two final PDFs",
+        ),
+    })
+
+
+def _disposition_lane(
+    tmp_path: Path, state: Any, *, scope: dict[str, Any], candidate: Any,
+) -> Any:
+    """The lane surface `_e5_round_measure_and_attribute` reads offline."""
+    target = tmp_path/"target.pdf"
+    target.write_bytes(b"%PDF-1.4 target")
+    return SimpleNamespace(
+        lane="a", counter={"request": 0}, findings=[],
+        ledger=defect_ledger.DefectLedger(), trace=RunTrace(tmp_path),
+        lane_budget=RunBudget(), attributions=[], measurement_results=[],
+        measured_by_finding={}, measurement_reuse={},
+        run=SimpleNamespace(
+            live=False, state=state, derived={}, candidate_review_scope=scope,
+            candidate=candidate, candidate_name_text="SYNTHETIC_CANDIDATE_NAME",
+            target_pdf=target, region_spans={}, pod=None, builder_reserve_requests=0,
+        ),
+    )
+
+
+def test_recorded_cases_are_disposed_through_the_measure_and_attribute_phase(
+    tmp_path: Path,
+) -> None:
+    """AC1: the five recorded cases replayed offline through the SHIPPED
+    measure-and-attribute phase — the caller of `finding_disposition.payable()`
+    — not through the disposition helpers. Each ends in one recorded disposition
+    with its reason, and only what the shell could not dispose costs anything."""
+    from app.pipeline import finding_disposition
+    from tests.helpers.pipeline_candidates import candidate_resume_E
+    from tests.helpers.pipeline_layout import compile_synthetic
+
+    state = compile_synthetic()
+    render = tmp_path/"render.pdf"
+    render.write_bytes(b"%PDF-1.4 render")
+    # The render's own section/page inventory: LANGUAGES reflowed to page 3.
+    render_pages = {
+        "section.01": [1], "section.02": [1], "section.03": [3],
+        "section.04": [1, 2], "section.05": [2], "section.06": [2], "section.07": [2],
+    }
+    case1 = _replay_finding(
+        "case1", "section.04.list", "list_item_text", claim="content_value",
+        observation="only the item text differs, bullet styling and indentation are identical",
+    )
+    case2 = _replay_finding(
+        "case2", "section.03", "pagination", claim="page_placement", page=2,
+        observation="LANGUAGES present on TARGET page 2, absent from RENDER page 2",
+    )
+    case3 = _replay_finding(
+        "case3", "header.03", "header_contact_labels", claim="presentation_property",
+        metric="header_contact_label_geometry",
+        observation="the target metadata map lists linkedin and the render's does not",
+    )
+    case4_values = _replay_finding(
+        "case4-values", "section.03", "content", claim="content_value",
+        observation="the language values are not the target's",
+    )
+    case4_placement = _replay_finding(
+        "case4-placement", "section.05", "pagination", claim="page_placement",
+        observation="EDUCATION is not where the target puts it",
+    )
+    case4_matching = _replay_finding(
+        "case4-matching", "header.03", "contact_row_layout", claim="matching",
+        observation="both rows are value-only on both sides",
+    )
+    # Honesty case: the recorded case-1 observation replayed with NO typed
+    # claim. The prose proves nothing, so the finding stays payable.
+    untyped = _replay_finding(
+        "untyped", "section.04.list", "item_text_presence", claim="presentation_property",
+        observation="only the item text differs, bullet styling and indentation are identical",
+    )
+    findings = [
+        case1, case2, case3, case4_values, case4_placement, case4_matching, untyped,
+    ]
+
+    lane = _disposition_lane(
+        tmp_path, state, scope=e5._candidate_review_scope(candidate_resume_E(), []),
+        candidate=candidate_resume_E(),
+    )
+    # The recording's own label measurement: both sides value-only, delta 0.0.
+    lane.measurement_reuse[measurement.measurement_reuse_key(
+        method=measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
+        request=case3.requested_measurement.model_copy(update={"region_id": case3.region}),
+        target_pdf=lane.run.target_pdf, current_pdf=render, render_version="render-v1",
+        state=state, plan=None, current_name_text=lane.run.candidate_name_text,
+    )] = evidence.MeasurementResult(
+        request_id="measure-case3", status="confirmed", target_value_pt=0.0,
+        current_value_pt=0.0, delta_pt=0.0,
+        method=measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
+    )
+    review_scope = finding_disposition.disposition_scope(
+        lane.run.candidate_review_scope,
+        e5._e5_region_catalog(state, lane.run.derived, render_pages),
+    )
+    # The review phase observes first, exactly as the shipped round does.
+    for finding in findings:
+        lane.findings.append(finding)
+        lane.ledger.observe(
+            finding,
+            disposition=finding_disposition.dispose_finding(
+                finding, candidate_scope=review_scope, output_section_pages=render_pages,
+            ),
+        )
+
+    assert e5._e5_round_measure_and_attribute(lane, SimpleNamespace(
+        round_no=1, selected=findings, current_pdf=render, current_plan=None,
+        current_version=SimpleNamespace(version_id="render-v1"),
+        render_section_pages=render_pages,
+    )) == e5._E5_NEXT
+
+    def disposition_of(finding: evidence.DefectFinding) -> Any:
+        return lane.ledger.entries[defect_ledger._ledger_key(finding)].disposition
+
+    assert {
+        finding.finding_id: (disposition_of(finding).kind, disposition_of(finding).reason)
+        for finding in findings
+    } == {
+        "case1": ("expected_variation", "candidate_content_owned"),
+        "case2": ("expected_variation", "page_local_global_missing_section_assertion"),
+        "case3": ("confirmed_matching", "measured_property_matches_within_tolerance"),
+        "case4-values": (
+            "expected_variation", "candidate_content_shape_absent:language_proficiency",
+        ),
+        "case4-placement": (
+            "expected_variation", "page_local_global_missing_section_assertion",
+        ),
+        # AC7: the observation reports matching presentation on both sides and
+        # no measurement contradicts it.
+        "case4-matching": ("confirmed_matching", "observation_reports_matching_presentation"),
+        "untyped": ("unresolved", "presentation_property_needs_its_measurement"),
+    }
+    assert all(disposition_of(finding).evidence for finding in findings)
+    dispositions = {
+        finding.finding_id: disposition_of(finding) for finding in findings
+    }
+    # AC6: nothing but the observation with no typed claim is payable, so no
+    # expected variation or matching observation can reach a paid request.
+    assert [
+        finding.finding_id
+        for finding in finding_disposition.payable(findings, dispositions)
+    ] == ["untyped"]
+    # AC9: the measured match is closed as `no_defect` — never confused with
+    # "not measured" — while the matching observation and the still-open
+    # observation reach only the deterministic rule, which spends no request.
+    assert {item.finding_id for item in lane.attributions} == {
+        "case3", "case4-matching", "untyped",
+    }
+    assert next(
+        item for item in lane.attributions if item.finding_id == "case3"
+    ).attribution == "no_defect"
+    assert {
+        item.finding_id: item.hypothesis_status
+        for item in lane.attributions if item.finding_id != "case3"
+    } == {"case4-matching": "unresolved", "untyped": "unresolved"}
+    # Case 5: even with the region eligible for a trial, an expected variation
+    # has no attribution to schedule from, so no Builder turn can follow.
+    measured = {
+        finding.finding_id: (
+            lane.measured_by_finding[finding.finding_id][1],
+            lane.measured_by_finding[finding.finding_id][2],
+        )
+        for finding in findings
+    }
+    selected, _stalled = repair_policy._next_e5_repair_finding(
+        [case1], measured, lane.attributions, [],
+        layout_trial_regions={"render-v1:section.04.list:list_item_text:not_measurable"},
+    )
+    assert selected is None
+    assert repair_policy._e5_attribution_batches(
+        finding_disposition.payable(findings, dispositions), measured,
+    ) == []
 
 
 def test_header_vertical_rule_metric_counts_additive_repairs(tmp_path: Path) -> None:
@@ -3298,7 +3510,8 @@ def test_ledger_is_the_single_open_closed_source() -> None:
 def test_stored_ledger_entry_from_before_the_extraction_still_validates() -> None:
     """A lane ledger entry serialized by the pre-extraction code validates
     against the new owner unchanged: same schema title, fields, and status
-    meaning, so stored e5_state.json records keep being readable."""
+    meaning, so stored e5_state.json records keep being readable. The one added
+    field — the shell's disposition — defaults to null for stored entries."""
     stored_entry = {
         "attribution": {
             "attribution": "no_defect", "evidence": ["m1"], "finding_id": "f1",
@@ -3320,7 +3533,8 @@ def test_stored_ledger_entry_from_before_the_extraction_still_validates() -> Non
     assert type(entry) is defect_ledger.E5LedgerEntry
     assert defect_ledger.E5LedgerEntry.model_json_schema()["title"] == "E5LedgerEntry"
     assert entry.status == "resolved" and entry.attribution is not None
-    assert json.loads(entry.model_dump_json()) == stored_entry
+    assert entry.disposition is None
+    assert json.loads(entry.model_dump_json()) == {**stored_entry, "disposition": None}
     # the stored resolved status keeps its open/closed meaning
     assert defect_ledger._open_ledger_finding_ids(lane.ledger) == []
 
