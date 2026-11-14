@@ -1306,15 +1306,19 @@ def test_builder_evidence_package_is_representation_neutral() -> None:
         state=State(),
         derived={"sidebar_rules": {"r": {"x0_pt": 1}}, "sidebar_labels": []},
         page_size=(612.0, 792.0),
+        target_contact_labels={"source_sha256": "0" * 64, "status": "confirmed", "label_mode": False},
     )
     package_b = e._e5_builder_evidence_package(
         draft=draft,
         state=State(),
         derived={"sidebar_rules": {"r": {"x0_pt": 1}}, "sidebar_labels": []},
         page_size=(612.0, 792.0),
+        target_contact_labels={"source_sha256": "0" * 64, "status": "confirmed", "label_mode": False},
     )
     assert package_a == package_b
     assert package_a["schema_version"] == "e5-builder-evidence/2"
+    # The package only CARRIES the caller's measurement; it never measures.
+    assert package_a["target_header_contact_label_context"]["label_mode"] is False
     assert package_a["structure_draft"] == draft.model_dump(mode="json")
     assert package_a["current_representation"] is None
 
@@ -3848,6 +3852,16 @@ def test_initial_a_context_is_candidate_compatible_and_compact(tmp_path: Path) -
     assert payload["candidate_compatible_labels"]["ABOUT ME"] == "omit_entire_section"
     assert "slot_shape_contract" in payload
     assert "candidate_layout_footprint" in payload
+    # AC2/AC3: the measured target contact-label context names the exact target
+    # it measured — the same identity this run recorded in `e5_state.json`.
+    target_contact_labels = payload["target_header_contact_label_context"]
+    state_record = json.loads((run_dir / "e5_state.json").read_text())
+    assert target_contact_labels["source_sha256"] == state_record["target_sha256"]
+    assert target_contact_labels["method"] == measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION
+    assert target_contact_labels["region_id"] == "header.product_contact"
+    assert target_contact_labels["status"] in {
+        "confirmed", "ambiguous", "evidence_missing", "not_measurable"}
+    assert ("label_mode" in target_contact_labels) == (target_contact_labels["status"] == "confirmed")
     assert len(json.dumps(payload).encode()) < 30_000
 
 
