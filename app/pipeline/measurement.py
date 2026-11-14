@@ -798,7 +798,8 @@ def section_page_locations(pdf: Path, state: Any) -> dict[str, list[int]]:
     """section node id -> sorted 1-based pages of THIS pdf carrying the section.
 
     A section is carried from the page that shows one of its measured heading
-    labels until the page a LATER section's heading starts on. A section whose
+    labels until the page a LATER section's heading starts on -- that page still
+    carries this section above the new heading, so it is included. A section whose
     label never starts a line in this pdf is absent from the result: that is the
     whole-output absence the disposition owner must keep unresolved, so a
     page-local claim is checked against the render's own pages instead of the
@@ -825,8 +826,10 @@ def section_page_locations(pdf: Path, state: Any) -> dict[str, list[int]]:
     page_count = max((int(line["page"]) for line in lines), default=0)
     locations: dict[str, list[int]] = {}
     for index, (node_id, start) in enumerate(starts):
-        end = starts[index + 1][1] if index + 1 < len(starts) else page_count + 1
-        locations[node_id] = list(range(start, max(start, end - 1) + 1))
+        # The last section runs through the last page that has any line: an
+        # out-of-order heading page can never end a section before it starts.
+        end = starts[index + 1][1] if index + 1 < len(starts) else page_count
+        locations[node_id] = list(range(start, max(start, end) + 1))
     return locations
 
 

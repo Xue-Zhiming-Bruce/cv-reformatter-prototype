@@ -53,6 +53,9 @@ CATALOG: list[dict[str, object]] = [
     {"region_id": "section.03", "kind": "section", "source": ["skills"]},
     # A target section the candidate has no content for at all.
     {"region_id": "section.04", "kind": "section", "source": ["additional_details"]},
+    # A target block the pair maps to no candidate source: the target's own
+    # content, structurally known, with no candidate role behind it.
+    {"region_id": "section.05", "kind": "section", "source": []},
 ]
 
 
@@ -171,9 +174,10 @@ def test_recorded_page_placement_is_reflow_not_missing_content() -> None:
     assert missing.reason == "section_absent_from_whole_output"
 
 
-def test_recorded_label_geometry_and_matching_claims_are_confirmed_matching() -> None:
-    """Case 3/4: a measured zero delta closes the claim it measured, and an
-    observation that itself reports matching presentation needs no repair."""
+def test_only_the_measurement_confirms_a_matching_claim() -> None:
+    """Case 3/4: a measured zero delta closes the claim it measured. A claim
+    LABEL is never evidence on its own, so `matching` stays payable until a
+    measurement of that property agrees."""
     label_presence = finding(
         "f1", "header.01", "contact_label_presence", metric="header_contact_label_geometry"
     )
@@ -192,13 +196,18 @@ def test_recorded_label_geometry_and_matching_claims_are_confirmed_matching() ->
     assert find_disposition_reason(label_presence, PAGES, measured_off) == (
         "measured_property_differs_beyond_tolerance"
     )
-    # An observation of matching presentation on both sides, before any
-    # measurement contradicts it.
-    matching = dispose(
-        finding("f2", "header.01", "contact_row_layout", claim="matching"), PAGES
-    )
-    assert matching.kind == "confirmed_matching"
-    assert matching.reason == "observation_reports_matching_presentation"
+    # Same claim, same region, with nothing but the label to go on.
+    unmeasured = finding("f2", "header.01", "contact_row_layout", claim="matching")
+    matching = dispose(unmeasured, PAGES)
+    assert matching.kind == "unresolved"
+    assert matching.reason == "matching_claim_needs_its_measurement"
+    assert [finding_disposition.payable([unmeasured], {"f2": matching})] == [[unmeasured]]
+    # The measurement it needed is what confirms it.
+    confirmed = dispose(unmeasured, PAGES, result=measured_equal.model_copy(
+        update={"request_id": "measure-f2"}
+    ))
+    assert confirmed.kind == "confirmed_matching"
+    assert confirmed.reason == "measured_property_matches_within_tolerance"
 
 
 def find_disposition_reason(
@@ -243,66 +252,72 @@ def test_disposition_reads_structured_evidence_not_confidence_or_prose() -> None
     assert dispose(first, PAGES).reason == "presentation_property_needs_its_measurement"
 
 
-def test_output_inventory_locates_each_section_on_the_renders_own_pages(tmp_path: Path) -> None:
-    """The render's section/page map comes from the render's own PDF: a section
-    that starts on page 2 covers page 2 and, until the next section starts, the
-    pages after it."""
-    pdf = tmp_path / "render.pdf"
-    document = canvas.Canvas(str(pdf), pagesize=(612, 792))
-    for page, labels in enumerate(
-        (["SUMMARY", "EXPERIENCE"], ["EXPERIENCE (cont.)"], ["EDUCATION"]), start=1
-    ):
-        document.setFont("Helvetica-Bold", 12)
-        document.drawString(72, 720, labels[0])
+def inventory_state(*labels: str) -> SimpleNamespace:
+    """One section node plus its measured heading label per label, in order."""
+    nodes = []
+    for index, label in enumerate(labels, start=1):
+        section = f"section.{index:02d}"
+        nodes.extend([
+            SimpleNamespace(
+                node_id=section, kind="section", parent_id=None,
+                reading_order=2 * index - 1, label=None,
+            ),
+            SimpleNamespace(
+                node_id=f"{section}.heading", kind="heading", parent_id=section,
+                reading_order=2 * index, label=label,
+            ),
+        ])
+    return SimpleNamespace(nodes=nodes)
+
+
+def inventory_pdf(path: Path, pages: list[list[str]]) -> Path:
+    document = canvas.Canvas(str(path), pagesize=(612, 792))
+    for lines in pages:
         document.setFont("Helvetica", 10)
-        document.drawString(72, 700, f"body line of page {page}")
-        if len(labels) > 1:
-            document.drawString(72, 640, labels[1])
+        for offset, text in enumerate(lines):
+            document.drawString(72, 720 - 60 * offset, text)
         document.showPage()
     document.save()
-    state = SimpleNamespace(nodes=[
-        SimpleNamespace(
-            node_id="section.01", kind="section", parent_id=None,
-            reading_order=1, label=None,
-        ),
-        SimpleNamespace(
-            node_id="section.01.heading", kind="heading", parent_id="section.01",
-            reading_order=2, label="Summary",
-        ),
-        SimpleNamespace(
-            node_id="section.02", kind="section", parent_id=None,
-            reading_order=3, label=None,
-        ),
-        SimpleNamespace(
-            node_id="section.02.heading", kind="heading", parent_id="section.02",
-            reading_order=4, label="Experience",
-        ),
-        SimpleNamespace(
-            node_id="section.03", kind="section", parent_id=None,
-            reading_order=5, label=None,
-        ),
-        SimpleNamespace(
-            node_id="section.03.heading", kind="heading", parent_id="section.03",
-            reading_order=6, label="Education",
-        ),
-        # A target section the render does not carry at all.
-        SimpleNamespace(
-            node_id="section.04", kind="section", parent_id=None,
-            reading_order=7, label=None,
-        ),
-        SimpleNamespace(
-            node_id="section.04.heading", kind="heading", parent_id="section.04",
-            reading_order=8, label="Languages",
-        ),
+    return path
+
+
+def test_output_inventory_locates_each_section_on_the_renders_own_pages(tmp_path: Path) -> None:
+    """The render's section/page map comes from the render's own PDF. A later
+    section's heading does not end the earlier one on the page they share: that
+    page still carries the earlier section above the new heading."""
+    pdf = inventory_pdf(tmp_path / "render.pdf", [
+        ["SUMMARY", "EXPERIENCE", "body line of page 1"],
+        ["body line of page 2", "EDUCATION", "body line of page 2b"],
+        ["body line of page 3"],
     ])
-    # SUMMARY and EXPERIENCE both start on page 1, EDUCATION starts on page 3:
-    # EXPERIENCE therefore covers page 1 and page 2, and the LANGUAGES heading
-    # starts no line at all, so section.04 is absent rather than invented.
-    assert measurement.section_page_locations(pdf, state) == {
-        "section.01": [1],
-        "section.02": [1, 2],
-        "section.03": [3],
-    }
+    # EXPERIENCE runs onto page 2, where EDUCATION starts partway down, and
+    # EDUCATION runs through page 3; the LANGUAGES heading starts no line at
+    # all, so section.04 is absent rather than invented.
+    assert measurement.section_page_locations(
+        pdf, inventory_state("Summary", "Experience", "Education", "Languages")
+    ) == {"section.01": [1], "section.02": [1, 2], "section.03": [2, 3]}
+
+
+def test_output_inventory_spans_two_sections_sharing_one_page(tmp_path: Path) -> None:
+    """Both sections of a one-page render cover that page, and nothing else."""
+    pdf = inventory_pdf(tmp_path / "render.pdf", [["SUMMARY", "SKILLS"]])
+    assert measurement.section_page_locations(
+        pdf, inventory_state("Summary", "Skills")
+    ) == {"section.01": [1], "section.02": [1]}
+
+
+def test_output_inventory_never_pads_the_last_section_past_the_last_page(
+    tmp_path: Path,
+) -> None:
+    """The earlier section runs through the page the next one starts on, and the
+    last section stops at the last page that carries content, never one page
+    past it."""
+    pdf = inventory_pdf(tmp_path / "render.pdf", [
+        ["SUMMARY", "body line of page 1"], ["EDUCATION"],
+    ])
+    assert measurement.section_page_locations(
+        pdf, inventory_state("Summary", "Education")
+    ) == {"section.01": [1, 2], "section.02": [2]}
 
 
 def test_region_catalog_reports_each_sides_own_pages() -> None:
@@ -441,10 +456,16 @@ def test_real_defects_still_reach_their_checks() -> None:
     # the content gate owns the refusal, so the claim stays payable.
     omitted = finding("f3", "section.03", "content_presence", claim="content_value")
     assert dispose(omitted, {"section.01": [1]}).reason == "section_absent_from_whole_output"
-    # Content claims about regions outside the reviewed pair stay unresolved.
+    # A content claim about a region nothing in the pair identifies is never
+    # read as candidate-owned: the absence of structure is not evidence.
     unknown_region = finding("f4", "section.99", "content", claim="content_value")
-    assert dispose(unknown_region, PAGES).kind == "expected_variation"
-    assert dispose(unknown_region, PAGES).reason == "target_person_content_presence"
+    assert dispose(unknown_region, PAGES).kind == "unresolved"
+    assert dispose(unknown_region, PAGES).reason == "region_not_in_the_reviewed_pair"
+    # The target's own content block, structurally known (a catalogued region
+    # the candidate has no role for), IS the retired keyword verdict's home.
+    target_block = finding("f4b", "section.05", "content", claim="content_value")
+    assert dispose(target_block, PAGES).kind == "expected_variation"
+    assert dispose(target_block, PAGES).reason == "target_person_content_presence"
     # A placement claim about a region that is not a section at all.
     not_a_section = finding("f5", "section.99.list", "pagination", claim="page_placement")
     assert dispose(not_a_section, PAGES).reason == "region_is_not_a_render_section"

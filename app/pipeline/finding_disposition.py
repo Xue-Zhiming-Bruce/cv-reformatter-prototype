@@ -9,7 +9,9 @@ content-free candidate scope the Reviewer boundary already publishes
 (`measurement.section_page_locations`), the finding's typed `claimed_difference`
 and, on the second call, the recorded measurement. `confidence` and the
 observation prose are retained, never parsed — a claim the shell cannot verify
-stays `unresolved`, which is payable.
+stays `unresolved`, which is payable. A claim label never closes a finding on
+its own: `matching` needs its measurement, and a region nothing structurally
+identifies is never read as candidate-owned.
 
 The boundary this policy deliberately does NOT cross: omitting candidate content
 altogether is decided by the independent candidate-content/coverage gate, so a
@@ -199,11 +201,12 @@ def _measured(
 
 
 def _matching_claim(claim: _Claim, evidence: list[str]) -> FindingDisposition | None:
-    """Rule 2: an observation that itself reports matching presentation on both
-    sides, while no measurement contradicts it (rule 1)."""
+    """Rule 2: a `matching` claim is the reviewer's CLAIM, never evidence. It is
+    corroborated only by a confirmed measurement of that property within
+    tolerance, which rule 1 decides; on the label alone it stays payable."""
     if claim.claim != "matching":
         return None
-    return _dispose("confirmed_matching", "observation_reports_matching_presentation", evidence)
+    return _dispose("unresolved", "matching_claim_needs_its_measurement", evidence)
 
 
 def _page_placement(claim: _Claim, evidence: list[str]) -> FindingDisposition | None:
@@ -249,9 +252,15 @@ def _candidate_content_value(
     if claim.claim != "content_value" or claim.region_kind == "header_row":
         return None
     if not claim.roles:
-        # This is where the retired `target_person_fact_or_value` keyword reason
-        # lands: the same verdict, decided by structure.
-        return _dispose("expected_variation", "target_person_content_presence", evidence)
+        if claim.region_kind:
+            # A node of the reviewed pair with no candidate role is the target's
+            # own content block: this is where the retired
+            # `target_person_fact_or_value` keyword reason lands, now under a
+            # structural condition (a known region), never from the prose.
+            return _dispose("expected_variation", "target_person_content_presence", evidence)
+        # No structure identifies the region at all: `expected` decided from the
+        # ABSENCE of evidence would suppress a possible real defect.
+        return _dispose("unresolved", "region_not_in_the_reviewed_pair", evidence)
     content_kinds = candidate_scope.get("content_kinds_by_role") or {}
     available = candidate_scope.get("available_section_roles") or []
     if not any(role in content_kinds or role in available for role in claim.roles):

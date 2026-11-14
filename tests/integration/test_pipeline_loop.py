@@ -1544,6 +1544,185 @@ def test_candidate_shape_filter_keeps_real_skills_layout_and_page_local_residual
     ).status == "evidence_missing"
 
 
+def _replay_finding(
+    finding_id: str, region: str, dimension: str, *, claim: str, observation: str,
+    page: int = 1, metric: str = "role_gap",
+) -> evidence.DefectFinding:
+    """One recorded recording: the prose is the model's, kept verbatim, and the
+    typed claim beside it was typed once by hand from the 2026-11 recording.
+    Nothing here reads the prose."""
+    return _e5_finding(finding_id, region, dimension).model_copy(update={
+        "page": page,
+        "observation": observation,
+        "claimed_difference": claim,
+        "requested_measurement": evidence.MeasurementRequest(
+            request_id=f"measure-{finding_id}", metric=metric, page=page,
+            intent="compare the recorded regions on the two final PDFs",
+        ),
+    })
+
+
+def _disposition_lane(
+    tmp_path: Path, state: Any, *, scope: dict[str, Any], candidate: Any,
+) -> Any:
+    """The lane surface `_e5_round_measure_and_attribute` reads offline."""
+    target = tmp_path/"target.pdf"
+    target.write_bytes(b"%PDF-1.4 target")
+    return SimpleNamespace(
+        lane="a", counter={"request": 0}, findings=[],
+        ledger=defect_ledger.DefectLedger(), trace=RunTrace(tmp_path),
+        lane_budget=RunBudget(), attributions=[], measurement_results=[],
+        measured_by_finding={}, measurement_reuse={},
+        run=SimpleNamespace(
+            live=False, state=state, derived={}, candidate_review_scope=scope,
+            candidate=candidate, candidate_name_text="SYNTHETIC_CANDIDATE_NAME",
+            target_pdf=target, region_spans={}, pod=None, builder_reserve_requests=0,
+        ),
+    )
+
+
+def test_recorded_cases_are_disposed_through_the_measure_and_attribute_phase(
+    tmp_path: Path,
+) -> None:
+    """AC1: the five recorded cases replayed offline through the SHIPPED
+    measure-and-attribute phase — the caller of `finding_disposition.payable()`
+    — not through the disposition helpers. Each ends in one recorded disposition
+    with its reason, and only what the shell could not dispose costs anything."""
+    from app.pipeline import finding_disposition
+    from tests.helpers.pipeline_candidates import candidate_resume_E
+    from tests.helpers.pipeline_layout import compile_synthetic
+
+    state = compile_synthetic()
+    render = tmp_path/"render.pdf"
+    render.write_bytes(b"%PDF-1.4 render")
+    # The render's own section/page inventory: LANGUAGES reflowed to page 3.
+    render_pages = {
+        "section.01": [1], "section.02": [1], "section.03": [3],
+        "section.04": [1, 2], "section.05": [2], "section.06": [2], "section.07": [2],
+    }
+    case1 = _replay_finding(
+        "case1", "section.04.list", "list_item_text", claim="content_value",
+        observation="only the item text differs, bullet styling and indentation are identical",
+    )
+    case2 = _replay_finding(
+        "case2", "section.03", "pagination", claim="page_placement", page=2,
+        observation="LANGUAGES present on TARGET page 2, absent from RENDER page 2",
+    )
+    case3 = _replay_finding(
+        "case3", "header.03", "header_contact_labels", claim="presentation_property",
+        metric="header_contact_label_geometry",
+        observation="the target metadata map lists linkedin and the render's does not",
+    )
+    case4_values = _replay_finding(
+        "case4-values", "section.03", "content", claim="content_value",
+        observation="the language values are not the target's",
+    )
+    case4_placement = _replay_finding(
+        "case4-placement", "section.05", "pagination", claim="page_placement",
+        observation="EDUCATION is not where the target puts it",
+    )
+    case4_matching = _replay_finding(
+        "case4-matching", "header.03", "contact_row_layout", claim="matching",
+        observation="both rows are value-only on both sides",
+    )
+    # Honesty case: the recorded case-1 observation replayed with NO typed
+    # claim. The prose proves nothing, so the finding stays payable.
+    untyped = _replay_finding(
+        "untyped", "section.04.list", "item_text_presence", claim="presentation_property",
+        observation="only the item text differs, bullet styling and indentation are identical",
+    )
+    findings = [
+        case1, case2, case3, case4_values, case4_placement, case4_matching, untyped,
+    ]
+
+    lane = _disposition_lane(
+        tmp_path, state, scope=e5._candidate_review_scope(candidate_resume_E(), []),
+        candidate=candidate_resume_E(),
+    )
+    # The recording's own label measurement: both sides value-only, delta 0.0.
+    lane.measurement_reuse[measurement.measurement_reuse_key(
+        method=measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
+        request=case3.requested_measurement.model_copy(update={"region_id": case3.region}),
+        target_pdf=lane.run.target_pdf, current_pdf=render, render_version="render-v1",
+        state=state, plan=None, current_name_text=lane.run.candidate_name_text,
+    )] = evidence.MeasurementResult(
+        request_id="measure-case3", status="confirmed", target_value_pt=0.0,
+        current_value_pt=0.0, delta_pt=0.0,
+        method=measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
+    )
+    review_scope = finding_disposition.disposition_scope(
+        lane.run.candidate_review_scope,
+        e5._e5_region_catalog(state, lane.run.derived, render_pages),
+    )
+    # The review phase observes first, exactly as the shipped round does.
+    for finding in findings:
+        lane.findings.append(finding)
+        lane.ledger.observe(
+            finding,
+            disposition=finding_disposition.dispose_finding(
+                finding, candidate_scope=review_scope, output_section_pages=render_pages,
+            ),
+        )
+
+    assert e5._e5_round_measure_and_attribute(lane, SimpleNamespace(
+        round_no=1, selected=findings, current_pdf=render, current_plan=None,
+        current_version=SimpleNamespace(version_id="render-v1"),
+        render_section_pages=render_pages,
+    )) == e5._E5_NEXT
+
+    def disposition_of(finding: evidence.DefectFinding) -> Any:
+        return lane.ledger.entries[defect_ledger._ledger_key(finding)].disposition
+
+    assert {
+        finding.finding_id: (disposition_of(finding).kind, disposition_of(finding).reason)
+        for finding in findings
+    } == {
+        "case1": ("expected_variation", "candidate_content_owned"),
+        "case2": ("expected_variation", "page_local_global_missing_section_assertion"),
+        "case3": ("confirmed_matching", "measured_property_matches_within_tolerance"),
+        "case4-values": (
+            "expected_variation", "candidate_content_shape_absent:language_proficiency",
+        ),
+        "case4-placement": (
+            "expected_variation", "page_local_global_missing_section_assertion",
+        ),
+        "case4-matching": ("unresolved", "matching_claim_needs_its_measurement"),
+        "untyped": ("unresolved", "presentation_property_needs_its_measurement"),
+    }
+    assert all(disposition_of(finding).evidence for finding in findings)
+    # AC6/AC9: only the payable residue is attributed, and the measured match is
+    # closed as `no_defect` — never confused with "not measured".
+    assert {item.finding_id for item in lane.attributions} == {
+        "case3", "case4-matching", "untyped",
+    }
+    assert next(
+        item for item in lane.attributions if item.finding_id == "case3"
+    ).attribution == "no_defect"
+    assert {
+        item.finding_id: item.hypothesis_status
+        for item in lane.attributions if item.finding_id != "case3"
+    } == {"case4-matching": "unresolved", "untyped": "unresolved"}
+    # Case 5: even with the region eligible for a trial, an expected variation
+    # has no attribution to schedule from, so no Builder turn can follow.
+    measured = {
+        finding.finding_id: (
+            lane.measured_by_finding[finding.finding_id][1],
+            lane.measured_by_finding[finding.finding_id][2],
+        )
+        for finding in findings
+    }
+    selected, _stalled = repair_policy._next_e5_repair_finding(
+        [case1], measured, lane.attributions, [],
+        layout_trial_regions={"render-v1:section.04.list:list_item_text:not_measurable"},
+    )
+    assert selected is None
+    assert repair_policy._e5_attribution_batches(
+        finding_disposition.payable(findings, {
+            finding.finding_id: disposition_of(finding) for finding in findings
+        }), measured,
+    ) == []
+
+
 def test_header_vertical_rule_metric_counts_additive_repairs(tmp_path: Path) -> None:
     from reportlab.pdfgen import canvas
 
