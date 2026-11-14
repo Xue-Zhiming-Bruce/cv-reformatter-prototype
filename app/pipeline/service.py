@@ -41,6 +41,7 @@ from app.pipeline.measurement import (
     _pdf_lines_and_marks,
     _target_body_text_color_context,
     pinned_export_environment,
+    target_header_contact_label_context,
 )
 from app.pipeline.repair_policy import (
     E5_BUDGET_REVIEW_POLICY,
@@ -467,6 +468,7 @@ def _e5_builder_evidence_package(
     initial_compact: bool = False,
     candidate_compatible_labels: dict[str, str] | None = None,
     body_color_context: dict[str, Any] | None = None,
+    target_contact_labels: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One representation-neutral Builder evidence package.
 
@@ -514,6 +516,9 @@ def _e5_builder_evidence_package(
         package["candidate_compatible_labels"] = candidate_compatible_labels
     if body_color_context is not None:
         package["target_body_text_color_context"] = body_color_context
+    if target_contact_labels is not None:
+        # Measured ONCE by the caller: this package never runs a measurement.
+        package["target_header_contact_label_context"] = target_contact_labels
     package["structure_draft"] = (
         _candidate_compatible_draft(draft, candidate_review_scope or {})
         if initial_compact else draft.model_dump(mode="json")
@@ -743,13 +748,41 @@ def _region_spans_from_draft(draft: TargetStructureDraft, page_height: float) ->
             spans[child] = (page_number, rule_top + 1.0, bottom)
     return spans
 
-def _apply_lane_a_structure(plan: Any, proposal: LaneAStructureProposal | None) -> Any:
+def _lane_a_contact_label_choice(
+    proposed: bool | None, target: dict[str, Any] | None
+) -> tuple[bool | None, str | None]:
+    """A confirmed values-only target overrides a proposal of generated labels.
+
+    Deterministic and recorded, never a rejection: the plan carries the
+    measured mode and one note naming it. Uncertain evidence (`ambiguous`,
+    `evidence_missing`, `not_measurable`, or no context at all) is never a
+    verdict, and labels are never removed in the other direction — the measured
+    repair path proves that change itself.
+    """
+    if proposed is not True or not target:
+        return proposed, None
+    if target.get("status") != "confirmed" or target.get("label_mode") is not False:
+        return proposed, None
+    return False, (
+        "header contact labels not generated: the measured target contact row "
+        f"has label_mode=false (method {target.get('method')}, "
+        f"region {target.get('region_id')})"
+    )
+
+
+def _apply_lane_a_structure(
+    plan: Any, proposal: LaneAStructureProposal | None, *,
+    target_contact_labels: dict[str, Any] | None = None,
+) -> Any:
     """Map the Lane A typed primitives onto the compiled plan (the fixed
     renderer interprets them; unknown section ids fail validation)."""
     if proposal is None:
         return plan
+    labels, override_note = _lane_a_contact_label_choice(
+        proposal.header_contact_labels, target_contact_labels
+    )
     header_rows = plan.header_rows
-    if proposal.header_contact_labels is not None:
+    if labels is not None:
         header_rows = []
         for row in plan.header_rows:
             fields = []
@@ -760,7 +793,7 @@ def _apply_lane_a_structure(plan: Any, proposal: LaneAStructureProposal | None) 
                     item = field.contact_item
                     if item is None or CONTACT_FIELD_SLOTS[item.field] != field.slot:
                         raise ValueError("header contact labels require structured source values matching each slot")
-                    text = f"{item.label}: {item.value}" if proposal.header_contact_labels else item.value
+                    text = f"{item.label}: {item.value}" if labels else item.value
                     field = field.model_copy(update={"text": text})
                 fields.append(field)
             header_rows.append(row.model_copy(update={"fields": fields}))
@@ -807,9 +840,9 @@ def _apply_lane_a_structure(plan: Any, proposal: LaneAStructureProposal | None) 
     notes = [*plan.notes, *(
         f"lane A structure proposal cites {node_id!r}, which has no compiled plan section (skipped)"
         for node_id in skipped
-    )]
+    ), *([override_note] if override_note else [])]
     return plan.model_copy(
-        update={"header_rows": header_rows, "header_contact_labels": proposal.header_contact_labels,
+        update={"header_rows": header_rows, "header_contact_labels": labels,
                 "sections": updated_sections, "appended_sections": updated_appended, "notes": notes}
     )
 
@@ -1263,6 +1296,12 @@ class _E5RunState:
     initial_builder_evidence: dict[str, Any]
     body_color_context: Any
     probe_candidates: dict[str, CandidateDocument] | None
+    # The measured target contact-label mode, computed ONCE from the target PDF
+    # before the initial evidence package exists: the initial Builder reads it
+    # from the package and `_apply_lane_a_structure` enforces it on every lane
+    # A render, so no render can silently generate labels a confirmed
+    # values-only target does not have.
+    target_contact_labels: dict[str, Any] | None = None
 
 
 @dataclass
@@ -1660,11 +1699,15 @@ def _e5_lane_terminal(
             if ls.run.layout_spec is not None:
                 _, plan, _ = render_layout_template(ls.run.layout_spec, probe_plan_candidate,
                     target_sha256=ls.run.target_sha256, page_count=ls.run.state.page.page_count)
-                plan = _apply_lane_a_structure(plan, selected_representation)
+                plan = _apply_lane_a_structure(
+                    plan, selected_representation,
+                    target_contact_labels=ls.run.target_contact_labels,
+                )
                 html = render_html(ls.run.state, plan)
             else:
                 plan = _apply_lane_a_structure(
-                    compile_render_plan(ls.run.state, probe_plan_candidate), selected_representation
+                    compile_render_plan(ls.run.state, probe_plan_candidate), selected_representation,
+                    target_contact_labels=ls.run.target_contact_labels,
                 )
                 if plan.status == "failed":
                     raise RuntimeError(f"probe plan failed: {plan.failures[:3]}")
@@ -1826,10 +1869,15 @@ def _e5_render_version(ls: _E5LaneState, note: str, proposal: LaneAStructureProp
     if ls.run.template_render is not None:
         _, plan, html = ls.run.template_render
         if proposal is not None:
-            plan = _apply_lane_a_structure(plan, proposal)
+            plan = _apply_lane_a_structure(
+                plan, proposal, target_contact_labels=ls.run.target_contact_labels
+            )
             html = render_html(ls.run.state, plan)
     else:
-        plan = _apply_lane_a_structure(compile_render_plan(ls.run.state, ls.run.candidate), proposal)
+        plan = _apply_lane_a_structure(
+            compile_render_plan(ls.run.state, ls.run.candidate), proposal,
+            target_contact_labels=ls.run.target_contact_labels,
+        )
         if plan.status == "failed":
             raise RuntimeError(f"refusing to render a failed plan: {plan.failures[:3]}")
         html = render_html(ls.run.state, plan)
@@ -3554,6 +3602,9 @@ def run_e5(
     page_size = _page_pt_size(target_pdf, 1)
     shared_target_images = _overview_pngs(target_pdf, out_dir, "builder_target_shared")
     body_color_context = _target_body_text_color_context(target_pdf)
+    # Measured ONCE, target-only, before any plan or render exists: the initial
+    # Builder and every lane A structure application read this same answer.
+    target_contact_labels = target_header_contact_label_context(target_pdf, state=state)
     initial_builder_evidence = _e5_builder_evidence_package(
         draft=draft,
         state=state,
@@ -3568,6 +3619,7 @@ def run_e5(
             label_catalog, candidate_review_scope
         ),
         body_color_context=body_color_context,
+        target_contact_labels=target_contact_labels,
     )
     header_rule_context = _header_vertical_rule_target_context(target_pdf)
     if header_rule_context is not None:
@@ -3646,6 +3698,7 @@ def run_e5(
         initial_builder_evidence=initial_builder_evidence,
         body_color_context=body_color_context,
         probe_candidates=probe_candidates,
+        target_contact_labels=target_contact_labels,
     )
 
     # -- 5. Run the lanes (fresh contexts; lane B never sees lane A output) --

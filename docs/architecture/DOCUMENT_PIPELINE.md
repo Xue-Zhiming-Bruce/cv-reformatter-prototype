@@ -781,6 +781,24 @@ error. This says nothing about field values, delimiters, font/color or other
 contact spacing. Promotion still requires measured improvement and accepted-region
 rechecks. The metric policy and changed proposal/reviewer instructions require
 fresh proofs; neither source facts nor the stored LayoutTemplateSpec are edited.
+The initial Builder call does not have to guess that choice:
+`measurement.py::target_header_contact_label_context` measures the TARGET alone
+before any plan or render exists, through the same `header_contact_label_evidence`
+owner the Reviewer's `target_evidence[0]` uses (target person values are never
+read), and `run_e5` carries the finished dict — `source_sha256`, `region_id`,
+`method`, `status`, and `label_mode`/`label_widths_pt` only when confirmed,
+`reason` otherwise — into `builder_evidence_initial.json` as
+`target_header_contact_label_context`. `service.py::_apply_lane_a_structure`
+then applies one deterministic override on every lane A render: a proposal of
+`header_contact_labels: true` against a confirmed `label_mode: false` target is
+applied as `false`, with a plan note naming the measured mode in the stored
+`render_<n>_plan.json`. The override never coerces the other direction, never
+fires on `ambiguous`, `evidence_missing` or `not_measurable` evidence or with no
+context at all, and never edits candidate values, field order, delimiters, body
+contacts or disclosure. It is not a rejection, so it costs no model request and
+does not terminate a lane. The added Builder sentence changes the prompt bytes
+and therefore the Agentic proof identity: older proofs, including the
+2026-11-12 recordings, are not inherited.
 The versioned `review-measurement/2` contract adds the explicit `unsupported`
 measurement selector alongside the existing two selectors. A Reviewer can retain
 its observation and desired measurement intent without claiming that an

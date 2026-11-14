@@ -141,6 +141,43 @@ def test_service_defaults_to_a_without_starting_b(tmp_path: Path) -> None:
     assert "EXPERIENCE" not in text and "Target facts only" not in text
 
 
+def test_offline_initial_builder_context_names_the_target_it_measured(tmp_path: Path) -> None:
+    """AC2/AC3: one offline run measures the target once, and the initial
+    payload carries that answer under the run's own target identity, bound to
+    the contact row this run's compiled state declares, with no target or
+    candidate content and inside the payload bound."""
+    from app.generation.template_mapper import CONTACT_FIELD_SLOTS
+
+    inputs = _inputs(tmp_path)
+    out, _, record = run_e5(
+        **inputs, candidate=_candidate("Candidate Alpha"),
+        out_dir=tmp_path / "context", max_repair_rounds=0,
+    )
+    payload = json.loads((out / "builder_evidence_initial.json").read_text())
+    context = payload["target_header_contact_label_context"]
+    state = json.loads((out / "e5_state.json").read_text())
+    assert context["source_sha256"] == state["target_sha256"] == record["target_sha256"]
+    assert context["method"] == measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION
+    declared_contact_rows = [
+        node["node_id"]
+        for node in json.loads((out / "c2_layout_state.json").read_text())["nodes"]
+        if node["kind"] == "header_row"
+        and any(field["slot"] in CONTACT_FIELD_SLOTS.values() for field in node["fields"])
+    ]
+    if len(declared_contact_rows) == 1:
+        assert context["region_id"] == declared_contact_rows[0]
+    else:
+        assert context["status"] == "not_measurable"
+        assert context["region_id"] is None and context["reason"]
+    assert context["status"] in {"confirmed", "ambiguous", "evidence_missing", "not_measurable"}
+    assert ("label_mode" in context) == (context["status"] == "confirmed")
+    assert ("reason" in context) == (context["status"] != "confirmed")
+    serialized = json.dumps(context)
+    for absent in ("Target Person", "Target facts only", "Candidate Alpha"):
+        assert absent not in serialized
+    assert len(json.dumps(payload).encode()) < 30_000
+
+
 @pytest.mark.parametrize("disposition", ["show", "hide"])
 def test_cli_blocks_pending_custom_review_before_output(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], disposition: str,
@@ -584,16 +621,17 @@ def test_header_contact_label_geometry_uses_actual_scoped_prefixes(tmp_path: Pat
         assert wrong_region.status == "not_measurable" and wrong_region.delta_pt is None
 
 
-def _header_label_scene(tmp_path: Path) -> tuple[dict, Any, Any, Any, Any]:
+def _header_label_scene(tmp_path: Path, *, target_labels: str = "hidden") -> tuple[dict, Any, Any, Any, Any]:
     """Real target/render PDFs plus the compiled state of one structured
-    header contact row; target declares values only (label_mode=false)."""
+    header contact row; by default the target declares values only
+    (label_mode=false)."""
     import hashlib
     from app.generation.template_mapper import build_client_render_context
     from app.pipeline.candidate_content import candidate_document_from_context
     from app.pipeline.html_renderer import render_layout_template
     from tests.helpers.pipeline import header_contact_inputs
 
-    inputs, spec, profile = header_contact_inputs(tmp_path)
+    inputs, spec, profile = header_contact_inputs(tmp_path, target_labels=target_labels)
     context = build_client_render_context(profile)
     candidate = candidate_document_from_context(context, candidate_id="label-loop", include_subheading=False)
     state, base, _ = render_layout_template(spec, candidate,
@@ -601,13 +639,15 @@ def _header_label_scene(tmp_path: Path) -> tuple[dict, Any, Any, Any, Any]:
     return inputs, context, state, base, candidate
 
 
-def _render_label_choice(tmp_path: Path, name: str, state: Any, base: Any, visible: bool) -> tuple[Any, str, Path]:
+def _render_label_choice(tmp_path: Path, name: str, state: Any, base: Any, visible: bool,
+                         *, target_contact_labels: dict | None = None) -> tuple[Any, str, Path]:
     from app.generation.chrome_html_to_pdf import export_html_to_pdf
     from app.pipeline import run_models, service
     from app.pipeline.html_renderer import render_html
 
     plan = service._apply_lane_a_structure(base, run_models.LaneAStructureProposal(
-        proposal_id=name, agent="scripted", sections=[], header_contact_labels=visible))
+        proposal_id=name, agent="scripted", sections=[], header_contact_labels=visible),
+        target_contact_labels=target_contact_labels)
     html = render_html(state, plan)
     path = tmp_path / f"{name}.html"
     path.write_text(html)
@@ -622,6 +662,135 @@ def _label_measurement(target_pdf: Path, pdf: Path, state: Any, plan: Any, name_
 
 
 EVIDENCE_LABEL = "offline controlled evidence - not live discovery, no fidelity winner inferred"
+
+
+@pytest.mark.parametrize("target_labels,status,label_mode", [
+    ("hidden", "confirmed", False), ("shown", "confirmed", True),
+    ("mixed", "ambiguous", None), ("unknown", "not_measurable", None),
+    ("empty", "evidence_missing", None),
+])
+def test_target_contact_label_context_is_the_measured_target_mode(
+    tmp_path: Path, target_labels: str, status: str, label_mode: bool | None,
+) -> None:
+    """AC1/AC2/AC3: one target-only owner, with the exact target identity, the
+    existing status vocabulary and no candidate or target-person content."""
+    import hashlib
+
+    inputs, _context, state, _base, _candidate = _header_label_scene(
+        tmp_path, target_labels=target_labels)
+    context = measurement.target_header_contact_label_context(inputs["target_pdf"], state=state)
+    assert context["source_sha256"] == hashlib.sha256(inputs["target_pdf"].read_bytes()).hexdigest()
+    assert context["region_id"] == "header.product_contact" and context["page"] == 1
+    assert context["method"] == measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION
+    assert context["status"] == status
+    if status == "confirmed":
+        assert context["label_mode"] is label_mode and "reason" not in context
+        assert set(context["label_widths_pt"]) == {"envelope", "location"}
+        assert 0 < context["window_top_pt"] < context["window_bottom_pt"]
+    else:
+        assert isinstance(context["reason"], str) and "label_mode" not in context
+    serialized = json.dumps(context)
+    for absent in ("target@example.test", "Target Person", "Target City",
+                   "alpha@example.test", "Office: West"):
+        assert absent not in serialized
+
+
+@pytest.mark.parametrize("target_labels,render_labels", [("hidden", False), ("shown", True)])
+def test_target_contact_label_context_agrees_with_the_reviewer_target_evidence(
+    tmp_path: Path, target_labels: str, render_labels: bool,
+) -> None:
+    """AC4: one owner, one answer — the initial Builder context and the
+    Reviewer's own target evidence cannot disagree about the same target."""
+    from app.pipeline import service
+
+    inputs, context, state, base, _candidate = _header_label_scene(
+        tmp_path, target_labels=target_labels)
+    plan, _html, pdf = _render_label_choice(tmp_path, "facts", state, base, render_labels)
+    facts = service._reviewer_presentation_facts(
+        inputs["target_pdf"], pdf, {}, current_name_text=context.candidate_heading,
+        state=state, plan=plan)
+    evidence = facts["header_contact_labels"]["target_evidence"][0]
+    target = measurement.target_header_contact_label_context(inputs["target_pdf"], state=state)
+    for key in ("status", "label_mode", "label_widths_pt", "window_top_pt",
+                "window_bottom_pt", "font_size_pt"):
+        assert target[key] == evidence[key]
+
+
+def test_confirmed_values_only_target_keeps_generated_labels_off(tmp_path: Path) -> None:
+    """AC5: initial and repair calls share one deterministic override — the plan
+    carries the measured target mode, one note names it, the rendered row shows
+    values only, and the proposal is neither rejected nor re-requested."""
+    from app.pipeline import run_models, service
+
+    inputs, context, state, base, candidate = _header_label_scene(tmp_path)
+    target = measurement.target_header_contact_label_context(inputs["target_pdf"], state=state)
+    assert (target["status"], target["label_mode"]) == ("confirmed", False)
+    proposal = run_models.LaneAStructureProposal(
+        proposal_id="override", agent="llm", sections=[], header_contact_labels=True)
+    assert service._validate_lane_a_proposal(proposal, state, candidate) is None  # not a rejection
+    plan, _html, pdf = _render_label_choice(
+        tmp_path, "override", state, base, True, target_contact_labels=target)
+    assert plan.header_contact_labels is False
+    # `render_<n>_plan.json` is this exact serialization (see `_e5_render_version`).
+    stored = json.loads(plan.model_dump_json())
+    assert any("label_mode=false" in note and target["region_id"] in note
+               and target["method"] in note for note in stored["notes"])
+    with pdfplumber.open(pdf) as document:
+        text = " ".join(page.extract_text() or "" for page in document.pages)
+    assert "alpha@example.test" in text and "Email: alpha@example.test" not in text
+    assert "Office: West" in text and "Location: Office: West" not in text
+
+
+@pytest.mark.parametrize("target_labels,proposed", [
+    ("hidden", False), ("shown", True), ("shown", False),
+])
+def test_contact_label_choice_never_coerces_the_agreeing_or_other_direction(
+    tmp_path: Path, target_labels: str, proposed: bool,
+) -> None:
+    """AC6: agreeing choices and a proposed removal against a labels-shown
+    target are applied as proposed, with no override note."""
+    from app.pipeline import run_models, service
+
+    inputs, _context, state, base, _candidate = _header_label_scene(
+        tmp_path, target_labels=target_labels)
+    target = measurement.target_header_contact_label_context(inputs["target_pdf"], state=state)
+    assert target["status"] == "confirmed"
+    plan = service._apply_lane_a_structure(
+        base,
+        run_models.LaneAStructureProposal(
+            proposal_id="no-override", agent="llm", sections=[], header_contact_labels=proposed),
+        target_contact_labels=target,
+    )
+    assert plan.header_contact_labels is proposed
+    assert plan.notes == base.notes
+
+
+@pytest.mark.parametrize("target_labels", ["mixed", "unknown", "empty"])
+def test_uncertain_target_evidence_never_becomes_a_label_verdict(
+    tmp_path: Path, target_labels: str,
+) -> None:
+    """AC7: ambiguous / not_measurable / evidence_missing — and no context at
+    all — apply the proposal unchanged, and the fail-closed rejections stay."""
+    from app.pipeline import run_models, service
+
+    inputs, _context, state, base, _candidate = _header_label_scene(
+        tmp_path, target_labels=target_labels)
+    target = measurement.target_header_contact_label_context(inputs["target_pdf"], state=state)
+    assert target["status"] != "confirmed" and "label_mode" not in target
+    proposal = run_models.LaneAStructureProposal(
+        proposal_id="uncertain", agent="llm", sections=[], header_contact_labels=True)
+    for context in (target, None):
+        plan = service._apply_lane_a_structure(base, proposal, target_contact_labels=context)
+        assert plan.header_contact_labels is True
+        assert plan.notes == base.notes
+    unstructured = base.model_copy(update={"header_rows": [
+        row.model_copy(update={"fields": [
+            field.model_copy(update={"contact_item": None}) for field in row.fields]})
+        if any(field.slot == "envelope" for field in row.fields) else row
+        for row in base.header_rows]})
+    with pytest.raises(ValueError, match="structured"):
+        service._apply_lane_a_structure(
+            unstructured, proposal, target_contact_labels={"status": "confirmed", "label_mode": False})
 
 
 def _retain_header_label_evidence(before_pdf: Path, after_pdf: Path, target_pdf: Path,
