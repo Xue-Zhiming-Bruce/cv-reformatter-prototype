@@ -20,6 +20,7 @@ from app.pipeline.defect_ledger import (
     _record_ledger_attribution,
 )
 from app.template_analysis.schemas import LayoutTemplateSpec
+from app.pipeline import finding_disposition
 from app.pipeline.rendering import RUNS, _export_pinned_html_to_pdf, _render_pages
 from app.pipeline.runtime import (
     BudgetExhausted,
@@ -41,6 +42,7 @@ from app.pipeline.measurement import (
     _pdf_lines_and_marks,
     _target_body_text_color_context,
     pinned_export_environment,
+    section_page_locations,
     target_header_contact_label_context,
 )
 from app.pipeline.repair_policy import (
@@ -88,6 +90,7 @@ from app.pipeline.evidence import (
     CandidateBindingLineage,
     DefectFinding,
     DualSourcePod,
+    FindingDisposition,
     E5AgentAuditSpec,
     FrozenCase,
     LiveAttributionHypothesis,
@@ -267,90 +270,6 @@ def _candidate_compatible_labels(
         )
         for label in labels if label.kind == "section_heading"
     }
-
-def _candidate_boundary_filter_reason(
-    finding: DefectFinding, review_scope: dict[str, Any]
-) -> str | None:
-    text = re.sub(
-        r"[^a-z0-9]+", " ",
-        f"{finding.observation} {finding.requested_measurement.intent or ''}".casefold(),
-    ).strip()
-    missing = any(word in text for word in ("missing", "absent", "omitted", "not present", "lacks"))
-    region = re.sub(r"[^a-z0-9]+", " ", finding.region.casefold()).strip()
-    unavailable = [
-        re.sub(r"[^a-z0-9]+", " ", label.casefold()).strip()
-        for label in review_scope["target_labels_without_candidate_content"]
-    ]
-    if any(
-        label and label in text and (
-            label in region
-            or missing
-            or any(word in text for word in ("copy", "replicate", "populate"))
-        )
-        for label in unavailable
-    ):
-        return "target_section_without_candidate_content"
-
-    if any(term in text for term in ("first name", "last name", "split name", "two-line name")):
-        return "representation_limit:atomic_candidate_name"
-    if "contact" in text and any(
-        term in text for term in ("label value", "label/value", "contact table", "typed row")
-    ) and not (finding.suspected_dimension == "header_contact_labels"
-               and review_scope.get("has_structured_header_contacts")):
-        return "representation_limit:flat_candidate_contact"
-
-    dimension = finding.suspected_dimension.casefold()
-    if (
-        not review_scope.get("has_language_proficiency_entries")
-        and any(term in text for term in (
-            "language proficiency", "proficiency dot", "language entr", "languages sub block",
-            "dot rating", "dot glyph", "bulleted language", "klingon", "elvish",
-        ))
-    ):
-        return "candidate_content_shape_absent:language_proficiency"
-
-    # A page image proves page placement, not global document absence. Keep a
-    # page/pagination residual, but reject a global missing-section assertion.
-    available_names = [
-        *review_scope.get("available_section_roles", []),
-        *review_scope.get("available_candidate_headings", []),
-    ]
-    available_names = [
-        re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip().replace("_", " ")
-        for value in available_names
-    ]
-    page_local = any(term in text for term in (
-        "page ", "pagination", "page break", "flow", "moved", "appears later",
-        "position on this page", "current page",
-    ))
-    if missing and "section" in text and not page_local and any(
-        name and name in text for name in available_names
-    ):
-        return "page_local_global_missing_section_assertion"
-    if (
-        any(word in dimension for word in ("completeness", "content_presence", "facts"))
-        and missing
-    ):
-        return "target_person_content_presence"
-    if (
-        any(term in text for term in ("target person", "target candidate", "target s"))
-        and missing
-        and any(term in text for term in (
-            " fact", " value", " name", " language", " proficiency", " employer",
-            " school", " date", " contact", " text", " wording", " detail", " entr",
-        ))
-    ):
-        return "target_person_fact_or_value"
-    return None
-
-def _candidate_aware_findings(
-    findings: list[DefectFinding], review_scope: dict[str, Any]
-) -> list[DefectFinding]:
-    """Keep presentation residuals; remove candidate-boundary violations."""
-    return [
-        finding for finding in findings
-        if _candidate_boundary_filter_reason(finding, review_scope) is None
-    ]
 
 def _residual_type(finding: DefectFinding) -> str:
     text = f"{finding.suspected_dimension} {finding.observation}".casefold()
@@ -952,7 +871,16 @@ def _owning_section_id(state: Any, region_id: str | None) -> str | None:
     return None
 
 
-def _e5_region_catalog(state: Any, derived: dict[str, Any]) -> list[dict[str, Any]]:
+def _e5_region_catalog(
+    state: Any, derived: dict[str, Any], render_pages: dict[str, list[int]] | None = None
+) -> list[dict[str, Any]]:
+    """The pair's region catalog, one entry per node, with EACH SIDE's page.
+
+    `target_page` is the target's own measured page for the region (sidebar
+    label row) and `render_pages` are the pages of the render under review
+    (`section_page_locations`). A target-derived page is never reported as the
+    render's page: a render that reflowed onto more pages than the target would
+    otherwise look like a page the target never had."""
     label_pages = {
         str(item.get("text") or "").casefold(): int(item["page"])
         for item in derived.get("sidebar_labels") or [] if item.get("page")
@@ -972,14 +900,22 @@ def _e5_region_catalog(state: Any, derived: dict[str, Any]) -> list[dict[str, An
 
     catalog = []
     for node in state.nodes:
-        section = nodes.get(_owning_section_id(state, node.node_id))
+        owner = _owning_section_id(state, node.node_id)
+        section = nodes.get(owner)
         sources = list(getattr(getattr(section, "binding", None), "sources", []) or [])
         catalog.append({
             "region_id": node.node_id,
             "kind": node.kind,
             "semantic_role": sources[0] if len(sources) == 1 else ("/".join(sources) or node.kind),
             "source": sources,
-            "page": page_for(node, section),
+            "slots": sorted(node.slots),
+            "target_page": page_for(node, section),
+            # The compiled header row is always page 1 of the render; a body
+            # region carries the pages its own section was found on.
+            "render_pages": (
+                [1] if node.kind == "header_row"
+                else sorted((render_pages or {}).get(owner) or [])
+            ),
         })
     return catalog
 
@@ -987,6 +923,7 @@ def _e5_region_catalog(state: Any, derived: dict[str, Any]) -> list[dict[str, An
 def _reviewer_presentation_facts(
     target_pdf: Path, current_pdf: Path, derived: dict[str, Any],
     *, current_name_text: str | None = None, state: Any = None, plan: Any = None,
+    render_section_pages: dict[str, list[int]] | None = None,
 ) -> dict[str, Any]:
     labels = derived.get("sidebar_labels") or []
     right_edges = [round(float(item["x1"]), 3) for item in labels if item.get("x1") is not None]
@@ -1017,6 +954,9 @@ def _reviewer_presentation_facts(
         },
         "target_ordinary_body_color": _target_body_text_color_context(target_pdf),
         "current_render_ordinary_body_color": _target_body_text_color_context(current_pdf),
+        # The render's OWN section -> page inventory: a section carried on
+        # another page of the output is reflow, not missing content.
+        "render_section_pages": dict(render_section_pages or {}),
     }
 
 def _e5_reviewer_message(
@@ -1049,8 +989,12 @@ def _e5_reviewer_message(
     if image_pages is not None:
         context["image_pages"] = image_pages
         context["pagination_note"] = (
-            "Candidate content may reflow beyond target pages. Extra render pages use the last "
-            "target page as a style reference; page-count differences alone are not defects."
+            "Candidate content may reflow beyond target pages. A render page past the "
+            "last target page is paired with that last target page as a STYLE "
+            "reference only (image_pages['target'] is null there): it is never "
+            "presented as the render's own page. Page-count differences alone are "
+            "not defects, and a section carried on another render page is reflow, "
+            "not missing content."
         )
     return (
         "The first attached image is TARGET; the second is RENDER. "
@@ -1068,7 +1012,14 @@ def _e5_reviewer_message(
         "Continue reviewing the whole page across all regions. "
         "Compare the TARGET and RENDER images for exactly this page. Use one "
         "region_id from region_catalog per finding and exactly one suspected "
-        "dimension. Carry the exact target_version, render_version, and page "
+        "dimension. Set claimed_difference to what you claim the difference is: "
+        "'content_value' for a candidate-owned value, count or key difference, "
+        "'page_placement' for a section that appears on a different page, "
+        "'matching' when both sides show the same presentation, and "
+        "'presentation_property' for any other layout, typography, spacing, "
+        "alignment, rule or colour difference. The shell disposes one claim per "
+        "finding before any repair; a claim it cannot verify stays open for its "
+        "measurement. Carry the exact target_version, render_version, and page "
         "below. Do not combine ABOUT ME with contact, target-only content with "
         "candidate presentation, or multiple regions/dimensions. role_gap is "
         "only for entry/job/role spacing; header_vertical_rule_geometry is only "
@@ -1427,6 +1378,10 @@ class _E5RoundState:
     repair_scope_versions: set[str] = field(default_factory=set)
     changed_regions: list[str] = field(default_factory=list)
     findings_new: list[DefectFinding] = field(default_factory=list)
+    # The ACTIVE render's own section node id -> pages, computed once in
+    # `_e5_round_review` and read by the region catalog, the Reviewer message
+    # and the disposition owner in both round phases.
+    render_section_pages: dict[str, list[int]] = field(default_factory=dict)
     render_fingerprint: str = ""
     run_review: bool = False
     actionable: list[DefectFinding] = field(default_factory=list)
@@ -1614,6 +1569,14 @@ def _e5_checkpoint(ls: _E5LaneState, phase: str) -> None:
             "finding_id": finding.finding_id,
             "render_version": finding.render_version,
             "observation": finding.observation,
+            # The shell's single disposition for this observation, with the
+            # reason and the evidence it used: a disposed entry stays visible
+            # and is never reported as repaired, and "not a defect" stays
+            # readable apart from "not measured" without reading prose.
+            "claimed_difference": finding.claimed_difference,
+            "disposition_kind": entry.disposition.kind if entry.disposition else None,
+            "disposition_reason": entry.disposition.reason if entry.disposition else None,
+            "disposition_evidence": list(entry.disposition.evidence) if entry.disposition else [],
             "repair_attempted": repair is not None,
             "repair_outcome": repair.get("outcome") if repair else None,
             "resolution_layer": (
@@ -2356,10 +2319,13 @@ def _e5_round_open(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
 
 
 def _e5_round_review(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
-    """See: the bounded Reviewer pass over the ACTIVE render, then the candidate-
-    boundary filter and the ledger dedup that decide what is actionable this
-    round."""
+    """See: the bounded Reviewer pass over the ACTIVE render, then the one
+    deterministic disposition owner and the ledger dedup that decide what is
+    actionable this round."""
 
+    # The render's own section/page inventory: computed once per round, read by
+    # the region catalog, the Reviewer message and the disposition owner.
+    rs.render_section_pages = section_page_locations(rs.current_pdf, ls.run.state)
     reviewer_failed = False
     try:
         if ls.run.live and rs.run_review:
@@ -2375,10 +2341,13 @@ def _e5_round_review(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
                 },
                 changed_pages=[ls.last_promoted_page] if ls.last_promoted_page else [],
             )
-            region_catalog = _e5_region_catalog(ls.run.state, ls.run.derived)
+            region_catalog = _e5_region_catalog(
+                ls.run.state, ls.run.derived, rs.render_section_pages
+            )
             presentation_facts = _reviewer_presentation_facts(
                 ls.run.target_pdf, rs.current_pdf, ls.run.derived, current_name_text=ls.run.candidate_name_text,
                 state=ls.run.state, plan=rs.current_plan,
+                render_section_pages=rs.render_section_pages,
             )
             ls.counter["finding"] += 1
             node_inventory = json.dumps(
@@ -2442,8 +2411,16 @@ def _e5_round_review(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
                                 lane=ls.lane,
                                 deterministic_presentation_facts=presentation_facts,
                                 image_pages=(
-                                    {"target": target_page_number,
-                                     "render": page_index if page_index <= len(render_overviews) else None}
+                                    {
+                                        "target": (
+                                            page_index if page_index <= len(target_overviews) else None
+                                        ),
+                                        "render": page_index if page_index <= len(render_overviews) else None,
+                                        "target_style_reference": (
+                                            len(target_overviews)
+                                            if page_index > len(target_overviews) else None
+                                        ),
+                                    }
                                     if ls.run.layout_spec is not None else None
                                 ),
                             )
@@ -2485,23 +2462,34 @@ def _e5_round_review(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
     if rs.run_review and not reviewer_failed:
         ls.reviewed_render_fingerprints.add(rs.render_fingerprint)
     rs.findings_new = _validate_finding_versions(rs.findings_new, ls.run.target_id, rs.current_version.version_id)
-    filtered = [
+    # ONE disposition per finding, before any paid attribution or Builder turn:
+    # only a payable disposition keeps the finding's normal checks; every other
+    # observation stays visible in the trace and on its ledger entry.
+    dispositions = {
+        finding.finding_id: finding_disposition.dispose_finding(
+            finding,
+            candidate_scope=finding_disposition.disposition_scope(
+                ls.run.candidate_review_scope,
+                _e5_region_catalog(ls.run.state, ls.run.derived, rs.render_section_pages),
+            ),
+            output_section_pages=rs.render_section_pages,
+        )
+        for finding in rs.findings_new
+    }
+    disposed = [
         {
             "finding": finding.model_dump(mode="json"),
-            "reason": reason,
+            "disposition": dispositions[finding.finding_id].model_dump(mode="json"),
         }
         for finding in rs.findings_new
-        if (reason := _candidate_boundary_filter_reason(
-            finding, ls.run.candidate_review_scope
-        )) is not None
+        if dispositions[finding.finding_id].kind not in finding_disposition.PAYABLE_KINDS
     ]
-    rs.findings_new = _candidate_aware_findings(rs.findings_new, ls.run.candidate_review_scope)
-    if filtered:
+    if disposed:
         ls.trace.add(
             agent="shell",
             phase="review",
-            action="candidate_boundary_filtered",
-            output={"removed": len(filtered), "findings": filtered},
+            action="finding_disposed",
+            output={"disposed": len(disposed), "findings": disposed},
             persist_output=True,
         )
     ls.findings.extend(rs.findings_new)
@@ -2511,13 +2499,22 @@ def _e5_round_review(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
     # Ledger dedup BEFORE attribution (Phase 0).
     rs.actionable: list[DefectFinding] = []
     carried_open_used = False
+    payable_ids = {
+        finding.finding_id for finding in finding_disposition.payable(rs.findings_new, dispositions)
+    }
     for finding in rs.findings_new:
+        disposition = dispositions[finding.finding_id]
         resolved = finding.finding_id in ls.resolved_measurements
-        entry, action = ls.ledger.observe(finding, resolved=resolved)
+        entry, action = ls.ledger.observe(finding, resolved=resolved, disposition=disposition)
         ls.trace.add(
             agent="shell", phase="ledger", action=action,
-            output={"key": entry.ledger_key, "finding": finding.finding_id},
+            output={
+                "key": entry.ledger_key, "finding": finding.finding_id,
+                "disposition": disposition.kind, "reason": disposition.reason,
+            },
         )
+        if finding.finding_id not in payable_ids:
+            continue  # disposed: recorded, costs no paid attribution and no Builder turn
         if action == "dedup" and entry.status in {"resolved", "repaired", "attributed"}:
             continue  # unchanged finding with unchanged evidence: no re-attribution
         if action == "dedup":
@@ -2601,12 +2598,19 @@ def _e5_round_schedule(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
 
 def _e5_round_measure_and_attribute(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
     """Measure and attribute the SELECTED findings only: identical requests bound
-    to this render version, then one attribution per finding (live batches
-    first, deterministic rule second — the second also re-decides a live
-    `unresolved` answer wherever the measurement proves the owner)."""
+    to this render version, then one disposition per measurement (a measured
+    match is closed deterministically, an expected variation costs nothing),
+    then one attribution per still-payable finding (live batches first,
+    deterministic rule second — the second also re-decides a live `unresolved`
+    answer wherever the measurement proves the owner)."""
 
+    disposition_scope = finding_disposition.disposition_scope(
+        ls.run.candidate_review_scope,
+        _e5_region_catalog(ls.run.state, ls.run.derived, rs.render_section_pages),
+    )
     # Bind -> measure -> attribute for the SELECTED findings only.
     measured: dict[str, tuple[MeasurementResult, MeasurementRequest]] = {}
+    dispositions: dict[str, FindingDisposition] = {}
     for finding in rs.selected:
         ls.counter["request"] += 1
         request_id = f"measure-l{ls.lane}-{ls.counter['request']:03d}"
@@ -2618,7 +2622,31 @@ def _e5_round_measure_and_attribute(ls: _E5LaneState, rs: _E5RoundState) -> _E5L
         measured[finding.finding_id] = (result, bound)
         ls.measured_by_finding[finding.finding_id] = (finding, result, bound)
         ls.ledger.entries[_ledger_key(finding)].last_measured_version = rs.current_version.version_id
-    batches = _e5_attribution_batches(rs.selected, measured)
+        # The measurement is the strongest disposition evidence: it closes a
+        # measured match and refutes a measured difference. An expected
+        # variation is recorded and spends no attribution request; a still
+        # unresolved finding keeps its normal live/deterministic attribution.
+        disposition = finding_disposition.dispose_finding(
+            finding,
+            candidate_scope=disposition_scope,
+            output_section_pages=rs.render_section_pages,
+            measurement=result,
+        )
+        ls.ledger.observe(finding, disposition=disposition)
+        dispositions[finding.finding_id] = disposition
+        ls.trace.add(
+            agent="shell", phase="dispose", action="measured_disposition",
+            output={"finding": finding.finding_id, **disposition.model_dump(mode="json")},
+            persist_output=True,
+        )
+    payable = finding_disposition.payable(rs.selected, dispositions)
+    # A measured match is closed: the deterministic owner still re-decides the
+    # attribution (a zero delta is `no_defect`), which costs no paid request.
+    matching = [
+        finding for finding in rs.selected
+        if dispositions[finding.finding_id].kind == "confirmed_matching"
+    ]
+    batches = _e5_attribution_batches(payable, measured)
     if ls.run.live and batches and _builder_reserve_intact(ls.lane_budget, ls.run.builder_reserve_requests):
         ls.run.pod.render_pdf = rs.current_pdf
         for group in batches:
@@ -2711,7 +2739,7 @@ def _e5_round_measure_and_attribute(ls: _E5LaneState, rs: _E5RoundState) -> _E5L
             except Exception as error:
                 _e5_escalate(ls, f"attribution_live_call_failed:{type(error).__name__}: {str(error)[:150]}")
     for finding in _e5_findings_needing_fallback_attribution(
-        rs.selected, measured, ls.attributions
+        [*payable, *matching], measured, ls.attributions
     ):
         result, bound = measured[finding.finding_id]
         _e5_attribute(ls, finding, result, bound)

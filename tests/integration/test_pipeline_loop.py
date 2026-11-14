@@ -1429,7 +1429,25 @@ def test_measurement_alone_never_confirms_template_compilation() -> None:
     assert attribution.repair_owner == "reviewer"
 
 
+def _disposed(
+    finding: evidence.DefectFinding,
+    scope: dict[str, object],
+    catalog: list[dict[str, object]],
+    pages: dict[str, list[int]],
+) -> evidence.FindingDisposition:
+    from app.pipeline import finding_disposition
+
+    return finding_disposition.dispose_finding(
+        finding,
+        candidate_scope=finding_disposition.disposition_scope(scope, catalog),
+        output_section_pages=pages,
+    )
+
+
 def test_reviewer_does_not_request_target_only_candidate_sections() -> None:
+    """A content claim about a target section the candidate has no content for
+    is disposed expected, while a layout claim in the same pair keeps its
+    normal checks (the retired keyword boundary replaced by one owner)."""
     from tests.helpers.pipeline_candidates import candidate_resume_E
 
     labels = [
@@ -1445,65 +1463,70 @@ def test_reviewer_does_not_request_target_only_candidate_sections() -> None:
     assert scope["content_kinds_by_role"]["skills"] == ["item_list"]
     assert scope["has_language_proficiency_entries"] is False
     assert scope["skills_only_skill_group"] is True
-    valid = _e5_finding("f1", "experience", "alignment")
-    invalid = _e5_finding("f2", "publications", "content")
-    invalid = invalid.model_copy(update={
-        "observation": "The render is missing the PUBLICATIONS section from the target."
-    })
-    target_facts = _e5_finding("f3", "skills", "content_completeness").model_copy(update={
-        "observation": "The target's Klingon language entries are absent from the render."
-    })
-    assert e5._candidate_aware_findings([valid, invalid, target_facts], scope) == [valid]
+    catalog = [
+        {"region_id": "section.01", "kind": "section", "source": ["work_experience"]},
+        {"region_id": "section.01.list", "kind": "list_row", "source": ["work_experience"]},
+        # A target section whose binding has no candidate content at all.
+        {"region_id": "section.02", "kind": "section", "source": ["additional_details"]},
+        {"region_id": "section.03", "kind": "section", "source": ["skills"]},
+    ]
+    pages = {"section.01": [1, 2], "section.02": [1], "section.03": [1]}
+    content_owned = _e5_finding("f1", "section.01.list", "list_item_text").model_copy(
+        update={"claimed_difference": "content_value"}
+    )
+    assert _disposed(content_owned, scope, catalog, pages).kind == "expected_variation"
+    assert _disposed(content_owned, scope, catalog, pages).reason == "candidate_content_owned"
+    target_only = _e5_finding("f2", "section.02", "content").model_copy(
+        update={"claimed_difference": "content_value"}
+    )
+    assert _disposed(target_only, scope, catalog, pages).reason == (
+        "target_section_without_candidate_content"
+    )
+    # A layout claim is never disposed from prose: it keeps its measurement.
+    layout = _e5_finding("f3", "section.03", "spacing")
+    assert _disposed(layout, scope, catalog, pages).kind == "unresolved"
 
 
 def test_candidate_shape_filter_keeps_real_skills_layout_and_page_local_residuals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The recorded dispositions: candidate-content-shape and page-placement
+    claims are expected variations, a real layout observation keeps its checks."""
     from tests.helpers.pipeline_candidates import candidate_resume_E
 
     scope = e5._candidate_review_scope(candidate_resume_E(), [])
-    no_language_shape = _e5_finding("f1", "skills", "content_presence").model_copy(update={
-        "observation": "The target language proficiency dots are missing from Skills."
-    })
-    no_dot_rating_shape = _e5_finding("f1b", "skills", "structure").model_copy(update={
-        "observation": "The target has dot-rating glyphs and a Languages sub-block."
-    })
-    skill_layout = _e5_finding("f2", "skills", "spacing").model_copy(update={
-        "observation": "Candidate skill groups are rendered as an overly dense block."
-    })
-    global_missing = _e5_finding("f3", "education", "content_presence").model_copy(update={
-        "observation": "The render is missing the Education section."
-    })
-    page_local = _e5_finding("f4", "education", "pagination").model_copy(update={
-        "observation": (
-            "Education is on target page 1 but not current page 1; this may be a "
-            "pagination or layout-flow difference."
-        )
-    })
-    valid_composite = _e5_finding("f5", "experience", "alignment").model_copy(update={
-        "observation": (
-            "The EXPERIENCE heading is misaligned with its candidate content; "
-            "the target also shows ABOUT ME elsewhere."
-        )
-    })
-    bullet_layout = _e5_finding("f6", "experience", "typography").model_copy(update={
-        "observation": "A doubled bullet marker is present in the render but not present in the target."
-    })
-    assert e5._candidate_aware_findings(
-        [
-            no_language_shape, no_dot_rating_shape, skill_layout, global_missing, page_local,
-            valid_composite, bullet_layout,
-        ], scope
-    ) == [skill_layout, page_local, valid_composite, bullet_layout]
-    assert e5._candidate_boundary_filter_reason(no_language_shape, scope) == (
+    catalog = [
+        {"region_id": "section.03", "kind": "section", "source": ["skills"]},
+        {"region_id": "section.04", "kind": "section", "source": ["education"]},
+        {"region_id": "section.05", "kind": "section", "source": ["languages"]},
+    ]
+    # LANGUAGES is carried by the render on page 3 only: a page-local absence
+    # claim is reflow, and a training-shape claim has no candidate leaves.
+    pages = {"section.03": [1], "section.04": [1, 2], "section.05": [3]}
+    no_language_shape = _e5_finding("f1", "section.05", "content_presence").model_copy(
+        update={"claimed_difference": "content_value"}
+    )
+    assert _disposed(no_language_shape, scope, catalog, pages).reason == (
         "candidate_content_shape_absent:language_proficiency"
     )
-    assert e5._candidate_boundary_filter_reason(no_dot_rating_shape, scope) == (
-        "candidate_content_shape_absent:language_proficiency"
+    skill_layout = _e5_finding("f2", "section.03", "spacing")
+    assert _disposed(skill_layout, scope, catalog, pages).kind == "unresolved"
+    page_local = _e5_finding("f4", "section.05", "pagination").model_copy(
+        update={"claimed_difference": "page_placement", "page": 2}
     )
-    assert e5._candidate_boundary_filter_reason(global_missing, scope) == (
-        "page_local_global_missing_section_assertion"
+    disposed_page_local = _disposed(page_local, scope, catalog, pages)
+    assert disposed_page_local.kind == "expected_variation"
+    assert disposed_page_local.reason == "page_local_global_missing_section_assertion"
+    # A section the render carries NOWHERE is never disposed as reflow: it stays
+    # unresolved and keeps its normal checks.
+    missing_whole_output = _e5_finding("f5", "section.04", "pagination").model_copy(
+        update={"claimed_difference": "page_placement", "page": 3}
     )
+    assert _disposed(missing_whole_output, scope, catalog, {}).reason == (
+        "section_absent_from_whole_output"
+    )
+    bullet_layout = _e5_finding("f6", "section.03", "typography")
+    assert _disposed(bullet_layout, scope, catalog, pages).kind == "unresolved"
 
     entry_header_gap = _e5_finding("f7", "experience", "role_gap").model_copy(update={
         "requested_measurement": evidence.MeasurementRequest(
@@ -3298,7 +3321,8 @@ def test_ledger_is_the_single_open_closed_source() -> None:
 def test_stored_ledger_entry_from_before_the_extraction_still_validates() -> None:
     """A lane ledger entry serialized by the pre-extraction code validates
     against the new owner unchanged: same schema title, fields, and status
-    meaning, so stored e5_state.json records keep being readable."""
+    meaning, so stored e5_state.json records keep being readable. The one added
+    field — the shell's disposition — defaults to null for stored entries."""
     stored_entry = {
         "attribution": {
             "attribution": "no_defect", "evidence": ["m1"], "finding_id": "f1",
@@ -3320,7 +3344,8 @@ def test_stored_ledger_entry_from_before_the_extraction_still_validates() -> Non
     assert type(entry) is defect_ledger.E5LedgerEntry
     assert defect_ledger.E5LedgerEntry.model_json_schema()["title"] == "E5LedgerEntry"
     assert entry.status == "resolved" and entry.attribution is not None
-    assert json.loads(entry.model_dump_json()) == stored_entry
+    assert entry.disposition is None
+    assert json.loads(entry.model_dump_json()) == {**stored_entry, "disposition": None}
     # the stored resolved status keeps its open/closed meaning
     assert defect_ledger._open_ledger_finding_ids(lane.ledger) == []
 
