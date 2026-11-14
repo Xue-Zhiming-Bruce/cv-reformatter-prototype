@@ -82,9 +82,9 @@ Response fields:
   name, model id, endpoint, credential or region;
 - `ingestion_limitations` — one attributed review requirement per visible DOCX
   shape the reader cannot read (nested table, text box, tracked insertion,
-  deletion or move, content a content control holds where the reader cannot
-  descend into it — an inline control in a paragraph, or a control in a table
-  position that does not hold the rows or cells it sits among —, simple field
+  deletion or move, content a content control holds where no walk descends it —
+  a control whose content is none of the blocks, rows, cells or runs the reader
+  places, such as one inside tracked change markup —, simple field
   result, embedded `w:altChunk` or `w:subDoc`, text-bearing block, table or
   inline wrapper it cannot read in place, and images/drawings/charts counted per
   part because OCR is out of scope), naming its location and, for a wrapper, the
@@ -102,7 +102,9 @@ Response fields:
   instead of being approved on a partial read. The reader's module docstring carries the
   enumerated read set — authored body order, table rows and cells walked on the
   table's own XML so a control or structural wrapper around either is read,
-  cells read through the same block walk, block wrappers of paragraphs/tables,
+  cells read through the same block walk, a content control read in every
+  position the walk reaches (paragraphs and tables at block level, rows and
+  cells in a table, runs inline), block wrappers of paragraphs/tables,
   inline text read by one walk with one explicit decision per element of the
   inline content model (every character renders: `w:t`, tabs, breaks,
   `w:noBreakHyphen`, `w:softHyphen`, `w:sym`'s code point, ruby base text; runs,
@@ -116,9 +118,14 @@ Response fields:
   rather than dropped. A symbol whose code point is a font-specific glyph slot is
   reported but does not block, like a reported image. A branch of
   `mc:AlternateContent` that was not chosen is neither read nor reported, and no
-  shape inside it is counted, because it renders what was read. Every content control in a part that no walk descended is counted as
-  a limitation, so a control in a position the reader cannot traverse is named
-  rather than skipped.
+  shape inside it is counted, because it renders what was read. Every content
+  control in a part that no walk descended is counted as a limitation, so a
+  control in a position the reader cannot traverse is named rather than skipped.
+  Container properties are never content: the walk skips the `*Pr` children of
+  the containers it descends (`w:customXmlPr`, `w:smartTagPr`, `w:sdtPr`,
+  `w:sdtEndPr`, `w:dirPr`, `w:fldData`, `w:pPr`, `w:rPr`) and every other
+  property element by that suffix, so property metadata is never reported as
+  unread text while an element that holds content and is not a property still is.
 
 In addition to `raw_extracted_text.txt` and `candidate_profile.json`, processing
 persists two immutable source-analysis artifacts:
