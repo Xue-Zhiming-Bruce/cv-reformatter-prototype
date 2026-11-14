@@ -75,10 +75,11 @@ def test_read_docx_attributes_header_and_footer_text_to_their_section(tmp_path: 
     content = read_docx(path)
 
     assert [
-        (item.location, item.section_index, item.text) for item in content.header_footer
+        (item.location, item.variant, item.section_index, item.text)
+        for item in content.header_footer
     ] == [
-        ("header", 1, "Synthetic Candidate Contact"),
-        ("footer", 1, "+1 555 0100"),
+        ("header", "default", 1, "Synthetic Candidate Contact"),
+        ("footer", "default", 1, "+1 555 0100"),
     ]
     assert content.plain_text.splitlines() == [
         "Synthetic Candidate Contact",
@@ -232,6 +233,130 @@ def test_read_docx_reports_a_field_result(tmp_path: Path) -> None:
     assert "cached visible result is not read" in content.limitations[0].message
     audit = audit_segmentation_lines(content.plain_text, content.plain_text.splitlines())
     assert audit.status == "passed"
+
+
+def test_read_docx_reads_only_enabled_header_variants(tmp_path: Path) -> None:
+    """Word hides a disabled variant, so it supplies no facts and no limitation."""
+    hidden = tmp_path / "hidden.docx"
+    document = Document()
+    document.sections[0].first_page_header.paragraphs[0].text = "Hidden first page"
+    document.add_paragraph("Body line")
+    document.save(hidden)
+
+    hidden_content = read_docx(hidden)
+
+    assert hidden_content.plain_text.splitlines() == ["Body line"]
+    assert hidden_content.header_footer == []
+    assert hidden_content.limitations == []
+
+    shown = tmp_path / "shown.docx"
+    document = Document()
+    section = document.sections[0]
+    section.first_page_header.paragraphs[0].text = "First page contact"
+    section.first_page_footer.paragraphs[0].text = "First page footer"
+    section.different_first_page_header_footer = True
+    document.settings.odd_and_even_pages_header_footer = True
+    section.even_page_header.paragraphs[0].text = "Even page contact"
+    document.add_paragraph("Body line")
+    document.save(shown)
+
+    shown_content = read_docx(shown)
+
+    assert [
+        (item.location, item.variant, item.text) for item in shown_content.header_footer
+    ] == [
+        ("header", "first_page", "First page contact"),
+        ("header", "even_page", "Even page contact"),
+        ("footer", "first_page", "First page footer"),
+    ]
+    assert shown_content.plain_text.splitlines() == [
+        "First page contact",
+        "Even page contact",
+        "Body line",
+        "First page footer",
+    ]
+
+
+def test_read_docx_keeps_header_paragraph_table_paragraph_order(tmp_path: Path) -> None:
+    """A header table keeps its place and its attribution, not paragraph-first order."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    header = document.sections[0].header
+    header.paragraphs[0].text = "Header first"
+    table = header.add_table(rows=1, cols=2, width=Inches(6))
+    table.rows[0].cells[0].text = "Contact"
+    table.rows[0].cells[1].text = "Phone"
+    header.add_paragraph("Header last")
+    document.add_paragraph("Body line")
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.header_footer[0].text == "Header first\nContact | Phone\nHeader last"
+    assert content.plain_text.splitlines() == [
+        "Header first",
+        "Contact | Phone",
+        "Header last",
+        "Body line",
+    ]
+
+
+def test_read_docx_reads_a_wrapper_of_paragraphs_and_tables(tmp_path: Path) -> None:
+    """A block wrapper around only block shapes is read where it sits."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    before = document.add_paragraph("Before wrapper")
+    before._p.addnext(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="resume">'
+            "<w:p><w:r><w:t>Inside wrapper</w:t></w:r></w:p>"
+            "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell entry</w:t></w:r></w:p>"
+            "</w:tc></w:tr></w:tbl>"
+            "</w:customXml>"
+        )
+    )
+    document.add_paragraph("After wrapper")
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Before wrapper",
+        "Inside wrapper",
+        "Cell entry",
+        "After wrapper",
+    ]
+    assert content.limitations == []
+
+
+def test_read_docx_reports_an_unrecognized_block_wrapper(tmp_path: Path) -> None:
+    """A wrapper this reader cannot read in place is named, never skipped."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="odd">'
+            "<w:p><w:r><w:t>Inside wrapper</w:t></w:r></w:p>"
+            "<w:r><w:t>Wrapped visible</w:t></w:r>"
+            "</w:customXml>"
+        ),
+    )
+    document.add_paragraph("After wrapper")
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate", "After wrapper"]
+    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
+        ("unknown_block", "body child 2", 1)
+    ]
+    limitation = content.limitations[0]
+    assert limitation.element == "customXml"
+    assert "body child 2 (customXml)" in limitation.message
+    assert "does not recognize is not read" in limitation.message
 
 
 def test_read_docx_with_embedded_image_preserves_text_extraction(tmp_path: Path) -> None:
