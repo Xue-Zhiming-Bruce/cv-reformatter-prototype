@@ -103,15 +103,20 @@ Response fields:
   enumerated read set — authored body order, table rows and cells walked on the
   table's own XML so a control or structural wrapper around either is read,
   cells read through the same block walk, block wrappers of paragraphs/tables,
-  inline text read by one walk (runs, hyperlinks, pass-through inline wrappers
-  and the runs of the selected `mc:AlternateContent` branch), and the default,
+  inline text read by one walk with one explicit decision per element of the
+  inline content model (every character renders: `w:t`, tabs, breaks,
+  `w:noBreakHyphen`, `w:softHyphen`, `w:sym`'s code point, ruby base text; runs,
+  hyperlinks, pass-through inline wrappers and the selected
+  `mc:AlternateContent` branch are descended), and the default,
   displayed first-page and enabled even-page headers/footers — and states that
   shapes outside it are not detectable. Reading and reporting are one traversal:
   every inline element the walk declines is named where it is declined, at any
-  nesting depth, and a wrapper or ruby annotation holding text is reported rather
-  than dropped. A branch of `mc:AlternateContent` that was not chosen is neither
-  read nor reported, and no shape inside it is counted, because it renders what
-  was read. Every content control in a part that no walk descended is counted as
+  nesting depth, and an element outside the decided model is reported whatever it
+  holds, so a wrapper, a ruby annotation or an unanticipated run child is named
+  rather than dropped. A symbol whose code point is a font-specific glyph slot is
+  reported but does not block, like a reported image. A branch of
+  `mc:AlternateContent` that was not chosen is neither read nor reported, and no
+  shape inside it is counted, because it renders what was read. Every content control in a part that no walk descended is counted as
   a limitation, so a control in a position the reader cannot traverse is named
   rather than skipped.
 
