@@ -24,9 +24,13 @@ Order and header policy (issue #49):
 What this reader reads (the whole read set):
 
 - body paragraphs and top-level body tables;
-- table-cell content through the same block walk as the body, so a cell's block
-  content control or wrapped paragraph is read where it sits; a table nested in
-  a cell stays reported (see below);
+- table rows and cells, read from the table's own XML in authored order:
+  python-docx returns only direct ``w:tr``/``w:tc`` children, so a row or cell
+  held by a content control or a structural wrapper (``w:customXml``,
+  ``w:smartTag``) is read in the position it occupies instead of vanishing; a
+  cell's block content then goes through the same block walk as the body, so a
+  cell's block content control or wrapped paragraph is read where it sits; a
+  table nested in a cell stays reported (see below);
 - a block-level content control (``w:sdt``), whose paragraphs and tables are read
   in the position the control occupies, nested controls included;
 - any other block wrapper whose own children are only paragraphs, tables or
@@ -48,9 +52,14 @@ location):
   deletions and moves (``w:ins``, ``w:del``, ``w:moveFrom``, ``w:moveTo``): a
   move is reported rather than read because Word keeps both the source and the
   destination copy under markup, so reading one would guess which is current;
-- a content control inside a paragraph;
-- a block wrapper holding text in a shape that is not paragraphs, tables or
-  controls — reported one per element with its name and child position;
+- content held by a content control this reader does not descend into: an inline
+  control inside a paragraph holds runs, and a control in a table position that
+  does not hold the rows or cells it sits among cannot be read. Counted once per
+  part, so a control in any position — body, cell, row, table, header or footer —
+  is named instead of skipped;
+- a block wrapper, or a table child, holding text in a shape that is not the
+  blocks, rows or cells this reader handles — reported one per element with its
+  name and child position;
 - an inline wrapper holding text that is not in the pass-through set above;
 - a simple field's cached visible result (``w:fldSimple``);
 - an embedded alternate-format chunk (``w:altChunk``) or included subdocument
@@ -80,7 +89,7 @@ stored profiles are untouched: this module only reads.
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Mapping, Sequence
+from typing import Collection, Literal, Mapping, Sequence
 
 from docx import Document
 from docx.document import Document as DocumentObject
@@ -88,7 +97,6 @@ from docx.oxml.text.paragraph import CT_P
 from docx.oxml.xmlchemy import BaseOxmlElement
 from docx.parts.hdrftr import FooterPart, HeaderPart
 from docx.section import Section as SectionObject
-from docx.table import Table
 
 from app.ingestion.file_validator import validate_docx_file
 
@@ -96,6 +104,8 @@ _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
 _PARAGRAPH = f"{_W}p"
 _TABLE = f"{_W}tbl"
+_ROW = f"{_W}tr"
+_CELL = f"{_W}tc"
 _RUN = f"{_W}r"
 _HYPERLINK = f"{_W}hyperlink"
 _TEXT = f"{_W}t"
@@ -122,10 +132,10 @@ _READ_CHILD_TAGS = frozenset({_PARAGRAPH, _TABLE, _CONTENT_CONTROL})
 _TRACKED_WRAPPERS = frozenset({_INSERTED, _DELETED, _MOVED_FROM, _MOVED_TO})
 #: Inline shapes whose text stays unread, so an inline wrapper holding one is skipped.
 _REPORTED_INLINE_TAGS = _TRACKED_WRAPPERS | {_CONTENT_CONTROL, _FIELD}
+#: Wrappers Word puts around runs, rows or cells without owning their content.
+_STRUCTURAL_WRAPPERS = frozenset({f"{_W}customXml", f"{_W}smartTag"})
 #: Inline wrappers that only structure runs; nothing else may be unwrapped blindly.
-_PASS_THROUGH_INLINE = frozenset(
-    {f"{_W}customXml", f"{_W}smartTag", f"{_W}dir", f"{_W}bdo"}
-)
+_PASS_THROUGH_INLINE = _STRUCTURAL_WRAPPERS | {f"{_W}dir", f"{_W}bdo"}
 
 LimitationKind = Literal[
     "nested_table",
@@ -144,7 +154,7 @@ _UNSUPPORTED_CONTENT_REVIEW: dict[LimitationKind, str] = {
     "text_box": "text-box content is not read",
     "tracked_change": "tracked insertions, deletions and moves are not resolved",
     "content_control": (
-        "a content control inside a paragraph or table cell is not read"
+        "content inside a content control this reader cannot read in place is not read"
     ),
     "field": "a field's cached visible result is not read",
     "alt_chunk": (
@@ -279,8 +289,13 @@ def read_docx(path: str | Path) -> ExtractedDocxContent:
     document = Document(str(file_path))
 
     body = document.element.body
-    blocks, block_limitations = _read_blocks(body, document, "body")
-    limitations = _find_limitations(body, "body") + block_limitations
+    # Content controls the walks descend, so ``_find_limitations`` can name every
+    # control they did not reach instead of leaving an unread one silent. These
+    # hold the elements, not ``id()``: lxml hands out a fresh proxy for the same
+    # element once the old proxy is collected, so an id would stop matching.
+    read_controls: set[BaseOxmlElement] = set()
+    blocks, block_limitations = _read_blocks(body, document, "body", read_controls)
+    limitations = _find_limitations(body, "body", read_controls) + block_limitations
 
     header_footer: list[ExtractedHeaderFooter] = []
     read_parts: set[str] = set()
@@ -294,7 +309,7 @@ def read_docx(path: str | Path) -> ExtractedDocxContent:
                 read_parts.add(str(displayed.partname))
                 label = f"{variant} {location} of section {section_index + 1}"
                 part_blocks, part_limitations = _read_blocks(
-                    displayed.element, document, label
+                    displayed.element, document, label, read_controls
                 )
                 text = "\n".join(_block_text(block) for block in part_blocks)
                 if text:
@@ -307,7 +322,8 @@ def read_docx(path: str | Path) -> ExtractedDocxContent:
                         )
                     )
                 limitations.extend(
-                    _find_limitations(displayed.element, label) + part_limitations
+                    _find_limitations(displayed.element, label, read_controls)
+                    + part_limitations
                 )
 
     return ExtractedDocxContent(
@@ -354,6 +370,7 @@ def _read_blocks(
     container: BaseOxmlElement,
     document: DocumentObject,
     location: str,
+    read_controls: set[BaseOxmlElement],
     *,
     read_tables: bool = True,
 ) -> tuple[list[ExtractedParagraph | ExtractedTable], list[ExtractedContentLimitation]]:
@@ -366,40 +383,49 @@ def _read_blocks(
 
     ``read_tables`` is off for a table cell: a nested table is reported rather
     than read, because flattening one into its parent cell loses its columns.
+    Every control this walk descends is recorded in ``read_controls``, and a
+    control it does not is named by ``_find_limitations``.
     """
     blocks: list[ExtractedParagraph | ExtractedTable] = []
     limitations: list[ExtractedContentLimitation] = []
-    unread_controls = 0
     for index, child in enumerate(container.iterchildren(), start=1):
         if child.tag == _PARAGRAPH:
             # ``Paragraph.text`` reads runs, hyperlinks and the inline wrappers
             # ``_paragraph_text`` unwraps, but nothing else it is given.
-            unread_controls += len(child.findall(f".//{_CONTENT_CONTROL}"))
             limitations.extend(_inline_limitations(child, f"{location} child {index}"))
             text = _paragraph_text(child, document).strip()
             if text:
                 blocks.append(ExtractedParagraph(text=text))
         elif child.tag == _TABLE and read_tables:
-            table, table_limitations = _read_table(Table(child, document), document, location)
+            rows, table_limitations = _read_rows(child, document, location, read_controls)
             limitations.extend(table_limitations)
-            if table.rows:
-                blocks.append(table)
+            if rows:
+                blocks.append(ExtractedTable(rows=rows))
         elif child.tag == _TABLE:
             # A nested table stays unread, so nothing inside it is reached either.
-            unread_controls += len(child.findall(f".//{_CONTENT_CONTROL}"))
+            continue
         elif child.tag in _TRACKED_WRAPPERS:
             continue
         elif child.tag == _CONTENT_CONTROL:
             content = child.find(_CONTROL_CONTENT)
             if content is not None:
+                read_controls.add(child)
                 sub_blocks, sub_limitations = _read_blocks(
-                    content, document, f"{location} child {index}", read_tables=read_tables
+                    content,
+                    document,
+                    f"{location} child {index}",
+                    read_controls,
+                    read_tables=read_tables,
                 )
                 blocks.extend(sub_blocks)
                 limitations.extend(sub_limitations)
         elif _is_block_wrapper(child):
             sub_blocks, sub_limitations = _read_blocks(
-                child, document, f"{location} child {index}", read_tables=read_tables
+                child,
+                document,
+                f"{location} child {index}",
+                read_controls,
+                read_tables=read_tables,
             )
             blocks.extend(sub_blocks)
             limitations.extend(sub_limitations)
@@ -412,13 +438,6 @@ def _read_blocks(
                     count=1,
                 )
             )
-    if unread_controls:
-        limitations.insert(
-            0,
-            ExtractedContentLimitation(
-                kind="content_control", location=location, count=unread_controls
-            ),
-        )
     return blocks, limitations
 
 
@@ -550,29 +569,102 @@ def _local_name(element: BaseOxmlElement) -> str:
     return element.tag.rsplit("}", 1)[-1] if isinstance(element.tag, str) else "element"
 
 
-def _read_table(
-    table: Table, document: DocumentObject, location: str
-) -> tuple[ExtractedTable, list[ExtractedContentLimitation]]:
-    """Rows of one table, reading each cell through the block walk.
+def _read_rows(
+    table: BaseOxmlElement,
+    document: DocumentObject,
+    location: str,
+    read_controls: set[BaseOxmlElement],
+) -> tuple[list[list[str]], list[ExtractedContentLimitation]]:
+    """Rows of one table in authored order, whatever wraps them.
 
-    A cell holds paragraphs and nested tables, so the same walk reads it: a
-    cell-level content control or wrapped paragraph is read in place instead of a
-    paragraph-only branch that would see neither. Cell content keeps the
-    container's location, so repeated gaps stay one entry per container.
+    ``Table.rows`` returns only direct ``w:tr`` children, so a row held by a
+    content control or a structural wrapper disappeared without even being named.
+    The table's own XML is walked instead; a child that holds text but is neither
+    a row nor a wrapper this reader descends is reported with its name and
+    position.
     """
     rows: list[list[str]] = []
     limitations: list[ExtractedContentLimitation] = []
-    for row in table.rows:
-        cells: list[str] = []
-        for cell in row.cells:
+    for index, child in enumerate(table.iterchildren(), start=1):
+        if child.tag == _ROW:
+            cells, cell_limitations = _read_cells(child, document, location, read_controls)
+            limitations.extend(cell_limitations)
+            if any(cells):
+                rows.append(cells)
+        elif child.tag == _CONTENT_CONTROL or child.tag in _STRUCTURAL_WRAPPERS:
+            holder = (
+                child.find(_CONTROL_CONTENT)
+                if child.tag == _CONTENT_CONTROL
+                else child
+            )
+            if holder is None:
+                continue
+            if child.tag == _CONTENT_CONTROL:
+                read_controls.add(child)
+            sub_rows, sub_limitations = _read_rows(holder, document, location, read_controls)
+            rows.extend(sub_rows)
+            limitations.extend(sub_limitations)
+        elif child.find(f".//{_TEXT}") is not None:
+            limitations.append(
+                ExtractedContentLimitation(
+                    kind="unknown_block",
+                    location=f"{location} table child {index}",
+                    element=_local_name(child),
+                    count=1,
+                )
+            )
+    return rows, limitations
+
+
+def _read_cells(
+    row: BaseOxmlElement,
+    document: DocumentObject,
+    location: str,
+    read_controls: set[BaseOxmlElement],
+) -> tuple[list[str], list[ExtractedContentLimitation]]:
+    """Cells of one row in authored order, reading each one through the block walk.
+
+    ``Row.cells`` returns only direct ``w:tc`` children, so a cell held by a
+    content control or a structural wrapper was skipped the same way a wrapped
+    row was. A cell holds paragraphs and nested tables, so the block walk reads
+    it: a cell-level content control or wrapped paragraph is read in place. Cell
+    content keeps the container's location, so repeated gaps stay one entry per
+    container.
+    """
+    cells: list[str] = []
+    limitations: list[ExtractedContentLimitation] = []
+    for index, child in enumerate(row.iterchildren(), start=1):
+        if child.tag == _CELL:
             cell_blocks, cell_limitations = _read_blocks(
-                cell._tc, document, location, read_tables=False
+                child, document, location, read_controls, read_tables=False
             )
             limitations.extend(cell_limitations)
             cells.append("\n".join(_block_text(block) for block in cell_blocks).strip())
-        if any(cells):
-            rows.append(cells)
-    return ExtractedTable(rows=rows), limitations
+        elif child.tag == _CONTENT_CONTROL or child.tag in _STRUCTURAL_WRAPPERS:
+            holder = (
+                child.find(_CONTROL_CONTENT)
+                if child.tag == _CONTENT_CONTROL
+                else child
+            )
+            if holder is None:
+                continue
+            if child.tag == _CONTENT_CONTROL:
+                read_controls.add(child)
+            sub_cells, sub_limitations = _read_cells(
+                holder, document, location, read_controls
+            )
+            cells.extend(sub_cells)
+            limitations.extend(sub_limitations)
+        elif child.find(f".//{_TEXT}") is not None:
+            limitations.append(
+                ExtractedContentLimitation(
+                    kind="unknown_block",
+                    location=f"{location} row child {index}",
+                    element=_local_name(child),
+                    count=1,
+                )
+            )
+    return cells, limitations
 
 
 def _table_lines(table: ExtractedTable) -> list[str]:
@@ -586,13 +678,27 @@ def _block_text(block: ExtractedParagraph | ExtractedTable) -> str:
 
 
 def _find_limitations(
-    element: BaseOxmlElement, location: str
+    element: BaseOxmlElement,
+    location: str,
+    read_controls: Collection[BaseOxmlElement],
 ) -> list[ExtractedContentLimitation]:
+    """Visible shapes in one part that no walk read, counted by kind.
+
+    ``content_control`` counts every control the walks did not descend, so a
+    control in a position this reader cannot traverse — body, cell, row, table,
+    header or footer — is named instead of disappearing. A control the walk did
+    descend is read, and naming it again would be false alarm.
+    """
     counts: dict[LimitationKind, int] = {
         "nested_table": sum(1 for table in element.iter(_TABLE) if _has_ancestor(table, _TABLE)),
         "text_box": len(element.findall(f".//{_TEXT_BOX}")),
         "tracked_change": sum(
             len(element.findall(f".//{tag}")) for tag in _TRACKED_WRAPPERS
+        ),
+        "content_control": sum(
+            1
+            for control in element.iter(_CONTENT_CONTROL)
+            if control not in read_controls
         ),
         "field": len(element.findall(f".//{_FIELD}")),
         "alt_chunk": len(element.findall(f".//{_ALT_CHUNK}"))

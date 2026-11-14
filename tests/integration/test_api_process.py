@@ -14,7 +14,7 @@ from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.opc.packuri import PackURI
 from docx.opc.part import Part
 from docx.oxml import parse_xml
-from docx.oxml.ns import nsdecls
+from docx.oxml.ns import nsdecls, qn
 from docx.shared import Inches
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
@@ -168,6 +168,13 @@ def _build_ordered_resume_docx(path: Path) -> None:
 def _one_pixel_png() -> bytes:
     return base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X3mNvwAAAABJRU5ErkJggg=="
+    )
+
+
+def _wrap_in_content_control(element_xml: str) -> object:
+    """Issue #49: a content control Word may put around a whole table part."""
+    return parse_xml(
+        f'<w:sdt {nsdecls("w")}><w:sdtContent>{element_xml}</w:sdtContent></w:sdt>'
     )
 
 
@@ -887,6 +894,138 @@ def test_unread_field_text_blocks_approval_and_names_the_text(
     detail = approval.json()["detail"]
     assert detail["error_code"] == "source_text_unread"
     assert detail["unread_text_source_content"] == body["ingestion_limitations"]
+
+
+@pytest.mark.usefixtures("a_generation_without_model_loop")
+def test_table_rows_and_cells_held_by_a_content_control_are_read(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Issue #49 QA: a control around a whole row or cell took table text out of reach."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    exporter = make_proof_pdf_exporter()
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", exporter)
+    monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", exporter)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    table = document.add_table(rows=2, cols=2)
+    table.rows[0].cells[0].text = "Acme"
+    table.rows[0].cells[1].text = "Engineer"
+    table.rows[1].cells[0].text = "2024"
+    table.rows[1].cells[1].text = "Led the migration"
+    table.rows[0].cells[1].paragraphs[0].add_run().add_picture(
+        io.BytesIO(_one_pixel_png()), width=Inches(0.25)
+    )
+    first_row, second_row = table._tbl.findall(qn("w:tr"))
+    first_row.replace(
+        first_row.findall(qn("w:tc"))[0],
+        _wrap_in_content_control(first_row.findall(qn("w:tc"))[0].xml),
+    )
+    table._tbl.replace(second_row, _wrap_in_content_control(second_row.xml))
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    lines = body["original_text"].splitlines()
+    assert lines[4:] == ["Acme | Engineer", "2024 | Led the migration"]
+    # The controlled cell and row are read, so only the picture is reported, and a
+    # picture carries no text, so nothing here is missing text.
+    assert len(body["ingestion_limitations"]) == 1
+    assert "OCR is out of scope" in body["ingestion_limitations"][0]
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["unread_source_content"] == body["ingestion_limitations"]
+    assert audit["unread_text_source_content"] == []
+    assert audit["status"] == "passed"
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 200, approval.text
+
+    generated = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": body["artifact_id"],
+            "approved_profile_version_id": approval.json()["profile_version_id"],
+            "template_name": "apex_standard",
+        },
+    )
+    assert generated.status_code == 200, generated.text
+
+
+def test_table_wrapper_the_reader_cannot_descend_is_named(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A table child holding text that is no row or known wrapper is named, not lost."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    table = document.add_table(rows=1, cols=1)
+    table.rows[0].cells[0].text = "Readable cell"
+    table._tbl.append(
+        parse_xml(
+            f'<w:unknownWrapper {nsdecls("w")}>'
+            "<w:tr><w:tc><w:p><w:r><w:t>Unreachable row</w:t></w:r></w:p></w:tc>"
+            "</w:tr></w:unknownWrapper>"
+        )
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "Unreachable row" not in body["original_text"]
+    (limitation,) = body["ingestion_limitations"]
+    assert "unknownWrapper" in limitation
+    assert "unknown block" in limitation
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "incomplete"
+    assert audit["unread_text_source_content"] == body["ingestion_limitations"]
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+
+    assert approval.status_code == 409, approval.text
+    assert approval.json()["detail"]["error_code"] == "source_text_unread"
 
 
 def test_process_rejects_pdf_without_extractable_text(tmp_path: Path) -> None:

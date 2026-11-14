@@ -81,12 +81,14 @@ Response fields:
   name, model id, endpoint, credential or region;
 - `ingestion_limitations` — one attributed review requirement per visible DOCX
   shape the reader cannot read (nested table, text box, tracked insertion,
-  deletion or move, content control inside a paragraph, simple field result,
-  embedded `w:altChunk` or `w:subDoc`, text-bearing block or inline wrapper it
-  cannot read in place, and images/drawings/charts counted per part because OCR
-  is out of scope), naming its location and, for a wrapper, the element name
-  and child position; empty for PDFs and for DOCX files inside the supported
-  shapes. The `segmentation_audit.json` line-coverage audit only measures the
+  deletion or move, content a content control holds where the reader cannot
+  descend into it — an inline control in a paragraph, or a control in a table
+  position that does not hold the rows or cells it sits among —, simple field
+  result, embedded `w:altChunk` or `w:subDoc`, text-bearing block, table or
+  inline wrapper it cannot read in place, and images/drawings/charts counted per
+  part because OCR is out of scope), naming its location and, for a wrapper, the
+  element name and child position; empty for PDFs and for DOCX files inside the
+  supported shapes. The `segmentation_audit.json` line-coverage audit only measures the
   text the reader supplied, so it never implies the source was read completely:
   it records every reported limitation in `unread_source_content` and the subset
   where visible text was lost in `unread_text_source_content`. A reported image,
@@ -97,11 +99,15 @@ Response fields:
   the reader could not read: no acknowledgment path for unread source text
   exists yet, so such an artifact has to be re-supplied with that content removed
   instead of being approved on a partial read. The reader's module docstring carries the
-  enumerated read set — authored body order, table cells read through the same
-  block walk, block wrappers of paragraphs/tables, runs held by a pass-through
-  inline wrapper, one branch of an inline `mc:AlternateContent`, and the
-  default, displayed first-page and enabled even-page headers/footers — and
-  states that shapes outside it are not detectable.
+  enumerated read set — authored body order, table rows and cells walked on the
+  table's own XML so a control or structural wrapper around either is read,
+  cells read through the same block walk, block wrappers of paragraphs/tables,
+  runs held by a pass-through inline wrapper, one branch of an inline
+  `mc:AlternateContent`, and the default, displayed first-page and enabled
+  even-page headers/footers — and states that shapes outside it are not
+  detectable. Every content control in a part that no walk descended is counted
+  as a limitation, so a control in a position the reader cannot traverse is
+  named rather than skipped.
 
 In addition to `raw_extracted_text.txt` and `candidate_profile.json`, processing
 persists two immutable source-analysis artifacts:
