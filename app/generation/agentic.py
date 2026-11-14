@@ -183,9 +183,10 @@ def renderer_contract() -> dict[str, Any]:
             "builder_reserve_model_requests": AGENTIC_BUILDER_RESERVE_REQUESTS,
         },
         "renderer": RENDERER_VERSION, "settings": {**_settings(), "max_request_bytes": MAX_REQUEST_BYTES},
-        # Browser build, resolution and bundled font assets: a changed rendering
-        # environment must not inherit an approval made under the old one.
-        "chrome_export": chrome_html_to_pdf.chrome_environment(),
+        # Browser build and bundled font assets: a changed rendering environment
+        # must not inherit an approval made under the old one. Where the same
+        # build was found and the timeout are provenance, not identity.
+        "chrome_export": chrome_html_to_pdf.chrome_export_identity(),
         "models": _model_identity(),
         "prompts": [prompts.E5_LANE_A_BUILDER_INSTRUCTIONS, prompts.E5_REVIEWER_INSTRUCTIONS,
                     prompts.E5_ATTRIBUTION_INSTRUCTIONS],

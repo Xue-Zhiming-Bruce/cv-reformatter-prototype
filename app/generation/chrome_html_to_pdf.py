@@ -19,10 +19,15 @@ freeze).
 
 :func:`chrome_environment` records the export identity: profile, browser
 version, flags, locale/timezone, bundled font assets and installed fallback-font
-package versions. The agentic renderer identity hashes it, so a browser or font
+package versions. The agentic renderer identity hashes
+:func:`chrome_export_identity` (the identity fields only), so a browser or font
 change invalidates incompatible proof approval through the existing identity
 check. The executable path and how it was resolved are provenance only: the same
 build renders the same PDF whether it was found through CHROME_BIN or PATH.
+
+The version probe is cached per executable file state (path, mtime, size,
+inode), so a browser replaced or upgraded in place is re-probed instead of
+keeping the previous version for the rest of the process.
 """
 
 from __future__ import annotations
@@ -140,8 +145,20 @@ def require_chrome_binary() -> ChromeBinary:
     return _find_chrome()
 
 
+def _binary_file_state(executable: str) -> tuple[int, int, int] | None:
+    """The file state a probed version is valid for. An in-place upgrade or
+    replacement rewrites the file, so a cached version must not outlive it."""
+    try:
+        stat = os.stat(executable)
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+
+
 @functools.lru_cache(maxsize=8)
-def _binary_version(executable: str) -> str | None:
+def _probe_binary_version(
+    executable: str, _file_state: tuple[int, int, int]
+) -> str | None:
     try:
         result = subprocess.run(
             [executable, "--version"], capture_output=True, text=True, timeout=10
@@ -149,6 +166,14 @@ def _binary_version(executable: str) -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     return result.stdout.strip() or None
+
+
+def _binary_version(executable: str) -> str | None:
+    """The installed browser version, re-probed whenever the file state changes."""
+    file_state = _binary_file_state(executable)
+    if file_state is None:
+        return None
+    return _probe_binary_version(executable, file_state)
 
 
 def font_asset_identity() -> dict[str, Any]:
@@ -227,6 +252,15 @@ def chrome_environment() -> dict[str, Any]:
     except HtmlToPdfExportError:
         binary = None
     return _environment(binary)
+
+
+def chrome_export_identity() -> dict[str, Any]:
+    """The part of :func:`chrome_environment` that identifies renders.
+
+    Proof identity hashes only this, so recording where the same browser build
+    was found (or the export timeout) never invalidates an approved proof."""
+    environment = chrome_environment()
+    return {field: environment[field] for field in _IDENTITY_FIELDS}
 
 
 def _process_environment(environment: Mapping[str, Any]) -> dict[str, str]:

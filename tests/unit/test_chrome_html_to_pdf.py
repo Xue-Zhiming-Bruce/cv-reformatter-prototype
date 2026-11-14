@@ -8,6 +8,7 @@ recorded browser/font environment, and failure/empty/stale-output handling.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -169,6 +170,56 @@ def test_changed_browser_version_changes_the_validity_digest(
     after = mod.chrome_environment()
     assert after["version"] == "FakeChrome 2.0"
     assert after["digest"] != before
+
+
+def _install_fake_browser(path: Path, version: str) -> Path:
+    """A real executable reporting its version, so the probe actually runs."""
+    path.write_text(f"#!/bin/sh\necho '{version}'\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def test_in_place_browser_upgrade_changes_the_recorded_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #52 judge finding 1: a browser replaced at the same path is
+    re-probed, so the export cannot record the version it replaced."""
+    browser = _install_fake_browser(tmp_path / "chrome", "JudgeChrome 1")
+    monkeypatch.setattr(
+        mod, "_find_chrome", lambda: mod.ChromeBinary(str(browser), "override")
+    )
+    before = mod.chrome_environment()
+    assert before["version"] == "JudgeChrome 1"
+    _install_fake_browser(browser, "JudgeChrome 2.0")
+    after = mod.chrome_environment()
+    assert after["executable"] == before["executable"]
+    assert after["version"] == "JudgeChrome 2.0"
+    assert after["digest"] != before["digest"]
+
+
+def test_touching_the_browser_file_does_not_fabricate_an_identity_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the reported version identifies the browser: a timestamp-only
+    change is re-probed and keeps the identity it already had."""
+    browser = _install_fake_browser(tmp_path / "chrome", "JudgeChrome 1")
+    monkeypatch.setattr(
+        mod, "_find_chrome", lambda: mod.ChromeBinary(str(browser), "override")
+    )
+    probes: list[tuple[int, int, int]] = []
+    probe = mod._probe_binary_version
+    monkeypatch.setattr(
+        mod,
+        "_probe_binary_version",
+        lambda path, state: probes.append(state) or probe(path, state),
+    )
+    before = mod.chrome_environment()
+    status = browser.stat()
+    os.utime(browser, ns=(status.st_atime_ns + 10**9, status.st_mtime_ns + 10**9))
+    after = mod.chrome_environment()
+    assert len(probes) == 2  # re-probed, not served from the cached version
+    assert after["version"] == before["version"] == "JudgeChrome 1"
+    assert after["digest"] == before["digest"]
 
 
 def test_missing_chrome_records_unresolved_environment(

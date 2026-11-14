@@ -261,8 +261,10 @@ override, system path or vendor default — is provenance only, because the same
 build renders the same PDF however it was found), the bundled-font asset digest
 and the installed fallback-font package versions where the host reports them
 (dpkg/apt; hosts without dpkg record none, so their fallback fonts stay outside
-the identity). Those records feed the existing manifest and proof identity, so a
-changed browser or font set invalidates stored layout proofs through the normal
+the identity). Only those identity fields feed the existing manifest and proof
+identity, and the version is re-probed whenever the browser file itself changes
+(in-place upgrade or replacement included), so a changed browser or font set
+invalidates stored layout proofs through the normal
 renderer-version check; it never silently reuses or relabels them. Exports write a
 temporary file and replace the target only on success, so a timeout or crash
 keeps the previous output.
