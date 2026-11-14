@@ -29,6 +29,14 @@ class AdobeAdapterError(RuntimeError):
     pass
 
 
+# Cleanup evidence carried by any exception raised from ``run_adobe_layout``.
+CLEANUP_EVIDENCE_ATTRIBUTE = "adobe_asset_cleanup"
+
+# A retry-later answer means the DELETE was not applied, not that the server
+# refused the asset: the aggregate state is ``pending`` for these.
+RETRY_LATER_STATUSES = frozenset({408, 425, 429})
+
+
 def normalize_adobe_layout(raw: dict[str, Any]) -> NormalizedLayoutEvidence:
     """Normalize a direct Adobe payload or archived ``structured_data`` wrapper.
 
@@ -220,52 +228,145 @@ def run_adobe_layout(pdf_path: Path) -> tuple[NormalizedLayoutEvidence, dict[str
         "ADOBE_PDF_SERVICES_TIMEOUT_SECONDS",
         os.getenv("COMMERCIAL_BAKEOFF_TIMEOUT_SECONDS", "180"),  # existing local configuration
     ))
-    asset_ids: list[str] = []
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        token = client.post(
-            "https://pdf-services.adobe.io/token",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={"client_id": client_id, "client_secret": client_secret},
-        )
-        _raise_http(token, "Adobe token request")
-        access_token = token.json().get("access_token")
-        if not access_token:
-            raise AdobeAdapterError("Adobe token response omitted access_token.")
-        headers = {"Authorization": f"Bearer {access_token}", "x-api-key": client_id}
-        created = client.post(f"{base_url}/assets", headers={**headers, "Content-Type": "application/json"}, json={"mediaType": "application/pdf"})
-        _raise_http(created, "Adobe asset creation")
-        asset = created.json()
-        asset_id, upload_uri = asset.get("assetID"), asset.get("uploadUri")
-        if not asset_id or not upload_uri:
-            raise AdobeAdapterError("Adobe asset response omitted assetID or uploadUri.")
-        asset_ids.append(asset_id)
-        uploaded = client.put(upload_uri, headers={"Content-Type": "application/pdf"}, content=pdf_path.read_bytes())
-        _raise_http(uploaded, "Adobe asset upload")
-        submitted = client.post(
-            f"{base_url}/operation/extractpdf", headers={**headers, "Content-Type": "application/json"},
-            json={"assetID": asset_id, "elementsToExtract": ["text", "tables"], "renditionsToExtract": ["tables", "figures"], "getCharBounds": True, "includeStyling": True},
-        )
-        _raise_http(submitted, "Adobe extract submission")
-        status_url = submitted.headers.get("location")
-        if not status_url:
-            raise AdobeAdapterError("Adobe did not return a job status URL.")
-        status = _poll(client, status_url, headers, timeout)
-        download_uri, result_id = _result_location(status)
-        if result_id:
-            asset_ids.append(result_id)
-        if not download_uri:
-            raise AdobeAdapterError("Adobe completed without a result URI.")
-        downloaded = client.get(download_uri)
-        _raise_http(downloaded, "Adobe result download")
-        zip_bytes = downloaded.content
-        for candidate in asset_ids:
+    # Every asset identity survives a later failure so the cleanup boundary
+    # below can attempt bounded deletion while the client stays authorized.
+    known_assets: list[dict[str, str]] = []
+    cleanup: dict[str, Any] = {"cleanup_state": "unknown", "assets": [], "limitations": []}
+    headers: dict[str, str] = {}
+    submitted_job = False
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             try:
-                client.delete(f"{base_url}/assets/{candidate}", headers=headers)
-            except httpx.HTTPError:
-                pass
-    structured = _structured_json(zip_bytes)
-    raw = {"status": status, "input_asset_id": asset_id, "result_asset_id": result_id, "structured_data": structured}
-    return normalize_adobe_layout(raw), raw, zip_bytes
+                token = client.post(
+                    "https://pdf-services.adobe.io/token",
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    data={"client_id": client_id, "client_secret": client_secret},
+                )
+                _raise_http(token, "Adobe token request")
+                access_token = token.json().get("access_token")
+                if not access_token:
+                    raise AdobeAdapterError("Adobe token response omitted access_token.")
+                headers = {"Authorization": f"Bearer {access_token}", "x-api-key": client_id}
+                created = client.post(f"{base_url}/assets", headers={**headers, "Content-Type": "application/json"}, json={"mediaType": "application/pdf"})
+                _raise_http(created, "Adobe asset creation")
+                asset = created.json()
+                asset_id, upload_uri = asset.get("assetID"), asset.get("uploadUri")
+                if asset_id:
+                    known_assets.append({"role": "input", "asset_id": str(asset_id)})
+                if not asset_id or not upload_uri:
+                    raise AdobeAdapterError("Adobe asset response omitted assetID or uploadUri.")
+                uploaded = client.put(upload_uri, headers={"Content-Type": "application/pdf"}, content=pdf_path.read_bytes())
+                _raise_http(uploaded, "Adobe asset upload")
+                submitted = client.post(
+                    f"{base_url}/operation/extractpdf", headers={**headers, "Content-Type": "application/json"},
+                    json={"assetID": asset_id, "elementsToExtract": ["text", "tables"], "renditionsToExtract": ["tables", "figures"], "getCharBounds": True, "includeStyling": True},
+                )
+                _raise_http(submitted, "Adobe extract submission")
+                submitted_job = True
+                status_url = submitted.headers.get("location")
+                if not status_url:
+                    raise AdobeAdapterError("Adobe did not return a job status URL.")
+                status = _poll(client, status_url, headers, timeout)
+                download_uri, result_id = _result_location(status)
+                if result_id:
+                    known_assets.append({"role": "result", "asset_id": str(result_id)})
+                if not download_uri:
+                    raise AdobeAdapterError("Adobe completed without a result URI.")
+                downloaded = client.get(download_uri)
+                _raise_http(downloaded, "Adobe result download")
+                zip_bytes = downloaded.content
+            finally:
+                cleanup = _cleanup_remote_assets(client, base_url, headers, known_assets, submitted_job)
+        structured = _structured_json(zip_bytes)
+        raw = {"status": status, "input_asset_id": asset_id, "result_asset_id": result_id, "asset_cleanup": cleanup, "structured_data": structured}
+        return normalize_adobe_layout(raw), raw, zip_bytes
+    except Exception as exc:
+        # The provider failure stays primary; cleanup evidence only rides along.
+        setattr(exc, CLEANUP_EVIDENCE_ATTRIBUTE, cleanup)
+        raise
+
+
+def _cleanup_remote_assets(
+    client: httpx.Client,
+    base_url: str,
+    headers: dict[str, str],
+    known_assets: list[dict[str, str]],
+    submitted_job: bool,
+) -> dict[str, Any]:
+    """Attempt one bounded DELETE per known asset and classify the outcome.
+
+    Never raises and never retries: an unresolved deletion is reported, not
+    repaired, so the primary provider result or failure stays attributable.
+    """
+    assets: list[dict[str, Any]] = []
+    for known in known_assets:
+        record: dict[str, Any] = {
+            "role": known["role"], "asset_id": known["asset_id"],
+            "outcome": "unknown", "http_status": None,
+        }
+        if not headers:
+            record["reason"] = "no authenticated client at cleanup time"
+        else:
+            try:
+                response = client.delete(f"{base_url}/assets/{known['asset_id']}", headers=headers)
+            except Exception:  # cleanup must never mask the primary provider outcome (issue #54)
+                record["outcome"] = "transient"
+            else:
+                record["http_status"] = response.status_code
+                record["outcome"] = _delete_outcome(response.status_code)
+        assets.append(record)
+    limitations: list[str] = []
+    if submitted_job and not any(record["role"] == "result" for record in assets):
+        limitations.append(
+            "Extract job was submitted but Adobe returned no result asset identity; "
+            "that asset's remote state is unknown and the paid operation was not resubmitted."
+        )
+    outcomes = {record["outcome"] for record in assets}
+    # An unanswered DELETE (transport failure) or 5xx may have been applied and
+    # stays ``unknown``; a retry-later answer is still ``pending`` work.
+    unanswered = any(
+        record["outcome"] in {"transient", "unknown"}
+        and record["http_status"] not in RETRY_LATER_STATUSES
+        for record in assets
+    )
+    # Worst outcome wins, so confirmed cleanup requires every asset to be gone.
+    if not assets or limitations or unanswered:
+        state = "unknown"
+    elif outcomes - {"deleted", "already_deleted"}:
+        state = "pending"
+    else:
+        state = "confirmed"
+    return {"cleanup_state": state, "assets": assets, "limitations": limitations}
+
+
+def _delete_outcome(status_code: int) -> str:
+    """Classify one DELETE response; 404/410 mean absent, not deletion by us."""
+    if 200 <= status_code < 300:
+        return "deleted"
+    if status_code in {404, 410}:
+        return "already_deleted"
+    if 400 <= status_code < 500 and status_code not in RETRY_LATER_STATUSES:
+        return "rejected"
+    return "transient"
+
+
+def describe_asset_cleanup(cleanup: dict[str, Any] | None) -> str:
+    """Render cleanup evidence as one safe line for an error or warning surface.
+
+    Only role/identity/outcome/status and the recorded limitations are
+    included: never credentials, authorization headers or signed URLs.
+    """
+    if not cleanup:
+        return "Adobe asset cleanup: unknown (no cleanup evidence recorded)."
+    assets = cleanup.get("assets") or []
+    known = ", ".join(
+        f"{item['role']} asset {item['asset_id']} {item['outcome']}"
+        + (f" (HTTP {item['http_status']})" if item.get("http_status") is not None else "")
+        for item in assets
+    ) or "none"
+    parts = [f"Adobe asset cleanup: {cleanup.get('cleanup_state', 'unknown')}; known assets: {known}"]
+    parts.extend(cleanup.get("limitations") or [])
+    return "; ".join(parts)
 
 
 def _structural_role(path: str) -> str:

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import json
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.template_analysis.commercial import (
@@ -674,3 +677,247 @@ def test_adobe_timeout_configuration(tmp_path: Path, monkeypatch, provider_timeo
     with pytest.raises(RuntimeError, match="stop before HTTP"):
         adobe.run_adobe_layout(tmp_path / "unused.pdf")
     assert captured["timeout"] == expected
+
+
+_ADOBE_BASE = "https://pdf-services.adobe.io"
+_ADOBE_STRUCTURED = {
+    "Pages": [{"Width": 612, "Height": 792}],
+    "elements": [{"Path": "//Document/Title", "Text": "Synthetic target", "Page": 0, "Bounds": [72, 72, 300, 90], "TextSize": 16}],
+}
+
+
+def _structured_zip() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("structuredData.json", json.dumps(_ADOBE_STRUCTURED))
+    return buffer.getvalue()
+
+
+class _AdobeHttp:
+    """Controlled Adobe HTTP transport: no network, records every request."""
+
+    def __init__(
+        self,
+        *,
+        fail_at: str | None = None,
+        delete_status: int = 204,
+        delete_transport_error: bool = False,
+        result_bytes: bytes | None = None,
+        upload_uri: str | None = "https://upload.example.test/in",
+    ) -> None:
+        self.fail_at = fail_at
+        self.delete_status = delete_status
+        self.delete_transport_error = delete_transport_error
+        self.result_bytes = result_bytes
+        self.upload_uri = upload_uri
+        self.requests: list[tuple[str, str]] = []
+
+    def deletes(self) -> list[str]:
+        return [url.rsplit("/", 1)[-1] for method, url in self.requests if method == "DELETE"]
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        method, url = request.method, str(request.url)
+        self.requests.append((method, url))
+        if url.endswith("/token"):
+            return httpx.Response(200, json={"access_token": "synthetic-access-token"})
+        if method == "POST" and url.endswith("/assets"):
+            if self.fail_at == "creation":
+                return httpx.Response(500)
+            created = {"assetID": "input-asset"}
+            if self.upload_uri is not None:
+                created["uploadUri"] = self.upload_uri
+            return httpx.Response(200, json=created)
+        if method == "PUT":
+            return httpx.Response(200 if self.fail_at != "upload" else 500)
+        if method == "POST" and url.endswith("/operation/extractpdf"):
+            if self.fail_at == "submission":
+                return httpx.Response(500)
+            return httpx.Response(201, headers={"location": f"{_ADOBE_BASE}/status/1"})
+        if url.endswith("/status/1"):
+            if self.fail_at == "polling":
+                return httpx.Response(500)
+            return httpx.Response(200, json={
+                "status": "done", "downloadUri": "https://download.example.test/result.zip",
+                "assetID": "result-asset",
+            })
+        if url == "https://download.example.test/result.zip":
+            if self.fail_at == "download":
+                return httpx.Response(500)
+            return httpx.Response(200, content=self.result_bytes or _structured_zip())
+        if method == "DELETE":
+            if self.delete_transport_error:
+                raise httpx.ConnectError("synthetic delete transport failure", request=request)
+            return httpx.Response(self.delete_status)
+        raise AssertionError(f"unexpected Adobe request {method} {url}")
+
+
+def _adobe_runner(monkeypatch, tmp_path: Path, http: _AdobeHttp):
+    """Run the real adapter over a controlled transport; no provider, no network."""
+    from app.template_analysis.commercial import adobe
+
+    monkeypatch.setenv("ADOBE_PDF_SERVICES_CLIENT_ID", "synthetic-client")
+    monkeypatch.setenv("ADOBE_PDF_SERVICES_CLIENT_SECRET", "synthetic-secret")
+    client_class = httpx.Client
+    monkeypatch.setattr(
+        adobe.httpx, "Client",
+        lambda **kwargs: client_class(transport=httpx.MockTransport(http), **kwargs),
+    )
+    pdf_path = tmp_path / "target.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 synthetic target")
+    return adobe, lambda: adobe.run_adobe_layout(pdf_path)
+
+
+def test_adobe_cleanup_reports_confirmed_deletion_after_success(monkeypatch, tmp_path: Path) -> None:
+    http = _AdobeHttp()
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    evidence, raw, _zip = run()
+    assert evidence.page_count == 1
+    assert raw["asset_cleanup"] == {
+        "cleanup_state": "confirmed",
+        "assets": [
+            {"role": "input", "asset_id": "input-asset", "outcome": "deleted", "http_status": 204},
+            {"role": "result", "asset_id": "result-asset", "outcome": "deleted", "http_status": 204},
+        ],
+        "limitations": [],
+    }
+    assert http.deletes() == ["input-asset", "result-asset"]
+
+
+@pytest.mark.parametrize(
+    ("fail_at", "expected_error", "expected_assets", "expected_state", "limitations"),
+    [
+        ("upload", "Adobe asset upload failed with HTTP 500.", {"input-asset": "deleted"}, "confirmed", 0),
+        ("submission", "Adobe extract submission failed with HTTP 500.", {"input-asset": "deleted"}, "confirmed", 0),
+        # Job submitted but the result identity never came back: not "deleted".
+        ("polling", "Adobe status polling failed with HTTP 500.", {"input-asset": "deleted"}, "unknown", 1),
+        ("download", "Adobe result download failed with HTTP 500.",
+         {"input-asset": "deleted", "result-asset": "deleted"}, "confirmed", 0),
+    ],
+)
+def test_adobe_cleanup_runs_on_every_failure_after_creation(
+    monkeypatch, tmp_path: Path, fail_at, expected_error, expected_assets, expected_state, limitations,
+) -> None:
+    http = _AdobeHttp(fail_at=fail_at)
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    with pytest.raises(adobe.AdobeAdapterError) as raised:
+        run()
+    assert str(raised.value) == expected_error
+    cleanup = getattr(raised.value, adobe.CLEANUP_EVIDENCE_ATTRIBUTE)
+    assert {item["asset_id"]: item["outcome"] for item in cleanup["assets"]} == expected_assets
+    assert cleanup["cleanup_state"] == expected_state
+    assert len(cleanup["limitations"]) == limitations
+    assert sorted(http.deletes()) == sorted(expected_assets)
+
+
+def test_adobe_creation_failure_reports_no_known_asset(monkeypatch, tmp_path: Path) -> None:
+    http = _AdobeHttp(fail_at="creation")
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    with pytest.raises(adobe.AdobeAdapterError) as raised:
+        run()
+    assert str(raised.value) == "Adobe asset creation failed with HTTP 500."
+    cleanup = getattr(raised.value, adobe.CLEANUP_EVIDENCE_ATTRIBUTE)
+    # No identity was ever returned, so nothing may be reported as deleted.
+    assert cleanup == {"cleanup_state": "unknown", "assets": [], "limitations": []}
+    assert http.deletes() == []
+
+
+def test_adobe_cleanup_confirmed_before_normalization_failure(monkeypatch, tmp_path: Path) -> None:
+    http = _AdobeHttp(result_bytes=b"not a zip archive")
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    with pytest.raises(adobe.AdobeAdapterError) as raised:
+        run()
+    assert str(raised.value) == "Adobe result omitted valid structuredData.json."
+    cleanup = getattr(raised.value, adobe.CLEANUP_EVIDENCE_ATTRIBUTE)
+    assert cleanup["cleanup_state"] == "confirmed"
+    assert sorted(http.deletes()) == ["input-asset", "result-asset"]
+
+
+@pytest.mark.parametrize(
+    ("delete_status", "expected_outcome", "expected_state"),
+    [
+        (204, "deleted", "confirmed"),
+        (404, "already_deleted", "confirmed"),
+        (410, "already_deleted", "confirmed"),
+        (403, "rejected", "pending"),
+        # Retry-later answers are transient work, not a refusal: still pending.
+        (429, "transient", "pending"),
+        (503, "transient", "unknown"),
+    ],
+)
+def test_adobe_cleanup_classifies_delete_status(
+    monkeypatch, tmp_path: Path, delete_status, expected_outcome, expected_state,
+) -> None:
+    http = _AdobeHttp(delete_status=delete_status)
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    evidence, raw, _zip = run()
+    cleanup = raw["asset_cleanup"]
+    assert evidence.page_count == 1  # primary analysis still succeeded
+    assert {item["outcome"] for item in cleanup["assets"]} == {expected_outcome}
+    assert {item["http_status"] for item in cleanup["assets"]} == {delete_status}
+    assert cleanup["cleanup_state"] == expected_state
+
+
+def test_adobe_creation_without_upload_uri_still_cleans_known_asset(monkeypatch, tmp_path: Path) -> None:
+    http = _AdobeHttp(upload_uri=None)
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    with pytest.raises(adobe.AdobeAdapterError) as raised:
+        run()
+    assert str(raised.value) == "Adobe asset response omitted assetID or uploadUri."
+    cleanup = getattr(raised.value, adobe.CLEANUP_EVIDENCE_ATTRIBUTE)
+    # The identity was returned, so it is deleted even though upload never ran.
+    assert http.deletes() == ["input-asset"]
+    assert cleanup["cleanup_state"] == "confirmed"
+    assert cleanup["assets"] == [
+        {"role": "input", "asset_id": "input-asset", "outcome": "deleted", "http_status": 204}
+    ]
+
+
+def test_adobe_delete_non_2xx_on_failure_path_keeps_pending_cleanup(monkeypatch, tmp_path: Path) -> None:
+    http = _AdobeHttp(fail_at="upload", delete_status=403)
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    with pytest.raises(adobe.AdobeAdapterError) as raised:
+        run()
+    assert str(raised.value) == "Adobe asset upload failed with HTTP 500."
+    cleanup = getattr(raised.value, adobe.CLEANUP_EVIDENCE_ATTRIBUTE)
+    assert cleanup["cleanup_state"] == "pending"
+    assert cleanup["assets"] == [
+        {"role": "input", "asset_id": "input-asset", "outcome": "rejected", "http_status": 403}
+    ]
+
+
+def test_adobe_cleanup_delete_transport_error_keeps_primary_success(monkeypatch, tmp_path: Path) -> None:
+    http = _AdobeHttp(delete_transport_error=True)
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    evidence, raw, _zip = run()
+    assert evidence.page_count == 1
+    assert raw["asset_cleanup"]["cleanup_state"] == "unknown"
+    assert {item["outcome"] for item in raw["asset_cleanup"]["assets"]} == {"transient"}
+    assert {item["http_status"] for item in raw["asset_cleanup"]["assets"]} == {None}
+
+
+def test_adobe_cleanup_error_does_not_mask_original_failure(monkeypatch, tmp_path: Path) -> None:
+    http = _AdobeHttp(fail_at="download", delete_transport_error=True)
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    with pytest.raises(adobe.AdobeAdapterError) as raised:
+        run()
+    assert str(raised.value) == "Adobe result download failed with HTTP 500."
+    cleanup = getattr(raised.value, adobe.CLEANUP_EVIDENCE_ATTRIBUTE)
+    assert cleanup["cleanup_state"] == "unknown"
+    assert {item["asset_id"]: item["outcome"] for item in cleanup["assets"]} == {
+        "input-asset": "transient", "result-asset": "transient",
+    }
+
+
+def test_adobe_cleanup_evidence_omits_credentials_and_signed_urls(monkeypatch, tmp_path: Path) -> None:
+    http = _AdobeHttp(delete_status=500, fail_at="download")
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    with pytest.raises(adobe.AdobeAdapterError) as raised:
+        run()
+    cleanup = getattr(raised.value, adobe.CLEANUP_EVIDENCE_ATTRIBUTE)
+    recorded = json.dumps(cleanup) + adobe.describe_asset_cleanup(cleanup)
+    assert "input-asset" in recorded  # safe identity is kept for the operator
+    for secret in (
+        "synthetic-client", "synthetic-secret", "synthetic-access-token",
+        "Bearer", "upload.example.test", "download.example.test",
+    ):
+        assert secret not in recorded

@@ -3,6 +3,7 @@
 from app.template_analysis.commercial.adobe import (
     AdobeAdapterError,
     AdobeConfigurationError,
+    describe_asset_cleanup,
     normalize_adobe_layout,
     run_adobe_layout,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "NormalizedPage",
     "NormalizedRule",
     "NormalizedTextBlock",
+    "describe_asset_cleanup",
     "normalize_adobe_layout",
     "build_design_evidence_from_normalized",
     "derive_heading_candidates",

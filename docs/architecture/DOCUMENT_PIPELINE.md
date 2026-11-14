@@ -2,7 +2,7 @@
 
 Status: `Active contract`
 
-Last reviewed: November 10, 2026 (layout-proof owner boundary)
+Last reviewed: November 14, 2026 (Adobe asset cleanup lifecycle and verified provider semantics, issue #54)
 
 This document defines the provider-neutral boundaries of the CV Reformatter
 backend. The [Product Specification](../product/PRODUCT_SPEC.md) remains the
@@ -124,6 +124,44 @@ Repeated badge clusters retain measured fill/text colors, height, horizontal
 padding, and line grouping. They attach only to the nearest measured section
 heading above; failed classification or attachment omits decoration and emits
 a review warning (compiler v7, ADR 0006).
+
+Known Adobe PDF Extract remote assets are deleted from one bounded cleanup
+boundary that runs after success and after every failure following asset
+creation, while the authorized client is still open (issue #54). Each known
+input or result asset identity receives exactly one DELETE attempt, classified
+as `deleted` (2xx), `already_deleted` (404/410, meaning absent remotely rather
+than proof this adapter deleted it), `rejected` (other 4xx) or `transient`
+(5xx, transport failure, or a retry-later answer: 408, 425, 429). There is no
+retry and the paid Extract operation is never resubmitted. The evidence carries
+an aggregate `cleanup_state`: `confirmed` when every known asset is gone and no
+asset identity is missing, `pending` when a known asset was refused or answered
+"retry later" and needs operator action, and `unknown` when deletion is
+unconfirmed (5xx or transport failure), no asset identity was ever returned, or
+a submitted job never returned a result identity (also listed as an explicit
+limitation). It is stored as `asset_cleanup` in the private raw artifact
+(`adobe_raw_response.json`) on success, where a non-confirmed state also becomes
+an `analysis_warnings` entry; on failure the same safe summary is appended to
+the provider-error 503 detail, so an unresolved deletion is readable rather than
+debugger-only. Evidence never contains credentials, authorization headers or
+signed URLs. The provider failure stays primary, and primary analysis success is
+never reported as cleanup success while deletion is pending or unknown.
+
+Verified Adobe semantics (vendor documentation, 2026-11-14; no live call):
+uploaded assets are "stored in Adobe Document Cloud for 24 hours by default";
+explicit deletion uses the Assets endpoint with the DELETE verb; "There is no
+API to get a list of the available assets", so an identity that was never
+returned cannot be inventoried afterwards. Regions are `ue1` (US,
+`https://pdf-services-ue1.adobe.io`) and `ew1` (Europe,
+`https://pdf-services-ew1.adobe.io`); this adapter still uses the legacy generic
+`https://pdf-services.adobe.io` for US, so the US region is implicit there and
+is deliberately unchanged by issue #54. Sources:
+https://developer.adobe.com/document-services/docs/overview/security and
+https://developer.adobe.com/document-services/docs/overview/howtos/service-region-configuration-for-apis.
+Not verified: whether a 2xx DELETE response already makes an asset unrecoverable,
+and any retention beyond the documented 24-hour default. Both need a separately
+authorized live check, so no vendor retention or confirmed-remote-deletion
+guarantee is claimed, and the B1A/P3 retention and deletion exit remains open
+(ADR 0002).
 
 ## Template Compilation Boundary
 
