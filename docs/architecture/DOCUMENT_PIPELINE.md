@@ -2,7 +2,7 @@
 
 Status: `Active contract`
 
-Last reviewed: November 10, 2026 (layout-proof owner boundary)
+Last reviewed: November 14, 2026 (Adobe asset cleanup lifecycle, issue #54)
 
 This document defines the provider-neutral boundaries of the CV Reformatter
 backend. The [Product Specification](../product/PRODUCT_SPEC.md) remains the
@@ -124,6 +124,27 @@ Repeated badge clusters retain measured fill/text colors, height, horizontal
 padding, and line grouping. They attach only to the nearest measured section
 heading above; failed classification or attachment omits decoration and emits
 a review warning (compiler v7, ADR 0006).
+
+Known Adobe PDF Extract remote assets are deleted from one bounded cleanup
+boundary that runs after success and after every failure following asset
+creation, while the authorized client is still open (issue #54). Each known
+input or result asset identity receives exactly one DELETE attempt, classified
+as `deleted` (2xx), `already_deleted` (404/410, meaning absent remotely rather
+than proof this adapter deleted it), `rejected` (any other 4xx) or `transient`
+(5xx or transport failure, so the outcome is unknown). There is no retry and
+the paid Extract operation is never resubmitted. The evidence carries an
+aggregate `cleanup_state`: `confirmed` when every known asset is gone and no
+asset identity is missing, `pending` when a known asset was refused and needs
+operator action, and `unknown` when deletion is unconfirmed, no asset identity
+was ever returned, or a submitted job never returned a result identity (that
+last case is also listed as an explicit limitation). It is stored as
+`asset_cleanup` in the private raw artifact (`adobe_raw_response.json`) on
+success and attached to the raised provider error otherwise; it never contains
+credentials, authorization headers or signed URLs. The provider failure stays
+primary, and primary analysis success is never reported as cleanup success
+while deletion is pending or unknown. These are attempts, not a vendor
+retention guarantee: Adobe's retention/deletion semantics and verified remote
+deletion remain operational release gates (ADR 0002).
 
 ## Template Compilation Boundary
 
