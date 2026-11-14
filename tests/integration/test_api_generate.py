@@ -1173,6 +1173,45 @@ def test_target_format_upload_surfaces_asset_cleanup_on_provider_failure(
     assert not any(path.is_file() for path in tmp_path.rglob("*"))
 
 
+def test_target_format_upload_redacts_url_shaped_asset_identity_in_503(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    hostile = "https://example.test/x?token=synthetic-token-value"
+
+    def fail_adobe(_path):
+        error = main.AdobeAdapterError("Adobe asset upload failed with HTTP 500.")
+        setattr(error, main.CLEANUP_EVIDENCE_ATTRIBUTE, {
+            "cleanup_state": "unknown",
+            "assets": [{
+                "role": "input", "asset_id": hostile, "asset_id_kind": "url",
+                "asset_id_length": len(hostile), "outcome": "unknown", "http_status": None,
+                "reason": "asset identity was not a bounded opaque token; deletion not attempted",
+            }],
+            "limitations": [
+                "An Adobe asset identity was not a bounded opaque token, so it is recorded redacted; "
+                "its deletion was not attempted and it may still exist remotely."
+            ],
+        })
+        raise error
+
+    monkeypatch.setattr(main, "run_adobe_layout", fail_adobe)
+
+    response = client.post(
+        "/api/target-format",
+        files={"file": ("target.pdf", b"%PDF-1.4\n", "application/pdf")},
+    )
+
+    assert response.status_code == 503
+    # A provider-supplied identity never reaches the public error surface.
+    assert "token=synthetic" not in response.text
+    assert "example.test" not in response.text
+    detail = response.json()["detail"]
+    assert "Adobe asset cleanup: unknown" in detail
+    assert "input asset redacted unknown" in detail
+
+
 def test_target_format_upload_warns_when_asset_cleanup_is_unconfirmed(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

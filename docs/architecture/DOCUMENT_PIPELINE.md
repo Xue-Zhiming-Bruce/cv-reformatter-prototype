@@ -127,24 +127,29 @@ a review warning (compiler v7, ADR 0006).
 
 Known Adobe PDF Extract remote assets are deleted from one bounded cleanup
 boundary that runs after success and after every failure following asset
-creation, while the authorized client is still open (issue #54). Each known
-input or result asset identity receives exactly one DELETE attempt, classified
-as `deleted` (2xx), `already_deleted` (404/410, meaning absent remotely rather
-than proof this adapter deleted it), `rejected` (other 4xx) or `transient`
-(5xx, transport failure, or a retry-later answer: 408, 425, 429). There is no
-retry and the paid Extract operation is never resubmitted. The evidence carries
-an aggregate `cleanup_state`: `confirmed` when every known asset is gone and no
-asset identity is missing, `pending` when a known asset was refused or answered
-"retry later" and needs operator action, and `unknown` when deletion is
-unconfirmed (5xx or transport failure), no asset identity was ever returned, or
-a submitted job never returned a result identity (also listed as an explicit
-limitation). It is stored as `asset_cleanup` in the private raw artifact
-(`adobe_raw_response.json`) on success, where a non-confirmed state also becomes
-an `analysis_warnings` entry; on failure the same safe summary is appended to
-the provider-error 503 detail, so an unresolved deletion is readable rather than
-debugger-only. Evidence never contains credentials, authorization headers or
-signed URLs. The provider failure stays primary, and primary analysis success is
-never reported as cleanup success while deletion is pending or unknown.
+creation, while the authorized client is still open (issue #54). An asset
+identity is recorded only when it is a bounded opaque provider token; a
+URL-shaped or otherwise unrecognized value is stored redacted with its kind and
+length, its deletion is not attempted, and the asset is never reported
+confirmed. Each known input or result asset identity receives exactly one
+DELETE attempt, classified as `deleted` (2xx), `already_deleted` (404/410,
+meaning absent remotely rather than proof this adapter deleted it), `rejected`
+(other 4xx) or `transient` (5xx, transport failure, or a retry-later answer:
+408, 425, 429). There is no retry and the paid Extract operation is never
+resubmitted. The evidence carries an aggregate `cleanup_state`: `confirmed`
+when every known asset is gone and no asset identity is missing, `pending` when
+a known asset was refused or answered "retry later" and needs operator action,
+and `unknown` when deletion is unconfirmed (5xx or transport failure), no asset
+identity was ever returned, a submission answer was never received (the paid
+job may still run remotely) or a submitted job never returned a result identity
+- each also recorded as an explicit limitation. It is stored as `asset_cleanup`
+in the private raw artifact (`adobe_raw_response.json`) on success, where a
+non-confirmed state also becomes an `analysis_warnings` entry; on failure the
+same safe summary is appended to the provider-error 503 detail, so an
+unresolved deletion is readable rather than debugger-only. Evidence and its
+rendered summary never contain credentials, authorization headers or signed
+URLs. The provider failure stays primary, and primary analysis success is never
+reported as cleanup success while deletion is pending or unknown.
 
 Verified Adobe semantics (vendor documentation, 2026-11-14; no live call):
 uploaded assets are "stored in Adobe Document Cloud for 24 hours by default";

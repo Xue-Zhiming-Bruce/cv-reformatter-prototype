@@ -704,12 +704,18 @@ class _AdobeHttp:
         delete_transport_error: bool = False,
         result_bytes: bytes | None = None,
         upload_uri: str | None = "https://upload.example.test/in",
+        asset_id: str = "input-asset",
+        result_asset_id: str = "result-asset",
+        submit_transport_error: bool = False,
     ) -> None:
         self.fail_at = fail_at
         self.delete_status = delete_status
         self.delete_transport_error = delete_transport_error
         self.result_bytes = result_bytes
         self.upload_uri = upload_uri
+        self.asset_id = asset_id
+        self.result_asset_id = result_asset_id
+        self.submit_transport_error = submit_transport_error
         self.requests: list[tuple[str, str]] = []
 
     def deletes(self) -> list[str]:
@@ -723,13 +729,15 @@ class _AdobeHttp:
         if method == "POST" and url.endswith("/assets"):
             if self.fail_at == "creation":
                 return httpx.Response(500)
-            created = {"assetID": "input-asset"}
+            created = {"assetID": self.asset_id}
             if self.upload_uri is not None:
                 created["uploadUri"] = self.upload_uri
             return httpx.Response(200, json=created)
         if method == "PUT":
             return httpx.Response(200 if self.fail_at != "upload" else 500)
         if method == "POST" and url.endswith("/operation/extractpdf"):
+            if self.submit_transport_error:
+                raise httpx.ReadTimeout("synthetic submission read timeout", request=request)
             if self.fail_at == "submission":
                 return httpx.Response(500)
             return httpx.Response(201, headers={"location": f"{_ADOBE_BASE}/status/1"})
@@ -738,7 +746,7 @@ class _AdobeHttp:
                 return httpx.Response(500)
             return httpx.Response(200, json={
                 "status": "done", "downloadUri": "https://download.example.test/result.zip",
-                "assetID": "result-asset",
+                "assetID": self.result_asset_id,
             })
         if url == "https://download.example.test/result.zip":
             if self.fail_at == "download":
@@ -787,7 +795,8 @@ def test_adobe_cleanup_reports_confirmed_deletion_after_success(monkeypatch, tmp
     ("fail_at", "expected_error", "expected_assets", "expected_state", "limitations"),
     [
         ("upload", "Adobe asset upload failed with HTTP 500.", {"input-asset": "deleted"}, "confirmed", 0),
-        ("submission", "Adobe extract submission failed with HTTP 500.", {"input-asset": "deleted"}, "confirmed", 0),
+        # A failed submission answer is ambiguous: the paid job may be running.
+        ("submission", "Adobe extract submission failed with HTTP 500.", {"input-asset": "deleted"}, "unknown", 1),
         # Job submitted but the result identity never came back: not "deleted".
         ("polling", "Adobe status polling failed with HTTP 500.", {"input-asset": "deleted"}, "unknown", 1),
         ("download", "Adobe result download failed with HTTP 500.",
@@ -906,6 +915,66 @@ def test_adobe_cleanup_error_does_not_mask_original_failure(monkeypatch, tmp_pat
     assert {item["asset_id"]: item["outcome"] for item in cleanup["assets"]} == {
         "input-asset": "transient", "result-asset": "transient",
     }
+
+
+def test_adobe_lost_submission_answer_is_never_confirmed_cleanup(monkeypatch, tmp_path: Path) -> None:
+    http = _AdobeHttp(submit_transport_error=True)
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    with pytest.raises(httpx.ReadTimeout) as raised:  # original error stays primary
+        run()
+    assert "synthetic submission read timeout" in str(raised.value)
+    cleanup = getattr(raised.value, adobe.CLEANUP_EVIDENCE_ATTRIBUTE)
+    # The paid job may be running remotely, so cleanup is not "confirmed".
+    assert cleanup["cleanup_state"] != "confirmed"
+    assert cleanup["cleanup_state"] == "unknown"
+    assert len(cleanup["limitations"]) == 1
+    assert "may still be running remotely" in cleanup["limitations"][0]
+    assert "paid work" in cleanup["limitations"][0]
+    assert http.deletes() == ["input-asset"]
+
+
+HOSTILE_ASSET_ID = "https://example.test/x?token=synthetic-token-value"
+
+
+def test_adobe_cleanup_redacts_url_shaped_asset_identity(monkeypatch, tmp_path: Path) -> None:
+    http = _AdobeHttp(asset_id=HOSTILE_ASSET_ID, fail_at="upload")
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    with pytest.raises(adobe.AdobeAdapterError) as raised:
+        run()
+    assert str(raised.value) == "Adobe asset upload failed with HTTP 500."
+    cleanup = getattr(raised.value, adobe.CLEANUP_EVIDENCE_ATTRIBUTE)
+    recorded = json.dumps(cleanup)
+    assert "token=synthetic" not in recorded
+    assert "example.test" not in recorded
+    assert cleanup["assets"] == [{
+        "role": "input", "asset_id": "redacted", "asset_id_kind": "url",
+        "asset_id_length": len(HOSTILE_ASSET_ID), "outcome": "unknown", "http_status": None,
+        "reason": "asset identity was not a bounded opaque token; deletion not attempted",
+    }]
+    assert cleanup["cleanup_state"] != "confirmed"
+    assert any("redacted" in limitation for limitation in cleanup["limitations"])
+    # The token is neither deleted nor sent back to the provider.
+    assert http.deletes() == []
+    assert not any("token=synthetic" in url for _method, url in http.requests)
+    summary = adobe.describe_asset_cleanup(cleanup)
+    assert "token=synthetic" not in summary and "example.test" not in summary
+    assert "input asset redacted" in summary
+
+
+def test_describe_asset_cleanup_redacts_hostile_identity_directly() -> None:
+    from app.template_analysis.commercial import adobe
+
+    summary = adobe.describe_asset_cleanup({
+        "cleanup_state": "unknown",
+        "assets": [{
+            "role": "input", "asset_id": HOSTILE_ASSET_ID, "outcome": "unknown",
+            "http_status": "https://example.test/y?token=leaked",
+        }],
+        "limitations": [],
+    })
+    assert "example.test" not in summary
+    assert "token=" not in summary
+    assert "input asset redacted unknown" in summary
 
 
 def test_adobe_cleanup_evidence_omits_credentials_and_signed_urls(monkeypatch, tmp_path: Path) -> None:
