@@ -37,6 +37,40 @@ E5_BUDGET_REVIEW_POLICY = "builder-reserve-protected+whole-final-pdf-review/1"
 # proof identity and never inherits an approval made under the old rule.
 E5_ATTRIBUTION_POLICY = "header-contact-label-confirmed/1"
 
+# Identity of the duplicate-render export rule. It is frozen in the run config
+# beside the budget/review policy so the proof says which skip rule produced it.
+E5_RENDER_EXPORT_POLICY = "skip-duplicate-export-on-identical-render/1"
+
+def _e5_duplicate_render_export(
+    base: RenderVersion | None, candidate_html_sha256: str,
+) -> tuple[bool, str]:
+    """Decide BEFORE any export whether a repair candidate is a no-op render.
+
+    The key is the rendered HTML's sha256 against the sha256 recorded on the
+    candidate's OWN repair base version inside this frozen run — never
+    ``proposal_id`` (a proposal differing only in its id is still a no-op),
+    never PDF bytes (two exports of one HTML already differ), and never state
+    that outlives the run. An unknown base identity — no base at all, or a base
+    with no recorded hash — fails OPEN: export exactly as before.
+    """
+    if base is None:
+        return False, "an initial render has no repair base, so it cannot be a duplicate"
+    if not base.html_sha256:
+        return False, (
+            f"repair base {base.version_id} records no html_sha256, so the candidate "
+            "cannot be compared to it; exporting"
+        )
+    if base.html_sha256 != candidate_html_sha256:
+        return False, (
+            f"rendered HTML sha256 {candidate_html_sha256} differs from repair base "
+            f"{base.version_id}; exporting"
+        )
+    return True, (
+        f"rendered HTML sha256 {candidate_html_sha256} is identical to repair base "
+        f"{base.version_id}'s recorded html_sha256, so a second export cannot show a "
+        "different render: no Chrome PDF export, page render or gate run was performed"
+    )
+
 def _e5_gate_classification(
     lane: str,
     gates: dict[str, Any],

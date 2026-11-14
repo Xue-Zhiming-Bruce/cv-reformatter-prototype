@@ -46,6 +46,7 @@ from app.pipeline.repair_policy import (
     E5_BUDGET_REVIEW_POLICY,
     E5_BUILDER_RESERVE_REQUESTS,
     E5_MAX_ROUND_ATTRIBUTION_FINDINGS,
+    E5_RENDER_EXPORT_POLICY,
     E5_REPRESENTATION_CEILING_GATES,
     LANE_A_OUTPUT_GATES,
     _attribution_budget,
@@ -56,6 +57,7 @@ from app.pipeline.repair_policy import (
     _e5_attribution_batches,
     _e5_blocking_gates,
     _e5_blocking_gates_passed,
+    _e5_duplicate_render_export,
     _e5_gate_classification,
     _e5_hard_gate_record,
     _e5_quarantine_eligibility,
@@ -1802,7 +1804,20 @@ def _e5_lane_terminal(
     ls.trace.save()
     return record
 
-def _e5_render_version(ls: _E5LaneState, note: str, proposal: LaneAStructureProposal | None = None) -> tuple[RenderVersion, Path, dict[str, Any]]:
+@dataclass(frozen=True)
+class _E5RenderOutcome:
+    """What a render attempt produced. ``skipped_reason`` is set exactly when the
+    rendered HTML duplicates the repair base, so no version exists to record."""
+
+    version: RenderVersion | None
+    pdf: Path | None
+    gates: dict[str, Any]
+    skipped_reason: str | None = None
+
+
+def _e5_render_version(ls: _E5LaneState, note: str, proposal: LaneAStructureProposal | None = None,
+    *, base: RenderVersion | None = None,
+) -> _E5RenderOutcome:
     from app.pipeline import quality as c2r
     from app.pipeline.render_plan import compile_render_plan
     from app.pipeline.html_renderer import render_html
@@ -1818,6 +1833,14 @@ def _e5_render_version(ls: _E5LaneState, note: str, proposal: LaneAStructureProp
         if plan.status == "failed":
             raise RuntimeError(f"refusing to render a failed plan: {plan.failures[:3]}")
         html = render_html(ls.run.state, plan)
+    # The duplicate-render decision belongs to the export owner and runs BEFORE
+    # any render_<n>* artifact exists, so a skip leaves no orphan HTML/plan/PDF
+    # and the version index advances only for a render that really happened.
+    skip, skip_reason = _e5_duplicate_render_export(
+        base, hashlib.sha256(html.encode("utf-8")).hexdigest()
+    )
+    if skip:
+        return _E5RenderOutcome(version=None, pdf=None, gates={}, skipped_reason=skip_reason)
     index = len(ls.versions) + 1
     html_path = ls.lane_dir / f"render_{index}.html"
     html_path.write_text(html, encoding="utf-8")
@@ -1940,7 +1963,7 @@ def _e5_render_version(ls: _E5LaneState, note: str, proposal: LaneAStructureProp
         encoding="utf-8",
     )
     ls.trace.add(agent="shell", phase="render", action="render_version", output=version.model_dump(mode="json"), note=note)
-    return version, pdf_path, gates
+    return _E5RenderOutcome(version=version, pdf=pdf_path, gates=gates)
 
 def _e5_render_entry_texts(ls: _E5LaneState, region_id: str | None, plan: Any = None) -> tuple[list[str], list[str]]:
     if plan is not None:
@@ -2745,6 +2768,46 @@ def _e5_round_select_repair(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
     return _E5_NEXT
 
 
+def _e5_record_duplicate_render(
+    ls: _E5LaneState, rs: _E5RoundState, reason: str
+) -> _E5LoopStep:
+    """Record an attempted repair that renders identically to its own base.
+
+    Nothing is simulated: the candidate audit keeps ``candidate_render_version``
+    null, no version/gate/promotion record is written, and the executed action
+    fingerprint stays spent so the same action on the same base is never
+    selected again."""
+    base = rs.repair_base_version
+    assert base is not None and rs.candidate_audit_index is not None
+    _e5_update_builder_candidate(ls,
+        rs.candidate_audit_index,
+        candidate_render_version=None,
+        outcome="duplicate_render_not_exported",
+        reason=reason,
+        base_html_sha256=base.html_sha256,
+        # The skip fires only when the candidate's rendered HTML hash equals the
+        # base's, so the identical hash IS the candidate's own HTML sha256.
+        candidate_html_sha256=base.html_sha256,
+    )
+    ls.fingerprints.append(rs.fingerprint)  # the action WAS executed
+    ls.trace.add(
+        agent="shell", phase="repair", action="duplicate_render_not_exported",
+        output={
+            "finding": rs.finding.finding_id,
+            "repair_base_version": base.version_id,
+            "html_sha256": base.html_sha256,
+            "render_export_policy": E5_RENDER_EXPORT_POLICY,
+            "prevented": (
+                "2 Chrome PDF exports, 2 page renders and the version's gate set "
+                "for an identical render"
+            ),
+        },
+        note=reason,
+        persist_output=True,
+    )
+    return _E5_RETRY
+
+
 def _e5_round_build_candidate(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
     """Repair: build the repair-base payload, call the Builder, validate the typed
     proposal and render the candidate. A rejected or failed candidate is
@@ -2845,10 +2908,16 @@ def _e5_round_build_candidate(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopSte
             {"finding": rs.finding.finding_id, "region": rs.finding.region, "round": rs.round_no,
              "agent": rs.proposal.agent, "sections": len(rs.proposal.sections)}
         )
-        rs.candidate_version, rs.candidate_pdf, rs.candidate_gates = _e5_render_version(ls,
-            f"lane A repair round {rs.round_no} for {rs.finding.finding_id}", rs.proposal
+        outcome = _e5_render_version(ls,
+            f"lane A repair round {rs.round_no} for {rs.finding.finding_id}", rs.proposal,
+            base=rs.repair_base_version,
         )
         assert rs.candidate_audit_index is not None
+        if outcome.skipped_reason is not None:
+            return _e5_record_duplicate_render(ls, rs, outcome.skipped_reason)
+        rs.candidate_version, rs.candidate_pdf, rs.candidate_gates = (
+            outcome.version, outcome.pdf, outcome.gates
+        )
         _e5_update_builder_candidate(ls,
             rs.candidate_audit_index,
             candidate_render_version=rs.candidate_version.version_id,
@@ -3187,7 +3256,9 @@ def _e5_run_lane(run: _E5RunState, lane: str) -> E5LaneRecord:
                 raise ValueError(validation_error)
         ls.lane_state["proposal"] = proposal
         ls.lane_state["active_proposal"] = proposal
-        version, pdf, gates = _e5_render_version(ls, initial_note, proposal)
+        initial = _e5_render_version(ls, initial_note, proposal)
+        assert initial.version is not None, "the initial render has no repair base"
+        version = initial.version
         if candidate_audit_index is not None:
             _e5_update_builder_candidate(
                 ls,
