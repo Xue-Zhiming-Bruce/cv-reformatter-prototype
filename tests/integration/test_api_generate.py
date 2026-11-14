@@ -1140,6 +1140,81 @@ def test_target_format_upload_surfaces_adobe_failure_without_artifacts(
     assert not any(path.is_file() for path in tmp_path.rglob("*"))
 
 
+def test_target_format_upload_surfaces_asset_cleanup_on_provider_failure(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+
+    def fail_adobe(_path):
+        error = main.AdobeAdapterError("Adobe asset upload failed with HTTP 500.")
+        setattr(error, main.CLEANUP_EVIDENCE_ATTRIBUTE, {
+            "cleanup_state": "pending",
+            "assets": [
+                {"role": "input", "asset_id": "input-asset", "outcome": "rejected", "http_status": 403}
+            ],
+            "limitations": [],
+        })
+        raise error
+
+    monkeypatch.setattr(main, "run_adobe_layout", fail_adobe)
+
+    response = client.post(
+        "/api/target-format",
+        files={"file": ("target.pdf", b"%PDF-1.4\n", "application/pdf")},
+    )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    # The provider failure stays primary; unresolved deletion is readable here.
+    assert "service unavailable" in detail.lower()
+    assert "Adobe asset cleanup: pending" in detail
+    assert "input asset input-asset rejected (HTTP 403)" in detail
+    assert not any(path.is_file() for path in tmp_path.rglob("*"))
+
+
+def test_target_format_upload_warns_when_asset_cleanup_is_unconfirmed(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from tests.helpers.adobe_evidence import measured_adobe_evidence
+
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    limitation = (
+        "Extract job was submitted but Adobe returned no result asset identity; "
+        "that asset's remote state is unknown and the paid operation was not resubmitted."
+    )
+    cleanup = {
+        "cleanup_state": "unknown",
+        "assets": [
+            {"role": "input", "asset_id": "input-asset", "outcome": "transient", "http_status": None}
+        ],
+        "limitations": [limitation],
+    }
+
+    def adobe_with_unconfirmed_cleanup(_path):
+        return measured_adobe_evidence(), {
+            "provider": "adobe", "archived": True, "asset_cleanup": cleanup,
+        }, b""
+
+    monkeypatch.setattr(main, "run_adobe_layout", adobe_with_unconfirmed_cleanup)
+
+    response = client.post(
+        "/api/target-format",
+        files={"file": ("target.pdf", b"%PDF-1.4\n", "application/pdf")},
+    )
+
+    assert response.status_code == 200, response.text
+    warnings = response.json()["target_format"]["analysis_warnings"]
+    # Primary analysis succeeds, but cleanup is not reported as complete.
+    assert any("Adobe asset cleanup: unknown" in warning for warning in warnings), warnings
+    assert any(limitation in warning for warning in warnings), warnings
+    saved = json.loads(
+        (tmp_path / response.json()["artifact_id"] / "adobe_raw_response.json").read_text()
+    )
+    assert saved["asset_cleanup"] == cleanup
+
+
 def test_generate_rejects_missing_target_format_reference(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
     profile = CandidateProfile(full_name="Jane Candidate")

@@ -703,11 +703,13 @@ class _AdobeHttp:
         delete_status: int = 204,
         delete_transport_error: bool = False,
         result_bytes: bytes | None = None,
+        upload_uri: str | None = "https://upload.example.test/in",
     ) -> None:
         self.fail_at = fail_at
         self.delete_status = delete_status
         self.delete_transport_error = delete_transport_error
         self.result_bytes = result_bytes
+        self.upload_uri = upload_uri
         self.requests: list[tuple[str, str]] = []
 
     def deletes(self) -> list[str]:
@@ -721,9 +723,10 @@ class _AdobeHttp:
         if method == "POST" and url.endswith("/assets"):
             if self.fail_at == "creation":
                 return httpx.Response(500)
-            return httpx.Response(
-                200, json={"assetID": "input-asset", "uploadUri": "https://upload.example.test/in"}
-            )
+            created = {"assetID": "input-asset"}
+            if self.upload_uri is not None:
+                created["uploadUri"] = self.upload_uri
+            return httpx.Response(200, json=created)
         if method == "PUT":
             return httpx.Response(200 if self.fail_at != "upload" else 500)
         if method == "POST" and url.endswith("/operation/extractpdf"):
@@ -836,6 +839,8 @@ def test_adobe_cleanup_confirmed_before_normalization_failure(monkeypatch, tmp_p
         (404, "already_deleted", "confirmed"),
         (410, "already_deleted", "confirmed"),
         (403, "rejected", "pending"),
+        # Retry-later answers are transient work, not a refusal: still pending.
+        (429, "transient", "pending"),
         (503, "transient", "unknown"),
     ],
 )
@@ -850,6 +855,34 @@ def test_adobe_cleanup_classifies_delete_status(
     assert {item["outcome"] for item in cleanup["assets"]} == {expected_outcome}
     assert {item["http_status"] for item in cleanup["assets"]} == {delete_status}
     assert cleanup["cleanup_state"] == expected_state
+
+
+def test_adobe_creation_without_upload_uri_still_cleans_known_asset(monkeypatch, tmp_path: Path) -> None:
+    http = _AdobeHttp(upload_uri=None)
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    with pytest.raises(adobe.AdobeAdapterError) as raised:
+        run()
+    assert str(raised.value) == "Adobe asset response omitted assetID or uploadUri."
+    cleanup = getattr(raised.value, adobe.CLEANUP_EVIDENCE_ATTRIBUTE)
+    # The identity was returned, so it is deleted even though upload never ran.
+    assert http.deletes() == ["input-asset"]
+    assert cleanup["cleanup_state"] == "confirmed"
+    assert cleanup["assets"] == [
+        {"role": "input", "asset_id": "input-asset", "outcome": "deleted", "http_status": 204}
+    ]
+
+
+def test_adobe_delete_non_2xx_on_failure_path_keeps_pending_cleanup(monkeypatch, tmp_path: Path) -> None:
+    http = _AdobeHttp(fail_at="upload", delete_status=403)
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    with pytest.raises(adobe.AdobeAdapterError) as raised:
+        run()
+    assert str(raised.value) == "Adobe asset upload failed with HTTP 500."
+    cleanup = getattr(raised.value, adobe.CLEANUP_EVIDENCE_ATTRIBUTE)
+    assert cleanup["cleanup_state"] == "pending"
+    assert cleanup["assets"] == [
+        {"role": "input", "asset_id": "input-asset", "outcome": "rejected", "http_status": 403}
+    ]
 
 
 def test_adobe_cleanup_delete_transport_error_keeps_primary_success(monkeypatch, tmp_path: Path) -> None:
@@ -876,10 +909,13 @@ def test_adobe_cleanup_error_does_not_mask_original_failure(monkeypatch, tmp_pat
 
 
 def test_adobe_cleanup_evidence_omits_credentials_and_signed_urls(monkeypatch, tmp_path: Path) -> None:
-    http = _AdobeHttp(delete_status=500)
+    http = _AdobeHttp(delete_status=500, fail_at="download")
     adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
-    _evidence, raw, _zip = run()
-    recorded = json.dumps(raw["asset_cleanup"])
+    with pytest.raises(adobe.AdobeAdapterError) as raised:
+        run()
+    cleanup = getattr(raised.value, adobe.CLEANUP_EVIDENCE_ATTRIBUTE)
+    recorded = json.dumps(cleanup) + adobe.describe_asset_cleanup(cleanup)
+    assert "input-asset" in recorded  # safe identity is kept for the operator
     for secret in (
         "synthetic-client", "synthetic-secret", "synthetic-access-token",
         "Bearer", "upload.example.test", "download.example.test",

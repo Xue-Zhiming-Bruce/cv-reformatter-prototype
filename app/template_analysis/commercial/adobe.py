@@ -32,6 +32,10 @@ class AdobeAdapterError(RuntimeError):
 # Cleanup evidence carried by any exception raised from ``run_adobe_layout``.
 CLEANUP_EVIDENCE_ATTRIBUTE = "adobe_asset_cleanup"
 
+# A retry-later answer means the DELETE was not applied, not that the server
+# refused the asset: the aggregate state is ``pending`` for these.
+RETRY_LATER_STATUSES = frozenset({408, 425, 429})
+
 
 def normalize_adobe_layout(raw: dict[str, Any]) -> NormalizedLayoutEvidence:
     """Normalize a direct Adobe payload or archived ``structured_data`` wrapper.
@@ -318,10 +322,17 @@ def _cleanup_remote_assets(
             "that asset's remote state is unknown and the paid operation was not resubmitted."
         )
     outcomes = {record["outcome"] for record in assets}
+    # An unanswered DELETE (transport failure) or 5xx may have been applied and
+    # stays ``unknown``; a retry-later answer is still ``pending`` work.
+    unanswered = any(
+        record["outcome"] in {"transient", "unknown"}
+        and record["http_status"] not in RETRY_LATER_STATUSES
+        for record in assets
+    )
     # Worst outcome wins, so confirmed cleanup requires every asset to be gone.
-    if not assets or outcomes & {"transient", "unknown"} or limitations:
+    if not assets or limitations or unanswered:
         state = "unknown"
-    elif "rejected" in outcomes:
+    elif outcomes - {"deleted", "already_deleted"}:
         state = "pending"
     else:
         state = "confirmed"
@@ -334,9 +345,28 @@ def _delete_outcome(status_code: int) -> str:
         return "deleted"
     if status_code in {404, 410}:
         return "already_deleted"
-    if 400 <= status_code < 500:
+    if 400 <= status_code < 500 and status_code not in RETRY_LATER_STATUSES:
         return "rejected"
     return "transient"
+
+
+def describe_asset_cleanup(cleanup: dict[str, Any] | None) -> str:
+    """Render cleanup evidence as one safe line for an error or warning surface.
+
+    Only role/identity/outcome/status and the recorded limitations are
+    included: never credentials, authorization headers or signed URLs.
+    """
+    if not cleanup:
+        return "Adobe asset cleanup: unknown (no cleanup evidence recorded)."
+    assets = cleanup.get("assets") or []
+    known = ", ".join(
+        f"{item['role']} asset {item['asset_id']} {item['outcome']}"
+        + (f" (HTTP {item['http_status']})" if item.get("http_status") is not None else "")
+        for item in assets
+    ) or "none"
+    parts = [f"Adobe asset cleanup: {cleanup.get('cleanup_state', 'unknown')}; known assets: {known}"]
+    parts.extend(cleanup.get("limitations") or [])
+    return "; ".join(parts)
 
 
 def _structural_role(path: str) -> str:

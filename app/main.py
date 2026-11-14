@@ -167,8 +167,10 @@ from app.template_analysis.design_compiler import (
     compile_measured_layout_template_spec,
 )
 from app.template_analysis.commercial.adobe import (
+    CLEANUP_EVIDENCE_ATTRIBUTE,
     AdobeAdapterError,
     AdobeConfigurationError,
+    describe_asset_cleanup,
     run_adobe_layout,
 )
 from app.template_analysis.commercial.local_color import (
@@ -784,15 +786,26 @@ async def upload_target_format(
                 detail="Analysis service paused: Adobe PDF analysis is not configured.",
             ) from exc
         except (AdobeAdapterError, httpx.HTTPError, OSError) as exc:
-            raise HTTPException(
-                status_code=503,
-                detail="Analysis service unavailable due to a provider or network issue.",
-            ) from exc
+            # The provider error stays primary; safe cleanup evidence is added
+            # so an unresolved deletion is readable, not debugger-only.
+            cleanup = getattr(exc, CLEANUP_EVIDENCE_ATTRIBUTE, None)
+            detail = "Analysis service unavailable due to a provider or network issue."
+            if cleanup:
+                detail = f"{detail} {describe_asset_cleanup(cleanup)}"
+            raise HTTPException(status_code=503, detail=detail) from exc
         except (CompileBridgeEvidenceError, DesignCompilerError, ValueError) as exc:
             raise HTTPException(
                 status_code=422,
                 detail=f"This target could not be measured: {exc}",
             ) from exc
+        # Saved analysis evidence already carries the cleanup state; repeat it
+        # as a warning so unconfirmed deletion is never shown as clean success.
+        cleanup_evidence = adobe_raw.get("asset_cleanup")
+        cleanup_warnings = (
+            [describe_asset_cleanup(cleanup_evidence)]
+            if cleanup_evidence and cleanup_evidence.get("cleanup_state") != "confirmed"
+            else []
+        )
 
         target_format = _store_target_format(
             artifact_id=resolved_artifact_id,
@@ -828,7 +841,7 @@ async def upload_target_format(
                     "layout_spec": artifact_url(resolved_artifact_id, LAYOUT_SPEC_FILENAME),
                     "adobe_raw": artifact_url(resolved_artifact_id, ADOBE_RAW_FILENAME),
                 },
-                "analysis_warnings": list(normalized.warnings),
+                "analysis_warnings": list(normalized.warnings) + cleanup_warnings,
                 "structure_contract": analyzed_style_spec.structure_contract,
                 "unsupported_features": list(analyzed_style_spec.unsupported_features),
             }
