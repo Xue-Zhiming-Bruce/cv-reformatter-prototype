@@ -5,6 +5,7 @@ import pytest
 from docx import Document
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
+from docx.shared import Inches
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 from pytest import MonkeyPatch
@@ -38,13 +39,21 @@ def _build_resume_docx(path: Path) -> None:
 
 
 def _build_ordered_resume_docx(path: Path) -> None:
-    """Issue #49: contact in the header/footer, a table between paragraphs, and three
-    visible shapes this reader cannot read (nested table, run content control, field)."""
+    """Issue #49: contact in the header/footer, a table between paragraphs, a header
+    table between header paragraphs, an enabled first-page header, a wrapped
+    paragraph, and three visible shapes this reader cannot read (nested table, run
+    content control, field)."""
     document = Document()
-    header = document.sections[0].header
+    section = document.sections[0]
+    header = section.header
     header.paragraphs[0].text = "Jane Candidate"
     header.add_paragraph("jane@example.com")
-    document.sections[0].footer.paragraphs[0].text = "+1 555 0100"
+    header_table = header.add_table(rows=1, cols=2, width=Inches(6))
+    header_table.rows[0].cells[0].text = "Contact | Phone"
+    header.add_paragraph("Reference on request")
+    section.first_page_header.paragraphs[0].text = "First page contact"
+    section.different_first_page_header_footer = True
+    section.footer.paragraphs[0].text = "+1 555 0100"
     document.add_paragraph("Location: Boston")
     document.add_paragraph("Skills")
     document.add_paragraph("Python, SQL")
@@ -55,6 +64,13 @@ def _build_ordered_resume_docx(path: Path) -> None:
     table.rows[1].cells[0].text = "Led the migration"
     table.rows[1].cells[1].text = "2024"
     document.add_paragraph("After table")
+    document.element.body.insert(
+        len(document.element.body) - 1,
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="resume">'
+            "<w:p><w:r><w:t>Wrapped entry</w:t></w:r></w:p></w:customXml>"
+        ),
+    )
     phone = document.add_paragraph("Phone: ")
     phone._p.append(
         parse_xml(
@@ -160,14 +176,27 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
     # Issue #49: header contact leads the preserved text, the footer closes it, and
     # the table keeps its authored place between the two body paragraphs.
     lines = body["original_text"].splitlines()
-    assert lines[:2] == ["Jane Candidate", "jane@example.com"]
+    assert lines[:5] == [
+        "Jane Candidate",
+        "jane@example.com",
+        "Contact | Phone",
+        "Reference on request",
+        "First page contact",
+    ]
     assert lines[-1] == "+1 555 0100"
     assert lines.count("jane@example.com") == 1
+    # The header table keeps its place between the header paragraphs, and the
+    # first-page header is read only because the section enables it.
+    assert lines.index("Contact | Phone") < lines.index("Reference on request")
+    assert lines.count("First page contact") == 1
     assert (
         lines.index("Before table")
         < lines.index("Acme | Engineer")
         < lines.index("After table")
     )
+    # A paragraph inside a block wrapper is read where the wrapper sits, so it must
+    # be in the preserved text rather than merely absent from the limitations.
+    assert lines.index("After table") < lines.index("Wrapped entry")
     # The nested table's cell, the content-control run and the field result are not
     # readable, so each must be named instead of passing as absent.
     for missing in ("Nested entry", "555 0199", "Field result"):
