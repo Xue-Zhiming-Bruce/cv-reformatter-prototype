@@ -2,7 +2,9 @@ from pathlib import Path
 
 import json
 import re
+import threading
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from docx import Document
@@ -22,6 +24,11 @@ from tests.helpers.layout_proof import (
     make_proof_pdf_exporter,
 )
 from tests.helpers.synthetic_pdf import build_styled_target_pdf
+from tests.helpers.event_loop_probe import (
+    HOLD_TIMEOUT_SECONDS,
+    assert_health_answers,
+    occupied_blocking_work,
+)
 
 client = TestClient(app)
 
@@ -1104,6 +1111,79 @@ def test_configured_database_failure_never_falls_back_or_exposes_credentials(
     assert response.status_code == 500, response.text
     assert "DO_NOT_EXPOSE_PASSWORD" not in response.text
     assert not sqlite_path.exists()
+
+
+def test_target_format_upload_keeps_event_loop_responsive_during_pdf_analysis(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Issue #51: Adobe analysis and local PDF measurement leave the event loop free.
+
+    The substitute waits on an event. A handler that still calls it directly
+    holds the loop, so the concurrent health probe never answers.
+    """
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    release = threading.Event()
+    entered = threading.Event()
+
+    def held_adobe(_path: Path):
+        entered.set()
+        assert release.wait(HOLD_TIMEOUT_SECONDS), "the Adobe substitute was never released"
+        raise main.AdobeAdapterError("synthetic substitute released")
+
+    monkeypatch.setattr(main, "run_adobe_layout", held_adobe)
+
+    with TestClient(app) as loop_client:
+        pool = ThreadPoolExecutor(max_workers=2)
+        try:
+            upload = pool.submit(
+                loop_client.post,
+                "/api/target-format",
+                files={"file": ("target.pdf", b"%PDF-1.4\n", "application/pdf")},
+            )
+            assert entered.wait(HOLD_TIMEOUT_SECONDS)
+            assert_health_answers(loop_client, pool)
+            release.set()
+            response = upload.result(timeout=HOLD_TIMEOUT_SECONDS)
+        finally:
+            release.set()
+            pool.shutdown(wait=True)
+
+    # The provider failure still reaches the caller through the boundary.
+    assert response.status_code == 503
+    assert "service unavailable" in response.json()["detail"].lower()
+
+
+DOCX_TARGET_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+
+
+@pytest.mark.parametrize(
+    ("filename", "upload_type"),
+    [("target.pdf", "application/pdf"), ("target.docx", DOCX_TARGET_TYPE)],
+)
+def test_target_format_reports_busy_without_creating_an_artifact(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    filename: str,
+    upload_type: str,
+) -> None:
+    """Issue #51: a saturated refusal stores nothing, on either target branch."""
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")
+
+    with occupied_blocking_work():
+        response = client.post(
+            "/api/target-format",
+            data={"artifact_id": "artifact_saturated_target"},
+            files={"file": (filename, b"%PDF-1.4\n", upload_type)},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["error_code"] == "server_busy"
+    assert response.headers["retry-after"] == "5"
+    # Refused before any storage: no artifact directory for the caller.
+    assert not (tmp_path / "outputs").exists()
 
 
 def test_target_format_upload_rejects_unsupported_files(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

@@ -1,4 +1,7 @@
 import json
+import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -23,6 +26,11 @@ from app.extraction.llm_extractor import (
 )
 from app.ingestion.pdf_reader import read_pdf_text
 from app.generation import service as generation_service
+from tests.helpers.event_loop_probe import (
+    HOLD_TIMEOUT_SECONDS,
+    assert_health_answers,
+    occupied_blocking_work,
+)
 
 client = TestClient(app)
 
@@ -721,6 +729,116 @@ def test_resume_abc_segmentation_audit_passes_with_mock_llm_first(
     assert any("Backend" in item for item in skills.items)
     projects = next(block for block in document.blocks if block.normalized_heading == "projects")
     assert "Smart Resume Builder" in " ".join(projects.items)
+
+
+DOCX_UPLOAD_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+
+
+def test_process_keeps_event_loop_responsive_while_parsing_and_extracting(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: parsing and the extraction client call leave the event loop free.
+
+    Both substitutes wait on an event. A handler that still calls them directly
+    holds the loop, so the concurrent health probe never answers.
+    """
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")
+    parse_entered, parse_release = threading.Event(), threading.Event()
+    extract_entered, extract_release = threading.Event(), threading.Event()
+
+    def held_parse(_path: Path) -> tuple[str, list[str]]:
+        parse_entered.set()
+        assert parse_release.wait(HOLD_TIMEOUT_SECONDS), "parse was never released"
+        return "Jane Candidate\njane@example.com", []
+
+    def held_extraction(_text: str, _client: object) -> None:
+        extract_entered.set()
+        assert extract_release.wait(HOLD_TIMEOUT_SECONDS), "extraction was never released"
+        raise LLMExtractionError("synthetic provider outage after release")
+
+    monkeypatch.setattr(main, "_read_candidate_resume_text", held_parse)
+    monkeypatch.setattr(main, "segment_and_extract_resume", held_extraction)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+
+    with TestClient(app) as loop_client:
+        pool = ThreadPoolExecutor(max_workers=2)
+        try:
+            upload = pool.submit(
+                loop_client.post,
+                "/api/process",
+                files={"file": ("resume.docx", resume_path.read_bytes(), DOCX_UPLOAD_TYPE)},
+            )
+            assert parse_entered.wait(HOLD_TIMEOUT_SECONDS)
+            assert_health_answers(loop_client, pool)
+            parse_release.set()
+            assert extract_entered.wait(HOLD_TIMEOUT_SECONDS)
+            assert_health_answers(loop_client, pool)
+            extract_release.set()
+            response = upload.result(timeout=HOLD_TIMEOUT_SECONDS)
+        finally:
+            parse_release.set()
+            extract_release.set()
+            pool.shutdown(wait=True)
+
+    # The provider failure still reaches the caller through the boundary.
+    assert response.status_code == 502
+    assert response.json()["detail"]["error_code"] == "candidate_segmentation_failed"
+
+
+def test_process_reports_busy_when_blocking_capacity_is_saturated(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: bounded capacity answers saturation instead of queueing."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+
+    with occupied_blocking_work():
+        response = client.post(
+            "/api/process",
+            files={"file": ("resume.docx", resume_path.read_bytes(), DOCX_UPLOAD_TYPE)},
+        )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "server_busy"
+    assert "nothing was sent to a provider" in detail["message"].lower()
+    assert response.headers["retry-after"] == "5"
+    # Rejected before parsing, so no artifact was created for the caller.
+    assert not (tmp_path / "outputs").exists()
+
+
+def test_process_cleans_temp_file_and_reports_extraction_failure(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: an offloaded provider failure propagates and cleans its temp file."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")
+    temporary_dir = tmp_path / "temporary"
+    temporary_dir.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temporary_dir))
+
+    def fail_extraction(_text: str, _client: object) -> None:
+        raise LLMExtractionError("synthetic provider outage")
+
+    monkeypatch.setattr(main, "segment_and_extract_resume", fail_extraction)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+
+    response = client.post(
+        "/api/process",
+        files={"file": ("resume.docx", resume_path.read_bytes(), DOCX_UPLOAD_TYPE)},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"]["error_code"] == "candidate_segmentation_failed"
+    assert list(temporary_dir.iterdir()) == []
+    assert not (tmp_path / "outputs").exists()
 
 
 def _fake_pdf_export(html_path: str | Path, output_path: str | Path) -> Path:

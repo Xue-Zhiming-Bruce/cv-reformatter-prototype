@@ -156,14 +156,20 @@ def new_artifact_id() -> str:
     return f"artifact_{uuid.uuid4().hex}"
 
 
-def prepare_artifact_dir(
-    outputs_dir: Path, artifact_id: str, *, allow_existing: bool = False
-) -> Path:
+def resolve_artifact_dir(outputs_dir: Path, artifact_id: str) -> Path:
+    """Validate the artifact id and storage path without creating anything."""
     if not is_safe_artifact_id(artifact_id):
         raise GenerationError(400, "Invalid artifact_id.")
     artifact_dir = outputs_dir / artifact_id
     if artifact_dir.exists() and not artifact_dir.is_dir():
         raise GenerationError(400, "Invalid artifact storage path.")
+    return artifact_dir
+
+
+def prepare_artifact_dir(
+    outputs_dir: Path, artifact_id: str, *, allow_existing: bool = False
+) -> Path:
+    artifact_dir = resolve_artifact_dir(outputs_dir, artifact_id)
     if artifact_dir.exists() and not allow_existing:
         raise GenerationError(409, "Artifact already exists.")
     artifact_dir.mkdir(parents=True, exist_ok=allow_existing)

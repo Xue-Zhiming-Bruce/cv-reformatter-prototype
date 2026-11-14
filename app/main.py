@@ -7,7 +7,7 @@ import tempfile
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, TypeVar
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError, model_validator
 import httpx
 
+from app.blocking_work import BlockingWorkSaturated, run_blocking
 from app.extraction.candidate_document_analyzer import build_candidate_field_evidence
 from app.extraction.candidate_schema import CandidateProfile
 from app.extraction.llm_extractor import (
@@ -60,6 +61,7 @@ from app.generation.service import (
     prepare_artifact_dir,
     requested_profile_revision_id,
     require_profile_revision,
+    resolve_artifact_dir,
     validate_profile_source_review,
     write_json,
     write_profile_debug_artifacts,
@@ -184,6 +186,7 @@ from app.template_analysis.design_schemas import (
     DesignProposal,
     DesignRequest,
     DesignState,
+    TargetLayoutEvidence,
 )
 from app.template_analysis.design_service import (
     DESIGNER_CLAUDE,
@@ -251,6 +254,11 @@ def _generation_settings() -> GenerationSettings:
 
 def _prepare_artifact_dir(artifact_id: str, *, allow_existing: bool = False) -> Path:
     return prepare_artifact_dir(GENERATED_OUTPUTS_DIR, artifact_id, allow_existing=allow_existing)
+
+
+def _resolve_artifact_dir(artifact_id: str) -> Path:
+    """Validate the artifact id and path without creating the directory."""
+    return resolve_artifact_dir(GENERATED_OUTPUTS_DIR, artifact_id)
 
 
 def _require_profile_revision(
@@ -567,6 +575,31 @@ SEGMENTATION_FAILED_MESSAGE = (
     "output; no fallback segmenter exists."
 )
 
+# Saturation is a "nothing was started, try again" answer, not a provider fault.
+BLOCKING_WORK_BUSY_DETAIL = {
+    "error_code": "server_busy",
+    "message": (
+        "This server is already running the maximum number of document and "
+        "provider operations it allows. Nothing was sent to a provider; retry "
+        "shortly."
+    ),
+}
+
+_T = TypeVar("_T")
+
+
+async def _run_off_loop(call: Callable[..., _T], *args: Any) -> _T:
+    """Run one synchronous parse/provider call outside the event loop."""
+    try:
+        return await run_blocking(call, *args)
+    except BlockingWorkSaturated as exc:
+        logger.warning("Blocking-work capacity is saturated: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=BLOCKING_WORK_BUSY_DETAIL,
+            headers={"Retry-After": "5"},
+        ) from exc
+
 
 def _build_extraction_client(provider: str | None) -> LLMClient:
     """Build the run's client; the client itself is the source of the run's mode."""
@@ -615,7 +648,9 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
 
     try:
         try:
-            extracted_text, ingestion_limitations = _read_candidate_resume_text(tmp_path)
+            extracted_text, ingestion_limitations = await _run_off_loop(
+                _read_candidate_resume_text, tmp_path
+            )
         except (UnsupportedFileTypeError, CorruptedFileError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except UnsupportedPdfTypeError as exc:
@@ -635,7 +670,12 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
         llm_client = _build_extraction_client(provider)
         segmentation_started = time.monotonic()
         try:
-            segmentation_output = segment_and_extract_resume(extracted_text, llm_client)
+            # The provider request is dispatched here. Cancelling this handler
+            # (server shutdown or explicit task cancellation, not a client
+            # disconnect) cannot undo it and nothing retries it.
+            segmentation_output = await _run_off_loop(
+                segment_and_extract_resume, extracted_text, llm_client
+            )
             audit = audit_segmentation_lines(
                 extracted_text,
                 segmentation_output_line_evidence(segmentation_output),
@@ -746,6 +786,66 @@ def _raise_docx_target_error(exc: Exception) -> None:
     raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
+def _analyze_pdf_target(
+    contents: bytes,
+) -> tuple[NormalizedLayoutEvidence, dict[str, Any], TargetLayoutEvidence, LayoutTemplateSpec]:
+    """Run one blocking PDF target analysis: Adobe Extract, measurement, compile.
+
+    ``run_adobe_layout`` polls with ``time.sleep``, so the whole step is one unit
+    of off-loop work. A dispatched Adobe job cannot be recalled or retried here.
+    """
+    with tempfile.TemporaryDirectory() as temporary_dir:
+        temporary_pdf = Path(temporary_dir) / "target.pdf"
+        temporary_pdf.write_bytes(contents)
+        normalized, adobe_raw, _adobe_zip = run_adobe_layout(temporary_pdf)
+        # ADR 0002 amendment: Adobe outputs no text fill colors;
+        # color is measured locally from the same PDF (provenance
+        # local_pdf) before compilation. Blocks that stay colorless
+        # still fail the bridge closed.
+        normalized = enrich_colors_from_local_pdf(normalized, temporary_pdf)
+        normalized = enrich_badges_from_local_pdf(normalized, temporary_pdf)
+        normalized = enrich_rules_from_local_pdf(normalized, temporary_pdf)
+    evidence, measured_style_spec = build_design_evidence_from_normalized(
+        normalized,
+        target_checksum=target_checksum_from_bytes(contents),
+    )
+    return (
+        normalized,
+        adobe_raw,
+        evidence,
+        compile_measured_layout_template_spec(evidence, measured_style_spec),
+    )
+
+
+def _store_and_analyze_docx_target(
+    artifact_id: str,
+    input_filename: str,
+    suffix: str,
+    contents: bytes,
+) -> tuple[TargetFormatMetadata, LayoutTemplateSpec]:
+    """Store and analyze one uploaded DOCX target off the event loop.
+
+    The artifact directory is created here, once a slot is secured, so a
+    saturated refusal stores nothing for the caller.
+    """
+    artifact_dir = _prepare_artifact_dir(artifact_id, allow_existing=True)
+    target_format = _store_target_format(
+        artifact_id=artifact_id,
+        artifact_dir=artifact_dir,
+        input_filename=input_filename,
+        suffix=suffix,
+        contents=contents,
+    )
+    try:
+        spec = analyze_target_docx(
+            artifact_dir / target_format.stored_filename, artifact_dir
+        )
+    except (TargetDocxAnalysisError, FileNotFoundError):
+        (artifact_dir / target_format.stored_filename).unlink(missing_ok=True)
+        raise
+    return target_format, spec
+
+
 @app.post("/api/target-format")
 async def upload_target_format(
     file: UploadFile = File(...),
@@ -762,28 +862,15 @@ async def upload_target_format(
         )
 
     resolved_artifact_id = artifact_id or new_artifact_id()
-    artifact_dir = _prepare_artifact_dir(resolved_artifact_id, allow_existing=True)
+    # Validation only: the directory is created after the blocking work so a
+    # saturated refusal leaves nothing behind for the caller.
+    artifact_dir = _resolve_artifact_dir(resolved_artifact_id)
     contents = await file.read()
     analyzed_style_spec: LayoutTemplateSpec | None = None
     if suffix == ".pdf":
         try:
-            with tempfile.TemporaryDirectory() as temporary_dir:
-                temporary_pdf = Path(temporary_dir) / "target.pdf"
-                temporary_pdf.write_bytes(contents)
-                normalized, adobe_raw, _adobe_zip = run_adobe_layout(temporary_pdf)
-                # ADR 0002 amendment: Adobe outputs no text fill colors;
-                # color is measured locally from the same PDF (provenance
-                # local_pdf) before compilation. Blocks that stay colorless
-                # still fail the bridge closed.
-                normalized = enrich_colors_from_local_pdf(normalized, temporary_pdf)
-                normalized = enrich_badges_from_local_pdf(normalized, temporary_pdf)
-                normalized = enrich_rules_from_local_pdf(normalized, temporary_pdf)
-            evidence, measured_style_spec = build_design_evidence_from_normalized(
-                normalized,
-                target_checksum=target_checksum_from_bytes(contents),
-            )
-            analyzed_style_spec = compile_measured_layout_template_spec(
-                evidence, measured_style_spec
+            normalized, adobe_raw, evidence, analyzed_style_spec = await _run_off_loop(
+                _analyze_pdf_target, contents
             )
         except AdobeConfigurationError as exc:
             raise HTTPException(
@@ -812,6 +899,7 @@ async def upload_target_format(
             else []
         )
 
+        artifact_dir = _prepare_artifact_dir(resolved_artifact_id, allow_existing=True)
         target_format = _store_target_format(
             artifact_id=resolved_artifact_id,
             artifact_dir=artifact_dir,
@@ -852,20 +940,15 @@ async def upload_target_format(
             }
         )
     else:
-        target_format = _store_target_format(
-            artifact_id=resolved_artifact_id,
-            artifact_dir=artifact_dir,
-            input_filename=file.filename,
-            suffix=suffix,
-            contents=contents,
-        )
         try:
-            analyzed_style_spec = analyze_target_docx(
-                artifact_dir / target_format.stored_filename,
-                artifact_dir,
+            target_format, analyzed_style_spec = await _run_off_loop(
+                _store_and_analyze_docx_target,
+                resolved_artifact_id,
+                file.filename,
+                suffix,
+                contents,
             )
         except (TargetDocxAnalysisError, FileNotFoundError) as exc:
-            (artifact_dir / target_format.stored_filename).unlink(missing_ok=True)
             _raise_docx_target_error(exc)
         target_format = target_format.model_copy(
             update={
