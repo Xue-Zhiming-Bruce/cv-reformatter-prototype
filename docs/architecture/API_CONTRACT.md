@@ -82,9 +82,12 @@ Response fields:
   name, model id, endpoint, credential or region;
 - `ingestion_limitations` — one attributed review requirement per visible DOCX
   shape the reader cannot read (nested table, text box, tracked
-  insertion/deletion), naming its location; empty for PDFs and for DOCX files
-  inside the supported shapes. The line-coverage audit only measures the text
-  the reader supplied, so a passed audit never implies this list is empty.
+  insertion/deletion, content control it does not descend into, simple field
+  result), naming its location; empty for PDFs and for DOCX files inside the
+  supported shapes. The line-coverage audit only measures the text the reader
+  supplied, so a passed audit never implies this list is empty. The reader's
+  module docstring carries the enumerated read set and states that shapes
+  outside it are not detectable.
 
 In addition to `raw_extracted_text.txt` and `candidate_profile.json`, processing
 persists two immutable source-analysis artifacts:

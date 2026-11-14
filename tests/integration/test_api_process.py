@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 from docx import Document
+from docx.oxml import parse_xml
+from docx.oxml.ns import nsdecls
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 from pytest import MonkeyPatch
@@ -36,8 +38,8 @@ def _build_resume_docx(path: Path) -> None:
 
 
 def _build_ordered_resume_docx(path: Path) -> None:
-    """Issue #49: contact in the header/footer, a table between paragraphs, and a
-    nested table this reader cannot read."""
+    """Issue #49: contact in the header/footer, a table between paragraphs, and three
+    visible shapes this reader cannot read (nested table, run content control, field)."""
     document = Document()
     header = document.sections[0].header
     header.paragraphs[0].text = "Jane Candidate"
@@ -53,6 +55,20 @@ def _build_ordered_resume_docx(path: Path) -> None:
     table.rows[1].cells[0].text = "Led the migration"
     table.rows[1].cells[1].text = "2024"
     document.add_paragraph("After table")
+    phone = document.add_paragraph("Phone: ")
+    phone._p.append(
+        parse_xml(
+            f'<w:sdt {nsdecls("w")}><w:sdtContent><w:r><w:t>555 0199</w:t></w:r>'
+            "</w:sdtContent></w:sdt>"
+        )
+    )
+    reference = document.add_paragraph("Ref: ")
+    reference._p.append(
+        parse_xml(
+            f'<w:fldSimple {nsdecls("w")} w:instr=" REF candidate_name ">'
+            "<w:r><w:t>Field result</w:t></w:r></w:fldSimple>"
+        )
+    )
     nested_holder = document.add_table(rows=1, cols=1)
     nested_holder.rows[0].cells[0].add_table(rows=1, cols=1).rows[0].cells[0].text = (
         "Nested entry"
@@ -152,11 +168,15 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
         < lines.index("Acme | Engineer")
         < lines.index("After table")
     )
-    # The nested table's cell text is not readable and must not pass as absent.
-    assert "Nested entry" not in body["original_text"]
-    assert len(body["ingestion_limitations"]) == 1
-    assert "nested table" in body["ingestion_limitations"][0]
-    assert "Review the source document" in body["ingestion_limitations"][0]
+    # The nested table's cell, the content-control run and the field result are not
+    # readable, so each must be named instead of passing as absent.
+    for missing in ("Nested entry", "555 0199", "Field result"):
+        assert missing not in body["original_text"]
+    assert len(body["ingestion_limitations"]) == 3
+    limitation_text = " ".join(body["ingestion_limitations"])
+    for shape in ("nested table", "content control", "field"):
+        assert shape in limitation_text
+    assert "Review the source document" in limitation_text
     assert (artifact_dir / "candidate_profile.json").exists()
     assert (artifact_dir / "normalized_candidate_document.json").exists()
     assert (artifact_dir / "candidate_field_evidence.json").exists()
