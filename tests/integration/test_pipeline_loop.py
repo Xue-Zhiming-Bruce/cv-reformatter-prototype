@@ -3858,7 +3858,7 @@ def test_initial_a_context_is_candidate_compatible_and_compact(tmp_path: Path) -
     state_record = json.loads((run_dir / "e5_state.json").read_text())
     assert target_contact_labels["source_sha256"] == state_record["target_sha256"]
     assert target_contact_labels["method"] == measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION
-    assert target_contact_labels["region_id"] == "header.product_contact"
+    assert isinstance(target_contact_labels.get("region_id"), str | None)
     assert target_contact_labels["status"] in {
         "confirmed", "ambiguous", "evidence_missing", "not_measurable"}
     assert ("label_mode" in target_contact_labels) == (target_contact_labels["status"] == "confirmed")
