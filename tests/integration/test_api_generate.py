@@ -120,7 +120,13 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
         "model": "frozen-extraction-model", "prompt_version": "frozen-extraction/1",
     }
     assert manifest["schemas"]["candidate_segmentation"] == "candidate-segmentation-run/1"
-    assert json.loads((artifact_dir / "generation_metadata.json").read_text())["renderer_version"] == "lane-a-product-subset/17"
+    native_metadata = json.loads((artifact_dir / "generation_metadata.json").read_text())
+    assert native_metadata["renderer_version"] == "lane-a-product-subset/17"
+    # The native PDF records the browser/font environment that produced it.
+    environment = native_metadata["rendering_environment"]
+    assert environment["contract"] == "chrome-export/1"
+    assert environment["resolution"] in {"override", "macos_default", "system", "unresolved"}
+    assert environment["fonts"]["sha256"] and environment["digest"]
     assert "Boston" not in (artifact_dir / "candidate_profile.html").read_text().partition("</header>")[2]
     assert (artifact_dir / "raw_extracted_text.txt").read_bytes() == raw_text_before
     assert (artifact_dir / "raw_extracted_text.txt").read_text(encoding="utf-8") == draft_raw_text

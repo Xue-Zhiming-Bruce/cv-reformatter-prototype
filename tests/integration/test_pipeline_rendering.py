@@ -145,6 +145,62 @@ def test_rail_heading_and_content_occupy_separate_pdf_columns(tmp_path: Path, la
     assert abs(heading["top"] - content["top"]) < 30
 
 
+def _contract_probe_html() -> str:
+    """Multi-page probe: @page size/margins, a printed background band and a
+    bundled webfont, all of which the shared export contract must preserve."""
+    paragraphs = "\n".join(
+        f"<p>Contract probe line {index:03d} keeps the shared export contract measurable.</p>"
+        for index in range(120)
+    )
+    return f"""<!doctype html><html><head><meta charset="utf-8"><style>
+@page {{ size: 500pt 700pt; margin: 30pt; }}
+* {{ box-sizing: border-box; margin: 0; padding: 0;
+  print-color-adjust: exact; -webkit-print-color-adjust: exact; }}
+body {{ font-family: 'Lato', sans-serif; font-size: 12pt; line-height: 16pt; }}
+.band {{ background: #ff0000; height: 40pt; }}
+p {{ margin-bottom: 2pt; }}
+</style></head><body><div class="band"></div>
+{paragraphs}
+</body></html>"""
+
+
+def test_shared_chrome_export_contract_holds_page_fonts_and_backgrounds(tmp_path: Path) -> None:
+    """The native/worker and pipeline-lane callers are one contract: both print
+    the @page page size, the embedded font and the background over 2+ pages."""
+    import pdfplumber
+    from app.generation.chrome_html_to_pdf import CONTRACT_VERSION, export_html_to_pdf
+    from app.pipeline.measurement import pinned_export_environment
+    from app.pipeline.rendering import _export_pinned_html_to_pdf, _inject_local_fonts
+
+    html_path = tmp_path / "contract.html"
+    html_path.write_text(_inject_local_fonts(_contract_probe_html()), encoding="utf-8")
+    environment = pinned_export_environment({})
+    assert environment["contract"] == CONTRACT_VERSION
+    assert environment["resolution"] in {"override", "macos_default", "system"}
+    assert environment["version"] and environment["fonts"]["files"]
+    outputs = [
+        export_html_to_pdf(html_path, tmp_path / "native_worker.pdf"),
+        _export_pinned_html_to_pdf(html_path, tmp_path / "pipeline.pdf", environment),
+    ]
+    for path in outputs:
+        with pdfplumber.open(path) as document:
+            assert len(document.pages) >= 2
+            first = document.pages[0]
+            assert round(first.width) == 500 and round(first.height) == 700
+            assert "Contract probe line 000" in (first.extract_text() or "")
+            fonts = {str(char["fontname"]).casefold() for page in document.pages for char in page.chars}
+            assert any("lato" in name for name in fonts), fonts
+            colours = [
+                shape["non_stroking_color"]
+                for shape in [*first.rects, *first.curves]
+                if shape.get("fill") and shape.get("non_stroking_color")
+            ]
+            assert any(
+                len(colour) >= 3 and colour[0] > .95 and colour[1] < .05 and colour[2] < .05
+                for colour in colours
+            ), colours
+
+
 def test_plan_status_and_full_leaf_ownership_on_full_coverage() -> None:
     state, plan = plan_for()
     assert plan.status == "fully_materialized"

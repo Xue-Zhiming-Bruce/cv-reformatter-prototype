@@ -27,6 +27,7 @@ from app.extraction.coverage_audit import SegmentationCoverageAudit
 from app.extraction.llm_extractor import LLMConfigurationError, build_llm_client
 from app.final_acceptance import current_output_identity, is_final_acceptance_current
 from app.generation.agentic import AgenticGenerationError, generation_strategy
+from app.generation import chrome_html_to_pdf
 from app.generation.chrome_html_to_pdf import HtmlToPdfExportError, export_html_to_pdf
 from app.generation.composition_report import (
     COMPOSITION_REPORT_FILENAME,
@@ -949,6 +950,13 @@ def prepare_generation(
                 active_renderer_version()
                 if uses_uploaded_target
                 else PIPELINE_RENDERER_VERSION
+            ),
+            # The browser/font environment that made this PDF; the uploaded-target
+            # identity already binds it through active_renderer_version().
+            "rendering_environment": (
+                None
+                if uses_uploaded_target
+                else chrome_html_to_pdf.chrome_environment()
             ),
             "layout_template_version": effective_layout_spec.template_version,
             "layout_spec_sha256": production_render_plan.layout_spec_sha256,

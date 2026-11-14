@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.generation.content_validation import validate_generated_content, validate_output_structure
-from app.generation import template_mapper
+from app.generation import chrome_html_to_pdf, template_mapper
 from app.generation.template_mapper import ClientFacingRenderContext
 from app.pipeline.candidate_content import candidate_document_from_context
 from app.pipeline.evidence import (
@@ -183,6 +183,9 @@ def renderer_contract() -> dict[str, Any]:
             "builder_reserve_model_requests": AGENTIC_BUILDER_RESERVE_REQUESTS,
         },
         "renderer": RENDERER_VERSION, "settings": {**_settings(), "max_request_bytes": MAX_REQUEST_BYTES},
+        # Browser build, resolution and bundled font assets: a changed rendering
+        # environment must not inherit an approval made under the old one.
+        "chrome_export": chrome_html_to_pdf.chrome_environment(),
         "models": _model_identity(),
         "prompts": [prompts.E5_LANE_A_BUILDER_INSTRUCTIONS, prompts.E5_REVIEWER_INSTRUCTIONS,
                     prompts.E5_ATTRIBUTION_INSTRUCTIONS],
@@ -366,6 +369,7 @@ def render_agentic(
         raise AgenticGenerationError("Agentic model, prompt or execution configuration changed during generation")
     selected_plan = run_dir/f"lane_a/{stem}_plan.json"
     report = {"renderer_version": identity, "generation_strategy": "agentic",
+        "rendering_environment": chrome_html_to_pdf.chrome_environment(),
         "terminal_state": terminal, "selected_version": version.version_id,
         "open_findings": lane.open_findings, "gate_validation": gate_validation, "budget": record.budget_state,
         "summary": lane.summary, "run_directory": run_dir.resolve().relative_to(evidence_dir.resolve()).as_posix(),

@@ -19,6 +19,7 @@ from typing import Any
 
 import pdfplumber
 
+from app.generation import chrome_html_to_pdf
 from app.generation.template_mapper import ClientFacingRenderContext
 from app.template_analysis.layout_proof_artifacts import (
     DEFAULT_PROOF_OUTPUT_DIR,
@@ -233,6 +234,7 @@ def _render_layout_proof_with_context(
         pdf_checksum=file_sha256(pdf_path),
         page_count=pdf_page_count(pdf_path),
         execution_mode=active_execution_mode(),
+        rendering_environment=chrome_html_to_pdf.chrome_environment(),
     )
 
 

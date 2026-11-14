@@ -24,6 +24,7 @@ from app.template_analysis.layout_proof_validation import (
     load_layout_proof_render_result,
     load_variant_evidence,
 )
+from app.generation.chrome_html_to_pdf import export_html_to_pdf as _chrome_exporter
 from tests.helpers.layout_proof import make_proof_pdf_exporter, create_and_approve_proofs as _create_and_approve
 from tests.helpers.synthetic_pdf import build_styled_target_pdf
 
@@ -136,8 +137,11 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     from app.pipeline import (
         finding_disposition, measurement, quality, repair_policy, review, run_models, service,
     )
-    from app.generation import agentic
+    from app.generation import agentic, chrome_html_to_pdf
     monkeypatch.setattr(agentic, "render_agentic", a_generation_without_model_loop)
+    # This case keeps the agentic lane's Chrome real; the file's fake exporter
+    # covers only the deterministic lifecycle cases.
+    monkeypatch.setattr(chrome_html_to_pdf, "export_html_to_pdf", _chrome_exporter)
     from app.generation.artifact_manifest import write_artifact_manifest
     monkeypatch.setattr(generation_service, "write_artifact_manifest", write_artifact_manifest)
     from app.generation.agentic import agentic_renderer_version
@@ -306,6 +310,12 @@ print(json.dumps(response.json()))
     report = json.loads((directory / "agentic_generation.json").read_text())
     assert report["generation_strategy"] == "agentic" and report["client_ready"] is False
     assert report["renderer_version"] == agentic_renderer_version()
+    # The agentic artifact records the browser build/resolution and bundled
+    # fonts its renderer identity was computed from.
+    assert report["rendering_environment"]["digest"]
+    assert report["rendering_environment"]["contract"] == "chrome-export/1"
+    assert report["rendering_environment"]["resolution"] in {"override", "macos_default", "system", "unresolved"}
+    assert report["rendering_environment"]["fonts"]["files"]
     assert report["content_validation"]["passed"] and report["structure_validation"]["passed"]
     assert report["selected_version"] and report["summary"]["reviewed_pdf_sha256"]
     assert identity["debug_artifacts"]["agentic_generation"] == str(directory / "agentic_generation.json")
