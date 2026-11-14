@@ -9,9 +9,11 @@ content-free candidate scope the Reviewer boundary already publishes
 (`measurement.section_page_locations`), the finding's typed `claimed_difference`
 and, on the second call, the recorded measurement. `confidence` and the
 observation prose are retained, never parsed — a claim the shell cannot verify
-stays `unresolved`, which is payable. A claim label never closes a finding on
-its own: `matching` needs its measurement, and a region nothing structurally
-identifies is never read as candidate-owned.
+stays `unresolved`, which is payable. Each typed claim is a structured fact with
+its own evidence need: `content_value` needs the candidate's registered shape,
+`page_placement` the render's own inventory, and `matching` only the absence of a
+contradicting measurement — while a region nothing structurally identifies is
+never read as candidate-owned.
 
 The boundary this policy deliberately does NOT cross: omitting candidate content
 altogether is decided by the independent candidate-content/coverage gate, so a
@@ -201,12 +203,14 @@ def _measured(
 
 
 def _matching_claim(claim: _Claim, evidence: list[str]) -> FindingDisposition | None:
-    """Rule 2: a `matching` claim is the reviewer's CLAIM, never evidence. It is
-    corroborated only by a confirmed measurement of that property within
-    tolerance, which rule 1 decides; on the label alone it stays payable."""
+    """Rule 2 (AC7): an observation that itself reports matching presentation on
+    both sides is confirmed while no measurement contradicts it. The contradicting
+    case is rule 1's verdict — a confirmed delta beyond tolerance is decided
+    there, before this step — so the typed claim plus the recorded measurement are
+    the structured facts, and neither reads the prose."""
     if claim.claim != "matching":
         return None
-    return _dispose("unresolved", "matching_claim_needs_its_measurement", evidence)
+    return _dispose("confirmed_matching", "observation_reports_matching_presentation", evidence)
 
 
 def _page_placement(claim: _Claim, evidence: list[str]) -> FindingDisposition | None:

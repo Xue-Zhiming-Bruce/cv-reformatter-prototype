@@ -174,10 +174,10 @@ def test_recorded_page_placement_is_reflow_not_missing_content() -> None:
     assert missing.reason == "section_absent_from_whole_output"
 
 
-def test_only_the_measurement_confirms_a_matching_claim() -> None:
-    """Case 3/4: a measured zero delta closes the claim it measured. A claim
-    LABEL is never evidence on its own, so `matching` stays payable until a
-    measurement of that property agrees."""
+def test_recorded_label_geometry_and_matching_claims_are_confirmed_matching() -> None:
+    """Case 3/4: a measured zero delta closes the claim it measured, and an
+    observation that itself reports matching presentation on both sides is
+    confirmed while no measurement contradicts it (AC7)."""
     label_presence = finding(
         "f1", "header.01", "contact_label_presence", metric="header_contact_label_geometry"
     )
@@ -196,18 +196,20 @@ def test_only_the_measurement_confirms_a_matching_claim() -> None:
     assert find_disposition_reason(label_presence, PAGES, measured_off) == (
         "measured_property_differs_beyond_tolerance"
     )
-    # Same claim, same region, with nothing but the label to go on.
-    unmeasured = finding("f2", "header.01", "contact_row_layout", claim="matching")
-    matching = dispose(unmeasured, PAGES)
-    assert matching.kind == "unresolved"
-    assert matching.reason == "matching_claim_needs_its_measurement"
-    assert [finding_disposition.payable([unmeasured], {"f2": matching})] == [[unmeasured]]
-    # The measurement it needed is what confirms it.
-    confirmed = dispose(unmeasured, PAGES, result=measured_equal.model_copy(
+    # An observation that itself reports matching presentation on both sides,
+    # before any measurement contradicts it.
+    matching = finding("f2", "header.01", "contact_row_layout", claim="matching")
+    disposed_matching = dispose(matching, PAGES)
+    assert disposed_matching.kind == "confirmed_matching"
+    assert disposed_matching.reason == "observation_reports_matching_presentation"
+    assert finding_disposition.payable([matching], {"f2": disposed_matching}) == []
+    # A confirmed measurement beyond tolerance IS the contradiction: it is the
+    # one verdict that reaches the finding's checks.
+    contradicted = dispose(matching, PAGES, result=measured_off.model_copy(
         update={"request_id": "measure-f2"}
     ))
-    assert confirmed.kind == "confirmed_matching"
-    assert confirmed.reason == "measured_property_matches_within_tolerance"
+    assert contradicted.kind == "suspected_defect"
+    assert contradicted.reason == "measured_property_differs_beyond_tolerance"
 
 
 def find_disposition_reason(

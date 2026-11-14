@@ -1686,12 +1686,24 @@ def test_recorded_cases_are_disposed_through_the_measure_and_attribute_phase(
         "case4-placement": (
             "expected_variation", "page_local_global_missing_section_assertion",
         ),
-        "case4-matching": ("unresolved", "matching_claim_needs_its_measurement"),
+        # AC7: the observation reports matching presentation on both sides and
+        # no measurement contradicts it.
+        "case4-matching": ("confirmed_matching", "observation_reports_matching_presentation"),
         "untyped": ("unresolved", "presentation_property_needs_its_measurement"),
     }
     assert all(disposition_of(finding).evidence for finding in findings)
-    # AC6/AC9: only the payable residue is attributed, and the measured match is
-    # closed as `no_defect` — never confused with "not measured".
+    dispositions = {
+        finding.finding_id: disposition_of(finding) for finding in findings
+    }
+    # AC6: nothing but the observation with no typed claim is payable, so no
+    # expected variation or matching observation can reach a paid request.
+    assert [
+        finding.finding_id
+        for finding in finding_disposition.payable(findings, dispositions)
+    ] == ["untyped"]
+    # AC9: the measured match is closed as `no_defect` — never confused with
+    # "not measured" — while the matching observation and the still-open
+    # observation reach only the deterministic rule, which spends no request.
     assert {item.finding_id for item in lane.attributions} == {
         "case3", "case4-matching", "untyped",
     }
@@ -1717,9 +1729,7 @@ def test_recorded_cases_are_disposed_through_the_measure_and_attribute_phase(
     )
     assert selected is None
     assert repair_policy._e5_attribution_batches(
-        finding_disposition.payable(findings, {
-            finding.finding_id: disposition_of(finding) for finding in findings
-        }), measured,
+        finding_disposition.payable(findings, dispositions), measured,
     ) == []
 
 

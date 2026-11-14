@@ -806,31 +806,47 @@ def section_page_locations(pdf: Path, state: Any) -> dict[str, list[int]]:
     target's.
     """
     lines, _marks = _pdf_lines_and_marks(pdf)
-    sections = sorted(
-        (node for node in state.nodes if node.kind == "section"),
-        key=lambda node: node.reading_order,
-    )
-    starts: list[tuple[str, int]] = []
-    for section in sections:
-        labels = [
-            _line_key(node.label)
-            for node in state.nodes
-            if node.kind == "heading" and node.parent_id == section.node_id and node.label
-        ]
-        pages = [
-            int(line["page"]) for line in lines
-            if any(_line_key(line["text"]).startswith(label) for label in labels if label)
-        ]
-        if pages:
-            starts.append((section.node_id, min(pages)))
+    starts = _section_start_pages(lines, state)
     page_count = max((int(line["page"]) for line in lines), default=0)
     locations: dict[str, list[int]] = {}
     for index, (node_id, start) in enumerate(starts):
-        # The last section runs through the last page that has any line: an
-        # out-of-order heading page can never end a section before it starts.
         end = starts[index + 1][1] if index + 1 < len(starts) else page_count
-        locations[node_id] = list(range(start, max(start, end) + 1))
+        locations[node_id] = _page_range(start, end)
     return locations
+
+
+def _section_start_pages(
+    lines: list[dict[str, Any]], state: Any
+) -> list[tuple[str, int]]:
+    """(section node id, first page one of its heading labels starts a line) in
+    reading order; a section whose label starts no line is omitted."""
+    starts: list[tuple[str, int]] = []
+    for section in sorted(
+        (node for node in state.nodes if node.kind == "section"),
+        key=lambda node: node.reading_order,
+    ):
+        labels = [
+            key
+            for key in (
+                _line_key(node.label) for node in state.nodes
+                if node.kind == "heading" and node.parent_id == section.node_id
+                and node.label
+            )
+            if key
+        ]
+        pages = [
+            int(line["page"]) for line in lines
+            if any(_line_key(line["text"]).startswith(label) for label in labels)
+        ]
+        if pages:
+            starts.append((section.node_id, min(pages)))
+    return starts
+
+
+def _page_range(start: int, end: int) -> list[int]:
+    """The inclusive pages start..end; an out-of-order heading page can never end
+    a section before it starts."""
+    return list(range(start, max(start, end) + 1))
 
 
 def _line_key(text: str) -> str:
