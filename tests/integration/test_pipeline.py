@@ -143,8 +143,11 @@ def test_service_defaults_to_a_without_starting_b(tmp_path: Path) -> None:
 
 def test_offline_initial_builder_context_names_the_target_it_measured(tmp_path: Path) -> None:
     """AC2/AC3: one offline run measures the target once, and the initial
-    payload carries that answer under the run's own target identity, with no
-    target or candidate content and inside the payload bound."""
+    payload carries that answer under the run's own target identity, bound to
+    the contact row this run's compiled state declares, with no target or
+    candidate content and inside the payload bound."""
+    from app.generation.template_mapper import CONTACT_FIELD_SLOTS
+
     inputs = _inputs(tmp_path)
     out, _, record = run_e5(
         **inputs, candidate=_candidate("Candidate Alpha"),
@@ -155,6 +158,17 @@ def test_offline_initial_builder_context_names_the_target_it_measured(tmp_path: 
     state = json.loads((out / "e5_state.json").read_text())
     assert context["source_sha256"] == state["target_sha256"] == record["target_sha256"]
     assert context["method"] == measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION
+    declared_contact_rows = [
+        node["node_id"]
+        for node in json.loads((out / "c2_layout_state.json").read_text())["nodes"]
+        if node["kind"] == "header_row"
+        and any(field["slot"] in CONTACT_FIELD_SLOTS.values() for field in node["fields"])
+    ]
+    if len(declared_contact_rows) == 1:
+        assert context["region_id"] == declared_contact_rows[0]
+    else:
+        assert context["status"] == "not_measurable"
+        assert context["region_id"] is None and context["reason"]
     assert context["status"] in {"confirmed", "ambiguous", "evidence_missing", "not_measurable"}
     assert ("label_mode" in context) == (context["status"] == "confirmed")
     assert ("reason" in context) == (context["status"] != "confirmed")

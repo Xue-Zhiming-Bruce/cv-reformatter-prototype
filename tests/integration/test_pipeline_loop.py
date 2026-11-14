@@ -3839,6 +3839,8 @@ def test_a_builder_content_free_shape_and_footprint_contracts() -> None:
 @pytest.mark.local_dataset
 @local_pipeline
 def test_initial_a_context_is_candidate_compatible_and_compact(tmp_path: Path) -> None:
+    from app.generation.template_mapper import CONTACT_FIELD_SLOTS
+
     run_dir, _terminal, _record = _run_e5(
         TARGET_PDF, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=0,
     )
@@ -3858,7 +3860,22 @@ def test_initial_a_context_is_candidate_compatible_and_compact(tmp_path: Path) -
     state_record = json.loads((run_dir / "e5_state.json").read_text())
     assert target_contact_labels["source_sha256"] == state_record["target_sha256"]
     assert target_contact_labels["method"] == measurement.HEADER_CONTACT_LABEL_MEASUREMENT_VERSION
-    assert isinstance(target_contact_labels.get("region_id"), str | None)
+    # The bound region is decided by the compiled state THIS run wrote, never by
+    # a literal and never by "any string": with one declared contact row the
+    # context must name that row (so a lost binding fails), and with none it
+    # must record the explicit absence instead of degrading silently.
+    declared_contact_rows = [
+        node["node_id"]
+        for node in json.loads((run_dir / "c2_layout_state.json").read_text())["nodes"]
+        if node["kind"] == "header_row"
+        and any(field["slot"] in CONTACT_FIELD_SLOTS.values() for field in node["fields"])
+    ]
+    if len(declared_contact_rows) == 1:
+        assert target_contact_labels["region_id"] == declared_contact_rows[0]
+    else:
+        assert target_contact_labels["status"] == "not_measurable"
+        assert target_contact_labels["region_id"] is None
+        assert target_contact_labels["reason"]
     assert target_contact_labels["status"] in {
         "confirmed", "ambiguous", "evidence_missing", "not_measurable"}
     assert ("label_mode" in target_contact_labels) == (target_contact_labels["status"] == "confirmed")
