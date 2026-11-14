@@ -133,7 +133,9 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
         from tests.helpers.postgres import migrate_database
         migrate_database(engine)
         monkeypatch.setattr(main, "DATABASE_URL", database_url)
-    from app.pipeline import measurement, quality, repair_policy, review, run_models, service
+    from app.pipeline import (
+        finding_disposition, measurement, quality, repair_policy, review, run_models, service,
+    )
     from app.generation import agentic
     monkeypatch.setattr(agentic, "render_agentic", a_generation_without_model_loop)
     from app.generation.artifact_manifest import write_artifact_manifest
@@ -389,6 +391,12 @@ print(json.dumps(response.json()))
         assert stale.status_code == 409 and calls == [], stale.text
     with monkeypatch.context() as policy:
         policy.setattr(review, "REVIEW_IMAGE_ENCODING_VERSION", "future-policy")
+        stale = client.post("/api/generate", json=request)
+        assert stale.status_code == 409 and calls == [], stale.text
+    with monkeypatch.context() as policy:
+        policy.setattr(
+            finding_disposition, "DISPOSITION_POLICY_VERSION", "future-policy"
+        )
         stale = client.post("/api/generate", json=request)
         assert stale.status_code == 409 and calls == [], stale.text
     with monkeypatch.context() as policy:
