@@ -24,10 +24,13 @@ from app.ingestion.pdf_reader import (
     EmptyPdfTextError,
     UnsupportedPdfTypeError,
     pdf_page_text,
+    read_pdf_page_sizes,
     read_pdf_pages,
 )
 from app.resource_limits import (
     DOCX_ZIP_LIMITS,
+    MAX_UPLOAD_BYTES,
+    MiB,
     DocumentLimitError,
     check_pdf_pages,
     enforce_zip_file,
@@ -58,7 +61,6 @@ def read_ingested_document(
     ``lost_text`` the subset where visible text was dropped (issue #49).
     """
     payload = _run_child("candidate", Path(path))
-    check_pdf_pages(payload["page_sizes"])
     return (
         payload["text"],
         [str(item) for item in payload["limitations"]],
@@ -71,10 +73,28 @@ def enforce_uploaded_document(contents: bytes, suffix: str) -> None:
     with tempfile.TemporaryDirectory(prefix="cv-document-limit-") as directory:
         path = Path(directory) / f"document{suffix}"
         path.write_bytes(contents)
-        if suffix == ".pdf":
-            check_pdf_pages(_run_child("geometry", path)["page_sizes"])
-        else:
-            enforce_zip_file(path, DOCX_ZIP_LIMITS)
+        enforce_document_path(path)
+
+
+def enforce_document_path(path: str | Path) -> None:
+    """Refuse a document file past the same policy, before any in-process parse.
+
+    Uploaded bytes are already counted; a path this process did not receive
+    through an upload (an operator-supplied target, for example) is measured
+    here so its later in-process parses are bounded by construction.
+    """
+    document = Path(path)
+    if document.stat().st_size > MAX_UPLOAD_BYTES:
+        raise DocumentLimitError(
+            "document_too_large",
+            f"This document is larger than the {MAX_UPLOAD_BYTES // MiB} MiB application "
+            "limit; nothing was processed.",
+            status_code=413,
+        )
+    if document.suffix.lower() == ".pdf":
+        _run_child("geometry", document)
+    else:
+        enforce_zip_file(document, DOCX_ZIP_LIMITS)
 
 
 def _run_child(mode: str, path: Path) -> dict[str, Any]:
@@ -101,25 +121,23 @@ def _run_child(mode: str, path: Path) -> dict[str, Any]:
 def _child_payload(mode: str, path: Path) -> dict[str, Any]:
     """What the child answers: page geometry, and text for a candidate document."""
     if path.suffix.lower() == ".pdf":
-        pages = read_pdf_pages(path)
-        page_sizes = [[page.width_pt, page.height_pt] for page in pages]
-        # Refused here first so an oversized document never reaches text extraction.
+        # Refused from the page tree first, so an oversized document never
+        # reaches text extraction.
+        page_sizes = [[width, height] for width, height in read_pdf_page_sizes(path)]
         check_pdf_pages(page_sizes)
-        payload: dict[str, Any] = {
+        if mode == "geometry":
+            return {"page_sizes": page_sizes}
+        return {
             "page_sizes": page_sizes,
-            "text": "",
+            "text": pdf_page_text(read_pdf_pages(path), source=path),
             "limitations": [],
             "unread_text": [],
         }
-        if mode == "candidate":
-            payload["text"] = pdf_page_text(pages, source=path)
-        return payload
     if mode != "candidate":
         raise UnsupportedFileTypeError("Page geometry is only measured for PDF documents.")
     content = read_docx(path)
     reported, lost_text = unread_content_messages(content.limitations)
     return {
-        "page_sizes": [],
         "text": content.plain_text,
         "limitations": reported,
         "unread_text": lost_text,

@@ -156,17 +156,44 @@ def test_zip_directory_refuses_a_forged_uncompressed_size_without_allocating() -
     assert peak < 1024 * 1024, "the claimed payload was never allocated"
 
 
-def test_zip_stream_verification_reads_in_chunks_not_in_one_payload() -> None:
+def test_zip_stream_verification_counts_bytes_it_actually_decompresses() -> None:
+    """The stream cap is observed on real output, not only on the directory.
+
+    The directory is skipped here so only the stream count can refuse: a no-op
+    verifier returns a 4 MiB member that the limit forbids.
+    """
     archive = _archive([("word/document.xml", b"\0" * (4 * 1024 * 1024))])
+    small_limits = ZipLimits(
+        max_entries=64,
+        max_entry_bytes=1024 * 1024,
+        max_total_bytes=64 * 1024 * 1024,
+        max_ratio=100_000,
+    )
 
     tracemalloc.start()
     try:
-        verify_zip_streams(archive, DOCX_ZIP_LIMITS)
+        with pytest.raises(DocumentLimitError) as refusal:
+            verify_zip_streams(archive, small_limits)
         peak = tracemalloc.get_traced_memory()[1]
     finally:
         tracemalloc.stop()
 
-    assert peak < 1024 * 1024, "decompressed bytes stayed at the read chunk size"
+    assert refusal.value.error_code == "zip_expansion_size"
+    assert peak < 1024 * 1024, "the read stayed at the chunk size instead of the payload"
+
+
+def test_zip_refusal_reports_entry_position_and_size_not_its_name() -> None:
+    """A refused package names no document-controlled entry in the public detail."""
+    archive = _archive(
+        [("[Content_Types].xml", b"<x/>"), ("/private/CANDIDATE_SECRET.xml", b"\0" * 1_000_000)]
+    )
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        inspect_zip_directory(archive, DOCX_ZIP_LIMITS)
+
+    assert refusal.value.error_code == "zip_expansion_ratio"
+    assert "CANDIDATE_SECRET" not in refusal.value.message
+    assert "entry 2 of 2" in refusal.value.message
 
 
 def test_bounded_member_read_refuses_an_oversized_member() -> None:
@@ -202,11 +229,19 @@ def test_raster_budget_allows_the_supported_document_and_refuses_past_the_cap() 
 
     assert budget.used_pixels == 40_112_880
 
+    budget.reserve(2000.0, 2000.0, scale=2)
     with pytest.raises(DocumentLimitError) as refusal:
-        budget.reserve(12000.0, 12000.0, scale=2)
+        budget.reserve(2000.0, 2000.0, scale=2)
 
     assert refusal.value.error_code == "raster_pixel_limit"
-    assert budget.used_pixels == 40_112_880, "a refused page is not counted as rendered"
+    assert budget.used_pixels == 56_112_880, "a refused page is not counted as rendered"
+
+
+def test_raster_budget_refuses_a_page_above_the_geometry_limit_first() -> None:
+    with pytest.raises(DocumentLimitError) as refusal:
+        RasterPixelBudget().reserve(2001.0, 792.0, scale=2)
+
+    assert refusal.value.error_code == "pdf_page_geometry"
 
 
 def test_bounded_child_returns_the_output_of_a_finished_child() -> None:

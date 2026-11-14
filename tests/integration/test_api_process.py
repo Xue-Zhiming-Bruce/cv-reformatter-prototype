@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from starlette.datastructures import UploadFile
 from docx import Document
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.opc.packuri import PackURI
@@ -1342,8 +1343,22 @@ def test_process_rejects_pdf_without_extractable_text(tmp_path: Path) -> None:
         )
 
     assert response.status_code == 400
-    assert "no extractable text" in response.json()["detail"].lower()
-    assert "scanned pdfs are not supported" in response.json()["detail"].lower()
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "pdf_no_extractable_text"
+    assert "no extractable text" in detail["message"].lower()
+    assert "scanned pdfs are not supported" in detail["message"].lower()
+
+
+def test_process_reports_a_corrupted_pdf_in_the_structured_error_shape() -> None:
+    """Issue #53: a reader refusal is the same structured detail as a limit one."""
+    response = client.post(
+        "/api/process", files={"file": ("corrupt.pdf", b"%PDF-1.4\nnot a document", "application/pdf")}
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "pdf_corrupted"
+    assert isinstance(detail["message"], str) and detail["message"]
 
 
 def test_process_rejects_unsupported_upload(tmp_path: Path) -> None:
@@ -1354,8 +1369,50 @@ def test_process_rejects_unsupported_upload(tmp_path: Path) -> None:
         response = client.post("/api/process", files={"file": ("resume.txt", text_file, "text/plain")})
 
     assert response.status_code == 400
-    assert ".docx" in response.json()["detail"].lower()
-    assert ".pdf" in response.json()["detail"].lower()
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "document_type_unsupported"
+    assert ".docx" in detail["message"].lower()
+    assert ".pdf" in detail["message"].lower()
+
+
+@pytest.mark.anyio
+async def test_candidate_ingestion_runs_off_the_event_loop(monkeypatch: MonkeyPatch) -> None:
+    """Issue #53: a slow bounded parse must not stall other requests.
+
+    The parse is replaced by a blocking 150 ms call; a 10 ms ticker on the same
+    loop must keep ticking while it runs.
+    """
+    import asyncio
+    import time
+
+    from app.resource_limits import DocumentLimitError
+
+    ticks = 0
+
+    def slow_ingestion(_path: Path) -> tuple[str, list[str]]:
+        time.sleep(0.15)
+        raise DocumentLimitError("local_processing_timeout", "Local parsing took too long.")
+
+    monkeypatch.setattr(main, "read_ingested_document", slow_ingestion)
+    spool = tempfile.SpooledTemporaryFile()
+    spool.write(b"%PDF-1.4\n")
+    spool.seek(0)
+    upload = UploadFile(file=spool, filename="resume.pdf")
+
+    async def tick() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    ticker = asyncio.create_task(tick())
+    try:
+        with pytest.raises(DocumentLimitError):
+            await main.process_resume(file=upload)
+    finally:
+        ticker.cancel()
+
+    assert ticks >= 8, f"the event loop ticked only {ticks} times during a 150 ms parse"
 
 
 def test_process_refuses_an_oversized_upload_without_content_length(

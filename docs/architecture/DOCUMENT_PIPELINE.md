@@ -1218,7 +1218,8 @@ count, currency and provider runtime are not covered here — they stay with
 | --- | --- | --- |
 | Upload file | 8 MiB | worst corpus DOCX 37 KiB, PDF 198 KiB |
 | Request body | 8 MiB + 64 KiB envelope | multipart headers/boundaries are not document bytes |
-| DOCX / Adobe result archive | 512 entries, 16 MiB per entry, 64 MiB total, 100:1 expansion | corpus 17 entries / 0.83 MiB / 32:1 on one entry |
+| DOCX package | 512 entries, 16 MiB per entry, 64 MiB total, 100:1 expansion | corpus 17 entries / 0.83 MiB / 32:1 on one entry |
+| Adobe result archive | 64 entries, 32 MiB per entry, 32 MiB total, 100:1 expansion | one provider result archive, same ratio rule |
 | PDF pages | 20 | corpus 1–2 pages |
 | PDF page side | 2000 pt | corpus Letter 612×792, A4 595×842 |
 | Raster per document | 64 MP | 20 A4 pages at 2× ≈ 40.1 MP |
@@ -1232,18 +1233,29 @@ Enforcement sits in the existing owners, not in each caller:
 - archives: `enforce_zip_file`/`inspect_zip_directory` read the central directory
   before any extraction, and `verify_zip_streams`/`read_zip_member_bounded` cap
   each stream, so a forged uncompressed size cannot force allocation. The DOCX
-  reader and the Adobe result-archive decoder take the same bounds;
-- pages and geometry: `check_pdf_pages` reads the declared page boxes before
-  text extraction, and `app/ingestion/ingest_document.py` runs the whole parse in
-  a bounded child process (`run_bounded_child`) because a timeout around a thread
-  does not stop a blocked parser;
-- raster: `RasterPixelBudget.reserve` is called by the shared rasterizers
-  (`app/pipeline/rendering.py`, `app/template_analysis/visual_comparator.py`)
-  before a bitmap exists.
+  reader and the Adobe result-archive decoder take the same bounds. A package
+  refusal reports entry position, size and count, never a document-controlled
+  entry name or path;
+- pages and geometry: `read_pdf_page_sizes` reads only the declared page boxes,
+  so `check_pdf_pages` refuses page count and page geometry before any page text
+  is extracted, and `app/ingestion/ingest_document.py` runs both the geometry
+  step and the whole parse in a bounded child process (`run_bounded_child`)
+  because a timeout around a thread does not stop a blocked parser;
+- raster: the shared rasterizers (`app/pipeline/rendering._render_pages`,
+  `app/template_analysis/visual_comparator._render_pdf`) check the page count,
+  then `RasterPixelBudget.reserve` checks each page's geometry and the running
+  pixel budget before that page's bitmap exists. A refusal removes every page
+  file the same render already wrote, so no partial raster set survives;
+- operator paths: `enforce_document_path` applies the same policy to a document
+  this process did not receive through an upload. `run_e5` calls it for its
+  target before any in-process `pdfplumber` parse, so the diagnostic path
+  refuses an over-limit target instead of parsing it unbounded.
 
-`/api/process`, `/api/target-format` and the uploaded-target job path reach the
-same helpers, so a synchronous request and a job refuse the same input the same
-way. Refusals are structured (`DocumentLimitError` → 413/422 with `error_code`)
+`/api/process` and `/api/target-format` reach the same helpers, and a job reuses
+the target stored by that upload, so the policy already applied to it. Each
+upload route runs the bounded child off the event loop, so one document's parse
+does not stall other requests. Refusals are structured (`DocumentLimitError` →
+413/422, reader errors → 400, both with `error_code` and `message` in `detail`)
 and happen before provider I/O, raster allocation and publication; a refused
 re-upload leaves stored source bytes and the prior published output untouched.
 No limit truncates a document.

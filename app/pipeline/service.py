@@ -3429,6 +3429,13 @@ def run_e5(
     target_pdf = target_pdf.resolve()
     if not target_pdf.exists():
         raise RuntimeError(f"target PDF not found: {target_pdf}")
+    # This operator-supplied target is parsed in-process by the stages below
+    # (page geometry, text flow, comparison rasters), so the same bounded child
+    # and page policy decide here, before any of them run. An unbounded
+    # document is refused rather than parsed here.
+    from app.ingestion.ingest_document import enforce_document_path
+
+    enforce_document_path(target_pdf)
     target_sha256 = _sha256_file(target_pdf)
     template_state = None
     template_render = None

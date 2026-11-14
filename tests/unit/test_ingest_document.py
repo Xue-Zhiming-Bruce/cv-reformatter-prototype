@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import tempfile
 import zipfile
 from pathlib import Path
@@ -12,7 +13,12 @@ from docx import Document
 from docx.shared import Inches
 from pypdf import PdfWriter
 
-from app.ingestion.ingest_document import enforce_uploaded_document, read_ingested_document
+from app.ingestion import ingest_document
+from app.ingestion.ingest_document import (
+    enforce_document_path,
+    enforce_uploaded_document,
+    read_ingested_document,
+)
 from app.resource_limits import DOCX_ZIP_LIMITS, DocumentLimitError
 from tests.helpers.synthetic_pdf import _write_single_page_pdf
 
@@ -53,6 +59,45 @@ def test_candidate_docx_read_returns_text(tmp_path: Path) -> None:
     assert text == "Jane Candidate"
     assert limitations == []
     assert lost_text == []
+
+
+@pytest.mark.parametrize(
+    ("page_size", "page_count", "error_code"),
+    [((612, 792), 21, "pdf_page_count"), ((5000, 5000), 1, "pdf_page_geometry")],
+)
+def test_candidate_read_refuses_from_the_page_tree_before_extracting_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    page_size: tuple[int, int],
+    page_count: int,
+    error_code: str,
+) -> None:
+    """Issue #53: page count and geometry are read from the page tree, so a
+    refused document extracts no page text at all."""
+    import pdfplumber.page
+
+    extractions: list[int] = []
+    original = pdfplumber.page.Page.extract_text
+
+    def counting(self, *args, **kwargs):
+        extractions.append(1)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pdfplumber.page.Page, "extract_text", counting)
+    path = tmp_path / "document.pdf"
+    writer = PdfWriter()
+    for _ in range(page_count):
+        writer.add_blank_page(width=page_size[0], height=page_size[1])
+    with path.open("wb") as output:
+        writer.write(output)
+
+    # The child entry point the parent process runs; its stdout is the answer.
+    assert ingest_document.main(["candidate", str(path)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["error"]["error_code"] == error_code
+    assert extractions == [], "a refused document was never text-extracted"
 
 
 def test_candidate_read_refuses_large_declared_page_geometry(tmp_path: Path) -> None:
@@ -99,6 +144,36 @@ def test_target_document_check_refuses_a_docx_package_before_analysis(tmp_path: 
         enforce_uploaded_document(path.read_bytes(), ".docx")
 
     assert refusal.value.error_code == "zip_entry_count"
+
+
+def test_operator_document_path_refuses_page_count_before_parsing(tmp_path: Path) -> None:
+    """Issue #53: a target the process did not receive as an upload takes the
+    same page policy before any in-process parse."""
+    path = tmp_path / "long-target.pdf"
+    writer = PdfWriter()
+    for _ in range(21):
+        writer.add_blank_page(width=612, height=792)
+    with path.open("wb") as output:
+        writer.write(output)
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        enforce_document_path(path)
+
+    assert refusal.value.error_code == "pdf_page_count"
+
+
+def test_operator_document_path_refuses_bytes_above_the_upload_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ingest_document, "MAX_UPLOAD_BYTES", 1024)
+    path = _text_pdf(tmp_path / "target.pdf")
+    path.write_bytes(path.read_bytes() + b"\0" * 1024)
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        enforce_document_path(path)
+
+    assert refusal.value.error_code == "document_too_large"
+    assert refusal.value.status_code == 413
 
 
 def test_a_refused_upload_leaves_no_temporary_copy(

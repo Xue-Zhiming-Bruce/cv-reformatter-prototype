@@ -1409,8 +1409,10 @@ def test_target_format_upload_rejects_unsupported_files(tmp_path: Path, monkeypa
     )
 
     assert response.status_code == 400
-    assert ".docx" in response.json()["detail"].lower()
-    assert ".pdf" in response.json()["detail"].lower()
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "document_type_unsupported"
+    assert ".docx" in detail["message"].lower()
+    assert ".pdf" in detail["message"].lower()
 
 
 def test_target_format_upload_surfaces_adobe_failure_without_artifacts(
@@ -2034,3 +2036,35 @@ def test_unread_source_text_blocks_generation(
     assert legacy.status_code == 409, legacy.text
     assert legacy.json()["detail"]["error_code"] == "source_text_unread"
     assert legacy.json()["detail"]["unread_text_source_content"] == unread
+
+
+def test_refused_docx_target_reports_no_archive_entry_name(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #53: a package refusal reports position and size, never an entry
+    name the package controls."""
+    import io
+    import zipfile
+
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("[Content_Types].xml", "<x/>")
+        package.writestr("/private/CANDIDATE_SECRET.xml", b"\0" * 1_000_000)
+
+    response = client.post(
+        "/api/target-format",
+        files={
+            "file": (
+                "target.docx",
+                archive.getvalue(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "zip_expansion_ratio"
+    assert "CANDIDATE_SECRET" not in detail["message"]
+    assert list(tmp_path.iterdir()) == [], "a refused target upload writes no artifact"

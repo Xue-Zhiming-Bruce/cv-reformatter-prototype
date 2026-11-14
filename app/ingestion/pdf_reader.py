@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Iterator, Sequence
 
 import pdfplumber
 from pdfplumber.utils.exceptions import PdfminerException
@@ -31,19 +32,31 @@ class PdfPage:
 
 def read_pdf_pages(path: str | Path) -> list[PdfPage]:
     """Parse a PDF once into per-page text and page geometry."""
-    file_path = _validate_pdf_file(path)
+    with _open_pdf(path) as pdf:
+        # A fixed 3pt gap merges ordinary words in small-font PDFs.
+        return [
+            PdfPage(
+                text=page.extract_text(x_tolerance_ratio=0.2) or "",
+                width_pt=float(page.width),
+                height_pt=float(page.height),
+            )
+            for page in pdf.pages
+        ]
 
+
+def read_pdf_page_sizes(path: str | Path) -> list[tuple[float, float]]:
+    """Read the declared page boxes only; no page text is extracted."""
+    with _open_pdf(path) as pdf:
+        return [(float(page.width), float(page.height)) for page in pdf.pages]
+
+
+@contextmanager
+def _open_pdf(path: str | Path) -> Iterator[pdfplumber.PDF]:
+    """Open the document, reporting parser failures as the documented reader error."""
+    file_path = _validate_pdf_file(path)
     try:
         with pdfplumber.open(file_path) as pdf:
-            # A fixed 3pt gap merges ordinary words in small-font PDFs.
-            return [
-                PdfPage(
-                    text=page.extract_text(x_tolerance_ratio=0.2) or "",
-                    width_pt=float(page.width),
-                    height_pt=float(page.height),
-                )
-                for page in pdf.pages
-            ]
+            yield pdf
     except (PdfminerException, ValueError) as exc:
         raise CorruptedPdfError("The PDF file appears to be corrupted or invalid.") from exc
     except OSError as exc:

@@ -221,19 +221,21 @@ def inspect_zip_directory(archive: ZipFile, limits: ZipLimits) -> None:
             f"{limits.max_entries}.",
         )
     total = 0
-    for entry in entries:
+    for position, entry in enumerate(entries, 1):
         if entry.is_dir():
             continue
+        # Refusals report the entry's position and sizes, never its name: the
+        # name is document-controlled and appears in the public error detail.
         if entry.file_size > limits.max_entry_bytes:
             _refuse(
                 "zip_entry_size",
-                f"The package entry '{entry.filename}' declares {entry.file_size} bytes; "
-                f"the application limit is {limits.max_entry_bytes} bytes per entry.",
+                f"Package entry {position} of {len(entries)} declares {entry.file_size} "
+                f"bytes; the application limit is {limits.max_entry_bytes} bytes per entry.",
             )
         if entry.file_size > max(entry.compress_size, 1) * limits.max_ratio:
             _refuse(
                 "zip_expansion_ratio",
-                f"The package entry '{entry.filename}' expands more than "
+                f"Package entry {position} of {len(entries)} expands more than "
                 f"{limits.max_ratio}:1; nothing was decompressed.",
             )
         total += entry.file_size
@@ -285,14 +287,19 @@ def read_zip_member_bounded(archive: ZipFile, name: str, limits: ZipLimits) -> b
     return b"".join(chunks)
 
 
-def check_pdf_pages(page_sizes: Sequence[Sequence[float]]) -> None:
-    """Refuse page count or page geometry above the limits, before any raster allocation."""
-    if len(page_sizes) > MAX_PDF_PAGES:
+def check_pdf_page_count(page_count: int) -> None:
+    """Refuse a document with more pages than the limit, from the page tree alone."""
+    if page_count > MAX_PDF_PAGES:
         _refuse(
             "pdf_page_count",
-            f"This PDF has {len(page_sizes)} pages; the application limit is "
+            f"This PDF has {page_count} pages; the application limit is "
             f"{MAX_PDF_PAGES} pages.",
         )
+
+
+def check_pdf_pages(page_sizes: Sequence[Sequence[float]]) -> None:
+    """Refuse page count or page geometry above the limits, before any raster allocation."""
+    check_pdf_page_count(len(page_sizes))
     for width, height in page_sizes:
         if width <= 0 or height <= 0 or width > MAX_PDF_PAGE_POINTS or height > MAX_PDF_PAGE_POINTS:
             _refuse(
@@ -310,7 +317,12 @@ class RasterPixelBudget:
         self.used_pixels = 0
 
     def reserve(self, width_pt: float, height_pt: float, *, scale: float) -> None:
-        """Count one page before it is rendered, so a refusal allocates no bitmap."""
+        """Count one page before it is rendered: first its geometry, then its pixels.
+
+        A refusal here leaves no bitmap for the page, and the caller removes any
+        page bitmap an earlier reservation of the same document already wrote.
+        """
+        check_pdf_pages([(width_pt, height_pt)])
         pixels = math.ceil(width_pt * scale) * math.ceil(height_pt * scale)
         if self.used_pixels + pixels > self.max_pixels:
             _refuse(
