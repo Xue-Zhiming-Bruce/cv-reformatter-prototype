@@ -242,6 +242,8 @@ def run_adobe_layout(pdf_path: Path) -> tuple[NormalizedLayoutEvidence, dict[str
     headers: dict[str, str] = {}
     # Tri-state: an unanswered submission is ambiguous, never "not submitted".
     submission_state = "not_attempted"
+    # A creation request that yields no usable identity cannot be cleaned or verified.
+    creation_attempted = False
     recorded_input_id: str | None = None
     recorded_result_id: str | None = None
     try:
@@ -257,6 +259,7 @@ def run_adobe_layout(pdf_path: Path) -> tuple[NormalizedLayoutEvidence, dict[str
                 if not access_token:
                     raise AdobeAdapterError("Adobe token response omitted access_token.")
                 headers = {"Authorization": f"Bearer {access_token}", "x-api-key": client_id}
+                creation_attempted = True
                 created = client.post(f"{base_url}/assets", headers={**headers, "Content-Type": "application/json"}, json={"mediaType": "application/pdf"})
                 _raise_http(created, "Adobe asset creation")
                 asset = created.json()
@@ -293,7 +296,7 @@ def run_adobe_layout(pdf_path: Path) -> tuple[NormalizedLayoutEvidence, dict[str
                 _raise_http(downloaded, "Adobe result download")
                 zip_bytes = downloaded.content
             finally:
-                cleanup = _cleanup_remote_assets(client, base_url, headers, known_assets, submission_state)
+                cleanup = _cleanup_remote_assets(client, base_url, headers, known_assets, submission_state, creation_attempted)
         structured = _structured_json(zip_bytes)
         raw = {"status": status, "input_asset_id": recorded_input_id, "result_asset_id": recorded_result_id, "asset_cleanup": cleanup, "structured_data": structured}
         return normalize_adobe_layout(raw), raw, zip_bytes
@@ -309,6 +312,7 @@ def _cleanup_remote_assets(
     headers: dict[str, str],
     known_assets: list[dict[str, str]],
     submission_state: str,
+    creation_attempted: bool,
 ) -> dict[str, Any]:
     """Attempt one bounded DELETE per known asset and classify the outcome.
 
@@ -333,6 +337,11 @@ def _cleanup_remote_assets(
                 record["outcome"] = _delete_outcome(response.status_code)
         assets.append(record)
     limitations: list[str] = []
+    if creation_attempted and not any(record["role"] == "input" for record in assets):
+        limitations.append(
+            "Adobe returned no asset identity for the uploaded target, so no deletion was "
+            "attempted and none can be confirmed."
+        )
     if submission_state == "attempted_unknown":
         limitations.append(
             "Extract submission outcome is unknown: the request was sent but Adobe's answer was "
@@ -346,8 +355,8 @@ def _cleanup_remote_assets(
         )
     if any(record["asset_id"] == REDACTED_ASSET_ID for record in assets):
         limitations.append(
-            "An Adobe asset identity was not a bounded opaque token, so it is recorded redacted; "
-            "its deletion was not attempted and it may still exist remotely."
+            "Adobe returned an asset identity that is not a bounded opaque token, so it is "
+            "recorded redacted; its deletion was not attempted and it may still exist remotely."
         )
     outcomes = {record["outcome"] for record in assets}
     # An unanswered DELETE (transport failure) or 5xx may have been applied and

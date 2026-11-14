@@ -704,7 +704,7 @@ class _AdobeHttp:
         delete_transport_error: bool = False,
         result_bytes: bytes | None = None,
         upload_uri: str | None = "https://upload.example.test/in",
-        asset_id: str = "input-asset",
+        asset_id: str | None = "input-asset",
         result_asset_id: str = "result-asset",
         submit_transport_error: bool = False,
     ) -> None:
@@ -729,7 +729,7 @@ class _AdobeHttp:
         if method == "POST" and url.endswith("/assets"):
             if self.fail_at == "creation":
                 return httpx.Response(500)
-            created = {"assetID": self.asset_id}
+            created = {"assetID": self.asset_id} if self.asset_id is not None else {}
             if self.upload_uri is not None:
                 created["uploadUri"] = self.upload_uri
             return httpx.Response(200, json=created)
@@ -825,8 +825,35 @@ def test_adobe_creation_failure_reports_no_known_asset(monkeypatch, tmp_path: Pa
         run()
     assert str(raised.value) == "Adobe asset creation failed with HTTP 500."
     cleanup = getattr(raised.value, adobe.CLEANUP_EVIDENCE_ATTRIBUTE)
-    # No identity was ever returned, so nothing may be reported as deleted.
-    assert cleanup == {"cleanup_state": "unknown", "assets": [], "limitations": []}
+    # No identity was ever returned, so nothing may be reported as deleted and
+    # the unanswered creation attempt is stated, not left to an empty list.
+    assert cleanup["assets"] == []
+    assert cleanup["cleanup_state"] == "unknown"
+    assert len(cleanup["limitations"]) == 1
+    assert "no asset identity" in cleanup["limitations"][0]
+    assert http.deletes() == []
+
+
+def test_adobe_creation_without_asset_identity_explains_unknown_cleanup(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    http = _AdobeHttp(asset_id=None)
+    adobe, run = _adobe_runner(monkeypatch, tmp_path, http)
+    with pytest.raises(adobe.AdobeAdapterError) as raised:
+        run()
+    assert str(raised.value) == "Adobe asset response omitted assetID or uploadUri."
+    cleanup = getattr(raised.value, adobe.CLEANUP_EVIDENCE_ATTRIBUTE)
+    assert cleanup["assets"] == []
+    assert cleanup["cleanup_state"] == "unknown"
+    assert len(cleanup["limitations"]) == 1
+    limitation = cleanup["limitations"][0]
+    assert "no asset identity" in limitation
+    assert "no deletion was attempted" in limitation
+    assert "none can be confirmed" in limitation
+    summary = adobe.describe_asset_cleanup(cleanup)
+    assert "no asset identity" in summary
+    # Distinct from "returned but unusable", which is the redaction wording.
+    assert "not a bounded opaque token" not in summary
     assert http.deletes() == []
 
 
@@ -953,12 +980,16 @@ def test_adobe_cleanup_redacts_url_shaped_asset_identity(monkeypatch, tmp_path: 
     }]
     assert cleanup["cleanup_state"] != "confirmed"
     assert any("redacted" in limitation for limitation in cleanup["limitations"])
+    assert any("returned an asset identity that is not a bounded opaque token" in limitation
+               for limitation in cleanup["limitations"])
     # The token is neither deleted nor sent back to the provider.
     assert http.deletes() == []
     assert not any("token=synthetic" in url for _method, url in http.requests)
     summary = adobe.describe_asset_cleanup(cleanup)
     assert "token=synthetic" not in summary and "example.test" not in summary
     assert "input asset redacted" in summary
+    # Distinct from "no identity was returned", which is the missing case.
+    assert "no asset identity" not in summary
 
 
 def test_describe_asset_cleanup_redacts_hostile_identity_directly() -> None:
