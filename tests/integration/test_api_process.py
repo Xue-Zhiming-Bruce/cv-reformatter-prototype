@@ -35,6 +35,31 @@ def _build_resume_docx(path: Path) -> None:
     document.save(path)
 
 
+def _build_ordered_resume_docx(path: Path) -> None:
+    """Issue #49: contact in the header/footer, a table between paragraphs, and a
+    nested table this reader cannot read."""
+    document = Document()
+    header = document.sections[0].header
+    header.paragraphs[0].text = "Jane Candidate"
+    header.add_paragraph("jane@example.com")
+    document.sections[0].footer.paragraphs[0].text = "+1 555 0100"
+    document.add_paragraph("Location: Boston")
+    document.add_paragraph("Skills")
+    document.add_paragraph("Python, SQL")
+    document.add_paragraph("Before table")
+    table = document.add_table(rows=2, cols=2)
+    table.rows[0].cells[0].text = "Acme"
+    table.rows[0].cells[1].text = "Engineer"
+    table.rows[1].cells[0].text = "Led the migration"
+    table.rows[1].cells[1].text = "2024"
+    document.add_paragraph("After table")
+    nested_holder = document.add_table(rows=1, cols=1)
+    nested_holder.rows[0].cells[0].add_table(rows=1, cols=1).rows[0].cells[0].text = (
+        "Nested entry"
+    )
+    document.save(path)
+
+
 def _build_text_pdf(path: Path) -> None:
     lines = [
         "Jane Candidate",
@@ -90,7 +115,7 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
     monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
     resume_path = tmp_path / "resume.docx"
-    _build_resume_docx(resume_path)
+    _build_ordered_resume_docx(resume_path)
 
     with resume_path.open("rb") as resume_file:
         response = client.post(
@@ -116,6 +141,22 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
     assert "LibreOffice conversion path is retired" in body["original_preview_error"]
     assert body["artifact_metadata_url"] == f"/api/artifacts/{body['artifact_id']}/metadata"
     assert (artifact_dir / "raw_extracted_text.txt").read_text(encoding="utf-8") == body["original_text"]
+    # Issue #49: header contact leads the preserved text, the footer closes it, and
+    # the table keeps its authored place between the two body paragraphs.
+    lines = body["original_text"].splitlines()
+    assert lines[:2] == ["Jane Candidate", "jane@example.com"]
+    assert lines[-1] == "+1 555 0100"
+    assert lines.count("jane@example.com") == 1
+    assert (
+        lines.index("Before table")
+        < lines.index("Acme | Engineer")
+        < lines.index("After table")
+    )
+    # The nested table's cell text is not readable and must not pass as absent.
+    assert "Nested entry" not in body["original_text"]
+    assert len(body["ingestion_limitations"]) == 1
+    assert "nested table" in body["ingestion_limitations"][0]
+    assert "Review the source document" in body["ingestion_limitations"][0]
     assert (artifact_dir / "candidate_profile.json").exists()
     assert (artifact_dir / "normalized_candidate_document.json").exists()
     assert (artifact_dir / "candidate_field_evidence.json").exists()
@@ -149,12 +190,29 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
         "email",
         "skills",
     }
+    # The authoritative normalized document keeps the reader's authored order and
+    # attributes the header contact line to the header's source position.
+    normalized_items = [
+        item for block in normalized["blocks"] for item in block["items"]
+    ]
+    assert normalized_items
+    source_positions = [lines.index(item) for item in normalized_items]
+    assert source_positions == sorted(source_positions)
+    assert "Acme | Engineer" in normalized_items
+    email_line = lines.index("jane@example.com") + 1
+    email_block = next(
+        block for block in normalized["blocks"] if "jane@example.com" in block["items"]
+    )
+    assert email_block["source_line_start"] <= email_line <= email_block["source_line_end"]
     # The deterministic line-coverage audit is persisted for every process run.
     audit = json.loads(
         (artifact_dir / "segmentation_audit.json").read_text(encoding="utf-8")
     )
     assert audit["status"] == "passed"
     assert audit["source_line_count"] == audit["output_line_count"]
+    # Coverage passes on the text the reader supplied; only the limitation says
+    # that the source held more, so a passing audit cannot stand in for it.
+    assert body["ingestion_limitations"]
 
 
 def test_process_accepts_text_pdf_upload(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -229,7 +287,10 @@ def test_process_reports_mock_extraction_mode(tmp_path: Path, monkeypatch: Monke
     assert response.status_code == 200
     body = response.json()
     assert body["extraction_mode"] == "mock"
-    assert set(body) == PRE_EXISTING_RESPONSE_FIELDS | {"extraction_mode"}
+    assert set(body) == PRE_EXISTING_RESPONSE_FIELDS | {
+        "extraction_mode",
+        "ingestion_limitations",
+    }
     body_text = response.text.lower()
     for provider_token in ("openai", "anthropic", "gpt-", "claude-", "api_key", "sk-"):
         assert provider_token not in body_text
