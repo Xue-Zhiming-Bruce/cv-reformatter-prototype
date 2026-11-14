@@ -23,16 +23,22 @@ Order and header policy (issue #49):
 
 What this reader reads (the whole read set):
 
-- body paragraphs and top-level body tables, and the paragraphs inside table
-  cells;
-- a block-level content control (``w:sdt``) at body level, whose paragraphs and
-  tables are read in the position the control occupies, nested controls
-  included;
+- body paragraphs and top-level body tables;
+- table-cell content through the same block walk as the body, so a cell's block
+  content control or wrapped paragraph is read where it sits; a table nested in
+  a cell stays reported (see below);
+- a block-level content control (``w:sdt``), whose paragraphs and tables are read
+  in the position the control occupies, nested controls included;
 - any other block wrapper whose own children are only paragraphs, tables or
   content controls (``w:customXml`` and friends), read in place recursively;
-- runs held by a transparent inline wrapper (``w:customXml``, ``w:smartTag``,
-  ``w:dir`` and the like): python-docx reads only direct runs and hyperlinks, so
+- runs held by a pass-through inline wrapper (``w:customXml``, ``w:smartTag``,
+  ``w:dir``, ``w:bdo``): python-docx reads only direct runs and hyperlinks, so
   such a wrapper is unwrapped on a copy and its runs read where they sit;
+- one branch of an inline markup-compatibility alternative
+  (``mc:AlternateContent``): the ``mc:Choice`` whose ``Requires`` namespaces are
+  all declared in the document, otherwise the ``mc:Fallback``. The branches are
+  alternative renderings of the same content, so reading both would duplicate
+  text and reading neither would drop it;
 - the same shapes inside a header/footer, read once per displayed variant.
 
 What it reports instead of dropping (the whole limitation set, each naming its
@@ -45,9 +51,14 @@ location):
 - a content control inside a paragraph;
 - a block wrapper holding text in a shape that is not paragraphs, tables or
   controls — reported one per element with its name and child position;
+- an inline wrapper holding text that is not in the pass-through set above;
 - a simple field's cached visible result (``w:fldSimple``);
-- an embedded alternate-format chunk (``w:altChunk``), whose text lives in
-  another part entirely.
+- an embedded alternate-format chunk (``w:altChunk``) or included subdocument
+  (``w:subDoc``), whose text lives in another part entirely;
+- images, drawings and charts, one entry per part with the count found: their
+  text, if any, is pixels or an embedded chart or worksheet part, and OCR is out
+  of scope, so the reader never supplies it. Reported only: not reading pixels is
+  not lost text, so these do not block approval.
 
 Inline content-control runs and ``w:fldSimple`` results are reported, not read:
 reading them would need a second, hand-written paragraph-text parser beside
@@ -58,18 +69,18 @@ same reason and reports ``incomplete`` rather than ``passed`` when the reader
 left source content unread.
 
 Shapes outside both lists above are outside this reader's detection: comment
-bodies live in ``comments.xml``, and chart, worksheet or OLE-object text lives in
-an embedded part, so no ``w:t`` in the main document marks either. Images carry
-no extractable text and OCR is out of scope. An empty ``limitations`` therefore
-means "none of the listed shapes was found", never "the source was read
-completely". Source bytes and stored profiles are untouched: this module only
-reads.
+bodies live in ``comments.xml``, and OLE-object text lives in an embedded part,
+so no ``w:t`` in the main document marks either. A chart is named through the
+drawing that holds it, but the chart's own text lives in a chart part this
+reader never opens. An empty ``limitations`` therefore means "none of the listed
+shapes was found", never "the source was read completely". Source bytes and
+stored profiles are untouched: this module only reads.
 """
 
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Literal, Mapping, Sequence
 
 from docx import Document
 from docx.document import Document as DocumentObject
@@ -77,11 +88,12 @@ from docx.oxml.text.paragraph import CT_P
 from docx.oxml.xmlchemy import BaseOxmlElement
 from docx.parts.hdrftr import FooterPart, HeaderPart
 from docx.section import Section as SectionObject
-from docx.table import Table, _Cell
+from docx.table import Table
 
 from app.ingestion.file_validator import validate_docx_file
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
 _PARAGRAPH = f"{_W}p"
 _TABLE = f"{_W}tbl"
 _RUN = f"{_W}r"
@@ -93,9 +105,16 @@ _DELETED = f"{_W}del"
 _MOVED_FROM = f"{_W}moveFrom"
 _MOVED_TO = f"{_W}moveTo"
 _ALT_CHUNK = f"{_W}altChunk"
+_SUB_DOCUMENT = f"{_W}subDoc"
+_DRAWING = f"{_W}drawing"
+_PICTURE = f"{_W}pict"
 _CONTENT_CONTROL = f"{_W}sdt"
 _CONTROL_CONTENT = f"{_W}sdtContent"
 _FIELD = f"{_W}fldSimple"
+_ALTERNATE_CONTENT = f"{_MC}AlternateContent"
+_CHOICE = f"{_MC}Choice"
+_FALLBACK = f"{_MC}Fallback"
+_REQUIRES = f"{_MC}Requires"
 
 #: Block children one container walk reads in place.
 _READ_CHILD_TAGS = frozenset({_PARAGRAPH, _TABLE, _CONTENT_CONTROL})
@@ -103,8 +122,10 @@ _READ_CHILD_TAGS = frozenset({_PARAGRAPH, _TABLE, _CONTENT_CONTROL})
 _TRACKED_WRAPPERS = frozenset({_INSERTED, _DELETED, _MOVED_FROM, _MOVED_TO})
 #: Inline shapes whose text stays unread, so an inline wrapper holding one is skipped.
 _REPORTED_INLINE_TAGS = _TRACKED_WRAPPERS | {_CONTENT_CONTROL, _FIELD}
-#: Inline elements whose text python-docx already reads, still searched for wrappers.
-_READ_INLINE_TAGS = frozenset({_RUN, _HYPERLINK})
+#: Inline wrappers that only structure runs; nothing else may be unwrapped blindly.
+_PASS_THROUGH_INLINE = frozenset(
+    {f"{_W}customXml", f"{_W}smartTag", f"{_W}dir", f"{_W}bdo"}
+)
 
 LimitationKind = Literal[
     "nested_table",
@@ -114,6 +135,8 @@ LimitationKind = Literal[
     "field",
     "alt_chunk",
     "unknown_block",
+    "unknown_inline",
+    "visual_element",
 ]
 
 _UNSUPPORTED_CONTENT_REVIEW: dict[LimitationKind, str] = {
@@ -124,9 +147,32 @@ _UNSUPPORTED_CONTENT_REVIEW: dict[LimitationKind, str] = {
         "a content control inside a paragraph or table cell is not read"
     ),
     "field": "a field's cached visible result is not read",
-    "alt_chunk": "an embedded alternate-format chunk (w:altChunk) is not read",
+    "alt_chunk": (
+        "an embedded alternate-format chunk (w:altChunk or w:subDoc) is not read"
+    ),
     "unknown_block": "a block element this reader does not recognize is not read",
+    "unknown_inline": (
+        "an inline element this reader does not recognize is not read"
+    ),
+    "visual_element": "image, drawing and chart text is not read; OCR is out of scope",
 }
+
+#: Kinds where visible text is known to be lost, so approval and generation fail
+#: closed. ``visual_element`` is reported only: its content is pixels or an
+#: embedded chart part, the reader never claims to read it, and OCR is out of
+#: scope, so refusing the document would reject ordinary resumes for a headshot.
+_BLOCKING_KINDS: frozenset[LimitationKind] = frozenset(
+    {
+        "nested_table",
+        "text_box",
+        "tracked_change",
+        "content_control",
+        "field",
+        "alt_chunk",
+        "unknown_block",
+        "unknown_inline",
+    }
+)
 
 HeaderVariant = Literal["default", "first_page", "even_page"]
 
@@ -185,6 +231,20 @@ class ExtractedContentLimitation:
             f"{_UNSUPPORTED_CONTENT_REVIEW[self.kind]}. Review the source document "
             "before approving this profile."
         )
+
+    @property
+    def blocks_source_review(self) -> bool:
+        """True when this gap lost text, so approval must not proceed on it."""
+        return self.kind in _BLOCKING_KINDS
+
+
+def unread_content_messages(
+    limitations: Sequence[ExtractedContentLimitation],
+) -> tuple[list[str], list[str]]:
+    """(every reported limitation, those where visible text was lost)."""
+    return [limitation.message for limitation in limitations], [
+        limitation.message for limitation in limitations if limitation.blocks_source_review
+    ]
 
 
 @dataclass(frozen=True)
@@ -254,7 +314,7 @@ def read_docx(path: str | Path) -> ExtractedDocxContent:
         source_path=file_path,
         blocks=blocks,
         header_footer=header_footer,
-        limitations=limitations,
+        limitations=_merge_limitations(limitations),
     )
 
 
@@ -291,7 +351,11 @@ def _displayed_part(
 
 
 def _read_blocks(
-    container: BaseOxmlElement, document: DocumentObject, location: str
+    container: BaseOxmlElement,
+    document: DocumentObject,
+    location: str,
+    *,
+    read_tables: bool = True,
 ) -> tuple[list[ExtractedParagraph | ExtractedTable], list[ExtractedContentLimitation]]:
     """Blocks of one container in authored order, plus what it cannot read.
 
@@ -299,6 +363,9 @@ def _read_blocks(
     or a wrapper whose own children are only those shapes (``w:customXml`` and
     friends). A text-bearing child outside that set is named in a limitation
     instead of being skipped; a child carrying no text has nothing to lose.
+
+    ``read_tables`` is off for a table cell: a nested table is reported rather
+    than read, because flattening one into its parent cell loses its columns.
     """
     blocks: list[ExtractedParagraph | ExtractedTable] = []
     limitations: list[ExtractedContentLimitation] = []
@@ -308,28 +375,31 @@ def _read_blocks(
             # ``Paragraph.text`` reads runs, hyperlinks and the inline wrappers
             # ``_paragraph_text`` unwraps, but nothing else it is given.
             unread_controls += len(child.findall(f".//{_CONTENT_CONTROL}"))
-            text = _paragraph_text(child).strip()
+            limitations.extend(_inline_limitations(child, f"{location} child {index}"))
+            text = _paragraph_text(child, document).strip()
             if text:
                 blocks.append(ExtractedParagraph(text=text))
-        elif child.tag == _TABLE:
-            # Cells are read as plain text; nothing inside them is descended into.
-            unread_controls += len(child.findall(f".//{_CONTENT_CONTROL}"))
-            table = _read_table(Table(child, document))
+        elif child.tag == _TABLE and read_tables:
+            table, table_limitations = _read_table(Table(child, document), document, location)
+            limitations.extend(table_limitations)
             if table.rows:
                 blocks.append(table)
+        elif child.tag == _TABLE:
+            # A nested table stays unread, so nothing inside it is reached either.
+            unread_controls += len(child.findall(f".//{_CONTENT_CONTROL}"))
         elif child.tag in _TRACKED_WRAPPERS:
             continue
         elif child.tag == _CONTENT_CONTROL:
             content = child.find(_CONTROL_CONTENT)
             if content is not None:
                 sub_blocks, sub_limitations = _read_blocks(
-                    content, document, f"{location} child {index}"
+                    content, document, f"{location} child {index}", read_tables=read_tables
                 )
                 blocks.extend(sub_blocks)
                 limitations.extend(sub_limitations)
         elif _is_block_wrapper(child):
             sub_blocks, sub_limitations = _read_blocks(
-                child, document, f"{location} child {index}"
+                child, document, f"{location} child {index}", read_tables=read_tables
             )
             blocks.extend(sub_blocks)
             limitations.extend(sub_limitations)
@@ -352,20 +422,22 @@ def _read_blocks(
     return blocks, limitations
 
 
-def _paragraph_text(paragraph: CT_P) -> str:
-    """Text of one paragraph, including runs a transparent inline wrapper holds.
+def _paragraph_text(paragraph: CT_P, document: DocumentObject) -> str:
+    """Text of one paragraph, including runs a pass-through wrapper holds.
 
     ``CT_P.text`` joins only direct ``w:r``/``w:hyperlink`` children, so a
-    ``w:customXml``, ``w:smartTag`` or similar structural wrapper around runs
-    would otherwise vanish. A paragraph without one takes python-docx's own path
-    unchanged; a wrapped one is unwrapped on a copy, so its runs read in the
-    position they occupy. Content controls, fields and revisions are left alone:
-    ``_find_limitations`` reports them instead.
+    ``w:customXml`` or ``w:smartTag`` around runs would otherwise vanish. A
+    paragraph without one takes python-docx's own path unchanged; a wrapped one
+    is unwrapped on a copy, so its runs read in the position they occupy.
+    Content controls, fields and revisions are left alone: ``_find_limitations``
+    reports them instead.
     """
-    if not _inline_wrappers(paragraph):
+    unwrap, _ = _inline_shapes(paragraph)
+    if not unwrap and paragraph.find(f".//{_ALTERNATE_CONTENT}") is None:
         return paragraph.text
     clone = deepcopy(paragraph)
-    while wrappers := _inline_wrappers(clone):
+    _keep_one_alternative(clone, document.element.nsmap)
+    while wrappers := _inline_shapes(clone)[0]:
         for wrapper in wrappers:
             for child in list(wrapper):
                 wrapper.addprevious(child)
@@ -373,19 +445,96 @@ def _paragraph_text(paragraph: CT_P) -> str:
     return clone.text
 
 
-def _inline_wrappers(element: BaseOxmlElement) -> list[BaseOxmlElement]:
-    """Transparent inline wrappers holding text python-docx would skip."""
-    wrappers: list[BaseOxmlElement] = []
+def _inline_shapes(
+    element: BaseOxmlElement,
+) -> tuple[list[BaseOxmlElement], list[BaseOxmlElement]]:
+    """(pass-through wrappers to unwrap, unrecognized wrappers holding text).
+
+    Both lists come from one walk, so what is read and what is named stay
+    complementary: a wrapper is either in the pass-through set, or reported by
+    ``_inline_limitations``, never silently skipped.
+    """
+    unwrap: list[BaseOxmlElement] = []
+    unread: list[BaseOxmlElement] = []
     for child in element.iterchildren():
-        if child.tag in _REPORTED_INLINE_TAGS:
+        if (
+            child.tag in _REPORTED_INLINE_TAGS
+            or child.tag == _RUN
+            or child.tag == _ALTERNATE_CONTENT
+        ):
             continue
-        if child.tag in _READ_INLINE_TAGS:
-            wrappers.extend(_inline_wrappers(child))
-        elif child.find(f".//{_TEXT}") is not None:
-            wrappers.append(child)
+        if child.tag == _HYPERLINK:
+            inner_unwrap, inner_unread = _inline_shapes(child)
+            unwrap.extend(inner_unwrap)
+            unread.extend(inner_unread)
+        elif child.find(f".//{_TEXT}") is None:
+            continue
+        elif child.tag in _PASS_THROUGH_INLINE:
+            unwrap.append(child)
         else:
-            wrappers.extend(_inline_wrappers(child))
-    return wrappers
+            unread.append(child)
+    return unwrap, unread
+
+
+def _inline_limitations(
+    paragraph: CT_P, location: str
+) -> list[ExtractedContentLimitation]:
+    """One limitation per inline wrapper whose text stays unread."""
+    return [
+        ExtractedContentLimitation(
+            kind="unknown_inline",
+            location=location,
+            element=_local_name(wrapper),
+            count=1,
+        )
+        for wrapper in _inline_shapes(paragraph)[1]
+    ]
+
+
+def _keep_one_alternative(
+    container: BaseOxmlElement, namespaces: Mapping[str, str]
+) -> None:
+    """Replace each markup-compatibility alternative with the one branch read.
+
+    ``mc:Choice`` and ``mc:Fallback`` are alternative renderings of the same
+    content, so both branches carry the text: unwrapping every text-bearing child
+    would duplicate it. The ``mc:Choice`` is taken when every namespace its
+    ``Requires`` names is declared in the document; otherwise the
+    ``mc:Fallback``.
+    """
+    while alternatives := [
+        item for item in container.iter(_ALTERNATE_CONTENT) if item.getparent() is not None
+    ]:
+        for alternative in alternatives:
+            if alternative.getparent() is None:
+                continue
+            branch = next(
+                (
+                    choice
+                    for choice in alternative.findall(_CHOICE)
+                    if _requires_declared(choice, alternative, namespaces)
+                ),
+                alternative.find(_FALLBACK),
+            )
+            if branch is not None:
+                for child in list(branch):
+                    alternative.addprevious(child)
+            alternative.getparent().remove(alternative)
+
+
+def _requires_declared(
+    choice: BaseOxmlElement,
+    element: BaseOxmlElement,
+    namespaces: Mapping[str, str],
+) -> bool:
+    """True when every namespace prefix the choice requires is declared."""
+    # Word writes ``mc:Requires``; hand-built markup often writes it unqualified.
+    requires = choice.get(_REQUIRES) or choice.get("Requires")
+    if not requires:
+        return True
+    return all(
+        prefix in namespaces or prefix in element.nsmap for prefix in requires.split()
+    )
 
 
 def _is_block_wrapper(element: BaseOxmlElement) -> bool:
@@ -401,19 +550,29 @@ def _local_name(element: BaseOxmlElement) -> str:
     return element.tag.rsplit("}", 1)[-1] if isinstance(element.tag, str) else "element"
 
 
-def _read_table(table: Table) -> ExtractedTable:
+def _read_table(
+    table: Table, document: DocumentObject, location: str
+) -> tuple[ExtractedTable, list[ExtractedContentLimitation]]:
+    """Rows of one table, reading each cell through the block walk.
+
+    A cell holds paragraphs and nested tables, so the same walk reads it: a
+    cell-level content control or wrapped paragraph is read in place instead of a
+    paragraph-only branch that would see neither. Cell content keeps the
+    container's location, so repeated gaps stay one entry per container.
+    """
     rows: list[list[str]] = []
+    limitations: list[ExtractedContentLimitation] = []
     for row in table.rows:
-        cells = [_cell_text(cell) for cell in row.cells]
+        cells: list[str] = []
+        for cell in row.cells:
+            cell_blocks, cell_limitations = _read_blocks(
+                cell._tc, document, location, read_tables=False
+            )
+            limitations.extend(cell_limitations)
+            cells.append("\n".join(_block_text(block) for block in cell_blocks).strip())
         if any(cells):
             rows.append(cells)
-    return ExtractedTable(rows=rows)
-
-
-def _cell_text(cell: _Cell) -> str:
-    return "\n".join(
-        _paragraph_text(paragraph._p) for paragraph in cell.paragraphs
-    ).strip()
+    return ExtractedTable(rows=rows), limitations
 
 
 def _table_lines(table: ExtractedTable) -> list[str]:
@@ -430,13 +589,15 @@ def _find_limitations(
     element: BaseOxmlElement, location: str
 ) -> list[ExtractedContentLimitation]:
     counts: dict[LimitationKind, int] = {
-        "nested_table": sum(1 for table in element.iter(_TABLE) if _has_table_ancestor(table)),
+        "nested_table": sum(1 for table in element.iter(_TABLE) if _has_ancestor(table, _TABLE)),
         "text_box": len(element.findall(f".//{_TEXT_BOX}")),
         "tracked_change": sum(
             len(element.findall(f".//{tag}")) for tag in _TRACKED_WRAPPERS
         ),
         "field": len(element.findall(f".//{_FIELD}")),
-        "alt_chunk": len(element.findall(f".//{_ALT_CHUNK}")),
+        "alt_chunk": len(element.findall(f".//{_ALT_CHUNK}"))
+        + len(element.findall(f".//{_SUB_DOCUMENT}")),
+        "visual_element": _visual_element_count(element),
     }
     return [
         ExtractedContentLimitation(kind=kind, location=location, count=count)
@@ -445,10 +606,41 @@ def _find_limitations(
     ]
 
 
-def _has_table_ancestor(element: BaseOxmlElement) -> bool:
+def _visual_element_count(element: BaseOxmlElement) -> int:
+    """Images, drawings and charts in a part, counted once per visible element."""
+    drawings = sum(
+        1 for item in element.iter(_DRAWING) if not _has_ancestor(item, _DRAWING)
+    )
+    legacy_pictures = sum(
+        1
+        for item in element.iter(_PICTURE)
+        if not _has_ancestor(item, _PICTURE)
+        and item.find(f".//{_TEXT_BOX}") is None
+    )
+    return drawings + legacy_pictures
+
+
+def _merge_limitations(
+    limitations: Sequence[ExtractedContentLimitation],
+) -> list[ExtractedContentLimitation]:
+    """One entry per kind, location and element, so a repeated gap stays one line."""
+    merged: dict[tuple[str, str, str | None], ExtractedContentLimitation] = {}
+    for limitation in limitations:
+        key = (limitation.kind, limitation.location, limitation.element)
+        previous = merged.get(key)
+        merged[key] = ExtractedContentLimitation(
+            kind=limitation.kind,
+            location=limitation.location,
+            element=limitation.element,
+            count=limitation.count + (previous.count if previous else 0),
+        )
+    return list(merged.values())
+
+
+def _has_ancestor(element: BaseOxmlElement, tag: str) -> bool:
     parent = element.getparent()
     while parent is not None:
-        if parent.tag == _TABLE:
+        if parent.tag == tag:
             return True
         parent = parent.getparent()
     return False

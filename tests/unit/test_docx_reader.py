@@ -12,7 +12,11 @@ from docx.oxml.ns import nsdecls
 from docx.shared import Inches
 
 from app.extraction.coverage_audit import audit_segmentation_lines
-from app.ingestion.docx_reader import ExtractedTable, read_docx
+from app.ingestion.docx_reader import (
+    ExtractedTable,
+    read_docx,
+    unread_content_messages,
+)
 from app.ingestion.file_validator import CorruptedFileError, UnsupportedFileTypeError, validate_docx_file
 
 
@@ -213,7 +217,7 @@ def test_read_docx_reports_inline_content_controls(tmp_path: Path) -> None:
     audit = audit_segmentation_lines(
         content.plain_text,
         content.plain_text.splitlines(),
-        [limitation.message for limitation in content.limitations],
+        *unread_content_messages(content.limitations),
     )
     assert audit.status == "incomplete"
 
@@ -241,7 +245,7 @@ def test_read_docx_reports_a_field_result(tmp_path: Path) -> None:
     audit = audit_segmentation_lines(
         content.plain_text,
         content.plain_text.splitlines(),
-        [limitation.message for limitation in content.limitations],
+        *unread_content_messages(content.limitations),
     )
     assert audit.status == "incomplete"
 
@@ -338,6 +342,84 @@ def test_read_docx_reads_a_wrapper_of_paragraphs_and_tables(tmp_path: Path) -> N
         "After wrapper",
     ]
     assert content.limitations == []
+
+
+def test_read_docx_reads_a_wrapped_paragraph_inside_a_table_cell(tmp_path: Path) -> None:
+    """A cell's block content is read through the body walk, not its direct paragraphs."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    table = document.add_table(rows=1, cols=2)
+    table.rows[0].cells[0]._tc.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="field">'
+            "<w:p><w:r><w:t>CELL_WRAPPED</w:t></w:r></w:p></w:customXml>"
+        )
+    )
+    table.rows[0].cells[1]._tc.append(
+        _content_control("<w:p><w:r><w:t>CELL_CONTROL</w:t></w:r></w:p>")
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Jane Candidate",
+        "CELL_WRAPPED | CELL_CONTROL",
+    ]
+    assert content.limitations == []
+
+
+def test_read_docx_reads_one_alternate_content_branch(tmp_path: Path) -> None:
+    """An mc:AlternateContent holds one content twice; only one branch is read."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    # ``wps`` is declared on the document root python-docx writes; ``wpx`` is not.
+    for requires in ("wps", "wpx"):
+        paragraph = document.add_paragraph("Alternative: ")
+        paragraph._p.append(
+            parse_xml(
+                "<mc:AlternateContent "
+                'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+                f'{nsdecls("w")}>'
+                f'<mc:Choice Requires="{requires}">'
+                "<w:r><w:t>CHOICE</w:t></w:r></mc:Choice>"
+                "<mc:Fallback><w:r><w:t>FALLBACK</w:t></w:r></mc:Fallback>"
+                "</mc:AlternateContent>"
+            )
+        )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Alternative: CHOICE",
+        "Alternative: FALLBACK",
+    ]
+    assert content.limitations == []
+
+
+def test_read_docx_reports_an_unrecognized_inline_wrapper(tmp_path: Path) -> None:
+    """An inline wrapper outside the pass-through set is named, never unwrapped."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Jane Candidate")
+    paragraph._p.append(
+        parse_xml(f'<w:foo {nsdecls("w")}><w:r><w:t>Unknown run</w:t></w:r></w:foo>')
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate"]
+    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
+        ("unknown_inline", "body child 1", 1)
+    ]
+    limitation = content.limitations[0]
+    assert limitation.element == "foo"
+    assert "an inline element this reader does not recognize is not read" in (
+        limitation.message
+    )
 
 
 def test_read_docx_reports_an_unrecognized_block_wrapper(tmp_path: Path) -> None:
@@ -494,6 +576,7 @@ def test_read_docx_with_embedded_image_preserves_text_extraction(tmp_path: Path)
     document = Document()
     document.add_paragraph("Jane Candidate")
     document.add_picture(io.BytesIO(_one_pixel_png()), width=Inches(0.25))
+    document.add_picture(io.BytesIO(_one_pixel_png()), width=Inches(0.25))
     document.add_paragraph("Skills: Python, SQL")
     document.save(path)
 
@@ -501,6 +584,13 @@ def test_read_docx_with_embedded_image_preserves_text_extraction(tmp_path: Path)
 
     assert content.paragraphs == ["Jane Candidate", "Skills: Python, SQL"]
     assert content.plain_text == "Jane Candidate\nSkills: Python, SQL"
+    # One entry per part with the count, not one per image.
+    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
+        ("visual_element", "body", 2)
+    ]
+    assert "OCR is out of scope" in content.limitations[0].message
+    # Pixels are not lost text, so this gap is reported but never blocks review.
+    assert content.limitations[0].blocks_source_review is False
 
 
 def test_validate_docx_rejects_unsupported_extension(tmp_path: Path) -> None:

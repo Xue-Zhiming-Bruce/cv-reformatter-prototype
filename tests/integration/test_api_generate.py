@@ -1897,3 +1897,52 @@ def test_refused_target_upload_keeps_the_prior_target_output(
     assert refused.json()["detail"]["error_code"] == "pdf_page_geometry"
     assert stored.read_bytes() == stored_before
     assert (tmp_path / artifact_id / "target_format.json").read_bytes() == metadata_before
+
+def test_unread_source_text_blocks_generation(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #49: an audit over a partly read source names the text, not a pass."""
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    profile = CandidateProfile(full_name="Jane Candidate", skills=["Python"])
+    artifact_id = "artifact_generate_unread"
+    artifact_dir = tmp_path / artifact_id
+    artifact_dir.mkdir()
+    version_id = _approve_profile_via_api(artifact_dir, profile, artifact_id)
+    unread = ["body: 1 text box found; text-box content is not read."]
+    audit_path = artifact_dir / "segmentation_audit.json"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "status": "incomplete",
+                "unread_source_content": unread,
+                "unread_text_source_content": unread,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    request = {
+        "artifact_id": artifact_id,
+        "approved_profile_version_id": version_id,
+        "template_name": "apex_standard",
+    }
+    response = client.post("/api/generate", json=request)
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "source_text_unread"
+    assert detail["unread_text_source_content"] == unread
+    assert not (artifact_dir / "candidate_profile.html").exists()
+
+    # An audit written before the split carries no text subset, so the whole
+    # reported list is treated as lost text instead of silently passing.
+    audit_path.write_text(
+        json.dumps({"status": "incomplete", "unread_source_content": unread}),
+        encoding="utf-8",
+    )
+
+    legacy = client.post("/api/generate", json=request)
+
+    assert legacy.status_code == 409, legacy.text
+    assert legacy.json()["detail"]["error_code"] == "source_text_unread"
+    assert legacy.json()["detail"]["unread_text_source_content"] == unread

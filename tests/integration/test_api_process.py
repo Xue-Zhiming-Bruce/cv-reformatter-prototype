@@ -1,11 +1,13 @@
 import asyncio
-import httpx
+import base64
+import io
 import json
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import httpx
 import pytest
 from docx import Document
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
@@ -37,6 +39,8 @@ from tests.helpers.event_loop_probe import (
     wait_until,
 )
 
+from tests.helpers.layout_proof import make_proof_pdf_exporter
+
 client = TestClient(app)
 
 
@@ -57,9 +61,10 @@ def _build_resume_docx(path: Path) -> None:
 def _build_ordered_resume_docx(path: Path) -> None:
     """Issue #49: contact in the header/footer, a table between paragraphs, a header
     table between header paragraphs, a first-page header defined before the section
-    that enables it, a wrapped paragraph and an inline wrapper around runs, plus five
-    visible shapes this reader cannot read (nested table, run content control, field,
-    tracked move, embedded chunk)."""
+    that enables it, a wrapped paragraph and an inline wrapper around runs, a wrapped
+    paragraph and a content control inside table cells, one branch of an inline
+    alternative, and six visible shapes this reader cannot read (nested table, run
+    content control, field, tracked move, embedded chunk, images)."""
     document = Document()
     section = document.sections[0]
     header = section.header
@@ -109,10 +114,29 @@ def _build_ordered_resume_docx(path: Path) -> None:
             "<w:r><w:t>Field result</w:t></w:r></w:fldSimple>"
         )
     )
+    alternative = document.add_paragraph("Alternative: ")
+    alternative._p.append(
+        parse_xml(
+            "<mc:AlternateContent "
+            'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+            f'{nsdecls("w")}>'
+            '<mc:Choice Requires="wps"><w:r><w:t>Choice branch</w:t></w:r></mc:Choice>'
+            "<mc:Fallback><w:r><w:t>Fallback branch</w:t></w:r></mc:Fallback>"
+            "</mc:AlternateContent>"
+        )
+    )
     nested_holder = document.add_table(rows=1, cols=1)
     nested_holder.rows[0].cells[0].add_table(rows=1, cols=1).rows[0].cells[0].text = (
         "Nested entry"
     )
+    # A cell-level wrapper is read through the same block walk as the body.
+    nested_holder.rows[0].cells[0]._tc.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="field">'
+            "<w:p><w:r><w:t>Cell wrapped</w:t></w:r></w:p></w:customXml>"
+        )
+    )
+    document.add_picture(io.BytesIO(_one_pixel_png()), width=Inches(0.25))
     for revision_id, tag in enumerate(("moveFrom", "moveTo"), start=1):
         body.insert(
             len(body) - 1,
@@ -139,6 +163,12 @@ def _build_ordered_resume_docx(path: Path) -> None:
     document.add_section()
     document.sections[1].different_first_page_header_footer = True
     document.save(path)
+
+
+def _one_pixel_png() -> bytes:
+    return base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X3mNvwAAAABJRU5ErkJggg=="
+    )
 
 
 def _build_text_pdf(path: Path) -> None:
@@ -249,6 +279,10 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
     # from the limitations.
     assert lines.index("After table") < lines.index("Wrapped entry")
     assert "Citizenship: Inline wrapped" in lines
+    # A cell-level wrapper is read by the same walk as the body, and an inline
+    # markup-compatibility alternative is read as one branch, never both.
+    assert "Cell wrapped" in lines
+    assert "Alternative: Choice branch" in lines
     # The nested table's cell, the content-control run, the field result, the moved
     # block and the embedded chunk are not readable, so each must be named instead of
     # passing as absent.
@@ -258,11 +292,19 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
         "Field result",
         "Moved line",
         "Chunk text",
+        "Fallback branch",
     ):
         assert missing not in body["original_text"]
-    assert len(body["ingestion_limitations"]) == 5
+    assert len(body["ingestion_limitations"]) == 6
     limitation_text = " ".join(body["ingestion_limitations"])
-    for shape in ("nested table", "content control", "field", "moves", "alternate-format chunk"):
+    for shape in (
+        "nested table",
+        "content control",
+        "field",
+        "moves",
+        "alternate-format chunk",
+        "OCR is out of scope",
+    ):
         assert shape in limitation_text
     assert "Review the source document" in limitation_text
     assert (artifact_dir / "candidate_profile.json").exists()
@@ -318,10 +360,17 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
     )
     assert audit["source_line_count"] == audit["output_line_count"]
     # Coverage of the supplied text cannot pass while the reader reported source
-    # content it never supplied, so the audit reports the gap itself.
+    # text it never supplied, so the audit reports the gap itself.
     assert audit["status"] == "incomplete"
     assert audit["unread_source_content"] == body["ingestion_limitations"]
     assert "could not read" in audit["detail"]
+    # The drawing is reported but is not lost text, so it stays out of the list
+    # that blocks approval.
+    drawing = next(
+        item for item in body["ingestion_limitations"] if "OCR is out of scope" in item
+    )
+    assert drawing in audit["unread_source_content"]
+    assert drawing not in audit["unread_text_source_content"]
 
 
 def test_process_accepts_text_pdf_upload(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -672,6 +721,174 @@ def test_llm_first_missing_line_persists_failed_audit_and_blocks_approval(
     assert [item["line"] for item in detail["missing_lines"]] == ["SQL"]
 
 
+def test_unread_source_content_blocks_approval_and_names_the_gap(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A source the reader could not fully read cannot be approved or generated."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_ordered_resume_docx(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ingestion_limitations"]
+    artifact_id = body["artifact_id"]
+
+    # Approval names the unread content instead of approving a profile whose
+    # source was only partly read.
+    approval = client.post(
+        f"/api/artifacts/{artifact_id}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 409
+    detail = approval.json()["detail"]
+    assert detail["error_code"] == "source_text_unread"
+    unread_text = [
+        item
+        for item in body["ingestion_limitations"]
+        if "OCR is out of scope" not in item
+    ]
+    assert detail["unread_text_source_content"] == unread_text
+    assert "No acknowledgment path" in detail["message"]
+
+    # Generation resolves the saved revision and hits the same gate.
+    generated = client.post(
+        "/api/generate",
+        json={"artifact_id": artifact_id, "profile_revision_id": body["profile_revision_id"]},
+    )
+    assert generated.status_code == 409, generated.text
+    assert generated.json()["detail"]["error_code"] == "source_text_unread"
+    assert generated.json()["detail"]["unread_text_source_content"] == unread_text
+
+
+@pytest.mark.usefixtures("a_generation_without_model_loop")
+def test_image_source_content_is_reported_without_blocking_generation(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A drawing carries pixels, not text, so it is reported and never refused."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    # Generation validates the exported PDF's text, so export real page text.
+    exporter = make_proof_pdf_exporter()
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", exporter)
+    monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", exporter)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    document.add_picture(io.BytesIO(_one_pixel_png()), width=Inches(0.25))
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["ingestion_limitations"]) == 1
+    assert "OCR is out of scope" in body["ingestion_limitations"][0]
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    # Reported for review, but it is not lost text, so nothing here is missing.
+    assert audit["unread_source_content"] == body["ingestion_limitations"]
+    assert audit["unread_text_source_content"] == []
+    assert audit["status"] == "passed"
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 200, approval.text
+
+    generated = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": body["artifact_id"],
+            "approved_profile_version_id": approval.json()["profile_version_id"],
+            "template_name": "apex_standard",
+        },
+    )
+    assert generated.status_code == 200, generated.text
+
+
+def test_unread_field_text_blocks_approval_and_names_the_text(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A field result is visible text the reader lost, so approval still fails closed."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    reference = document.add_paragraph("Ref: ")
+    reference._p.append(
+        parse_xml(
+            f'<w:fldSimple {nsdecls("w")} w:instr=" REF candidate_name ">'
+            "<w:r><w:t>Field result</w:t></w:r></w:fldSimple>"
+        )
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "incomplete"
+    assert audit["unread_source_content"] == body["ingestion_limitations"]
+    assert audit["unread_text_source_content"] == body["ingestion_limitations"]
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+
+    assert approval.status_code == 409, approval.text
+    detail = approval.json()["detail"]
+    assert detail["error_code"] == "source_text_unread"
+    assert detail["unread_text_source_content"] == body["ingestion_limitations"]
+
+
 def test_process_rejects_pdf_without_extractable_text(tmp_path: Path) -> None:
     pdf_path = tmp_path / "blank.pdf"
     writer = PdfWriter()
@@ -816,10 +1033,10 @@ def test_process_keeps_event_loop_responsive_while_parsing_and_extracting(
     parse_entered, parse_release = threading.Event(), threading.Event()
     extract_entered, extract_release = threading.Event(), threading.Event()
 
-    def held_parse(_path: Path) -> tuple[str, list[str]]:
+    def held_parse(_path: Path) -> tuple[str, list[str], list[str]]:
         parse_entered.set()
         assert parse_release.wait(HOLD_TIMEOUT_SECONDS), "parse was never released"
-        return "Jane Candidate\njane@example.com", []
+        return "Jane Candidate\njane@example.com", [], []
 
     def held_extraction(_text: str, _client: object) -> None:
         extract_entered.set()
@@ -913,12 +1130,12 @@ def _held_parser(
 ):
     """Block inside the parser, then report whether its upload still existed."""
 
-    def parse(path: Path) -> tuple[str, list[str]]:
+    def parse(path: Path) -> tuple[str, list[str], list[str]]:
         seen["path"] = path
         entered.set()
         assert release.wait(HOLD_TIMEOUT_SECONDS), "the parser was never released"
         seen["input_present"] = path.exists()
-        return "Jane Candidate\njane@example.com", []
+        return "Jane Candidate\njane@example.com", [], []
 
     return parse
 

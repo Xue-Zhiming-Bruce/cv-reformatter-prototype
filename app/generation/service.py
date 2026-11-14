@@ -278,6 +278,25 @@ def validate_profile_source_review(
                     ],
                 },
             )
+        if segmentation_audit.unread_text:
+            # No acknowledgment path exists yet for source text the reader never
+            # supplied, so a lost-text gap fails closed instead of passing. Content
+            # that carries no text (an image) is reported only and never reaches
+            # this list.
+            raise GenerationError(
+                409,
+                {
+                    "error_code": "source_text_unread",
+                    "message": (
+                        "The ingestion reader reported visible source text it could not "
+                        "read, so this profile cannot be approved or generated. No "
+                        "acknowledgment path for unread source text exists yet: the "
+                        "content must be removed from the source document, or an "
+                        "acknowledgment mechanism must be approved first."
+                    ),
+                    "unread_text_source_content": segmentation_audit.unread_text,
+                },
+            )
     normalized_document = load_normalized_candidate_document(artifact_dir)
     missing_blocks = unaccounted_source_blocks(profile, normalized_document)
     unreviewed_blocks = unreviewed_source_blocks(profile, normalized_document)

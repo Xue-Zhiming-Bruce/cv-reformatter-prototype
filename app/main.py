@@ -669,9 +669,11 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
 
     contents = await read_upload_bounded(file)
     try:
-        extracted_text, ingestion_limitations = await _run_off_loop(
-            _parse_candidate_upload, contents, suffix
-        )
+        (
+            extracted_text,
+            ingestion_limitations,
+            unread_text_limitations,
+        ) = await _run_off_loop(_parse_candidate_upload, contents, suffix)
     except (UnsupportedFileTypeError, CorruptedFileError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except UnsupportedPdfTypeError as exc:
@@ -701,6 +703,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
             extracted_text,
             segmentation_output_line_evidence(segmentation_output),
             unread_source_content=ingestion_limitations,
+            unread_text_source_content=unread_text_limitations,
         )
         profile, normalized_document = materialize_llm_segmentation(
             extracted_text, segmentation_output
@@ -1792,12 +1795,14 @@ def _build_ledger(profile: CandidateProfile) -> LedgerSummary:
     return LedgerSummary(extracted=extracted_count, placed=extracted_count, needs_review=needs_review)
 
 
-def _read_candidate_resume_text(path: Path) -> tuple[str, list[str]]:
-    """Extraction text plus the source content the reader could not read."""
+def _read_candidate_resume_text(path: Path) -> tuple[str, list[str], list[str]]:
+    """Extraction text, every reported limitation, and those that lost text."""
     return read_ingested_document(path)
 
 
-def _parse_candidate_upload(contents: bytes, suffix: str) -> tuple[str, list[str]]:
+def _parse_candidate_upload(
+    contents: bytes, suffix: str
+) -> tuple[str, list[str], list[str]]:
     """Write and parse one uploaded resume, deleting the temp file in this call.
 
     The file must outlive the parser, so the handler never owns it: a cancelled
@@ -1810,6 +1815,8 @@ def _parse_candidate_upload(contents: bytes, suffix: str) -> tuple[str, list[str
         return _read_candidate_resume_text(tmp_path)
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
 
 
 def _count_populated(value: Any) -> int:
