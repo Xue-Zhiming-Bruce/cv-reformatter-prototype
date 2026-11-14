@@ -1244,8 +1244,12 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
             width = 360 if repair in {"improve", "renderer_claim", "unresolved", "dismissed_claim", "accepted_missing"} else 80
         elif repair == "accepted_missing":
             width = 80 if proposal_id.endswith("r2") else 92
+        elif repair == "trial_noop":
+            # a REAL rendering change (the rail cannot fit the heading), so the
+            # trial is really rendered and gated instead of being a duplicate
+            width = 20
         else:
-            width = 80 if repair in {"improve", "noop", "renderer_claim", "unresolved", "dismissed_claim", "trial_noop"} else 92
+            width = 80 if repair in {"improve", "noop", "renderer_claim", "unresolved", "dismissed_claim"} else 92
         return run_models.LaneAStructureProposal(proposal_id=proposal_id, agent="llm", sections=[
             run_models.E5LaneASection(section_node_id="section.02", heading_in_rail=True, rail_label_width_pt=width),
         ])
@@ -1311,6 +1315,17 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
             return result
 
         monkeypatch.setattr(quality, "content_gate", missing_trial_content)
+    if repair == "trial_noop":
+        from app.pipeline import quality
+        original_shapes = quality.content_shape_verification
+
+        def unconsumable_rail_shape(*args, **kwargs):
+            result = original_shapes(*args, **kwargs)
+            if Path(kwargs["pdf"] if "pdf" in kwargs else args[6]).name == "render_2.pdf":
+                result["passed"] = False
+            return result
+
+        monkeypatch.setattr(quality, "content_shape_verification", unconsumable_rail_shape)
     if repair == "accepted_missing":
         original_controller = service.MeasureController
         counts = {}
@@ -1356,6 +1371,26 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
         assert html.name == "render_2.html" and pdf.name == "render_2.pdf"
         return
     assert phases == ["initial", "repair"], lane
+    if repair == "noop":
+        # A repair that renders byte-identically to its own base exports
+        # nothing (#48): one version, no second render/page-image set, and the
+        # builder candidate records the skipped export instead of a rollback.
+        assert len(lane["render_versions"]) == 1, lane["render_versions"]
+        skipped = lane["builder_candidates"][-1]
+        assert skipped["outcome"] == "duplicate_render_not_exported", skipped
+        assert skipped["candidate_render_version"] is None
+        # the round itself was spent (measurement, attribution, one validated
+        # proposal) — the export and the gate run are what was avoided
+        assert lane["open_findings"] and len(lane["repair_attempts"]) == 1, lane
+        initial_version = lane["render_versions"][0]["version_id"]
+        assert report["selected_version"] == lane["active_render_version"] == initial_version
+        assert lane["best_render_version"] == initial_version
+        assert lane["quarantined_repair_base"] is None
+        assert report["summary"]["pending_layout_trials"] == []
+        assert not list((tmp_path / report["run_directory"] / "lane_a").glob("render_2*"))
+        assert html.name == "render_1.html" and pdf.name == "render_1.pdf"
+        assert service._sha256_file(pdf) in report["summary"]["reviewed_pdf_sha256"]
+        return
     assert len(lane["render_versions"]) == 2 and lane["repair_attempts"]
     initial, attempted = lane["render_versions"]
     if repair in {"ambiguous", "ambiguous_single", "warning", "unbound", "compound", "unsafe_trial", "trial_noop"}:
@@ -1366,6 +1401,11 @@ def test_agentic_product_template_measures_repairs_and_selects_accepted_version(
         assert report["selected_version"] == initial["version_id"]
         outcome = "rolled_back" if repair in {"unsafe_trial", "trial_noop"} else "awaiting_owner_review"
         assert lane["builder_candidates"][-1]["outcome"] == outcome, lane
+        if repair == "trial_noop":
+            # a REAL rendering change: exported and gated, then rolled back only
+            # because the declared rail shape could not be consumed
+            assert "content_shapes_match_evidence" in lane["builder_candidates"][-1]["reason"], lane
+            assert (tmp_path / report["run_directory"] / "lane_a/render_2.pdf").is_file()
         pending = report["summary"]["pending_layout_trials"]
         if repair in {"unsafe_trial", "trial_noop"}:
             assert pending == []

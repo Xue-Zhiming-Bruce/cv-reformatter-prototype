@@ -343,6 +343,200 @@ def test_repair_waits_for_whole_final_pdf_review_capacity(tmp_path, monkeypatch)
     assert e._e5_round_select_repair(lane, round_state).action == "next"
 
 
+def _force_one_repair_action(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Force exactly ONE repairable action into the real repair selection.
+
+    The synthetic offline loop has no confirmed builder-owned defect of its own.
+    Only the SELECT phase is wrapped — review, measurement and attribution keep
+    running for real — and it injects one synthetic action while its fingerprint
+    is unspent. Afterwards the real rule decides, so the test never emulates the
+    deduplication it asserts.
+    """
+    finding = _e5_finding("finding-forced-repair", "section.01", "gap")
+    request = finding.requested_measurement
+    result = evidence.MeasurementResult(
+        request_id=request.request_id, status="confirmed", delta_pt=8.0,
+    )
+    attribution = _e5_attribution(finding, request_id=request.request_id)
+    fingerprint = f"{finding.render_version}:section.01:gap:8.0"
+    real_select = e5._e5_round_select_repair
+
+    def selecting(ls, rs):
+        step = real_select(ls, rs)
+        if (
+            step.action != "retry" or rs.repair_finding is not None
+            or fingerprint in ls.fingerprints
+        ):
+            return step
+        rs.repair_finding = (finding, result, request, attribution, fingerprint)
+        return e5._E5_NEXT
+
+    monkeypatch.setattr(
+        e5, "_E5_ROUND_PHASES",
+        tuple(selecting if phase is real_select else phase
+              for phase in e5._E5_ROUND_PHASES),
+    )
+    return fingerprint
+
+
+def _counting_export(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Count REAL exports: the wrapper still delegates to the pinned exporter."""
+    exported: list[str] = []
+    real_export = e5._export_pinned_html_to_pdf
+
+    def counting(html_path, pdf_path, environment):
+        exported.append(Path(pdf_path).name)
+        return real_export(html_path, pdf_path, environment)
+
+    monkeypatch.setattr(e5, "_export_pinned_html_to_pdf", counting)
+    return exported
+
+
+def test_repair_that_renders_identically_exported_nothing_more(tmp_path, monkeypatch) -> None:
+    """Issue #48: a repair candidate whose rendered HTML is byte-identical to
+    its own repair base is recorded as a no-op instead of being exported,
+    page-rendered, gated and rolled back."""
+    exported = _counting_export(monkeypatch)
+    monkeypatch.setattr(
+        e5, "_scripted_lane_a_proposal",
+        lambda state, derived: run_models.LaneAStructureProposal(
+            proposal_id="noop", sections=[], agent="scripted",
+        ),
+    )
+    real_phases = e5._E5_ROUND_PHASES
+    fingerprint = _force_one_repair_action(monkeypatch)
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    run_dir, terminal, record = e.run_e5(
+        **inputs, candidate=synthetic_pipeline_candidate("Candidate Alpha"),
+        out_dir=tmp_path / "dup", live=False, lanes=("a",), max_repair_rounds=2,
+    )
+    lane_dir = run_dir / "lane_a"
+    lane = record["lanes"]["a"]
+    base = lane["render_versions"][0]
+
+    # AC1: exactly one export pair for the lane, and no render_2* artifact at
+    # all (no orphan .html or _plan.json either).
+    assert exported == ["render_1.pdf", "render_1_second.pdf"]
+    assert sorted(p.name for p in lane_dir.glob("render_2*")) == []
+    assert sorted(p.name for p in lane_dir.glob("hard_gates_*.json")) == [
+        f"hard_gates_{base['version_id']}.json"
+    ]
+
+    # AC3: the no-op is audited, never simulated as a render.
+    audit = json.loads((lane_dir / "builder_candidate_01.json").read_text())
+    assert audit["stage"] == "repair"
+    assert audit["input_render_version"] == base["version_id"]
+    assert audit["candidate_render_version"] is None
+    assert audit["outcome"] == "duplicate_render_not_exported"
+    assert "identical" in audit["reason"] and base["html_sha256"] in audit["reason"]
+    assert audit["base_html_sha256"] == base["html_sha256"]
+    assert audit["candidate_html_sha256"] == base["html_sha256"]
+    assert lane["render_versions"] == [base]
+
+    # AC4/AC9: one shell entry names the prevented work; the eligible output and
+    # scheduling state are the ones the initial render produced.
+    trace = json.loads((lane_dir / "trace.json").read_text())
+    skip = next(entry for entry in trace if entry["action"] == "duplicate_render_not_exported")
+    assert skip["agent"] == "shell"
+    prevented = json.loads((lane_dir / skip["output_artifact"]).read_text())
+    assert prevented["repair_base_version"] == base["version_id"]
+    assert prevented["finding"] == "finding-forced-repair"
+    assert prevented["html_sha256"] == base["html_sha256"]
+    assert prevented["prevented"].startswith("2 Chrome PDF exports")
+    assert lane["active_render_version"] == base["version_id"]
+    assert lane["best_render_version"] == base["version_id"]
+    assert lane["quarantined_repair_base"] is None
+    assert lane["summary"]["pending_layout_trials"] == []
+    config = json.loads((run_dir / "run_config.json").read_text())
+    assert config["budgets"]["per_lane"]["render_export_policy"] == (
+        repair_policy.E5_RENDER_EXPORT_POLICY
+    )
+    probes = json.loads((lane_dir / "content_shape_probes.json").read_text())
+    assert probes["_selected_version"] == base["version_id"]
+
+    # AC5: the executed fingerprint stays spent and is persisted with the lane
+    # state, so the same action on the same base is never selected again.
+    state = json.loads((lane_dir / "e5_lane_a_state.json").read_text())
+    assert fingerprint in state["action_fingerprints"]
+    assert [item["artifact"] for item in state["builder_candidates"]] == [
+        "builder_candidate_01.json"
+    ]
+    assert len(lane["repair_attempts"]) == 1, "the no-op action was resubmitted"
+
+    # The terminal state still names the SAME eligible output as the run in
+    # which the no-op was never attempted (AC4).
+    monkeypatch.setattr(e5, "_E5_ROUND_PHASES", real_phases)
+    baseline_dir, baseline_terminal, baseline = e.run_e5(
+        **inputs, candidate=synthetic_pipeline_candidate("Candidate Alpha"),
+        out_dir=tmp_path / "baseline", live=False, lanes=("a",), max_repair_rounds=2,
+    )
+    # the baseline exports its initial render only, like the no-op run
+    assert exported == ["render_1.pdf", "render_1_second.pdf"] * 2
+    assert (terminal, lane["terminal_state"], lane["terminal_reason"]) == (
+        baseline_terminal, baseline["lanes"]["a"]["terminal_state"],
+        baseline["lanes"]["a"]["terminal_reason"],
+    )
+    for key in ("active_render_version", "best_render_version", "open_findings"):
+        assert lane[key] == baseline["lanes"]["a"][key]
+    assert lane["ledger"] == baseline["lanes"]["a"]["ledger"]
+    # the base version's own gate record is untouched — not re-verified, not
+    # re-dated, and no gate claim exists for a version that was never rendered
+    assert (lane_dir / f"hard_gates_{base['version_id']}.json").read_text() == (
+        baseline_dir / "lane_a" / f"hard_gates_{base['version_id']}.json"
+    ).read_text()
+    # AC5: a skip refunds nothing — the render tool call stays spent, the model
+    # request count and the configured ceilings are unchanged.
+    for key in ("model_request_count", "max_model_requests", "max_tool_calls"):
+        assert lane["budget_state"][key] == baseline["lanes"]["a"]["budget_state"][key]
+    assert lane["budget_state"]["tool_call_count"] == (
+        baseline["lanes"]["a"]["budget_state"]["tool_call_count"] + 1
+    )
+    assert json.loads((lane_dir / "content_shape_probes.json").read_text())[
+        "_selected_version"
+    ] == json.loads((baseline_dir / "lane_a" / "content_shape_probes.json").read_text())[
+        "_selected_version"
+    ]
+
+
+def test_repair_that_changes_the_render_still_exports_and_gates(tmp_path, monkeypatch) -> None:
+    """Issue #48 positive control: one changed rendered property is NOT a no-op,
+    so the version still exports twice, re-renders its pages and writes its gate
+    record."""
+    exported = _counting_export(monkeypatch)
+
+    def changing_proposal(state, derived) -> run_models.LaneAStructureProposal:
+        section = next(node.node_id for node in state.nodes if node.kind == "section")
+        return run_models.LaneAStructureProposal(
+            proposal_id="changed", agent="scripted",
+            sections=[run_models.E5LaneASection(
+                section_node_id=section, heading_in_rail=True, rail_label_width_pt=90.0,
+            )],
+        )
+
+    monkeypatch.setattr(e5, "_scripted_lane_a_proposal", changing_proposal)
+    _force_one_repair_action(monkeypatch)
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    run_dir, _terminal, record = e.run_e5(
+        **inputs, candidate=synthetic_pipeline_candidate("Candidate Alpha"),
+        out_dir=tmp_path / "changed", live=False, lanes=("a",), max_repair_rounds=1,
+    )
+    lane_dir = run_dir / "lane_a"
+    versions = record["lanes"]["a"]["render_versions"]
+    assert len(versions) == 2
+    assert exported == [
+        "render_1.pdf", "render_1_second.pdf", "render_2.pdf", "render_2_second.pdf",
+    ]
+    assert (lane_dir / "render_2.html").read_text() != (lane_dir / "render_1.html").read_text()
+    gates = json.loads((lane_dir / f"hard_gates_{versions[1]['version_id']}.json").read_text())
+    assert gates["render_version"] == versions[1]["version_id"]
+    assert set(gates["gates"]) == {
+        "deterministic_render", "no_target_candidate_facts",
+        "section_order_matches_state", "no_blank_page",
+        "candidate_content_accounting", "content_shapes_match_evidence",
+        "content_gate",
+    }
+
+
 def test_attribution_sdk_retry_stops_at_the_protected_allowance(tmp_path, monkeypatch) -> None:
     """Issue #41: SDK-level retries of a failing attribution request are spent
     through the same boundary, so they cannot consume the Builder reserve and
@@ -2306,13 +2500,11 @@ def test_run_e5_rollback_binds_next_round_to_the_active_version(
     against the OLD ACTIVE version — PDF, RenderPlan, and gates — and the
     rejected representation never enters the probe basis or best selection."""
     _force_scripted_builder_attribution(monkeypatch)
-    from app.pipeline.run_models import LaneAStructureProposal
 
-    # a scripted proposal that changes nothing -> the identical render ->
-    # the identical measurement -> deterministic non-improving rollback
-    def non_improving_proposal(state, derived):
-        return LaneAStructureProposal(proposal_id="noop", sections=[], agent="scripted")
-
+    # The repair is a REAL rendering change — the offline Builder's rails at the
+    # generic measured rail width — that still cannot improve the finding, so
+    # every round produces a rendered, exported and rolled-back candidate
+    # instead of a duplicate render (issue #48 skips those before exporting).
     class RoundDistinctReviewer(review.ScriptedReviewer):
         # a distinct dimension per round keeps the repair fingerprint distinct
         # so a repair actually executes in EVERY round (the fingerprint would
@@ -2325,7 +2517,6 @@ def test_run_e5_rollback_binds_next_round_to_the_active_version(
                 for f in findings
             ]
 
-    monkeypatch.setattr(e5, "_scripted_lane_a_proposal", non_improving_proposal)
     monkeypatch.setattr(e5, "ScriptedReviewer", RoundDistinctReviewer)
     run_dir, terminal, record = _run_e5(
         TARGET_PDF, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=2,
