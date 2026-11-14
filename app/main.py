@@ -72,13 +72,17 @@ from app.final_acceptance import (
     is_final_acceptance_current,
     save_final_acceptance,
 )
-from app.ingestion.docx_reader import read_docx
 from app.ingestion.file_validator import CorruptedFileError, UnsupportedFileTypeError
+from app.ingestion.ingest_document import enforce_uploaded_document, read_ingested_document
 from app.ingestion.pdf_reader import (
     CorruptedPdfError,
     EmptyPdfTextError,
     UnsupportedPdfTypeError,
-    read_pdf_text,
+)
+from app.resource_limits import (
+    DocumentLimitError,
+    UploadBodyLimitMiddleware,
+    read_upload_bounded,
 )
 from app.profile_approval import (
     ProfileApprovalError,
@@ -232,6 +236,14 @@ async def generation_error_handler(_request: Request, error: GenerationError) ->
     """Map generation-domain failures to the historical HTTP status/detail."""
     return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
 
+@app.exception_handler(DocumentLimitError)
+async def document_limit_error_handler(_request: Request, error: DocumentLimitError) -> JSONResponse:
+    """Refuse past a declared resource limit with a structured, content-free error."""
+    return JSONResponse(
+        status_code=error.status_code,
+        content={"detail": {"error_code": error.error_code, "message": error.message}},
+    )
+
 GENERATED_OUTPUTS_DIR = Path(
     os.getenv("GENERATED_OUTPUTS_DIR", "data/generated_outputs")
 )
@@ -286,6 +298,7 @@ DOWNLOADABLE_DIAGNOSTIC_PNG_PATTERN = re.compile(
     r"generated_page_\d{3}|comparison_page_\d{3}_diff)\.png$"
 )
 
+app.add_middleware(UploadBodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -608,14 +621,14 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
             detail="Only .docx and text-based .pdf candidate resumes are supported in this milestone.",
         )
 
-    contents = await file.read()
+    contents = await read_upload_bounded(file)
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(contents)
         tmp_path = Path(tmp.name)
 
     try:
         try:
-            extracted_text, ingestion_limitations = _read_candidate_resume_text(tmp_path)
+            extracted_text, ingestion_limitations = read_ingested_document(tmp_path)
         except (UnsupportedFileTypeError, CorruptedFileError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except UnsupportedPdfTypeError as exc:
@@ -762,8 +775,9 @@ async def upload_target_format(
         )
 
     resolved_artifact_id = artifact_id or new_artifact_id()
+    contents = await read_upload_bounded(file)
+    enforce_uploaded_document(contents, suffix)
     artifact_dir = _prepare_artifact_dir(resolved_artifact_id, allow_existing=True)
-    contents = await file.read()
     analyzed_style_spec: LayoutTemplateSpec | None = None
     if suffix == ".pdf":
         try:
@@ -1626,10 +1640,7 @@ def _build_ledger(profile: CandidateProfile) -> LedgerSummary:
 
 def _read_candidate_resume_text(path: Path) -> tuple[str, list[str]]:
     """Extraction text plus the source content the reader could not read."""
-    if path.suffix.lower() == ".pdf":
-        return read_pdf_text(path), []
-    content = read_docx(path)
-    return content.plain_text, [limitation.message for limitation in content.limitations]
+    return read_ingested_document(path)
 
 
 def _count_populated(value: Any) -> int:

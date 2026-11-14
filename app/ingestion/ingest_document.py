@@ -1,0 +1,133 @@
+"""One bounded read of an ingested document, in a terminable child process.
+
+Issue #53: the page-tree walk and text extraction are the expensive part of
+ingestion, so they run in a child this process can kill, and the limits in
+:mod:`app.resource_limits` are applied before any text or geometry is returned.
+The child prints one JSON object on stdout and never truncates: a document past
+a limit is refused with a structured
+:class:`~app.resource_limits.DocumentLimitError`, and the parent raises the same
+documented reader errors the child reports.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from app.ingestion.docx_reader import read_docx
+from app.ingestion.file_validator import CorruptedFileError, UnsupportedFileTypeError
+from app.ingestion.pdf_reader import (
+    CorruptedPdfError,
+    EmptyPdfTextError,
+    UnsupportedPdfTypeError,
+    pdf_page_text,
+    read_pdf_pages,
+)
+from app.resource_limits import (
+    DOCX_ZIP_LIMITS,
+    DocumentLimitError,
+    check_pdf_pages,
+    enforce_zip_file,
+    run_bounded_child,
+)
+
+CHILD_MODULE = "app.ingestion.ingest_document"
+
+#: The documented reader errors a child may report back, by class name.
+_READER_ERRORS = {
+    error.__name__: error
+    for error in (
+        CorruptedFileError,
+        UnsupportedFileTypeError,
+        CorruptedPdfError,
+        UnsupportedPdfTypeError,
+        EmptyPdfTextError,
+    )
+}
+
+
+def read_ingested_document(path: str | Path) -> tuple[str, list[str]]:
+    """Extracted text plus the source content the reader could not read."""
+    payload = _run_child("candidate", Path(path))
+    check_pdf_pages(payload["page_sizes"])
+    return payload["text"], [str(item) for item in payload["limitations"]]
+
+
+def enforce_uploaded_document(contents: bytes, suffix: str) -> None:
+    """Refuse an uploaded document past the limits before analysis or a provider call."""
+    with tempfile.TemporaryDirectory(prefix="cv-document-limit-") as directory:
+        path = Path(directory) / f"document{suffix}"
+        path.write_bytes(contents)
+        if suffix == ".pdf":
+            check_pdf_pages(_run_child("geometry", path)["page_sizes"])
+        else:
+            enforce_zip_file(path, DOCX_ZIP_LIMITS)
+
+
+def _run_child(mode: str, path: Path) -> dict[str, Any]:
+    output = run_bounded_child(["-m", CHILD_MODULE, mode, str(path)])
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise DocumentLimitError(
+            "local_processing_failed",
+            "Local document processing returned no result; nothing was processed.",
+        ) from exc
+    if error := payload.get("error"):
+        if error["type"] == "DocumentLimitError":
+            raise DocumentLimitError(
+                error["error_code"], error["message"], status_code=int(error["status_code"])
+            )
+        reader_error = _READER_ERRORS.get(error["type"])
+        if reader_error is None:
+            raise DocumentLimitError("local_processing_failed", error["message"])
+        raise reader_error(error["message"])
+    return payload
+
+
+def _child_payload(mode: str, path: Path) -> dict[str, Any]:
+    """What the child answers: page geometry, and text for a candidate document."""
+    if path.suffix.lower() == ".pdf":
+        pages = read_pdf_pages(path)
+        page_sizes = [[page.width_pt, page.height_pt] for page in pages]
+        # Refused here first so an oversized document never reaches text extraction.
+        check_pdf_pages(page_sizes)
+        payload: dict[str, Any] = {"page_sizes": page_sizes, "text": "", "limitations": []}
+        if mode == "candidate":
+            payload["text"] = pdf_page_text(pages, source=path)
+        return payload
+    if mode != "candidate":
+        raise UnsupportedFileTypeError("Page geometry is only measured for PDF documents.")
+    content = read_docx(path)
+    return {
+        "page_sizes": [],
+        "text": content.plain_text,
+        "limitations": [limitation.message for limitation in content.limitations],
+    }
+
+
+def main(argv: list[str]) -> int:
+    """Child entry point: print one JSON result, never a traceback."""
+    mode, path = argv[0], Path(argv[1])
+    try:
+        result = _child_payload(mode, path)
+    except DocumentLimitError as error:
+        result = {
+            "error": {
+                "type": "DocumentLimitError",
+                "error_code": error.error_code,
+                "message": error.message,
+                "status_code": error.status_code,
+            }
+        }
+    except tuple(_READER_ERRORS.values()) as error:
+        result = {"error": {"type": type(error).__name__, "message": str(error)}}
+    print(json.dumps(result), flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

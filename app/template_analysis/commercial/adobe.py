@@ -13,6 +13,12 @@ from typing import Any
 
 import httpx
 
+from app.resource_limits import (
+    PROVIDER_RESULT_ZIP_LIMITS,
+    ZipLimits,
+    inspect_zip_directory,
+    read_zip_member_bounded,
+)
 from app.template_analysis.commercial.models import (
     MeasurementProvenance,
     NormalizedBox,
@@ -297,7 +303,7 @@ def run_adobe_layout(pdf_path: Path) -> tuple[NormalizedLayoutEvidence, dict[str
                 zip_bytes = downloaded.content
             finally:
                 cleanup = _cleanup_remote_assets(client, base_url, headers, known_assets, submission_state, creation_attempted)
-        structured = _structured_json(zip_bytes)
+        structured = _structured_json(zip_bytes, PROVIDER_RESULT_ZIP_LIMITS)
         raw = {"status": status, "input_asset_id": recorded_input_id, "result_asset_id": recorded_result_id, "asset_cleanup": cleanup, "structured_data": structured}
         return normalize_adobe_layout(raw), raw, zip_bytes
     except Exception as exc:
@@ -539,10 +545,13 @@ def _result_location(payload: dict[str, Any]) -> tuple[str | None, str | None]:
     return ((payload.get("downloadUri") or (resource.get("downloadUri") if isinstance(resource, dict) else None)), (payload.get("assetID") or (resource.get("assetID") if isinstance(resource, dict) else None)))
 
 
-def _structured_json(zip_bytes: bytes) -> dict[str, Any]:
+def _structured_json(zip_bytes: bytes, limits: ZipLimits) -> dict[str, Any]:
+    """Decode the result archive under the shared decompressed-size bound."""
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+            inspect_zip_directory(archive, limits)
             name = next(item for item in archive.namelist() if Path(item).name.lower() == "structureddata.json")
-            return json.loads(archive.read(name).decode("utf-8"))
+            payload = read_zip_member_bounded(archive, name, limits)
+        return json.loads(payload.decode("utf-8"))
     except (StopIteration, zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AdobeAdapterError("Adobe result omitted valid structuredData.json.") from exc

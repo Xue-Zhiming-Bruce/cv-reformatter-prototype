@@ -1021,3 +1021,28 @@ def test_adobe_cleanup_evidence_omits_credentials_and_signed_urls(monkeypatch, t
         "Bearer", "upload.example.test", "download.example.test",
     ):
         assert secret not in recorded
+
+
+def test_adobe_result_zip_refuses_expansion_past_the_shared_limit() -> None:
+    """Issue #53: the commercial adapter decodes the result archive under the
+    shared decompressed-size bound, so a compressed result cannot expand here."""
+    from app import resource_limits
+    from app.template_analysis.commercial import adobe
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("structuredData.json", json.dumps({"Pages": [], "pad": "x" * 200_000}))
+
+    with pytest.raises(resource_limits.DocumentLimitError) as refusal:
+        adobe._structured_json(buffer.getvalue(), resource_limits.PROVIDER_RESULT_ZIP_LIMITS)
+
+    assert refusal.value.error_code == "zip_expansion_ratio"
+
+
+def test_adobe_result_zip_decoding_stays_within_the_limit() -> None:
+    from app import resource_limits
+    from app.template_analysis.commercial import adobe
+
+    assert adobe._structured_json(
+        _structured_zip(), resource_limits.PROVIDER_RESULT_ZIP_LIMITS
+    ) == _ADOBE_STRUCTURED
