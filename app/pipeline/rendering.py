@@ -9,11 +9,12 @@ import os
 import re
 import statistics
 import subprocess
+from contextlib import closing
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 import pdfplumber
-import pypdfium2 as pdfium
+from app import pdfium_native
 from app.generation.chrome_html_to_pdf import HtmlToPdfExportError, _find_chrome
 from app.template_analysis.commercial.adobe import _flatten_text_elements
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
@@ -52,7 +53,7 @@ def _pinned_chrome_environment(summary: dict[str, Any]) -> dict[str, Any]:
         "timezone": "UTC",
         "flags": list(CHROME_FLAGS),
         "required_fonts": sorted({row["font_family"] for row in summary.get("style_groups", {}).values() if row.get("font_family")}),
-        "capture_renderer": f"pypdfium2 {getattr(pdfium, '__version__', 'unknown')}",
+        "capture_renderer": f"pypdfium2 {getattr(pdfium_native.pdfium, '__version__', 'unknown')}",
     }
 
 def _export_pinned_html_to_pdf(html_path: Path, output_path: Path, environment: dict[str, Any]) -> Path:
@@ -602,10 +603,11 @@ def _inject_local_fonts(filled_html: str) -> str:
     return re.sub(r"</style>", "\n" + "\n".join(faces) + "\n</style>", filled_html, count=1, flags=re.I)
 
 def _render_pages(pdf_path: Path, output_dir: Path, prefix: str) -> list[Path]:
-    document = pdfium.PdfDocument(pdf_path)
     paths: list[Path] = []
-    for index, page in enumerate(document):
-        path = output_dir / f"{prefix}_page_{index + 1}.png"
-        page.render(scale=2).to_pil().convert("RGB").save(path)
-        paths.append(path)
+    with pdfium_native.native_lifetime(), closing(pdfium_native.pdfium.PdfDocument(pdf_path)) as document:
+        for index, page in enumerate(document):
+            path = output_dir / f"{prefix}_page_{index + 1}.png"
+            with closing(page), closing(page.render(scale=2)) as bitmap:
+                bitmap.to_pil().convert("RGB").save(path)
+            paths.append(path)
     return paths
