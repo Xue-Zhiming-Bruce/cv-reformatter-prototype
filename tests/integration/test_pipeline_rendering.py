@@ -1545,6 +1545,9 @@ class _SubstitutePage:
         self.substitute = substitute
         self.closed = False
 
+    def get_size(self) -> tuple[float, float]:
+        return 612.0, 792.0
+
     def render(self, *, scale: float) -> "_SubstituteBitmap":
         substitute = self.substitute
         substitute.render_calls += 1
@@ -1721,3 +1724,49 @@ def test_only_the_pdfium_owner_imports_and_opens_documents() -> None:
         ("pipeline/rendering.py", "_render_pages"),
         ("template_analysis/visual_comparator.py", "_render_pdf"),
     }, f"documents opened outside the serialized owner functions: {sorted(open_sites)}"
+
+
+def test_render_pages_refuses_past_the_document_pixel_budget_before_allocating(
+    tmp_path: Path,
+) -> None:
+    """Issue #53: the shared rasterization owner refuses before a bitmap exists."""
+    from app.pipeline import rendering
+    from app.resource_limits import DocumentLimitError
+    from tests.helpers.synthetic_pdf import _write_single_page_pdf
+
+    huge = _write_single_page_pdf(
+        tmp_path / "huge.pdf",
+        ["BT 0 0 0 rg /F1 12 Tf 72 720 Td (Rendered page) Tj ET"],
+        width_pt=12000,
+        height_pt=12000,
+    )
+    output_dir = tmp_path / "pages"
+    output_dir.mkdir()
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        rendering._render_pages(huge, output_dir, "target")
+
+    assert refusal.value.error_code == "raster_pixel_limit"
+    assert list(output_dir.iterdir()) == [], "a refused page allocates and writes nothing"
+
+
+def test_visual_comparison_refuses_past_the_document_pixel_budget(tmp_path: Path) -> None:
+    """The comparison rasterizer applies the same pixel policy as the pipeline one."""
+    from app.resource_limits import DocumentLimitError
+    from app.template_analysis import visual_comparator
+    from tests.helpers.synthetic_pdf import _write_single_page_pdf
+
+    huge = _write_single_page_pdf(
+        tmp_path / "huge.pdf",
+        ["BT 0 0 0 rg /F1 12 Tf 72 720 Td (Rendered page) Tj ET"],
+        width_pt=12000,
+        height_pt=12000,
+    )
+    output_dir = tmp_path / "comparison"
+    output_dir.mkdir()
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        visual_comparator._render_pdf(huge, output_dir, filename_prefix="generated_page", dpi=144)
+
+    assert refusal.value.error_code == "raster_pixel_limit"
+    assert list(output_dir.iterdir()) == []

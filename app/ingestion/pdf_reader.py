@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 import pdfplumber
 from pdfplumber.utils.exceptions import PdfminerException
@@ -18,24 +20,47 @@ class EmptyPdfTextError(ValueError):
     """Raised when a PDF has no extractable text."""
 
 
-def read_pdf_text(path: str | Path) -> str:
-    """Extract plain text from a PDF resume."""
+@dataclass(frozen=True)
+class PdfPage:
+    """One page's extracted text with the page geometry it was read at."""
+
+    text: str
+    width_pt: float
+    height_pt: float
+
+
+def read_pdf_pages(path: str | Path) -> list[PdfPage]:
+    """Parse a PDF once into per-page text and page geometry."""
     file_path = _validate_pdf_file(path)
 
     try:
         with pdfplumber.open(file_path) as pdf:
             # A fixed 3pt gap merges ordinary words in small-font PDFs.
-            page_text = [page.extract_text(x_tolerance_ratio=0.2) or "" for page in pdf.pages]
+            return [
+                PdfPage(
+                    text=page.extract_text(x_tolerance_ratio=0.2) or "",
+                    width_pt=float(page.width),
+                    height_pt=float(page.height),
+                )
+                for page in pdf.pages
+            ]
     except (PdfminerException, ValueError) as exc:
         raise CorruptedPdfError("The PDF file appears to be corrupted or invalid.") from exc
     except OSError as exc:
         raise CorruptedPdfError(f"The PDF file could not be read: {file_path}") from exc
 
-    text = "\n".join(part.strip() for part in page_text if part.strip()).strip()
-    if not text:
-        raise EmptyPdfTextError(f"No extractable text found in PDF: {file_path}")
 
+def pdf_page_text(pages: Sequence[PdfPage], *, source: str | Path) -> str:
+    """Join page text in page order; refuse a PDF with no extractable text."""
+    text = "\n".join(part.strip() for part in (page.text for page in pages) if part.strip()).strip()
+    if not text:
+        raise EmptyPdfTextError(f"No extractable text found in PDF: {source}")
     return text
+
+
+def read_pdf_text(path: str | Path) -> str:
+    """Extract plain text from a PDF resume."""
+    return pdf_page_text(read_pdf_pages(path), source=path)
 
 
 def _validate_pdf_file(path: str | Path) -> Path:

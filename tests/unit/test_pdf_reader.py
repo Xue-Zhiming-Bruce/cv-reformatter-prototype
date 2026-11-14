@@ -8,6 +8,7 @@ from app.ingestion.pdf_reader import (
     CorruptedPdfError,
     EmptyPdfTextError,
     UnsupportedPdfTypeError,
+    read_pdf_pages,
     read_pdf_text,
 )
 
@@ -29,6 +30,26 @@ def test_read_pdf_text_preserves_positioned_word_gaps(tmp_path: Path, font_size:
     ])
 
     assert read_pdf_text(pdf).splitlines() == ["Software Engineer II", "quality-of-service"]
+
+
+def test_read_pdf_pages_returns_text_with_its_page_geometry(tmp_path: Path) -> None:
+    """Issue #53: one parse supplies both the text and the geometry the shared
+    page limits are measured against."""
+    from tests.helpers.synthetic_pdf import _write_single_page_pdf
+
+    pdf = _write_single_page_pdf(
+        tmp_path / "a4.pdf",
+        ["BT /F1 12 Tf 72 720 Td (Software Engineer) Tj ET"],
+        width_pt=595.3,
+        height_pt=841.9,
+    )
+
+    pages = read_pdf_pages(pdf)
+
+    assert len(pages) == 1
+    assert pages[0].text == "Software Engineer"
+    assert pages[0].width_pt == pytest.approx(595.3)
+    assert pages[0].height_pt == pytest.approx(841.9)
 
 
 def test_read_pdf_text_extracts_text_from_dataset_sample(tmp_path: Path) -> None:

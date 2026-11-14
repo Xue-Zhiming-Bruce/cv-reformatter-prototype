@@ -328,6 +328,16 @@ existing extraction/profile artifacts are immutable and need a fresh analysis
 and recruiter save to adopt corrected text. Output content-preservation checks
 do not establish visible-source extraction accuracy.
 
+`unit/test_resource_limits.py` and `unit/test_ingest_document.py` cover the
+issue #53 document resource envelope: an upload refused while it arrives, ZIP
+entry count/expansion/forged-size refusal without allocating the declared size,
+page count and declared geometry refusal, the raster pixel budget, and a
+bounded parse child that is killed on timeout. Each case uses bytes built in the
+test, not a corpus file, so they run offline and cannot exhaust machine memory.
+The API-side assertions live in `integration/test_api_process.py` (a chunked
+direct upload above the app limit) and `integration/test_api_generate.py` (a
+target upload refused before provider analysis keeps the prior target output).
+
 The matrix retains the actual generation API receipt. Raw target rule counts,
 header wording, section inventory and comparison metrics are content-sensitive
 `fidelity_diagnostics` for owner review, shown in Review first; they cannot

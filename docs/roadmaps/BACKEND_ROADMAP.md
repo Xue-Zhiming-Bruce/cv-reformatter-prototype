@@ -831,6 +831,16 @@ Status: `[ ]` Builds on B1A and P1.
 - [ ] Add private local/Spaces artifact adapters, signed short-lived access,
       checksums/lifecycle/deletion, safe paths and upload size/type/page/time
       limits. Verify corrupt, oversized, traversal and decompression failures.
+      November 15 (issue #53): the local application limits are implemented for
+      both uploads and the shared rasterizers — 8 MiB upload, 8 MiB + 64 KiB
+      request body, DOCX 512 entries/16 MiB per entry/64 MiB total/100:1, PDF
+      20 pages and 2000 pt per side, 64 MP raster, 60 s bounded parse. The
+      bytes/pages/pixels/local CPU scope closes here;
+      [ADR 0010](../decisions/0010-conversion-execution-envelope.md) (#43) still
+      owns the token, currency and provider-runtime budget. Values are constants
+      with corpus basis in `app/resource_limits.py`; per-identity quotas,
+      concurrent admission and private storage remain open, so this line stays
+      unchecked.
 - [ ] Version machine-readable API errors, capability/support reporting and
       frontend alignment through the API contract; keep frontend code outside
       backend scope.

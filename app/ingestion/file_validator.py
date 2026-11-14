@@ -1,6 +1,8 @@
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
+from app.resource_limits import DOCX_ZIP_LIMITS, enforce_zip_file
+
 
 class UnsupportedFileTypeError(ValueError):
     """Raised when the uploaded file type is outside the MVP scope."""
@@ -20,6 +22,7 @@ def validate_docx_file(path: str | Path) -> Path:
         raise UnsupportedFileTypeError("Only .docx files are supported in this milestone.")
 
     try:
+        enforce_zip_file(file_path, DOCX_ZIP_LIMITS)
         with ZipFile(file_path) as archive:
             if "[Content_Types].xml" not in archive.namelist():
                 raise CorruptedFileError("The DOCX package is missing required metadata.")
