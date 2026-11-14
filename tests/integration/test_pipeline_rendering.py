@@ -164,11 +164,11 @@ p {{ margin-bottom: 2pt; }}
 </body></html>"""
 
 
-def test_shared_chrome_export_contract_holds_page_fonts_and_backgrounds(tmp_path: Path) -> None:
-    """The native/worker and pipeline-lane callers are one contract: both print
-    the @page page size, the embedded font and the background over 2+ pages."""
+def test_pipeline_export_adapter_holds_export_contract(tmp_path: Path) -> None:
+    """The pipeline lane's adapter prints the @page page size, the embedded
+    bundled font and the background over 2+ pages through the shared contract."""
     import pdfplumber
-    from app.generation.chrome_html_to_pdf import CONTRACT_VERSION, export_html_to_pdf
+    from app.generation.chrome_html_to_pdf import CONTRACT_VERSION
     from app.pipeline.measurement import pinned_export_environment
     from app.pipeline.rendering import _export_pinned_html_to_pdf, _inject_local_fonts
 
@@ -178,27 +178,62 @@ def test_shared_chrome_export_contract_holds_page_fonts_and_backgrounds(tmp_path
     assert environment["contract"] == CONTRACT_VERSION
     assert environment["resolution"] in {"override", "macos_default", "system"}
     assert environment["version"] and environment["fonts"]["files"]
-    outputs = [
-        export_html_to_pdf(html_path, tmp_path / "native_worker.pdf"),
-        _export_pinned_html_to_pdf(html_path, tmp_path / "pipeline.pdf", environment),
-    ]
-    for path in outputs:
-        with pdfplumber.open(path) as document:
-            assert len(document.pages) >= 2
-            first = document.pages[0]
-            assert round(first.width) == 500 and round(first.height) == 700
-            assert "Contract probe line 000" in (first.extract_text() or "")
-            fonts = {str(char["fontname"]).casefold() for page in document.pages for char in page.chars}
-            assert any("lato" in name for name in fonts), fonts
-            colours = [
-                shape["non_stroking_color"]
-                for shape in [*first.rects, *first.curves]
-                if shape.get("fill") and shape.get("non_stroking_color")
-            ]
-            assert any(
-                len(colour) >= 3 and colour[0] > .95 and colour[1] < .05 and colour[2] < .05
-                for colour in colours
-            ), colours
+    path = _export_pinned_html_to_pdf(html_path, tmp_path / "pipeline.pdf", environment)
+    with pdfplumber.open(path) as document:
+        assert len(document.pages) >= 2
+        first = document.pages[0]
+        assert round(first.width) == 500 and round(first.height) == 700
+        assert "Contract probe line 000" in (first.extract_text() or "")
+        fonts = {str(char["fontname"]).casefold() for page in document.pages for char in page.chars}
+        assert any("lato" in name for name in fonts), fonts
+        colours = [
+            shape["non_stroking_color"]
+            for shape in [*first.rects, *first.curves]
+            if shape.get("fill") and shape.get("non_stroking_color")
+        ]
+        assert any(
+            len(colour) >= 3 and colour[0] > .95 and colour[1] < .05 and colour[2] < .05
+            for colour in colours
+        ), colours
+
+
+def test_offline_worker_render_adapter_holds_export_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The job worker's installed renderer reaches the shared export contract:
+    the template's @page size and its text survive into a real PDF. The native
+    lane's boundary is covered by the real-Chrome API acceptance case
+    (test_api_generate.test_builtin_api_shared_a_preserves_real_pdf_and_acceptance_identity)."""
+    import pdfplumber
+    from app.generation import agentic, service as generation_service
+    from app.generation.chrome_html_to_pdf import CONTRACT_VERSION
+    from app.generation.template_mapper import build_client_render_context
+    from app.job_worker import install_offline_renderer
+    from app.template_analysis.schemas import built_in_layout_template_spec
+    from tests.helpers.pipeline_layout import product_entry_profile
+
+    target_pdf = build_plain_target_pdf(tmp_path / "target.pdf")
+    monkeypatch.setattr(agentic, "render_agentic", agentic.render_agentic)
+    monkeypatch.setattr(
+        generation_service, "write_artifact_manifest", generation_service.write_artifact_manifest
+    )
+    install_offline_renderer()
+    spec = built_in_layout_template_spec()
+    source, pdf_path, metadata = agentic.render_agentic(
+        context=build_client_render_context(product_entry_profile()),
+        layout_spec=spec,
+        target_pdf=target_pdf,
+        evidence_dir=tmp_path,
+        output_dir=tmp_path / "worker",
+    )
+    assert source == tmp_path / "worker" / "render.html" and source.exists()
+    assert pdf_path == tmp_path / "worker" / "render.pdf"
+    assert metadata["rendering_environment"]["contract"] == CONTRACT_VERSION
+    with pdfplumber.open(pdf_path) as document:
+        first = document.pages[0]
+        assert round(first.width) == round(spec.page.width_pt)
+        assert round(first.height) == round(spec.page.height_pt)
+        assert "Candidate Alpha" in (first.extract_text() or "")
 
 
 def test_plan_status_and_full_leaf_ownership_on_full_coverage() -> None:

@@ -271,6 +271,8 @@ fontconfig fallbacks from `fonts-liberation`/`fonts-dejavu-core`. Docker install
 exactly `chromium=156.0.8078.79-1~deb12u1`; a browser or bundled-font bump is a
 deliberate reviewed pin change that carries its own rendering evidence, and the
 resulting browser/font identity change invalidates stored layout proofs. The
+recorded version is re-probed whenever the browser file changes, so replacing or
+upgrading it in place cannot keep the old identity. The
 image's installed fallback-font package versions are recorded in the export
 environment too, so a drift in those apt packages is not silently ignored.
 Frontend

@@ -382,6 +382,50 @@ def test_changed_chrome_environment_invalidates_approval_before_rendering(
     assert approval_path.read_bytes() == approval_bytes
 
 
+def test_resolution_labels_keep_the_proof_identity_but_a_new_build_does_not(
+    tmp_path: Path, fake_pdf: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #52 judge finding 2: how the same browser build was found is
+    provenance, so a different resolution label cannot change the proof
+    identity; a different build still cannot reach the renderer."""
+    from app.generation import agentic, chrome_html_to_pdf
+
+    binary = chrome_html_to_pdf.ChromeBinary("/fake/chrome", "override")
+    monkeypatch.setattr(chrome_html_to_pdf, "_find_chrome", lambda: binary)
+    monkeypatch.setattr(chrome_html_to_pdf, "_binary_version", lambda _path: "FakeChrome 1.0")
+    target_pdf = build_styled_target_pdf(tmp_path / "target.pdf")
+    _render_all_variants(tmp_path, target_pdf=target_pdf)
+    approval = approve_layout_proof(
+        artifact_dir=tmp_path, artifact_id="artifact-1", target_checksum=file_sha256(target_pdf),
+        layout_spec=_spec(), target_pdf=target_pdf, reviewer_id="reviewer-1",
+    )
+    for resolution in ("override", "system", "macos_default"):
+        monkeypatch.setattr(
+            chrome_html_to_pdf, "_find_chrome",
+            lambda resolution=resolution: binary._replace(resolution=resolution),
+        )
+        environment = chrome_html_to_pdf.chrome_environment()
+        assert environment["resolution"] == resolution
+        assert environment["version"] == "FakeChrome 1.0"
+        assert agentic.agentic_renderer_version() == approval.renderer_version
+
+    monkeypatch.setattr(
+        chrome_html_to_pdf, "_find_chrome", lambda: binary._replace(path="/fake/chrome-2")
+    )
+    monkeypatch.setattr(chrome_html_to_pdf, "_binary_version", lambda _path: "FakeChrome 2.0")
+    assert agentic.agentic_renderer_version() != approval.renderer_version
+
+    def never(**_kwargs):
+        raise AssertionError("the renderer ran before the environment check")
+
+    monkeypatch.setattr(agentic, "render_agentic", never)
+    output = tmp_path / "candidate"
+    with pytest.raises(LayoutProofMismatchError, match="renderer version mismatch"):
+        render_candidate_document(approval=approval, artifact_id="artifact-1", layout_spec=_spec(),
+                                  render_context=_candidate_context(), output_dir=output, target_pdf=target_pdf)
+    assert not output.exists()
+
+
 def test_approve_refuses_missing_render_result(tmp_path: Path, fake_pdf: None) -> None:
     target_pdf = build_styled_target_pdf(tmp_path / "target.pdf")
     _render_all_variants(tmp_path, target_pdf=target_pdf)
