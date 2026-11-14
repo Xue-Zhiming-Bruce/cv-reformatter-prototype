@@ -103,6 +103,18 @@ Original text remains available even when an original PDF preview exists.
 `POST /api/process` is the only operation that creates `raw_extracted_text.txt`
 and `candidate_profile.json`; both files are immutable after extraction.
 
+### Bounded upload capacity
+
+`POST /api/process` and `POST /api/target-format` run their file parsing and
+provider work on a bounded worker pool (capacity `API_BLOCKING_WORK_CAPACITY`,
+default 4) instead of the request event loop, so one upload cannot delay health,
+status or other requests while an SDK call or provider polling runs. When every
+slot is busy the upload is refused before any work starts: HTTP 503 with
+`{"error_code": "server_busy", "message": ...}` and `Retry-After: 5`. That
+refusal is capacity, not a provider failure: no artifact is created, nothing was
+sent to a provider, and no paid work is retried automatically. A cancelled
+request (client disconnect) cannot recall a provider call already dispatched.
+
 ## Upload Target Format
 
 ```text
