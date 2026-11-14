@@ -6,6 +6,9 @@ documents, so one process-wide lock covers each complete native lifetime
 garbage collection unless they are closed explicitly, so every lifetime closes
 while it still holds that lock. Call :func:`native_lifetime` around the whole
 lifetime and reach PDFium only through the ``pdfium`` name this module owns.
+
+A missing pypdfium2 now fails when this module is imported rather than at the
+first render, because the import above happens at module import time.
 """
 
 from __future__ import annotations

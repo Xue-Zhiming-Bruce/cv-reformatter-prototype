@@ -1,5 +1,6 @@
 """Render-plan, HTML, and independent output gate regressions."""
 from __future__ import annotations
+import ast
 import json
 import re
 import threading
@@ -1427,10 +1428,18 @@ def test_structure_gate_uses_semantic_boundary_when_title_equals_heading(tmp_pat
 
 
 class _SubstitutePdfium:
-    """A safe native-call substitute: records every lifetime it is given."""
+    """A safe native-call substitute: records every lifetime it is given.
 
-    def __init__(self, *, render_seconds: float = 0.05, fail_on_render: int | None = None,
-                 fail_how: str | None = None):
+    ``intervals`` holds one ``(opened_at, closed_at)`` span per document, from
+    the ``PdfDocument(...)`` call that enters PDFium to the ``close()`` that
+    leaves it — the whole native lifetime the shared owner must serialize, not
+    just the render call inside it. Narrowing the boundary to render-only makes
+    these spans intersect.
+    """
+
+    def __init__(self, *, open_seconds: float = 0.02, render_seconds: float = 0.05,
+                 fail_on_render: int | None = None, fail_how: str | None = None):
+        self.open_seconds = open_seconds
         self.render_seconds = render_seconds
         self.fail_on_render = fail_on_render
         self.fail_how = fail_how
@@ -1441,15 +1450,20 @@ class _SubstitutePdfium:
         self.bitmaps: list[_SubstituteBitmap] = []
 
     def PdfDocument(self, path):  # the name production calls
-        document = _SubstituteDocument(self, page_count=len(PdfReader(path).pages))
+        opened_at = time.monotonic()
+        time.sleep(self.open_seconds)  # a real open enters PDFium too
+        document = _SubstituteDocument(
+            self, page_count=len(PdfReader(path).pages), opened_at=opened_at
+        )
         self.documents.append(document)
         return document
 
 
 class _SubstituteDocument:
-    def __init__(self, substitute: _SubstitutePdfium, page_count: int = 2):
+    def __init__(self, substitute: _SubstitutePdfium, *, page_count: int, opened_at: float):
         self.substitute = substitute
         self.page_count = page_count
+        self.opened_at = opened_at
         self.closed = False
 
     def __len__(self) -> int:
@@ -1465,6 +1479,8 @@ class _SubstituteDocument:
         return page
 
     def close(self) -> None:
+        if not self.closed:
+            self.substitute.intervals.append((self.opened_at, time.monotonic()))
         self.closed = True
 
 
@@ -1479,9 +1495,7 @@ class _SubstitutePage:
         failing = substitute.render_calls == substitute.fail_on_render
         if failing and substitute.fail_how == "render":
             raise RuntimeError("synthetic native render failure")
-        started = time.monotonic()
         time.sleep(substitute.render_seconds)  # a real render holds the page this long
-        substitute.intervals.append((started, time.monotonic()))
         bitmap = _SubstituteBitmap(
             substitute, fail_to_pil=bool(failing and substitute.fail_how == "to_pil")
         )
@@ -1528,7 +1542,7 @@ def _compare(pdf: Path, output_dir: Path) -> None:
 def test_two_independent_pdfium_operations_never_overlap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A rasterization and a comparison started independently in one process
     never hold PDFium at the same time; without the shared owner their recorded
-    native intervals intersect."""
+    native lifetimes (open to close) intersect."""
     substitute = _SubstitutePdfium()
     _substituted_pdfium(monkeypatch, substitute)
     target = build_two_page_overflow_pdf(tmp_path / "target.pdf")
@@ -1556,6 +1570,13 @@ def test_two_independent_pdfium_operations_never_overlap(tmp_path: Path, monkeyp
 
     assert errors == []
     assert substitute.render_calls == 3
+    # One span per document, spanning PdfDocument(...) to close(); a per-render
+    # span count here would silently re-narrow what overlap is checked over.
+    assert len(substitute.intervals) == len(substitute.documents) == 2
+    assert all(
+        end - start >= substitute.open_seconds + substitute.render_seconds
+        for start, end in substitute.intervals
+    )
     ordered = sorted(substitute.intervals)
     overlaps = [
         (earlier, later) for earlier, later in zip(ordered, ordered[1:]) if later[0] < earlier[1]
@@ -1599,3 +1620,48 @@ def test_a_failed_pdfium_lifetime_leaks_no_handle(
     substitute.fail_how = None
     output_dir.mkdir(exist_ok=True)
     _rasterize(pdf, output_dir)
+
+
+def _pdfdocument_calls(source: str) -> list[tuple[str, int]]:
+    """Every ``PdfDocument(...)`` call in ``source`` with its enclosing function."""
+    calls: list[tuple[str, int]] = []
+
+    def walk(node: ast.AST, enclosing: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            name = (
+                child.name
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                else enclosing
+            )
+            if isinstance(child, ast.Call):
+                target = child.func
+                called = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
+                if called == "PdfDocument":
+                    calls.append((enclosing, child.lineno))
+            walk(child, name)
+
+    walk(ast.parse(source), "<module>")
+    return calls
+
+
+def test_only_the_pdfium_owner_imports_and_opens_documents() -> None:
+    """Inventory guard: one pypdfium2 import site, and documents opened only
+    inside the two functions that hold the shared serialization boundary."""
+    from app import pdfium_native
+
+    app_root = Path(pdfium_native.__file__).resolve().parent
+    import_sites: set[str] = set()
+    open_sites: set[tuple[str, str]] = set()
+    for path in sorted(app_root.rglob("*.py")):
+        relative = path.relative_to(app_root).as_posix()
+        source = path.read_text(encoding="utf-8")
+        if re.search(r"^\s*(?:import|from)\s+pypdfium2\b", source, re.M):
+            import_sites.add(relative)
+        for enclosing, _line in _pdfdocument_calls(source):
+            open_sites.add((relative, enclosing))
+
+    assert import_sites == {"pdfium_native.py"}, f"pypdfium2 imported in {sorted(import_sites)}"
+    assert open_sites == {
+        ("pipeline/rendering.py", "_render_pages"),
+        ("template_analysis/visual_comparator.py", "_render_pdf"),
+    }, f"documents opened outside the serialized owner functions: {sorted(open_sites)}"
