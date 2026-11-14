@@ -600,6 +600,26 @@ environment switch enables it. Provider policy, live execution, live
 cost/Reviewer evidence and a bounded live trial remain open, so B1A stays
 unchecked.
 
+November 14 (issues #45–#48, merged on `backend/durable-jobs-and-publication`):
+four P2 slices landed with QA and an independent judge at each branch head.
+`#45` (`2c8d3fc`) gives render-region evidence crops a real page count and
+refuses an out-of-range page before rendering instead of emitting a crop that no
+page supports. `#48` (`eebd899`) stops a re-export when a layout trial produces
+byte-identical HTML, recording the skip as `duplicate_render_not_exported`
+instead of a second PDF. `#46` (`cc5460a`) grounds the Builder's contact-label
+context in one target-only measurement owner, so a label claim is not restated
+from prose. `#47` (`b724e11`) adds `finding_disposition.py` as the single owner
+of whether an observation is a suspected defect, an expected variation, a
+confirmed match or unresolved, with `payable()` as the only routing boundary, and
+retires the two filter helpers it replaces; a section's page inventory now
+follows page ownership (a later heading takes over only when it starts at the top
+of its page), so reflow is never read as missing content. A follow-up (`471eade`)
+makes a recorded page count that disagrees with the PDF a recoverable `ValueError`
+instead of an `IndexError`. Evidence at the merge head `f6bc1ea`: ruff clean,
+offline 1049 passed / 41 skipped / 29 deselected, PostgreSQL 1090 passed / 0
+skipped / 29 deselected. Nothing here approves a template, grants owner
+acceptance or enables a live provider path.
+
 ### B2 — Analyzer Operational Readiness
 
 Status: analyzer decision accepted (ADR 0002); operational readiness `[ ]`.

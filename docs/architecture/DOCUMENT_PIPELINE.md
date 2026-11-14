@@ -271,6 +271,7 @@ target and designer-template generation retain the approval-aware product path.
 | --- | --- |
 | Input dispatch and run coordination (`run_e5`, its named phases, per-run state) | `__main__.py`, `service.py` |
 | Evidence access, measurements, review | `evidence.py`, `measurement.py`, `review.py` |
+| Finding disposition: whether a Reviewer observation is a suspected defect, an expected variation, a confirmed match or unresolved, and the one `payable()` routing boundary that decides whether it may cost a paid attribution request or a Builder turn | `finding_disposition.py` |
 | Persistent defect state (dedup keys, observation classes, reopen, open/closed, attribution binding) | `defect_ledger.py` |
 | Stored E5 run records, Lane A structure and label-approval contracts | `run_models.py` |
 | Presentation-label catalog, canonical identity, approval projection, recognition | `presentation_labels.py` |
