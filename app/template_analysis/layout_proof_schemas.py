@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -257,6 +257,10 @@ class LayoutProofRenderResult(LayoutProofModel):
     #: Appended and defaulted so stored render results stay readable; the
     #: recorded provenance is what review-required reuse must verify.
     execution_mode: ProofExecutionMode = "unrecorded/1"
+    #: The Chrome profile/build and bundled font assets that produced this PDF.
+    #: Defaulted so stored render results stay readable; a result with no
+    #: recorded environment is never relabelled as the current one.
+    rendering_environment: dict[str, Any] | None = None
 
 
 class StructuralCheck(LayoutProofModel):

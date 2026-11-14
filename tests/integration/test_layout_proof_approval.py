@@ -335,6 +335,53 @@ def test_preloaded_approval_cannot_render_with_another_renderer(
     assert not output.exists()
 
 
+def test_changed_chrome_environment_invalidates_approval_before_rendering(
+    tmp_path: Path, fake_pdf: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.generation import agentic, chrome_html_to_pdf
+
+    target_pdf = build_styled_target_pdf(tmp_path / "target.pdf")
+    _render_all_variants(tmp_path, target_pdf=target_pdf)
+    approval = approve_layout_proof(
+        artifact_dir=tmp_path, artifact_id="artifact-1", target_checksum=file_sha256(target_pdf),
+        layout_spec=_spec(), target_pdf=target_pdf, reviewer_id="reviewer-1",
+    )
+    approved_version = approval.renderer_version
+    approval_path = tmp_path / "layout_proofs/approval.json"
+    approval_bytes = approval_path.read_bytes()
+    result_path = tmp_path / "layout_proofs/variants/medium/render_result.json"
+    stored_result = json.loads(result_path.read_text())
+    assert stored_result["renderer_version"] == approved_version
+    assert stored_result["rendering_environment"]["contract"] == chrome_html_to_pdf.CONTRACT_VERSION
+
+    # A browser build or bundled-font change between proof approval and
+    # generation: the recorded environment no longer matches the active one.
+    upgraded = {
+        **chrome_html_to_pdf.chrome_environment(),
+        "version": "Google Chrome 999.0.0.0",
+        "digest": "0" * 16,
+    }
+    monkeypatch.setattr(chrome_html_to_pdf, "chrome_environment", lambda: upgraded)
+    assert agentic.agentic_renderer_version() != approved_version
+
+    def never(**_kwargs):
+        raise AssertionError("the renderer ran before the environment check")
+
+    monkeypatch.setattr(agentic, "render_agentic", never)
+    output = tmp_path / "candidate"
+    with pytest.raises(LayoutProofMismatchError, match="renderer version mismatch"):
+        render_candidate_document(approval=approval, artifact_id="artifact-1", layout_spec=_spec(),
+                                  render_context=_candidate_context(), output_dir=output, target_pdf=target_pdf)
+    assert not output.exists()
+    # The old proof and approval stay readable under their recorded identity;
+    # they are never re-labelled as current or rewritten by the rejection.
+    stored_approval = LayoutProofApproval.model_validate_json(approval_path.read_text())
+    assert stored_approval.renderer_version == approved_version
+    assert stored_approval.is_approved
+    assert json.loads(result_path.read_text()) == stored_result
+    assert approval_path.read_bytes() == approval_bytes
+
+
 def test_approve_refuses_missing_render_result(tmp_path: Path, fake_pdf: None) -> None:
     target_pdf = build_styled_target_pdf(tmp_path / "target.pdf")
     _render_all_variants(tmp_path, target_pdf=target_pdf)

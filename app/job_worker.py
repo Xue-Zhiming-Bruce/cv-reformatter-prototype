@@ -612,7 +612,8 @@ def install_offline_renderer() -> None:
         source = directory / "render.html"
         source.write_text(html, encoding="utf-8")
         return source, chrome_html_to_pdf.export_html_to_pdf(source, directory / "render.pdf"), {
-            "execution": "local-job/offline", "model_requests": 0, "tool_calls": 0}
+            "execution": "local-job/offline", "model_requests": 0, "tool_calls": 0,
+            "rendering_environment": chrome_html_to_pdf.chrome_environment()}
 
     # The proof/render evidence records the renderer that actually ran; the
     # offline substitution is never mistaken for the agentic provider owner.

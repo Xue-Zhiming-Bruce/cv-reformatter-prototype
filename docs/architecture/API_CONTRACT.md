@@ -647,7 +647,9 @@ rewritten on read. New proof IDs include renderer and canonical-context identity
 so a version change preserves earlier proof files. Rolling back requires the
 matching implementation, approval record and original checksum-verified proof
 files; no automatic fallback grants an older approval. Generation metadata also
-records `renderer_version`. Current uploaded-target rendering uses
+records `renderer_version` and, for native and agentic output, the
+`rendering_environment` (export contract version, browser version and resolution
+mode, locale/timezone, font readiness and bundled-font digest). Current uploaded-target rendering uses
 `agentic-a/6+lane-a-product-subset/17+<configuration digest>`; `product-html/1`
 identifies historical records only. The six identity fields used for final-output
 acceptance remain unchanged.
