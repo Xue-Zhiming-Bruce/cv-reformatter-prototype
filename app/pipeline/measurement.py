@@ -600,6 +600,46 @@ def _header_vertical_rule_target_context(pdf: Path) -> dict[str, Any] | None:
         "forbidden_interpretation": "continuous_or_page_spanning_vertical_rail",
     }
 
+def target_header_contact_label_context(pdf: Path, *, state: Any) -> dict[str, Any]:
+    """The measured TARGET contact-label mode, before any plan or render exists.
+
+    The initial Builder call has no render to compare against, so this reads the
+    target alone through the same `header_contact_label_evidence` owner the
+    Reviewer's `target_evidence[0]` uses (target person values are never read:
+    `values=None`). Every field but the target identity and the declared region
+    is that measurement verbatim, so the two call paths cannot disagree about
+    the same target. Uncertain evidence keeps its own status and reason and
+    carries no `label_mode`, so nothing defaults a target to `false`.
+    """
+    nodes = [node for node in state.nodes if node.kind == "header_row"
+             and any(field.slot in CONTACT_FIELD_SLOTS.values() for field in node.fields)]
+    node = nodes[0] if len(nodes) == 1 else None
+    context: dict[str, Any] = {
+        "source_sha256": _sha256_file(pdf), "region_id": node.node_id if node else None,
+        "page": 1, "method": HEADER_CONTACT_LABEL_MEASUREMENT_VERSION,
+    }
+
+    def unavailable(status: str, reason: str) -> dict[str, Any]:
+        return {**context, "status": status, "reason": reason}
+
+    if node is None:
+        return unavailable(
+            "not_measurable", "label geometry requires one declared page-one contact row"
+        )
+    name = _header_vertical_rule_evidence(pdf, 1)
+    font = next((style.font_size_pt for style in state.styles
+                 if style.style_id == node.style_id), None)
+    if name is None or font is None:
+        return unavailable(
+            "evidence_missing", "the header name did not bind to the actual PDF"
+            if name is None else "the declared contact row has no measured style"
+        )
+    return {**context, **header_contact_label_evidence(
+        pdf, name_region=name["name_region"], font_size_pt=font,
+        labels={CONTACT_FIELD_SLOTS[field]: label for label, field in CONTACT_LABEL_FIELDS.items()
+                if CONTACT_FIELD_SLOTS[field] in {item.slot for item in node.fields}},
+        separator=node.separator)}
+
 def _target_body_text_color_context(pdf: Path) -> dict[str, Any] | None:
     """Measured dominant text fill by visible-character volume."""
     import pdfplumber
