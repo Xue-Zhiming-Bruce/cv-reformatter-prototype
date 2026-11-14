@@ -9,6 +9,7 @@ enable approval.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -424,6 +425,51 @@ def test_resolution_labels_keep_the_proof_identity_but_a_new_build_does_not(
         render_candidate_document(approval=approval, artifact_id="artifact-1", layout_spec=_spec(),
                                   render_context=_candidate_context(), output_dir=output, target_pdf=target_pdf)
     assert not output.exists()
+
+
+def _report_fallback_font_version(
+    monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    """Report one installed fallback-font package version for the dpkg probe."""
+    from app.generation import chrome_html_to_pdf
+
+    stdout = f"fonts-dejavu-core={version}\nfonts-liberation=1:2.1.5-3\n"
+    monkeypatch.setattr(
+        chrome_html_to_pdf.subprocess, "run",
+        lambda _command, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout=stdout, stderr=""
+        ),
+    )
+
+
+def test_changed_fallback_font_package_rejects_the_approved_renderer_identity(
+    tmp_path: Path, fake_pdf: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #52 judge finding: the recorded fallback-font package versions are
+    read again on each identity check, so an apt upgrade under a live process
+    cannot keep approving proofs rendered under the previous fonts."""
+    from app.generation import agentic, chrome_html_to_pdf
+    from app.template_analysis.layout_proof_rendering import require_current_renderer
+
+    monkeypatch.setattr(
+        chrome_html_to_pdf, "_find_chrome",
+        lambda: chrome_html_to_pdf.ChromeBinary("/fake/chrome", "override"),
+    )
+    monkeypatch.setattr(chrome_html_to_pdf, "_binary_version", lambda _path: "FakeChrome 1.0")
+    _report_fallback_font_version(monkeypatch, "2.37-6")
+    target_pdf = build_styled_target_pdf(tmp_path / "target.pdf")
+    _render_all_variants(tmp_path, target_pdf=target_pdf)
+    approval = approve_layout_proof(
+        artifact_dir=tmp_path, artifact_id="artifact-1", target_checksum=file_sha256(target_pdf),
+        layout_spec=_spec(), target_pdf=target_pdf, reviewer_id="reviewer-1",
+    )
+    assert approval.renderer_version == agentic.agentic_renderer_version()
+    require_current_renderer(approval.renderer_version)
+
+    _report_fallback_font_version(monkeypatch, "2.37-7")
+    assert agentic.agentic_renderer_version() != approval.renderer_version
+    with pytest.raises(LayoutProofMismatchError, match="renderer version mismatch"):
+        require_current_renderer(approval.renderer_version)
 
 
 def test_approve_refuses_missing_render_result(tmp_path: Path, fake_pdf: None) -> None:

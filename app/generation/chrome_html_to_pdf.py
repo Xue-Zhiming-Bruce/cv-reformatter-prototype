@@ -27,7 +27,10 @@ build renders the same PDF whether it was found through CHROME_BIN or PATH.
 
 The version probe is cached per executable file state (path, mtime, size,
 inode), so a browser replaced or upgraded in place is re-probed instead of
-keeping the previous version for the rest of the process.
+keeping the previous version for the rest of the process. The fallback-font
+package versions are not cached at all: they are probed on every identity read
+(one `dpkg-query` there, not per render), so an apt upgrade under a long-lived
+process still changes the recorded identity.
 """
 
 from __future__ import annotations
@@ -189,13 +192,16 @@ def font_asset_identity() -> dict[str, Any]:
     return {"directory": directory.as_posix(), "sha256": digest.hexdigest(), "files": [path.name for path in files]}
 
 
-@functools.lru_cache(maxsize=1)
 def fallback_font_identity() -> dict[str, str]:
     """Installed fallback-font package versions, where the host reports them.
 
     Chrome draws glyphs the bundled woff2 assets do not cover from these fonts,
     so a version change changes rendered glyphs and must invalidate a proof.
     Hosts without dpkg (macOS) report none and are outside this identity.
+
+    Probed on every identity read rather than cached: a long-lived process must
+    not keep approving proofs against a package that changed under it. This is
+    one ``dpkg-query`` per identity read, not per render.
     """
     try:
         result = subprocess.run(
