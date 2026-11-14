@@ -97,6 +97,7 @@ from app.template_analysis.layout_proof_validation import (
     validate_proof_structure,
 )
 from app.template_analysis.schemas import LayoutTemplateSpec, TemplateStyleSpec
+from app.target_publication import TargetSet
 
 class LayoutProofNotApprovedError(RuntimeError):
     """Raised when final candidate generation lacks an approved layout proof."""
@@ -398,18 +399,18 @@ def resolve_layout_proof_context(
         validate_target_format_reference,
     )
 
-    target_format = load_saved_target_format(artifact_dir)
+    target_set = TargetSet(artifact_dir)
+    target_format = load_saved_target_format(target_set)
     if target_format is None:
         raise LayoutProofContextError("No target format for this artifact.")
     if not target_format.used_as_template_source:
         raise LayoutProofContextError("The target format is not used as a template source.")
-    validate_target_format_reference(artifact_id, artifact_dir, target_format)
-    stored_path = artifact_dir / target_format.stored_filename
+    stored_path = validate_target_format_reference(artifact_id, target_set, target_format)
     try:
         style_spec = (
             _design_layout_spec(artifact_dir, design_id, repository)
             if design_id is not None
-            else load_layout_template_spec(artifact_dir / LAYOUT_SPEC_FILENAME)
+            else load_layout_template_spec(target_set.published_dir / LAYOUT_SPEC_FILENAME)
         )
     except TargetAnalysisArtifactError as exc:
         raise LayoutProofContextError(

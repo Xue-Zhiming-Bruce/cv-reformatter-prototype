@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import threading
+from unittest.mock import patch
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
@@ -19,6 +20,7 @@ from app.extraction.candidate_schema import CandidateProfile, WorkExperience
 from app.main import app
 from app.template_analysis import layout_proof_service
 from app.generation.render_plan import layout_spec_sha256
+from app.template_analysis.design_evidence import target_checksum_from_bytes
 from app.template_analysis.artifacts import load_layout_template_spec
 from app.generation import service as generation_service
 from tests.helpers.layout_proof import (
@@ -1371,6 +1373,33 @@ def test_publication_switches_one_complete_set_at_a_time(
     assert not any((outputs / ".staging").glob("*"))
     # The live set and the one it replaced stay; the superseded one is pruned.
     assert len(_published_epochs(artifact_dir)) == 2
+
+
+def test_layout_proof_status_reads_one_published_target_set(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: metadata and source of one read come from one published set.
+
+    At ``ab1fe85`` the status read the metadata, a publication switched the set,
+    and the source was then resolved by its public name: A's metadata was
+    reported with B's checksum.
+    """
+    outputs = tmp_path / "outputs"
+    artifact_dir = outputs / "artifact_pinned_reader"
+    first, second = _publish_baseline_target(tmp_path, monkeypatch, artifact_dir)
+    loaded = json.loads
+
+    def switch_after_metadata(text, *args, **kwargs):
+        payload = loaded(text, *args, **kwargs)
+        if isinstance(payload, dict) and "stored_filename" in payload:
+            response = _upload_docx(second, artifact_dir.name, "second.docx")
+            assert response.status_code == 200, response.text
+        return payload
+
+    with patch.object(json, "loads", switch_after_metadata):
+        status = main._layout_proof_status(artifact_dir.name, artifact_dir)
+
+    assert status.target_checksum == target_checksum_from_bytes(first)
 
 
 def test_cancellation_inside_the_publish_window_publishes_nothing(

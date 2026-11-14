@@ -148,7 +148,7 @@ from app.template_analysis.layout_proof_validation import (
     load_layout_proof_render_result,
     load_variant_evidence,
 )
-from app.target_publication import publish_target_set
+from app.target_publication import TargetSet, publish_target_set
 from app.template_analysis.artifacts import (
     ADOBE_RAW_FILENAME,
     LAYOUT_SPEC_FILENAME,
@@ -1928,7 +1928,9 @@ def _resolve_download_artifact(artifact_id: str, filename: str) -> Path:
         COMPOSITION_REPORT_FILENAME,
     }:
         directory, manifest = generations.selected_output(directory)
-    artifact_path = directory / filename
+    # The pinned epoch copy is what was verified and what goes out: the public
+    # target name may switch to another set while the caller reads it.
+    artifact_path = TargetSet(directory).read(filename) or directory / filename
     if not artifact_path.exists() or not artifact_path.is_file():
         raise HTTPException(status_code=404, detail="Generated artifact not found.")
     if directory != GENERATED_OUTPUTS_DIR / artifact_id and generations is not None:
@@ -1958,9 +1960,10 @@ def _profile_repository() -> ProfileRevisionRepository | None:
 
 def _load_design_evidence(artifact_dir: Path) -> tuple[Any, TemplateStyleSpec | None]:
     """Rebuild from persisted Adobe evidence; never rerun an analyzer."""
-    analysis_path = artifact_dir / NORMALIZED_LAYOUT_FILENAME
-    metadata_path = artifact_dir / "target_format.json"
-    if not analysis_path.exists() or not metadata_path.exists():
+    target_set = TargetSet(artifact_dir)
+    analysis_path = target_set.read(NORMALIZED_LAYOUT_FILENAME)
+    metadata_path = target_set.read(TARGET_FORMAT_FILENAME)
+    if analysis_path is None or metadata_path is None:
         return None, None
     try:
         normalized = NormalizedLayoutEvidence.model_validate_json(
@@ -1971,8 +1974,8 @@ def _load_design_evidence(artifact_dir: Path) -> tuple[Any, TemplateStyleSpec | 
         )
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise DesignServiceError(f"Saved target analysis is invalid: {exc}") from exc
-    stored_path = artifact_dir / target_format.stored_filename
-    if not stored_path.exists():
+    stored_path = target_set.read(target_format.stored_filename)
+    if stored_path is None:
         return None, None
     if target_format.role != "pdf_reference":
         return None, None
@@ -2063,7 +2066,7 @@ def _load_generation_style_spec(
     artifact_dir: Path,
 ) -> LayoutTemplateSpec:
     """Load the sole uploaded-target generation contract: artifact-root v2."""
-    return load_layout_template_spec(artifact_dir / LAYOUT_SPEC_FILENAME)
+    return load_layout_template_spec(TargetSet(artifact_dir).published_dir / LAYOUT_SPEC_FILENAME)
 
 
 def _layout_proof_context(
@@ -2086,11 +2089,12 @@ def _layout_proof_status(
     artifact_id: str, artifact_dir: Path
 ) -> LayoutProofStatusResponse:
     target_checksum = ""
-    target_format = load_saved_target_format(artifact_dir)
+    target_set = TargetSet(artifact_dir)
+    target_format = load_saved_target_format(target_set)
     if target_format is not None:
-        stored_path = artifact_dir / target_format.stored_filename
+        stored_path = target_set.read(target_format.stored_filename)
         try:
-            if stored_path.exists():
+            if stored_path is not None:
                 target_checksum = target_checksum_from_bytes(stored_path.read_bytes())
         except OSError:
             target_checksum = ""
