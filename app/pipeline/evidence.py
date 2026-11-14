@@ -348,14 +348,18 @@ class EvidencePod:
         return record.model_dump(mode="json")
 
     def page_pixels(self, page_number: int, source: str = "target") -> tuple[list[Path], int, int]:
-        """Render (once per source) and cache full-resolution page PNGs."""
-        key = f"{source}:{self.target_pdf.name}"
+        """Render (once per source) and cache full-resolution page PNGs.
+
+        The page is checked against the resolved source's page count before any
+        render, so an out-of-range request writes no page image.
+        """
+        pdf, page_sizes, _source_kind = self._crop_source(source)
+        if not 1 <= page_number <= len(page_sizes):
+            raise ValueError(f"page {page_number} outside 1..{len(page_sizes)}")
+        key = f"{source}:{pdf.name}"
         if key not in self._page_images:
-            prefix = f"{source}_{self.target_pdf.stem}"
-            self._page_images[key] = _render_pages(self.target_pdf, self.out_dir, prefix)
+            self._page_images[key] = _render_pages(pdf, self.out_dir, f"{source}_{pdf.stem}")
         pages = self._page_images[key]
-        if not 1 <= page_number <= len(pages):
-            raise ValueError(f"page {page_number} outside 1..{len(pages)}")
         from PIL import Image
 
         with Image.open(pages[page_number - 1]) as image:
@@ -371,9 +375,13 @@ class EvidencePod:
             }
         return None
 
-    def _crop_source(self, source: str) -> tuple[Path, Mapping[int, tuple[float, float]]]:
-        """The PDF one crop reads, with that PDF's own page sizes."""
-        return self.target_pdf, self.page_sizes
+    def _crop_source(self, source: str) -> tuple[Path, Mapping[int, tuple[float, float]], str]:
+        """The PDF one crop reads, that PDF's own page sizes, and the provenance kind
+        it carries. A source this pod cannot crop is refused here, so the reported
+        kind always follows the pixels that were actually cropped."""
+        if source != "target":
+            raise ValueError(f"source must be 'target' or 'render': {source!r}")
+        return self.target_pdf, self.page_sizes, "target_pdf"
 
     def _pt_to_px(
         self,
@@ -505,7 +513,7 @@ class EvidencePod:
             )
             return [json.dumps({"evidence_id": evidence_id, "status": "unavailable", **refusal}, indent=1)]
         self._validate_bbox(bbox_pt)
-        pdf, page_sizes = self._crop_source(source)
+        pdf, page_sizes, source_kind = self._crop_source(source)
         pages, width_px, height_px = self.page_pixels(page_number, source)
         source_path = pages[page_number - 1]
         x0, top, x1, bottom, scale_x, scale_y = self._pt_to_px(page_number, bbox_pt, source, page_sizes)
@@ -537,7 +545,7 @@ class EvidencePod:
             "evidence_id": evidence_id,
             "kind": "region_crop",
             "page": page_number,
-            "source_kind": "target_pdf" if source == "target" else "render",
+            "source_kind": source_kind,
             "source_artifact": source_path.name,
             "page_size_pt": list(page_sizes[page_number]),
             "requested_bbox_pt": [round(float(v), 3) for v in bbox_pt],
@@ -552,7 +560,7 @@ class EvidencePod:
             ),
             "is_original_resolution": True,
         }
-        header["target_sha256" if source == "target" else "source_sha256"] = _sha256_file(pdf)
+        header["target_sha256" if source_kind == "target_pdf" else "source_sha256"] = _sha256_file(pdf)
         return [
             "Region crop follows in the next part. Machine-readable header:\n"
             + json.dumps(header, indent=1),
@@ -1136,9 +1144,11 @@ class DualSourcePod(EvidencePod):
     # -- page pixels for both sources ----------------------------------------
 
     def page_pixels(self, page_number: int, source: str = "target") -> tuple[list[Path], int, int]:
-        pdf = self.render_pdf if source == "render" else self.target_pdf
-        if pdf is None:
+        if source == "render" and self.render_pdf is None:
             raise ValueError("no candidate render bound to this pod")
+        pdf, page_sizes, _source_kind = self._crop_source(source)
+        if not 1 <= page_number <= len(page_sizes):
+            raise ValueError(f"page {page_number} outside 1..{len(page_sizes)}")
         # Keyed by content, not by name: a re-bound render with a reused basename
         # must never serve the previous render's pixels.
         digest = _sha256_file(pdf)
@@ -1147,8 +1157,6 @@ class DualSourcePod(EvidencePod):
             prefix = f"{source}_{pdf.stem}_{digest[:8]}"
             self._page_images[key] = _render_pages(pdf, self.out_dir, prefix)
         pages = self._page_images[key]
-        if not 1 <= page_number <= len(pages):
-            raise ValueError(f"page {page_number} outside 1..{len(pages)}")
         from PIL import Image
 
         with Image.open(pages[page_number - 1]) as image:
@@ -1161,10 +1169,10 @@ class DualSourcePod(EvidencePod):
             return {"reason": "no candidate render exists at this checkpoint"}
         return None
 
-    def _crop_source(self, source: str) -> tuple[Path, Mapping[int, tuple[float, float]]]:
+    def _crop_source(self, source: str) -> tuple[Path, Mapping[int, tuple[float, float]], str]:
         """A render crop reads the bound render PDF with the render's page geometry."""
         if source == "render" and self.render_pdf is not None:
-            return self.render_pdf, _pdf_page_sizes(self.render_pdf)
+            return self.render_pdf, _pdf_page_sizes(self.render_pdf), "render"
         return super()._crop_source(source)
 
     def measure_render_words(self, page_number: int) -> dict[str, Any]:

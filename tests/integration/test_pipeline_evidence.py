@@ -315,8 +315,34 @@ def test_render_crop_rejects_a_page_past_the_bound_render(tmp_path: Path) -> Non
     result = tools["inspect_page_region"](2, list(_RENDER_BBOX), source="render")
     assert result["status"] == "error" and result["tool"] == "inspect_page_region"
     assert "page 2 outside 1..1" in result["error"]
-    assert not list(tmp_path.glob("region_*.png"))
+    assert not list(tmp_path.glob("*.png"))  # no crop and no full-page image
     assert [record for record in pod.records if record.kind == "region_crop"] == []
+
+
+@pytest.mark.parametrize("source", ["target", "render"])
+def test_out_of_range_crop_writes_no_page_image_for_either_source(tmp_path: Path, source: str) -> None:
+    """The page is refused before any page render, on the target-only pod too."""
+    e1_dir = tmp_path / "e1"
+    e1_dir.mkdir()
+    with pytest.raises(ValueError, match="page 2 outside 1..1"):
+        _pod(e1_dir).inspect_page_region(2, list(_RENDER_BBOX))
+    assert not list(e1_dir.glob("*.png"))
+
+    dual_dir = tmp_path / "dual"
+    pod = _dual_pod(dual_dir, render_pdf=_marked_render_pdf(dual_dir / "render_1.pdf"))
+    with pytest.raises(ValueError, match="page 2 outside 1..1"):
+        pod.inspect_page_region(2, list(_RENDER_BBOX), source=source)
+    assert not list(dual_dir.glob("*.png"))
+
+
+def test_crop_refuses_an_unknown_source_instead_of_claiming_render_provenance(tmp_path: Path) -> None:
+    """Provenance follows the pixels cropped: a source the pod cannot crop is refused,
+    never reported as a render crop of the target's pixels."""
+    pod = _dual_pod(tmp_path, render_pdf=_marked_render_pdf(tmp_path / "render_1.pdf"))
+    with pytest.raises(ValueError, match="source must be 'target' or 'render'"):
+        pod.inspect_page_region(1, list(_RENDER_BBOX), source="tgt")
+    assert pod.records == []
+    assert not list(tmp_path.glob("*.png"))
 
 
 def test_render_crop_runs_through_the_attribution_tool_boundary(tmp_path: Path) -> None:
