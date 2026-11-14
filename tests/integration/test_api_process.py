@@ -63,9 +63,10 @@ def _build_ordered_resume_docx(path: Path) -> None:
     """Issue #49: contact in the header/footer, a table between paragraphs, a header
     table between header paragraphs, a first-page header defined before the section
     that enables it, a wrapped paragraph and an inline wrapper around runs, a wrapped
-    paragraph and a content control inside table cells, one branch of an inline
-    alternative, and six visible shapes this reader cannot read (nested table, run
-    content control, field, tracked move, embedded chunk, images)."""
+    paragraph and a content control inside table cells, an inline content control
+    whose ``sdtPr`` must not report as content, one branch of an inline alternative,
+    and five visible shapes this reader cannot read (nested table, field, tracked
+    move, embedded chunk, images)."""
     document = Document()
     section = document.sections[0]
     header = section.header
@@ -98,14 +99,15 @@ def _build_ordered_resume_docx(path: Path) -> None:
     citizenship._p.append(
         parse_xml(
             f'<w:customXml {nsdecls("w")} w:element="field">'
+            '<w:customXmlPr><w:attr w:name="format" w:val="text"/></w:customXmlPr>'
             "<w:r><w:t>Inline wrapped</w:t></w:r></w:customXml>"
         )
     )
     phone = document.add_paragraph("Phone: ")
     phone._p.append(
         parse_xml(
-            f'<w:sdt {nsdecls("w")}><w:sdtContent><w:r><w:t>555 0199</w:t></w:r>'
-            "</w:sdtContent></w:sdt>"
+            f'<w:sdt {nsdecls("w")}><w:sdtPr><w:text/></w:sdtPr><w:sdtContent>'
+            "<w:r><w:t>555 0199</w:t></w:r></w:sdtContent></w:sdt>"
         )
     )
     reference = document.add_paragraph("Ref: ")
@@ -287,33 +289,33 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
     # from the limitations.
     assert lines.index("After table") < lines.index("Wrapped entry")
     assert "Citizenship: Inline wrapped" in lines
-    # A cell-level wrapper is read by the same walk as the body, and an inline
-    # markup-compatibility alternative is read as one branch, never both.
+    # A cell-level wrapper is read by the same walk as the body, an inline content
+    # control's runs are read where they sit, and an inline markup-compatibility
+    # alternative is read as one branch, never both.
     assert "Cell wrapped" in lines
+    assert "Phone: 555 0199" in lines
     assert "Alternative: Choice branch" in lines
-    # The nested table's cell, the content-control run, the field result, the moved
-    # block and the embedded chunk are not readable, so each must be named instead of
-    # passing as absent.
+    # The nested table's cell, the field result, the moved block and the embedded
+    # chunk are not readable, so each must be named instead of passing as absent.
     for missing in (
         "Nested entry",
-        "555 0199",
         "Field result",
         "Moved line",
         "Chunk text",
         "Fallback branch",
     ):
         assert missing not in body["original_text"]
-    assert len(body["ingestion_limitations"]) == 6
+    assert len(body["ingestion_limitations"]) == 5
     limitation_text = " ".join(body["ingestion_limitations"])
     for shape in (
         "nested table",
-        "content control",
         "field",
         "moves",
         "alternate-format chunk",
         "OCR is out of scope",
     ):
         assert shape in limitation_text
+    assert "content control" not in limitation_text
     assert "Review the source document" in limitation_text
     assert (artifact_dir / "candidate_profile.json").exists()
     assert (artifact_dir / "normalized_candidate_document.json").exists()
@@ -1136,6 +1138,99 @@ def test_table_rows_and_cells_held_by_a_content_control_are_read(
     assert audit["unread_source_content"] == body["ingestion_limitations"]
     assert audit["unread_text_source_content"] == []
     assert audit["status"] == "passed"
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 200, approval.text
+
+    generated = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": body["artifact_id"],
+            "approved_profile_version_id": approval.json()["profile_version_id"],
+            "template_name": "apex_standard",
+        },
+    )
+    assert generated.status_code == 200, generated.text
+
+
+@pytest.mark.usefixtures("a_generation_without_model_loop")
+def test_property_wrappers_do_not_block_approval_or_generation(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Issue #49: a ``*Pr`` child describes its container, so it is never content."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    exporter = make_proof_pdf_exporter()
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", exporter)
+    monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", exporter)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    body_element = document.element.body
+    body_element.insert(
+        len(body_element) - 1,
+        parse_xml(
+            f'<w:sdt {nsdecls("w")}><w:sdtPr><w:alias w:val="Summary"/></w:sdtPr>'
+            "<w:sdtContent><w:p><w:r><w:t>Block control entry</w:t></w:r></w:p>"
+            "</w:sdtContent><w:sdtEndPr/></w:sdt>"
+        ),
+    )
+    wrapped = document.add_paragraph("Skills: ")
+    wrapped._p.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="field">'
+            '<w:customXmlPr><w:attr w:name="format" w:val="text"/></w:customXmlPr>'
+            "<w:r><w:t>Python</w:t></w:r></w:customXml>"
+        )
+    )
+    wrapped._p.append(
+        parse_xml(
+            f'<w:smartTag {nsdecls("w")} w:uri="urn:x" w:element="skill">'
+            '<w:smartTagPr><w:attr w:name="format" w:val="text"/></w:smartTagPr>'
+            "<w:r><w:t>, SQL</w:t></w:r></w:smartTag>"
+        )
+    )
+    inline = document.add_paragraph("Phone: ")
+    inline._p.append(
+        parse_xml(
+            f'<w:sdt {nsdecls("w")}><w:sdtPr><w:text/></w:sdtPr><w:sdtContent>'
+            "<w:r><w:t>555 0199</w:t></w:r></w:sdtContent></w:sdt>"
+        )
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    lines = body["original_text"].splitlines()
+    # Every property-wrapped value is read, so the document is complete as read.
+    assert "Block control entry" in lines
+    assert "Skills: Python, SQL" in lines
+    assert "Phone: 555 0199" in lines
+    assert body["ingestion_limitations"] == []
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "passed"
+    assert audit["unread_source_content"] == []
+    assert audit["unread_text_source_content"] == []
 
     approval = client.post(
         f"/api/artifacts/{body['artifact_id']}/profiles/approve",

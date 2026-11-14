@@ -22,8 +22,8 @@ def test_demo_forwards_unread_source_content_to_its_coverage_audit(
     phone = document.add_paragraph("Phone: ")
     phone._p.append(
         parse_xml(
-            f'<w:sdt {nsdecls("w")}><w:sdtContent>'
-            "<w:r><w:t>555 0199</w:t></w:r></w:sdtContent></w:sdt>"
+            f'<w:fldSimple {nsdecls("w")} w:instr=" REF candidate_phone ">'
+            "<w:r><w:t>555 0199</w:t></w:r></w:fldSimple>"
         )
     )
     document.save(resume_path)
@@ -38,7 +38,7 @@ def test_demo_forwards_unread_source_content_to_its_coverage_audit(
     )
     assert audit["status"] == "incomplete"
     assert len(audit["unread_source_content"]) == 1
-    assert "content control" in audit["unread_source_content"][0]
+    assert "field" in audit["unread_source_content"][0]
     assert "555 0199" not in (
         run_demo.OUTPUT_DIR / "raw_extracted_text.txt"
     ).read_text(encoding="utf-8")

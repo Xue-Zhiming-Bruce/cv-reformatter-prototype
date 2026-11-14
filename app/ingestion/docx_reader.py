@@ -31,8 +31,12 @@ What this reader reads (the whole read set):
   cell's block content then goes through the same block walk as the body, so a
   cell's block content control or wrapped paragraph is read where it sits; a
   table nested in a cell stays reported (see below);
-- a block-level content control (``w:sdt``), whose paragraphs and tables are read
-  in the position the control occupies, nested controls included;
+- a content control (``w:sdt``) in every position the walk reaches: its
+  paragraphs and tables at block level, its rows and cells in a table, its runs
+  inline, each read in the position the control occupies, nested controls
+  included. A control is recorded as read when the walk descends it, so the
+  part-level ``content_control`` count below names only the controls left
+  unread;
 - any other block wrapper whose own children are only paragraphs, tables or
   content controls (``w:customXml`` and friends), read in place recursively;
 - inline text, by one walk with one explicit decision per element of the inline
@@ -61,11 +65,11 @@ location):
   deletions and moves (``w:ins``, ``w:del``, ``w:moveFrom``, ``w:moveTo``): a
   move is reported rather than read because Word keeps both the source and the
   destination copy under markup, so reading one would guess which is current;
-- content held by a content control this reader does not descend into: an inline
-  control inside a paragraph holds runs, and a control in a table position that
-  does not hold the rows or cells it sits among cannot be read. Counted once per
-  part, so a control in any position — body, cell, row, table, header or footer —
-  is named instead of skipped;
+- content held by a content control no walk descends: a control whose content is
+  none of the blocks, rows, cells or runs the walks place (for example one inside
+  tracked change markup, which is itself reported). Counted once per part, so a
+  control in any position — body, cell, row, table, header or footer — is named
+  instead of skipped;
 - a block wrapper, or a table child, holding text in a shape that is not the
   blocks, rows or cells this reader handles — reported one per element with its
   name and child position;
@@ -92,15 +96,24 @@ location):
   its code point is in the text, but the glyph it draws is the font's, so the
   meaning is font-specific. Reported only, for the same reason as an image.
 
-Inline content-control runs and ``w:fldSimple`` results are reported, not read:
-reading them would need a second, hand-written paragraph-text parser beside
-python-docx's own. Visible text the reader never supplied cannot be recovered by
-a later check, so a passing source-coverage audit only proves that the text this
-reader supplied reached the output. The audit reads the limitation list for the
-same reason and reports ``incomplete`` rather than ``passed`` when the reader
-left source content unread. Every inline element the walk declines is named from
-the decision that declines it, so the read set and the reported set stay
-complementary at any nesting depth.
+What the walk never treats as content (the property set):
+
+- the properties of the containers it descends (``w:customXmlPr``,
+  ``w:smartTagPr``, ``w:sdtPr``, ``w:sdtEndPr``, ``w:dirPr``, ``w:fldData``, and
+  ``w:pPr``/``w:rPr``). They describe their container instead of being visible
+  text, so reporting one would refuse a document whose text was read completely.
+  They are skipped structurally — every property element of these containers ends
+  in ``Pr`` — so a property element this reader has not named yet is never
+  reported as content either, while an element the content model does not allow
+  and that does not end in ``Pr`` still is.
+
+``w:fldSimple`` results are reported, not read. Visible text the reader never
+supplied cannot be recovered by a later check, so a passing source-coverage audit
+only proves that the text this reader supplied reached the output. The audit
+reads the limitation list for the same reason and reports ``incomplete`` rather
+than ``passed`` when the reader left source content unread. Every inline element
+the walk declines is named from the decision that declines it, so the read set
+and the reported set stay complementary at any nesting depth.
 
 Shapes outside both lists above are outside this reader's detection: footnote,
 endnote and comment bodies live in ``footnotes.xml``, ``endnotes.xml`` and
@@ -173,6 +186,23 @@ _READ_CHILD_TAGS = frozenset({_PARAGRAPH, _TABLE, _CONTENT_CONTROL})
 _TRACKED_WRAPPERS = frozenset({_INSERTED, _DELETED, _MOVED_FROM, _MOVED_TO})
 #: Wrappers Word puts around runs, rows or cells without owning their content.
 _STRUCTURAL_WRAPPERS = frozenset({f"{_W}customXml", f"{_W}smartTag"})
+#: Property children of the containers this walk descends: they describe the
+#: container instead of being content, so the walk skips them. ``w:fldData`` is
+#: listed by name because it is the property element whose tag has no ``Pr``
+#: suffix; ``_is_property`` covers the rest by that suffix, so a property element
+#: this list does not name yet is still never reported as unread content.
+_CONTAINER_PROPERTIES = frozenset(
+    {
+        f"{_W}customXmlPr",
+        f"{_W}smartTagPr",
+        f"{_W}sdtPr",
+        f"{_W}sdtEndPr",
+        f"{_W}dirPr",
+        f"{_W}rubyPr",
+        f"{_W}fldData",
+    }
+)
+
 #: The elements the inline content model allows in a paragraph or a run.
 #: Enumerated from ECMA-376 (``EG_PContent`` and ``EG_RunInnerContent``) plus the
 #: markup-compatibility alternative, so ``_INLINE_DECISIONS`` can be checked
@@ -201,6 +231,7 @@ _INLINE_CONTENT_TAGS = frozenset(
         _SYMBOL,
         _PAGE_BREAK_MARK,
         _RUBY,
+        _CONTROL_CONTENT,
         _DRAWING,
         _PICTURE,
         _OBJECT,
@@ -249,6 +280,8 @@ _INLINE_CONTENT_TAGS = frozenset(
         f"{_W}customXmlMoveToRangeEnd",
         f"{_W}permStart",
         f"{_W}permEnd",
+        # properties of the containers above, which are never content
+        *_CONTAINER_PROPERTIES,
     }
 )
 
@@ -278,17 +311,20 @@ _INLINE_DECISIONS: dict[str, InlineDecision] = {
     **{tag: "descend" for tag in _STRUCTURAL_WRAPPERS},
     f"{_W}dir": "descend",
     f"{_W}bdo": "descend",
+    # Controls and the content they hold are read in the position they occupy.
+    _CONTENT_CONTROL: "descend",
+    _CONTROL_CONTENT: "descend",
     # Content a part-level count already names, so the walk must not name it twice.
     _DRAWING: "counted",
     _PICTURE: "counted",
     _ALT_CHUNK: "counted",
     _SUB_DOCUMENT: "counted",
-    _CONTENT_CONTROL: "counted",
     _FIELD: "counted",
     **{tag: "counted" for tag in _TRACKED_WRAPPERS},
     # Markup and field structure with no visible character of its own.
     f"{_W}pPr": "empty",
     f"{_W}rPr": "empty",
+    **{tag: "empty" for tag in _CONTAINER_PROPERTIES},
     f"{_W}proofErr": "empty",
     # a complex field's result is ordinary runs, so only its structure is here
     f"{_W}fldChar": "empty",
@@ -709,10 +745,15 @@ def _read_inline(
     so an element nobody anticipated costs a limitation rather than its text.
     """
     for child in container.iterchildren():
+        if _is_property(child):
+            continue
         decision = _INLINE_DECISIONS.get(child.tag, "report")
         if decision == "render":
             _render_character(child, pieces, limitations, location)
         elif decision == "descend":
+            if child.tag == _CONTENT_CONTROL:
+                # Read in place, so the part-level count must not call it unread.
+                account.controls.add(child)
             if child.tag == _RUBY:
                 _read_ruby(child, pieces, limitations, location, namespaces, account)
             elif child.tag == _ALTERNATE_CONTENT:
@@ -778,6 +819,20 @@ def _symbol_character(element: BaseOxmlElement) -> str:
 def _is_private_use(character: str) -> bool:
     """True when a code point is a font glyph slot rather than Unicode text."""
     return bool(character) and "\ue000" <= character <= "\uf8ff"
+
+
+def _is_property(element: BaseOxmlElement) -> bool:
+    """True for a container's property child: metadata, never content.
+
+    Reporting one would refuse a document whose visible text was read completely,
+    so the walk skips them structurally rather than deciding about them as
+    content. Every property element of these containers ends in ``Pr``, which
+    also covers one this reader has not named yet.
+    """
+    return (
+        element.tag in _CONTAINER_PROPERTIES
+        or _local_name(element).endswith("Pr")
+    )
 
 
 def _read_ruby(

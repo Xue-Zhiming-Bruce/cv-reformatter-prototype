@@ -193,8 +193,8 @@ def test_read_docx_reads_a_block_content_control_in_place(tmp_path: Path) -> Non
     assert content.limitations == []
 
 
-def test_read_docx_reports_inline_content_controls(tmp_path: Path) -> None:
-    """A control wrapping runs, or sitting in a cell, keeps text the reader never sees."""
+def test_read_docx_reads_content_controls_where_they_sit(tmp_path: Path) -> None:
+    """A control's runs are read in place, in a paragraph and in a table cell."""
     path = tmp_path / "resume.docx"
     document = Document()
     phone = document.add_paragraph("Phone: ")
@@ -207,17 +207,119 @@ def test_read_docx_reports_inline_content_controls(tmp_path: Path) -> None:
 
     content = read_docx(path)
 
-    assert content.plain_text.splitlines() == ["Phone:"]
-    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
-        ("content_control", "body", 2)
-    ]
-    assert (
-        "content inside a content control this reader cannot read in place"
-        in content.limitations[0].message
+    assert content.plain_text.splitlines() == ["Phone: 555 0100", "In-cell value"]
+    assert content.limitations == []
+
+
+def test_read_docx_reports_a_content_control_no_walk_descends(tmp_path: Path) -> None:
+    """A control inside tracked change content is named, never read or hidden."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Phone: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:ins {nsdecls("w")} w:id="1" w:author="a" w:date="2024-01-01T00:00:00Z">'
+            "<w:sdt><w:sdtPr/><w:sdtContent><w:r><w:t>555 0100</w:t></w:r>"
+            "</w:sdtContent></w:sdt>"
+            "</w:ins>"
+        )
     )
-    assert "Review the source document" in content.limitations[0].message
-    # The coverage audit measures only the text the reader supplied, so it reports
-    # `incomplete` here instead of passing over the missing control text.
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Phone:"]
+    assert sorted((item.kind, item.count) for item in content.limitations) == [
+        ("content_control", 1),
+        ("tracked_change", 1),
+    ]
+    control = next(item for item in content.limitations if item.kind == "content_control")
+    assert "read in place" in control.message
+
+
+def test_read_docx_reads_property_wrapped_content_without_a_limitation(
+    tmp_path: Path,
+) -> None:
+    """A ``*Pr`` child describes its container, so it is never unread content."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        parse_xml(
+            f'<w:sdt {nsdecls("w")}><w:sdtPr><w:alias w:val="Summary"/></w:sdtPr>'
+            "<w:sdtContent><w:p><w:r><w:t>Block control</w:t></w:r></w:p>"
+            "</w:sdtContent><w:sdtEndPr/></w:sdt>"
+        ),
+    )
+    wrapper = document.add_paragraph("Wrapper: ")
+    wrapper._p.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="field"><w:customXmlPr>'
+            '<w:attr w:name="format" w:val="text"/>'
+            "</w:customXmlPr><w:r><w:t>Python</w:t></w:r>"
+            # a property element this reader has not named is still not content
+            "<w:novelPr/></w:customXml>"
+        )
+    )
+    wrapper._p.append(
+        parse_xml(
+            f'<w:smartTag {nsdecls("w")} w:uri="urn:x" w:element="skill">'
+            '<w:smartTagPr><w:attr w:name="format" w:val="text"/></w:smartTagPr>'
+            "<w:r><w:t>, SQL</w:t></w:r></w:smartTag>"
+        )
+    )
+    inline = document.add_paragraph("Control: ")
+    inline._p.append(
+        parse_xml(
+            f'<w:sdt {nsdecls("w")}><w:sdtPr><w:text/></w:sdtPr><w:sdtContent>'
+            "<w:r><w:t>555 0100</w:t></w:r></w:sdtContent></w:sdt>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Block control",
+        "Wrapper: Python, SQL",
+        "Control: 555 0100",
+    ]
+    assert content.limitations == []
+    audit = audit_segmentation_lines(
+        content.plain_text,
+        content.plain_text.splitlines(),
+        *unread_content_messages(content.limitations),
+    )
+    assert audit.status == "passed"
+
+
+def test_read_docx_still_names_a_field_beside_property_wrappers(
+    tmp_path: Path,
+) -> None:
+    """Skipping properties must not silence a content gap in the same paragraph."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Ref: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="field">'
+            '<w:customXmlPr><w:attr w:name="format" w:val="text"/></w:customXmlPr>'
+            "<w:r><w:t>plain text</w:t></w:r></w:customXml>"
+        )
+    )
+    paragraph._p.append(
+        parse_xml(
+            f'<w:fldSimple {nsdecls("w")} w:instr=" REF candidate_name ">'
+            "<w:r><w:t>Field result</w:t></w:r></w:fldSimple>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Ref: plain text"]
+    assert [(item.kind, item.count) for item in content.limitations] == [("field", 1)]
     audit = audit_segmentation_lines(
         content.plain_text,
         content.plain_text.splitlines(),
@@ -703,7 +805,6 @@ def test_read_docx_decides_every_element_of_the_inline_content_model(
     counted = {
         "drawing": "visual_element",
         "pict": "visual_element",
-        "sdt": "content_control",
         "fldSimple": "field",
         "ins": "tracked_change",
         "del": "tracked_change",
