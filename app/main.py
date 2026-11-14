@@ -72,7 +72,7 @@ from app.final_acceptance import (
     is_final_acceptance_current,
     save_final_acceptance,
 )
-from app.ingestion.docx_reader import read_docx
+from app.ingestion.docx_reader import read_docx, unread_content_messages
 from app.ingestion.file_validator import CorruptedFileError, UnsupportedFileTypeError
 from app.ingestion.pdf_reader import (
     CorruptedPdfError,
@@ -613,7 +613,11 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
 
     try:
         try:
-            extracted_text, ingestion_limitations = _read_candidate_resume_text(tmp_path)
+            (
+                extracted_text,
+                ingestion_limitations,
+                unread_text_limitations,
+            ) = _read_candidate_resume_text(tmp_path)
         except (UnsupportedFileTypeError, CorruptedFileError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except UnsupportedPdfTypeError as exc:
@@ -638,6 +642,7 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
                 extracted_text,
                 segmentation_output_line_evidence(segmentation_output),
                 unread_source_content=ingestion_limitations,
+                unread_text_source_content=unread_text_limitations,
             )
             profile, normalized_document = materialize_llm_segmentation(
                 extracted_text, segmentation_output
@@ -1611,12 +1616,13 @@ def _build_ledger(profile: CandidateProfile) -> LedgerSummary:
     return LedgerSummary(extracted=extracted_count, placed=extracted_count, needs_review=needs_review)
 
 
-def _read_candidate_resume_text(path: Path) -> tuple[str, list[str]]:
-    """Extraction text plus the source content the reader could not read."""
+def _read_candidate_resume_text(path: Path) -> tuple[str, list[str], list[str]]:
+    """Extraction text, every reported limitation, and those that lost text."""
     if path.suffix.lower() == ".pdf":
-        return read_pdf_text(path), []
+        return read_pdf_text(path), [], []
     content = read_docx(path)
-    return content.plain_text, [limitation.message for limitation in content.limitations]
+    reported, lost_text = unread_content_messages(content.limitations)
+    return content.plain_text, reported, lost_text
 
 
 def _count_populated(value: Any) -> int:

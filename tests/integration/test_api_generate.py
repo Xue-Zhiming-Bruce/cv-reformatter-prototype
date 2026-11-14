@@ -1500,10 +1500,10 @@ def test_revision_route_persists_additional_section_edits_and_dispositions(
     assert blocked.json()["detail"]["pending_review_sections"][0]["source_block_id"] == "block_projects"
 
 
-def test_unread_source_content_blocks_generation(
+def test_unread_source_text_blocks_generation(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
-    """Issue #49: an audit over a partly read source names the gap, not a pass."""
+    """Issue #49: an audit over a partly read source names the text, not a pass."""
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
     profile = CandidateProfile(full_name="Jane Candidate", skills=["Python"])
     artifact_id = "artifact_generate_unread"
@@ -1511,22 +1511,40 @@ def test_unread_source_content_blocks_generation(
     artifact_dir.mkdir()
     version_id = _approve_profile_via_api(artifact_dir, profile, artifact_id)
     unread = ["body: 1 text box found; text-box content is not read."]
-    (artifact_dir / "segmentation_audit.json").write_text(
+    audit_path = artifact_dir / "segmentation_audit.json"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "status": "incomplete",
+                "unread_source_content": unread,
+                "unread_text_source_content": unread,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    request = {
+        "artifact_id": artifact_id,
+        "approved_profile_version_id": version_id,
+        "template_name": "apex_standard",
+    }
+    response = client.post("/api/generate", json=request)
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "source_text_unread"
+    assert detail["unread_text_source_content"] == unread
+    assert not (artifact_dir / "candidate_profile.html").exists()
+
+    # An audit written before the split carries no text subset, so the whole
+    # reported list is treated as lost text instead of silently passing.
+    audit_path.write_text(
         json.dumps({"status": "incomplete", "unread_source_content": unread}),
         encoding="utf-8",
     )
 
-    response = client.post(
-        "/api/generate",
-        json={
-            "artifact_id": artifact_id,
-            "approved_profile_version_id": version_id,
-            "template_name": "apex_standard",
-        },
-    )
+    legacy = client.post("/api/generate", json=request)
 
-    assert response.status_code == 409, response.text
-    detail = response.json()["detail"]
-    assert detail["error_code"] == "source_content_unread"
-    assert detail["unread_source_content"] == unread
-    assert not (artifact_dir / "candidate_profile.html").exists()
+    assert legacy.status_code == 409, legacy.text
+    assert legacy.json()["detail"]["error_code"] == "source_text_unread"
+    assert legacy.json()["detail"]["unread_text_source_content"] == unread

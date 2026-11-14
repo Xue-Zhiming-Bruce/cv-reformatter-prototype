@@ -25,6 +25,7 @@ from app.extraction.llm_extractor import (
 )
 from app.ingestion.pdf_reader import read_pdf_text
 from app.generation import service as generation_service
+from tests.helpers.layout_proof import make_proof_pdf_exporter
 
 client = TestClient(app)
 
@@ -345,10 +346,17 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
     )
     assert audit["source_line_count"] == audit["output_line_count"]
     # Coverage of the supplied text cannot pass while the reader reported source
-    # content it never supplied, so the audit reports the gap itself.
+    # text it never supplied, so the audit reports the gap itself.
     assert audit["status"] == "incomplete"
     assert audit["unread_source_content"] == body["ingestion_limitations"]
     assert "could not read" in audit["detail"]
+    # The drawing is reported but is not lost text, so it stays out of the list
+    # that blocks approval.
+    drawing = next(
+        item for item in body["ingestion_limitations"] if "OCR is out of scope" in item
+    )
+    assert drawing in audit["unread_source_content"]
+    assert drawing not in audit["unread_text_source_content"]
 
 
 def test_process_accepts_text_pdf_upload(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -734,8 +742,13 @@ def test_unread_source_content_blocks_approval_and_names_the_gap(
     )
     assert approval.status_code == 409
     detail = approval.json()["detail"]
-    assert detail["error_code"] == "source_content_unread"
-    assert detail["unread_source_content"] == body["ingestion_limitations"]
+    assert detail["error_code"] == "source_text_unread"
+    unread_text = [
+        item
+        for item in body["ingestion_limitations"]
+        if "OCR is out of scope" not in item
+    ]
+    assert detail["unread_text_source_content"] == unread_text
     assert "No acknowledgment path" in detail["message"]
 
     # Generation resolves the saved revision and hits the same gate.
@@ -744,10 +757,122 @@ def test_unread_source_content_blocks_approval_and_names_the_gap(
         json={"artifact_id": artifact_id, "profile_revision_id": body["profile_revision_id"]},
     )
     assert generated.status_code == 409, generated.text
-    assert generated.json()["detail"]["error_code"] == "source_content_unread"
-    assert generated.json()["detail"]["unread_source_content"] == body[
-        "ingestion_limitations"
-    ]
+    assert generated.json()["detail"]["error_code"] == "source_text_unread"
+    assert generated.json()["detail"]["unread_text_source_content"] == unread_text
+
+
+@pytest.mark.usefixtures("a_generation_without_model_loop")
+def test_image_source_content_is_reported_without_blocking_generation(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A drawing carries pixels, not text, so it is reported and never refused."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    # Generation validates the exported PDF's text, so export real page text.
+    exporter = make_proof_pdf_exporter()
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", exporter)
+    monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", exporter)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    document.add_picture(io.BytesIO(_one_pixel_png()), width=Inches(0.25))
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["ingestion_limitations"]) == 1
+    assert "OCR is out of scope" in body["ingestion_limitations"][0]
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    # Reported for review, but it is not lost text, so nothing here is missing.
+    assert audit["unread_source_content"] == body["ingestion_limitations"]
+    assert audit["unread_text_source_content"] == []
+    assert audit["status"] == "passed"
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 200, approval.text
+
+    generated = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": body["artifact_id"],
+            "approved_profile_version_id": approval.json()["profile_version_id"],
+            "template_name": "apex_standard",
+        },
+    )
+    assert generated.status_code == 200, generated.text
+
+
+def test_unread_field_text_blocks_approval_and_names_the_text(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A field result is visible text the reader lost, so approval still fails closed."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    reference = document.add_paragraph("Ref: ")
+    reference._p.append(
+        parse_xml(
+            f'<w:fldSimple {nsdecls("w")} w:instr=" REF candidate_name ">'
+            "<w:r><w:t>Field result</w:t></w:r></w:fldSimple>"
+        )
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "incomplete"
+    assert audit["unread_source_content"] == body["ingestion_limitations"]
+    assert audit["unread_text_source_content"] == body["ingestion_limitations"]
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+
+    assert approval.status_code == 409, approval.text
+    detail = approval.json()["detail"]
+    assert detail["error_code"] == "source_text_unread"
+    assert detail["unread_text_source_content"] == body["ingestion_limitations"]
 
 
 def test_process_rejects_pdf_without_extractable_text(tmp_path: Path) -> None:

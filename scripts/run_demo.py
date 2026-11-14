@@ -18,7 +18,7 @@ except ModuleNotFoundError:
     def load_dotenv() -> bool:
         return False
 
-from app.ingestion.docx_reader import read_docx
+from app.ingestion.docx_reader import read_docx, unread_content_messages
 from app.ingestion.pdf_reader import read_pdf_text
 from app.extraction.coverage_audit import audit_segmentation_lines
 from app.extraction.llm_extractor import MockLLMClient, build_llm_client
@@ -46,13 +46,16 @@ def main() -> None:
     if resume_path == DEFAULT_INPUT and not resume_path.exists():
         create_synthetic_resume(resume_path)
 
-    resume_text, unread_source_content = read_resume_text(resume_path)
+    resume_text, unread_source_content, unread_text_content = read_resume_text(
+        resume_path
+    )
     llm_client = MockLLMClient() if args.mock else build_llm_client()
     output = segment_and_extract_resume(resume_text, llm_client)
     audit = audit_segmentation_lines(
         resume_text,
         segmentation_output_line_evidence(output),
         unread_source_content,
+        unread_text_content,
     )
     profile, document = materialize_llm_segmentation(resume_text, output)
     followup_message = generate_followup_message(profile)
@@ -84,12 +87,13 @@ def main() -> None:
     print(f"Artifacts: {OUTPUT_DIR}")
 
 
-def read_resume_text(path: Path) -> tuple[str, list[str]]:
-    """Source text and the visible content the reader could not read."""
+def read_resume_text(path: Path) -> tuple[str, list[str], list[str]]:
+    """Source text, every reported limitation, and those that lost text."""
     if path.suffix.lower() == ".pdf":
-        return read_pdf_text(path), []
+        return read_pdf_text(path), [], []
     content = read_docx(path)
-    return content.plain_text, [limitation.message for limitation in content.limitations]
+    reported, lost_text = unread_content_messages(content.limitations)
+    return content.plain_text, reported, lost_text
 
 
 def create_synthetic_resume(path: Path) -> None:

@@ -12,7 +12,11 @@ from docx.oxml.ns import nsdecls
 from docx.shared import Inches
 
 from app.extraction.coverage_audit import audit_segmentation_lines
-from app.ingestion.docx_reader import ExtractedTable, read_docx
+from app.ingestion.docx_reader import (
+    ExtractedTable,
+    read_docx,
+    unread_content_messages,
+)
 from app.ingestion.file_validator import CorruptedFileError, UnsupportedFileTypeError, validate_docx_file
 
 
@@ -213,7 +217,7 @@ def test_read_docx_reports_inline_content_controls(tmp_path: Path) -> None:
     audit = audit_segmentation_lines(
         content.plain_text,
         content.plain_text.splitlines(),
-        [limitation.message for limitation in content.limitations],
+        *unread_content_messages(content.limitations),
     )
     assert audit.status == "incomplete"
 
@@ -241,7 +245,7 @@ def test_read_docx_reports_a_field_result(tmp_path: Path) -> None:
     audit = audit_segmentation_lines(
         content.plain_text,
         content.plain_text.splitlines(),
-        [limitation.message for limitation in content.limitations],
+        *unread_content_messages(content.limitations),
     )
     assert audit.status == "incomplete"
 
@@ -585,6 +589,8 @@ def test_read_docx_with_embedded_image_preserves_text_extraction(tmp_path: Path)
         ("visual_element", "body", 2)
     ]
     assert "OCR is out of scope" in content.limitations[0].message
+    # Pixels are not lost text, so this gap is reported but never blocks review.
+    assert content.limitations[0].blocks_source_review is False
 
 
 def test_validate_docx_rejects_unsupported_extension(tmp_path: Path) -> None:

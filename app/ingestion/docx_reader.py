@@ -57,7 +57,8 @@ location):
   (``w:subDoc``), whose text lives in another part entirely;
 - images, drawings and charts, one entry per part with the count found: their
   text, if any, is pixels or an embedded chart or worksheet part, and OCR is out
-  of scope, so the reader never supplies it.
+  of scope, so the reader never supplies it. Reported only: not reading pixels is
+  not lost text, so these do not block approval.
 
 Inline content-control runs and ``w:fldSimple`` results are reported, not read:
 reading them would need a second, hand-written paragraph-text parser beside
@@ -156,6 +157,23 @@ _UNSUPPORTED_CONTENT_REVIEW: dict[LimitationKind, str] = {
     "visual_element": "image, drawing and chart text is not read; OCR is out of scope",
 }
 
+#: Kinds where visible text is known to be lost, so approval and generation fail
+#: closed. ``visual_element`` is reported only: its content is pixels or an
+#: embedded chart part, the reader never claims to read it, and OCR is out of
+#: scope, so refusing the document would reject ordinary resumes for a headshot.
+_BLOCKING_KINDS: frozenset[LimitationKind] = frozenset(
+    {
+        "nested_table",
+        "text_box",
+        "tracked_change",
+        "content_control",
+        "field",
+        "alt_chunk",
+        "unknown_block",
+        "unknown_inline",
+    }
+)
+
 HeaderVariant = Literal["default", "first_page", "even_page"]
 
 #: Header/footer variant accessors per role, in the order they are read.
@@ -213,6 +231,20 @@ class ExtractedContentLimitation:
             f"{_UNSUPPORTED_CONTENT_REVIEW[self.kind]}. Review the source document "
             "before approving this profile."
         )
+
+    @property
+    def blocks_source_review(self) -> bool:
+        """True when this gap lost text, so approval must not proceed on it."""
+        return self.kind in _BLOCKING_KINDS
+
+
+def unread_content_messages(
+    limitations: Sequence[ExtractedContentLimitation],
+) -> tuple[list[str], list[str]]:
+    """(every reported limitation, those where visible text was lost)."""
+    return [limitation.message for limitation in limitations], [
+        limitation.message for limitation in limitations if limitation.blocks_source_review
+    ]
 
 
 @dataclass(frozen=True)
