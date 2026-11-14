@@ -141,6 +141,17 @@ def test_region_crop_preserves_location_and_records_transform(tmp_path: Path) ->
     assert crop.exists() and crop.stat().st_size > 0
 
 
+def test_page_pixels_refuses_a_page_the_target_pdf_does_not_have(tmp_path: Path) -> None:
+    """Stored geometry can claim more pages than the pdf; that refusal is recoverable."""
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    raw = json.loads(inputs["adobe_json"].read_text())
+    raw["structured_data"]["pages"].append({"page_number": 1, "width": 612.0, "height": 792.0})
+    pod = _pod(tmp_path, raw=raw)
+    assert pod.page_count == 2  # the recorded geometry disagrees with the one-page pdf
+    with pytest.raises(ValueError, match="page 2 outside 1..1"):
+        pod.page_pixels(2)
+
+
 def test_region_crop_rejects_whole_page_requests(tmp_path: Path) -> None:
     pod = _pod(tmp_path)
     width, height = pod.page_sizes[1]

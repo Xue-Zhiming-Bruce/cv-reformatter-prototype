@@ -360,6 +360,10 @@ class EvidencePod:
         if key not in self._page_images:
             self._page_images[key] = _render_pages(pdf, self.out_dir, f"{source}_{pdf.stem}")
         pages = self._page_images[key]
+        if page_number > len(pages):
+            # A stored geometry count can outrun the pdf it describes; keep the
+            # refusal recoverable instead of failing on the page lookup below.
+            raise ValueError(f"page {page_number} outside 1..{len(pages)}")
         from PIL import Image
 
         with Image.open(pages[page_number - 1]) as image:
@@ -1182,6 +1186,10 @@ class DualSourcePod(EvidencePod):
             prefix = f"{source}_{pdf.stem}_{digest[:8]}"
             self._page_images[key] = _render_pages(pdf, self.out_dir, prefix)
         pages = self._page_images[key]
+        if page_number > len(pages):
+            # A stored geometry count can outrun the pdf it describes; keep the
+            # refusal recoverable instead of failing on the page lookup below.
+            raise ValueError(f"page {page_number} outside 1..{len(pages)}")
         from PIL import Image
 
         with Image.open(pages[page_number - 1]) as image:
