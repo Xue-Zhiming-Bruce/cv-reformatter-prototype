@@ -1,11 +1,13 @@
 from pathlib import Path
 
+import asyncio
 import json
 import re
 import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
+import httpx
 import pytest
 from docx import Document
 from docx.shared import Pt, RGBColor
@@ -27,7 +29,9 @@ from tests.helpers.synthetic_pdf import build_styled_target_pdf
 from tests.helpers.event_loop_probe import (
     HOLD_TIMEOUT_SECONDS,
     assert_health_answers,
+    cancel_while_held,
     occupied_blocking_work,
+    wait_until,
 )
 
 client = TestClient(app)
@@ -1160,9 +1164,7 @@ def test_target_format_upload_keeps_event_loop_responsive_during_pdf_analysis(
     assert "service unavailable" in response.json()["detail"].lower()
 
 
-DOCX_TARGET_TYPE = (
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-)
+DOCX_TARGET_TYPE = DOCX_MIME
 
 
 @pytest.mark.parametrize(
@@ -1190,6 +1192,102 @@ def test_target_format_reports_busy_without_creating_an_artifact(
     assert response.headers["retry-after"] == "5"
     # Refused before any storage: no artifact directory for the caller.
     assert not (tmp_path / "outputs").exists()
+
+
+def _target_docx_bytes(path: Path) -> bytes:
+    document = Document()
+    document.styles["Normal"].font.name = "Times New Roman"
+    document.save(path)
+    return path.read_bytes()
+
+
+def _held_target_analysis(
+    entered: threading.Event, release: threading.Event, held_bytes: bytes | None = None
+):
+    """Block target analysis until ``release``; with ``held_bytes``, only for that upload."""
+    from app.template_analysis.docx_style_analyzer import analyze_target_docx
+
+    def analysis(docx_path: Path, output_dir: Path):
+        if held_bytes is None or Path(docx_path).read_bytes() == held_bytes:
+            entered.set()
+            assert release.wait(HOLD_TIMEOUT_SECONDS), "the held upload was never released"
+        return analyze_target_docx(docx_path, output_dir)
+
+    return analysis
+
+
+def _assert_target_published(outputs: Path, artifact_id: str, expected: bytes) -> None:
+    """A published target owns its source, its spec and its metadata."""
+    artifact_dir = outputs / artifact_id
+    assert (artifact_dir / "target_format_template.docx").read_bytes() == expected
+    assert (artifact_dir / "layout_template_spec.json").exists()
+    assert (artifact_dir / "target_format.json").exists()
+    # Every staged copy was renamed out of its own staging directory.
+    assert list((outputs / ".staging").glob("*")) == []
+
+
+def test_concurrent_target_uploads_keep_their_own_source(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: a refused upload must not delete another upload's staged source.
+
+    At ``527ca0f`` the corrupt upload unlinked the good source, so the good
+    upload died with ``FileNotFoundError``.
+    """
+    outputs = tmp_path / "outputs"
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", outputs)
+    good_bytes = _target_docx_bytes(tmp_path / "good-target.docx")
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(
+        main, "analyze_target_docx", _held_target_analysis(entered, release, good_bytes)
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        good = pool.submit(
+            _upload_docx, good_bytes, "artifact_shared_target", "good-target.docx"
+        )
+        try:
+            assert entered.wait(HOLD_TIMEOUT_SECONDS), "the good upload never reached analysis"
+            bad_response = _upload_docx(
+                b"not a word document", "artifact_shared_target", "bad-target.docx"
+            )
+        finally:
+            release.set()
+        good_response = good.result(timeout=HOLD_TIMEOUT_SECONDS)
+
+    assert bad_response.status_code == 400
+    assert good_response.status_code == 200, good_response.text
+    _assert_target_published(outputs, "artifact_shared_target", good_bytes)
+
+
+def test_cancelled_target_upload_publishes_nothing(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: a cancelled analysis must leave no partial target artifact."""
+    outputs = tmp_path / "outputs"
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", outputs)
+    docx_bytes = _target_docx_bytes(tmp_path / "cancelled-target.docx")
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(
+        main, "analyze_target_docx", _held_target_analysis(entered, release)
+    )
+
+    async def attempt(async_client: httpx.AsyncClient) -> None:
+        await async_client.post(
+            "/api/target-format",
+            data={"artifact_id": "artifact_cancelled_target"},
+            files={"file": ("cancelled-target.docx", docx_bytes, DOCX_MIME)},
+        )
+
+    asyncio.run(cancel_while_held(attempt, entered=entered, release=release))
+
+    # Wait for the abandoned worker to finish, then check what it left behind.
+    wait_until(
+        lambda: not any((outputs / ".staging").glob("*")),
+        "the cancelled upload never cleaned its staging directory",
+    )
+    artifact_dir = outputs / "artifact_cancelled_target"
+    assert not artifact_dir.exists(), sorted(path.name for path in artifact_dir.iterdir())
 
 
 def test_target_format_upload_rejects_unsupported_files(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

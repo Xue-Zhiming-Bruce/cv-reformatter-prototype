@@ -8,16 +8,22 @@ bounded wait.
 
 ``occupied_blocking_work`` holds every slot for the body of a ``with`` block, so
 a request inside it meets the saturated case.
+
+``cancel_while_held`` and ``wait_until`` cover what off-loop work exposed:
+cancelling a handler while its worker still runs, and the state that worker
+reaches afterwards.
 """
 
 from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Awaitable, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -72,3 +78,56 @@ def occupied_blocking_work() -> Iterator[None]:
     finally:
         release.set()
         holder.join(HOLD_TIMEOUT_SECONDS)
+
+
+def wait_until(predicate: Callable[[], bool], message: str) -> None:
+    """Bounded wait for a state a worker thread reaches after the handler is gone."""
+    deadline = time.monotonic() + HOLD_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    pytest.fail(message)
+
+
+async def _request_until_cancelled(
+    async_client: httpx.AsyncClient,
+    request: Callable[[httpx.AsyncClient], Awaitable[None]],
+    entered: threading.Event,
+    release: threading.Event,
+) -> None:
+    task = asyncio.create_task(request(async_client))
+    try:
+        assert await asyncio.to_thread(
+            entered.wait, HOLD_TIMEOUT_SECONDS
+        ), "the blocking substitute never started"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+
+async def cancel_while_held(
+    request: Callable[[httpx.AsyncClient], Awaitable[None]],
+    *,
+    entered: threading.Event,
+    release: threading.Event,
+) -> None:
+    """Cancel one ASGI request while the worker behind it is still running.
+
+    ``entered`` is set by the test's blocking substitute inside the worker, so
+    the cancellation lands after the request dispatched its blocking work;
+    ``release`` then frees that worker while nobody is waiting for it.
+    """
+    from app.main import app
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as async_client:
+        await _request_until_cancelled(async_client, request, entered, release)

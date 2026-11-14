@@ -1,3 +1,5 @@
+import asyncio
+import httpx
 import json
 import tempfile
 import threading
@@ -29,7 +31,9 @@ from app.generation import service as generation_service
 from tests.helpers.event_loop_probe import (
     HOLD_TIMEOUT_SECONDS,
     assert_health_answers,
+    cancel_while_held,
     occupied_blocking_work,
+    wait_until,
 )
 
 client = TestClient(app)
@@ -839,6 +843,78 @@ def test_process_cleans_temp_file_and_reports_extraction_failure(
     assert response.json()["detail"]["error_code"] == "candidate_segmentation_failed"
     assert list(temporary_dir.iterdir()) == []
     assert not (tmp_path / "outputs").exists()
+
+
+def _held_parser(
+    entered: threading.Event, release: threading.Event, seen: dict[str, object]
+):
+    """Block inside the parser, then report whether its upload still existed."""
+
+    def parse(path: Path) -> tuple[str, list[str]]:
+        seen["path"] = path
+        entered.set()
+        assert release.wait(HOLD_TIMEOUT_SECONDS), "the parser was never released"
+        seen["input_present"] = path.exists()
+        return "Jane Candidate\njane@example.com", []
+
+    return parse
+
+
+def test_cancelled_process_keeps_the_upload_until_the_parser_returns(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: the temp upload outlives the parser even when the handler is cancelled.
+
+    At ``527ca0f`` the handler deleted the file on cancellation while the
+    offloaded parser was still reading it.
+    """
+    entered, release = threading.Event(), threading.Event()
+    parsed: dict[str, object] = {}
+    monkeypatch.setattr(
+        main, "_read_candidate_resume_text", _held_parser(entered, release, parsed)
+    )
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+
+    async def attempt(async_client: httpx.AsyncClient) -> None:
+        await async_client.post(
+            "/api/process",
+            files={"file": ("resume.docx", resume_path.read_bytes(), DOCX_UPLOAD_TYPE)},
+        )
+
+    asyncio.run(cancel_while_held(attempt, entered=entered, release=release))
+
+    assert parsed["input_present"] is True, "the upload vanished while its parser was reading it"
+    wait_until(lambda: not Path(parsed["path"]).exists(), "the parsed upload was never deleted")
+
+
+def test_failed_parse_still_deletes_its_temp_upload(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: a parser that raises still removes the file it was given."""
+    from app.ingestion.file_validator import UnsupportedFileTypeError
+
+    temporary_dir = tmp_path / "temporary"
+    temporary_dir.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temporary_dir))
+    seen: dict[str, Path] = {}
+
+    def failing_parse(path: Path) -> tuple[str, list[str]]:
+        seen["path"] = path
+        raise UnsupportedFileTypeError("synthetic parser failure")
+
+    monkeypatch.setattr(main, "_read_candidate_resume_text", failing_parse)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+
+    response = client.post(
+        "/api/process",
+        files={"file": ("resume.docx", resume_path.read_bytes(), DOCX_UPLOAD_TYPE)},
+    )
+
+    assert response.status_code == 400
+    assert not seen["path"].exists()
+    assert list(temporary_dir.iterdir()) == []
 
 
 def _fake_pdf_export(html_path: str | Path, output_path: str | Path) -> Path:

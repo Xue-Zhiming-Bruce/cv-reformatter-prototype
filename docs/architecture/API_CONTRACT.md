@@ -162,6 +162,12 @@ The `target_format` object includes:
 
 Generation can reload the saved target format using the same `artifact_id`.
 
+Publication is all-or-nothing per request: each upload stages privately, and the
+analyzed files are renamed into the artifact directory only after the analysis
+succeeds, with `target_format.json` renamed last. A failed, refused or cancelled
+upload therefore publishes no partial target files, and no upload can delete
+another request's staged source.
+
 ## Save Candidate Revisions
 
 ```text
