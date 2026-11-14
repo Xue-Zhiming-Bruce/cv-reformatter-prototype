@@ -1184,6 +1184,54 @@ with no bundle use their original path; a missing bundle is an explicit failure.
 Provider execution/policy, production isolation, retention, observability and
 broader recovery/scale checks remain separate roadmap requirements.
 
+### Document Resource Envelope — Implemented (issue #53)
+
+`app/resource_limits.py` owns the document work a request may cost in bytes,
+pages, pixels and local CPU. The numbers were measured on the supported resume
+corpus (50 DOCX, 9 PDF); the module docstring carries the same table with its
+basis, so a change to a value and to its stated reason stay in one place. Token
+count, currency and provider runtime are not covered here — they stay with
+[ADR 0010](../decisions/0010-conversion-execution-envelope.md) below.
+
+| Limit | Value | Basis |
+| --- | --- | --- |
+| Upload file | 8 MiB | worst corpus DOCX 37 KiB, PDF 198 KiB |
+| Request body | 8 MiB + 64 KiB envelope | multipart headers/boundaries are not document bytes |
+| DOCX / Adobe result archive | 512 entries, 16 MiB per entry, 64 MiB total, 100:1 expansion | corpus 17 entries / 0.83 MiB / 32:1 on one entry |
+| PDF pages | 20 | corpus 1–2 pages |
+| PDF page side | 2000 pt | corpus Letter 612×792, A4 595×842 |
+| Raster per document | 64 MP | 20 A4 pages at 2× ≈ 40.1 MP |
+| Local parse | 60 s | worst corpus parse 0.10 s |
+
+Enforcement sits in the existing owners, not in each caller:
+
+- bytes: `read_upload_bounded` for a `UploadFile` and
+  `UploadBodyLimitMiddleware` at the ASGI receive boundary, so a missing,
+  chunked or lying `Content-Length` is not a way around the limit;
+- archives: `enforce_zip_file`/`inspect_zip_directory` read the central directory
+  before any extraction, and `verify_zip_streams`/`read_zip_member_bounded` cap
+  each stream, so a forged uncompressed size cannot force allocation. The DOCX
+  reader and the Adobe result-archive decoder take the same bounds;
+- pages and geometry: `check_pdf_pages` reads the declared page boxes before
+  text extraction, and `app/ingestion/ingest_document.py` runs the whole parse in
+  a bounded child process (`run_bounded_child`) because a timeout around a thread
+  does not stop a blocked parser;
+- raster: `RasterPixelBudget.reserve` is called by the shared rasterizers
+  (`app/pipeline/rendering.py`, `app/template_analysis/visual_comparator.py`)
+  before a bitmap exists.
+
+`/api/process`, `/api/target-format` and the uploaded-target job path reach the
+same helpers, so a synchronous request and a job refuse the same input the same
+way. Refusals are structured (`DocumentLimitError` → 413/422 with `error_code`)
+and happen before provider I/O, raster allocation and publication; a refused
+re-upload leaves stored source bytes and the prior published output untouched.
+No limit truncates a document.
+
+Still missing: per-organization or per-identity quotas, admission control across
+concurrent requests, and an operator-tunable setting — the values are constants,
+which is enough for the single-worker local boundary but not for multi-tenant
+hosting.
+
 ### Conversion Execution Envelope — Proposed, Not Implemented
 
 The stages above are dispatched as separate executions, and the request/tool

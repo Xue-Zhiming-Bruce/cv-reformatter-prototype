@@ -4,9 +4,8 @@ Status: `Active contract`
 
 Owner: Backend
 
-Last reviewed: November 12, 2026 (independent personal-information hiding
-controls, disclosure precedence and the hidden-value gate; executable interface
-unchanged)
+Last reviewed: November 15, 2026 (issue #53 document resource limits and their
+structured refusals; existing fields unchanged)
 
 This document records the current MVP-compatible backend interface used by the
 frontend. It is not a complete versioned OpenAPI replacement; the FastAPI
@@ -142,6 +141,36 @@ The `target_format` object includes:
 - `analysis_warnings`.
 
 Generation can reload the saved target format using the same `artifact_id`.
+
+## Document Resource Limits — Both Uploads (issue #53)
+
+Both upload operations share one application-enforced policy, owned by
+`app/resource_limits.py`; the module docstring carries each value's basis in the
+supported resume corpus. Values: upload file 8 MiB, request body 8 MiB + 64 KiB
+of multipart envelope, DOCX 512 ZIP entries / 16 MiB per entry / 64 MiB total /
+100:1 expansion, PDF 20 pages and 2000 pt per page side, 64 MP raster per
+rendered document, 60 s local parse. Neither `Content-Length` nor the proxy's
+`client_max_body_size 32m` is the boundary: the bytes actually received are
+counted, so a direct API upload with an absent, chunked or lying length takes the
+same path.
+
+A refusal is structured, names no source content or path, and happens before
+provider I/O, raster allocation or publication:
+
+```json
+{"detail": {"error_code": "upload_too_large", "message": "..."}}
+```
+
+| HTTP | `error_code` | Refused because |
+| --- | --- | --- |
+| 413 | `upload_too_large` | request body or file part above the byte limit |
+| 422 | `zip_entry_count`, `zip_entry_size`, `zip_uncompressed_size`, `zip_expansion_ratio`, `zip_expansion_size` | DOCX/Adobe package expansion |
+| 422 | `pdf_page_count`, `pdf_page_geometry` | page count or declared page geometry |
+| 422 | `raster_pixel_limit` | the shared rasterizer would allocate past the pixel cap |
+| 422 | `local_processing_timeout`, `local_processing_failed` | the bounded parse child overran or failed |
+
+No limit truncates a document: a refused input returns nothing and preserves the
+source bytes and any prior published output for that `artifact_id`.
 
 ## Save Candidate Revisions
 

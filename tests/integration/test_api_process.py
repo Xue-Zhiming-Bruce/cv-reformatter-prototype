@@ -23,6 +23,7 @@ from app.extraction.llm_extractor import (
 )
 from app.ingestion.pdf_reader import read_pdf_text
 from app.generation import service as generation_service
+from app.resource_limits import MAX_UPLOAD_BYTES, UPLOAD_ENVELOPE_BYTES
 
 client = TestClient(app)
 
@@ -687,6 +688,68 @@ def test_process_rejects_unsupported_upload(tmp_path: Path) -> None:
     assert response.status_code == 400
     assert ".docx" in response.json()["detail"].lower()
     assert ".pdf" in response.json()["detail"].lower()
+
+
+def test_process_refuses_an_oversized_upload_without_content_length(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """The application byte limit, not the proxy: a chunked direct upload above
+    it is refused while it arrives, with no Content-Length to inspect."""
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    boundary = "cv-limit-boundary"
+    head = (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; "
+        "filename=\"resume.pdf\"\r\nContent-Type: application/pdf\r\n\r\n"
+    ).encode()
+    oversize = MAX_UPLOAD_BYTES + 4 * UPLOAD_ENVELOPE_BYTES
+
+    def body():
+        yield head
+        remaining = oversize
+        while remaining:
+            chunk = min(256 * 1024, remaining)
+            yield b"%PDF-1.4" + b"\0" * (chunk - 8)
+            remaining -= chunk
+        yield f"\r\n--{boundary}--\r\n".encode()
+
+    response = client.post(
+        "/api/process",
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+        content=body(),
+    )
+
+    assert "transfer-encoding" in response.request.headers
+    assert "content-length" not in response.request.headers
+    assert response.status_code == 413
+    assert response.json()["detail"]["error_code"] == "upload_too_large"
+    assert list(tmp_path.iterdir()) == [], "a refused upload persists no artifact"
+
+
+def test_process_refuses_large_declared_page_geometry_before_the_provider(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Refused before extraction: no provider is configured here, so reaching the
+    client boundary would answer 500 instead of this limit refusal."""
+    from tests.helpers.synthetic_pdf import _write_single_page_pdf
+
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.delenv("API_LLM_PROVIDER", raising=False)
+    resume_path = _write_single_page_pdf(
+        tmp_path / "huge.pdf",
+        ["BT /F1 12 Tf 72 720 Td (Jane Candidate) Tj ET"],
+        width_pt=5000,
+        height_pt=5000,
+    )
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process", files={"file": ("huge.pdf", resume_file, "application/pdf")}
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error_code"] == "pdf_page_geometry"
+    assert response.json()["detail"]["message"].startswith("A PDF page measures")
+    assert [path.name for path in tmp_path.iterdir()] == ["huge.pdf"]
 
 
 @pytest.mark.local_dataset

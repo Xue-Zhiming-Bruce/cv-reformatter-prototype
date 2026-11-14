@@ -26,6 +26,14 @@ from tests.helpers.synthetic_pdf import build_styled_target_pdf
 client = TestClient(app)
 
 
+def _synthetic_target_upload(tmp_path: Path) -> bytes:
+    """A real text PDF target; upload inputs stay outside the artifact directory."""
+    inputs = tmp_path / "upload-inputs"
+    inputs.mkdir(exist_ok=True)
+    return build_styled_target_pdf(inputs / "target.pdf").read_bytes()
+
+
+
 pytestmark = pytest.mark.usefixtures("a_generation_without_model_loop")
 
 @pytest.fixture(autouse=True)
@@ -1132,12 +1140,14 @@ def test_target_format_upload_surfaces_adobe_failure_without_artifacts(
 
     response = client.post(
         "/api/target-format",
-        files={"file": ("target.pdf", b"%PDF-1.4\n", "application/pdf")},
+        files={"file": ("target.pdf", _synthetic_target_upload(tmp_path), "application/pdf")},
     )
 
     assert response.status_code == 503
     assert "service unavailable" in response.json()["detail"].lower()
-    assert not any(path.is_file() for path in tmp_path.rglob("*"))
+    assert not any(
+        path.is_file() for path in tmp_path.rglob("*") if "upload-inputs" not in path.parts
+    ), "a refused target upload writes no artifact"
 
 
 def test_target_format_upload_surfaces_asset_cleanup_on_provider_failure(
@@ -1161,7 +1171,7 @@ def test_target_format_upload_surfaces_asset_cleanup_on_provider_failure(
 
     response = client.post(
         "/api/target-format",
-        files={"file": ("target.pdf", b"%PDF-1.4\n", "application/pdf")},
+        files={"file": ("target.pdf", _synthetic_target_upload(tmp_path), "application/pdf")},
     )
 
     assert response.status_code == 503
@@ -1170,7 +1180,9 @@ def test_target_format_upload_surfaces_asset_cleanup_on_provider_failure(
     assert "service unavailable" in detail.lower()
     assert "Adobe asset cleanup: pending" in detail
     assert "input asset input-asset rejected (HTTP 403)" in detail
-    assert not any(path.is_file() for path in tmp_path.rglob("*"))
+    assert not any(
+        path.is_file() for path in tmp_path.rglob("*") if "upload-inputs" not in path.parts
+    ), "a refused target upload writes no artifact"
 
 
 def test_target_format_upload_redacts_url_shaped_asset_identity_in_503(
@@ -1200,7 +1212,7 @@ def test_target_format_upload_redacts_url_shaped_asset_identity_in_503(
 
     response = client.post(
         "/api/target-format",
-        files={"file": ("target.pdf", b"%PDF-1.4\n", "application/pdf")},
+        files={"file": ("target.pdf", _synthetic_target_upload(tmp_path), "application/pdf")},
     )
 
     assert response.status_code == 503
@@ -1240,7 +1252,7 @@ def test_target_format_upload_warns_when_asset_cleanup_is_unconfirmed(
 
     response = client.post(
         "/api/target-format",
-        files={"file": ("target.pdf", b"%PDF-1.4\n", "application/pdf")},
+        files={"file": ("target.pdf", _synthetic_target_upload(tmp_path), "application/pdf")},
     )
 
     assert response.status_code == 200, response.text
@@ -1612,3 +1624,78 @@ def test_revision_route_persists_additional_section_edits_and_dispositions(
     assert blocked.status_code == 409, blocked.text
     assert blocked.json()["detail"]["error_code"] == "source_content_unaccounted"
     assert blocked.json()["detail"]["pending_review_sections"][0]["source_block_id"] == "block_projects"
+
+
+def test_target_upload_refuses_large_declared_page_geometry_before_analysis(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #53: page geometry is refused before the provider analysis runs."""
+    from tests.helpers.synthetic_pdf import _write_single_page_pdf
+
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    analyzed: list[str] = []
+
+    def record_analysis(pdf_path: Path):
+        analyzed.append(str(pdf_path))
+        raise AssertionError("Adobe analysis ran for a refused target")
+
+    monkeypatch.setattr(main, "run_adobe_layout", record_analysis)
+    target_path = _write_single_page_pdf(
+        tmp_path / "huge-target.pdf",
+        ["BT 0 0 0 rg /F1 12 Tf 72 720 Td (Target) Tj ET"],
+        width_pt=5000,
+        height_pt=5000,
+    )
+
+    response = client.post(
+        "/api/target-format",
+        data={"artifact_id": "artifact_limited_target"},
+        files={"file": ("huge-target.pdf", target_path.read_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error_code"] == "pdf_page_geometry"
+    assert analyzed == []
+    assert not (tmp_path / "artifact_limited_target").exists()
+
+
+def test_refused_target_upload_keeps_the_prior_target_output(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #53: a refused re-upload leaves the stored target and its analysis alone."""
+    from tests.helpers.synthetic_pdf import _write_single_page_pdf
+
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    artifact_id = "artifact_prior_target"
+    accepted = client.post(
+        "/api/target-format",
+        data={"artifact_id": artifact_id},
+        files={
+            "file": (
+                "reference.pdf",
+                build_styled_target_pdf(tmp_path / "reference.pdf").read_bytes(),
+                "application/pdf",
+            )
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    stored = tmp_path / artifact_id / "target_format_reference.pdf"
+    stored_before = stored.read_bytes()
+    metadata_before = (tmp_path / artifact_id / "target_format.json").read_bytes()
+    huge = _write_single_page_pdf(
+        tmp_path / "huge-target.pdf",
+        ["BT 0 0 0 rg /F1 12 Tf 72 720 Td (Target) Tj ET"],
+        width_pt=5000,
+        height_pt=5000,
+    )
+
+    refused = client.post(
+        "/api/target-format",
+        data={"artifact_id": artifact_id},
+        files={"file": ("huge-target.pdf", huge.read_bytes(), "application/pdf")},
+    )
+
+    assert refused.status_code == 422
+    assert refused.json()["detail"]["error_code"] == "pdf_page_geometry"
+    assert stored.read_bytes() == stored_before
+    assert (tmp_path / artifact_id / "target_format.json").read_bytes() == metadata_before
