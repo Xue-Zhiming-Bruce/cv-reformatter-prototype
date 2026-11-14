@@ -202,6 +202,13 @@ def _raw_page_sizes(structured_data: dict[str, Any]) -> dict[int, tuple[float, f
         sizes[number] = (float(page.get("width") or 0.0), float(page.get("height") or 0.0))
     return sizes
 
+def _pdf_page_sizes(pdf: Path) -> dict[int, tuple[float, float]]:
+    """Page sizes (pt) read from a PDF file, not from a target's extracted evidence."""
+    import pdfplumber
+
+    with pdfplumber.open(pdf) as document:
+        return {index + 1: (float(page.width), float(page.height)) for index, page in enumerate(document.pages)}
+
 def _iter_raw_nodes(node: Any, path: str = ""):
     """Yield every dict node of the raw Adobe tree with its structural path."""
     if isinstance(node, dict):
@@ -341,26 +348,51 @@ class EvidencePod:
         return record.model_dump(mode="json")
 
     def page_pixels(self, page_number: int, source: str = "target") -> tuple[list[Path], int, int]:
-        """Render (once per source) and cache full-resolution page PNGs."""
-        key = f"{source}:{self.target_pdf.name}"
+        """Render (once per source) and cache full-resolution page PNGs.
+
+        The page is checked against the resolved source's page count before any
+        render, so an out-of-range request writes no page image.
+        """
+        pdf, page_sizes, _source_kind = self._crop_source(source)
+        if not 1 <= page_number <= len(page_sizes):
+            raise ValueError(f"page {page_number} outside 1..{len(page_sizes)}")
+        key = f"{source}:{pdf.name}"
         if key not in self._page_images:
-            prefix = f"{source}_{self.target_pdf.stem}"
-            self._page_images[key] = _render_pages(self.target_pdf, self.out_dir, prefix)
+            self._page_images[key] = _render_pages(pdf, self.out_dir, f"{source}_{pdf.stem}")
         pages = self._page_images[key]
-        if not 1 <= page_number <= len(pages):
-            raise ValueError(f"page {page_number} outside 1..{len(pages)}")
         from PIL import Image
 
         with Image.open(pages[page_number - 1]) as image:
             size = image.size
         return pages, size[0], size[1]
 
+    def _crop_refusal(self, source: str) -> dict[str, str] | None:
+        """The refusal payload for a source this pod cannot crop, or None to crop it."""
+        if source == "render":
+            return {
+                "reason": "no candidate render exists at the E1 target-understanding checkpoint",
+                "next": "crop a render only after a Builder step produces one",
+            }
+        return None
+
+    def _crop_source(self, source: str) -> tuple[Path, Mapping[int, tuple[float, float]], str]:
+        """The PDF one crop reads, that PDF's own page sizes, and the provenance kind
+        it carries. A source this pod cannot crop is refused here, so the reported
+        kind always follows the pixels that were actually cropped."""
+        if source != "target":
+            raise ValueError(f"source must be 'target' or 'render': {source!r}")
+        return self.target_pdf, self.page_sizes, "target_pdf"
+
     def _pt_to_px(
-        self, page_number: int, bbox_pt: list[float], source: str
+        self,
+        page_number: int,
+        bbox_pt: list[float],
+        source: str,
+        page_sizes: Mapping[int, tuple[float, float]],
     ) -> tuple[int, int, int, int, float, float]:
         """Translate PDF-point coordinates into pixel coordinates of the page image."""
         _pages, width_px, height_px = self.page_pixels(page_number, source)
-        width_pt, height_pt = self.page_sizes[page_number]
+        width_pt, height_pt = page_sizes[page_number]
         scale_x, scale_y = width_px / width_pt, height_px / height_pt
         x0, top, x1, bottom = (float(v) for v in bbox_pt)
         return (
@@ -458,15 +490,16 @@ class EvidencePod:
     ) -> list[Any]:
         """ORIGINAL-RESOLUTION crop of one bounded region, keeping its page location.
 
-        `source="render"` is refused in E1 rather than silently substituted: no
-        candidate render exists at this checkpoint, and a made-up substitute
-        would misrepresent what the reviewer looked at.
+        `source="render"` is refused rather than silently substituted when no
+        render is bound: a made-up substitute would misrepresent what the
+        reviewer looked at. A pod that binds a render (`_crop_source`) crops that
+        PDF with its own page geometry.
         """
         from pydantic_ai import BinaryContent
 
         evidence_id = self._next_id("region")
-        if source == "render":
-            reason = "no candidate render exists at the E1 target-understanding checkpoint"
+        refusal = self._crop_refusal(source)
+        if refusal is not None:
             self._record(
                 EvidenceAccessRecord(
                     evidence_id=evidence_id,
@@ -474,25 +507,16 @@ class EvidencePod:
                     provider="pypdfium2",
                     tool="inspect_page_region",
                     status="unavailable",
-                    reason=reason,
+                    reason=refusal["reason"],
                     request={"page": page_number, "bbox_pt": bbox_pt, "source": source},
                 )
             )
-            return [
-                json.dumps(
-                    {
-                        "evidence_id": evidence_id,
-                        "status": "unavailable",
-                        "reason": reason,
-                        "next": "crop a render only after a Builder step produces one",
-                    },
-                    indent=1,
-                )
-            ]
+            return [json.dumps({"evidence_id": evidence_id, "status": "unavailable", **refusal}, indent=1)]
         self._validate_bbox(bbox_pt)
+        pdf, page_sizes, source_kind = self._crop_source(source)
         pages, width_px, height_px = self.page_pixels(page_number, source)
         source_path = pages[page_number - 1]
-        x0, top, x1, bottom, scale_x, scale_y = self._pt_to_px(page_number, bbox_pt, source)
+        x0, top, x1, bottom, scale_x, scale_y = self._pt_to_px(page_number, bbox_pt, source, page_sizes)
         scale = (scale_x + scale_y) / 2
         with _open_image(source_path) as image:
             clipped = (
@@ -512,6 +536,7 @@ class EvidencePod:
                 provider="pypdfium2",
                 tool="inspect_page_region",
                 status="available",
+                source_path=pdf.name,
                 artifact=artifact.name,
                 request={"page": page_number, "bbox_pt": bbox_pt, "source": source, "note": note},
             )
@@ -520,10 +545,9 @@ class EvidencePod:
             "evidence_id": evidence_id,
             "kind": "region_crop",
             "page": page_number,
-            "source_kind": "target_pdf",
+            "source_kind": source_kind,
             "source_artifact": source_path.name,
-            "target_sha256": _sha256_file(self.target_pdf),
-            "page_size_pt": list(self.page_sizes[page_number]),
+            "page_size_pt": list(page_sizes[page_number]),
             "requested_bbox_pt": [round(float(v), 3) for v in bbox_pt],
             "crop_pixels": list(crop.size),
             "crop_box_px": list(clipped),
@@ -536,6 +560,7 @@ class EvidencePod:
             ),
             "is_original_resolution": True,
         }
+        header["target_sha256" if source_kind == "target_pdf" else "source_sha256"] = _sha256_file(pdf)
         return [
             "Region crop follows in the next part. Machine-readable header:\n"
             + json.dumps(header, indent=1),
@@ -1119,46 +1144,36 @@ class DualSourcePod(EvidencePod):
     # -- page pixels for both sources ----------------------------------------
 
     def page_pixels(self, page_number: int, source: str = "target") -> tuple[list[Path], int, int]:
-        pdf = self.render_pdf if source == "render" else self.target_pdf
-        if pdf is None:
+        if source == "render" and self.render_pdf is None:
             raise ValueError("no candidate render bound to this pod")
-        key = f"{source}:{pdf.name}"
+        pdf, page_sizes, _source_kind = self._crop_source(source)
+        if not 1 <= page_number <= len(page_sizes):
+            raise ValueError(f"page {page_number} outside 1..{len(page_sizes)}")
+        # Keyed by content, not by name: a re-bound render with a reused basename
+        # must never serve the previous render's pixels.
+        digest = _sha256_file(pdf)
+        key = f"{source}:{digest}"
         if key not in self._page_images:
-            prefix = f"{source}_{pdf.stem}"
+            prefix = f"{source}_{pdf.stem}_{digest[:8]}"
             self._page_images[key] = _render_pages(pdf, self.out_dir, prefix)
         pages = self._page_images[key]
-        if not 1 <= page_number <= len(pages):
-            raise ValueError(f"page {page_number} outside 1..{len(pages)}")
         from PIL import Image
 
         with Image.open(pages[page_number - 1]) as image:
             size = image.size
         return pages, size[0], size[1]
 
-    def inspect_page_region(
-        self,
-        page_number: int,
-        bbox_pt: list[float],
-        source: Literal["target", "render"] = "target",
-        note: str = "",
-    ) -> list[Any]:
-        """Original-resolution crop of the TARGET or the RENDER version."""
+    def _crop_refusal(self, source: str) -> dict[str, str] | None:
+        """Refuse a render crop only while no render is bound to this pod."""
         if source == "render" and self.render_pdf is None:
-            evidence_id = self._next_id("region")
-            reason = "no candidate render exists at this checkpoint"
-            self._record(
-                EvidenceAccessRecord(
-                    evidence_id=evidence_id,
-                    kind="region_crop",
-                    provider="pypdfium2",
-                    tool="inspect_page_region",
-                    status="unavailable",
-                    reason=reason,
-                    request={"page": page_number, "bbox_pt": bbox_pt, "source": source},
-                )
-            )
-            return [json.dumps({"evidence_id": evidence_id, "status": "unavailable", "reason": reason}, indent=1)]
-        return super().inspect_page_region(page_number, bbox_pt, source, note)
+            return {"reason": "no candidate render exists at this checkpoint"}
+        return None
+
+    def _crop_source(self, source: str) -> tuple[Path, Mapping[int, tuple[float, float]], str]:
+        """A render crop reads the bound render PDF with the render's page geometry."""
+        if source == "render" and self.render_pdf is not None:
+            return self.render_pdf, _pdf_page_sizes(self.render_pdf), "render"
+        return super()._crop_source(source)
 
     def measure_render_words(self, page_number: int) -> dict[str, Any]:
         """Page-local word boxes of the CURRENT render pdf (output verification
