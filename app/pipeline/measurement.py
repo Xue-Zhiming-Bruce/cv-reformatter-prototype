@@ -794,6 +794,45 @@ def _measure_header_vertical_rule_geometry(
         warnings=["coordinates are page-local pt; geometry is relative to the detected name region"],
     )
 
+def section_page_locations(pdf: Path, state: Any) -> dict[str, list[int]]:
+    """section node id -> sorted 1-based pages of THIS pdf carrying the section.
+
+    A section is carried from the page that shows one of its measured heading
+    labels until the page a LATER section's heading starts on. A section whose
+    label never starts a line in this pdf is absent from the result: that is the
+    whole-output absence the disposition owner must keep unresolved, so a
+    page-local claim is checked against the render's own pages instead of the
+    target's.
+    """
+    lines, _marks = _pdf_lines_and_marks(pdf)
+    sections = sorted(
+        (node for node in state.nodes if node.kind == "section"),
+        key=lambda node: node.reading_order,
+    )
+    starts: list[tuple[str, int]] = []
+    for section in sections:
+        labels = [
+            _line_key(node.label)
+            for node in state.nodes
+            if node.kind == "heading" and node.parent_id == section.node_id and node.label
+        ]
+        pages = [
+            int(line["page"]) for line in lines
+            if any(_line_key(line["text"]).startswith(label) for label in labels if label)
+        ]
+        if pages:
+            starts.append((section.node_id, min(pages)))
+    page_count = max((int(line["page"]) for line in lines), default=0)
+    locations: dict[str, list[int]] = {}
+    for index, (node_id, start) in enumerate(starts):
+        end = starts[index + 1][1] if index + 1 < len(starts) else page_count + 1
+        locations[node_id] = list(range(start, max(start, end - 1) + 1))
+    return locations
+
+
+def _line_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").casefold()).strip()
+
 def _measurement_improvement(
     before: MeasurementResult, after: MeasurementResult
 ) -> tuple[bool, str]:
