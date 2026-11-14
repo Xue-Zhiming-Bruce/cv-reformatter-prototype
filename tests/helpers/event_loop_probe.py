@@ -12,16 +12,23 @@ a request inside it meets the saturated case.
 ``cancel_while_held`` and ``wait_until`` cover what off-loop work exposed:
 cancelling a handler while its worker still runs, and the state that worker
 reaches afterwards.
+
+``paused_publication`` holds the first rename that publishes into one artifact
+directory, so a test can look at what a reader sees inside the publication
+window instead of racing it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import contextmanager, suppress
+from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -88,6 +95,24 @@ def wait_until(predicate: Callable[[], bool], message: str) -> None:
             return
         time.sleep(0.01)
     pytest.fail(message)
+
+
+@contextmanager
+def paused_publication(
+    artifact_dir: Path, entered: threading.Event, release: threading.Event
+) -> Iterator[None]:
+    """Hold the publication right after its first rename into ``artifact_dir``."""
+    real_replace = os.replace
+
+    def replace(source, destination):
+        result = real_replace(source, destination)
+        if not entered.is_set() and str(artifact_dir) in str(destination):
+            entered.set()
+            assert release.wait(HOLD_TIMEOUT_SECONDS), "the publication was never released"
+        return result
+
+    with patch.object(os, "replace", replace):
+        yield
 
 
 async def _request_until_cancelled(

@@ -31,6 +31,7 @@ from tests.helpers.event_loop_probe import (
     assert_health_answers,
     cancel_while_held,
     occupied_blocking_work,
+    paused_publication,
     wait_until,
 )
 
@@ -776,7 +777,6 @@ def test_target_format_upload_accepts_docx_templates_and_pdf_references(
         in docx_body["target_format"]["unsupported_features"]
     )
     assert docx_body["target_format"]["download_url"] == f"/api/artifacts/{artifact_id}/target_format_template.docx"
-    assert (tmp_path / artifact_id / "target_format_template.docx").exists()
 
     assert pdf_response.status_code == 200
     pdf_body = pdf_response.json()
@@ -790,6 +790,9 @@ def test_target_format_upload_accepts_docx_templates_and_pdf_references(
     assert "normalized_layout" in pdf_body["target_format"]["analysis_artifact_urls"]
     assert "target_evidence" in pdf_body["target_format"]["analysis_artifact_urls"]
     assert (tmp_path / artifact_id / "target_format_reference.pdf").exists()
+    # The PDF upload published over the DOCX set: the current target is one set
+    # from one request, so the superseded DOCX template is no longer published.
+    assert not (tmp_path / artifact_id / "target_format_template.docx").exists()
     assert (tmp_path / artifact_id / "layout_template_spec.json").exists()
     assert not (tmp_path / artifact_id / "template_style_spec.json").exists()
     assert (tmp_path / artifact_id / "normalized_layout_evidence.json").exists()
@@ -1188,11 +1191,27 @@ def test_target_format_reports_busy_without_creating_an_artifact(
     assert not (tmp_path / "outputs").exists()
 
 
-def _target_docx_bytes(path: Path) -> bytes:
+def _target_docx_bytes(path: Path, paragraph: str = "") -> bytes:
     document = Document()
     document.styles["Normal"].font.name = "Times New Roman"
+    if paragraph:
+        document.add_paragraph(paragraph)
     document.save(path)
     return path.read_bytes()
+
+
+def _published_upload(artifact_dir: Path) -> tuple[str, bytes] | None:
+    """What the artifact directory publishes now: metadata name and source bytes."""
+    metadata_path = artifact_dir / "target_format.json"
+    if not metadata_path.exists():
+        return None
+    metadata = json.loads(metadata_path.read_text())
+    return metadata["input_filename"], (artifact_dir / metadata["stored_filename"]).read_bytes()
+
+
+def _published_epochs(artifact_dir: Path) -> list[str]:
+    """The immutable sets kept under the artifact; older ones are pruned."""
+    return sorted(path.name for path in (artifact_dir / ".targets").glob("set-*"))
 
 
 def _held_target_analysis(
@@ -1281,7 +1300,76 @@ def test_cancelled_target_upload_publishes_nothing(
         "the cancelled upload never cleaned its staging directory",
     )
     artifact_dir = outputs / "artifact_cancelled_target"
-    assert not artifact_dir.exists(), sorted(path.name for path in artifact_dir.iterdir())
+    assert _published_upload(artifact_dir) is None
+    assert _published_epochs(artifact_dir) == []
+
+
+def _publish_baseline_target(
+    tmp_path: Path, monkeypatch: MonkeyPatch, artifact_dir: Path
+) -> tuple[bytes, bytes]:
+    """Publish one complete target set; return its bytes and a different second upload."""
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", artifact_dir.parent)
+    first = _target_docx_bytes(tmp_path / "first.docx", "first upload")
+    second = _target_docx_bytes(tmp_path / "second.docx", "second upload")
+    assert _upload_docx(first, artifact_dir.name, "first.docx").status_code == 200
+    return first, second
+
+
+def test_publication_switches_one_complete_set_at_a_time(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: no reader sees one upload's metadata beside another's source.
+
+    At ``22f9b79`` the first rename already replaced the published source while
+    the previous request's metadata was still in place.
+    """
+    outputs = tmp_path / "outputs"
+    artifact_dir = outputs / "artifact_single_switch"
+    first, second = _publish_baseline_target(tmp_path, monkeypatch, artifact_dir)
+    entered, release = threading.Event(), threading.Event()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with paused_publication(artifact_dir, entered, release):
+            upload = pool.submit(_upload_docx, second, artifact_dir.name, "second.docx")
+            try:
+                assert entered.wait(HOLD_TIMEOUT_SECONDS), "the second upload never published"
+                # Mid-publication the previous set is still the whole visible set.
+                assert _published_upload(artifact_dir) == ("first.docx", first)
+            finally:
+                release.set()
+        response = upload.result(timeout=HOLD_TIMEOUT_SECONDS)
+
+    assert response.status_code == 200, response.text
+    assert _published_upload(artifact_dir) == ("second.docx", second)
+    assert not any((outputs / ".staging").glob("*"))
+    # The live set and the one it replaced stay; the superseded one is pruned.
+    assert len(_published_epochs(artifact_dir)) == 2
+
+
+def test_cancellation_inside_the_publish_window_publishes_nothing(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: cancelling during publication must not replace the published set."""
+    outputs = tmp_path / "outputs"
+    artifact_dir = outputs / "artifact_switch_cancelled"
+    first, second = _publish_baseline_target(tmp_path, monkeypatch, artifact_dir)
+    entered, release = threading.Event(), threading.Event()
+
+    async def attempt(async_client: httpx.AsyncClient) -> None:
+        await async_client.post(
+            "/api/target-format",
+            data={"artifact_id": artifact_dir.name},
+            files={"file": ("second.docx", second, DOCX_MIME)},
+        )
+
+    with paused_publication(artifact_dir, entered, release):
+        asyncio.run(cancel_while_held(attempt, entered=entered, release=release))
+
+    wait_until(
+        lambda: not any((outputs / ".staging").glob("*")),
+        "the cancelled upload never cleaned its staging directory",
+    )
+    assert _published_upload(artifact_dir) == ("first.docx", first)
+    assert len(_published_epochs(artifact_dir)) == 1
 
 
 def test_target_format_upload_rejects_unsupported_files(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
