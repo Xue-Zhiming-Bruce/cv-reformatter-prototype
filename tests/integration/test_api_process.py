@@ -3,6 +3,9 @@ from pathlib import Path
 
 import pytest
 from docx import Document
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from docx.opc.packuri import PackURI
+from docx.opc.part import Part
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
 from docx.shared import Inches
@@ -40,9 +43,10 @@ def _build_resume_docx(path: Path) -> None:
 
 def _build_ordered_resume_docx(path: Path) -> None:
     """Issue #49: contact in the header/footer, a table between paragraphs, a header
-    table between header paragraphs, an enabled first-page header, a wrapped
-    paragraph, and three visible shapes this reader cannot read (nested table, run
-    content control, field)."""
+    table between header paragraphs, a first-page header defined before the section
+    that enables it, a wrapped paragraph and an inline wrapper around runs, plus five
+    visible shapes this reader cannot read (nested table, run content control, field,
+    tracked move, embedded chunk)."""
     document = Document()
     section = document.sections[0]
     header = section.header
@@ -52,7 +56,6 @@ def _build_ordered_resume_docx(path: Path) -> None:
     header_table.rows[0].cells[0].text = "Contact | Phone"
     header.add_paragraph("Reference on request")
     section.first_page_header.paragraphs[0].text = "First page contact"
-    section.different_first_page_header_footer = True
     section.footer.paragraphs[0].text = "+1 555 0100"
     document.add_paragraph("Location: Boston")
     document.add_paragraph("Skills")
@@ -64,12 +67,20 @@ def _build_ordered_resume_docx(path: Path) -> None:
     table.rows[1].cells[0].text = "Led the migration"
     table.rows[1].cells[1].text = "2024"
     document.add_paragraph("After table")
-    document.element.body.insert(
-        len(document.element.body) - 1,
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
         parse_xml(
             f'<w:customXml {nsdecls("w")} w:element="resume">'
             "<w:p><w:r><w:t>Wrapped entry</w:t></w:r></w:p></w:customXml>"
         ),
+    )
+    citizenship = document.add_paragraph("Citizenship: ")
+    citizenship._p.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="field">'
+            "<w:r><w:t>Inline wrapped</w:t></w:r></w:customXml>"
+        )
     )
     phone = document.add_paragraph("Phone: ")
     phone._p.append(
@@ -89,6 +100,31 @@ def _build_ordered_resume_docx(path: Path) -> None:
     nested_holder.rows[0].cells[0].add_table(rows=1, cols=1).rows[0].cells[0].text = (
         "Nested entry"
     )
+    for revision_id, tag in enumerate(("moveFrom", "moveTo"), start=1):
+        body.insert(
+            len(body) - 1,
+            parse_xml(
+                f'<w:{tag} {nsdecls("w")} w:id="{revision_id}" w:author="recruiter" '
+                'w:date="2026-01-01T00:00:00Z">'
+                "<w:p><w:r><w:t>Moved line</w:t></w:r></w:p>"
+                f"</w:{tag}>"
+            ),
+        )
+    chunk = Part(
+        PackURI("/word/chunk0.html"),
+        "text/html",
+        b"<html><body><p>Chunk text</p></body></html>",
+        document.part.package,
+    )
+    chunk_id = document.part.relate_to(chunk, RT.A_F_CHUNK)
+    body.insert(
+        len(body) - 1,
+        parse_xml(f'<w:altChunk {nsdecls("w", "r")} r:id="{chunk_id}"/>'),
+    )
+    # The first-page header stays defined in section one, which does not display
+    # it; section two enables first-page headers and inherits the definition.
+    document.add_section()
+    document.sections[1].different_first_page_header_footer = True
     document.save(path)
 
 
@@ -186,7 +222,8 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
     assert lines[-1] == "+1 555 0100"
     assert lines.count("jane@example.com") == 1
     # The header table keeps its place between the header paragraphs, and the
-    # first-page header is read only because the section enables it.
+    # first-page header defined in the first section is read at the second section,
+    # which is the one that displays it.
     assert lines.index("Contact | Phone") < lines.index("Reference on request")
     assert lines.count("First page contact") == 1
     assert (
@@ -194,16 +231,25 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
         < lines.index("Acme | Engineer")
         < lines.index("After table")
     )
-    # A paragraph inside a block wrapper is read where the wrapper sits, so it must
-    # be in the preserved text rather than merely absent from the limitations.
+    # A paragraph inside a block wrapper, and runs inside an inline wrapper, are read
+    # where they sit, so they must be in the preserved text rather than merely absent
+    # from the limitations.
     assert lines.index("After table") < lines.index("Wrapped entry")
-    # The nested table's cell, the content-control run and the field result are not
-    # readable, so each must be named instead of passing as absent.
-    for missing in ("Nested entry", "555 0199", "Field result"):
+    assert "Citizenship: Inline wrapped" in lines
+    # The nested table's cell, the content-control run, the field result, the moved
+    # block and the embedded chunk are not readable, so each must be named instead of
+    # passing as absent.
+    for missing in (
+        "Nested entry",
+        "555 0199",
+        "Field result",
+        "Moved line",
+        "Chunk text",
+    ):
         assert missing not in body["original_text"]
-    assert len(body["ingestion_limitations"]) == 3
+    assert len(body["ingestion_limitations"]) == 5
     limitation_text = " ".join(body["ingestion_limitations"])
-    for shape in ("nested table", "content control", "field"):
+    for shape in ("nested table", "content control", "field", "moves", "alternate-format chunk"):
         assert shape in limitation_text
     assert "Review the source document" in limitation_text
     assert (artifact_dir / "candidate_profile.json").exists()
@@ -257,11 +303,12 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
     audit = json.loads(
         (artifact_dir / "segmentation_audit.json").read_text(encoding="utf-8")
     )
-    assert audit["status"] == "passed"
     assert audit["source_line_count"] == audit["output_line_count"]
-    # Coverage passes on the text the reader supplied; only the limitation says
-    # that the source held more, so a passing audit cannot stand in for it.
-    assert body["ingestion_limitations"]
+    # Coverage of the supplied text cannot pass while the reader reported source
+    # content it never supplied, so the audit reports the gap itself.
+    assert audit["status"] == "incomplete"
+    assert audit["unread_source_content"] == body["ingestion_limitations"]
+    assert "could not read" in audit["detail"]
 
 
 def test_process_accepts_text_pdf_upload(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

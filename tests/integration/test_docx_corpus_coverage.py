@@ -78,7 +78,7 @@ def test_docx_corpus_extraction_coverage_and_generation(
 
     assert len(measurements) == CORPUS_FILE_COUNT
     for measurement in measurements:
-        assert measurement.audit_status in {"passed", "failed", "not_run"}
+        assert measurement.audit_status in {"passed", "failed", "not_run", "incomplete"}
         assert measurement.process_status is not None or measurement.unhandled_error
         assert (
             measurement.generate_status is not None

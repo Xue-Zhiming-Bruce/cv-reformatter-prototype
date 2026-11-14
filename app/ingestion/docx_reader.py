@@ -10,80 +10,101 @@ Order and header policy (issue #49):
   (``ExtractedHeaderFooter``). Header text joins ``plain_text`` ahead of the body
   and footer text after it: that is page order, not an invented one. Variants
   read for one section come in default, first-page, even-page order.
-- A header/footer is read once, in the section that defines it, in authored
-  order (a table between two header paragraphs stays between them). A section
-  linked to the previous one inherits an already-read definition, and a header
-  repeated on every page is a presentation fact rather than more source text;
-  emitting either again would duplicate candidate facts and invent reading order.
-- The first-page variant is read only when the section enables it (``titlePg``)
+- A header/footer is read once, in the section that displays it, in authored
+  order (a table between two header paragraphs stays between them). Word uses the
+  nearest definition at or before the using section, so a definition parked in an
+  earlier section is read at the section that inherits and displays it; a header
+  repeated on every page is a presentation fact rather than more source text, and
+  emitting it again would duplicate candidate facts.
+- The first-page variant is read only when the section displays it (``titlePg``)
   and the even-page variant only when the document enables it
-  (``oddAndEvenPagesHeaderFooter``). Word keeps the text of a disabled variant
-  out of view, so reading it would invent facts; it is not reported either.
+  (``oddAndEvenPagesHeaderFooter``). Word keeps the text of a variant no page
+  shows out of view, so reading it would invent facts; it is not reported either.
 
 What this reader reads (the whole read set):
 
-- body paragraphs and top-level body tables;
+- body paragraphs and top-level body tables, and the paragraphs inside table
+  cells;
 - a block-level content control (``w:sdt``) at body level, whose paragraphs and
   tables are read in the position the control occupies, nested controls
   included;
 - any other block wrapper whose own children are only paragraphs, tables or
   content controls (``w:customXml`` and friends), read in place recursively;
-- the same shapes inside a header/footer, read once per defining section and
-  enabled variant.
+- runs held by a transparent inline wrapper (``w:customXml``, ``w:smartTag``,
+  ``w:dir`` and the like): python-docx reads only direct runs and hyperlinks, so
+  such a wrapper is unwrapped on a copy and its runs read where they sit;
+- the same shapes inside a header/footer, read once per displayed variant.
 
 What it reports instead of dropping (the whole limitation set, each naming its
 location):
 
-- a table inside a table cell, text-box content, and tracked
-  insertions/deletions;
-- a content control inside a paragraph or table cell;
+- a table inside a table cell, text-box content, and tracked insertions,
+  deletions and moves (``w:ins``, ``w:del``, ``w:moveFrom``, ``w:moveTo``): a
+  move is reported rather than read because Word keeps both the source and the
+  destination copy under markup, so reading one would guess which is current;
+- a content control inside a paragraph;
 - a block wrapper holding text in a shape that is not paragraphs, tables or
   controls — reported one per element with its name and child position;
-- a simple field's cached visible result (``w:fldSimple``).
+- a simple field's cached visible result (``w:fldSimple``);
+- an embedded alternate-format chunk (``w:altChunk``), whose text lives in
+  another part entirely.
 
 Inline content-control runs and ``w:fldSimple`` results are reported, not read:
 reading them would need a second, hand-written paragraph-text parser beside
 python-docx's own. Visible text the reader never supplied cannot be recovered by
 a later check, so a passing source-coverage audit only proves that the text this
-reader supplied reached the output.
+reader supplied reached the output. The audit reads the limitation list for the
+same reason and reports ``incomplete`` rather than ``passed`` when the reader
+left source content unread.
 
-Shapes outside both lists above are outside this reader's detection: a comment,
-embedded or drawing content, or text an element carries in no ``w:t`` at all
-(``w:altChunk``) can still be dropped with no limitation. An empty
-``limitations`` therefore means "none of the listed shapes was found", never
-"the source was read completely". Images carry no extractable text and OCR is
-out of scope. Source bytes and stored profiles are untouched: this module only
+Shapes outside both lists above are outside this reader's detection: comment
+bodies live in ``comments.xml``, and chart, worksheet or OLE-object text lives in
+an embedded part, so no ``w:t`` in the main document marks either. Images carry
+no extractable text and OCR is out of scope. An empty ``limitations`` therefore
+means "none of the listed shapes was found", never "the source was read
+completely". Source bytes and stored profiles are untouched: this module only
 reads.
 """
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Sequence
 
 from docx import Document
 from docx.document import Document as DocumentObject
+from docx.oxml.text.paragraph import CT_P
 from docx.oxml.xmlchemy import BaseOxmlElement
+from docx.parts.hdrftr import FooterPart, HeaderPart
 from docx.section import Section as SectionObject
-from docx.table import Table
-from docx.text.paragraph import Paragraph
+from docx.table import Table, _Cell
 
 from app.ingestion.file_validator import validate_docx_file
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _PARAGRAPH = f"{_W}p"
 _TABLE = f"{_W}tbl"
+_RUN = f"{_W}r"
+_HYPERLINK = f"{_W}hyperlink"
 _TEXT = f"{_W}t"
 _TEXT_BOX = f"{_W}txbxContent"
 _INSERTED = f"{_W}ins"
 _DELETED = f"{_W}del"
+_MOVED_FROM = f"{_W}moveFrom"
+_MOVED_TO = f"{_W}moveTo"
+_ALT_CHUNK = f"{_W}altChunk"
 _CONTENT_CONTROL = f"{_W}sdt"
 _CONTROL_CONTENT = f"{_W}sdtContent"
 _FIELD = f"{_W}fldSimple"
 
 #: Block children one container walk reads in place.
 _READ_CHILD_TAGS = frozenset({_PARAGRAPH, _TABLE, _CONTENT_CONTROL})
-#: Block wrappers ``_find_limitations`` reports as ``tracked_change`` instead.
-_TRACKED_WRAPPERS = frozenset({_INSERTED, _DELETED, f"{_W}moveFrom", f"{_W}moveTo"})
+#: Revision wrappers ``_find_limitations`` reports as ``tracked_change`` instead.
+_TRACKED_WRAPPERS = frozenset({_INSERTED, _DELETED, _MOVED_FROM, _MOVED_TO})
+#: Inline shapes whose text stays unread, so an inline wrapper holding one is skipped.
+_REPORTED_INLINE_TAGS = _TRACKED_WRAPPERS | {_CONTENT_CONTROL, _FIELD}
+#: Inline elements whose text python-docx already reads, still searched for wrappers.
+_READ_INLINE_TAGS = frozenset({_RUN, _HYPERLINK})
 
 LimitationKind = Literal[
     "nested_table",
@@ -91,17 +112,19 @@ LimitationKind = Literal[
     "tracked_change",
     "content_control",
     "field",
+    "alt_chunk",
     "unknown_block",
 ]
 
 _UNSUPPORTED_CONTENT_REVIEW: dict[LimitationKind, str] = {
     "nested_table": "a table inside a table cell is not read",
     "text_box": "text-box content is not read",
-    "tracked_change": "tracked insertions/deletions are not resolved",
+    "tracked_change": "tracked insertions, deletions and moves are not resolved",
     "content_control": (
         "a content control inside a paragraph or table cell is not read"
     ),
     "field": "a field's cached visible result is not read",
+    "alt_chunk": "an embedded alternate-format chunk (w:altChunk) is not read",
     "unknown_block": "a block element this reader does not recognize is not read",
 }
 
@@ -200,26 +223,32 @@ def read_docx(path: str | Path) -> ExtractedDocxContent:
     limitations = _find_limitations(body, "body") + block_limitations
 
     header_footer: list[ExtractedHeaderFooter] = []
-    for section_index, section in enumerate(document.sections, start=1):
+    read_parts: set[str] = set()
+    sections = document.sections
+    for section_index, section in enumerate(sections):
         for location in ("header", "footer"):
             for variant in _enabled_variants(document, section):
-                content = getattr(section, _VARIANT_ACCESSORS[location][variant])
-                if content.is_linked_to_previous:
+                displayed = _displayed_part(sections, section_index, location, variant)
+                if displayed is None or str(displayed.partname) in read_parts:
                     continue
-                label = f"{variant} {location} of section {section_index}"
-                part = content.part.element
-                part_blocks, part_limitations = _read_blocks(part, document, label)
+                read_parts.add(str(displayed.partname))
+                label = f"{variant} {location} of section {section_index + 1}"
+                part_blocks, part_limitations = _read_blocks(
+                    displayed.element, document, label
+                )
                 text = "\n".join(_block_text(block) for block in part_blocks)
                 if text:
                     header_footer.append(
                         ExtractedHeaderFooter(
                             location=location,
                             variant=variant,
-                            section_index=section_index,
+                            section_index=section_index + 1,
                             text=text,
                         )
                     )
-                limitations.extend(_find_limitations(part, label) + part_limitations)
+                limitations.extend(
+                    _find_limitations(displayed.element, label) + part_limitations
+                )
 
     return ExtractedDocxContent(
         source_path=file_path,
@@ -241,6 +270,26 @@ def _enabled_variants(
     return variants
 
 
+def _displayed_part(
+    sections: Sequence[SectionObject],
+    section_index: int,
+    location: str,
+    variant: HeaderVariant,
+) -> HeaderPart | FooterPart | None:
+    """Header/footer part Word shows for this section and variant, if any.
+
+    Word uses the nearest definition at or before the using section, so a
+    first-page definition parked in a section that does not enable it still
+    reaches the pages of a later section that does.
+    """
+    accessor = _VARIANT_ACCESSORS[location][variant]
+    for section in reversed(sections[: section_index + 1]):
+        content = getattr(section, accessor)
+        if not content.is_linked_to_previous:
+            return content.part
+    return None
+
+
 def _read_blocks(
     container: BaseOxmlElement, document: DocumentObject, location: str
 ) -> tuple[list[ExtractedParagraph | ExtractedTable], list[ExtractedContentLimitation]]:
@@ -256,10 +305,10 @@ def _read_blocks(
     unread_controls = 0
     for index, child in enumerate(container.iterchildren(), start=1):
         if child.tag == _PARAGRAPH:
-            # ``Paragraph.text`` reads runs and hyperlinks only, so a content
-            # control inside this paragraph keeps its own text back.
+            # ``Paragraph.text`` reads runs, hyperlinks and the inline wrappers
+            # ``_paragraph_text`` unwraps, but nothing else it is given.
             unread_controls += len(child.findall(f".//{_CONTENT_CONTROL}"))
-            text = Paragraph(child, document).text.strip()
+            text = _paragraph_text(child).strip()
             if text:
                 blocks.append(ExtractedParagraph(text=text))
         elif child.tag == _TABLE:
@@ -303,6 +352,42 @@ def _read_blocks(
     return blocks, limitations
 
 
+def _paragraph_text(paragraph: CT_P) -> str:
+    """Text of one paragraph, including runs a transparent inline wrapper holds.
+
+    ``CT_P.text`` joins only direct ``w:r``/``w:hyperlink`` children, so a
+    ``w:customXml``, ``w:smartTag`` or similar structural wrapper around runs
+    would otherwise vanish. A paragraph without one takes python-docx's own path
+    unchanged; a wrapped one is unwrapped on a copy, so its runs read in the
+    position they occupy. Content controls, fields and revisions are left alone:
+    ``_find_limitations`` reports them instead.
+    """
+    if not _inline_wrappers(paragraph):
+        return paragraph.text
+    clone = deepcopy(paragraph)
+    while wrappers := _inline_wrappers(clone):
+        for wrapper in wrappers:
+            for child in list(wrapper):
+                wrapper.addprevious(child)
+            wrapper.getparent().remove(wrapper)
+    return clone.text
+
+
+def _inline_wrappers(element: BaseOxmlElement) -> list[BaseOxmlElement]:
+    """Transparent inline wrappers holding text python-docx would skip."""
+    wrappers: list[BaseOxmlElement] = []
+    for child in element.iterchildren():
+        if child.tag in _REPORTED_INLINE_TAGS:
+            continue
+        if child.tag in _READ_INLINE_TAGS:
+            wrappers.extend(_inline_wrappers(child))
+        elif child.find(f".//{_TEXT}") is not None:
+            wrappers.append(child)
+        else:
+            wrappers.extend(_inline_wrappers(child))
+    return wrappers
+
+
 def _is_block_wrapper(element: BaseOxmlElement) -> bool:
     """True when every child is a block shape this reader handles, or carries no text."""
     children = list(element.iterchildren())
@@ -319,10 +404,16 @@ def _local_name(element: BaseOxmlElement) -> str:
 def _read_table(table: Table) -> ExtractedTable:
     rows: list[list[str]] = []
     for row in table.rows:
-        cells = [cell.text.strip() for cell in row.cells]
+        cells = [_cell_text(cell) for cell in row.cells]
         if any(cells):
             rows.append(cells)
     return ExtractedTable(rows=rows)
+
+
+def _cell_text(cell: _Cell) -> str:
+    return "\n".join(
+        _paragraph_text(paragraph._p) for paragraph in cell.paragraphs
+    ).strip()
 
 
 def _table_lines(table: ExtractedTable) -> list[str]:
@@ -341,9 +432,11 @@ def _find_limitations(
     counts: dict[LimitationKind, int] = {
         "nested_table": sum(1 for table in element.iter(_TABLE) if _has_table_ancestor(table)),
         "text_box": len(element.findall(f".//{_TEXT_BOX}")),
-        "tracked_change": len(element.findall(f".//{_INSERTED}"))
-        + len(element.findall(f".//{_DELETED}")),
+        "tracked_change": sum(
+            len(element.findall(f".//{tag}")) for tag in _TRACKED_WRAPPERS
+        ),
         "field": len(element.findall(f".//{_FIELD}")),
+        "alt_chunk": len(element.findall(f".//{_ALT_CHUNK}")),
     }
     return [
         ExtractedContentLimitation(kind=kind, location=location, count=count)
