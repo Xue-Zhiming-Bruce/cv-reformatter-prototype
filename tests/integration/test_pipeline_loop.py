@@ -4416,6 +4416,47 @@ def test_a_lane_document_limit_refusal_ends_the_run_as_an_abort(
     assert not list(run_dir.glob("*.pdf")), "a refused run produced a document"
 
 
+def test_an_in_lane_refusal_keeps_the_files_the_lane_already_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #53: an in-lane abort keeps the lane's own files as the record.
+
+    The probe gate is the lane's second bounded parse, so refusing there happens
+    after the initial render: the lane's PDFs stay while nothing of the
+    comparison or the owner package is written.
+    """
+    from app.pipeline import service
+
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    gate_calls = {"count": 0}
+    real_gate = quality.content_gate
+
+    def refusing_gate(*args: Any, **kwargs: Any) -> Any:
+        gate_calls["count"] += 1
+        if gate_calls["count"] == 2:  # call 1 is the initial render's gate
+            _document_limit_refusal()
+        return real_gate(*args, **kwargs)
+
+    monkeypatch.setattr(quality, "content_gate", refusing_gate)
+
+    run_dir, terminal, record = service.run_e5(
+        inputs["target_pdf"],
+        tmp_path / "run",
+        candidate=synthetic_pipeline_candidate("Synthetic Candidate"),
+        probe_candidates={"probe_normal": synthetic_pipeline_candidate("Probe Candidate")},
+        **{key: value for key, value in inputs.items() if key != "target_pdf"},
+    )
+
+    assert terminal == "operational_abort"
+    assert record["summary"]["abort"]["operation"] == "lane_a_document_limit"
+    assert record["summary"]["abort"]["error_code"] == "local_processing_timeout"
+    assert (run_dir / "lane_a" / "render_1.pdf").exists(), "an in-lane abort deleted the lane's files"
+    assert (run_dir / "c2_layout_state.json").exists(), "the compiled state precedes the lane"
+    assert not (run_dir / "manifest.json").exists(), "a refused lane published an artifact manifest"
+    assert not (run_dir / "comparison_report.json").exists(), "a refused lane wrote the comparison"
+    assert not (run_dir / "owner_review").exists(), "a refused lane wrote the owner package"
+
+
 def test_a_target_overview_refusal_ends_the_run_as_an_abort(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
