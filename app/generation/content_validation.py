@@ -147,7 +147,7 @@ def _check(
 
 def _read_pdf_text(path: Path) -> str:
     with pdfplumber.open(path) as pdf:
-        return "\n".join(page.extract_text(use_text_flow=True) or "" for page in bounded_pdf_pages(pdf.pages))
+        return "\n".join(page.extract_text(use_text_flow=True) or "" for page in bounded_pdf_pages(pdf))
 
 
 class HiddenValueLeak(ContentValidationModel):
@@ -293,7 +293,7 @@ def _check_pdf_page_geometry(
     issues: list[str] = []
     tolerance_pt = 3.0
     with pdfplumber.open(pdf_path) as pdf:
-        for page_number, page in enumerate(bounded_pdf_pages(pdf.pages), start=1):
+        for page_number, page in enumerate(bounded_pdf_pages(pdf), start=1):
             chars = page.chars
             if not chars:
                 continue

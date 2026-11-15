@@ -20,7 +20,7 @@ from app.pipeline.evidence import (
     _sha256_file,
 )
 from app.pipeline.rendering import _pinned_chrome_environment
-from app.resource_limits import bounded_pdf_pages
+from app.resource_limits import bounded_pdf_page, bounded_pdf_pages
 
 HEADER_VERTICAL_RULE_MEASUREMENT_VERSION = "header_vertical_rule_geometry/2"
 HEADER_CONTACT_LABEL_MEASUREMENT_VERSION = "header_contact_label_geometry/1"
@@ -212,7 +212,7 @@ def _pdf_lines_and_marks(pdf: Path) -> tuple[list[dict[str, Any]], list[dict[str
     lines: list[dict[str, Any]] = []
     marks: list[dict[str, Any]] = []
     with pdfplumber.open(pdf) as document:
-        for page_number, page in enumerate(bounded_pdf_pages(document.pages), 1):
+        for page_number, page in enumerate(bounded_pdf_pages(document), 1):
             page_chars = [
                 char for char in page.chars
                 if str(char["text"]).strip()
@@ -295,7 +295,7 @@ def header_contact_label_evidence(
     bottom = min([top + 72, *(mark["top"] for mark in marks
         if mark["page"] == 1 and mark.get("kind") == "rule" and mark["top"] > top + .5)])
     with pdfplumber.open(pdf) as document:
-        page = document.pages[0]
+        page = bounded_pdf_page(document, 1)
         chars = [char for char in page.chars if str(char["text"]).strip()
             and char["top"] >= top - .25 and char["bottom"] <= bottom + .25
             and abs(float(char["size"]) - font_size_pt) <= .25]
@@ -437,7 +437,7 @@ def _bind_role_gap_anchors(
 
     def row_styles(path: Path) -> dict[float, tuple[float, bool, Any]]:
         with pdfplumber.open(path) as document:
-            words = document.pages[request.page - 1].extract_words(
+            words = bounded_pdf_page(document, request.page).extract_words(
                 extra_attrs=["fontname", "size", "non_stroking_color"])
         styles = {}
         for word in sorted(words, key=lambda item: item["x0"]):
@@ -551,7 +551,7 @@ def _header_vertical_rule_evidence(
     header_bottom = min(page_height, name["bottom"] + 80.0)
     rules: list[dict[str, Any]] = []
     with pdfplumber.open(pdf) as document:
-        page = document.pages[page_number - 1]
+        page = bounded_pdf_page(document, page_number)
         objects = [*page.rects, *page.curves, *(getattr(page, "lines", None) or [])]
         seen: set[tuple[float, float, float]] = set()
         for mark in objects:
@@ -655,7 +655,7 @@ def _target_body_text_color_context(pdf: Path) -> dict[str, Any] | None:
 
     colors: Counter[tuple[float, float, float]] = Counter()
     with pdfplumber.open(pdf) as document:
-        for page in bounded_pdf_pages(document.pages):
+        for page in bounded_pdf_pages(document):
             for char in page.chars:
                 color = char.get("non_stroking_color")
                 if not str(char.get("text") or "").strip() or not isinstance(color, (list, tuple)) or len(color) != 3:
@@ -929,7 +929,7 @@ def _header_typography_context(pdf: Path, *, name_text: str | None = None) -> di
         return {"state": "unbound", "reason": "the requested header name did not bind to final-PDF text"}
     region = evidence["name_region"]
     with pdfplumber.open(pdf) as document:
-        chars = [char for char in document.pages[0].chars if str(char.get("text") or "").strip()]
+        chars = [char for char in bounded_pdf_page(document, 1).chars if str(char.get("text") or "").strip()]
         selected = [char for char in chars
             if region["x0"] - .5 <= (char["x0"] + char["x1"]) / 2 <= region["x1"] + .5
             and region["top"] - .5 <= (char["top"] + char["bottom"]) / 2 <= region["bottom"] + .5]

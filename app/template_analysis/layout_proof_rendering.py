@@ -21,6 +21,7 @@ import pdfplumber
 
 from app.generation import chrome_html_to_pdf
 from app.generation.template_mapper import ClientFacingRenderContext
+from app.resource_limits import bounded_pdf_page_count
 from app.template_analysis.layout_proof_artifacts import (
     DEFAULT_PROOF_OUTPUT_DIR,
     file_sha256,
@@ -241,4 +242,4 @@ def _render_layout_proof_with_context(
 def pdf_page_count(pdf_path: Path) -> int:
     """Deterministic page count of a rendered proof PDF; unreadable files raise."""
     with pdfplumber.open(pdf_path) as pdf:
-        return len(pdf.pages)
+        return bounded_pdf_page_count(pdf)

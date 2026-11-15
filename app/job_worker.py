@@ -26,6 +26,7 @@ from app.profile_approval import ApprovedProfileVersion, load_profile_revision
 from app.storage.artifact_store import ArtifactStoreConflict, ArtifactStoreError
 from app.storage.job_queue import JobLeaseLost, PostgresJobQueue
 from app.storage.postgres import PostgresGenerationRepository, PostgresProfileRevisionRepository, artifact_sessions, postgres_engine
+from app.resource_limits import bounded_pdf_page_count
 from app.target_publication import TARGETS_DIRNAME, TargetSet
 from app.template_analysis.artifacts import (ADOBE_RAW_FILENAME, LAYOUT_SPEC_FILENAME,
                                             NORMALIZED_LAYOUT_FILENAME, load_layout_template_spec)
@@ -633,7 +634,7 @@ def install_offline_renderer() -> None:
             candidate_document_from_context(context, candidate_id="local-job-candidate",
                 include_subheading=layout_spec.header.show_candidate_subheading),
             target_sha256=hashlib.sha256(Path(target_pdf).read_bytes()).hexdigest(),
-            page_count=len(PdfReader(target_pdf).pages))
+            page_count=bounded_pdf_page_count(PdfReader(target_pdf)))
         directory = Path(output_dir)
         directory.mkdir(parents=True, exist_ok=False)
         source = directory / "render.html"

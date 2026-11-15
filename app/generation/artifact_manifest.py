@@ -16,6 +16,7 @@ from app.final_acceptance import FinalOutputIdentity, current_output_identity, f
 from app.generation.composition_report import COMPOSITION_REPORT_FILENAME
 from app.profile_approval import ProfileApprovalError, ProfileRevisionRepository, draft_sha256, load_current_approved_profile
 from app.generation.template_mapper import CLIENT_DISCLOSURE_VERSION
+from app.resource_limits import bounded_pdf_pages
 from app.target_publication import TARGETS_DIRNAME, TargetSet
 from app.template_analysis.artifacts import (
     ADOBE_RAW_FILENAME,
@@ -198,7 +199,7 @@ def _matches(directory: Path, reference: FileIdentity) -> bool:
 def _pdf_fonts(path: Path) -> tuple[str | None, list[FontIdentity]]:
     fonts: dict[tuple[str, str, str | None], FontIdentity] = {}
     with PdfReader(path) as pdf:
-        for page in pdf.pages:
+        for page in bounded_pdf_pages(pdf):
             resources = page.get("/Resources")
             font_map = resources.get_object().get("/Font") if resources else None
             for value in font_map.get_object().values() if font_map else ():

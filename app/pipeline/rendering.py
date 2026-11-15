@@ -319,7 +319,7 @@ def _measure_margins(evidence: NormalizedLayoutEvidence, pdf_path: Path | None) 
     visible_tops: dict[int, float] = {}
     if pdf_path is not None:
         with pdfplumber.open(pdf_path) as pdf:
-            for number, page in enumerate(bounded_pdf_pages(pdf.pages), 1):
+            for number, page in enumerate(bounded_pdf_pages(pdf), 1):
                 words = page.extract_words()
                 if not words:
                     continue
@@ -487,7 +487,7 @@ def _per_line_edges(pdf: Path) -> list[tuple[int, float, float, float]]:
     """Per-line geometry (page, top, x0, x1) for cross-render comparison."""
     with pdfplumber.open(pdf) as document:
         edges = []
-        for page_number, page in enumerate(bounded_pdf_pages(document.pages), 1):
+        for page_number, page in enumerate(bounded_pdf_pages(document), 1):
             rows: dict[int, list[tuple[float, float]]] = {}
             for word in page.extract_words():
                 rows.setdefault(round(word["top"], 1), []).append((float(word["x0"]), float(word["x1"])))

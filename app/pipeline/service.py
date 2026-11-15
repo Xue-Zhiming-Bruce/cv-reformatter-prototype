@@ -3665,6 +3665,7 @@ def run_e5(
         # Measured ONCE, target-only, before any plan or render exists: the initial
         # Builder and every lane A structure application read this same answer.
         target_contact_labels = target_header_contact_label_context(target_pdf, state=state)
+        header_rule_context = _header_vertical_rule_target_context(target_pdf)
     except DocumentLimitError as error:
         # The bounded overview raster and the target reads can refuse here, before
         # any lane exists; answer with the same abort the other refusals get.
@@ -3685,7 +3686,6 @@ def run_e5(
         body_color_context=body_color_context,
         target_contact_labels=target_contact_labels,
     )
-    header_rule_context = _header_vertical_rule_target_context(target_pdf)
     if header_rule_context is not None:
         initial_builder_evidence["header_vertical_rule_target_context"] = (
             header_rule_context

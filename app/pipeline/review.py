@@ -15,6 +15,7 @@ from app.pipeline.measurement import (
     _pdf_lines_and_marks,
 )
 import pdfplumber as _pdfplumber
+from app.resource_limits import bounded_pdf_page
 from app.pipeline.evidence import (
     DefectFinding,
     DualSourcePod,
@@ -389,7 +390,7 @@ def _line_style_of(
     """Measured style of ONE page-local text line: the style group whose font
     size matches the line's median character size (generic; any family)."""
     with _pdfplumber.open(target_pdf) as document:
-        page_chars = document.pages[page_number - 1].chars
+        page_chars = bounded_pdf_page(document, page_number).chars
     overlapping = [
         char
         for char in page_chars

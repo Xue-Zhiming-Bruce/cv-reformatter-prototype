@@ -334,14 +334,19 @@ entry count/expansion/forged-size refusal without allocating the declared size,
 page count and declared geometry refusal read from the page tree before any text
 extraction (the test counts `extract_text` calls), the raster pixel budget and
 per-page geometry, and a bounded parse child that is killed on timeout. Package
-refusals report entry position and size, never an entry name. Each case uses
+refusals report entry position and size, never an entry name, including the
+member reader reached without the directory checks, and the parse budget starts
+before the page tree is built, so a slow page tree is charged to the same
+deadline and refused at the first page; a static check holds that no module
+reads a document's page tree except through the bounded page helpers. Each case uses
 bytes built in the test, not a corpus file, so they run offline and cannot
 exhaust machine memory. `integration/test_pipeline_rendering.py` covers both
 rasterizers (page count and page side, and — counting real render calls — that a
 document refused for its page count, a later page's geometry or the summed pixel
 budget renders nothing at all), the shared per-page wall-clock parse budget on
 the generation gates, `unit/test_resource_limits.py` covers the same budget on
-the diagnostic `measure` tool's all-page walk, and
+the diagnostic `measure` tool's all-page walk and on the privacy gate's document
+parses, and
 `integration/test_pipeline_loop.py` covers the
 diagnostic target preflight and the same budget on its own target parse, and
 that a refusal raised inside a lane ends the run as `operational_abort` with
@@ -350,7 +355,8 @@ attribution batch's `measure` refusal crosses its handler instead of being
 recorded as a provider-call failure, and which artifacts each refusal point
 leaves: a refused compile or input parse writes neither the compiled layout
 state nor a render, a target-read abort keeps the compiled state (and the
-overview, when it rendered first), and an in-lane abort keeps those and the
+overview, when it rendered first) — the header-rule read included — and an
+in-lane abort keeps those and the
 lane's own files, in every case without a manifest or a PDF; `integration/test_api_process.py` covers a chunked direct upload above
 the app limit, the structured reader-error shape and an event-loop ticker kept
 ticking during a slow parse; `integration/test_api_generate.py` covers a target

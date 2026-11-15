@@ -23,3 +23,20 @@ def slow_page_extraction(monkeypatch: pytest.MonkeyPatch, *, delay: float = 0.12
             return _original(self, *args, **kwargs)
 
         monkeypatch.setattr(pdfplumber.page.Page, name, slow)
+
+
+def slow_page_construction(monkeypatch: pytest.MonkeyPatch, *, delay: float = 0.12) -> None:
+    """Make building each page object cost wall-clock time.
+
+    `document.pages` builds the whole page tree on its first access, before any
+    page can be yielded, so a budget that starts at the first page misses it.
+    """
+    import pdfplumber.page
+
+    original = pdfplumber.page.Page.__init__
+
+    def slow(self: object, *args: object, **kwargs: object) -> None:
+        time.sleep(delay)
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pdfplumber.page.Page, "__init__", slow)

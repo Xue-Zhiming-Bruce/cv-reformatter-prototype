@@ -12,7 +12,7 @@ from PIL import Image, ImageChops
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.pipeline.rendering import ROOT, _render_pages
 from app.pipeline.runtime import RunBudget, RunTrace
-from app.resource_limits import DocumentLimitError, bounded_pdf_pages
+from app.resource_limits import DocumentLimitError, bounded_pdf_page, bounded_pdf_pages
 
 POD_SCHEMA_VERSION = "pipeline-e-evidence-pod/1"
 
@@ -208,7 +208,7 @@ def _pdf_page_sizes(pdf: Path) -> dict[int, tuple[float, float]]:
     import pdfplumber
 
     with pdfplumber.open(pdf) as document:
-        return {index + 1: (float(page.width), float(page.height)) for index, page in enumerate(bounded_pdf_pages(document.pages))}
+        return {index + 1: (float(page.width), float(page.height)) for index, page in enumerate(bounded_pdf_pages(document))}
 
 def _iter_raw_nodes(node: Any, path: str = ""):
     """Yield every dict node of the raw Adobe tree with its structural path."""
@@ -656,12 +656,12 @@ class EvidencePod:
         measurements: dict[str, Any] = {}
         try:
             with pdfplumber.open(self.target_pdf) as document:
-                pages = document.pages
-                if page_number is not None and not 1 <= page_number <= len(pages):
-                    raise ValueError(f"page {page_number} outside 1..{len(pages)}")
-                # A request without a page walks the whole target, so it takes
-                # the same parse budget as every other parent-side page loop.
-                for number, page in enumerate(bounded_pdf_pages(pages), 1):
+                # The walk takes the parse budget, which starts before the page
+                # tree is built; the page number is checked after it so a
+                # request cannot reach pages outside that budget.
+                page_count = 0
+                for number, page in enumerate(bounded_pdf_pages(document), 1):
+                    page_count = number
                     if page_number is not None and number != page_number:
                         continue
                     width, height = float(page.width), float(page.height)
@@ -703,6 +703,8 @@ class EvidencePod:
                             for index, item in _rule_objects(page)
                         ]
                     measurements[str(number)] = entry
+                if page_number is not None and not 1 <= page_number <= page_count:
+                    raise ValueError(f"page {page_number} outside 1..{page_count}")
         except DocumentLimitError:
             raise
         except Exception as error:  # measurement failure is a recorded outcome
@@ -1230,7 +1232,7 @@ class DualSourcePod(EvidencePod):
         rows: list[dict[str, Any]] = []
         try:
             with pdfplumber.open(self.render_pdf) as document:
-                page = document.pages[page_number - 1]
+                page = bounded_pdf_page(document, page_number)
                 for word in page.extract_words():
                     rows.append(
                         {
@@ -1381,7 +1383,7 @@ def _pdf_line_rows(pdf: Path, page_number: int) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     with pdfplumber.open(pdf) as document:
-        page = document.pages[page_number - 1]
+        page = bounded_pdf_page(document, page_number)
         grouped: dict[float, list[dict[str, Any]]] = {}
         for word in page.extract_words():
             top = round(float(word["top"]), 1)
@@ -1405,7 +1407,7 @@ def _page_pt_size(pdf: Path, page_number: int) -> tuple[float, float]:
     import pdfplumber
 
     with pdfplumber.open(pdf) as document:
-        page = document.pages[page_number - 1]
+        page = bounded_pdf_page(document, page_number)
         return float(page.width), float(page.height)
 
 def _side_by_side(images: list[tuple[str, Path | None]], out_path: Path) -> Path:
