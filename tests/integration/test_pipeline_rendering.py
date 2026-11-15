@@ -166,7 +166,8 @@ p {{ margin-bottom: 2pt; }}
 
 def test_pipeline_export_adapter_holds_export_contract(tmp_path: Path) -> None:
     """The pipeline lane's adapter prints the @page page size, the embedded
-    bundled font and the background over 2+ pages through the shared contract."""
+    bundled font and the background over 2+ pages through the shared contract,
+    with no browser header/footer."""
     import pdfplumber
     from app.generation.chrome_html_to_pdf import CONTRACT_VERSION
     from app.pipeline.measurement import pinned_export_environment
@@ -195,14 +196,24 @@ def test_pipeline_export_adapter_holds_export_contract(tmp_path: Path) -> None:
             len(colour) >= 3 and colour[0] > .95 and colour[1] < .05 and colour[2] < .05
             for colour in colours
         ), colours
+        # Printing the browser header/footer would add a date line to every
+        # page and a file: URL with the page counter below it.
+        printed = [
+            line
+            for page in document.pages
+            for line in (page.extract_text() or "").splitlines()
+            if line.strip()
+        ]
+        assert all(line.startswith("Contract probe line") for line in printed), printed
 
 
 def test_offline_worker_render_adapter_holds_export_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The job worker's installed renderer reaches the shared export contract:
-    the template's @page size and its text survive into a real PDF. The native
-    lane's boundary is covered by the real-Chrome API acceptance case
+    the template's @page size and its text survive into a real PDF with no
+    browser header/footer. The native lane's boundary is covered by the
+    real-Chrome API acceptance case
     (test_api_generate.test_builtin_api_shared_a_preserves_real_pdf_and_acceptance_identity)."""
     import pdfplumber
     from app.generation import agentic, service as generation_service
@@ -233,7 +244,9 @@ def test_offline_worker_render_adapter_holds_export_contract(
         first = document.pages[0]
         assert round(first.width) == round(spec.page.width_pt)
         assert round(first.height) == round(spec.page.height_pt)
-        assert "Candidate Alpha" in (first.extract_text() or "")
+        text = first.extract_text() or ""
+        assert text.startswith("Candidate Alpha"), text
+        assert "file:" not in text, text
 
 
 def test_plan_status_and_full_leaf_ownership_on_full_coverage() -> None:
