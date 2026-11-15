@@ -7,10 +7,12 @@ from pathlib import Path
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 from app import pdfium_native
+from app.ingestion.pdf_reader import read_pdf_page_sizes
 from app.resource_limits import (
     DocumentLimitError,
     RasterPixelBudget,
     check_pdf_page_count,
+    check_pdf_pages,
 )
 from app.template_analysis.schemas import PageComparison, VisualComparisonReport
 
@@ -256,6 +258,10 @@ def _render_pdf(
     try:
         scale = dpi / 72
         budget = RasterPixelBudget()
+        # The geometry policy reads the DECLARED page box — the same reading
+        # ingestion validates — because PDFium can interpret a degenerate box as
+        # another size and would render a page ingestion refuses.
+        check_pdf_pages(read_pdf_page_sizes(path))
         with pdfium_native.native_lifetime(), closing(pdfium_native.pdfium.PdfDocument(str(path))) as document:
             check_pdf_page_count(len(document))
             # Every page is measured and charged to the budget before page 1

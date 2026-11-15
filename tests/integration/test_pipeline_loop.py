@@ -4575,6 +4575,38 @@ def test_a_header_rule_target_refusal_aborts_before_the_first_lane(
     assert not (run_dir / "manifest.json").exists(), "a refused run published an artifact manifest"
 
 
+def test_a_page_size_target_refusal_aborts_with_the_compiled_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #53: the pre-lane target reads share one abort boundary.
+
+    The page-size read is the first target read after the compiled state, so a
+    refusal there must end the run with a terminal record like every other
+    pre-lane refusal instead of raising out of `run_e5`.
+    """
+    from app.pipeline import service
+
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    monkeypatch.setattr(service, "_page_pt_size", _document_limit_refusal)
+
+    run_dir, terminal, record = service.run_e5(
+        inputs["target_pdf"],
+        tmp_path / "run",
+        candidate=synthetic_pipeline_candidate("Synthetic Candidate"),
+        **{key: value for key, value in inputs.items() if key != "target_pdf"},
+    )
+
+    assert terminal == "operational_abort"
+    assert record["summary"]["abort"]["operation"] == "target_measurement"
+    assert record["summary"]["abort"]["error_code"] == "local_processing_timeout"
+    assert (run_dir / "c2_layout_state.json").exists(), "the compile precedes the target reads"
+    assert (run_dir / "e5_state.json").exists(), "a refused run recorded no terminal state"
+    assert not list(run_dir.glob("*.png")), "the page-size read precedes the overview render"
+    assert not list(run_dir.glob("*.pdf")), "a refused run produced a document"
+    assert not (run_dir / "lane_a").exists(), "a refused run started a lane"
+    assert not (run_dir / "manifest.json").exists(), "a refused run published an artifact manifest"
+
+
 def test_the_measure_tool_refusal_crosses_the_attribution_handler(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

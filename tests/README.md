@@ -341,9 +341,11 @@ deadline and refused at the first page; a static check holds that no module
 reads a document's page tree except through the bounded page helpers. Each case uses
 bytes built in the test, not a corpus file, so they run offline and cannot
 exhaust machine memory. `integration/test_pipeline_rendering.py` covers both
-rasterizers (page count and page side, and — counting real render calls — that a
-document refused for its page count, a later page's geometry or the summed pixel
-budget renders nothing at all), the shared per-page wall-clock parse budget on
+rasterizers (page count and page side — measured on the declared page box, so a
+page PDFium would interpret as usable is still refused — and, counting real
+render calls, that a document refused for its page count, a later page's
+geometry or the summed pixel budget renders nothing at all), the shared
+per-page wall-clock parse budget on
 the generation gates, `unit/test_resource_limits.py` covers the same budget on
 the diagnostic `measure` tool's all-page walk and on the privacy gate's document
 parses, and
@@ -355,7 +357,8 @@ attribution batch's `measure` refusal crosses its handler instead of being
 recorded as a provider-call failure, and which artifacts each refusal point
 leaves: a refused compile or input parse writes neither the compiled layout
 state nor a render, a target-read abort keeps the compiled state (and the
-overview, when it rendered first) — the header-rule read included — and an
+overview, when it rendered first) — the page-size and header-rule reads
+included — and an
 in-lane abort keeps those and the
 lane's own files, in every case without a manifest or a PDF; `integration/test_api_process.py` covers a chunked direct upload above
 the app limit, the structured reader-error shape and an event-loop ticker kept
