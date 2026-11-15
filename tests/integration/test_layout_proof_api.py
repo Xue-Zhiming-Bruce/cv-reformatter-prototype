@@ -92,6 +92,39 @@ def _generate_with_target(artifact_id: str, target_format: dict[str, object], ve
     )
 
 
+def test_layout_proof_decision_verifies_the_target_the_request_resolved(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """The request keeps its target PDF published while the decision verifies it.
+
+    At ``240eedb`` the approval route resolved the target through a view it
+dropped, so two uploads landing in that window left the checksum verification
+    reading a deleted file: the request failed on a target it had just validated.
+    """
+    artifact_id = "artifact_proof_target_window"
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    reject = main.reject_layout_proof
+    decided: list[str] = []
+
+    def upload_then_reject(*args: object, **kwargs: object) -> object:
+        for _ in range(2):
+            _upload_target(tmp_path, artifact_id)
+        decided.append("done")
+        return reject(*args, **kwargs)
+
+    monkeypatch.setattr(main, "reject_layout_proof", upload_then_reject)
+
+    response = client.post(
+        f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+        json={"state": "rejected", "reviewer_id": "synthetic-reviewer"},
+    )
+
+    assert decided, "the decision step never ran"
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "rejected"
+
+
 def test_layout_proof_render_failure_returns_structured_error(tmp_path: Path) -> None:
     artifact_id = "artifact_proof_render_failure"
     _upload_target(tmp_path, artifact_id)

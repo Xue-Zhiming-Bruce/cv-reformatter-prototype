@@ -212,6 +212,24 @@ either side of a publication may therefore legitimately see different sets;
 what cannot happen is one operation mixing upload A's metadata with upload B's
 bytes.
 
+The pin is a kernel `flock` on the epoch directory — shared to read, exclusive to
+delete or to stage — so it is visible to every process, not only the one that
+took it: a child worker that publishes or prunes leaves the set its parent is
+reading alone, and the kernel drops the hold when the reader closes the view or
+its process dies. A pruner deletes only a set it can take exclusively itself, so
+a set being read, adopted or staged is never deleted, and a publisher holds its
+staged epoch exclusively until the switch and fails closed if that claim was
+lost, rather than publishing a name that points at nothing. Selecting a set and
+holding it are one critical section, so no publication lands in between.
+
+The guarantees stop where the reader stops. A hold lives in the process that
+took it: when a worker dies its hold dies with it, and nothing protects a file
+that another process still tries to read afterwards. Nothing protects a returned
+*path* either once its view is gone — a path names bytes a later publication may
+delete — so an operation that hands out a target path hands out the view with it
+or does its work inside it, and a download response keeps its view until the
+response has been sent.
+
 ## Save Candidate Revisions
 
 ```text

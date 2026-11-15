@@ -762,10 +762,11 @@ def render_proof_snapshot(bundle: Path) -> None:
     install_offline_renderer()
     progress = _ProgressWriter(bundle)
     variants = {variant.value: "pending" for variant in LengthVariant}
+    target_set = TargetSet(bundle)  # held while every variant reads the target PDF
     try:
         _require_frozen_target(bundle, payload)
         _, layout_spec, target_pdf, target_checksum = resolve_layout_proof_context(
-            bundle, payload.artifact_id, payload.design_id)
+            bundle, payload.artifact_id, payload.design_id, target_set)
         if target_checksum != payload.target_sha256:
             raise ValueError("The bundled target document changed")
         progress.write("render", variants)
