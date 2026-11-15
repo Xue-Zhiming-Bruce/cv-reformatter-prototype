@@ -707,6 +707,9 @@ class PreparedGeneration:
     artifact_id: str
     artifact_dir: Path
     target_format: TargetFormatMetadata | None
+    #: The pinned set every target file of this generation comes from; holding it
+    #: keeps the set retained until rendering is done with ``target_document``.
+    target_set: TargetSet | None
     target_document: Path | None
     profile_revision: ApprovedProfileVersion
     reviewed_profile: CandidateProfile
@@ -1004,6 +1007,7 @@ def prepare_generation(
         artifact_id=artifact_id,
         artifact_dir=artifact_dir,
         target_format=target_format,
+        target_set=target_set,
         target_document=target_document,
         profile_revision=profile_revision,
         reviewed_profile=reviewed_profile,

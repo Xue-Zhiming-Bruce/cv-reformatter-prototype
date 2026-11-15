@@ -216,19 +216,34 @@ beside another upload's source. Uploads for the same `artifact_id` serialize on
 a per-artifact lock, so the later one publishes over the earlier one and the
 superseded set stops being published — after a PDF target supersedes a DOCX
 target, the DOCX template URL is no longer part of the current target. A
-refused, failed or cancelled upload publishes nothing, including a cancellation
-that lands while it was publishing, and no upload can delete another request's
-staged source.
+refused, failed, cancelled or otherwise failed upload publishes nothing,
+including a cancellation or failure that lands while it was publishing: the
+previous set is put back and the staged one is discarded, and no upload can
+delete another request's staged source. A published set is retained while it is
+current, while it is the set the current one replaced, and while a reader still
+holds it: pruning never deletes a set an open view is reading, so a publication
+cannot pull bytes out from under an operation in progress. A publisher that
+starts up also drops what a dead publisher left behind, including the set the
+current one replaced, so a retention count settles at one live set once no view
+holds an older one.
 
-Consistency is per logical read, not across time. A reader that needs more than
-one file (metadata plus source, a proof plus its render, a worker input
+An artifact directory published before the switch existed keeps its target files
+as plain files, which no single rename can replace together. Its first read or
+publication copies them into one complete immutable epoch and switches to it, so
+such a directory is either entirely legacy or a complete set, never half of
+each — a copy rather than a move, because an adoption that dies before the switch
+then still leaves the whole legacy set readable. The target file exists twice for
+the length of that adoption.
+
+Consistency is per logical operation, not across time. A reader that needs more
+than one file (metadata plus source, a proof plus its render, a worker input
 snapshot) pins the current set once — `app.target_publication.TargetSet` — and
-reads every file from that pinned epoch; a writer never writes through a public
+reads every file from that pinned epoch, and an operation that also renders
+keeps that view alive until it is done; a writer never writes through a public
 name, because a set is immutable once published. Two *separate* reads issued on
 either side of a publication may therefore legitimately see different sets;
-what cannot happen is one read mixing upload A's metadata with upload B's bytes.
-A pinned set is retained while it is live and one publication after it, so a
-view pinned before two later uploads resolves nothing rather than stale bytes.
+what cannot happen is one operation mixing upload A's metadata with upload B's
+bytes.
 
 ## Document Resource Limits — Both Uploads (issue #53)
 

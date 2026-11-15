@@ -286,3 +286,171 @@ def test_target_snapshot_copies_one_published_set_as_real_files(tmp_path: Path) 
         assert not (bundle / name).is_symlink()
     assert not (bundle / "target_format_reference.pdf").exists()
     assert not (bundle / TARGETS_DIRNAME).exists()
+
+
+def _legacy_artifact(
+    tmp_path: Path, artifact_dir: Path, filenames: tuple[str, ...], tag: str
+) -> dict[str, bytes]:
+    """An artifact directory published before the switch: plain files, no epochs."""
+    staging, contents = _staging(tmp_path, filenames, tag)
+    artifact_dir.mkdir(parents=True)
+    for name in filenames:
+        os.replace(staging / name, artifact_dir / name)
+    return contents
+
+
+def test_pinned_set_stays_readable_across_two_later_publications(tmp_path: Path) -> None:
+    """A view retains its set while it reads, so pruning cannot pull it out.
+
+    At ``60ed109`` pruning kept the live set and one predecessor, so a view
+    pinned before two later publications resolved nothing.
+    """
+    from app.target_publication import TargetSet
+
+    artifact_dir = tmp_path / "artifact_leased_reader"
+    first = _publish(tmp_path, artifact_dir, PDF_SET, "first")
+    view = TargetSet(artifact_dir)
+    assert view.read("adobe_raw_response.json") is not None
+    _publish(tmp_path, artifact_dir, DOCX_SET, "second")
+    _publish(tmp_path, artifact_dir, DOCX_SET, "third")
+
+    retained = view.read("adobe_raw_response.json")
+    assert retained is not None, "pruning deleted a set an open view is still reading"
+    assert retained.read_bytes() == first["adobe_raw_response.json"]
+
+    # Releasing the view lets the next publication prune it again.
+    view.close()
+    _publish(tmp_path, artifact_dir, DOCX_SET, "fourth")
+    assert len(_epochs(artifact_dir)) == 2
+
+
+def test_legacy_directory_is_adopted_as_one_complete_epoch(tmp_path: Path) -> None:
+    """A pin on a pre-switch directory reads one whole upload, never a mix.
+
+    At ``60ed109`` the first publication replaced the plain files one by one, so
+    a pinned view saw the old metadata beside the new source and the plain
+    metadata file stayed beside the new links.
+    """
+    from app.target_publication import TargetSet
+
+    artifact_dir = tmp_path / "artifact_legacy_adopted"
+    first = _legacy_artifact(tmp_path, artifact_dir, PDF_SET, "first")
+    view = TargetSet(artifact_dir)
+    assert json.loads(view.read("target_format.json").read_text())["input_filename"] == "first.docx"
+
+    _publish(tmp_path, artifact_dir, PDF_SET, "second")
+
+    retained = view.read("adobe_raw_response.json")
+    assert retained is not None, "adoption left the pinned legacy set half migrated"
+    assert retained.read_bytes() == first["adobe_raw_response.json"]
+    assert json.loads((artifact_dir / "target_format.json").read_text())["input_filename"] == "second.docx"
+    plain = [
+        path.name
+        for path in artifact_dir.iterdir()
+        if path.name in PDF_SET and path.is_file() and not path.is_symlink()
+    ]
+    assert plain == [], f"plain files stayed beside the published links: {plain}"
+
+
+def test_abandonment_while_linking_public_names_publishes_nothing(tmp_path: Path) -> None:
+    """Giving up after the switch still publishes nothing.
+
+    At ``60ed109`` abandonment was only checked before and right after the
+    switch, so setting it while the public names were linked left the new set
+    published even though the caller had gone.
+    """
+    from app.target_publication import TargetSet
+
+    artifact_dir = tmp_path / "artifact_abandon_link"
+    first = _publish(tmp_path, artifact_dir, DOCX_SET, "first")
+    staging, _second = _staging(tmp_path, DOCX_SET, "second")
+    abandoned = threading.Event()
+    link_public_names = TargetSet._link_public_names
+
+    def link_then_abandon(self: TargetSet, filenames) -> None:
+        link_public_names(self, filenames)
+        abandoned.set()
+
+    with patch.object(TargetSet, "_link_public_names", link_then_abandon):
+        publish_target_set(artifact_dir, staging, DOCX_SET, abandoned)
+
+    assert (artifact_dir / "target_format.json").read_bytes() == first["target_format.json"]
+    assert (artifact_dir / "target_format_template.docx").read_bytes() == first["target_format_template.docx"]
+    assert len(_epochs(artifact_dir)) == 1, _epochs(artifact_dir)
+
+
+def test_interrupted_adoption_keeps_every_legacy_file_readable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure before the switch leaves the whole legacy set, not half of it.
+
+    The copy is what carries that: at ``98d5eaf`` adoption moved the plain files
+    into the new epoch first, so a crash between the move and the switch left
+    an epoch nothing pointed at and every target read resolved nothing.
+    """
+    from app import target_publication
+    from app.target_publication import TargetSet
+
+    artifact_dir = tmp_path / "artifact_legacy_interrupted"
+    legacy = _legacy_artifact(tmp_path, artifact_dir, PDF_SET, "first")
+
+    def fail(*_args: object, **_kwargs: object) -> str | None:
+        raise OSError("injected failure before the switch")
+
+    monkeypatch.setattr(target_publication, "_flip_current", fail)
+    with pytest.raises(OSError):
+        TargetSet(artifact_dir).read("target_format.json")
+
+    plain = {
+        path.name: path.read_bytes()
+        for path in artifact_dir.iterdir()
+        if path.is_file() and not path.is_symlink()
+    }
+    assert plain, f"the interrupted adoption took the plain legacy files: {_epochs(artifact_dir)}"
+    assert {name: plain.get(name) for name in PDF_SET} == legacy
+    assert _epochs(artifact_dir) == [], _epochs(artifact_dir)
+
+    monkeypatch.undo()
+    view = TargetSet(artifact_dir)
+    try:
+        for name, payload in legacy.items():
+            assert view.read(name).read_bytes() == payload, name
+    finally:
+        view.close()
+
+
+def test_interrupted_adoption_then_an_abandoned_upload_keeps_the_legacy_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash during adoption, then a cancelled upload, still serves the set.
+
+    At ``98d5eaf`` the two together left ``epochs=[]``: nothing published and the
+    published files unreachable.
+    """
+    from app import target_publication
+    from app.target_publication import TargetSet
+
+    artifact_dir = tmp_path / "artifact_legacy_interrupted_abandoned"
+    legacy = _legacy_artifact(tmp_path, artifact_dir, PDF_SET, "first")
+
+    def fail(*_args: object, **_kwargs: object) -> str | None:
+        raise OSError("injected failure before the switch")
+
+    monkeypatch.setattr(target_publication, "_flip_current", fail)
+    with pytest.raises(OSError):
+        TargetSet(artifact_dir).read("target_format.json")
+    monkeypatch.undo()
+
+    staging, _second = _staging(tmp_path, DOCX_SET, "second")
+    abandoned = threading.Event()
+    abandoned.set()
+    publish_target_set(artifact_dir, staging, DOCX_SET, abandoned)
+
+    assert len(_epochs(artifact_dir)) == 1, _epochs(artifact_dir)
+    view = TargetSet(artifact_dir)
+    try:
+        for name, payload in legacy.items():
+            assert view.read(name).read_bytes() == payload, name
+        assert view.read("target_format_template.docx") is None
+    finally:
+        view.close()

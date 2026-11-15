@@ -1333,8 +1333,9 @@ def create_layout_proofs(
     """Create and validate all three synthetic proof variants for a target."""
     _require_artifact(artifact_id)
     artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
+    target_set = TargetSet(artifact_dir)
     _target_format, style_spec, target_pdf, target_checksum = _layout_proof_context(
-        artifact_dir, artifact_id, body.design_id
+        artifact_dir, artifact_id, body.design_id, target_set=target_set
     )
     try:
         create_proof_variants(
@@ -1369,7 +1370,7 @@ def create_layout_proofs(
                 "options": ["reanalyze_target", "upload_new_target"],
             },
         ) from exc
-    return _layout_proof_status(artifact_id, artifact_dir)
+    return _layout_proof_status(artifact_id, artifact_dir, target_set)
 
 
 @app.get("/api/artifacts/{artifact_id}/layout-proofs", response_model=LayoutProofStatusResponse)
@@ -2063,22 +2064,24 @@ def _require_artifact(artifact_id: str) -> None:
 
 
 def _load_generation_style_spec(
-    artifact_dir: Path,
+    target_set: TargetSet,
 ) -> LayoutTemplateSpec:
     """Load the sole uploaded-target generation contract: artifact-root v2."""
-    return load_layout_template_spec(TargetSet(artifact_dir).published_dir / LAYOUT_SPEC_FILENAME)
+    return load_layout_template_spec(target_set.published_dir / LAYOUT_SPEC_FILENAME)
 
 
 def _layout_proof_context(
     artifact_dir: Path,
     artifact_id: str,
     design_id: str | None,
+    target_set: TargetSet | None = None,
 ) -> tuple[TargetFormatMetadata, LayoutTemplateSpec, Path, str]:
     """Resolve target metadata, the template spec, the visual-comparison target
     PDF, and the target checksum for layout-proof operations."""
     try:
         return resolve_layout_proof_context(
-            artifact_dir, artifact_id, design_id, repository=design_repository(DATABASE_URL)
+            artifact_dir, artifact_id, design_id,
+            repository=design_repository(DATABASE_URL), target_set=target_set,
         )
     except LayoutProofContextError as exc:
         detail = str(exc) if exc.error_code is None else {"error_code": exc.error_code, "message": str(exc)}
@@ -2086,10 +2089,11 @@ def _layout_proof_context(
 
 
 def _layout_proof_status(
-    artifact_id: str, artifact_dir: Path
+    artifact_id: str, artifact_dir: Path, target_set: TargetSet | None = None
 ) -> LayoutProofStatusResponse:
+    """Report one target's proof state from one pinned set."""
     target_checksum = ""
-    target_set = TargetSet(artifact_dir)
+    target_set = target_set or TargetSet(artifact_dir)
     target_format = load_saved_target_format(target_set)
     if target_format is not None:
         stored_path = target_set.read(target_format.stored_filename)
@@ -2100,7 +2104,9 @@ def _layout_proof_status(
             target_checksum = ""
     layout_checksum = ""
     try:
-        style_spec = _load_generation_style_spec(artifact_dir)
+        # One view for the whole status: metadata, source and spec come from one
+        # set even when an upload switches it while this runs.
+        style_spec = _load_generation_style_spec(target_set)
         layout_checksum = layout_spec_checksum(style_spec)
     except Exception:
         pass
