@@ -787,9 +787,19 @@ def test_read_docx_decides_every_element_of_the_inline_content_model(
     must render, descend, count, ignore or report each one; an element added to
     the model without a decision fails here instead of in a review round.
     """
-    from app.ingestion.docx_reader import _INLINE_CONTENT_TAGS, _INLINE_DECISIONS
+    from app.ingestion.docx_reader import (
+        _INLINE_CONTENT_TAGS,
+        _INLINE_DECISIONS,
+        _MATH,
+        _MATH_PARAGRAPH,
+    )
 
     assert set(_INLINE_DECISIONS) == _INLINE_CONTENT_TAGS
+    # Every math element has one entry, in the math namespace Word writes: a
+    # ``w:oMath`` copy beside ``m:oMath`` would never match a document.
+    assert {
+        tag for tag in _INLINE_CONTENT_TAGS if _local_name(tag) in {"oMath", "oMathPara"}
+    } == {_MATH, _MATH_PARAGRAPH}
 
     rendered = {
         "t": "",

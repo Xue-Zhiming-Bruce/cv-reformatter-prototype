@@ -96,7 +96,10 @@ location):
   instead of reading as empty;
 - a ruby annotation (``w:ruby/w:rt``): the base text is read, and the smaller
   pronunciation printed above it is reported rather than guessed into the line;
-- a simple field's cached visible result (``w:fldSimple``);
+- a simple field's cached visible result (``w:fldSimple``), reported and never
+  read: the runs inside it are the value a field last computed, which a field
+  update can replace, so the cached value is named instead of entering the
+  candidate's source text;
 - a referenced note this reader did not read: an id no note part supplies, or a
   comment body, which lives in ``comments.xml`` as a margin annotation rather
   than page text and is deliberately not mixed into the candidate's text. Counted
@@ -258,8 +261,6 @@ _INLINE_CONTENT_TAGS = frozenset(
         _SUB_DOCUMENT,
         _ALTERNATE_CONTENT,
         f"{_W}pPr",
-        f"{_W}oMath",
-        f"{_W}oMathPara",
         # run content
         _TEXT,
         _TAB,
@@ -416,8 +417,6 @@ _INLINE_DECISIONS: dict[str, InlineDecision] = {
     f"{_W}pgNum": "report",
     f"{_W}delText": "report",
     f"{_W}contentPart": "report",
-    f"{_W}oMath": "report",
-    f"{_W}oMathPara": "report",
     _OBJECT: "report",  # an embedded object's own text lives in another part
 }
 
