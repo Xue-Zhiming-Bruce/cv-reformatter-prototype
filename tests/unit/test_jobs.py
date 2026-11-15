@@ -103,7 +103,7 @@ def _render_result(execution_mode: str, proof_id: str, variant: LengthVariant = 
         pdf_filename=f"proof-{variant.value}.pdf",
         html_checksum="a" * 64,
         pdf_checksum="b" * 64,
-        page_count=0,
+        page_count=1,  # a proof nobody could review is not evidence (#35)
         execution_mode=execution_mode,
     )
 
@@ -112,7 +112,7 @@ def _evidence(execution_mode: str, variant: LengthVariant = LengthVariant.MEDIUM
     return VariantProofEvidence(
         variant=variant,
         render_result=_render_result(execution_mode, f"layout_proof_{variant.value}_0123456789abcdef", variant),
-        structural=StructuralValidationResult(passed=True, page_count=0),
+        structural=StructuralValidationResult(passed=True, page_count=1),
         visual=VisualComparisonEvidence(report=VisualComparisonReport(
             target_page_count=1, generated_page_count=1, compared_page_count=0,
             page_count_similarity=1.0, average_layout_similarity=1.0,
