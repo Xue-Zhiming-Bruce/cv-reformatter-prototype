@@ -40,14 +40,19 @@ What this reader reads (the whole read set):
 - any other block wrapper whose own children are only paragraphs, tables or
   content controls (``w:customXml`` and friends), read in place recursively;
 - an Office Math zone (``m:oMath``, ``m:oMathPara``), block or inline: its
-  characters are the ``m:t`` nodes under it, read in that order. A math zone is
-  visible source text in its own namespace, so a decision that asked for ``w:t``
-  alone dropped an equation as "carries no text";
+  children go through the same inline walk as a paragraph's, so ``m:t`` renders
+  in order, the math constructs (``m:r``, ``m:f``, ``m:sSup`` and the rest of
+  ``_MATH_CONTAINERS``) are descended, and a child outside that model is named
+  rather than lost. One walk, not a collector that reads ``m:t`` and drops the
+  rest: a math zone is visible source text in its own namespace, so a decision
+  that asked for ``w:t`` alone dropped an equation as "carries no text";
 - a footnote or endnote a ``w:footnoteReference``/``w:endnoteReference`` points
   at, read from its own part (``footnotes.xml``, ``endnotes.xml``) and emitted
   after the body blocks: a note is printed at the foot of the page, so it joins
-  the text after the body and ahead of the footer. Notes a part does not supply
-  stay reported (see ``note`` below);
+  the text after the body and ahead of the footer. Only a reference the walk
+  itself reaches is followed, so a note pointed at from an alternative branch
+  that was not chosen prints nothing and is not read. Notes a part does not
+  supply stay reported (see ``note`` below);
 - inline text, by one walk with one explicit decision per element of the inline
   content model (``_INLINE_DECISIONS``): a character the element renders is
   appended (``w:t``, ``w:tab``/``w:ptab`` as a tab, ``w:br``/``w:cr`` as the break
@@ -107,10 +112,12 @@ location):
   document rather than a blind spot;
 - an embedded alternate-format chunk (``w:altChunk``) or included subdocument
   (``w:subDoc``), whose text lives in another part entirely;
-- images, drawings and charts, one entry per part with the count found: their
-  text, if any, is pixels or an embedded chart or worksheet part, and OCR is out
-  of scope, so the reader never supplies it. Reported only: not reading pixels is
-  not lost text, so these do not block approval;
+- drawings, legacy pictures and charts that hold no text of their own, one entry
+  per part with the count found: what they show is pixels or an embedded chart or
+  worksheet part, and OCR is out of scope, so the reader never supplies it.
+  Reported only: not reading pixels is not lost text, so these do not block
+  approval. A drawing that carries a character is not one of them — its text is
+  visible content nobody read, so it is counted as a text box and blocks;
 - a symbol character whose ``w:char`` is a private-use code point (Wingdings,
   Symbol and other font-specific code pages), one entry per part naming the font:
   its code point is in the text, but the glyph it draws is the font's, so the
@@ -152,7 +159,6 @@ from docx import Document
 from docx.document import Document as DocumentObject
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import parse_xml
-from docx.oxml.text.paragraph import CT_P
 from docx.oxml.xmlchemy import BaseOxmlElement
 from docx.parts.hdrftr import FooterPart, HeaderPart
 from docx.section import Section as SectionObject
@@ -185,6 +191,20 @@ _RUBY = f"{_W}ruby"
 _MATH = f"{_M}oMath"
 _MATH_PARAGRAPH = f"{_M}oMathPara"
 _MATH_TEXT = f"{_M}t"
+#: Office Math's content model: every element a math zone nests a character in,
+#: from ECMA-376 (``CT_OMathPara``, ``CT_OMath``, ``CT_OMathArg`` and the constructs
+#: inside them). ``m:t`` is the only one that carries text; the rest are structure,
+#: and a math child outside this set is reported by the same inline walk that
+#: decides about run content.
+_MATH_CONTAINERS = frozenset(
+    f"{_M}{name}"
+    for name in (
+        "acc", "bar", "borderBox", "box", "d", "deg", "den", "e", "eqArr", "f",
+        "fName", "func", "groupChr", "lim", "limLow", "limUpp", "m", "mr", "nary",
+        "num", "oMath", "oMathPara", "phant", "r", "rad", "sPre", "sSub", "sSubSup",
+        "sSup", "sub", "sup",
+    )
+)
 _RUBY_BASE = f"{_W}rubyBase"
 _RUBY_TEXT = f"{_W}rt"
 _OBJECT = f"{_W}object"
@@ -214,16 +234,19 @@ _TEXT_LOCAL_NAMES = frozenset(
 
 #: Block children one container walk reads in place.
 _READ_CHILD_TAGS = frozenset({_PARAGRAPH, _TABLE, _CONTENT_CONTROL})
-#: Note parts and the marks that point at them, in the order they are read.
-_NOTE_REFERENCES: tuple[tuple[str, str], ...] = (
-    ("footnote", f"{_W}footnoteReference"),
-    ("endnote", f"{_W}endnoteReference"),
-    ("comment", f"{_W}commentReference"),
-)
-_NOTE_PARTS: tuple[tuple[str, str, str], ...] = (
-    ("footnote", RT.FOOTNOTES, f"{_W}footnote"),
-    ("endnote", RT.ENDNOTES, f"{_W}endnote"),
-)
+#: The mark in the text -> the kind of note it points at. Only a mark the walk
+#: itself reaches brings a note in: one in an alternative branch that was not
+#: chosen is neither read nor counted.
+_NOTE_REFERENCES: dict[str, str] = {
+    f"{_W}footnoteReference": "footnote",
+    f"{_W}endnoteReference": "endnote",
+    f"{_W}commentReference": "comment",
+}
+#: The part each readable note kind lives in, by kind.
+_NOTE_PARTS: dict[str, tuple[str, str]] = {
+    "footnote": (RT.FOOTNOTES, f"{_W}footnote"),
+    "endnote": (RT.ENDNOTES, f"{_W}endnote"),
+}
 
 #: Revision wrappers ``_find_limitations`` reports as ``tracked_change`` instead.
 _TRACKED_WRAPPERS = frozenset({_INSERTED, _DELETED, _MOVED_FROM, _MOVED_TO})
@@ -272,8 +295,7 @@ _INLINE_CONTENT_TAGS = frozenset(
         _SYMBOL,
         _PAGE_BREAK_MARK,
         _RUBY,
-        _MATH,
-        _MATH_PARAGRAPH,
+        *_MATH_CONTAINERS,
         _MATH_TEXT,
         _CONTROL_CONTENT,
         _DRAWING,
@@ -355,9 +377,8 @@ _INLINE_DECISIONS: dict[str, InlineDecision] = {
     **{tag: "descend" for tag in _STRUCTURAL_WRAPPERS},
     f"{_W}dir": "descend",
     f"{_W}bdo": "descend",
-    # Office Math carries its text in ``m:t`` runs, in any of these namespaces.
-    _MATH: "descend",
-    _MATH_PARAGRAPH: "descend",
+    # Office Math: the walk descends the constructs and renders their ``m:t``.
+    **{tag: "descend" for tag in _MATH_CONTAINERS},
     _MATH_TEXT: "render",
     # Controls and the content they hold are read in the position they occupy.
     _CONTENT_CONTROL: "descend",
@@ -600,12 +621,17 @@ class _ReadAccount:
     every ``mc:AlternateContent`` branch that was not chosen. Both hold the
     elements themselves, not ``id()``: lxml hands out a fresh proxy for the same
     element once the old proxy is collected, so an id would stop matching.
-    ``notes`` holds the referenced notes that were read, so the count names the
-    notes a part did not supply.
+    ``referenced_notes`` holds every note reference the walk itself reached, in
+    walk order, and ``notes`` the ones whose text it then read: reading from the
+    walk's own references is what keeps a note in an alternative branch that was
+    not chosen out of the text, and the difference names the notes a part did not
+    supply.
     """
 
     controls: set[BaseOxmlElement] = field(default_factory=set)
     discarded: set[BaseOxmlElement] = field(default_factory=set)
+    #: ``(kind, id)`` of every note reference the walk reached, in walk order.
+    referenced_notes: dict[tuple[str, str], None] = field(default_factory=dict)
     #: ``(kind, id)`` of every referenced note whose text this walk read.
     notes: set[tuple[str, str]] = field(default_factory=set)
 
@@ -665,46 +691,37 @@ def read_docx(path: str | Path) -> ExtractedDocxContent:
 def _read_notes(
     document: DocumentObject, account: _ReadAccount
 ) -> tuple[list[ExtractedParagraph | ExtractedTable], list[ExtractedContentLimitation]]:
-    """Read every referenced footnote and endnote, in reference order.
+    """Read every note the walks referenced, in the order the walks reached them.
 
-    A note is printed at the foot of the page, so its text joins the body blocks
-    after the body and ahead of the footer: page order again, not an invented
-    one. A note whose part is missing, whose id the part does not hold, or that
-    lives in a part this reader does not open (a comment's) is left unread and
-    stays counted by ``_find_limitations``, which reports one entry per part.
+    The references are the walk's own, not a scan of the part: a note referenced
+    only from an ``mc:AlternateContent`` branch that was not chosen renders no
+    text on the selected branch, so it must not pull its own text into the
+    candidate's. A note is printed at the foot of the page, so its text joins the
+    body blocks after the body and ahead of the footer: page order again, not an
+    invented one. A note whose part is missing, whose id the part does not hold,
+    or that lives in a part this reader does not open (a comment's) is left unread
+    and stays counted by ``_find_limitations``, which reports one entry per part.
     """
     blocks: list[ExtractedParagraph | ExtractedTable] = []
     limitations: list[ExtractedContentLimitation] = []
-    body = document.element.body
-    for kind, relationship, item_tag in _NOTE_PARTS:
-        references = _referenced_note_ids(body, f"{_W}{kind}Reference")
-        if not references:
+    notes_by_kind: dict[str, dict[str, BaseOxmlElement]] = {}
+    for kind, note_id in list(account.referenced_notes):
+        if kind not in _NOTE_PARTS:
             continue
-        notes = _note_items(document, relationship, item_tag)
-        for note_id in references:
-            note = notes.get(note_id)
-            if note is None:
-                continue
-            label = f"{kind} {note_id}"
-            note_blocks, note_block_limitations = _read_blocks(
-                note, document, label, account
-            )
-            limitations.extend(
-                _find_limitations(note, label, account) + note_block_limitations
-            )
-            blocks.extend(note_blocks)
-            account.notes.add((kind, note_id))
+        if kind not in notes_by_kind:
+            relationship, item_tag = _NOTE_PARTS[kind]
+            notes_by_kind[kind] = _note_items(document, relationship, item_tag)
+        note = notes_by_kind[kind].get(note_id)
+        if note is None:
+            continue
+        label = f"{kind} {note_id}"
+        note_blocks, note_block_limitations = _read_blocks(note, document, label, account)
+        limitations.extend(
+            _find_limitations(note, label, account) + note_block_limitations
+        )
+        blocks.extend(note_blocks)
+        account.notes.add((kind, note_id))
     return blocks, limitations
-
-
-def _referenced_note_ids(container: BaseOxmlElement, reference_tag: str) -> list[str]:
-    """Ids of one note kind's references, in document order and without repeats."""
-    ids: list[str] = []
-    for reference in container.iter(reference_tag):
-        note_id = reference.get(f"{_W}id")
-        if note_id is not None and note_id not in ids:
-            ids.append(note_id)
-    return ids
 
 
 def _note_items(
@@ -778,7 +795,7 @@ def _read_blocks(
     limitations: list[ExtractedContentLimitation] = []
     for index, child in enumerate(container.iterchildren(), start=1):
         if child.tag == _PARAGRAPH:
-            text, inline_limitations = _read_paragraph(
+            text, inline_limitations = _read_inline_text(
                 child,
                 f"{location} child {index}",
                 document.element.nsmap,
@@ -821,7 +838,13 @@ def _read_blocks(
             blocks.extend(sub_blocks)
             limitations.extend(sub_limitations)
         elif child.tag in (_MATH, _MATH_PARAGRAPH):
-            text = _math_text(child).strip()
+            text, math_limitations = _read_inline_text(
+                child,
+                f"{location} child {index}",
+                document.element.nsmap,
+                account,
+            )
+            limitations.extend(math_limitations)
             if text:
                 blocks.append(ExtractedParagraph(text=text))
         elif _carries_text(child):
@@ -836,13 +859,18 @@ def _read_blocks(
     return blocks, limitations
 
 
-def _read_paragraph(
-    paragraph: CT_P,
+def _read_inline_text(
+    container: BaseOxmlElement,
     location: str,
     namespaces: Mapping[str, str],
     account: _ReadAccount,
 ) -> tuple[str, list[ExtractedContentLimitation]]:
-    """Text of one paragraph and every inline shape the walk declined to read.
+    """Text of one inline container and every inline shape the walk declined to read.
+
+    A paragraph and a block-level math zone are both inline containers, so both
+    are read here: an office-math child the walk has not seen is named by the same
+    decision table that handles run content, instead of a second collector that
+    would read ``m:t`` and lose everything else.
 
     Reading and reporting are one traversal, so a child is read, descended, or
     named at the moment it is declined; a wrapper holding a wrapper cannot be read
@@ -850,7 +878,7 @@ def _read_paragraph(
     """
     pieces: list[str] = []
     limitations: list[ExtractedContentLimitation] = []
-    _read_inline(paragraph, pieces, limitations, location, namespaces, account)
+    _read_inline(container, pieces, limitations, location, namespaces, account)
     return "".join(pieces).strip(), limitations
 
 
@@ -864,11 +892,12 @@ def _read_inline(
 ) -> None:
     """Append one inline container's text in authored order, deciding every child.
 
-    A paragraph, a run and a chosen alternative branch are all inline containers,
-    and each child takes one exit from ``_INLINE_DECISIONS``: render a character,
-    descend, leave to a part-level count, ignore markup that holds no visible
-    character, or report it by name. A child missing from that table is reported,
-    so an element nobody anticipated costs a limitation rather than its text.
+    A paragraph, a run, a math construct and a chosen alternative branch are all
+    inline containers, and each child takes one exit from ``_INLINE_DECISIONS``:
+    render a character, descend, leave to a part-level count, ignore markup that
+    holds no visible character, or report it by name. A child missing from that
+    table is reported, so an element nobody anticipated costs a limitation rather
+    than its text.
     """
     for child in container.iterchildren():
         if _is_property(child):
@@ -880,11 +909,7 @@ def _read_inline(
             if child.tag == _CONTENT_CONTROL:
                 # Read in place, so the part-level count must not call it unread.
                 account.controls.add(child)
-            if child.tag in (_MATH, _MATH_PARAGRAPH):
-                # A math zone's own tree is not run content: read the characters
-                # its ``m:t`` nodes carry instead of walking ``m:r``/``m:f``.
-                pieces.append(_math_text(child))
-            elif child.tag == _RUBY:
+            if child.tag == _RUBY:
                 _read_ruby(child, pieces, limitations, location, namespaces, account)
             elif child.tag == _ALTERNATE_CONTENT:
                 branch = _live_branch(child, namespaces, account)
@@ -892,6 +917,14 @@ def _read_inline(
                     _read_inline(branch, pieces, limitations, location, namespaces, account)
             else:
                 _read_inline(child, pieces, limitations, location, namespaces, account)
+        elif decision == "counted":
+            note_kind = _NOTE_REFERENCES.get(child.tag)
+            if note_kind is not None:
+                # Recorded where the walk reaches it, so only a reference the
+                # selected branch renders can bring a note's text into the read.
+                account.referenced_notes.setdefault(
+                    (note_kind, child.get(f"{_W}id") or ""), None
+                )
         elif decision == "report":
             limitations.append(
                 ExtractedContentLimitation(
@@ -963,11 +996,6 @@ def _is_property(element: BaseOxmlElement) -> bool:
         element.tag in _CONTAINER_PROPERTIES
         or _local_name(element).endswith("Pr")
     )
-
-
-def _math_text(element: BaseOxmlElement) -> str:
-    """Characters of one Office Math zone, in the order its ``m:t`` nodes carry them."""
-    return "".join(node.text or "" for node in element.iter(_MATH_TEXT))
 
 
 def _carries_text(element: BaseOxmlElement) -> bool:
@@ -1197,7 +1225,8 @@ def _find_limitations(
             if _has_ancestor(table, _TABLE)
             and not _inside(table, account.discarded)
         ),
-        "text_box": _counted(element, _TEXT_BOX, account),
+        "text_box": _counted(element, _TEXT_BOX, account)
+        + _drawing_text_count(element, account),
         "tracked_change": sum(
             _counted(element, tag, account) for tag in _TRACKED_WRAPPERS
         ),
@@ -1212,7 +1241,7 @@ def _find_limitations(
         + _counted(element, _SUB_DOCUMENT, account),
         "note": sum(
             1
-            for kind, reference_tag in _NOTE_REFERENCES
+            for reference_tag, kind in _NOTE_REFERENCES.items()
             for reference in element.iter(reference_tag)
             if (kind, reference.get(f"{_W}id")) not in account.notes
             and not _inside(reference, account.discarded)
@@ -1226,22 +1255,42 @@ def _find_limitations(
     ]
 
 
+def _visual_elements(
+    element: BaseOxmlElement, account: _ReadAccount
+) -> list[BaseOxmlElement]:
+    """Top-level drawings and legacy pictures in a part, minus discarded branches."""
+    return [
+        item
+        for tag in (_DRAWING, _PICTURE)
+        for item in element.iter(tag)
+        if not _has_ancestor(item, tag) and not _inside(item, account.discarded)
+    ]
+
+
 def _visual_element_count(element: BaseOxmlElement, account: _ReadAccount) -> int:
-    """Images, drawings and charts in a part, counted once per visible element."""
-    drawings = sum(
-        1
-        for item in element.iter(_DRAWING)
-        if not _has_ancestor(item, _DRAWING)
-        and not _inside(item, account.discarded)
+    """Drawings that hold only pixels or an embedded chart, one per visible element.
+
+    A drawing that carries a character of its own is not a picture: its text is
+    visible content this reader did not read, so ``_drawing_text_count`` names it
+    as a text box, which blocks review. Chart and worksheet text still lives in
+    the embedded part, which is what "not read" means here.
+    """
+    return sum(
+        1 for item in _visual_elements(element, account) if not _carries_text(item)
     )
-    legacy_pictures = sum(
+
+
+def _drawing_text_count(element: BaseOxmlElement, account: _ReadAccount) -> int:
+    """Drawings holding text this reader did not read, counted once per drawing.
+
+    A text box keeps its content in ``w:txbxContent`` and is already counted there,
+    so it is excluded here to keep one element one gap.
+    """
+    return sum(
         1
-        for item in element.iter(_PICTURE)
-        if not _has_ancestor(item, _PICTURE)
-        and item.find(f".//{_TEXT_BOX}") is None
-        and not _inside(item, account.discarded)
+        for item in _visual_elements(element, account)
+        if _carries_text(item) and item.find(f".//{_TEXT_BOX}") is None
     )
-    return drawings + legacy_pictures
 
 
 def _merge_limitations(

@@ -1437,6 +1437,80 @@ def test_comment_reference_blocks_approval_revision_and_generation(
     assert generated.json()["detail"]["error_code"] == "source_text_unread"
 
 
+def test_drawing_text_blocks_approval_revision_and_generation(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Text a drawing draws is unread source text, not a picture reported in passing."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    paragraph = document.add_paragraph()
+    paragraph._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp")} '
+            'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            "<w:drawing><wp:inline><a:graphic><a:graphicData"
+            ' uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            "<wps:wsp><wps:txBody><a:p><a:r><a:t>DRAWN TEXT</a:t></a:r></a:p>"
+            "</wps:txBody></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing>"
+            "</w:r>"
+        )
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "DRAWN TEXT" not in body["original_text"]
+    (limitation,) = body["ingestion_limitations"]
+    assert "text-box content is not read" in limitation
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "incomplete"
+    assert audit["unread_text_source_content"] == body["ingestion_limitations"]
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 409, approval.text
+    assert approval.json()["detail"]["error_code"] == "source_text_unread"
+
+    revision = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/revisions",
+        json={"profile": body["profile"]},
+    )
+    assert revision.status_code == 409, revision.text
+    assert revision.json()["detail"]["error_code"] == "source_text_unread"
+
+    generated = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": body["artifact_id"],
+            "profile_revision_id": body["profile_revision_id"],
+        },
+    )
+    assert generated.status_code == 409, generated.text
+    assert generated.json()["detail"]["error_code"] == "source_text_unread"
+
+
 def test_table_wrapper_the_reader_cannot_descend_is_named(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
