@@ -3579,10 +3579,6 @@ def run_e5(
     # closed as a leak instead of being silently tolerated).
     approved_label_texts = {label.text for label in approved_label_catalog}
     (out_dir / "c2_layout_state.json").write_bytes(state_bytes(state))
-    body_scaffold, bullet_tiers = None, {}
-    if layout_spec is None:
-        _headings_scaffold, body_scaffold = compile_two_column_state_for_scaffold(target_pdf, summary)
-        bullet_tiers = _two_column_bullet_tiers(_pdf_lines_and_marks(target_pdf)[0], summary)
 
     # Structure is an explicit caller input; no previous run is consulted.
     (out_dir / "structure_draft.json").write_text(draft.model_dump_json(indent=2), encoding="utf-8")
@@ -3602,8 +3598,6 @@ def run_e5(
             "schema_version": layout_spec.schema_version, "compiler": RENDERER_VERSION,
             "template_approved": False, "api_cutover": False,
         }
-    page_height = _page_pt_size(target_pdf, 1)[1]
-    region_spans = _region_spans_from_draft(draft, page_height)
 
     # Generic header-overflow disposition (E3 shell transition, reused for
     # the main candidate AND every content-shape probe): the compiled
@@ -3658,8 +3652,16 @@ def run_e5(
 
     store = EvidenceStore(out_dir)
     store.register_version("structure_draft_v1", out_dir / "structure_draft.json", "shared evidence-linked draft")
+    # One boundary for every target read before the lanes: the two-column
+    # scaffold compile, the page-size read, the shared overview raster and the
+    # remaining target reads all end the run instead of raising out of it.
     try:
+        body_scaffold, bullet_tiers = None, {}
+        if layout_spec is None:
+            _headings_scaffold, body_scaffold = compile_two_column_state_for_scaffold(target_pdf, summary)
+            bullet_tiers = _two_column_bullet_tiers(_pdf_lines_and_marks(target_pdf)[0], summary)
         page_size = _page_pt_size(target_pdf, 1)
+        region_spans = _region_spans_from_draft(draft, page_size[1])
         shared_target_images = _overview_pngs(target_pdf, out_dir, "builder_target_shared")
         body_color_context = _target_body_text_color_context(target_pdf)
         # Measured ONCE, target-only, before any plan or render exists: the initial
@@ -3667,8 +3669,9 @@ def run_e5(
         target_contact_labels = target_header_contact_label_context(target_pdf, state=state)
         header_rule_context = _header_vertical_rule_target_context(target_pdf)
     except DocumentLimitError as error:
-        # The bounded overview raster and the target reads can refuse here, before
-        # any lane exists; answer with the same abort the other refusals get.
+        # The scaffold compile, the bounded overview raster and the target reads
+        # can refuse here, before any lane exists; answer with the same abort the
+        # other refusals get.
         return _e5_abort(out_dir, "target_measurement", error)
     initial_builder_evidence = _e5_builder_evidence_package(
         draft=draft,

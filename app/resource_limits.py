@@ -309,10 +309,14 @@ def check_pdf_page_count(page_count: int) -> None:
 
 
 def check_pdf_pages(page_sizes: Sequence[Sequence[float]]) -> None:
-    """Refuse page count or page geometry above the limits, before any raster allocation."""
+    """Refuse page count or page geometry above the limits, before any raster allocation.
+
+    The test is a positive range, so a zero, negative, infinite or NaN side is
+    refused by the same branch as an oversized page.
+    """
     check_pdf_page_count(len(page_sizes))
     for width, height in page_sizes:
-        if width <= 0 or height <= 0 or width > MAX_PDF_PAGE_POINTS or height > MAX_PDF_PAGE_POINTS:
+        if not (0 < width <= MAX_PDF_PAGE_POINTS and 0 < height <= MAX_PDF_PAGE_POINTS):
             _refuse(
                 "pdf_page_geometry",
                 f"A PDF page measures {width:.1f}x{height:.1f} pt; every page must be "

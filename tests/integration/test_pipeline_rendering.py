@@ -1906,6 +1906,52 @@ def _counted_pdfium(monkeypatch: pytest.MonkeyPatch) -> _CountingPdfium:
     return counter
 
 
+def _zero_width_declared_pdf(path: Path) -> Path:
+    """A one-page PDF whose DECLARED box has no width.
+
+    Ingestion refuses this box (`pdf_page_geometry`); PDFium interprets a
+    degenerate box as the default 612 pt width, so a preflight that trusts the
+    interpreted size renders a page the contract refuses.
+    """
+    from reportlab.pdfgen import canvas
+
+    source = path.with_name("declared-source.pdf")
+    document = canvas.Canvas(str(source), pagesize=(612, 792))
+    document.setFont("Helvetica", 12)
+    document.drawString(72, 720, "Zero width declared page")
+    document.save()
+    declared = source.read_bytes()
+    zero_width = declared.replace(b"/MediaBox [ 0 0 612 792 ]", b"/MediaBox [ 0 0 0 792 ]")
+    assert zero_width != declared, "the declared MediaBox was not found"
+    path.write_bytes(zero_width)
+    return path
+
+
+@pytest.mark.parametrize("owner", _RASTERIZERS)
+def test_rasterizer_refuses_a_page_whose_declared_box_has_no_area(
+    owner: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #53: the geometry policy reads the declared box, not PDFium's guess.
+
+    The same file is refused by ingestion before any text extraction, so the
+    rasterizer must refuse it before page 1 allocates or renders even though
+    PDFium would happily interpret it at the default width.
+    """
+    from app.resource_limits import DocumentLimitError
+
+    pdf = _zero_width_declared_pdf(tmp_path / "zero-width.pdf")
+    output_dir = tmp_path / "pages"
+    output_dir.mkdir()
+    counter = _counted_pdfium(monkeypatch)
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        _RASTERIZERS[owner](pdf, output_dir)
+
+    assert refusal.value.error_code == "pdf_page_geometry"
+    assert counter.render_calls == 0, "the rendered size was not the policy reading"
+    assert list(output_dir.iterdir()) == []
+
+
 @pytest.mark.parametrize("owner", _RASTERIZERS)
 def test_rasterizer_renders_nothing_for_a_document_above_the_pixel_budget(
     owner: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

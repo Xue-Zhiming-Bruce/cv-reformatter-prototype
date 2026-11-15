@@ -14,10 +14,12 @@ from typing import Any
 import pdfplumber
 from app import pdfium_native
 from app.generation import chrome_html_to_pdf
+from app.ingestion.pdf_reader import read_pdf_page_sizes
 from app.resource_limits import (
     RasterPixelBudget,
     bounded_pdf_pages,
     check_pdf_page_count,
+    check_pdf_pages,
 )
 from app.template_analysis.commercial.adobe import _flatten_text_elements
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
@@ -568,10 +570,15 @@ def _inject_local_fonts(filled_html: str) -> str:
 
 def _render_pages(pdf_path: Path, output_dir: Path, prefix: str) -> list[Path]:
     budget = RasterPixelBudget()
+    # The geometry policy reads the DECLARED page box — the same reading ingestion
+    # validates. PDFium interprets a degenerate box as another size (a zero-width
+    # page becomes the default width) and would render a page ingestion refuses.
+    check_pdf_pages(read_pdf_page_sizes(pdf_path))
     with pdfium_native.native_lifetime(), closing(pdfium_native.pdfium.PdfDocument(pdf_path)) as document:
         check_pdf_page_count(len(document))
         # Every page is measured and charged to the budget before page 1 renders,
-        # so a document that will be refused allocates no bitmap at all.
+        # so a document that will be refused allocates no bitmap at all. A bitmap
+        # allocates at PDFium's interpreted size, so that is what is charged.
         sizes = []
         for index in range(len(document)):
             with closing(document[index]) as page:

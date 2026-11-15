@@ -1245,11 +1245,18 @@ Enforcement sits in the existing owners, not in each caller:
   step and the whole parse in a bounded child process (`run_bounded_child`)
   because a timeout around a thread does not stop a blocked parser;
 - raster: the shared rasterizers (`app/pipeline/rendering._render_pages`,
-  `app/template_analysis/visual_comparator._render_pdf`) read every page's
-  declared size first, then charge the whole document to
-  `RasterPixelBudget` — page count, every page's geometry, and the summed
-  pixels — before page 1 allocates a bitmap. A document that will be refused
-  therefore renders nothing; there is no partial raster set to clean up;
+  `app/template_analysis/visual_comparator._render_pdf`) apply the geometry
+  policy to each page's DECLARED box — the reading `read_pdf_page_sizes` and
+  ingestion use, including a zero, negative, infinite or NaN side — before page
+  1 allocates anything. The bitmap itself allocates at PDFium's interpreted
+  size, so that interpreted size is what `RasterPixelBudget` charges; where the
+  two disagree the declared box decides the policy and the interpreted size
+  decides the pixels. This matters because PDFium can interpret a degenerate
+  box as a usable page (a zero-width `/MediaBox` becomes the default 612 pt
+  width) and would otherwise render a document ingestion refuses. Page count,
+  every page's geometry and the summed pixels are charged before page 1
+  allocates a bitmap, so a document that will be refused renders nothing; there
+  is no partial raster set to clean up;
 - in-process parses: `app/resource_limits.bounded_pdf_pages` is the only way a
   parent-side parse touches a `pdfplumber` or `pypdf` document's pages
   (measurement, rendering, evidence including the diagnostic `measure` tool,
@@ -1274,9 +1281,12 @@ Enforcement sits in the existing owners, not in each caller:
   take their pages from `bounded_pdf_pages`. The target preflight is the one
   refusal that leaves `run_e5` as the raised refusal (the caller answers it as
   a structured 413/422); every later refusal ends the run as
-  `operational_abort` with the refusal's `error_code` — the shared target
-  overview render or one of the target reads before a lane starts, the
-  `measure` tool, a gate's parse or a lane render after it starts. A refusal is
+  `operational_abort` with the refusal's `error_code` — from the compiled
+  layout state to the first lane, one boundary holds every target read (`run_e5`
+  compiles the two-column scaffolds, reads page size and region spans, renders
+  the shared target overview and measures the target's body color, contact
+  labels and header rule in that one guarded stretch), then the `measure` tool,
+  a gate's parse or a lane render after it starts. A refusal is
   never a provider-call failure, so it is re-raised past the loop's failure
   handlers instead of being degraded into one. A refused compile or input parse
   writes neither the compiled layout state nor a render. Once that state exists
