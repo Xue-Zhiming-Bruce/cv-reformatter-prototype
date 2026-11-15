@@ -234,6 +234,22 @@ def require_matching_target_format(
         )
 
 
+def measured_layout_spec_required_error() -> GenerationError:
+    """One answer for a saved uploaded target that resolves no compiled spec."""
+    return GenerationError(
+        400,
+        {
+            "error_code": "measured_layout_spec_required",
+            "message": (
+                "This artifact has a saved uploaded target but no usable "
+                "LayoutTemplateSpec; the built-in layout is not a fallback "
+                "for an uploaded target. Re-analyze this target."
+            ),
+            "options": ["reanalyze_target", "upload_new_target"],
+        },
+    )
+
+
 def validate_target_format_reference(
     artifact_id: str,
     target_set: TargetSet,
@@ -864,13 +880,7 @@ def prepare_generation(
                 raise TargetAnalysisArtifactError(LAYOUT_SPEC_FILENAME)
             style_spec = load_layout_template_spec(spec_path)
         except TargetAnalysisArtifactError as exc:
-            raise GenerationError(
-                400,
-                (
-                    "The uploaded target format has no valid artifact-root "
-                    "LayoutTemplateSpec. Re-analyze this target."
-                ),
-            ) from exc
+            raise measured_layout_spec_required_error() from exc
         if style_spec.structure_contract == "legacy" or (
             target_format.role == "pdf_reference"
             and style_spec.structure_contract != "measured"
@@ -959,18 +969,7 @@ def prepare_generation(
         # silent fallback an uploaded target rules out. No upload path publishes
         # a target set without a compiled spec, so this guards hand-written or
         # legacy artifact directories, not a reachable product request.
-        raise GenerationError(
-            400,
-            {
-                "error_code": "measured_layout_spec_required",
-                "message": (
-                    "This artifact has a saved uploaded target but no usable "
-                    "LayoutTemplateSpec; the built-in layout is not a fallback "
-                    "for an uploaded target. Re-analyze this target."
-                ),
-                "options": ["reanalyze_target", "upload_new_target"],
-            },
-        )
+        raise measured_layout_spec_required_error()
     effective_layout_spec = style_spec or built_in_layout_template_spec()
     production_render_plan = build_production_render_plan(
         approved_profile_version_id=profile_revision.profile_revision_id,
