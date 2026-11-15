@@ -1251,10 +1251,12 @@ Enforcement sits in the existing owners, not in each caller:
   overview render or one of the target reads before a lane starts, the
   `measure` tool, a gate's parse or a lane render after it starts. A refusal is
   never a provider-call failure, so it is re-raised past the loop's failure
-  handlers instead of being degraded into one; an abort before the lanes writes
-  no compiled or rendered artifact, and an abort inside a lane stops the run
-  before the comparison and the owner package, keeping the artifacts already
-  written as the record.
+  handlers instead of being degraded into one. A refused compile or input parse
+  writes neither the compiled layout state nor a render. Once that state exists
+  an abort keeps what was already written and stops before the next thing: a
+  target-read or shared-overview abort keeps the compiled state (and the
+  overview, if it rendered before the refusal), and an abort inside a lane stops
+  before the comparison and the owner package.
 
 `/api/process` and `/api/target-format` reach the same helpers, and a job reuses
 the target stored by that upload, so the policy already applied to it. Each

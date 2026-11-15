@@ -4365,8 +4365,12 @@ def test_diagnostic_parse_budget_refuses_a_target_that_parses_past_it(
 
     assert terminal == "operational_abort"
     assert record["summary"]["abort"]["error_code"] == "local_processing_timeout"
+    assert record["summary"]["abort"]["operation"] == "compile_two_column_state"
     assert not list(run_dir.glob("*.png")), "a refused parse rendered a page"
+    assert not list(run_dir.glob("*.pdf")), "a refused parse produced a document"
     assert not (run_dir / "c2_layout_state.json").exists(), "a refused parse compiled a layout"
+    assert not (run_dir / "lane_a").exists(), "a refused parse started a lane"
+    assert not (run_dir / "manifest.json").exists(), "a refused parse published a manifest"
 
 
 def _document_limit_refusal(*_args: Any, **_kwargs: Any) -> NoReturn:
@@ -4403,6 +4407,10 @@ def test_a_lane_document_limit_refusal_ends_the_run_as_an_abort(
     abort = record["summary"]["abort"]
     assert abort["error_code"] == "local_processing_timeout"
     assert abort["operation"] == "lane_a_document_limit"
+    # What the run wrote before the lane stays as the record; nothing of the
+    # refused lane or of the publication exists.
+    assert (run_dir / "c2_layout_state.json").exists(), "the compiled state precedes the lane"
+    assert list(run_dir.glob("*.png")), "the shared overview precedes the lane"
     assert not (run_dir / "lane_a").exists(), "a refused lane wrote a lane directory"
     assert not (run_dir / "manifest.json").exists(), "a refused run published an artifact manifest"
     assert not list(run_dir.glob("*.pdf")), "a refused run produced a document"
@@ -4430,6 +4438,42 @@ def test_a_target_overview_refusal_ends_the_run_as_an_abort(
         "error": "The target parse ran past the local parse budget.",
         "error_code": "local_processing_timeout",
     }
+    # The compile finished before the shared target reads; the refusal stops
+    # there, so the compiled state is the last artifact and no page is rendered.
+    assert (run_dir / "c2_layout_state.json").exists(), "the compile precedes the target reads"
+    assert not list(run_dir.glob("*.png")), "a refused overview rendered a page"
+    assert not list(run_dir.glob("*.pdf")), "a refused run produced a document"
+    assert not (run_dir / "lane_a").exists(), "a refused run started a lane"
+    assert not (run_dir / "manifest.json").exists(), "a refused run published an artifact manifest"
+
+
+def test_a_target_read_refusal_after_the_overview_keeps_what_it_rendered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #53: the abort keeps what the run already wrote.
+
+    The overview render precedes the body-color read in the same guarded block,
+    so refusing at the read must keep the compiled state AND that render as the
+    record, not roll the run directory back.
+    """
+    from app.pipeline import service
+
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    monkeypatch.setattr(service, "_target_body_text_color_context", _document_limit_refusal)
+
+    run_dir, terminal, record = service.run_e5(
+        inputs["target_pdf"],
+        tmp_path / "run",
+        candidate=synthetic_pipeline_candidate("Synthetic Candidate"),
+        **{key: value for key, value in inputs.items() if key != "target_pdf"},
+    )
+
+    assert terminal == "operational_abort"
+    assert record["summary"]["abort"]["operation"] == "target_measurement"
+    assert record["summary"]["abort"]["error_code"] == "local_processing_timeout"
+    assert (run_dir / "c2_layout_state.json").exists(), "the compile precedes the target reads"
+    assert list(run_dir.glob("*.png")), "the overview rendered before the refused read"
+    assert not list(run_dir.glob("*.pdf")), "a refused run produced a document"
     assert not (run_dir / "lane_a").exists(), "a refused run started a lane"
     assert not (run_dir / "manifest.json").exists(), "a refused run published an artifact manifest"
 
