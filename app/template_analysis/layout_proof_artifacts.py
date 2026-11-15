@@ -16,6 +16,7 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
+from app.target_publication import contained_in_artifact
 from app.template_analysis.layout_proof_schemas import (
     LayoutProofApproval,
     LengthVariant,
@@ -117,6 +118,53 @@ def _save_comparison_checksums(artifact_dir: str | Path, variant: LengthVariant)
     )
 
 
+def proof_identity_mismatch(
+    current: LayoutProofRenderResult, approved: LayoutProofRenderResult
+) -> str | None:
+    """Why ``current`` is not the proof ``approved`` covers, or ``None``.
+
+    Every identity the approval binds is compared, not just the proof id: a
+    render record rewritten under the same id would otherwise keep an approval
+    that no longer describes this target, spec, renderer, execution or PDF. Both
+    the generation guard and the status endpoint compare through this function.
+    """
+    for attribute, reason in (
+        ("proof_id", "was re-created"),
+        ("target_checksum", "covers a different target"),
+        ("layout_spec_checksum", "covers a different layout spec"),
+        ("renderer_version", "was rendered by a different renderer"),
+        ("execution_mode", "was produced by a different execution"),
+        ("pdf_checksum", "records a different proof PDF"),
+    ):
+        if getattr(current, attribute) != getattr(approved, attribute):
+            return reason
+    return None
+
+
+def _require_valid_variant_evidence(
+    artifact_dir: str | Path, variant: LengthVariant
+) -> None:
+    """The variant's stored evidence must also validate as reviewable evidence.
+
+    A render result alone loads happily with an unrecorded page count, so
+    identity agreement on it alone would leave an approval standing over a proof
+    no reviewer could have reviewed.
+    """
+    from app.template_analysis.layout_proof_validation import (
+        LayoutProofValidationError,
+        load_variant_evidence,
+    )
+
+    try:
+        if load_variant_evidence(artifact_dir, variant) is None:
+            raise LayoutProofValidationError("stored evidence is incomplete")
+    except (LayoutProofValidationError, OSError, ValueError) as exc:
+        raise LayoutProofResourceError(
+            "layout_proof_resource_mismatch",
+            f"the recorded {variant.value} proof evidence cannot be read",
+        ) from exc
+
+
 def stale_variant_proofs(
     artifact_dir: str | Path,
     artifact_id: str,
@@ -133,11 +181,13 @@ def stale_variant_proofs(
     for variant, evidence in approval.variants.items():
         try:
             current = _recorded_proof_result(artifact_dir, artifact_id, variant)
+            _require_valid_variant_evidence(artifact_dir, variant)
         except LayoutProofResourceError:
             stale[variant.value] = "cannot be read"
             continue
-        if current.proof_id != evidence.render_result.proof_id:
-            stale[variant.value] = "was re-created"
+        reason = proof_identity_mismatch(current, evidence.render_result)
+        if reason is not None:
+            stale[variant.value] = reason
     return stale
 
 
@@ -213,7 +263,7 @@ def resolve_proof_resource(
         filename, expected_checksum = result.html_filename, result.html_checksum
     proof_dir = layout_proofs_dir_for(artifact_dir) / result.proof_id
     label = f"proof {kind.upper()}"
-    path = _contained_file(proof_dir / filename, proof_dir, variant, label)
+    path = _contained_file(artifact_dir, proof_dir / filename, variant, label)
     if _file_sha256_or_none(path, variant, label) != expected_checksum:
         raise LayoutProofResourceError(
             "layout_proof_resource_mismatch",
@@ -276,7 +326,7 @@ def resolve_comparison_resource(
         )
     visual_dir = variant_dir_for(artifact_dir, variant) / "visual"
     path = _contained_file(
-        visual_dir / filename, visual_dir, variant, "comparison resource"
+        artifact_dir, visual_dir / filename, variant, "comparison resource"
     )
     if _file_sha256_or_none(path, variant, "comparison resource") != recorded[filename]:
         raise LayoutProofResourceError(
@@ -332,28 +382,20 @@ def _recorded_visual_report(
 
 
 def _contained_file(
-    path: Path, directory: Path, variant: LengthVariant, label: str
+    artifact_dir: str | Path, path: Path, variant: LengthVariant, label: str
 ) -> Path:
-    """Resolve ``path`` only when its real file stays inside ``directory``."""
-    try:
-        resolved_path = path.resolve()
-        resolved_directory = directory.resolve()
-    except OSError as exc:
+    """``path`` only when it sits inside the artifact with no symlinked component."""
+    if not contained_in_artifact(artifact_dir, path):
         raise LayoutProofResourceError(
             "layout_proof_resource_mismatch",
-            f"the {variant.value} {label} cannot be resolved",
-        ) from exc
-    if not resolved_path.is_relative_to(resolved_directory):
-        raise LayoutProofResourceError(
-            "layout_proof_resource_mismatch",
-            f"the {variant.value} {label} does not resolve inside its own directory",
+            f"the {variant.value} {label} is not inside this artifact",
         )
-    if not resolved_path.is_file():
+    if not path.is_file():
         raise LayoutProofResourceError(
             "layout_proof_resource_not_found",
             f"the {variant.value} {label} is not available",
         )
-    return resolved_path
+    return path
 
 
 def write_json_atomic(path: Path, payload: object, *, canonical: bool = False) -> None:

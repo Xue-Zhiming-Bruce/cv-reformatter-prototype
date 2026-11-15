@@ -15,6 +15,7 @@ from app import main
 from app.generation import service as generation_service
 from app.extraction.candidate_schema import CandidateProfile
 from app.main import app
+from app.target_publication import TargetSet
 from app.template_analysis import layout_proof_rendering
 from app.template_analysis.artifacts import LAYOUT_SPEC_FILENAME, load_layout_template_spec
 from app.template_analysis.layout_proof_schemas import LengthVariant
@@ -1526,6 +1527,50 @@ def test_proof_resource_rejections_are_structured_and_pathless(tmp_path: Path) -
     )
 
 
+def test_a_symlinked_directory_cannot_relocate_the_containment_boundary(
+    tmp_path: Path,
+) -> None:
+    """AC9: a directory symlink moves the boundary, so it is refused like a file.
+
+    Resolving the file and its expected directory separately lets a *directory*
+    symlink point both at checksum-valid evidence outside the artifact, so
+    containment is decided by walking from the artifact root instead.
+    """
+    artifact_id = "artifact_proof_symlinked_directory"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    entry = _variant_entry(_proof_status(artifact_id), "short")
+    proof_base = f"/api/artifacts/{artifact_id}/layout-proofs/variants/short"
+    elsewhere = tmp_path / "elsewhere"
+
+    proof_dir = artifact_dir / "layout_proofs" / entry["proof_id"]
+    shutil.copytree(proof_dir, elsewhere / "proof")
+    shutil.rmtree(proof_dir)
+    proof_dir.symlink_to(elsewhere / "proof", target_is_directory=True)
+    for resource in ("proof.pdf", "proof.html"):
+        _assert_structured_resource_error(
+            client.get(f"{proof_base}/{resource}"), expected=MISMATCH
+        )
+
+    visual_dir = artifact_dir / "layout_proofs" / "variants" / "short" / "visual"
+    shutil.copytree(visual_dir, elsewhere / "visual")
+    shutil.rmtree(visual_dir)
+    visual_dir.symlink_to(elsewhere / "visual", target_is_directory=True)
+    for item in entry["comparison_images"]:
+        _assert_structured_resource_error(client.get(item["url"]), expected=MISMATCH)
+
+    # The artifact download route holds the same boundary: a relocated published
+    # set is not somewhere this artifact's bytes are read from.
+    published = TargetSet(artifact_dir).published_dir
+    shutil.copytree(published, elsewhere / "set")
+    shutil.rmtree(published)
+    published.symlink_to(elsewhere / "set", target_is_directory=True)
+    response = client.get(f"/api/artifacts/{artifact_id}/target_format_reference.pdf")
+    assert response.status_code == 404, response.text
+    assert str(tmp_path) not in response.text
+
+
 def test_comparison_resource_bytes_are_verified_against_the_recorded_digests(
     tmp_path: Path,
 ) -> None:
@@ -2161,33 +2206,99 @@ def test_html_never_substitutes_for_the_proof_pdf(tmp_path: Path) -> None:
     assert _variant_entry(_proof_status(artifact_id), "short")
 
 
-def test_an_unrecorded_page_count_reads_as_unknown(tmp_path: Path) -> None:
-    """AC1: an absent recorded count is unknown, never 0 and never passing."""
+def _forget_recorded_page_count(variant_dir: Path) -> None:
+    """Drop a variant's page count while its structural record still claims success."""
+    render_result_path = variant_dir / "render_result.json"
+    render_result = json.loads(render_result_path.read_text(encoding="utf-8"))
+    render_result.pop("page_count", None)
+    render_result_path.write_text(json.dumps(render_result), encoding="utf-8")
+    structural_path = variant_dir / "structural.json"
+    structural = json.loads(structural_path.read_text(encoding="utf-8"))
+    structural.update({"page_count": 0, "passed": True})
+    structural_path.write_text(json.dumps(structural), encoding="utf-8")
+
+
+def test_an_unknown_page_count_is_never_reviewable_or_approvable(tmp_path: Path) -> None:
+    """AC1/AC7: an unrecorded count is unknown, never 0 and never passing."""
     artifact_id = "artifact_proof_page_count_unknown"
     artifact_dir = tmp_path / artifact_id
     _upload_target(tmp_path, artifact_id)
-    _create_proof_set(artifact_id)
-    variant_dir = artifact_dir / "layout_proofs" / "variants" / "short"
-    render_result = json.loads((variant_dir / "render_result.json").read_text(encoding="utf-8"))
-    render_result.pop("page_count")
-    (variant_dir / "render_result.json").write_text(json.dumps(render_result), encoding="utf-8")
-    structural = json.loads((variant_dir / "structural.json").read_text(encoding="utf-8"))
-    structural.update(
-        {
-            "page_count": 0,
-            "passed": False,
-            "checks": [
-                {**check, "passed": False} if check["name"] == "page_count_min" else check
-                for check in structural["checks"]
-            ],
-        }
-    )
-    (variant_dir / "structural.json").write_text(json.dumps(structural), encoding="utf-8")
+    _create_and_approve(client, artifact_id, artifact_dir)
+    _forget_recorded_page_count(artifact_dir / "layout_proofs" / "variants" / "short")
 
-    entry = _variant_entry(_proof_status(artifact_id), "short")
-    assert entry["page_count"] is None
-    assert entry["page_count"] != 0
-    assert entry["structural_passed"] is False
+    body = _proof_status(artifact_id)
+    available, unavailable = _review_state_lists(body)
+    assert "short" not in available and "short" in unavailable
+    assert available == ["medium", "long"]
+    # No available variant ever reports an unknown count, so none can pass on one.
+    assert all(entry["page_count"] for entry in body["variants"])
+    assert all(entry["structural_passed"] for entry in body["variants"])
+
+    # An approval cannot stand over evidence no reviewer could have reviewed.
+    assert body["state"] != "approved"
+    assert body["approval_invalidated"] is True
+    refused = client.post(
+        f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+        json={"state": "approved", "reviewer_id": "reviewer-unknown-count"},
+    )
+    assert refused.status_code == 409, refused.text
+
+
+def test_approving_proofs_never_grants_final_acceptance(tmp_path: Path) -> None:
+    """AC8: an approval is a template review, and it grants no readiness."""
+    artifact_id = "artifact_proof_approval_grants_nothing"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _approve_profile(artifact_id, artifact_dir)
+    _create_proof_set(artifact_id)
+    acceptance_path = artifact_dir / "final_acceptance.json"
+    assert not acceptance_path.exists()
+
+    approved = client.post(
+        f"/api/artifacts/{artifact_id}/layout-proofs/approve",
+        json={"state": "approved", "reviewer_id": "proof-reviewer"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["state"] == "approved"
+    # Approving the template creates no acceptance and no candidate output.
+    assert not acceptance_path.exists()
+    assert not (artifact_dir / "candidate_profile.pdf").exists()
+    assert not (artifact_dir / "candidate_profile.html").exists()
+
+
+def test_rewriting_the_current_render_record_under_its_proof_id_blocks_the_approval(
+    tmp_path: Path,
+) -> None:
+    """AC8: the approval binds the whole identity, not just the proof id."""
+    artifact_id = "artifact_proof_identity_rewrite"
+    artifact_dir = tmp_path / artifact_id
+    target_format = _upload_target(tmp_path, artifact_id)
+    version_id = _approve_profile(artifact_id, artifact_dir)
+    _create_and_approve(client, artifact_id, artifact_dir)
+    assert _proof_status(artifact_id)["state"] == "approved"
+
+    # Same proof id, same files, different target identity.
+    render_result_path = (
+        artifact_dir / "layout_proofs" / "variants" / "short" / "render_result.json"
+    )
+    render_result = json.loads(render_result_path.read_text(encoding="utf-8"))
+    render_result_path.write_text(
+        json.dumps({**render_result, "target_checksum": "0" * 64}), encoding="utf-8"
+    )
+
+    # The status and the generation guard compare through the same function.
+    body = _proof_status(artifact_id)
+    assert body["state"] != "approved"
+    assert body["approval_invalidated"] is True
+    assert "covers a different target" in (body["approval_invalidated_reason"] or "")
+    assert str(tmp_path) not in body["approval_invalidated_reason"]
+    blocked = _generate_with_target(artifact_id, target_format, version_id)
+    assert blocked.status_code == 409, blocked.text
+    detail = blocked.json()["detail"]
+    assert detail["error_code"] == "layout_proof_mismatch", blocked.text
+    assert "covers a different target" in detail["message"]
+    assert not (artifact_dir / "candidate_profile.pdf").exists()
+    assert not (artifact_dir / "candidate_profile.html").exists()
 
 
 def test_approving_proofs_leaves_final_acceptance_and_client_ready_untouched(

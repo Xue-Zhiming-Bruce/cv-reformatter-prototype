@@ -137,6 +137,29 @@ def _flip_current(sets_dir: Path, epoch_name: str | None) -> str | None:
     return previous
 
 
+def contained_in_artifact(artifact_dir: str | Path, path: str | Path) -> bool:
+    """Whether ``path`` sits under ``artifact_dir`` with no symlinked component.
+
+    Resolving a target and its expected directory separately keeps them agreeing
+    after a *directory* is replaced by a symlink elsewhere, so containment is
+    decided by walking the components below the artifact root and refusing any
+    symlink, not by comparing resolved paths.
+    """
+    root = Path(artifact_dir)
+    try:
+        relative = Path(path).relative_to(root)
+    except ValueError:
+        return False
+    current = root
+    for part in relative.parts:
+        if part in {"", ".", ".."}:
+            return False
+        current = current / part
+        if current.is_symlink():
+            return False
+    return True
+
+
 def publish_target_set(
     artifact_dir: Path,
     staging_dir: Path,

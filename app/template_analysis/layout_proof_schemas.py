@@ -330,6 +330,14 @@ class VariantProofEvidence(LayoutProofModel):
             raise ValueError(
                 "structural result page count does not match the render result"
             )
+        # A proof whose page count was never recorded cannot be reviewed or
+        # approved: it would report ``page_count: null`` while its structural
+        # evidence still claimed success.
+        if not self.render_result.page_count:
+            raise ValueError(
+                "variant evidence requires a recorded page count; a proof with an "
+                "unknown or zero page count cannot be reviewed"
+            )
         return self
 
 
