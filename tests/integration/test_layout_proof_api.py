@@ -2089,6 +2089,42 @@ def test_a_saved_target_is_never_rendered_with_the_built_in_layout(tmp_path: Pat
     assert not (artifact_dir / "candidate_profile.html").exists()
 
 
+@pytest.mark.parametrize("used_as_template_source", [True, False])
+def test_a_saved_target_without_a_compiled_spec_names_its_own_error(
+    tmp_path: Path, used_as_template_source: bool
+) -> None:
+    """AC8: regardless of the saved flag, no compiled spec is one structured 400."""
+    state = "template" if used_as_template_source else "plain"
+    artifact_id = f"artifact_proof_gate_spec_missing_{state}"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    version_id = _approve_profile(artifact_id, artifact_dir)
+    metadata_path = artifact_dir / "target_format.json"
+    stored = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata_path.write_text(
+        json.dumps({**stored, "used_as_template_source": used_as_template_source}),
+        encoding="utf-8",
+    )
+    # Remove the published spec itself, not just the artifact-root name: the
+    # pinned set keeps its own copy, so a root-only unlink leaves it readable.
+    spec_name = artifact_dir / LAYOUT_SPEC_FILENAME
+    published_spec = spec_name.resolve()
+    spec_name.unlink()
+    published_spec.unlink()
+
+    rejected = client.post(
+        "/api/generate",
+        json={"artifact_id": artifact_id, "approved_profile_version_id": version_id},
+    )
+    assert rejected.status_code == 400, rejected.text
+    detail = rejected.json()["detail"]
+    assert detail["error_code"] == "measured_layout_spec_required", rejected.text
+    assert detail["options"] == ["reanalyze_target", "upload_new_target"]
+    assert str(tmp_path) not in rejected.text
+    assert not (artifact_dir / "candidate_profile.pdf").exists()
+    assert not (artifact_dir / "candidate_profile.html").exists()
+
+
 def test_html_never_substitutes_for_the_proof_pdf(tmp_path: Path) -> None:
     """AC3: a variant is reviewable only with both its PDF and its HTML."""
     artifact_id = "artifact_proof_html_alternative"
