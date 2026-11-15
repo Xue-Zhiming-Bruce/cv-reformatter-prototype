@@ -15,6 +15,7 @@ from urllib.parse import quote
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.background import BackgroundTask
 from dotenv import load_dotenv
 from pdfplumber.utils.exceptions import PdfminerException
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -40,6 +41,7 @@ from app.extraction.llm_segmentation import (
 )
 from app.generation.artifact_manifest import (
     ArtifactManifest,
+    GenerationRepository,
     MANIFEST_FILENAME,
     is_artifact_manifest_current,
 )
@@ -1355,9 +1357,9 @@ def create_layout_proofs(
     """Create and validate all three synthetic proof variants for a target."""
     _require_artifact(artifact_id)
     artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
-    target_set = TargetSet(artifact_dir)
+    target_set = TargetSet(artifact_dir)  # held while the target PDF is rendered
     _target_format, style_spec, target_pdf, target_checksum = _layout_proof_context(
-        artifact_dir, artifact_id, body.design_id, target_set=target_set
+        artifact_dir, artifact_id, body.design_id, target_set
     )
     try:
         create_proof_variants(
@@ -1420,8 +1422,9 @@ def approve_layout_proofs(
     """
     _require_artifact(artifact_id)
     artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
+    target_set = TargetSet(artifact_dir)  # held while the target PDF is verified
     _target_format, style_spec, target_pdf, target_checksum = _layout_proof_context(
-        artifact_dir, artifact_id, body.design_id
+        artifact_dir, artifact_id, body.design_id, target_set
     )
     _require_echoed_identity(
         body,
@@ -1648,10 +1651,11 @@ def submit_generation_job(artifact_id: str, request: NativeJobCreate) -> JobReco
     return queue.submit(submission)
 
 
-def _target_job_context(artifact_id: str, design_id: str | None):
+def _target_job_context(artifact_id: str, design_id: str | None, target_set: TargetSet):
+    """Resolve the uploaded target for a job submission; the caller owns ``target_set``."""
     _require_artifact(artifact_id)
     directory = GENERATED_OUTPUTS_DIR / artifact_id
-    return directory, _layout_proof_context(directory, artifact_id, design_id)
+    return directory, _layout_proof_context(directory, artifact_id, design_id, target_set)
 
 
 @app.post("/api/artifacts/{artifact_id}/layout-proof-jobs", response_model=JobRecord, status_code=202)
@@ -1659,8 +1663,10 @@ def submit_target_proof_job(artifact_id: str, request: TargetProofJobCreate) -> 
     """Queue uploaded-target proof creation; the request does no render work."""
     _local_target_execution(request)
     queue = _local_job_queue()
+    _require_artifact(artifact_id)
+    target_set = TargetSet(GENERATED_OUTPUTS_DIR / artifact_id)  # held while the target PDF is frozen
     directory, (_target_format, layout_spec, target_pdf, target_checksum) = _target_job_context(
-        artifact_id, request.design_id)
+        artifact_id, request.design_id, target_set)
     revision = _require_profile_revision(artifact_dir=directory, artifact_id=artifact_id,
                                          profile_revision_id=request.profile_revision_id)
     from app.job_worker import target_proof_submission
@@ -1678,8 +1684,10 @@ def submit_target_generation_job(artifact_id: str, request: TargetGenerationJobC
     """Queue a target-based generation from the approved proof set."""
     _local_target_execution(request)
     queue = _local_job_queue()
+    _require_artifact(artifact_id)
+    target_set = TargetSet(GENERATED_OUTPUTS_DIR / artifact_id)  # held while the target PDF is frozen
     directory, (_target_format, layout_spec, target_pdf, target_checksum) = _target_job_context(
-        artifact_id, request.design_id)
+        artifact_id, request.design_id, target_set)
     revision = _require_profile_revision(artifact_dir=directory, artifact_id=artifact_id,
                                          profile_revision_id=request.profile_revision_id)
     approval = load_layout_proof_approval(directory, repository=layout_proof_repository(DATABASE_URL))
@@ -1811,7 +1819,7 @@ def get_artifact_metadata(artifact_id: str) -> ArtifactMetadataResponse:
 
 @app.get("/api/artifacts/{artifact_id}/{filename}")
 def download_generated_artifact(artifact_id: str, filename: str) -> FileResponse:
-    artifact_path = _resolve_download_artifact(artifact_id, filename)
+    artifact_path, target_set = _resolve_download_artifact(artifact_id, filename)
     suffix = artifact_path.suffix.lower()
     media_type = {
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1820,11 +1828,15 @@ def download_generated_artifact(artifact_id: str, filename: str) -> FileResponse
         ".png": "image/png",
         ".json": "application/json",
     }[suffix]
+    # The response owns the view until it has sent the bytes, then releases it:
+    # a later upload cannot delete the verified set while it streams, and the
+    # hold does not outlive the request.
     return FileResponse(
         artifact_path,
         media_type=media_type,
         filename=filename,
         content_disposition_type="attachment" if suffix == ".docx" else "inline",
+        background=BackgroundTask(target_set.close),
     )
 
 
@@ -1935,7 +1947,8 @@ def _store_target_format(
     )
 
 
-def _resolve_download_artifact(artifact_id: str, filename: str) -> Path:
+def _resolve_download_artifact(artifact_id: str, filename: str) -> tuple[Path, TargetSet]:
+    """The bytes to download and the view that keeps them published meanwhile."""
     is_allowed_filename = (
         filename in DOWNLOADABLE_ARTIFACT_FILENAMES
         or DOWNLOADABLE_DIAGNOSTIC_PNG_PATTERN.fullmatch(filename) is not None
@@ -1951,12 +1964,30 @@ def _resolve_download_artifact(artifact_id: str, filename: str) -> Path:
         COMPOSITION_REPORT_FILENAME,
     }:
         directory, manifest = generations.selected_output(directory)
-    # The pinned epoch copy is what was verified and what goes out: the public
-    # target name may switch to another set while the caller reads it.
-    artifact_path = TargetSet(directory).read(filename) or directory / filename
-    if not contained_in_artifact(GENERATED_OUTPUTS_DIR / artifact_id, artifact_path):
-        raise HTTPException(status_code=404, detail="Generated artifact not found.")
+    # The returned view is what goes out: the public target name may switch to
+    # another set while the caller streams this one.
+    target_set = TargetSet(directory)
+    try:
+        return _verified_download(artifact_id, filename, directory, manifest,
+                                  generations, target_set)
+    except BaseException:
+        target_set.close()
+        raise
+
+
+def _verified_download(
+    artifact_id: str,
+    filename: str,
+    directory: Path,
+    manifest: ArtifactManifest | None,
+    generations: GenerationRepository | None,
+    target_set: TargetSet,
+) -> tuple[Path, TargetSet]:
+    """The verified file and the held view; the caller closes the view."""
+    artifact_path = target_set.read(filename) or directory / filename
     if not artifact_path.exists() or not artifact_path.is_file():
+        raise HTTPException(status_code=404, detail="Generated artifact not found.")
+    if not contained_in_artifact(GENERATED_OUTPUTS_DIR / artifact_id, artifact_path):
         raise HTTPException(status_code=404, detail="Generated artifact not found.")
     if directory != GENERATED_OUTPUTS_DIR / artifact_id and generations is not None:
         if manifest is None:
@@ -1972,7 +2003,7 @@ def _resolve_download_artifact(artifact_id: str, filename: str) -> Path:
             reference = next((item for item in manifest.outputs.values() if item.path == filename), None)
             if reference is None or file_sha256(artifact_path) != reference.sha256:
                 raise ArtifactStoreError("Published generation file changed; no loose-file fallback was used.")
-    return artifact_path
+    return artifact_path, target_set
 
 
 def _artifact_store() -> ArtifactStore:
@@ -2098,14 +2129,14 @@ def _layout_proof_context(
     artifact_dir: Path,
     artifact_id: str,
     design_id: str | None,
-    target_set: TargetSet | None = None,
+    target_set: TargetSet,
 ) -> tuple[TargetFormatMetadata, LayoutTemplateSpec, Path, str]:
     """Resolve target metadata, the template spec, the visual-comparison target
     PDF, and the target checksum for layout-proof operations."""
     try:
         return resolve_layout_proof_context(
-            artifact_dir, artifact_id, design_id,
-            repository=design_repository(DATABASE_URL), target_set=target_set,
+            artifact_dir, artifact_id, design_id, target_set,
+            repository=design_repository(DATABASE_URL),
         )
     except LayoutProofContextError as exc:
         detail = str(exc) if exc.error_code is None else {"error_code": exc.error_code, "message": str(exc)}
@@ -2231,12 +2262,14 @@ def _approved_scope_layout_checksum(
     if not approval.design_id:
         return layout_checksum
     try:
-        _target, style_spec, _pdf, _checksum = resolve_layout_proof_context(
-            artifact_dir,
-            approval.artifact_id,
-            approval.design_id,
-            repository=design_repository(DATABASE_URL),
-        )
+        with TargetSet(artifact_dir) as target_set:
+            _target, style_spec, _pdf, _checksum = resolve_layout_proof_context(
+                artifact_dir,
+                approval.artifact_id,
+                approval.design_id,
+                target_set,
+                repository=design_repository(DATABASE_URL),
+            )
     except (LayoutProofContextError, HTTPException, OSError, ValueError):
         return approval.layout_spec_checksum
     return layout_spec_checksum(style_spec)

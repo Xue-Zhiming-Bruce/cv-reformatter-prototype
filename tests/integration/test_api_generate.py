@@ -547,6 +547,65 @@ def test_download_generated_artifact_rejects_unknown_or_unsafe_paths(tmp_path: P
     assert unknown_file_response.status_code == 404
 
 
+def _publish_target_pdf(tmp_path: Path, artifact_dir: Path, contents: bytes, tag: str) -> bytes:
+    """Publish one one-file target set, as the upload route does."""
+    from app.target_publication import publish_target_set
+
+    staging = tmp_path / f".staging-{tag}"
+    staging.mkdir()
+    (staging / "target_format_reference.pdf").write_bytes(contents)
+    publish_target_set(
+        artifact_dir, staging, ("target_format_reference.pdf",), threading.Event()
+    )
+    return contents
+
+
+async def _sent_body(response: object) -> bytes:
+    """Send a response through ASGI the way the server does, and return its body."""
+    sent: list[dict] = []
+    never = asyncio.Event()
+
+    async def receive() -> dict:
+        await never.wait()  # the client never disconnects mid-body
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    await response({"type": "http", "method": "GET", "headers": []}, receive, send)
+    return b"".join(
+        message.get("body", b"") for message in sent if message["type"] == "http.response.body"
+    )
+
+
+def test_download_response_streams_the_set_it_resolved(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """The response keeps its set published until it has sent the bytes.
+
+    At ``240eedb`` the route resolved the path through a view it dropped on
+    return, so two uploads before the response ran left it raising
+    ``File at path ... does not exist`` instead of sending what it verified.
+    """
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    artifact_id = "artifact_download_window"
+    artifact_dir = tmp_path / artifact_id
+    artifact_dir.mkdir()
+    first = _publish_target_pdf(tmp_path, artifact_dir, b"%PDF-1.4 first\n", "first")
+    first_epoch = (artifact_dir / ".targets" / "current").resolve()
+
+    response = main.download_generated_artifact(artifact_id, "target_format_reference.pdf")
+    _publish_target_pdf(tmp_path, artifact_dir, b"%PDF-1.4 second\n", "second")
+    _publish_target_pdf(tmp_path, artifact_dir, b"%PDF-1.4 third\n", "third")
+
+    assert asyncio.run(_sent_body(response)) == first
+
+    # The hold ends with the response, so the set it streamed can be pruned: a
+    # view left open would keep one kernel descriptor per download forever.
+    _publish_target_pdf(tmp_path, artifact_dir, b"%PDF-1.4 fourth\n", "fourth")
+    assert not first_epoch.exists(), "the response kept holding the set it already sent"
+
+
 def test_uploaded_target_never_falls_back_to_built_in(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:

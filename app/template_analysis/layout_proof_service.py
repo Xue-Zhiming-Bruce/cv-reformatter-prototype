@@ -385,24 +385,24 @@ def resolve_layout_proof_context(
     artifact_dir: Path,
     artifact_id: str,
     design_id: str | None,
+    target_set: TargetSet,
     *,
     repository: DesignRepository | None = None,
-    target_set: TargetSet | None = None,
 ) -> tuple[TargetFormatMetadata, LayoutTemplateSpec, Path, str]:
     """Resolve target metadata, the template spec, the visual-comparison target
     PDF, and the target checksum for proof and target-generation work.
 
     Shared by the synchronous routes and the durable job submissions so both
-    entry points accept and reject exactly the same artifacts. A caller that
-    keeps working on the result passes its view in, so everything it reads next
-    still comes from the set the proofs were rendered against.
+    entry points accept and reject exactly the same artifacts. The caller passes
+    the view it keeps working with, so the returned target PDF is readable for as
+    long as the caller holds it: this function never returns a path it does not
+    keep published.
     """
     from app.generation.service import (
         load_saved_target_format,
         validate_target_format_reference,
     )
 
-    target_set = target_set or TargetSet(artifact_dir)
     target_format = load_saved_target_format(target_set)
     if target_format is None:
         raise LayoutProofContextError("No target format for this artifact.")

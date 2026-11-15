@@ -18,6 +18,7 @@ from app.job_worker import NativeJobWorker, ROOT
 from app.storage.artifact_store import ArtifactStoreConflict
 from app.storage.job_queue import PostgresJobQueue
 from app.storage.postgres import PostgresGenerationRepository, artifact_sessions, generation_versions, job_attempts, workflow_jobs
+from app.target_publication import TargetSet
 from tests.helpers.postgres import migrate_database
 
 
@@ -427,12 +428,14 @@ def test_proof_child_reuses_matched_evidence_and_rerenders_drift(target_jobs, mo
     ctx = target_jobs
     directory = ctx["directory"]
     create_and_approve_proofs(ctx["client"], ctx["artifact_id"], directory)
-    _, layout_spec, target_pdf, target_checksum = _layout_proof_context(directory, ctx["artifact_id"], None)
-    revision = PostgresProfileRevisionRepository(ctx["engine"]).current(ctx["artifact_id"])
-    submission = target_proof_submission(directory, revision,
-        TargetProofJobCreate(local_synthetic=True, profile_revision_id=revision.profile_revision_id,
-                             idempotency_key="proof-reuse"),
-        layout_spec=layout_spec, target_pdf=target_pdf, target_checksum=target_checksum)
+    with TargetSet(directory) as target_set:  # the target PDF stays readable this long
+        _, layout_spec, target_pdf, target_checksum = _layout_proof_context(
+            directory, ctx["artifact_id"], None, target_set)
+        revision = PostgresProfileRevisionRepository(ctx["engine"]).current(ctx["artifact_id"])
+        submission = target_proof_submission(directory, revision,
+            TargetProofJobCreate(local_synthetic=True, profile_revision_id=revision.profile_revision_id,
+                                 idempotency_key="proof-reuse"),
+            layout_spec=layout_spec, target_pdf=target_pdf, target_checksum=target_checksum)
     payload = submission.payload
     bundle = ctx["directory"].parent / "bundle"
     shutil.copytree(directory, bundle)
@@ -551,13 +554,14 @@ def test_target_proof_job_stage_deadline_stops_the_child(target_jobs, monkeypatc
     from app.storage.postgres import PostgresProfileRevisionRepository
 
     directory = ctx["directory"]
-    _, layout_spec, target_pdf, target_checksum = _layout_proof_context(
-        directory, ctx["artifact_id"], None)
-    revision = PostgresProfileRevisionRepository(ctx["engine"]).current(ctx["artifact_id"])
-    submission = target_proof_submission(directory, revision,
-        TargetProofJobCreate(local_synthetic=True, profile_revision_id=revision.profile_revision_id,
-                             idempotency_key="proof-deadline"),
-        layout_spec=layout_spec, target_pdf=target_pdf, target_checksum=target_checksum)
+    with TargetSet(directory) as target_set:  # the target PDF stays readable this long
+        _, layout_spec, target_pdf, target_checksum = _layout_proof_context(
+            directory, ctx["artifact_id"], None, target_set)
+        revision = PostgresProfileRevisionRepository(ctx["engine"]).current(ctx["artifact_id"])
+        submission = target_proof_submission(directory, revision,
+            TargetProofJobCreate(local_synthetic=True, profile_revision_id=revision.profile_revision_id,
+                                 idempotency_key="proof-deadline"),
+            layout_spec=layout_spec, target_pdf=target_pdf, target_checksum=target_checksum)
     ctx["queue"].submit(JobSubmission(idempotency_key="proof-deadline", payload=submission.payload))
     loops = {"count": 0}
     base = real_time.monotonic()

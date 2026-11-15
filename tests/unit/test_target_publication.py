@@ -586,3 +586,236 @@ def test_a_migration_that_died_between_its_renames_is_recovered(tmp_path: Path) 
 
     assert not list(targets.glob(".migrating-*")), "the recovered directory stayed beside the set"
     assert (targets / CURRENT_LINK_NAME).is_symlink()
+
+
+#: Publishes each staged directory it is given, the way a second request would.
+PUBLISHING_CHILD = """
+import sys, threading
+from pathlib import Path
+
+from app.target_publication import publish_target_set
+
+artifact_dir, filenames = Path(sys.argv[1]), sys.argv[2].split(",")
+for staging in (Path(value) for value in sys.argv[3:]):
+    publish_target_set(artifact_dir, staging, filenames, threading.Event())
+"""
+
+
+def _publish_from_child(
+    tmp_path: Path, artifact_dir: Path, filenames: tuple[str, ...], tags: tuple[str, ...]
+) -> list[dict[str, bytes]]:
+    """Publish whole sets from a separate process, as a second request would."""
+    staged = [_staging(tmp_path, filenames, tag) for tag in tags]
+    script = tmp_path / "child_publisher.py"
+    script.write_text(PUBLISHING_CHILD, encoding="utf-8")
+    subprocess.run(
+        [sys.executable, "-B", str(script), str(artifact_dir), ",".join(filenames),
+         *(str(path) for path, _contents in staged)],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        check=True,
+        timeout=HOLD_TIMEOUT_SECONDS,
+    )
+    return [contents for _path, contents in staged]
+
+
+@pytest.mark.parametrize("shape", ["published", "plain files"])
+def test_a_publication_between_selection_and_hold_cannot_empty_the_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    """Choosing a set and holding it is one step, so nothing is pruned in between.
+
+    At ``240eedb`` the hold was registered after the selection lock was released:
+    two publications landing in that window deleted the chosen set, and every
+    read of the view then returned nothing.
+    """
+    from app import target_publication
+    from app.target_publication import TargetSet
+
+    artifact_dir = tmp_path / f"artifact_select_hold_{shape.replace(' ', '_')}"
+    first = (
+        _publish(tmp_path, artifact_dir, PDF_SET, "first")
+        if shape == "published"
+        else _legacy_artifact(tmp_path, artifact_dir, PDF_SET, "first")
+    )
+    view = TargetSet(artifact_dir)
+    lock = target_publication._artifact_lock(artifact_dir.name)
+    injected: list[str] = []
+
+    class InjectingLock:
+        """Publishes twice at the moment the reader stops holding the lock."""
+
+        def __enter__(self) -> None:
+            lock.acquire()
+
+        def __exit__(self, *_: object) -> None:
+            lock.release()
+            if not injected:
+                injected.append("done")
+                _publish(tmp_path, artifact_dir, DOCX_SET, "second")
+                _publish(tmp_path, artifact_dir, DOCX_SET, "third")
+
+    monkeypatch.setattr(target_publication, "_artifact_lock", lambda _id: InjectingLock())
+    try:
+        held = view.read("target_format_reference.pdf")
+        assert held is not None, "the chosen set was pruned before the view held it"
+        assert held.read_bytes() == first["target_format_reference.pdf"]
+    finally:
+        view.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the test publishes from a separate process")
+def test_another_process_cannot_prune_a_set_a_view_holds(tmp_path: Path) -> None:
+    """The hold is a kernel lock, so another process's pruning sees it.
+
+    At ``240eedb`` holds were a process-local dictionary: a child that published
+    two sets pruned the parent's set and the parent's view lost its file.
+    """
+    from app.target_publication import TargetSet
+
+    artifact_dir = tmp_path / "artifact_cross_process_hold"
+    first = _publish(tmp_path, artifact_dir, DOCX_SET, "first")
+    view = TargetSet(artifact_dir)
+    try:
+        assert view.read("target_format_template.docx").read_bytes() == first["target_format_template.docx"]
+        _publish_from_child(tmp_path, artifact_dir, DOCX_SET, ("second", "third"))
+        held = view.read("target_format_template.docx")
+        assert held is not None, "another process pruned a set this view holds"
+        assert held.read_bytes() == first["target_format_template.docx"]
+    finally:
+        view.close()
+
+
+def test_a_dangling_current_beside_plain_files_is_adopted_not_read_in_place(
+    tmp_path: Path,
+) -> None:
+    """Plain files beside an unresolved ``current`` are a set to adopt.
+
+    At ``240eedb`` any symlink form made adoption return early, so the view held
+    the artifact root itself and served the next upload's bytes after a
+    publication instead of the set it first read.
+    """
+    from app.target_publication import TargetSet
+
+    artifact_dir = tmp_path / "artifact_dangling_plain"
+    first = _legacy_artifact(tmp_path, artifact_dir, DOCX_SET, "first")
+    (artifact_dir / TARGETS_DIRNAME).mkdir()
+    (artifact_dir / TARGETS_DIRNAME / CURRENT_LINK_NAME).symlink_to("set-gone")
+
+    view = TargetSet(artifact_dir)
+    try:
+        assert view.read("target_format_template.docx").read_bytes() == first["target_format_template.docx"]
+        second = _publish(tmp_path, artifact_dir, DOCX_SET, "second")
+        held = view.read("target_format_template.docx")
+        assert held is not None
+        assert held.read_bytes() == first["target_format_template.docx"], "the view followed the publication"
+        assert (artifact_dir / "target_format_template.docx").read_bytes() == second["target_format_template.docx"]
+    finally:
+        view.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the test publishes from a separate process")
+def test_a_staged_adoption_survives_a_publisher_in_another_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A publisher cannot prune the set an adopter is about to switch to.
+
+    At ``240eedb`` the adopter's copy was an ordinary unreferenced epoch: a child
+    that published meanwhile pruned it, the adopter flipped ``current`` to the
+    missing epoch, and every read of that artifact resolved nothing.
+    """
+    from app import target_publication
+    from app.target_publication import TargetSet
+
+    artifact_dir = tmp_path / "artifact_paused_adopter"
+    _legacy_artifact(tmp_path, artifact_dir, PDF_SET, "first")
+    copy_epoch = target_publication._copy_epoch
+    paused, resume = threading.Event(), threading.Event()
+
+    def copy_then_pause(*args: object) -> object:
+        copied = copy_epoch(*args)
+        if not paused.is_set():
+            paused.set()
+            assert resume.wait(HOLD_TIMEOUT_SECONDS), "the test never resumed the adopter"
+        return copied
+
+    monkeypatch.setattr(target_publication, "_copy_epoch", copy_then_pause)
+    read_after: list[Path | None] = []
+
+    def adopt() -> None:
+        view = TargetSet(artifact_dir)
+        try:
+            read_after.append(view.read("target_format_reference.pdf"))
+        finally:
+            view.close()
+
+    adopter = threading.Thread(target=adopt)
+    adopter.start()
+    try:
+        assert paused.wait(HOLD_TIMEOUT_SECONDS), "the adopter never reached its switch"
+        published = _publish_from_child(tmp_path, artifact_dir, PDF_SET, ("second",))
+    finally:
+        resume.set()
+        adopter.join(HOLD_TIMEOUT_SECONDS)
+    monkeypatch.undo()
+
+    assert read_after, "the adopter never finished"
+    held = read_after[0]
+    assert held is not None, "the adoption published an epoch that was already pruned"
+    assert held.read_bytes() == published[0]["target_format_reference.pdf"]
+    current = artifact_dir / TARGETS_DIRNAME / CURRENT_LINK_NAME
+    assert current.is_symlink() and current.is_dir(), "the switch named a set that is not there"
+
+
+def test_a_pruner_never_deletes_a_staged_set(tmp_path: Path) -> None:
+    """A set a publisher staged is invisible to every pruner until the switch.
+
+    At ``240eedb`` a staged epoch had no marker, so another publication pruned it
+    between the copy and the switch.
+    """
+    from app import target_publication
+
+    artifact_dir = tmp_path / "artifact_staged_claim"
+    _publish(tmp_path, artifact_dir, DOCX_SET, "first")
+    staged, claim = target_publication._staged_epoch(artifact_dir / TARGETS_DIRNAME)
+    try:
+        (staged / "target_format.json").write_bytes(b"staged")
+        _publish(tmp_path, artifact_dir, DOCX_SET, "second")
+        _publish(tmp_path, artifact_dir, DOCX_SET, "third")
+        assert staged.is_dir(), "a pruner deleted a staged set"
+    finally:
+        os.close(claim)
+
+
+def test_a_closed_view_selects_and_holds_again(tmp_path: Path) -> None:
+    """``close`` ends the hold, so the next read selects what is current then.
+
+    At ``240eedb`` a closed view kept the epoch it first pinned and read that
+    stale set (or nothing, once it was pruned) although the docstring promised a
+    fresh pin. A view created with ``resolved=`` keeps its own set and fails
+    closed once that set is gone.
+    """
+    from app.target_publication import TargetSet
+
+    artifact_dir = tmp_path / "artifact_reopen"
+    first_view = TargetSet(artifact_dir)
+    first = _publish(tmp_path, artifact_dir, DOCX_SET, "first")
+    first_epoch = first_view.published_dir
+    assert first_view.read("target_format.json").read_bytes() == first["target_format.json"]
+    first_view.close()
+
+    second = _publish(tmp_path, artifact_dir, DOCX_SET, "second")
+    assert first_view.read("target_format.json").read_bytes() == second["target_format.json"]
+
+    frozen = TargetSet(artifact_dir, resolved=first_epoch)
+    try:
+        assert frozen.read("target_format.json").read_bytes() == first["target_format.json"]
+        frozen.close()
+        assert frozen.read("target_format.json").read_bytes() == first["target_format.json"]
+        frozen.close()  # let go before the set is pruned
+        _publish(tmp_path, artifact_dir, DOCX_SET, "third")
+        _publish(tmp_path, artifact_dir, DOCX_SET, "fourth")
+        with pytest.raises(OSError):
+            frozen.read("target_format.json")
+    finally:
+        frozen.close()
