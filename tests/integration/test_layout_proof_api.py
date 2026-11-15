@@ -2032,3 +2032,49 @@ def test_a_saved_target_is_never_rendered_with_the_built_in_layout(tmp_path: Pat
     assert rejected.json()["detail"]["error_code"] == "measured_layout_spec_required"
     assert not (artifact_dir / "candidate_profile.pdf").exists()
     assert not (artifact_dir / "candidate_profile.html").exists()
+
+
+def test_comparison_image_page_numbers_come_from_the_stored_report(tmp_path: Path) -> None:
+    """AC2: a served page number is the report's, not the file's position."""
+    artifact_id = "artifact_proof_page_numbers"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+    evidence = load_variant_evidence(artifact_dir, LengthVariant("short"))
+    assert evidence is not None
+    report = evidence.visual.report
+    visual_dir = artifact_dir / "layout_proofs" / "variants" / "short" / "visual"
+    first = report.pages[0]
+    # A report whose compared pages are not 1..N: a second comparison recorded
+    # as page 7 rather than as the second file.
+    gap_page = first.model_copy(
+        update={"page_number": 7, "difference_filename": "comparison_page_007_diff.png"}
+    )
+    shutil.copyfile(visual_dir / first.difference_filename, visual_dir / gap_page.difference_filename)
+    save_variant_evidence(
+        artifact_dir,
+        evidence.model_copy(
+            update={
+                "visual": evidence.visual.model_copy(
+                    update={
+                        "report": report.model_copy(update={"pages": [first, gap_page]})
+                    }
+                )
+            }
+        ),
+    )
+
+    entry = _variant_entry(_proof_status(artifact_id), "short")
+    page_numbers = {
+        image["filename"]: image["page_number"]
+        for image in entry["comparison_images"]
+        if image["kind"] == "difference"
+    }
+    assert page_numbers == {
+        first.difference_filename: first.page_number,
+        gap_page.difference_filename: 7,
+    }
+    gap_entry = next(
+        image for image in entry["comparison_images"] if image["filename"] == gap_page.difference_filename
+    )
+    assert client.get(gap_entry["url"]).status_code == 200
