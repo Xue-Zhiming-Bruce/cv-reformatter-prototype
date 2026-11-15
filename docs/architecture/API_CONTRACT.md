@@ -173,13 +173,18 @@ previous set is put back and the staged one is discarded, and no upload can
 delete another request's staged source. A published set is retained while it is
 current, while it is the set the current one replaced, and while a reader still
 holds it: pruning never deletes a set an open view is reading, so a publication
-cannot pull bytes out from under an operation in progress.
+cannot pull bytes out from under an operation in progress. A publisher that
+starts up also drops what a dead publisher left behind, including the set the
+current one replaced, so a retention count settles at one live set once no view
+holds an older one.
 
 An artifact directory published before the switch existed keeps its target files
 as plain files, which no single rename can replace together. Its first read or
-publication adopts them into one complete immutable epoch and switches to it, so
+publication copies them into one complete immutable epoch and switches to it, so
 such a directory is either entirely legacy or a complete set, never half of
-each.
+each — a copy rather than a move, because an adoption that dies before the switch
+then still leaves the whole legacy set readable. The target file exists twice for
+the length of that adoption.
 
 Consistency is per logical operation, not across time. A reader that needs more
 than one file (metadata plus source, a proof plus its render, a worker input

@@ -18,9 +18,10 @@ name: a public name is a symlink into the live epoch, so writing through it
 would edit a set other readers treat as immutable.
 
 An artifact directory published before the switch existed keeps plain files that
-no rename can replace together. Its first read or write adopts them into one
+no rename can replace together. Its first read or write copies them into one
 complete epoch and switches to it, so the directory is either entirely legacy or
-a complete epoch: never half of each.
+a complete epoch: never half of each, and an adoption that dies before the
+switch leaves the whole legacy set readable.
 
 Uploads for the same artifact id serialize on a per-artifact lock, so the later
 one publishes over the earlier one instead of interleaving with it, and a
@@ -150,6 +151,18 @@ def publish_target_set(
     TargetSet(artifact_dir).publish(staging_dir, filenames, abandoned)
 
 
+def _copy_epoch(sets_dir: Path, artifact_dir: Path, names: Sequence[str]) -> Path:
+    """Copy ``names`` into one new epoch; a failed copy leaves no epoch behind."""
+    epoch = _new_epoch_dir(sets_dir)
+    try:
+        for name in names:
+            shutil.copy2(artifact_dir / name, epoch / name)
+    except BaseException:
+        shutil.rmtree(epoch, ignore_errors=True)
+        raise
+    return epoch
+
+
 class TargetSet:
     """One artifact's published target set: its pinned read view and its writer."""
 
@@ -245,10 +258,9 @@ class TargetSet:
     def _adopt_legacy(self) -> None:
         """Give a directory published before the switch one complete epoch.
 
-        Caller holds the lock. Plain target files are moved into one immutable
-        epoch and every public name is linked to it, so the directory is never
-        half legacy and half switched: a reader pins either the whole old set or
-        the whole new one.
+        Caller holds the lock. The plain files are copied rather than moved, so
+        an adoption that dies before the switch still leaves the whole legacy
+        set readable; the target file exists twice for the length of it.
         """
         if (self.sets_dir / CURRENT_LINK_NAME).is_symlink():
             return
@@ -260,10 +272,12 @@ class TargetSet:
         ]
         if not legacy:
             return
-        epoch = _new_epoch_dir(self.sets_dir)
-        for name in legacy:
-            os.replace(self.artifact_dir / name, epoch / name)
-        _flip_current(self.sets_dir, epoch.name)
+        epoch = _copy_epoch(self.sets_dir, self.artifact_dir, legacy)
+        try:
+            _flip_current(self.sets_dir, epoch.name)
+        except BaseException:
+            shutil.rmtree(epoch, ignore_errors=True)  # nothing names it yet
+            raise
         self._link_public_names(legacy)
 
     def _switch(

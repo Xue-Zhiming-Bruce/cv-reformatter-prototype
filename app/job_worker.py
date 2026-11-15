@@ -804,11 +804,11 @@ def render_proof_snapshot(bundle: Path) -> None:
 
 def _require_frozen_target(bundle: Path, payload) -> None:
     """The child re-checks the frozen identities before it renders anything."""
-    if (analysis_checksum(TargetSet(bundle)) != payload.analysis_sha256
+    target_set = TargetSet(bundle)
+    if (analysis_checksum(target_set) != payload.analysis_sha256
             or file_sha256(bundle / payload.target_stored_filename) != payload.target_sha256
-            or layout_spec_sha256(load_layout_template_spec(target_layout_path(TargetSet(bundle),
-                                                                             payload.design_id)))
-            != payload.layout_sha256):
+            or layout_spec_sha256(load_layout_template_spec(
+                target_layout_path(target_set, payload.design_id))) != payload.layout_sha256):
         raise ValueError("The snapshot disagrees with its frozen target identities")
     from app.template_analysis.layout_proof_rendering import active_renderer_version
 

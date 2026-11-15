@@ -377,3 +377,80 @@ def test_abandonment_while_linking_public_names_publishes_nothing(tmp_path: Path
     assert (artifact_dir / "target_format.json").read_bytes() == first["target_format.json"]
     assert (artifact_dir / "target_format_template.docx").read_bytes() == first["target_format_template.docx"]
     assert len(_epochs(artifact_dir)) == 1, _epochs(artifact_dir)
+
+
+def test_interrupted_adoption_keeps_every_legacy_file_readable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure before the switch leaves the whole legacy set, not half of it.
+
+    The copy is what carries that: at ``98d5eaf`` adoption moved the plain files
+    into the new epoch first, so a crash between the move and the switch left
+    an epoch nothing pointed at and every target read resolved nothing.
+    """
+    from app import target_publication
+    from app.target_publication import TargetSet
+
+    artifact_dir = tmp_path / "artifact_legacy_interrupted"
+    legacy = _legacy_artifact(tmp_path, artifact_dir, PDF_SET, "first")
+
+    def fail(*_args: object, **_kwargs: object) -> str | None:
+        raise OSError("injected failure before the switch")
+
+    monkeypatch.setattr(target_publication, "_flip_current", fail)
+    with pytest.raises(OSError):
+        TargetSet(artifact_dir).read("target_format.json")
+
+    plain = {
+        path.name: path.read_bytes()
+        for path in artifact_dir.iterdir()
+        if path.is_file() and not path.is_symlink()
+    }
+    assert plain, f"the interrupted adoption took the plain legacy files: {_epochs(artifact_dir)}"
+    assert {name: plain.get(name) for name in PDF_SET} == legacy
+    assert _epochs(artifact_dir) == [], _epochs(artifact_dir)
+
+    monkeypatch.undo()
+    view = TargetSet(artifact_dir)
+    try:
+        for name, payload in legacy.items():
+            assert view.read(name).read_bytes() == payload, name
+    finally:
+        view.close()
+
+
+def test_interrupted_adoption_then_an_abandoned_upload_keeps_the_legacy_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash during adoption, then a cancelled upload, still serves the set.
+
+    At ``98d5eaf`` the two together left ``epochs=[]``: nothing published and the
+    published files unreachable.
+    """
+    from app import target_publication
+    from app.target_publication import TargetSet
+
+    artifact_dir = tmp_path / "artifact_legacy_interrupted_abandoned"
+    legacy = _legacy_artifact(tmp_path, artifact_dir, PDF_SET, "first")
+
+    def fail(*_args: object, **_kwargs: object) -> str | None:
+        raise OSError("injected failure before the switch")
+
+    monkeypatch.setattr(target_publication, "_flip_current", fail)
+    with pytest.raises(OSError):
+        TargetSet(artifact_dir).read("target_format.json")
+    monkeypatch.undo()
+
+    staging, _second = _staging(tmp_path, DOCX_SET, "second")
+    abandoned = threading.Event()
+    abandoned.set()
+    publish_target_set(artifact_dir, staging, DOCX_SET, abandoned)
+
+    assert len(_epochs(artifact_dir)) == 1, _epochs(artifact_dir)
+    view = TargetSet(artifact_dir)
+    try:
+        for name, payload in legacy.items():
+            assert view.read(name).read_bytes() == payload, name
+        assert view.read("target_format_template.docx") is None
+    finally:
+        view.close()
