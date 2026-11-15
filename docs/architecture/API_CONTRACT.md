@@ -88,7 +88,9 @@ Response fields:
   inline wrapper it cannot read in place, a referenced note or comment body the
   reader did not read, a part a drawing points at that is not an image — a chart,
   a diagram or an embedded object, counted per part and blocking, because its text
-  lives in that part — and drawings and pictures that hold only pixels, counted
+  lives in that part — a vector image that draws a character in a text element,
+  blocking for the same reason while its `title` and `desc` metadata does not
+  count — and drawings and pictures that hold only pixels, counted
   per part and not blocking because OCR is out of scope; a drawing that carries a
   character is a text box instead, and blocks. The branch selection the inline
   walk makes also decides which of a drawing's `mc:AlternateContent` branches

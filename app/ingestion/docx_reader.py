@@ -121,9 +121,13 @@ location):
   chart, a diagram or an embedded object keeps its text in the part its
   relationship names, so every relationship target that is not an image is
   reported as an ``embedded_part`` and blocks, whether or not this reader knows
-  that part's format. Relationship ids are resolved against the part that owns the
-  drawing, and the branch selection the walk uses also decides which of a drawing's
-  own ``mc:AlternateContent`` branches contributes text;
+  that part's format. A vector image is XML, so one that draws a character in a
+  text element blocks the same way, while what it keeps in ``title`` and ``desc``
+  describes the image and is not drawn; a vector part this reader cannot parse is
+  not known to be pixels either, so it is reported rather than passed. Relationship
+  ids are resolved against the part that owns the drawing, and the branch selection
+  the walk uses also decides which of a drawing's own ``mc:AlternateContent``
+  branches contributes text;
 - a symbol character whose ``w:char`` is a private-use code point (Wingdings,
   Symbol and other font-specific code pages), one entry per part naming the font:
   its code point is in the text, but the glyph it draws is the font's, so the
@@ -1365,7 +1369,7 @@ def _is_unread_target(owner: Part, relationship_id: str) -> bool:
     names, and an id the package cannot resolve is not known to be pixels either,
     so both are text this reader did not read. An external target holds no text in
     the package at all, so it is not a gap. An image is pixels — except a vector
-    one, which is XML that can hold a text node of its own.
+    one, which is XML and can draw a character in a text element of its own.
     """
     relationship = owner.rels.get(relationship_id)
     if relationship is None:
@@ -1375,9 +1379,31 @@ def _is_unread_target(owner: Part, relationship_id: str) -> bool:
     part = relationship.target_part
     if part.content_type != "image/svg+xml":
         return not part.content_type.startswith("image/")
-    # shortcut: SVG text is found by its element name, not by rendering the vector;
-    # upgrade to a real SVG text walk if a vector format other than SVG turns up.
-    return b"<text" in part.blob or b"<tspan" in part.blob
+    return _svg_holds_text(part.blob)
+
+
+#: SVG elements that draw characters. ``title`` and ``desc`` are metadata a viewer
+#: does not draw, so they are not text this reader lost.
+_SVG_TEXT_LOCAL_NAMES = frozenset({"text", "tspan", "textPath", "altGlyph"})
+
+
+def _svg_holds_text(blob: bytes) -> bool:
+    """True when a vector image draws characters, decided by element local name.
+
+    A vector image is XML, so the text in it is an element: the local name decides
+    that, which a prefix cannot hide and a comment mentioning ``<text`` never
+    matches, because a comment is not an element. A part that does not parse as
+    XML is not known to be pixels either, so it is reported rather than passed.
+
+    shortcut: only the SVG text elements this reader knows are listed, and
+    characters drawn as paths stay pixels; upgrade if another vector format, or an
+    SVG text element outside this set, turns up.
+    """
+    try:
+        root = parse_xml(blob)
+    except (SyntaxError, ValueError):
+        return True
+    return any(_local_name(item) in _SVG_TEXT_LOCAL_NAMES for item in root.iter())
 
 
 def _selected_elements(

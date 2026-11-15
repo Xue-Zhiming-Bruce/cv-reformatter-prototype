@@ -90,6 +90,22 @@ def _add_chart_drawing(document: object, label: str) -> None:
     )
 
 
+def _add_svg_drawing(document: object, svg: str) -> None:
+    """Append a drawing whose picture part is this vector image."""
+    svg_id = _add_xml_part(
+        document, "/word/media/image1.svg", "image/svg+xml", svg, RT.IMAGE
+    )
+    document.add_paragraph()._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp", "r")}>'
+            '<w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic>'
+            '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            f'<a:blip r:embed="{svg_id}"/>'
+            "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
+        )
+    )
+
+
 def _build_ordered_resume_docx(path: Path) -> None:
     """Issue #49: contact in the header/footer, a table between paragraphs, a header
     table between header paragraphs, a first-page header defined before the section
@@ -1618,6 +1634,111 @@ def test_chart_text_blocks_approval_revision_and_generation(
     )
     assert generated.status_code == 409, generated.text
     assert generated.json()["detail"]["error_code"] == "source_text_unread"
+
+
+def _process_svg_resume(
+    tmp_path: Path, monkeypatch: MonkeyPatch, svg: str
+) -> dict[str, object]:
+    """Upload a resume whose one drawing references this vector image."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    _add_svg_drawing(document, svg)
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_prefixed_svg_text_blocks_approval_revision_and_generation(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A prefix does not hide the text element, so review fails closed."""
+    body = _process_svg_resume(
+        tmp_path,
+        monkeypatch,
+        '<s:svg xmlns:s="http://www.w3.org/2000/svg"><s:text>LOST SVG TEXT</s:text>'
+        "</s:svg>",
+    )
+
+    assert "LOST SVG TEXT" not in body["original_text"]
+    (limitation,) = body["ingestion_limitations"]
+    assert "chart, diagram or embedded object" in limitation
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "incomplete"
+    assert audit["unread_text_source_content"] == body["ingestion_limitations"]
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 409, approval.text
+    assert approval.json()["detail"]["error_code"] == "source_text_unread"
+
+    revision = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/revisions",
+        json={"profile": body["profile"]},
+    )
+    assert revision.status_code == 409, revision.text
+    assert revision.json()["detail"]["error_code"] == "source_text_unread"
+
+    generated = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": body["artifact_id"],
+            "profile_revision_id": body["profile_revision_id"],
+        },
+    )
+    assert generated.status_code == 409, generated.text
+    assert generated.json()["detail"]["error_code"] == "source_text_unread"
+
+
+def test_svg_comment_naming_text_approves_with_a_report(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A comment mentioning ``<text`` is not an element, so nothing was lost."""
+    body = _process_svg_resume(
+        tmp_path,
+        monkeypatch,
+        '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/>'
+        "<!-- <text is only a comment --></svg>",
+    )
+
+    (limitation,) = body["ingestion_limitations"]
+    assert "OCR is out of scope" in limitation
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "passed"
+    assert audit["unread_text_source_content"] == []
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 200, approval.text
 
 
 def test_drawing_with_an_unselected_text_branch_approves_with_a_report(
