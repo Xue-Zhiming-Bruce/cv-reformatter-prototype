@@ -801,6 +801,8 @@ def test_read_docx_decides_every_element_of_the_inline_content_model(
         "softHyphen": "\u00ad",
         "sym": "",
         "lastRenderedPageBreak": "",
+        "oMath": "",
+        "oMathPara": "",
     }
     counted = {
         "drawing": "visual_element",
@@ -812,6 +814,9 @@ def test_read_docx_decides_every_element_of_the_inline_content_model(
         "moveTo": "tracked_change",
         "altChunk": "alt_chunk",
         "subDoc": "alt_chunk",
+        "footnoteReference": "note",
+        "endnoteReference": "note",
+        "commentReference": "note",
     }
     path = tmp_path / "resume.docx"
     document = Document()
@@ -1111,12 +1116,181 @@ def test_validate_docx_rejects_corrupted_file(tmp_path: Path) -> None:
         validate_docx_file(path)
 
 
+def test_read_docx_reads_block_office_math(tmp_path: Path) -> None:
+    """Office Math carries its text in m:t, so an equation is visible source text."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Skills")
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        parse_xml(
+            f'<m:oMathPara {nsdecls("m", "w")}>'
+            "<m:oMath><m:r><m:t>LOST</m:t></m:r></m:oMath></m:oMathPara>"
+        ),
+    )
+    document.add_paragraph("After")
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Skills", "LOST", "After"]
+    assert content.limitations == []
+    audit = audit_segmentation_lines(
+        content.plain_text, content.plain_text.splitlines()
+    )
+    assert audit.status == "passed"
+
+
+def test_read_docx_reads_inline_office_math(tmp_path: Path) -> None:
+    """A math zone inside a paragraph is read in the position it occupies."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Function: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<m:oMath {nsdecls("m", "w")}><m:r><m:t>f(x)=x</m:t></m:r></m:oMath>'
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Function: f(x)=x"]
+    assert content.limitations == []
+
+
+def test_read_docx_names_a_wrapper_holding_office_math(tmp_path: Path) -> None:
+    """Text is detected in every text namespace, so a math-only wrapper is named."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Skills")
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        parse_xml(
+            f'<w:customXml {nsdecls("w", "m")} w:element="equation">'
+            "<m:oMathPara><m:oMath><m:r><m:t>LOST</m:t></m:r></m:oMath></m:oMathPara>"
+            "</w:customXml>"
+        ),
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Skills"]
+    assert [(item.kind, item.element) for item in content.limitations] == [
+        ("unknown_block", "customXml")
+    ]
+    assert content.limitations[0].blocks_source_review is True
+
+
+def test_read_docx_reads_a_referenced_footnote(tmp_path: Path) -> None:
+    """A footnote's text is printed on the page, so it is read from its part."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Body text")
+    paragraph._p.append(
+        parse_xml(f'<w:r {nsdecls("w")}><w:footnoteReference w:id="1"/></w:r>')
+    )
+    _add_note_part(document, "footnotes", {"1": "Footnote text"})
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Body text", "Footnote text"]
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_referenced_endnote(tmp_path: Path) -> None:
+    """An endnote is read the same way, from its own part."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Body text")
+    paragraph._p.append(
+        parse_xml(f'<w:r {nsdecls("w")}><w:endnoteReference w:id="2"/></w:r>')
+    )
+    _add_note_part(document, "endnotes", {"2": "Endnote text"})
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Body text", "Endnote text"]
+    assert content.limitations == []
+
+
+def test_read_docx_names_a_referenced_note_without_its_part(tmp_path: Path) -> None:
+    """A reference whose note no part supplies is named, not ignored."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Body text")
+    paragraph._p.append(
+        parse_xml(f'<w:r {nsdecls("w")}><w:footnoteReference w:id="4"/></w:r>')
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Body text"]
+    (limitation,) = content.limitations
+    assert (limitation.kind, limitation.location, limitation.count) == ("note", "body", 1)
+    assert "not read" in limitation.message
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_names_a_comment_body_it_does_not_open(tmp_path: Path) -> None:
+    """A comment is a margin annotation, so a reference is reported per document."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Body text")
+    paragraph._p.append(
+        parse_xml(f'<w:r {nsdecls("w")}><w:commentReference w:id="3"/></w:r>')
+    )
+    _add_note_part(document, "comments", {"3": "Recruiter note"})
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Body text"]
+    (limitation,) = content.limitations
+    assert (limitation.kind, limitation.count) == ("note", 1)
+    audit = audit_segmentation_lines(
+        content.plain_text,
+        content.plain_text.splitlines(),
+        *unread_content_messages(content.limitations),
+    )
+    assert audit.status == "incomplete"
+
+
+def _add_note_part(document: object, root: str, items: dict[str, str]) -> None:
+    """Attach a footnotes/endnotes/comments part holding one paragraph per note."""
+    relationship = {
+        "footnotes": RT.FOOTNOTES,
+        "endnotes": RT.ENDNOTES,
+        "comments": RT.COMMENTS,
+    }[root]
+    item = root[:-1]
+    xml = f'<w:{root} {nsdecls("w")}>' + "".join(
+        f'<w:{item} w:id="{note_id}"><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:{item}>'
+        for note_id, text in items.items()
+    ) + f"</w:{root}>"
+    part = Part(
+        PackURI(f"/word/{root}.xml"),
+        f"application/vnd.openxmlformats-officedocument.wordprocessingml.{root}+xml",
+        xml.encode(),
+        document.part.package,
+    )
+    document.part.relate_to(part, relationship)
+
+
 def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
 def _bare_element(tag: str) -> object:
     name = _local_name(tag)
+    if "officeDocument/2006/math" in tag:
+        return parse_xml(f'<m:{name} {nsdecls("m")}/>')
     if name == "AlternateContent":
         return parse_xml(
             '<mc:AlternateContent '

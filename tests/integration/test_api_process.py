@@ -159,6 +159,27 @@ def _one_pixel_png() -> bytes:
     )
 
 
+def _add_note_part(document: object, root: str, items: dict[str, str]) -> None:
+    """Attach a footnotes/endnotes/comments part holding one paragraph per note."""
+    relationship = {
+        "footnotes": RT.FOOTNOTES,
+        "endnotes": RT.ENDNOTES,
+        "comments": RT.COMMENTS,
+    }[root]
+    item = root[:-1]
+    xml = f'<w:{root} {nsdecls("w")}>' + "".join(
+        f'<w:{item} w:id="{note_id}"><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:{item}>'
+        for note_id, text in items.items()
+    ) + f"</w:{root}>"
+    part = Part(
+        PackURI(f"/word/{root}.xml"),
+        f"application/vnd.openxmlformats-officedocument.wordprocessingml.{root}+xml",
+        xml.encode(),
+        document.part.package,
+    )
+    document.part.relate_to(part, relationship)
+
+
 def _wrap_in_content_control(element_xml: str) -> object:
     """Issue #49: a content control Word may put around a whole table part."""
     return parse_xml(
@@ -1232,6 +1253,188 @@ def test_property_wrappers_do_not_block_approval_or_generation(
         },
     )
     assert generated.status_code == 200, generated.text
+
+
+@pytest.mark.usefixtures("a_generation_without_model_loop")
+def test_block_math_text_is_read_at_the_endpoint(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Issue #49: Office Math text is source text, so an equation never vanishes."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    exporter = make_proof_pdf_exporter()
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", exporter)
+    monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", exporter)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        parse_xml(
+            f'<m:oMathPara {nsdecls("m", "w")}>'
+            "<m:oMath><m:r><m:t>LOST</m:t></m:r></m:oMath></m:oMathPara>"
+        ),
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body_json = response.json()
+    assert "LOST" in body_json["original_text"].splitlines()
+    assert body_json["ingestion_limitations"] == []
+    audit = json.loads(
+        (tmp_path / body_json["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "passed"
+
+    approval = client.post(
+        f"/api/artifacts/{body_json['artifact_id']}/profiles/approve",
+        json={"profile": body_json["profile"]},
+    )
+    assert approval.status_code == 200, approval.text
+
+
+@pytest.mark.usefixtures("a_generation_without_model_loop")
+def test_footnote_text_is_read_at_the_endpoint(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Issue #49: a referenced footnote is read from its part, not left behind."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    exporter = make_proof_pdf_exporter()
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", exporter)
+    monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", exporter)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    paragraph = document.add_paragraph("Footnote holder")
+    paragraph._p.append(
+        parse_xml(f'<w:r {nsdecls("w")}><w:footnoteReference w:id="1"/></w:r>')
+    )
+    _add_note_part(document, "footnotes", {"1": "Footnote text"})
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body_json = response.json()
+    assert body_json["original_text"].splitlines()[-1] == "Footnote text"
+    assert body_json["ingestion_limitations"] == []
+    audit = json.loads(
+        (tmp_path / body_json["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "passed"
+
+    approval = client.post(
+        f"/api/artifacts/{body_json['artifact_id']}/profiles/approve",
+        json={"profile": body_json["profile"]},
+    )
+    assert approval.status_code == 200, approval.text
+
+    generated = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": body_json["artifact_id"],
+            "approved_profile_version_id": approval.json()["profile_version_id"],
+            "template_name": "apex_standard",
+        },
+    )
+    assert generated.status_code == 200, generated.text
+
+
+def test_comment_reference_blocks_approval_revision_and_generation(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A comment body is not page text, so the reference is named and fail-closed."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    paragraph = document.add_paragraph("Body text")
+    paragraph._p.append(
+        parse_xml(f'<w:r {nsdecls("w")}><w:commentReference w:id="3"/></w:r>')
+    )
+    _add_note_part(document, "comments", {"3": "Recruiter note"})
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "Recruiter note" not in body["original_text"]
+    (limitation,) = body["ingestion_limitations"]
+    assert "footnote, endnote or comment" in limitation
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "incomplete"
+    assert audit["unread_text_source_content"] == body["ingestion_limitations"]
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 409, approval.text
+    assert approval.json()["detail"]["error_code"] == "source_text_unread"
+
+    revision = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/revisions",
+        json={"profile": body["profile"]},
+    )
+    assert revision.status_code == 409, revision.text
+    assert revision.json()["detail"]["error_code"] == "source_text_unread"
+
+    generated = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": body["artifact_id"],
+            "profile_revision_id": body["profile_revision_id"],
+        },
+    )
+    assert generated.status_code == 409, generated.text
+    assert generated.json()["detail"]["error_code"] == "source_text_unread"
 
 
 def test_table_wrapper_the_reader_cannot_descend_is_named(

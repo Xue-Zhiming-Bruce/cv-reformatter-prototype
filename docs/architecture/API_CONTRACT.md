@@ -86,7 +86,8 @@ Response fields:
   a control whose content is none of the blocks, rows, cells or runs the reader
   places, such as one inside tracked change markup —, simple field
   result, embedded `w:altChunk` or `w:subDoc`, text-bearing block, table or
-  inline wrapper it cannot read in place, and images/drawings/charts counted per
+  inline wrapper it cannot read in place, a referenced note or comment body the
+  reader did not read, and images/drawings/charts counted per
   part because OCR is out of scope), naming its location and, for a wrapper, the
   element name and child position; empty for PDFs and for DOCX files inside the
   supported shapes. The `segmentation_audit.json` line-coverage audit only measures the
@@ -109,9 +110,15 @@ Response fields:
   inline content model (every character renders: `w:t`, tabs, breaks,
   `w:noBreakHyphen`, `w:softHyphen`, `w:sym`'s code point, ruby base text; runs,
   hyperlinks, pass-through inline wrappers and the selected
-  `mc:AlternateContent` branch are descended), and the default,
-  displayed first-page and enabled even-page headers/footers — and states that
-  shapes outside it are not detectable. Reading and reporting are one traversal:
+  `mc:AlternateContent` branch are descended), an Office Math zone read through
+  its `m:t` characters, a referenced footnote or endnote read from its own part
+  after the body blocks, and the default, displayed first-page and enabled
+  even-page headers/footers — and states that shapes outside it are not
+  detectable. "Holds text" is decided in every text namespace, so a wrapper or
+  block around `m:t` (Office Math) or `a:t` (DrawingML) is seen like a `w:t` one
+  instead of passing as empty. A referenced note no part supplies, and a comment
+  body, are counted per part as a `note` limitation instead of being left to a
+  docstring blind spot. Reading and reporting are one traversal:
   every inline element the walk declines is named where it is declined, at any
   nesting depth, and an element outside the decided model is reported whatever it
   holds, so a wrapper, a ruby annotation or an unanticipated run child is named
