@@ -121,6 +121,7 @@ from app.template_analysis.layout_proof_artifacts import (
     layout_spec_checksum,
     resolve_comparison_resource,
     resolve_proof_resource,
+    stale_variant_proofs,
     variant_dir_for,
 )
 from app.template_analysis.layout_proof_schemas import (
@@ -149,7 +150,7 @@ from app.template_analysis.layout_proof_validation import (
     load_layout_proof_render_result,
     load_variant_evidence,
 )
-from app.target_publication import TargetSet, publish_target_set
+from app.target_publication import TargetSet, contained_in_artifact, publish_target_set
 from app.template_analysis.artifacts import (
     ADOBE_RAW_FILENAME,
     LAYOUT_SPEC_FILENAME,
@@ -1953,6 +1954,8 @@ def _resolve_download_artifact(artifact_id: str, filename: str) -> Path:
     # The pinned epoch copy is what was verified and what goes out: the public
     # target name may switch to another set while the caller reads it.
     artifact_path = TargetSet(directory).read(filename) or directory / filename
+    if not contained_in_artifact(GENERATED_OUTPUTS_DIR / artifact_id, artifact_path):
+        raise HTTPException(status_code=404, detail="Generated artifact not found.")
     if not artifact_path.exists() or not artifact_path.is_file():
         raise HTTPException(status_code=404, detail="Generated artifact not found.")
     if directory != GENERATED_OUTPUTS_DIR / artifact_id and generations is not None:
@@ -2207,15 +2210,12 @@ def _approval_invalidation(
     current = _approved_scope_layout_checksum(artifact_dir, approval, layout_checksum)
     if layout_checksum and current and approval.layout_spec_checksum != current:
         return "the layout spec changed after this proof set was approved"
-    recreated = sorted(
-        variant.value
-        for variant, evidence in approval.variants.items()
-        if _current_proof_id(artifact_dir, artifact_id, variant)
-        not in (None, evidence.render_result.proof_id)
-    )
-    if not recreated:
+    stale = stale_variant_proofs(artifact_dir, artifact_id, approval)
+    if not stale:
         return None
-    return "the proof set was re-created after this approval: " + ", ".join(recreated)
+    return "the stored proof set no longer matches this approval: " + ", ".join(
+        f"{variant} {reason}" for variant, reason in stale.items()
+    )
 
 
 def _approved_scope_layout_checksum(
@@ -2240,19 +2240,6 @@ def _approved_scope_layout_checksum(
     except (LayoutProofContextError, HTTPException, OSError, ValueError):
         return approval.layout_spec_checksum
     return layout_spec_checksum(style_spec)
-
-
-def _current_proof_id(
-    artifact_dir: Path, artifact_id: str, variant: LengthVariant
-) -> str | None:
-    """The proof id this artifact's stored evidence records, when it is readable."""
-    try:
-        return load_layout_proof_render_result(
-            artifact_dir, variant, artifact_id=artifact_id
-        ).proof_id
-    except (OSError, LayoutProofIncompleteError, LayoutProofValidationError):
-        return None
-
 
 #: Any one of these means proofs were created for a variant, readable or not.
 _VARIANT_EVIDENCE_FILENAMES = ("render_result.json", "structural.json", "visual.json")
