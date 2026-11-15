@@ -154,6 +154,7 @@ from app.template_analysis.layout_proof_validation import (
 from app.target_publication import (
     TargetPublicationBusy,
     TargetSet,
+    TargetSetChanged,
     contained_in_artifact,
     publish_target_set,
 )
@@ -243,6 +244,20 @@ app = FastAPI(title="CV Reformatter MVP", lifespan=_app_lifespan)
 @app.exception_handler(ArtifactStoreError)
 async def artifact_store_error_handler(_request: Request, error: ArtifactStoreError) -> JSONResponse:
     return JSONResponse(status_code=409 if isinstance(error, ArtifactStoreConflict) else 500, content={"detail": str(error)})
+
+@app.exception_handler(TargetSetChanged)
+async def target_set_changed_handler(_request: Request, error: TargetSetChanged) -> JSONResponse:
+    """A publication or migration replaced the target set mid-request.
+
+    The part of the operation already read belongs to the set that is no longer
+    current, so nothing is answered from the two together: the caller retries the
+    whole request against the set that is current now.
+    """
+    return JSONResponse(
+        status_code=409,
+        content={"detail": f"{error} Retry the whole request."},
+    )
+
 
 @app.exception_handler(GenerationError)
 async def generation_error_handler(_request: Request, error: GenerationError) -> JSONResponse:

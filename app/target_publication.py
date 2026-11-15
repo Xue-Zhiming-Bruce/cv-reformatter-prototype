@@ -30,10 +30,13 @@ its check and its switch resumes into the state that decision produced instead o
 reverting a newer publication, and a sequence that unlinks a layout another
 process is copying cannot interleave with it. A publication that cannot take the
 lock publishes nothing and raises :class:`TargetPublicationBusy`; a read that
-must take it waits for the sequence in progress and then reads the state it left.
-A read of an artifact that has no published epoch yet holds that lock shared for
-as long as the view is open, so no publication moves the files it reads into an
-epoch beneath it.
+must decide the same thing waits for the sequence in progress and then reads the
+state it left. No read holds that lock beyond the decision it makes, so a reader
+never stops the owner publishing — only pruning. A view that pins a layout with
+no published epoch records what it read (what ``current`` names, the identity of
+the directory it read) and raises :class:`TargetSetChanged` on the first read
+that would answer from a different state, instead of mixing two sets in one
+operation or holding the publication decision for its own lifetime.
 
 An artifact directory published before the switch existed keeps plain files that
 no rename can replace together. Its first read or write copies them into one
@@ -80,6 +83,7 @@ __all__ = (
     "TARGETS_DIRNAME",
     "TargetPublicationBusy",
     "TargetSet",
+    "TargetSetChanged",
     "publish_target_set",
 )
 
@@ -111,6 +115,10 @@ class TargetPublicationBusy(OSError):
     """Another process is deciding what this artifact's target set is."""
 
 
+class TargetSetChanged(OSError):
+    """The target set changed mid-request, so answering would mix two sets."""
+
+
 class _AbandonedUpload(Exception):
     """Internal: the caller gave up, so the staged set is discarded."""
 
@@ -122,22 +130,20 @@ def _artifact_lock(artifact_id: str) -> threading.Lock:
         return _LOCKS.setdefault(artifact_id, threading.Lock())
 
 
-def _lock_decisions(sets_dir: Path, *, exclusive: bool, blocking: bool = True) -> int:
+def _lock_decisions(sets_dir: Path, *, blocking: bool = True) -> int:
     """Hold the artifact's publication decision lock and return its descriptor.
 
     Every sequence that decides or changes what ``current`` means takes this lock
     exclusively: a publication, a legacy adoption, a migration, the rollback of an
     abandoned publication and the cleanup that drops plain files. The check those
     sequences make and the switch they make are therefore one decision, so a
-    pause inside one cannot resume over a newer publication. An exclusive attempt
-    that must not wait fails closed instead of publishing into a sequence that has
-    the lock.
+    pause inside one cannot resume over a newer publication. An attempt that must
+    not wait fails closed instead of publishing into a sequence that has the lock.
     """
     sets_dir.mkdir(parents=True, exist_ok=True)
     fd = os.open(sets_dir, os.O_RDONLY)
-    flags = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
     try:
-        fcntl.flock(fd, flags if blocking else flags | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         os.close(fd)
         raise TargetPublicationBusy(
@@ -283,6 +289,20 @@ def _current_set(sets_dir: Path) -> Path | None:
     return current if stat.S_ISDIR(mode) else None
 
 
+def _layout_now(sets_dir: Path) -> tuple[int | None, str | None, tuple[int, int] | None]:
+    """What a read of an unpublished layout depends on: ``current`` and the layout.
+
+    A view that cannot hold its layout records this and compares it on every read,
+    so a publication or migration that lands meanwhile is seen instead of answered
+    from.
+    """
+    mode = _current_mode(sets_dir)
+    target = None
+    if mode is not None and stat.S_ISLNK(mode):
+        target = os.readlink(sets_dir / CURRENT_LINK_NAME)
+    return mode, target, _directory_identity(sets_dir.parent)
+
+
 def _new_epoch_dir(sets_dir: Path) -> Path:
     sets_dir.mkdir(parents=True, exist_ok=True)
     return Path(tempfile.mkdtemp(prefix="set-", dir=sets_dir))
@@ -376,6 +396,8 @@ class TargetSet:
         self._pinned: Path | None = None
         self._fd: int | None = None
         self._decision_fd: int | None = None
+        # What a view that pinned nothing published read: re-derived on every read.
+        self._layout: tuple[int | None, str | None, tuple[int, int] | None] | None = None
 
     def __enter__(self) -> TargetSet:
         return self
@@ -396,6 +418,7 @@ class TargetSet:
         nothing once it is gone; any other view reads what is current then.
         """
         fd, self._fd, self._pinned = self._fd, None, None
+        self._layout = None
         if fd is not None:
             os.close(fd)
 
@@ -408,19 +431,38 @@ class TargetSet:
         """The directory this view reads, held for as long as the view stays open.
 
         An epoch is selected and held in one step, retrying a set pruned meanwhile,
-        so the view always holds an epoch it named; what the view reads when
-        nothing is published is held the same way. Two publications can land
-        between one look and the next, so the retry is what keeps them out — the
-        decision lock is what makes one publication sequence atomic.
+        so the view always holds an epoch it named. What a view reads when nothing
+        is published cannot be held — a hold would let a reader stop the owner
+        publishing — so it records the layout it read and re-checks it before
+        answering from it, and the decision lock is what makes one publication
+        sequence atomic.
         """
         if self._pinned is None:
             self._pinned = self._select()
+        self._fail_if_changed()
         return self._pinned
 
     def read(self, filename: str) -> Path | None:
-        """``filename`` from the held set, or ``None`` when it is not published."""
+        """``filename`` from the held set, or ``None`` when it is not published.
+
+        A view that pinned an unpublished layout answers ``None`` only while that
+        layout is still the one it read: a name that disappeared because the owner
+        published or migrated it raises :class:`TargetSetChanged` like any other
+        read of a changed set, rather than reading as an artifact without it.
+        """
         path = self.published_dir / filename
-        return path if path.is_file() else None
+        if path.is_file():
+            return path
+        self._fail_if_changed()
+        return None
+
+    def _fail_if_changed(self) -> None:
+        """Fail closed once the layout a view pinned is no longer the one it read."""
+        if self._layout is not None and _layout_now(self.sets_dir) != self._layout:
+            raise TargetSetChanged(
+                f"The target set of {self.artifact_dir.name} changed during this request: "
+                "it was published or migrated after the read began."
+            )
 
     def _select(self) -> Path:
         """Choose what this view reads and hold it, retrying a set pruned meanwhile."""
@@ -459,33 +501,31 @@ class TargetSet:
         return epoch
 
     def _pin_unpublished(self) -> Path | None:
-        """Adopt or hold a layout that names no epoch, so one of them is pinned.
+        """Adopt a layout that names no epoch, then record the layout a read gets.
 
-        Adopting is a decision, so it runs under the exclusive decision lock and
-        waits out a sequence that already has it, then reads the state that
-        sequence left. What no decision leaves is the layout itself: the view then
-        holds that shared, so a publication cannot move these files into an epoch
-        beneath the reader.
+        Adopting is a decision, so it runs under the decision lock and waits out a
+        sequence that already has it, then reads the state that sequence left. A
+        layout that still names no set is not held: holding it would refuse every
+        publication of that artifact for as long as the view lives, including one a
+        client leaks, so the view records what it read and fails closed on the first
+        read that would answer from another state.
         """
-        with self._decision(exclusive=True):
+        with self._decision():
             self._adopt_legacy()
             epoch = _current_set(self.sets_dir)
+            if epoch is None:
+                self._layout = _layout_now(self.sets_dir)
         if epoch is not None:
             return self._hold_set(epoch)
-        fd = _lock_decisions(self.sets_dir, exclusive=False)
-        if _current_set(self.sets_dir) is not None:
-            os.close(fd)  # published before the hold: read that set instead
-            return None
-        self._fd = fd
         return self.artifact_dir
 
     @contextlib.contextmanager
-    def _decision(self, *, exclusive: bool, blocking: bool = True) -> Iterator[None]:
+    def _decision(self, *, blocking: bool = True) -> Iterator[None]:
         """Hold the decision lock for one sequence, unless this view already has it."""
         if self._decision_fd is not None:
             yield
             return
-        fd = _lock_decisions(self.sets_dir, exclusive=exclusive, blocking=blocking)
+        fd = _lock_decisions(self.sets_dir, blocking=blocking)
         self._decision_fd = fd
         try:
             yield
@@ -510,9 +550,7 @@ class TargetSet:
         while linking, puts the previous set back and discards the staged one as
         far as no other process already holds it.
         """
-        with _artifact_lock(self.artifact_dir.name), self._decision(
-            exclusive=True, blocking=False
-        ):
+        with _artifact_lock(self.artifact_dir.name), self._decision(blocking=False):
             self._adopt_legacy()  # adopt a legacy directory before switching it
             self._drop_leftovers()
             epoch, claim = _staged_epoch(self.sets_dir)

@@ -678,6 +678,38 @@ def test_a_target_upload_that_cannot_take_the_decision_lock_publishes_nothing(
     assert not (artifact_dir / "target_format.json").exists()
 
 
+def test_a_target_set_that_changed_mid_request_answers_409_and_says_to_retry(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """A read that spans a publication answers 409, not bytes from two sets.
+
+    ``TargetSet.read`` fails closed once the layout a request pinned is no longer
+    the layout it recorded; the boundary maps that to 409 with the retry the caller
+    needs, because half of the operation was already built from the old set.
+    """
+    from app.target_publication import TargetSetChanged
+
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    artifact_id = "artifact_target_changed"
+    artifact_dir = tmp_path / artifact_id
+    artifact_dir.mkdir()
+    (artifact_dir / "target_format_reference.pdf").write_bytes(b"%PDF-1.4 first\n")
+
+    def changed(_self: object, _filename: str) -> None:
+        raise TargetSetChanged(
+            f"The target set of {artifact_id} changed during this request: "
+            "it was published or migrated after the read began."
+        )
+
+    monkeypatch.setattr(main.TargetSet, "read", changed)
+    response = client.get(f"/api/artifacts/{artifact_id}/target_format_reference.pdf")
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert "changed during this request" in detail, detail
+    assert "Retry the whole request" in detail, detail
+
+
 def test_uploaded_target_never_falls_back_to_built_in(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
