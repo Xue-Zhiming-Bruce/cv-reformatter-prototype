@@ -192,7 +192,10 @@ nothing and answers `503` with a `detail` saying another operation is deciding
 this artifact: a caller retries rather than having its upload interleave. A read
 that has to decide the same thing — adopting a legacy directory, migrating a
 dereferenced copy — waits for the sequence in progress and then reads the state
-it left, so a copy never races a publication that replaces its source.
+it left, so a copy never races a publication that replaces its source. No read
+holds that lock beyond the decision it makes, so a reader never stops the owner
+publishing: publication is never blocked by a reader, only pruning is, and that
+by the epoch hold described below.
 
 An artifact directory published before the switch existed keeps its target files
 as plain files, which no single rename can replace together. Its first read or
@@ -240,11 +243,22 @@ and a publisher holds its staged epoch exclusively until the switch and fails
 closed if that claim was lost, rather than publishing a name that points at
 nothing.
 
-What an artifact with nothing published pins is the layout itself: the view holds
-the decision lock shared for as long as it is open, so no publication can move
-the files it reads into an epoch beneath it — the artifact's public names cannot
-start resolving to a set the view never pinned. A publication attempted while
-such a view is open answers `503` like any other one that cannot take the lock.
+What an artifact with nothing published pins is the layout itself, and no lock
+holds it: the view records what it read — that `current` names no set, and the
+identity of the directory it read — and re-derives that state on every read. A
+publication or a migration since the pin therefore raises
+`app.target_publication.TargetSetChanged` on the first read that would answer
+from it, which the HTTP boundary reports as `409` with a `detail` saying the
+target changed during the request and that the client must retry the whole
+request. The operation never mixes: it does not answer `null` from the previous
+layout for one name and bytes from the new set for the next, and a name that
+vanished with the layout is that same error rather than an artifact without it.
+The two holds a reader can still take are a shared `flock` on the pinned epoch,
+which blocks only pruning, and the decision lock for the length of one adoption
+or migration, which blocks publication only while that decision runs. A view of
+an unpublished layout therefore stops no publication, however long it lives or
+whether anyone ever closes it; what it loses by not holding anything is that a
+publication in flight makes its next read fail closed instead of answering.
 
 An epoch is selected and held in one step, and the selection retries until the
 view holds an epoch it named: two publications can land between one look and the

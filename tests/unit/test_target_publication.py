@@ -6,6 +6,7 @@ kills a real publisher process so the leftover is the one a dead process leaves.
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 from pathlib import Path
@@ -30,6 +31,7 @@ from app.target_publication import (
     TARGETS_DIRNAME,
     TargetPublicationBusy,
     TargetSet,
+    TargetSetChanged,
     publish_target_set,
 )
 
@@ -1115,29 +1117,82 @@ def test_a_publication_during_a_paused_adoption_cannot_break_the_copy(
     assert current.is_symlink() and current.is_dir()
 
 
-def test_a_view_of_an_unpublished_artifact_keeps_it_unpublished(tmp_path: Path) -> None:
-    """A view with nothing published pins that, not the artifact directory.
+@pytest.mark.skipif(os.name != "posix", reason="the test publishes from a separate process")
+def test_a_view_of_an_unpublished_layout_does_not_block_publication(tmp_path: Path) -> None:
+    """A view that pins nothing published holds no lock, so the owner can publish.
 
-    At ``64a272b`` the view pinned the artifact directory with no hold at all, so
-    metadata read before a publication sat beside a source read after another one.
+    At ``b7a28d0`` the view held the decision lock shared for its whole life, so
+    every publication of that artifact was refused (the ``503`` path) while the
+    view lived — including one a client leaked and never closed. The view now
+    records the layout it read and fails closed instead of answering from a set
+    it never pinned.
     """
     artifact_dir = tmp_path / "artifact_empty_view"
     artifact_dir.mkdir()
     view = TargetSet(artifact_dir)
     try:
         assert view.read("target_format.json") is None
-        _staged_contents, reported = _publish_from_child(
-            tmp_path, artifact_dir, DOCX_SET, ("second",)
-        )
-        assert reported == ["busy"], "a publication appeared beneath an open view"
-        assert view.read("target_format.json") is None
-        assert view.read("target_format_template.docx") is None
+        staged, reported = _publish_from_child(tmp_path, artifact_dir, DOCX_SET, ("second",))
+        assert reported == ["published"], "an open view of nothing blocked the publication"
+        with pytest.raises(TargetSetChanged):
+            view.read("target_format.json")
+        with pytest.raises(TargetSetChanged):
+            view.read("target_format_template.docx")
+        assert (artifact_dir / "target_format.json").read_bytes() == staged[0]["target_format.json"]
     finally:
         view.close()
 
     contents = _publish(tmp_path, artifact_dir, DOCX_SET, "third")
     assert view.read("target_format.json").read_bytes() == contents["target_format.json"]
     view.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the test publishes from a separate process")
+def test_a_read_across_a_publication_fails_the_whole_operation(tmp_path: Path) -> None:
+    """The first read that sees a changed layout fails the operation, mixing nothing.
+
+    At ``b7a28d0`` the view either held the decision lock shared for its whole life
+    (so the publication was refused) or, with that hold gone, answered ``None`` from
+    the artifact root for one name while a second name resolved through the new
+    epoch — one operation over two different states of the artifact.
+    """
+    artifact_dir = tmp_path / "artifact_mid_operation"
+    artifact_dir.mkdir()
+    view = TargetSet(artifact_dir)
+    try:
+        assert view.read("target_format_template.docx") is None
+        _staged, reported = _publish_from_child(tmp_path, artifact_dir, DOCX_SET, ("second",))
+        assert reported == ["published"], reported
+        for name in DOCX_SET:
+            with pytest.raises(TargetSetChanged):
+                view.read(name)
+    finally:
+        view.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the test publishes from a separate process")
+def test_a_leaked_view_of_an_unpublished_layout_does_not_block_publication(
+    tmp_path: Path,
+) -> None:
+    """A view nobody closes holds nothing, so a leaked one cannot wedge the owner.
+
+    At ``b7a28d0`` the shared decision hold lived as long as the view, so a view a
+    caller forgot to close refused every later publication of that artifact for the
+    life of the process.
+    """
+    artifact_dir = tmp_path / "artifact_leaked_view"
+    artifact_dir.mkdir()
+    view = TargetSet(artifact_dir)
+    assert view.read("target_format.json") is None
+    _staged, reported = _publish_from_child(
+        tmp_path, artifact_dir, DOCX_SET, ("second", "third")
+    )
+    assert reported == ["published", "published"], reported
+    del view  # never closed: collected only after two publications
+    gc.collect()
+    assert (artifact_dir / TARGETS_DIRNAME / CURRENT_LINK_NAME).is_dir()
+    with TargetSet(artifact_dir) as fresh:
+        assert fresh.read("target_format_template.docx") is not None
 
 
 @pytest.mark.parametrize("shape", ["empty current only", "empty current beside plain files"])
