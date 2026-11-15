@@ -45,7 +45,7 @@ import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator, NoReturn, Sequence
+from typing import Any, Iterator, NoReturn, Sequence
 from zipfile import ZipFile
 
 from starlette.datastructures import UploadFile
@@ -272,7 +272,17 @@ def verify_zip_streams(archive: ZipFile, limits: ZipLimits) -> None:
 
 
 def read_zip_member_bounded(archive: ZipFile, name: str, limits: ZipLimits) -> bytes:
-    """Read one archive member through a capped chunked stream."""
+    """Read one archive member through a capped chunked stream.
+
+    The member name is document-controlled, so a refusal names its position and
+    size only: a caller that reaches this helper without the directory checks
+    still cannot turn a path into an error message.
+    """
+    entries = archive.infolist()
+    position = next(
+        (index for index, entry in enumerate(entries, 1) if entry.filename == name),
+        None,
+    )
     chunks: list[bytes] = []
     total = 0
     with archive.open(name) as member:
@@ -281,7 +291,7 @@ def read_zip_member_bounded(archive: ZipFile, name: str, limits: ZipLimits) -> b
             if total > limits.max_entry_bytes:
                 _refuse(
                     "zip_expansion_size",
-                    f"The archive member '{name}' expands past the "
+                    f"Package entry {position} of {len(entries)} expands past the "
                     f"{limits.max_entry_bytes} byte application limit.",
                 )
             chunks.append(chunk)
@@ -310,23 +320,63 @@ def check_pdf_pages(page_sizes: Sequence[Sequence[float]]) -> None:
             )
 
 
-def bounded_pdf_pages(pages: Iterable[Any]) -> Iterator[Any]:
+def _parse_deadline() -> float:
+    return time.monotonic() + LOCAL_PARSE_TIMEOUT_SECONDS
+
+
+def _check_parse_deadline(deadline: float) -> None:
+    if time.monotonic() > deadline:
+        _refuse(
+            "local_processing_timeout",
+            f"Local document processing did not finish within {LOCAL_PARSE_TIMEOUT_SECONDS:g} "
+            "seconds; nothing was processed.",
+        )
+
+
+def bounded_pdf_pages(document: Any) -> Iterator[Any]:
     """Yield the pages of one in-process parse, refusing past the parse budget.
 
-    Every parent-side parse takes its pages from here, so the same contract
-    holds wherever a document is read instead of only on the path that was
-    measured. The check runs between pages: one pdfplumber page call cannot be
-    interrupted, so a parse is bounded by the budget plus its last page.
+    Every parent-side parse reads its pages through here, so the contract holds
+    wherever a document is read instead of only on the path that was measured.
+    The budget starts at this call, before `document.pages` builds the page
+    tree, so page construction is charged to it as well. The check then runs as
+    soon as the tree exists and between pages: neither one page call nor the
+    tree build can be interrupted, so a parse is bounded by the budget plus the
+    tree build and its last page.
     """
-    deadline = time.monotonic() + LOCAL_PARSE_TIMEOUT_SECONDS
-    for page in pages:
-        if time.monotonic() > deadline:
-            _refuse(
-                "local_processing_timeout",
-                f"Local document processing did not finish within {LOCAL_PARSE_TIMEOUT_SECONDS:g} "
-                "seconds; nothing was processed.",
-            )
-        yield page
+    deadline = _parse_deadline()
+
+    def _bounded() -> Iterator[Any]:
+        for page in document.pages:
+            _check_parse_deadline(deadline)
+            yield page
+
+    return _bounded()
+
+
+def bounded_pdf_page(document: Any, number: int) -> Any:
+    """One page of an in-process parse, charged to the same parse budget.
+
+    A single-page read still builds the whole page tree, so it goes through the
+    one bounded iterator instead of indexing `document.pages` itself.
+    """
+    page_count = 0
+    for page_count, page in enumerate(bounded_pdf_pages(document), 1):
+        if page_count == number:
+            return page
+    raise IndexError(f"page {number} outside 1..{page_count}")
+
+
+def bounded_pdf_page_count(document: Any) -> int:
+    """How many pages an in-process parse has, charged to the same parse budget.
+
+    The count is read after the budget starts: pdfplumber builds the page tree to
+    answer it, while pypdf reads the page tree's declared length.
+    """
+    deadline = _parse_deadline()
+    page_count = len(document.pages)
+    _check_parse_deadline(deadline)
+    return page_count
 
 
 class RasterPixelBudget:

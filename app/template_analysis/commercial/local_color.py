@@ -88,10 +88,11 @@ def enrich_colors_from_local_pdf(
 
     votes: dict[tuple[int, str], Counter[str]] = {}
     with pdfplumber.open(pdf_path) as pdf:
-        for page_number, page_blocks in blocks_by_page.items():
-            if not 1 <= page_number <= len(pdf.pages):
+        # One bounded walk for every requested page, in page order.
+        for page_number, page in enumerate(bounded_pdf_pages(pdf), 1):
+            page_blocks = blocks_by_page.get(page_number)
+            if not page_blocks:
                 continue
-            page = pdf.pages[page_number - 1]
             width, height = float(page.width), float(page.height)
             for char in page.chars:
                 hex_color = _hex_from_color(char.get("non_stroking_color"))
@@ -138,7 +139,7 @@ def enrich_rules_from_local_pdf(
     rules: list[NormalizedRule] = []
     lines_by_page: dict[int, list[dict[str, object]]] = {}
     with pdfplumber.open(pdf_path) as pdf:
-        for page_number, page in enumerate(bounded_pdf_pages(pdf.pages), start=1):
+        for page_number, page in enumerate(bounded_pdf_pages(pdf), start=1):
             width, height = float(page.width), float(page.height)
             words = page.extract_words()
             lines_by_page[page_number] = page.extract_text_lines(strip=True)
@@ -635,7 +636,7 @@ def enrich_badges_from_local_pdf(
     clusters: list[NormalizedBadgeCluster] = []
     warnings = list(normalized.warnings)
     with pdfplumber.open(pdf_path) as pdf:
-        for page_number, page in enumerate(bounded_pdf_pages(pdf.pages), start=1):
+        for page_number, page in enumerate(bounded_pdf_pages(pdf), start=1):
             width, height = float(page.width), float(page.height)
             words = page.extract_words(extra_attrs=["non_stroking_color"])
             candidates, unmeasured = _page_badge_candidates(page, words)

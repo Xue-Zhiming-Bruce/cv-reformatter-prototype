@@ -1250,19 +1250,22 @@ Enforcement sits in the existing owners, not in each caller:
   `RasterPixelBudget` — page count, every page's geometry, and the summed
   pixels — before page 1 allocates a bitmap. A document that will be refused
   therefore renders nothing; there is no partial raster set to clean up;
-- in-process parses: `app/resource_limits.bounded_pdf_pages` is the page
-  iterator every parent-side `pdfplumber` page loop takes its pages from
+- in-process parses: `app/resource_limits.bounded_pdf_pages` is the only way a
+  parent-side parse touches a `pdfplumber` or `pypdf` document's pages
   (measurement, rendering, evidence including the diagnostic `measure` tool,
-  quality, content validation, layout-proof validation, and the target's local
-  color/enrichment reads), so each loop checks the 60 s local parse budget
-  between pages and refuses with `local_processing_timeout`. The parent-side
-  reads that take one page only (`measurement`, `quality`, `evidence`, `review`
-  and `local_color` index `pages[n]` directly) and the page-count reads are
-  inside that same bound by construction: they parse one page and have no page
-  to check between. The bound is per parse and is the budget plus one page: one
-  `pdfplumber` page call cannot be interrupted, so a single page that runs long
-  is not cut short, and this is not a hard wall-clock ceiling for the whole
-  conversion;
+  quality including the privacy gate, content validation, layout-proof
+  validation, the target's local color/enrichment reads, ingestion's own text
+  and page-box reads, and the artifact font scan), and
+  `bounded_pdf_page`/`bounded_pdf_page_count` are the only single-page and
+  page-count reads, so no module iterates `document.pages` itself. The helper
+  starts the 60 s local parse budget at the call, before it builds the page
+  tree, so page construction is charged to the same deadline, and each loop
+  then checks the budget between pages and refuses with
+  `local_processing_timeout`. The bound is per parse and is the budget plus the
+  page-tree build and one page: neither a single page call nor pdfplumber's own
+  page-tree construction can be interrupted, so the check runs as soon as the
+  tree exists and before each later page, and this is not a hard wall-clock
+  ceiling for the whole conversion;
 - operator paths: `enforce_document_path` applies the same policy to a document
   this process did not receive through an upload, and answers the child-measured
   page sizes. `run_e5` calls it for its target before any in-process parse and

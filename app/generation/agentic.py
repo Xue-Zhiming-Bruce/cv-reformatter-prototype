@@ -23,6 +23,7 @@ from app.pipeline.evidence import (
 from app.pipeline.html_renderer import RENDERER_VERSION, render_layout_template
 from app.pipeline.layout_state import C2LayoutState
 from app.pipeline.runtime import RunBudget
+from app.resource_limits import bounded_pdf_page_count
 from app.pipeline.run_models import E5LoopRecord, PresentationLabelApproval
 from app.pipeline import finding_disposition, measurement, presentation_labels, prompts, quality, repair_policy, review, run_artifacts, service
 from app.target_publication import TARGETS_DIRNAME
@@ -308,7 +309,7 @@ def render_agentic(
         include_subheading=layout_spec.header.show_candidate_subheading)
     with pdfplumber.open(target_pdf) as pdf:
         state, _, _ = render_layout_template(layout_spec, candidate,
-            target_sha256=_sha256_file(target_pdf), page_count=len(pdf.pages))
+            target_sha256=_sha256_file(target_pdf), page_count=bounded_pdf_page_count(pdf))
     if presentation_label_approval is None:
         catalog = presentation_labels.template_presentation_label_catalog(
             state, normalized, target_sha256=_sha256_file(target_pdf))

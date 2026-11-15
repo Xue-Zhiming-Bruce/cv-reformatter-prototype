@@ -258,7 +258,7 @@ def measure_pdf_geometry(pdf_path: str | Path) -> PdfGeometryMeasurements:
 
     with pdfplumber.open(pdf_path) as pdf:
         page_measurements: list[PdfPageMeasurements] = []
-        for index, page in enumerate(bounded_pdf_pages(pdf.pages), start=1):
+        for index, page in enumerate(bounded_pdf_pages(pdf), start=1):
             chars = page.chars
             page_measurements.append(
                 PdfPageMeasurements(

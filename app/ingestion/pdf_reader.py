@@ -8,6 +8,8 @@ from typing import Iterator, Sequence
 import pdfplumber
 from pdfplumber.utils.exceptions import PdfminerException
 
+from app.resource_limits import bounded_pdf_pages
+
 
 class UnsupportedPdfTypeError(ValueError):
     """Raised when the provided file is not a PDF."""
@@ -40,14 +42,14 @@ def read_pdf_pages(path: str | Path) -> list[PdfPage]:
                 width_pt=float(page.width),
                 height_pt=float(page.height),
             )
-            for page in pdf.pages
+            for page in bounded_pdf_pages(pdf)
         ]
 
 
 def read_pdf_page_sizes(path: str | Path) -> list[tuple[float, float]]:
     """Read the declared page boxes only; no page text is extracted."""
     with _open_pdf(path) as pdf:
-        return [(float(page.width), float(page.height)) for page in pdf.pages]
+        return [(float(page.width), float(page.height)) for page in bounded_pdf_pages(pdf)]
 
 
 @contextmanager

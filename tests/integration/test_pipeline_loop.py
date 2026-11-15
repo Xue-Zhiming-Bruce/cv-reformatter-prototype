@@ -4543,6 +4543,38 @@ def test_a_target_read_refusal_after_the_overview_keeps_what_it_rendered(
     assert not (run_dir / "manifest.json").exists(), "a refused run published an artifact manifest"
 
 
+def test_a_header_rule_target_refusal_aborts_before_the_first_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #53: every pre-lane target read aborts instead of raising.
+
+    The header-rule read is the last target-only measurement before the driver
+    starts, so it runs inside the same guarded block as the overview and the
+    other reads; a refusal there is the run's abort, not an exception out of
+    `run_e5`.
+    """
+    from app.pipeline import service
+
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    monkeypatch.setattr(service, "_header_vertical_rule_target_context", _document_limit_refusal)
+
+    run_dir, terminal, record = service.run_e5(
+        inputs["target_pdf"],
+        tmp_path / "run",
+        candidate=synthetic_pipeline_candidate("Synthetic Candidate"),
+        **{key: value for key, value in inputs.items() if key != "target_pdf"},
+    )
+
+    assert terminal == "operational_abort"
+    assert record["summary"]["abort"]["operation"] == "target_measurement"
+    assert record["summary"]["abort"]["error_code"] == "local_processing_timeout"
+    assert (run_dir / "c2_layout_state.json").exists(), "the compile precedes the target reads"
+    assert list(run_dir.glob("*.png")), "the overview rendered before the refused read"
+    assert not list(run_dir.glob("*.pdf")), "a refused run produced a document"
+    assert not (run_dir / "lane_a").exists(), "a refused run started a lane"
+    assert not (run_dir / "manifest.json").exists(), "a refused run published an artifact manifest"
+
+
 def test_the_measure_tool_refusal_crosses_the_attribution_handler(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

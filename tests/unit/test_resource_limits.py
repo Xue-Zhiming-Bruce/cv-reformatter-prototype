@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import tempfile
 import time
 import tracemalloc
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from starlette.datastructures import UploadFile
@@ -114,6 +116,20 @@ def _archive(entries: list[tuple[str, bytes]]) -> zipfile.ZipFile:
     return zipfile.ZipFile(io.BytesIO(buffer.getvalue()))
 
 
+def _three_page_text_pdf(tmp_path: Path) -> Path:
+    """A real three-page PDF, so a page loop has pages that cost time to read."""
+    from reportlab.pdfgen import canvas
+
+    path = tmp_path / "three-pages.pdf"
+    document = canvas.Canvas(str(path), pagesize=(612, 792))
+    for number in range(3):
+        document.setFont("Helvetica", 12)
+        document.drawString(72, 720, f"Page {number + 1} contact line")
+        document.showPage()
+    document.save()
+    return path
+
+
 def test_zip_directory_refuses_excessive_entry_count() -> None:
     archive = _archive(
         [(f"entry_{index}.xml", b"x") for index in range(DOCX_ZIP_LIMITS.max_entries + 1)]
@@ -209,6 +225,19 @@ def test_bounded_member_read_refuses_an_oversized_member() -> None:
     assert refusal.value.error_code == "zip_expansion_size"
 
 
+def test_bounded_member_read_names_no_document_controlled_entry() -> None:
+    """The member reader is the trust boundary, so it names a position not a path."""
+    archive = _archive([("/private/CANDIDATE_SECRET.xml", b"\0" * 4096)])
+    limits = ZipLimits(max_entries=64, max_entry_bytes=1024, max_total_bytes=8192, max_ratio=100_000)
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        read_zip_member_bounded(archive, "/private/CANDIDATE_SECRET.xml", limits)
+
+    assert refusal.value.error_code == "zip_expansion_size"
+    assert "CANDIDATE_SECRET" not in refusal.value.message
+    assert "entry 1 of 1" in refusal.value.message
+
+
 def test_pdf_page_count_limit_refuses_before_raster_allocation() -> None:
     with pytest.raises(DocumentLimitError) as refusal:
         check_pdf_pages([(595.3, 841.9)] * 21)
@@ -252,7 +281,7 @@ def test_page_budget_yields_every_page_of_a_parse_within_the_budget(monkeypatch:
     monkeypatch.setattr(resource_limits.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(resource_limits, "LOCAL_PARSE_TIMEOUT_SECONDS", 1.0)
 
-    assert list(bounded_pdf_pages([1, 2, 3])) == [1, 2, 3]
+    assert list(bounded_pdf_pages(SimpleNamespace(pages=[1, 2, 3]))) == [1, 2, 3]
 
 
 def test_page_budget_refuses_a_parse_that_runs_past_it(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -265,7 +294,7 @@ def test_page_budget_refuses_a_parse_that_runs_past_it(monkeypatch: pytest.Monke
     seen: list[int] = []
 
     with pytest.raises(DocumentLimitError) as refusal:
-        for page in bounded_pdf_pages([1, 2, 3]):
+        for page in bounded_pdf_pages(SimpleNamespace(pages=[1, 2, 3])):
             seen.append(page)
 
     assert seen == [1, 2]
@@ -301,6 +330,82 @@ def test_all_page_measurement_refuses_a_target_past_the_parse_budget(
         pod.measure_local_pdf()
 
     assert refusal.value.error_code == "local_processing_timeout"
+
+
+def test_the_parse_budget_covers_the_page_tree_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #53: the budget starts before the page tree is built.
+
+    pdfplumber builds every page object on the first `document.pages` access, so
+    a budget that starts at the first page does not cover that work.
+    """
+    from app import resource_limits
+    from app.pipeline.evidence import EvidencePod
+    from tests.helpers.pdf_parse_budget import slow_page_construction
+    from tests.helpers.pipeline import _pod
+
+    base = _pod(tmp_path)
+    pod = EvidencePod(_three_page_text_pdf(tmp_path), base.adobe_json, base.out_dir)
+    slow_page_construction(monkeypatch, delay=0.05)
+    monkeypatch.setattr(resource_limits, "LOCAL_PARSE_TIMEOUT_SECONDS", 0.02)
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        pod.measure_local_pdf()
+
+    assert refusal.value.error_code == "local_processing_timeout"
+
+
+def test_the_privacy_gate_refuses_page_extraction_past_the_parse_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate's document parses are production page loops, so they are bounded."""
+    from app import resource_limits
+    from app.pipeline.quality import candidate_privacy_gate
+    from tests.helpers.pdf_parse_budget import slow_page_extraction
+
+    pdf = _three_page_text_pdf(tmp_path)
+    slow_page_extraction(monkeypatch, delay=0.05)
+    monkeypatch.setattr(resource_limits, "LOCAL_PARSE_TIMEOUT_SECONDS", 0.02)
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        candidate_privacy_gate("<p>Page 1 contact line</p>", pdf, pdf, labels=set())
+
+    assert refusal.value.error_code == "local_processing_timeout"
+
+
+_PAGE_TREE_ACCESS = re.compile(r"\.pages\b")
+
+
+def test_no_module_reads_a_document_page_tree_outside_the_bounded_helpers() -> None:
+    """One shape for page access keeps the parse budget auditable by inspection.
+
+    The names below are evidence models built from a target's extracted layout,
+    not parsed documents, so their `pages` list carries no page-construction
+    cost and is read directly.
+    """
+    evidence_page_lists = (
+        "claim.pages",
+        "evidence.pages",
+        "measured.pages",
+        "normalized.pages",
+        "report.pages",
+        "self.pages",
+        "visual_comparison.pages",
+    )
+    root = Path(__file__).resolve().parents[2]
+    offenders: list[str] = []
+    for path in sorted((root / "app").rglob("*.py")):
+        if path.name == "resource_limits.py":
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if not _PAGE_TREE_ACCESS.search(line) or "bounded_pdf_page" in line:
+                continue
+            if any(name in line for name in evidence_page_lists):
+                continue
+            offenders.append(f"{path.relative_to(root)}:{number}")
+
+    assert offenders == [], "a document page tree is read outside the bounded helpers: " + ", ".join(offenders)
 
 
 def test_bounded_child_returns_the_output_of_a_finished_child() -> None:
