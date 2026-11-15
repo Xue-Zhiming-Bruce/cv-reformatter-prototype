@@ -1635,6 +1635,107 @@ def test_read_docx_keeps_vector_metadata_as_pixels(tmp_path: Path) -> None:
     assert limitation.blocks_source_review is False
 
 
+def test_read_docx_names_foreign_html_a_vector_image_holds(tmp_path: Path) -> None:
+    """A ``foreignObject`` holds HTML, where a character is page text."""
+    content = _drawing_of_vector_image(
+        tmp_path,
+        '<svg xmlns="http://www.w3.org/2000/svg"'
+        ' xmlns:xhtml="http://www.w3.org/1999/xhtml">'
+        '<foreignObject width="10" height="10"><xhtml:div>FOREIGN TEXT</xhtml:div>'
+        "</foreignObject></svg>",
+    )
+
+    assert "FOREIGN TEXT" not in content.plain_text
+    (limitation,) = content.limitations
+    assert limitation.kind == "embedded_part"
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_keeps_a_vector_image_whose_foreign_html_is_empty(
+    tmp_path: Path,
+) -> None:
+    """A ``foreignObject`` that holds no character draws no character."""
+    content = _drawing_of_vector_image(
+        tmp_path,
+        '<svg xmlns="http://www.w3.org/2000/svg"><foreignObject width="1" height="1"/>'
+        "</svg>",
+    )
+
+    (limitation,) = content.limitations
+    assert limitation.kind == "visual_element"
+    assert limitation.blocks_source_review is False
+
+
+def test_read_docx_names_a_vector_part_that_is_not_svg(tmp_path: Path) -> None:
+    """A part typed as SVG whose root is something else is not known to be art.
+
+    The root decides, not its children: elements in the SVG namespace under another
+    root are still not an image this reader can call art.
+    """
+    content = _drawing_of_vector_image(
+        tmp_path,
+        '<document xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/>'
+        "</document>",
+    )
+
+    (limitation,) = content.limitations
+    assert limitation.kind == "embedded_part"
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_names_an_unknown_element_a_vector_image_holds(
+    tmp_path: Path,
+) -> None:
+    """A construct this reader does not know may draw a character, so it blocks."""
+    content = _drawing_of_vector_image(
+        tmp_path,
+        '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/>'
+        "<unknownShape/></svg>",
+    )
+
+    (limitation,) = content.limitations
+    assert limitation.kind == "embedded_part"
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_keeps_a_vector_image_of_recognised_shapes(tmp_path: Path) -> None:
+    """Shapes, their scaffolding and filters are art the reader can vouch for."""
+    content = _drawing_of_vector_image(
+        tmp_path,
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        '<defs><linearGradient id="g"><stop offset="0"/></linearGradient>'
+        '<clipPath id="c"><rect width="1" height="1"/></clipPath></defs>'
+        '<g clip-path="url(#c)"><path d="M0 0h1v1z" fill="url(#g)"/>'
+        '<circle r="1"/><ellipse rx="1" ry="1"/><line x2="1"/><polygon points="0,0"/>'
+        '<polyline points="0,0"/><image href="pixel.png"/><use href="#g"/></g>'
+        "<switch><rect width=\"1\" height=\"1\"/></switch></svg>",
+    )
+
+    (limitation,) = content.limitations
+    assert limitation.kind == "visual_element"
+    assert limitation.blocks_source_review is False
+
+
+def test_read_docx_counts_each_drawing_that_points_at_an_unread_part(
+    tmp_path: Path,
+) -> None:
+    """One entry per kind, counting drawings: two drawings of one part are two."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Skills: Python")
+    svg_id = _add_svg_drawing(
+        document,
+        '<svg xmlns="http://www.w3.org/2000/svg"><text>SHARED LABEL</text></svg>',
+    )
+    document.add_paragraph()._p.append(_svg_drawing_run(svg_id))
+    document.save(path)
+
+    content = read_docx(path)
+
+    (limitation,) = content.limitations
+    assert (limitation.kind, limitation.count) == ("embedded_part", 2)
+
+
 def test_read_docx_does_not_name_an_external_picture_link_as_text(
     tmp_path: Path,
 ) -> None:
@@ -1742,20 +1843,24 @@ def _add_xml_part(
     return document.part.relate_to(part, relationship)
 
 
-def _add_svg_drawing(document: object, svg: str) -> None:
-    """Append a drawing whose picture part is this vector image."""
+def _svg_drawing_run(svg_id: str) -> object:
+    """A drawing run whose picture is the part this relationship id names."""
+    return parse_xml(
+        f'<w:r {nsdecls("w", "a", "wp", "r")}>'
+        '<w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic>'
+        '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        f'<a:blip r:embed="{svg_id}"/>'
+        "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
+    )
+
+
+def _add_svg_drawing(document: object, svg: str) -> str:
+    """Append a drawing whose picture part is this vector image; return its id."""
     svg_id = _add_xml_part(
         document, "/word/media/image1.svg", "image/svg+xml", svg, RT.IMAGE
     )
-    document.add_paragraph()._p.append(
-        parse_xml(
-            f'<w:r {nsdecls("w", "a", "wp", "r")}>'
-            '<w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic>'
-            '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
-            f'<a:blip r:embed="{svg_id}"/>'
-            "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
-        )
-    )
+    document.add_paragraph()._p.append(_svg_drawing_run(svg_id))
+    return svg_id
 
 
 def _chart_part_xml(label: str) -> str:

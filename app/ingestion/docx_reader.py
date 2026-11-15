@@ -112,22 +112,24 @@ location):
   document rather than a blind spot;
 - an embedded alternate-format chunk (``w:altChunk``) or included subdocument
   (``w:subDoc``), whose text lives in another part entirely;
-- drawings that hold only pixels (a legacy picture, an image, a drawing with no
-  text of its own), one entry per part with the count found: OCR is out of scope,
-  so the reader never supplies it. Reported only: not reading pixels is not lost
-  text, so these do not block approval. A drawing that carries a character is not
-  one of them — its text is visible content nobody read, so it is counted as a
-  text box and blocks — and neither is a drawing that points at another part: a
-  chart, a diagram or an embedded object keeps its text in the part its
-  relationship names, so every relationship target that is not an image is
-  reported as an ``embedded_part`` and blocks, whether or not this reader knows
-  that part's format. A vector image is XML, so one that draws a character in a
-  text element blocks the same way, while what it keeps in ``title`` and ``desc``
-  describes the image and is not drawn; a vector part this reader cannot parse is
-  not known to be pixels either, so it is reported rather than passed. Relationship
-  ids are resolved against the part that owns the drawing, and the branch selection
-  the walk uses also decides which of a drawing's own ``mc:AlternateContent``
-  branches contributes text;
+- drawings that hold only art (a legacy picture, a raster image, a drawing with no
+  text of its own), one entry per kind and document part with the count of drawings
+  found: OCR is out of scope, so the reader never supplies it. Reported only: art
+  this reader does not interpret is not lost text, so these do not block approval.
+  A drawing that carries a character is not one of them — its text is visible
+  content nobody read, so it is counted as a text box and blocks — and neither is a
+  drawing that points at another part: a chart, a diagram or an embedded object
+  keeps its text in the part its relationship names, so every relationship target
+  that is not an image is reported as an ``embedded_part`` and blocks, whether or
+  not this reader knows that part's format. A vector image is XML, so it counts as
+  art only when every element in it draws a shape this reader recognises: an SVG
+  text element, a ``foreignObject`` holding HTML, and any construct added to the
+  format later all block instead of passing, as does a part that does not parse or
+  whose root is not SVG. Vector art is not read as a character stream at all, so an
+  outline that spells a word is art here, not text. Relationship ids are resolved
+  against the part that owns the drawing, and the branch selection the walk uses
+  also decides which of a drawing's own ``mc:AlternateContent`` branches contributes
+  text;
 - a symbol character whose ``w:char`` is a private-use code point (Wingdings,
   Symbol and other font-specific code pages), one entry per part naming the font:
   its code point is in the text, but the glyph it draws is the font's, so the
@@ -507,15 +509,18 @@ _UNSUPPORTED_CONTENT_REVIEW: dict[LimitationKind, str] = {
         "a symbol character from a font's own code page is emitted as its code "
         "point; the glyph it draws is font-specific"
     ),
-    "visual_element": "image text is not read; OCR is out of scope",
+    "visual_element": (
+        "art is not read as text, so a character drawn as art is missed; OCR is out "
+        "of scope and a vector shape is not interpreted as characters"
+    ),
 }
 
 #: Kinds where visible text is known to be lost, so approval and generation fail
-#: closed. ``visual_element`` and ``symbol`` are reported only: the first is
-#: pixels (OCR is out of scope), and the second is a font-glyph code point that
-#: did reach the text with its meaning intact as far as this reader can tell, so
-#: refusing the document would reject ordinary resumes for a headshot or a
-#: Wingdings bullet.
+#: closed. ``visual_element`` and ``symbol`` are reported only: the first is art
+#: this reader does not interpret (OCR is out of scope), and the second is a
+#: font-glyph code point that did reach the text with its meaning intact as far as
+#: this reader can tell, so refusing the document would reject ordinary resumes for
+#: a headshot or a Wingdings bullet.
 _BLOCKING_KINDS: frozenset[LimitationKind] = frozenset(
     {
         "nested_table",
@@ -1123,6 +1128,11 @@ def _local_name(element: BaseOxmlElement) -> str:
     return element.tag.rsplit("}", 1)[-1] if isinstance(element.tag, str) else "element"
 
 
+def _namespace(element: BaseOxmlElement) -> str:
+    tag = element.tag
+    return tag[1:].split("}", 1)[0] if isinstance(tag, str) and tag.startswith("{") else ""
+
+
 def _read_rows(
     table: BaseOxmlElement,
     document: DocumentObject,
@@ -1363,13 +1373,13 @@ def _drawing_limitation(
 
 
 def _is_unread_target(owner: Part, relationship_id: str) -> bool:
-    """True when a drawn relationship points at a part this reader cannot call pixels.
+    """True when a drawn relationship points at a part this reader cannot call art.
 
     A chart, a diagram and an embedded object each keep text in the part the id
-    names, and an id the package cannot resolve is not known to be pixels either,
-    so both are text this reader did not read. An external target holds no text in
-    the package at all, so it is not a gap. An image is pixels — except a vector
-    one, which is XML and can draw a character in a text element of its own.
+    names, and an id the package cannot resolve is not known to be art either, so
+    both are text this reader did not read. An external target holds no text in the
+    package at all, so it is not a gap. An image is art — except a vector one,
+    which is XML and can hold markup that draws a character.
     """
     relationship = owner.rels.get(relationship_id)
     if relationship is None:
@@ -1382,28 +1392,126 @@ def _is_unread_target(owner: Part, relationship_id: str) -> bool:
     return _svg_holds_text(part.blob)
 
 
-#: SVG elements that draw characters. ``title`` and ``desc`` are metadata a viewer
-#: does not draw, so they are not text this reader lost.
-_SVG_TEXT_LOCAL_NAMES = frozenset({"text", "tspan", "textPath", "altGlyph"})
+_SVG_NAMESPACE = "http://www.w3.org/2000/svg"
+
+#: SVG elements that draw a shape, a shape's scaffolding or a filter, and nothing
+#: else. A vector part is art only when every element in it is one of these: a
+#: construct this reader does not know could draw a character, so not being here
+#: blocks instead of passing. That keeps the report honest without maintaining a
+#: list of text elements, which no list can complete.
+_SVG_GRAPHICS_LOCAL_NAMES = frozenset(
+    {
+        "svg",
+        "g",
+        "defs",
+        "use",
+        "path",
+        "rect",
+        "circle",
+        "ellipse",
+        "line",
+        "polyline",
+        "polygon",
+        "image",
+        "style",
+        "switch",
+        "symbol",
+        "marker",
+        "clipPath",
+        "mask",
+        "pattern",
+        "linearGradient",
+        "radialGradient",
+        "stop",
+        "filter",
+        "feBlend",
+        "feColorMatrix",
+        "feComponentTransfer",
+        "feComposite",
+        "feConvolveMatrix",
+        "feDiffuseLighting",
+        "feDisplacementMap",
+        "feDistantLight",
+        "feDropShadow",
+        "feFlood",
+        "feFuncA",
+        "feFuncB",
+        "feFuncG",
+        "feFuncR",
+        "feGaussianBlur",
+        "feImage",
+        "feMerge",
+        "feMergeNode",
+        "feMorphology",
+        "feOffset",
+        "fePointLight",
+        "feSpecularLighting",
+        "feSpotLight",
+        "feTile",
+        "feTurbulence",
+    }
+)
+
+#: SVG elements that describe an image. A viewer draws none of them.
+_SVG_METADATA_LOCAL_NAMES = frozenset({"title", "desc", "metadata"})
 
 
 def _svg_holds_text(blob: bytes) -> bool:
-    """True when a vector image draws characters, decided by element local name.
+    """True unless every element of a vector part can be proven to draw a shape.
 
-    A vector image is XML, so the text in it is an element: the local name decides
-    that, which a prefix cannot hide and a comment mentioning ``<text`` never
-    matches, because a comment is not an element. A part that does not parse as
-    XML is not known to be pixels either, so it is reported rather than passed.
+    Inverted on purpose: an allowlist of text elements cannot be exhaustive, so a
+    construct this reader does not recognise must not pass as art. The part is art
+    only when its root is an SVG ``svg`` and every element under it is a shape, a
+    shape container or a filter primitive, with ``title``, ``desc`` and
+    ``metadata`` allowed and ignored because nothing draws them. ``foreignObject``
+    holds markup this reader cannot judge, so it is judged by what it holds: a
+    non-whitespace character there is page text. A part that does not parse, or
+    whose root is not SVG, is not known to be art either, so both are reported as
+    text this reader did not read.
 
-    shortcut: only the SVG text elements this reader knows are listed, and
-    characters drawn as paths stay pixels; upgrade if another vector format, or an
-    SVG text element outside this set, turns up.
+    shortcut: vector art is not interpreted at all, so an outline that spells a word
+    is art here rather than text, and so is a character drawn by a construct added
+    to the format later — both are reported as art; upgrade when the product has to
+    make a character-level claim about vector art.
     """
     try:
         root = parse_xml(blob)
     except (SyntaxError, ValueError):
         return True
-    return any(_local_name(item) in _SVG_TEXT_LOCAL_NAMES for item in root.iter())
+    if root.tag != f"{{{_SVG_NAMESPACE}}}svg":
+        return True
+    return _svg_element_holds_text(root)
+
+
+def _svg_element_holds_text(element: BaseOxmlElement) -> bool:
+    """True when an SVG element or anything under it can draw a character."""
+    for child in element.iterchildren():
+        if not isinstance(child.tag, str):
+            continue  # a comment or a processing instruction draws nothing
+        name = _local_name(child)
+        if _namespace(child) != _SVG_NAMESPACE:
+            return True  # markup from outside SVG, where only SVG belongs
+        if name in _SVG_METADATA_LOCAL_NAMES or name == "style":
+            continue  # describes or styles the image; neither draws a character
+        if name == "foreignObject":
+            if _svg_foreign_holds_text(child):
+                return True
+            continue
+        if name not in _SVG_GRAPHICS_LOCAL_NAMES:
+            return True  # an element that may draw a character this reader missed
+        if _svg_element_holds_text(child):
+            return True
+    return False
+
+
+def _svg_foreign_holds_text(element: BaseOxmlElement) -> bool:
+    """True when foreign (HTML) content holds a character, which is page text."""
+    texts = [element.text]
+    for item in element.iter():
+        if item is element or not isinstance(item.tag, str):
+            continue
+        texts.extend((item.text, item.tail))
+    return any(text is not None and text.strip() for text in texts)
 
 
 def _selected_elements(
