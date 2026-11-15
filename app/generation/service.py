@@ -207,6 +207,33 @@ def load_saved_target_format(target_set: TargetSet) -> TargetFormatMetadata | No
         raise GenerationError(400, "Saved target format metadata is invalid.") from exc
 
 
+def assert_target_format_assertion(
+    saved: TargetFormatMetadata, requested: TargetFormatMetadata
+) -> None:
+    """Refuse a request whose target reference asserts something the set does not.
+
+    ``role`` and ``used_as_template_source`` decide whether this generation is
+    driven by an uploaded target layout, so a caller may restate the saved
+    metadata but never contradict it.
+    """
+    if (
+        requested.artifact_id != saved.artifact_id
+        or requested.role != saved.role
+        or requested.used_as_template_source != saved.used_as_template_source
+    ):
+        raise GenerationError(
+            400,
+            {
+                "error_code": "target_format_mismatch",
+                "message": (
+                    "target_format disagrees with this artifact's saved target "
+                    "metadata; the saved metadata is the only source of truth "
+                    "for its role and template-source use."
+                ),
+            },
+        )
+
+
 def validate_target_format_reference(
     artifact_id: str,
     target_set: TargetSet,
@@ -763,8 +790,15 @@ def prepare_generation(
     # One pinned view for this whole preparation: the metadata, the source and
     # the spec it names all come from the set published when it started.
     target_set = TargetSet(artifact_dir)
-    if target_format is None and request.artifact_id is not None:
-        target_format = load_saved_target_format(target_set)
+    # The saved set, not the request, decides what this artifact's target is: a
+    # request flag can neither select the built-in layout for an artifact that
+    # owns an uploaded target nor skip that target's layout-proof gate.
+    saved_target_format = load_saved_target_format(target_set)
+    if target_format is None:
+        target_format = saved_target_format
+    elif saved_target_format is not None:
+        assert_target_format_assertion(saved_target_format, target_format)
+        target_format = saved_target_format
     if target_format is not None and target_format.artifact_id != artifact_id:
         raise GenerationError(400, "target_format.artifact_id must match artifact_id.")
     fallback_warnings: list[str] = []
@@ -919,6 +953,22 @@ def prepare_generation(
         layout_proof_approval = None
 
     normalized_document = load_normalized_candidate_document(artifact_dir)
+    if style_spec is None and saved_target_format is not None:
+        # The built-in template is the layout of an artifact with no uploaded
+        # target at all; substituting it for a saved target is exactly the
+        # silent fallback an uploaded target rules out.
+        raise GenerationError(
+            400,
+            {
+                "error_code": "measured_layout_spec_required",
+                "message": (
+                    "This artifact has a saved uploaded target but no usable "
+                    "LayoutTemplateSpec; the built-in layout is not a fallback "
+                    "for an uploaded target. Re-analyze this target."
+                ),
+                "options": ["reanalyze_target", "upload_new_target"],
+            },
+        )
     effective_layout_spec = style_spec or built_in_layout_template_spec()
     production_render_plan = build_production_render_plan(
         approved_profile_version_id=profile_revision.profile_revision_id,

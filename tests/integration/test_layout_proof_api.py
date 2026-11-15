@@ -1959,3 +1959,76 @@ def test_unavailable_or_invalidated_proofs_still_block_generation(tmp_path: Path
     assert client.get(body["variants"][0]["proof_pdf_url"]).status_code == 200
     assert _proof_status(artifact_id)["state"] == body["state"]
     assert not (artifact_dir / "final_acceptance.json").exists()
+
+
+def test_the_saved_target_metadata_not_the_request_flag_decides_the_gate(
+    tmp_path: Path,
+) -> None:
+    """AC8: a request flag can never skip a saved uploaded target's gate."""
+    artifact_id = "artifact_proof_gate_request_flag"
+    artifact_dir = tmp_path / artifact_id
+    target_format = _upload_target(tmp_path, artifact_id)
+    version_id = _approve_profile(artifact_id, artifact_dir)
+    _create_proof_set(artifact_id)  # created, never approved
+
+    for lie in (
+        {"used_as_template_source": False},
+        {"role": "docx_template"},
+        {"artifact_id": "artifact_request_flag_elsewhere"},
+    ):
+        rejected = _generate_with_target(artifact_id, {**target_format, **lie}, version_id)
+        assert rejected.status_code == 400, (lie, rejected.text)
+        detail = rejected.json()["detail"]
+        assert detail["error_code"] == "target_format_mismatch", (lie, rejected.text)
+        assert str(tmp_path) not in rejected.text
+
+    # The saved set alone drives the gate: naming only the artifact still blocks.
+    omitted = client.post(
+        "/api/generate",
+        json={"artifact_id": artifact_id, "approved_profile_version_id": version_id},
+    )
+    assert omitted.status_code == 409, omitted.text
+    assert omitted.json()["detail"]["error_code"] in {
+        "layout_proof_required",
+        "layout_proof_approval_required",
+    }
+    # Restating the saved metadata is gated exactly the same way.
+    restated = _generate_with_target(artifact_id, target_format, version_id)
+    assert restated.status_code == 409, restated.text
+    assert restated.json()["detail"]["error_code"] in {
+        "layout_proof_required",
+        "layout_proof_approval_required",
+    }
+    assert not (artifact_dir / "candidate_profile.pdf").exists()
+
+
+def test_a_saved_target_is_never_rendered_with_the_built_in_layout(tmp_path: Path) -> None:
+    """AC8: the built-in layout needs an artifact with no saved uploaded target."""
+    artifact_id = "artifact_proof_gate_built_in"
+    artifact_dir = tmp_path / artifact_id
+    _upload_target(tmp_path, artifact_id)
+    version_id = _approve_profile(artifact_id, artifact_dir)
+    # A saved target that is not a compiled template source still rules out the
+    # built-in layout: substituting it would be the silent fallback AC8 forbids.
+    metadata_path = artifact_dir / "target_format.json"
+    stored = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata_path.write_text(
+        json.dumps(
+            {
+                **stored,
+                "used_as_template_source": False,
+                "analysis_status": "not_analyzed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifact_dir / LAYOUT_SPEC_FILENAME).unlink()
+
+    rejected = client.post(
+        "/api/generate",
+        json={"artifact_id": artifact_id, "approved_profile_version_id": version_id},
+    )
+    assert rejected.status_code == 400, rejected.text
+    assert rejected.json()["detail"]["error_code"] == "measured_layout_spec_required"
+    assert not (artifact_dir / "candidate_profile.pdf").exists()
+    assert not (artifact_dir / "candidate_profile.html").exists()
