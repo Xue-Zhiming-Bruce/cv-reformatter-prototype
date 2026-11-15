@@ -85,13 +85,16 @@ Response fields:
   a control whose content is none of the blocks, rows, cells or runs the reader
   places, such as one inside tracked change markup —, simple field
   result, embedded `w:altChunk` or `w:subDoc`, text-bearing block, table or
-  inline wrapper it cannot read in place, and images/drawings/charts counted per
-  part because OCR is out of scope), naming its location and, for a wrapper, the
-  element name and child position; empty for PDFs and for DOCX files inside the
-  supported shapes. The `segmentation_audit.json` line-coverage audit only measures the
-  text the reader supplied, so it never implies the source was read completely:
-  it records every reported limitation in `unread_source_content` and the subset
-  where visible text was lost in `unread_text_source_content`. A reported image,
+  inline wrapper it cannot read in place, a referenced note or comment body the
+  reader did not read, and drawings, pictures and charts that hold no text of
+  their own counted per part because OCR is out of scope — a drawing that carries
+  a character is a text box instead, and blocks), naming its location and, for a
+  wrapper, the element name and child position; empty for PDFs and for DOCX files
+  inside the supported shapes. The `segmentation_audit.json` line-coverage audit
+  only measures the text the reader supplied, so it never implies the source was
+  read completely: it records every reported limitation in
+  `unread_source_content` and the subset where visible text was lost in
+  `unread_text_source_content`. A reported image,
   drawing or chart is pixels or an embedded chart part rather than lost text, so
   it appears only in the first list and leaves the audit `passed`. Any entry in
   the second list makes the audit `incomplete` and blocks profile revision
@@ -108,17 +111,26 @@ Response fields:
   inline content model (every character renders: `w:t`, tabs, breaks,
   `w:noBreakHyphen`, `w:softHyphen`, `w:sym`'s code point, ruby base text; runs,
   hyperlinks, pass-through inline wrappers and the selected
-  `mc:AlternateContent` branch are descended), and the default,
-  displayed first-page and enabled even-page headers/footers — and states that
-  shapes outside it are not detectable. Reading and reporting are one traversal:
-  every inline element the walk declines is named where it is declined, at any
-  nesting depth, and an element outside the decided model is reported whatever it
-  holds, so a wrapper, a ruby annotation or an unanticipated run child is named
-  rather than dropped. A symbol whose code point is a font-specific glyph slot is
-  reported but does not block, like a reported image. A branch of
-  `mc:AlternateContent` that was not chosen is neither read nor reported, and no
-  shape inside it is counted, because it renders what was read. Every content
-  control in a part that no walk descended is counted as a limitation, so a
+  `mc:AlternateContent` branch are descended), an Office Math zone read by that
+  same walk (its `m:t` renders, its constructs are descended, a child outside the
+  math content model is reported), a referenced footnote or endnote read from its
+  own part after the body blocks and only from a reference the walk reached, and
+  the default, displayed first-page and enabled even-page headers/footers — and
+  states that shapes outside it are not detectable. "Holds text" is decided in
+  every text namespace, so a wrapper or block around `m:t` (Office Math) or `a:t`
+  (DrawingML) is seen like a `w:t` one instead of passing as empty. A referenced
+  note no part supplies, and a comment body, are counted per part as a `note`
+  limitation instead of being left to a docstring blind spot. Reading and
+  reporting are one traversal: every inline element the walk declines is named
+  where it is declined, at any nesting depth, and an element outside the decided
+  model is reported whatever it holds, so a wrapper, a ruby annotation or an
+  unanticipated run child is named rather than dropped. A symbol whose code point
+  is a font-specific glyph slot is reported but does not block, like a reported
+  image. A branch of
+  `mc:AlternateContent` that was not chosen is neither read nor reported, no
+  shape inside it is counted and a note it references is not read, because it
+  renders what was read. Every content control in a part that no walk descended
+  is counted as a limitation, so a
   control in a position the reader cannot traverse is named rather than skipped.
   Container properties are never content: the walk skips the `*Pr` children of
   the containers it descends (`w:customXmlPr`, `w:smartTagPr`, `w:sdtPr`,
