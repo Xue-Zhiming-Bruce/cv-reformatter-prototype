@@ -112,12 +112,18 @@ location):
   document rather than a blind spot;
 - an embedded alternate-format chunk (``w:altChunk``) or included subdocument
   (``w:subDoc``), whose text lives in another part entirely;
-- drawings, legacy pictures and charts that hold no text of their own, one entry
-  per part with the count found: what they show is pixels or an embedded chart or
-  worksheet part, and OCR is out of scope, so the reader never supplies it.
-  Reported only: not reading pixels is not lost text, so these do not block
-  approval. A drawing that carries a character is not one of them — its text is
-  visible content nobody read, so it is counted as a text box and blocks;
+- drawings that hold only pixels (a legacy picture, an image, a drawing with no
+  text of its own), one entry per part with the count found: OCR is out of scope,
+  so the reader never supplies it. Reported only: not reading pixels is not lost
+  text, so these do not block approval. A drawing that carries a character is not
+  one of them — its text is visible content nobody read, so it is counted as a
+  text box and blocks — and neither is a drawing that points at another part: a
+  chart, a diagram or an embedded object keeps its text in the part its
+  relationship names, so every relationship target that is not an image is
+  reported as an ``embedded_part`` and blocks, whether or not this reader knows
+  that part's format. Relationship ids are resolved against the part that owns the
+  drawing, and the branch selection the walk uses also decides which of a drawing's
+  own ``mc:AlternateContent`` branches contributes text;
 - a symbol character whose ``w:char`` is a private-use code point (Wingdings,
   Symbol and other font-specific code pages), one entry per part naming the font:
   its code point is in the text, but the glyph it draws is the font's, so the
@@ -144,20 +150,22 @@ and the reported set stay complementary at any nesting depth.
 
 Shapes outside both lists above are outside this reader's detection: settings
 and style parts (``styles.xml``, ``numbering.xml``, a theme) name no visible text
-of their own. A chart is named through the drawing that holds it, but the chart's
-own text lives in a chart part this reader never opens, and the same is true of a
-worksheet behind an embedded object. An empty ``limitations`` therefore means
-"none of the listed shapes was found", never "the source was read completely".
+of their own. A chart, a diagram or an embedded object is named through the
+drawing that holds it and blocks review: its text lives in the part the drawing
+points at, which this reader never opens. An empty ``limitations`` therefore
+means "none of the listed shapes was found", never "the source was read
+completely".
 Source bytes and stored profiles are untouched: this module only reads.
 """
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Mapping, Sequence
+from typing import Iterator, Literal, Mapping, Sequence
 
 from docx import Document
 from docx.document import Document as DocumentObject
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from docx.opc.part import Part
 from docx.oxml import parse_xml
 from docx.oxml.xmlchemy import BaseOxmlElement
 from docx.parts.hdrftr import FooterPart, HeaderPart
@@ -168,6 +176,7 @@ from app.ingestion.file_validator import validate_docx_file
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _M = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
 _MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+_R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _PARAGRAPH = f"{_W}p"
 _TABLE = f"{_W}tbl"
 _ROW = f"{_W}tr"
@@ -463,6 +472,7 @@ LimitationKind = Literal[
     "ruby",
     "symbol",
     "note",
+    "embedded_part",
     "visual_element",
 ]
 
@@ -485,19 +495,23 @@ _UNSUPPORTED_CONTENT_REVIEW: dict[LimitationKind, str] = {
     "note": (
         "a referenced footnote, endnote or comment body in another part is not read"
     ),
+    "embedded_part": (
+        "text inside a part a drawing points at (a chart, diagram or embedded "
+        "object) is not read"
+    ),
     "symbol": (
         "a symbol character from a font's own code page is emitted as its code "
         "point; the glyph it draws is font-specific"
     ),
-    "visual_element": "image, drawing and chart text is not read; OCR is out of scope",
+    "visual_element": "image text is not read; OCR is out of scope",
 }
 
 #: Kinds where visible text is known to be lost, so approval and generation fail
 #: closed. ``visual_element`` and ``symbol`` are reported only: the first is
-#: pixels or an embedded chart part (OCR is out of scope), and the second is a
-#: font-glyph code point that did reach the text with its meaning intact as far
-#: as this reader can tell, so refusing the document would reject ordinary
-#: resumes for a headshot or a Wingdings bullet.
+#: pixels (OCR is out of scope), and the second is a font-glyph code point that
+#: did reach the text with its meaning intact as far as this reader can tell, so
+#: refusing the document would reject ordinary resumes for a headshot or a
+#: Wingdings bullet.
 _BLOCKING_KINDS: frozenset[LimitationKind] = frozenset(
     {
         "nested_table",
@@ -510,6 +524,7 @@ _BLOCKING_KINDS: frozenset[LimitationKind] = frozenset(
         "unknown_inline",
         "ruby",
         "note",
+        "embedded_part",
     }
 )
 
@@ -646,7 +661,9 @@ def read_docx(path: str | Path) -> ExtractedDocxContent:
     note_blocks, note_limitations = _read_notes(document, account)
     blocks.extend(note_blocks)
     limitations = (
-        _find_limitations(body, "body", account)
+        _find_limitations(
+            body, "body", account, document.element.nsmap, document.part
+        )
         + block_limitations
         + note_limitations
     )
@@ -676,7 +693,13 @@ def read_docx(path: str | Path) -> ExtractedDocxContent:
                         )
                     )
                 limitations.extend(
-                    _find_limitations(displayed.element, label, account)
+                    _find_limitations(
+                        displayed.element,
+                        label,
+                        account,
+                        document.element.nsmap,
+                        displayed.part,
+                    )
                     + part_limitations
                 )
 
@@ -704,20 +727,27 @@ def _read_notes(
     """
     blocks: list[ExtractedParagraph | ExtractedTable] = []
     limitations: list[ExtractedContentLimitation] = []
-    notes_by_kind: dict[str, dict[str, BaseOxmlElement]] = {}
+    notes_by_kind: dict[str, tuple[Part, dict[str, BaseOxmlElement]] | None] = {}
     for kind, note_id in list(account.referenced_notes):
         if kind not in _NOTE_PARTS:
             continue
         if kind not in notes_by_kind:
             relationship, item_tag = _NOTE_PARTS[kind]
             notes_by_kind[kind] = _note_items(document, relationship, item_tag)
-        note = notes_by_kind[kind].get(note_id)
+        kind_part = notes_by_kind[kind]
+        if kind_part is None:
+            continue
+        part, notes = kind_part
+        note = notes.get(note_id)
         if note is None:
             continue
         label = f"{kind} {note_id}"
         note_blocks, note_block_limitations = _read_blocks(note, document, label, account)
         limitations.extend(
-            _find_limitations(note, label, account) + note_block_limitations
+            _find_limitations(
+                note, label, account, document.element.nsmap, part
+            )
+            + note_block_limitations
         )
         blocks.extend(note_blocks)
         account.notes.add((kind, note_id))
@@ -726,13 +756,13 @@ def _read_notes(
 
 def _note_items(
     document: DocumentObject, relationship: str, item_tag: str
-) -> dict[str, BaseOxmlElement]:
-    """One note part's notes by id, or nothing when the document has no such part."""
+) -> tuple[Part, dict[str, BaseOxmlElement]] | None:
+    """One note part and its notes by id, or nothing when the document has no part."""
     try:
         part = document.part.part_related_by(relationship)
     except KeyError:
-        return {}
-    return {
+        return None
+    return part, {
         note_id: note
         for note in parse_xml(part.blob).iter(item_tag)
         if (note_id := note.get(f"{_W}id")) is not None
@@ -1208,6 +1238,8 @@ def _find_limitations(
     element: BaseOxmlElement,
     location: str,
     account: _ReadAccount,
+    namespaces: Mapping[str, str],
+    owner: Part,
 ) -> list[ExtractedContentLimitation]:
     """Visible shapes in one part that no walk read, counted by kind.
 
@@ -1217,7 +1249,14 @@ def _find_limitations(
     descend is read, and naming it again would be false alarm. A shape inside an
     alternative branch that was not chosen is not counted: the chosen branch
     renders the same content, so it is not missing.
+
+    ``owner`` is the part the element belongs to, because a drawing can point at
+    another part through a relationship id that only that part's relationships
+    resolve. Drawings are decided first: selecting their branches registers the
+    branches that render nothing, so the counts below skip what a discarded branch
+    holds.
     """
+    drawings = _drawing_limitation_counts(element, account, namespaces, owner)
     counts: dict[LimitationKind, int] = {
         "nested_table": sum(
             1
@@ -1225,8 +1264,7 @@ def _find_limitations(
             if _has_ancestor(table, _TABLE)
             and not _inside(table, account.discarded)
         ),
-        "text_box": _counted(element, _TEXT_BOX, account)
-        + _drawing_text_count(element, account),
+        "text_box": _counted(element, _TEXT_BOX, account) + drawings["text_box"],
         "tracked_change": sum(
             _counted(element, tag, account) for tag in _TRACKED_WRAPPERS
         ),
@@ -1246,7 +1284,8 @@ def _find_limitations(
             if (kind, reference.get(f"{_W}id")) not in account.notes
             and not _inside(reference, account.discarded)
         ),
-        "visual_element": _visual_element_count(element, account),
+        "embedded_part": drawings["embedded_part"],
+        "visual_element": drawings["visual_element"],
     }
     return [
         ExtractedContentLimitation(kind=kind, location=location, count=count)
@@ -1267,30 +1306,101 @@ def _visual_elements(
     ]
 
 
-def _visual_element_count(element: BaseOxmlElement, account: _ReadAccount) -> int:
-    """Drawings that hold only pixels or an embedded chart, one per visible element.
+def _drawing_limitation_counts(
+    element: BaseOxmlElement,
+    account: _ReadAccount,
+    namespaces: Mapping[str, str],
+    owner: Part,
+) -> dict[LimitationKind, int]:
+    """Drawings in a part, one entry per drawing by the one gap it is."""
+    counts: dict[LimitationKind, int] = {
+        "text_box": 0,
+        "embedded_part": 0,
+        "visual_element": 0,
+    }
+    for drawing in _visual_elements(element, account):
+        kind = _drawing_limitation(drawing, account, namespaces, owner)
+        if kind is not None:
+            counts[kind] += 1
+    return counts
 
-    A drawing that carries a character of its own is not a picture: its text is
-    visible content this reader did not read, so ``_drawing_text_count`` names it
-    as a text box, which blocks review. Chart and worksheet text still lives in
-    the embedded part, which is what "not read" means here.
+
+def _drawing_limitation(
+    drawing: BaseOxmlElement,
+    account: _ReadAccount,
+    namespaces: Mapping[str, str],
+    owner: Part,
+) -> LimitationKind | None:
+    """The one gap a drawing is, decided on what it renders and what it points at.
+
+    A drawing's own characters are text this reader did not read, and so is the
+    text of any part it points at that is not an image: a chart, a diagram and an
+    embedded object each keep their text in the part the relationship names, which
+    this reader never opens. A relationship id the package cannot resolve, or one
+    whose target is external, is not known to be pixels either, so both are
+    reported the same way. A text box the drawing holds keeps its own text-box
+    entry, so ``None`` sends that element to the text-box count instead of naming
+    the same content twice.
     """
-    return sum(
-        1 for item in _visual_elements(element, account) if not _carries_text(item)
-    )
+    has_text = has_text_box = unread_part = False
+    for item in _selected_elements(drawing, account, namespaces):
+        if item.tag == _TEXT_BOX:
+            has_text_box = True
+        elif _local_name(item) in _TEXT_LOCAL_NAMES:
+            has_text = True
+        for name, relationship_id in item.attrib.items():
+            if name.startswith(_R) and _is_unread_target(owner, relationship_id):
+                unread_part = True
+    if unread_part:
+        return "embedded_part"
+    if has_text:
+        return None if has_text_box else "text_box"
+    return "visual_element"
 
 
-def _drawing_text_count(element: BaseOxmlElement, account: _ReadAccount) -> int:
-    """Drawings holding text this reader did not read, counted once per drawing.
+def _is_unread_target(owner: Part, relationship_id: str) -> bool:
+    """True when a drawn relationship points at a part this reader cannot call pixels.
 
-    A text box keeps its content in ``w:txbxContent`` and is already counted there,
-    so it is excluded here to keep one element one gap.
+    A chart, a diagram and an embedded object each keep text in the part the id
+    names, and an id the package cannot resolve is not known to be pixels either,
+    so both are text this reader did not read. An external target holds no text in
+    the package at all, so it is not a gap. An image is pixels — except a vector
+    one, which is XML that can hold a text node of its own.
     """
-    return sum(
-        1
-        for item in _visual_elements(element, account)
-        if _carries_text(item) and item.find(f".//{_TEXT_BOX}") is None
-    )
+    relationship = owner.rels.get(relationship_id)
+    if relationship is None:
+        return True
+    if relationship.is_external:
+        return False
+    part = relationship.target_part
+    if part.content_type != "image/svg+xml":
+        return not part.content_type.startswith("image/")
+    # shortcut: SVG text is found by its element name, not by rendering the vector;
+    # upgrade to a real SVG text walk if a vector format other than SVG turns up.
+    return b"<text" in part.blob or b"<tspan" in part.blob
+
+
+def _selected_elements(
+    element: BaseOxmlElement,
+    account: _ReadAccount,
+    namespaces: Mapping[str, str],
+) -> Iterator[BaseOxmlElement]:
+    """Descendants the element renders, with its own alternative branches resolved.
+
+    A drawing is decided as one element, so the selection the inline walk makes for
+    block content has to happen here too: a branch that was not chosen renders
+    nothing, so neither its text nor a part it points at may be counted.
+    """
+    for child in element.iterchildren():
+        if not isinstance(child.tag, str) or child.tag in (_CHOICE, _FALLBACK):
+            continue
+        if child.tag == _ALTERNATE_CONTENT:
+            branch = _live_branch(child, namespaces, account)
+            if branch is not None:
+                yield from _selected_elements(branch, account, namespaces)
+            continue
+        yield child
+        yield from _selected_elements(child, account, namespaces)
 
 
 def _merge_limitations(
