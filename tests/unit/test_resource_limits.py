@@ -272,6 +272,37 @@ def test_page_budget_refuses_a_parse_that_runs_past_it(monkeypatch: pytest.Monke
     assert refusal.value.error_code == "local_processing_timeout"
 
 
+def test_all_page_measurement_refuses_a_target_past_the_parse_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The diagnostic `measure` tool walks every page, so it takes the same budget."""
+    from pypdf import PdfWriter
+
+    from app import resource_limits
+    from app.pipeline.evidence import EvidencePod
+    from tests.helpers.pipeline import _pod
+
+    base = _pod(tmp_path)
+    target = tmp_path / "three-pages.pdf"
+    writer = PdfWriter()
+    for _ in range(3):
+        writer.add_blank_page(width=612, height=792)
+    with target.open("wb") as handle:
+        writer.write(handle)
+    pod = EvidencePod(target, base.adobe_json, base.out_dir)
+
+    assert sorted(pod.measure_local_pdf()["pages"]) == ["1", "2", "3"], "every page is measured inside the budget"
+
+    clock = iter([0.0, 0.25, 0.75, 1.5])
+    monkeypatch.setattr(resource_limits.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(resource_limits, "LOCAL_PARSE_TIMEOUT_SECONDS", 1.0)
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        pod.measure_local_pdf()
+
+    assert refusal.value.error_code == "local_processing_timeout"
+
+
 def test_bounded_child_returns_the_output_of_a_finished_child() -> None:
     assert json.loads(run_bounded_child(["-c", "print('{\"ok\": true}')"])) == {"ok": True}
 

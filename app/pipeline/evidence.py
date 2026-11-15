@@ -12,7 +12,7 @@ from PIL import Image, ImageChops
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.pipeline.rendering import ROOT, _render_pages
 from app.pipeline.runtime import RunBudget, RunTrace
-from app.resource_limits import bounded_pdf_pages
+from app.resource_limits import DocumentLimitError, bounded_pdf_pages
 
 POD_SCHEMA_VERSION = "pipeline-e-evidence-pod/1"
 
@@ -657,15 +657,13 @@ class EvidencePod:
         try:
             with pdfplumber.open(self.target_pdf) as document:
                 pages = document.pages
-                wanted = (
-                    range(1, len(pages) + 1)
-                    if page_number is None
-                    else [page_number]
-                )
-                for number in wanted:
-                    if not 1 <= number <= len(pages):
-                        raise ValueError(f"page {number} outside 1..{len(pages)}")
-                    page = pages[number - 1]
+                if page_number is not None and not 1 <= page_number <= len(pages):
+                    raise ValueError(f"page {page_number} outside 1..{len(pages)}")
+                # A request without a page walks the whole target, so it takes
+                # the same parse budget as every other parent-side page loop.
+                for number, page in enumerate(bounded_pdf_pages(pages), 1):
+                    if page_number is not None and number != page_number:
+                        continue
                     width, height = float(page.width), float(page.height)
                     entry: dict[str, Any] = {
                         "size_pt": [width, height],
@@ -705,6 +703,8 @@ class EvidencePod:
                             for index, item in _rule_objects(page)
                         ]
                     measurements[str(number)] = entry
+        except DocumentLimitError:
+            raise
         except Exception as error:  # measurement failure is a recorded outcome
             self._record(
                 EvidenceAccessRecord(

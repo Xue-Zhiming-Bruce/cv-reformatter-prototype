@@ -340,7 +340,9 @@ exhaust machine memory. `integration/test_pipeline_rendering.py` covers both
 rasterizers (page count and page side, and — counting real render calls — that a
 document refused for its page count, a later page's geometry or the summed pixel
 budget renders nothing at all), the shared per-page wall-clock parse budget on
-the generation gates, and `integration/test_pipeline_loop.py` covers the
+the generation gates, `unit/test_resource_limits.py` covers the same budget on
+the diagnostic `measure` tool's all-page walk, and
+`integration/test_pipeline_loop.py` covers the
 diagnostic target preflight and the same budget on its own target parse; `integration/test_api_process.py` covers a chunked direct upload above
 the app limit, the structured reader-error shape and an event-loop ticker kept
 ticking during a slow parse; `integration/test_api_generate.py` covers a target

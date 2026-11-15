@@ -1226,15 +1226,19 @@ Enforcement sits in the existing owners, not in each caller:
   `RasterPixelBudget` — page count, every page's geometry, and the summed
   pixels — before page 1 allocates a bitmap. A document that will be refused
   therefore renders nothing; there is no partial raster set to clean up;
-- in-process parses: `app/resource_limits.bounded_pdf_pages` is the one page
-  iterator the parent-side `pdfplumber` parses take their pages from
-  (measurement, rendering, evidence, quality, content validation, layout-proof
-  validation, and the target's local color/enrichment reads), so each parse
-  checks the 60 s local parse budget between pages and refuses with
-  `local_processing_timeout`. The bound is per parse and is the budget plus one
-  page: one `pdfplumber` page call cannot be interrupted, so a single page that
-  runs long is not cut short, and this is not a hard wall-clock ceiling for the
-  whole conversion;
+- in-process parses: `app/resource_limits.bounded_pdf_pages` is the page
+  iterator every parent-side `pdfplumber` page loop takes its pages from
+  (measurement, rendering, evidence including the diagnostic `measure` tool,
+  quality, content validation, layout-proof validation, and the target's local
+  color/enrichment reads), so each loop checks the 60 s local parse budget
+  between pages and refuses with `local_processing_timeout`. The parent-side
+  reads that take one page only (`measurement`, `quality`, `evidence`, `review`
+  and `local_color` index `pages[n]` directly) and the page-count reads are
+  inside that same bound by construction: they parse one page and have no page
+  to check between. The bound is per parse and is the budget plus one page: one
+  `pdfplumber` page call cannot be interrupted, so a single page that runs long
+  is not cut short, and this is not a hard wall-clock ceiling for the whole
+  conversion;
 - operator paths: `enforce_document_path` applies the same policy to a document
   this process did not receive through an upload, and answers the child-measured
   page sizes. `run_e5` calls it for its target before any in-process parse and
