@@ -20,6 +20,7 @@ from app.resource_limits import (
     DocumentLimitError,
     RasterPixelBudget,
     UploadBodyLimitMiddleware,
+    bounded_pdf_pages,
     ZipLimits,
     check_pdf_pages,
     inspect_zip_directory,
@@ -242,6 +243,33 @@ def test_raster_budget_refuses_a_page_above_the_geometry_limit_first() -> None:
         RasterPixelBudget().reserve(2001.0, 792.0, scale=2)
 
     assert refusal.value.error_code == "pdf_page_geometry"
+
+
+def test_page_budget_yields_every_page_of_a_parse_within_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app import resource_limits
+
+    clock = iter([0.0, 0.1, 0.2, 0.3])
+    monkeypatch.setattr(resource_limits.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(resource_limits, "LOCAL_PARSE_TIMEOUT_SECONDS", 1.0)
+
+    assert list(bounded_pdf_pages([1, 2, 3])) == [1, 2, 3]
+
+
+def test_page_budget_refuses_a_parse_that_runs_past_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shared parse budget is elapsed wall-clock time, checked between pages."""
+    from app import resource_limits
+
+    clock = iter([0.0, 0.25, 0.75, 1.5])
+    monkeypatch.setattr(resource_limits.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(resource_limits, "LOCAL_PARSE_TIMEOUT_SECONDS", 1.0)
+    seen: list[int] = []
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        for page in bounded_pdf_pages([1, 2, 3]):
+            seen.append(page)
+
+    assert seen == [1, 2]
+    assert refusal.value.error_code == "local_processing_timeout"
 
 
 def test_bounded_child_returns_the_output_of_a_finished_child() -> None:

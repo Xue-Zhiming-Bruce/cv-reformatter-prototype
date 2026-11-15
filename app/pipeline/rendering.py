@@ -16,7 +16,11 @@ from typing import Any
 import pdfplumber
 from app import pdfium_native
 from app.generation.chrome_html_to_pdf import HtmlToPdfExportError, _find_chrome
-from app.resource_limits import DocumentLimitError, RasterPixelBudget, check_pdf_page_count
+from app.resource_limits import (
+    RasterPixelBudget,
+    bounded_pdf_pages,
+    check_pdf_page_count,
+)
 from app.template_analysis.commercial.adobe import _flatten_text_elements
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 
@@ -356,7 +360,7 @@ def _measure_margins(evidence: NormalizedLayoutEvidence, pdf_path: Path | None) 
     visible_tops: dict[int, float] = {}
     if pdf_path is not None:
         with pdfplumber.open(pdf_path) as pdf:
-            for number, page in enumerate(pdf.pages, 1):
+            for number, page in enumerate(bounded_pdf_pages(pdf.pages), 1):
                 words = page.extract_words()
                 if not words:
                     continue
@@ -524,7 +528,7 @@ def _per_line_edges(pdf: Path) -> list[tuple[int, float, float, float]]:
     """Per-line geometry (page, top, x0, x1) for cross-render comparison."""
     with pdfplumber.open(pdf) as document:
         edges = []
-        for page_number, page in enumerate(document.pages, 1):
+        for page_number, page in enumerate(bounded_pdf_pages(document.pages), 1):
             rows: dict[int, list[tuple[float, float]]] = {}
             for word in page.extract_words():
                 rows.setdefault(round(word["top"], 1), []).append((float(word["x0"]), float(word["x1"])))
@@ -604,22 +608,21 @@ def _inject_local_fonts(filled_html: str) -> str:
     return re.sub(r"</style>", "\n" + "\n".join(faces) + "\n</style>", filled_html, count=1, flags=re.I)
 
 def _render_pages(pdf_path: Path, output_dir: Path, prefix: str) -> list[Path]:
-    paths: list[Path] = []
     budget = RasterPixelBudget()
     with pdfium_native.native_lifetime(), closing(pdfium_native.pdfium.PdfDocument(pdf_path)) as document:
         check_pdf_page_count(len(document))
-        try:
-            for index, page in enumerate(document):
-                path = output_dir / f"{prefix}_page_{index + 1}.png"
-                with closing(page):
-                    # Page geometry and the document pixel budget are checked
-                    # before this page allocates a bitmap.
-                    budget.reserve(*page.get_size(), scale=2)
-                    with closing(page.render(scale=2)) as bitmap:
-                        bitmap.to_pil().convert("RGB").save(path)
-                paths.append(path)
-        except DocumentLimitError:
-            for written in paths:
-                written.unlink(missing_ok=True)
-            raise
+        # Every page is measured and charged to the budget before page 1 renders,
+        # so a document that will be refused allocates no bitmap at all.
+        sizes = []
+        for index in range(len(document)):
+            with closing(document[index]) as page:
+                sizes.append(page.get_size())
+        for width, height in sizes:
+            budget.reserve(width, height, scale=2)
+        paths: list[Path] = []
+        for index in range(len(sizes)):
+            path = output_dir / f"{prefix}_page_{index + 1}.png"
+            with closing(document[index]) as page, closing(page.render(scale=2)) as bitmap:
+                bitmap.to_pil().convert("RGB").save(path)
+            paths.append(path)
     return paths

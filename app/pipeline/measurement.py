@@ -19,6 +19,7 @@ from app.pipeline.evidence import (
     _sha256_file,
 )
 from app.pipeline.rendering import _pinned_chrome_environment
+from app.resource_limits import bounded_pdf_pages
 
 HEADER_VERTICAL_RULE_MEASUREMENT_VERSION = "header_vertical_rule_geometry/2"
 HEADER_CONTACT_LABEL_MEASUREMENT_VERSION = "header_contact_label_geometry/1"
@@ -210,7 +211,7 @@ def _pdf_lines_and_marks(pdf: Path) -> tuple[list[dict[str, Any]], list[dict[str
     lines: list[dict[str, Any]] = []
     marks: list[dict[str, Any]] = []
     with pdfplumber.open(pdf) as document:
-        for page_number, page in enumerate(document.pages, 1):
+        for page_number, page in enumerate(bounded_pdf_pages(document.pages), 1):
             page_chars = [
                 char for char in page.chars
                 if str(char["text"]).strip()
@@ -653,7 +654,7 @@ def _target_body_text_color_context(pdf: Path) -> dict[str, Any] | None:
 
     colors: Counter[tuple[float, float, float]] = Counter()
     with pdfplumber.open(pdf) as document:
-        for page in document.pages:
+        for page in bounded_pdf_pages(document.pages):
             for char in page.chars:
                 color = char.get("non_stroking_color")
                 if not str(char.get("text") or "").strip() or not isinstance(color, (list, tuple)) or len(color) != 3:

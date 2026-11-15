@@ -1221,22 +1221,37 @@ Enforcement sits in the existing owners, not in each caller:
   step and the whole parse in a bounded child process (`run_bounded_child`)
   because a timeout around a thread does not stop a blocked parser;
 - raster: the shared rasterizers (`app/pipeline/rendering._render_pages`,
-  `app/template_analysis/visual_comparator._render_pdf`) check the page count,
-  then `RasterPixelBudget.reserve` checks each page's geometry and the running
-  pixel budget before that page's bitmap exists. A refusal removes every page
-  file the same render already wrote, so no partial raster set survives;
+  `app/template_analysis/visual_comparator._render_pdf`) read every page's
+  declared size first, then charge the whole document to
+  `RasterPixelBudget` — page count, every page's geometry, and the summed
+  pixels — before page 1 allocates a bitmap. A document that will be refused
+  therefore renders nothing; there is no partial raster set to clean up;
+- in-process parses: `app/resource_limits.bounded_pdf_pages` is the one page
+  iterator the parent-side `pdfplumber` parses take their pages from
+  (measurement, rendering, evidence, quality, content validation, layout-proof
+  validation, and the target's local color/enrichment reads), so each parse
+  checks the 60 s local parse budget between pages and refuses with
+  `local_processing_timeout`. The bound is per parse and is the budget plus one
+  page: one `pdfplumber` page call cannot be interrupted, so a single page that
+  runs long is not cut short, and this is not a hard wall-clock ceiling for the
+  whole conversion;
 - operator paths: `enforce_document_path` applies the same policy to a document
-  this process did not receive through an upload. `run_e5` calls it for its
-  target before any in-process `pdfplumber` parse, so the diagnostic path
-  refuses an over-limit target instead of parsing it unbounded.
+  this process did not receive through an upload, and answers the child-measured
+  page sizes. `run_e5` calls it for its target before any in-process parse and
+  uses those sizes for the page-count and layout-spec geometry checks, so the
+  diagnostic path never reopens the file for them; its remaining target parses
+  take their pages from `bounded_pdf_pages`. A parse that runs past the budget
+  ends the run as `operational_abort` with the refusal's `error_code` and writes
+  no compiled or rendered artifact.
 
 `/api/process` and `/api/target-format` reach the same helpers, and a job reuses
 the target stored by that upload, so the policy already applied to it. Each
 upload route runs the bounded child off the event loop, so one document's parse
 does not stall other requests. Refusals are structured (`DocumentLimitError` →
-413/422, reader errors → 400, both with `error_code` and `message` in `detail`)
-and happen before provider I/O, raster allocation and publication; a refused
-re-upload leaves stored source bytes and the prior published output untouched.
+413/422, reader errors → 400 including a corrupt PDF on either route, both with
+`error_code` and `message` in `detail`) and happen before provider I/O, raster
+allocation and publication; a refused re-upload leaves stored source bytes and
+the prior published output untouched.
 No limit truncates a document.
 
 Still missing: per-organization or per-identity quotas, admission control across

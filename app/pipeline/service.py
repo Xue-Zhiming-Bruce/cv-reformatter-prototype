@@ -20,6 +20,7 @@ from app.pipeline.defect_ledger import (
     _record_ledger_attribution,
 )
 from app.template_analysis.schemas import LayoutTemplateSpec
+from app.resource_limits import DocumentLimitError
 from app.pipeline import finding_disposition
 from app.pipeline.rendering import RUNS, _export_pinned_html_to_pdf, _render_pages
 from app.pipeline.runtime import (
@@ -1425,7 +1426,11 @@ def _e5_abort(
     """Write the operational abort and return the coordinator's result shape."""
     record = E5LoopRecord(target_id="unknown", target_sha256="0" * 64)
     record.summary["terminal_state"] = "operational_abort"
-    record.summary["abort"] = {"operation": operation, "error": str(error)}
+    abort: dict[str, Any] = {"operation": operation, "error": str(error)}
+    if isinstance(error, DocumentLimitError):
+        # A refusal keeps the code the policy raised, not only its message.
+        abort["error_code"] = error.error_code
+    record.summary["abort"] = abort
     (out_dir / "e5_state.json").write_text(
         json.dumps(record.model_dump(mode="json"), ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -3432,21 +3437,24 @@ def run_e5(
     # This operator-supplied target is parsed in-process by the stages below
     # (page geometry, text flow, comparison rasters), so the same bounded child
     # and page policy decide here, before any of them run. An unbounded
-    # document is refused rather than parsed here.
+    # document is refused rather than parsed here, and the child's measured page
+    # sizes are the parent's page count and geometry: nothing reopens the file
+    # for them. Every stage that does parse the target takes its pages from
+    # ``resource_limits.bounded_pdf_pages``, so the parse itself is bounded too.
     from app.ingestion.ingest_document import enforce_document_path
 
-    enforce_document_path(target_pdf)
+    page_sizes = enforce_document_path(target_pdf)
     target_sha256 = _sha256_file(target_pdf)
     template_state = None
     template_render = None
     template_label_catalog = None
     if layout_spec is not None:
-        import pdfplumber
+        if page_sizes is None:
+            raise ValueError("A LayoutTemplateSpec target must be a PDF document")
         layout_spec = LayoutTemplateSpec.model_validate(layout_spec.model_dump())
-        with pdfplumber.open(target_pdf) as document:
-            if any(abs(page.width - layout_spec.page.width_pt) > 0.1 or abs(page.height - layout_spec.page.height_pt) > 0.1 for page in document.pages):
-                raise ValueError("LayoutTemplateSpec page dimensions do not match the target PDF")
-            template_render = render_layout_template(layout_spec, candidate, target_sha256=target_sha256, page_count=len(document.pages))
+        if any(abs(width - layout_spec.page.width_pt) > 0.1 or abs(height - layout_spec.page.height_pt) > 0.1 for width, height in page_sizes):
+            raise ValueError("LayoutTemplateSpec page dimensions do not match the target PDF")
+        template_render = render_layout_template(layout_spec, candidate, target_sha256=target_sha256, page_count=len(page_sizes))
         template_state = template_render[0]
         template_label_catalog = [
             PresentationLabel(label_id=f"label.template.{node.node_id}", text=node.label,

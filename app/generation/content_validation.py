@@ -17,6 +17,7 @@ from app.generation.template_mapper import (
     ClientFacingRenderContext,
     RenderAdditionalSection,
 )
+from app.resource_limits import bounded_pdf_pages
 from app.template_analysis.schemas import LayoutTemplateSpec
 
 
@@ -146,7 +147,7 @@ def _check(
 
 def _read_pdf_text(path: Path) -> str:
     with pdfplumber.open(path) as pdf:
-        return "\n".join(page.extract_text(use_text_flow=True) or "" for page in pdf.pages)
+        return "\n".join(page.extract_text(use_text_flow=True) or "" for page in bounded_pdf_pages(pdf.pages))
 
 
 class HiddenValueLeak(ContentValidationModel):
@@ -292,7 +293,7 @@ def _check_pdf_page_geometry(
     issues: list[str] = []
     tolerance_pt = 3.0
     with pdfplumber.open(pdf_path) as pdf:
-        for page_number, page in enumerate(pdf.pages, start=1):
+        for page_number, page in enumerate(bounded_pdf_pages(pdf.pages), start=1):
             chars = page.chars
             if not chars:
                 continue

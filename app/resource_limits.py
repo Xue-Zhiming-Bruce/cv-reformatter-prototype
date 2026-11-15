@@ -41,10 +41,11 @@ import math
 import os
 import subprocess
 import sys
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NoReturn, Sequence
+from typing import Any, Iterable, Iterator, NoReturn, Sequence
 from zipfile import ZipFile
 
 from starlette.datastructures import UploadFile
@@ -309,6 +310,25 @@ def check_pdf_pages(page_sizes: Sequence[Sequence[float]]) -> None:
             )
 
 
+def bounded_pdf_pages(pages: Iterable[Any]) -> Iterator[Any]:
+    """Yield the pages of one in-process parse, refusing past the parse budget.
+
+    Every parent-side parse takes its pages from here, so the same contract
+    holds wherever a document is read instead of only on the path that was
+    measured. The check runs between pages: one pdfplumber page call cannot be
+    interrupted, so a parse is bounded by the budget plus its last page.
+    """
+    deadline = time.monotonic() + LOCAL_PARSE_TIMEOUT_SECONDS
+    for page in pages:
+        if time.monotonic() > deadline:
+            _refuse(
+                "local_processing_timeout",
+                f"Local document processing did not finish within {LOCAL_PARSE_TIMEOUT_SECONDS:g} "
+                "seconds; nothing was processed.",
+            )
+        yield page
+
+
 class RasterPixelBudget:
     """Count the pixels one document rasterization will allocate and refuse past the cap."""
 
@@ -319,8 +339,8 @@ class RasterPixelBudget:
     def reserve(self, width_pt: float, height_pt: float, *, scale: float) -> None:
         """Count one page before it is rendered: first its geometry, then its pixels.
 
-        A refusal here leaves no bitmap for the page, and the caller removes any
-        page bitmap an earlier reservation of the same document already wrote.
+        A caller charges every page of a document before rendering the first, so
+        a refusal leaves no bitmap of the refused document on disk.
         """
         check_pdf_pages([(width_pt, height_pt)])
         pixels = math.ceil(width_pt * scale) * math.ceil(height_pt * scale)

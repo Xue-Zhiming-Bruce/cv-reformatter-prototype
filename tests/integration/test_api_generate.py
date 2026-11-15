@@ -855,6 +855,28 @@ def _with_bad_page_size(name: str, data: bytes) -> bytes | None:
     return data
 
 
+def test_target_format_upload_reports_a_corrupt_pdf_in_the_structured_shape(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Issue #53: a corrupt target PDF is a refused document, not a server error."""
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    artifact_id = "artifact_corrupt_target"
+
+    response = client.post(
+        "/api/target-format",
+        data={"artifact_id": artifact_id},
+        files={"file": ("broken.pdf", b"%PDF-1.7\n1 0 obj\n<< broken", "application/pdf")},
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == {
+        "error_code": "pdf_corrupted",
+        "message": "The PDF file appears to be corrupted or invalid.",
+    }
+    assert not (tmp_path / artifact_id / "target_format.json").exists()
+
+
 def test_target_format_upload_rejects_docx_with_unresolvable_theme(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

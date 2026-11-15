@@ -4327,3 +4327,43 @@ def test_diagnostic_run_refuses_an_over_limit_target_before_parsing(tmp_path: Pa
 
     assert refusal.value.error_code == "pdf_page_count"
     assert not (tmp_path / "run").exists(), "a refused target created no run directory"
+
+
+def test_diagnostic_parse_budget_refuses_a_target_that_parses_past_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #53: the geometry preflight is not the only bound.
+
+    A preflight that succeeds still leaves the parent's own pdfplumber parse
+    unbounded, so every page-iterating parse checks the shared wall-clock budget
+    between pages and refuses the run before it reaches a lane or an artifact.
+    """
+    from pypdf import PdfWriter
+
+    from app import resource_limits
+    from app.pipeline import service
+    from tests.helpers.pdf_parse_budget import slow_page_extraction
+
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    target = tmp_path / "slow-target.pdf"
+    writer = PdfWriter()
+    for _ in range(3):
+        writer.add_blank_page(width=612, height=792)
+    with target.open("wb") as output:
+        writer.write(output)
+    # The child preflight of this small file finishes well inside this budget;
+    # the injected page cost is what the parent parse has to refuse.
+    monkeypatch.setattr(resource_limits, "LOCAL_PARSE_TIMEOUT_SECONDS", 0.2)
+    slow_page_extraction(monkeypatch)
+
+    run_dir, terminal, record = service.run_e5(
+        target,
+        tmp_path / "run",
+        candidate=synthetic_pipeline_candidate("Synthetic Candidate"),
+        **{key: value for key, value in inputs.items() if key != "target_pdf"},
+    )
+
+    assert terminal == "operational_abort"
+    assert record["summary"]["abort"]["error_code"] == "local_processing_timeout"
+    assert not list(run_dir.glob("*.png")), "a refused parse rendered a page"
+    assert not (run_dir / "c2_layout_state.json").exists(), "a refused parse compiled a layout"

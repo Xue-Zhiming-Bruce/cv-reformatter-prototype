@@ -168,9 +168,9 @@ provider I/O, raster allocation or publication:
 | 422 | `zip_entry_count`, `zip_entry_size`, `zip_uncompressed_size`, `zip_expansion_ratio`, `zip_expansion_size` | DOCX/Adobe package expansion |
 | 422 | `pdf_page_count`, `pdf_page_geometry` | page count or declared page geometry |
 | 422 | `raster_pixel_limit` | the shared rasterizer would allocate past the pixel cap |
-| 422 | `local_processing_timeout`, `local_processing_failed` | the bounded parse child overran or failed |
+| 422 | `local_processing_timeout`, `local_processing_failed` | the bounded parse child overran or failed, or an in-process parse ran past the local parse budget between pages |
 | 400 | `document_type_unsupported`, `pdf_type_unsupported` | the file is not a supported `.docx` or text `.pdf` |
-| 400 | `docx_corrupted`, `pdf_corrupted`, `pdf_no_extractable_text` | the reader could not read the document as a text resume |
+| 400 | `docx_corrupted`, `pdf_corrupted`, `pdf_no_extractable_text` | the reader could not read the document as a text resume, on the candidate route, the target preflight or the target's own local parses |
 
 A package refusal reports entry position, size and count, never an entry name or
 path. The bounded parse runs off the event loop, so a second request is served

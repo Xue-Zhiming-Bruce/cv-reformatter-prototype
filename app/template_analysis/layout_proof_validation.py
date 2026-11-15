@@ -49,6 +49,7 @@ from app.template_analysis.layout_proof_schemas import (
     VisualComparisonEvidence,
 )
 from app.template_analysis.schemas import LayoutTemplateSpec, TemplateStyleSpec
+from app.resource_limits import bounded_pdf_pages
 from app.template_analysis.visual_comparator import compare_pdf_layouts
 
 
@@ -257,7 +258,7 @@ def measure_pdf_geometry(pdf_path: str | Path) -> PdfGeometryMeasurements:
 
     with pdfplumber.open(pdf_path) as pdf:
         page_measurements: list[PdfPageMeasurements] = []
-        for index, page in enumerate(pdf.pages, start=1):
+        for index, page in enumerate(bounded_pdf_pages(pdf.pages), start=1):
             chars = page.chars
             page_measurements.append(
                 PdfPageMeasurements(

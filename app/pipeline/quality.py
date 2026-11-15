@@ -15,6 +15,7 @@ from app.pipeline.layout_compiler import _below_heading_rule, _resolve_above_hea
 from app.pipeline.render_plan import C2RenderPlan, section_groups
 from app.pipeline.html_renderer import _pt, _class_for
 from app.pipeline.render_plan import _inline_separator
+from app.resource_limits import bounded_pdf_pages
 
 #: Re-exported for the pipeline service and the layout-proof API test, which
 #: patches ``quality._line_stability``; the helpers live in rendering.
@@ -132,7 +133,7 @@ def _pdf_flow_text(pdf: Path, column: Column | None = None) -> str:
 
     with pdfplumber.open(pdf) as document:
         return "\n".join((page.within_bbox((max(0, column.x0_pt-.5), 0, min(page.width, column.x1_pt+.5), page.height))
-            if column else page).extract_text(use_text_flow=True) or "" for page in document.pages)
+            if column else page).extract_text(use_text_flow=True) or "" for page in bounded_pdf_pages(document.pages))
 
 class _IdentityParser(HTMLParser):
     """Collect rendered-element identities and their text.
@@ -212,7 +213,7 @@ def _grid_pdf_leaf_presence(
 
     buckets: dict[tuple[str, int, int, str], str] = {}
     with pdfplumber.open(pdf) as document:
-        for page_index, page in enumerate(document.pages, 1):
+        for page_index, page in enumerate(bounded_pdf_pages(document.pages), 1):
             for line in page.extract_text_lines() or []:
                 for section in [*plan.sections, *plan.appended_sections]:
                     if not section.category_grid_cells:
@@ -522,7 +523,7 @@ def blank_page_gate(pdf: Path) -> dict[str, Any]:
     pages: list[dict[str, Any]] = []
     blank_pages: list[int] = []
     with pdfplumber.open(pdf) as document:
-        for index, page in enumerate(document.pages, 1):
+        for index, page in enumerate(bounded_pdf_pages(document.pages), 1):
             text = page.extract_text() or ""
             meaningful_text = any(character.isalnum() for character in text)
             visual_objects = len(page.rects) + len(page.lines) + len(page.images) + len(page.curves)
@@ -683,7 +684,7 @@ def _rendered_rule_extents(pdf: Path | None) -> list[dict[str, Any]]:
 
     rendered: list[dict[str, Any]] = []
     with pdfplumber.open(pdf) as document:
-        for page_index, page in enumerate(document.pages, 1):
+        for page_index, page in enumerate(bounded_pdf_pages(document.pages), 1):
             for obj in [*page.rects, *page.lines]:
                 height = float(obj["bottom"]) - float(obj["top"])
                 width = float(obj["x1"]) - float(obj["x0"])
@@ -730,7 +731,7 @@ def _rendered_heading_positions(
                     left = region.x0_pt if region else plan.page.margin_left_pt
                     right = region.x1_pt if region else plan.page.width_pt-plan.page.margin_right_pt
                     pattern = r"(?<!\w)" + r"\s+".join(re.escape(word) for word in section.label.split()) + r"(?!\w)"
-                    matches = [(page_index, hit) for page_index, page in enumerate(document.pages, 1)
+                    matches = [(page_index, hit) for page_index, page in enumerate(bounded_pdf_pages(document.pages), 1)
                         for hit in (page.search(pattern, case=False) or [])
                         if abs(hit["x0"]-left) <= 1 and hit["x1"] <= right+1
                         and (page_index, hit["top"]) >= cursors.get(section.column_slot, floor)
@@ -749,7 +750,7 @@ def _rendered_heading_positions(
         for node_id, label in labels.items():
             if label:
                 pending.setdefault(_norm(label), []).append(node_id)
-        for page_index, page in enumerate(document.pages, 1):
+        for page_index, page in enumerate(bounded_pdf_pages(document.pages), 1):
             for label, node_ids in pending.items():
                 # PDF flow keeps rail-label characters together across visual line breaks.
                 pattern = r"(?<!\w)" + r"\s*".join(re.escape(char) for char in label if not char.isspace()) + r"(?!\w)"
@@ -1430,7 +1431,7 @@ def _product_pagination_checks(
 
     if pdf:
         with pdfplumber.open(pdf) as document:
-            nonblank = [bool(page.chars) for page in document.pages]
+            nonblank = [bool(page.chars) for page in bounded_pdf_pages(document.pages)]
     else:
         nonblank = []
     record("pages", "no_blank_pages", bool(nonblank) and all(nonblank), nonblank)
@@ -1495,7 +1496,7 @@ def _product_column_checks(
                         fill_present = any(_pdf_color_hex(obj.get("non_stroking_color")) == plan.sidebar_background_hex.upper()
                             and obj.get("fill") and abs(obj["x0"]-column.x0_pt) < 1
                             and abs(obj["x1"]-column.x1_pt) < 1
-                            for page in document.pages for obj in page.rects)
+                            for page in bounded_pdf_pages(document.pages) for obj in page.rects)
                 passed &= bool(element and f"background:{plan.sidebar_background_hex};" in element["style"] and fill_present)
         record(group_id, bool(passed))
     for section in plan.sections:
@@ -1545,7 +1546,7 @@ def _product_decoration_checks(
         return rows
     with pdfplumber.open(pdf) as document:
         used_shapes: set[tuple[int, int]] = set()
-        shapes = [(page_index, index, obj) for page_index, page in enumerate(document.pages)
+        shapes = [(page_index, index, obj) for page_index, page in enumerate(bounded_pdf_pages(document.pages))
                   for index, obj in enumerate([*page.curves, *page.rects])]
         first_section = next((section for section in plan.sections if section.label and not section.empty), None)
         first_heading = headings.get(first_section.node_id) if first_section else None
@@ -1596,7 +1597,7 @@ def _product_decoration_checks(
                             required["border"] = f"0.5pt solid {badge.border_color_hex}"
                         passed &= css_matches(element, required)
                         found = None
-                        hits_by_page = [page.search(re.escape(item.text)) or [] for page in document.pages]
+                        hits_by_page = [page.search(re.escape(item.text)) or [] for page in bounded_pdf_pages(document.pages)]
                         for page_index, shape_index, shape in shapes:
                             if (page_index, shape_index) in used_shapes:
                                 continue

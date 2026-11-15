@@ -12,6 +12,7 @@ from PIL import Image, ImageChops
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.pipeline.rendering import ROOT, _render_pages
 from app.pipeline.runtime import RunBudget, RunTrace
+from app.resource_limits import bounded_pdf_pages
 
 POD_SCHEMA_VERSION = "pipeline-e-evidence-pod/1"
 
@@ -207,7 +208,7 @@ def _pdf_page_sizes(pdf: Path) -> dict[int, tuple[float, float]]:
     import pdfplumber
 
     with pdfplumber.open(pdf) as document:
-        return {index + 1: (float(page.width), float(page.height)) for index, page in enumerate(document.pages)}
+        return {index + 1: (float(page.width), float(page.height)) for index, page in enumerate(bounded_pdf_pages(document.pages))}
 
 def _iter_raw_nodes(node: Any, path: str = ""):
     """Yield every dict node of the raw Adobe tree with its structural path."""

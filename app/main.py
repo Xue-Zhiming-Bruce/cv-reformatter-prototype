@@ -5,9 +5,9 @@ import re
 import shutil
 import tempfile
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Iterator, Literal
 from urllib.parse import quote
 
 import anyio
@@ -15,6 +15,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from dotenv import load_dotenv
+from pdfplumber.utils.exceptions import PdfminerException
 from pydantic import BaseModel, Field, ValidationError, model_validator
 import httpx
 
@@ -623,6 +624,28 @@ PDF_NO_TEXT_MESSAGE = (
 )
 
 
+@contextmanager
+def _refused_document_errors() -> Iterator[None]:
+    """Answer any document reader or parser failure in the one refused-document shape.
+
+    Both upload routes read the same two document types, so this one mapping
+    covers the candidate file, the target preflight and the target's own local
+    parses rather than only the call that was measured.
+    """
+    try:
+        yield
+    except UnsupportedFileTypeError as exc:
+        raise _document_refusal("document_type_unsupported", str(exc)) from exc
+    except UnsupportedPdfTypeError as exc:
+        raise _document_refusal("pdf_type_unsupported", str(exc)) from exc
+    except CorruptedFileError as exc:
+        raise _document_refusal("docx_corrupted", str(exc)) from exc
+    except (CorruptedPdfError, PdfminerException) as exc:
+        raise _document_refusal("pdf_corrupted", str(exc)) from exc
+    except EmptyPdfTextError as exc:
+        raise _document_refusal("pdf_no_extractable_text", PDF_NO_TEXT_MESSAGE) from exc
+
+
 @app.post("/api/process")
 async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
     if not file.filename:
@@ -644,22 +667,12 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
         tmp_path = Path(tmp.name)
 
     try:
-        try:
+        with _refused_document_errors():
             # The parse is a bounded child process; waiting for it in this
             # coroutine would stall every other request for its duration.
             extracted_text, ingestion_limitations = await anyio.to_thread.run_sync(
                 read_ingested_document, tmp_path
             )
-        except UnsupportedFileTypeError as exc:
-            raise _document_refusal("document_type_unsupported", str(exc)) from exc
-        except UnsupportedPdfTypeError as exc:
-            raise _document_refusal("pdf_type_unsupported", str(exc)) from exc
-        except CorruptedFileError as exc:
-            raise _document_refusal("docx_corrupted", str(exc)) from exc
-        except CorruptedPdfError as exc:
-            raise _document_refusal("pdf_corrupted", str(exc)) from exc
-        except EmptyPdfTextError as exc:
-            raise _document_refusal("pdf_no_extractable_text", PDF_NO_TEXT_MESSAGE) from exc
 
         provider = os.getenv("API_LLM_PROVIDER")
         llm_client = _build_extraction_client(provider)
@@ -793,8 +806,11 @@ async def upload_target_format(
 
     resolved_artifact_id = artifact_id or new_artifact_id()
     contents = await read_upload_bounded(file)
-    # Same bounded child as the candidate parse; keep it off the event loop.
-    await anyio.to_thread.run_sync(enforce_uploaded_document, contents, suffix)
+    # Same bounded child as the candidate parse; keep it off the event loop, and
+    # answer its reader errors in the refused-document shape like the candidate
+    # route instead of letting a corrupt PDF escape as a server error.
+    with _refused_document_errors():
+        await anyio.to_thread.run_sync(enforce_uploaded_document, contents, suffix)
     artifact_dir = _prepare_artifact_dir(resolved_artifact_id, allow_existing=True)
     analyzed_style_spec: LayoutTemplateSpec | None = None
     if suffix == ".pdf":
@@ -807,9 +823,10 @@ async def upload_target_format(
                 # color is measured locally from the same PDF (provenance
                 # local_pdf) before compilation. Blocks that stay colorless
                 # still fail the bridge closed.
-                normalized = enrich_colors_from_local_pdf(normalized, temporary_pdf)
-                normalized = enrich_badges_from_local_pdf(normalized, temporary_pdf)
-                normalized = enrich_rules_from_local_pdf(normalized, temporary_pdf)
+                with _refused_document_errors():
+                    normalized = enrich_colors_from_local_pdf(normalized, temporary_pdf)
+                    normalized = enrich_badges_from_local_pdf(normalized, temporary_pdf)
+                    normalized = enrich_rules_from_local_pdf(normalized, temporary_pdf)
             evidence, measured_style_spec = build_design_evidence_from_normalized(
                 normalized,
                 target_checksum=target_checksum_from_bytes(contents),

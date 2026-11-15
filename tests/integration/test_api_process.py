@@ -694,6 +694,34 @@ def test_process_reports_a_corrupted_pdf_in_the_structured_error_shape() -> None
     assert isinstance(detail["message"], str) and detail["message"]
 
 
+@pytest.mark.parametrize(
+    ("reader_error", "error_code"),
+    [
+        ("UnsupportedFileTypeError", "document_type_unsupported"),
+        ("UnsupportedPdfTypeError", "pdf_type_unsupported"),
+        ("CorruptedFileError", "docx_corrupted"),
+        ("CorruptedPdfError", "pdf_corrupted"),
+        ("EmptyPdfTextError", "pdf_no_extractable_text"),
+    ],
+)
+def test_every_reader_error_is_refused_in_the_same_structured_shape(
+    reader_error: str, error_code: str
+) -> None:
+    """Issue #53: both upload routes map every reader error, not only the measured one."""
+    from fastapi import HTTPException
+
+    from app.ingestion import file_validator, pdf_reader
+
+    error_type = getattr(pdf_reader, reader_error, None) or getattr(file_validator, reader_error)
+    with pytest.raises(HTTPException) as refusal:
+        with main._refused_document_errors():
+            raise error_type("reader refused the document")
+
+    assert refusal.value.status_code == 400
+    assert refusal.value.detail["error_code"] == error_code
+    assert isinstance(refusal.value.detail["message"], str) and refusal.value.detail["message"]
+
+
 def test_process_rejects_unsupported_upload(tmp_path: Path) -> None:
     text_path = tmp_path / "resume.txt"
     text_path.write_text("not a docx", encoding="utf-8")

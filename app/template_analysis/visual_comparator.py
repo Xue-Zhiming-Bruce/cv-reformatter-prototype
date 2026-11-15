@@ -258,18 +258,20 @@ def _render_pdf(
         budget = RasterPixelBudget()
         with pdfium_native.native_lifetime(), closing(pdfium_native.pdfium.PdfDocument(str(path))) as document:
             check_pdf_page_count(len(document))
+            # Every page is measured and charged to the budget before page 1
+            # renders, so a refused document allocates no bitmap at all.
+            sizes = []
             for page_index in range(len(document)):
-                filename = f"{filename_prefix}_{page_index + 1:03d}.png"
                 with closing(document[page_index]) as page:
-                    # Page geometry and the document pixel budget are checked
-                    # before this page allocates a bitmap.
-                    budget.reserve(*page.get_size(), scale=scale)
-                    with closing(page.render(scale=scale)) as bitmap:
-                        bitmap.to_pil().convert("RGB").save(output_dir / filename, format="PNG")
+                    sizes.append(page.get_size())
+            for width_pt, height_pt in sizes:
+                budget.reserve(width_pt, height_pt, scale=scale)
+            for page_index in range(len(sizes)):
+                filename = f"{filename_prefix}_{page_index + 1:03d}.png"
+                with closing(document[page_index]) as page, closing(page.render(scale=scale)) as bitmap:
+                    bitmap.to_pil().convert("RGB").save(output_dir / filename, format="PNG")
                 filenames.append(filename)
     except DocumentLimitError:
-        for written in filenames:
-            (output_dir / written).unlink(missing_ok=True)
         raise
     except Exception as exc:
         raise VisualComparisonError(f"PDF pages could not be rendered for comparison: {path}") from exc
