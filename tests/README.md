@@ -343,7 +343,11 @@ budget renders nothing at all), the shared per-page wall-clock parse budget on
 the generation gates, `unit/test_resource_limits.py` covers the same budget on
 the diagnostic `measure` tool's all-page walk, and
 `integration/test_pipeline_loop.py` covers the
-diagnostic target preflight and the same budget on its own target parse; `integration/test_api_process.py` covers a chunked direct upload above
+diagnostic target preflight and the same budget on its own target parse, and
+that a refusal raised inside a lane ends the run as `operational_abort` with
+`local_processing_timeout` instead of a lane failure, and that the live
+attribution batch's `measure` refusal crosses its handler instead of being
+recorded as a provider-call failure; `integration/test_api_process.py` covers a chunked direct upload above
 the app limit, the structured reader-error shape and an event-loop ticker kept
 ticking during a slow parse; `integration/test_api_generate.py` covers a target
 upload refused before provider analysis that keeps the prior target output and

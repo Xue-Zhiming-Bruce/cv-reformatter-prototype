@@ -1244,9 +1244,17 @@ Enforcement sits in the existing owners, not in each caller:
   page sizes. `run_e5` calls it for its target before any in-process parse and
   uses those sizes for the page-count and layout-spec geometry checks, so the
   diagnostic path never reopens the file for them; its remaining target parses
-  take their pages from `bounded_pdf_pages`. A parse that runs past the budget
-  ends the run as `operational_abort` with the refusal's `error_code` and writes
-  no compiled or rendered artifact.
+  take their pages from `bounded_pdf_pages`. The target preflight is the one
+  refusal that leaves `run_e5` as the raised refusal (the caller answers it as
+  a structured 413/422); every later refusal ends the run as
+  `operational_abort` with the refusal's `error_code` — the shared target
+  overview render or one of the target reads before a lane starts, the
+  `measure` tool, a gate's parse or a lane render after it starts. A refusal is
+  never a provider-call failure, so it is re-raised past the loop's failure
+  handlers instead of being degraded into one; an abort before the lanes writes
+  no compiled or rendered artifact, and an abort inside a lane stops the run
+  before the comparison and the owner package, keeping the artifacts already
+  written as the record.
 
 `/api/process` and `/api/target-format` reach the same helpers, and a job reuses
 the target stored by that upload, so the policy already applied to it. Each
