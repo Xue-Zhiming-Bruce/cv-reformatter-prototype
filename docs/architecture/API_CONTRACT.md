@@ -186,6 +186,22 @@ each — a copy rather than a move, because an adoption that dies before the swi
 then still leaves the whole legacy set readable. The target file exists twice for
 the length of that adoption.
 
+The `current` pointer has one answer per form, so that a copied or restored
+artifact directory is read as the target it holds instead of failing:
+
+| `current` | read | publication |
+| --- | --- | --- |
+| link to an epoch (what a publication writes) | that epoch | switches to the new set |
+| real directory (`cp -rL`, `rsync -L`, `copytree` without links, a restored backup) | that directory is the set; its first use copies it into an epoch, links it and replaces the directory | migrates, then switches |
+| absent (no upload yet, or a snapshot copied without `.targets`) | legacy plain names if any, otherwise no target | publishes the first set |
+| dangling link (an epoch the copy or restore did not bring) | no target; legacy plain names if any | replaces the link |
+| plain file (a tool that stored the link as its content) | no target; legacy plain names if any | replaces the file |
+| unreadable (permissions, unmounted volume) | the `OSError` reaches the caller | the `OSError` reaches the caller and nothing staged is moved |
+
+A copy tool produces the first five forms; the sixth is produced by a permission
+or mount failure and is never reported as an artifact that has no target, which
+would silently drop a published set from every read.
+
 Consistency is per logical operation, not across time. A reader that needs more
 than one file (metadata plus source, a proof plus its render, a worker input
 snapshot) pins the current set once — `app.target_publication.TargetSet` — and
