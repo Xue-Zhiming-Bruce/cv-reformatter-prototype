@@ -100,11 +100,12 @@ def target_proof_submission(directory: Path, revision: ApprovedProfileVersion, r
     if request.execution == "live":
         refuse_live_execution()
     approval = request.presentation_label_approval
+    target_set = TargetSet(directory, resolved=target_pdf.parent)
     return JobSubmission(idempotency_key=request.idempotency_key, payload=TargetProofPayload(
         artifact_id=directory.name, profile_revision_id=revision.profile_revision_id,
         profile_sha256=revision.profile_sha256, source_draft_sha256=revision.source_draft_sha256,
         target_sha256=target_checksum, target_stored_filename=target_pdf.name,
-        analysis_sha256=analysis_checksum(TargetSet(directory, resolved=target_pdf.parent)),
+        analysis_sha256=analysis_checksum(target_set),
         layout_sha256=layout_spec_sha256(layout_spec),
         design_id=request.design_id,
         presentation_label_catalog_sha256=approval.catalog_sha256 if approval is not None else None,
@@ -125,16 +126,16 @@ def target_generation_submission(directory: Path, revision: ApprovedProfileVersi
     if approval is None or approval.approval_id != request.proof_approval_id or not approval.is_approved:
         raise ValueError("Target generation requires the approved proof set named by this request")
     require_review_evidence(approval, required_execution="offline-renderer/1")
-    inputs = capture_generation_inputs(directory, revision_id=revision.profile_revision_id,
-                                       layout_path=target_layout_path(
-                                           TargetSet(directory, resolved=target_pdf.parent),
-                                           request.design_id),
-                                       target_path=target_pdf)
+    target_set = TargetSet(directory, resolved=target_pdf.parent)
+    inputs = capture_generation_inputs(
+        directory, revision_id=revision.profile_revision_id,
+        layout_path=target_layout_path(target_set, request.design_id),
+        target_path=target_pdf, target_set=target_set)
     return JobSubmission(idempotency_key=request.idempotency_key, payload=TargetGenerationPayload(
         artifact_id=directory.name, profile_revision_id=revision.profile_revision_id,
         profile_sha256=revision.profile_sha256, source_draft_sha256=revision.source_draft_sha256,
         target_sha256=target_checksum, target_stored_filename=target_pdf.name,
-        analysis_sha256=analysis_checksum(TargetSet(directory, resolved=target_pdf.parent)),
+        analysis_sha256=analysis_checksum(target_set),
         layout_sha256=layout_spec_sha256(layout_spec),
         design_id=request.design_id,
         presentation_label_catalog_sha256=approval.presentation_label_catalog_sha256,

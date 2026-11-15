@@ -1350,20 +1350,36 @@ def test_publication_switches_one_complete_set_at_a_time(
 def test_layout_proof_status_reads_one_published_target_set(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
-    """Issue #51: metadata and source of one read come from one published set.
+    """Issue #51: metadata, source and layout spec of one status come from one set.
 
-    At ``ab1fe85`` the status read the metadata, a publication switched the set,
-    and the source was then resolved by its public name: A's metadata was
-    reported with B's checksum.
+    At ``60ed109`` the status pinned the metadata and then built a second view for
+    the layout spec, so a publication in between reported A's target with B's
+    layout.
     """
+    from app.template_analysis.layout_proof_artifacts import layout_spec_checksum
+
     outputs = tmp_path / "outputs"
     artifact_dir = outputs / "artifact_pinned_reader"
-    first, second = _publish_baseline_target(tmp_path, monkeypatch, artifact_dir)
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", outputs)
+    target_pdf = build_styled_target_pdf(tmp_path / "target-reference.pdf")
+    first = target_pdf.read_bytes()
+    published = client.post(
+        "/api/target-format",
+        data={"artifact_id": artifact_dir.name},
+        files={"file": ("target-reference.pdf", first, "application/pdf")},
+    )
+    assert published.status_code == 200, published.text
+    first_layout = layout_spec_checksum(
+        load_layout_template_spec(artifact_dir / "layout_template_spec.json")
+    )
     loaded = json.loads
+    switched: list[bool] = []
 
     def switch_after_metadata(text, *args, **kwargs):
         payload = loaded(text, *args, **kwargs)
-        if isinstance(payload, dict) and "stored_filename" in payload:
+        if isinstance(payload, dict) and "stored_filename" in payload and not switched:
+            switched.append(True)
+            second = _target_docx_bytes(tmp_path / "second.docx", "second upload")
             response = _upload_docx(second, artifact_dir.name, "second.docx")
             assert response.status_code == 200, response.text
         return payload
@@ -1371,7 +1387,9 @@ def test_layout_proof_status_reads_one_published_target_set(
     with patch.object(json, "loads", switch_after_metadata):
         status = main._layout_proof_status(artifact_dir.name, artifact_dir)
 
+    assert switched, "the publication did not happen inside the status read"
     assert status.target_checksum == target_checksum_from_bytes(first)
+    assert status.layout_spec_checksum == first_layout
 
 
 def test_cancellation_inside_the_publish_window_publishes_nothing(
