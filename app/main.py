@@ -15,7 +15,6 @@ from urllib.parse import quote
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from starlette.background import BackgroundTask
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError, model_validator
 import httpx
@@ -146,7 +145,7 @@ from app.template_analysis.layout_proof_validation import (
     load_layout_proof_render_result,
     load_variant_evidence,
 )
-from app.target_publication import TargetSet, publish_target_set
+from app.target_publication import TargetPublicationBusy, TargetSet, publish_target_set
 from app.template_analysis.artifacts import (
     ADOBE_RAW_FILENAME,
     LAYOUT_SPEC_FILENAME,
@@ -984,6 +983,11 @@ async def _publish_off_loop(
         raise
 
 
+def _publication_busy_error(exc: TargetPublicationBusy) -> HTTPException:
+    """Another process is publishing or adopting this artifact: nothing was published."""
+    return HTTPException(status_code=503, detail=f"{exc} Retry the upload.")
+
+
 @app.post("/api/target-format")
 async def upload_target_format(
     file: UploadFile = File(...),
@@ -1021,6 +1025,8 @@ async def upload_target_format(
                 status_code=503,
                 detail="Analysis service paused: Adobe PDF analysis is not configured.",
             ) from exc
+        except TargetPublicationBusy as exc:
+            raise _publication_busy_error(exc) from exc
         except (AdobeAdapterError, httpx.HTTPError, OSError) as exc:
             # The provider error stays primary; safe cleanup evidence is added
             # so an unresolved deletion is readable, not debugger-only.
@@ -1044,6 +1050,8 @@ async def upload_target_format(
                 suffix,
                 contents,
             )
+        except TargetPublicationBusy as exc:
+            raise _publication_busy_error(exc) from exc
         except (TargetDocxAnalysisError, FileNotFoundError) as exc:
             _raise_docx_target_error(exc)
 
@@ -1764,6 +1772,26 @@ def get_artifact_metadata(artifact_id: str) -> ArtifactMetadataResponse:
     })
 
 
+class _HeldTargetResponse(FileResponse):
+    """A download that releases the target view whatever sending it does.
+
+    Starlette runs a background task only when the body was sent, so a ``send``
+    that fails kept the view — and the set it holds — alive for as long as the
+    response object was referenced. What remains unprotected is a response object
+    that is never sent and never collected: its view lives as long as it does.
+    """
+
+    def __init__(self, path: Path, *, target_set: TargetSet, **kwargs: Any) -> None:
+        super().__init__(path, **kwargs)
+        self._target_set = target_set
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._target_set.close()
+
+
 @app.get("/api/artifacts/{artifact_id}/{filename}")
 def download_generated_artifact(artifact_id: str, filename: str) -> FileResponse:
     artifact_path, target_set = _resolve_download_artifact(artifact_id, filename)
@@ -1775,15 +1803,15 @@ def download_generated_artifact(artifact_id: str, filename: str) -> FileResponse
         ".png": "image/png",
         ".json": "application/json",
     }[suffix]
-    # The response owns the view until it has sent the bytes, then releases it:
-    # a later upload cannot delete the verified set while it streams, and the
-    # hold does not outlive the request.
-    return FileResponse(
+    # The response owns the view until it has sent the bytes, then releases it: a
+    # later upload cannot delete the verified set while it streams, and neither a
+    # failed send nor an abandoned response pins the set for its own lifetime.
+    return _HeldTargetResponse(
         artifact_path,
         media_type=media_type,
         filename=filename,
         content_disposition_type="attachment" if suffix == ".docx" else "inline",
-        background=BackgroundTask(target_set.close),
+        target_set=target_set,
     )
 
 
