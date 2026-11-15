@@ -9,6 +9,7 @@ from app.ingestion.pdf_reader import (
     EmptyPdfTextError,
     UnsupportedPdfTypeError,
     read_pdf_pages,
+    read_pdf_page_sizes,
     read_pdf_text,
 )
 
@@ -50,6 +51,50 @@ def test_read_pdf_pages_returns_text_with_its_page_geometry(tmp_path: Path) -> N
     assert pages[0].text == "Software Engineer"
     assert pages[0].width_pt == pytest.approx(595.3)
     assert pages[0].height_pt == pytest.approx(841.9)
+
+
+@pytest.mark.parametrize(
+    "declared_box",
+    ["0 0 0 792", "0 0 -612 792", "0 0 612 -792", "0 792 612 0"],
+    ids=["no_width", "negative_width", "negative_height", "inverted_y"],
+)
+def test_read_pdf_page_sizes_refuses_an_unusable_declared_box(
+    tmp_path: Path, declared_box: str
+) -> None:
+    """Issue #53: the declared box is read as declared, not as normalised.
+
+    pdfplumber swaps an inverted box's corners into a normal 612x792 page, which
+    would report a page the declaration does not describe; the reader refuses it
+    first so ingestion and both rasterizer owners inherit the same answer.
+    """
+    from tests.helpers.synthetic_pdf import _write_single_page_pdf
+
+    from app.resource_limits import DocumentLimitError
+
+    pdf = _write_single_page_pdf(
+        tmp_path / "declared-box.pdf",
+        ["BT /F1 12 Tf 72 720 Td (Declared page box) Tj ET"],
+        media_box=declared_box,
+    )
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        read_pdf_page_sizes(pdf)
+
+    assert refusal.value.error_code == "pdf_page_geometry"
+    assert declared_box in str(refusal.value)
+
+
+def test_read_pdf_page_sizes_reads_a_usable_declared_box(tmp_path: Path) -> None:
+    """The control: an offset but well-ordered box is a normal page, not a refusal."""
+    from tests.helpers.synthetic_pdf import _write_single_page_pdf
+
+    pdf = _write_single_page_pdf(
+        tmp_path / "offset-box.pdf",
+        ["BT /F1 12 Tf 72 720 Td (Declared page box) Tj ET"],
+        media_box="9 9 621 801",
+    )
+
+    assert read_pdf_page_sizes(pdf) == [(612.0, 792.0)]
 
 
 def test_read_pdf_text_extracts_text_from_dataset_sample(tmp_path: Path) -> None:

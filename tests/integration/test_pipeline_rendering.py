@@ -1906,40 +1906,43 @@ def _counted_pdfium(monkeypatch: pytest.MonkeyPatch) -> _CountingPdfium:
     return counter
 
 
-def _zero_width_declared_pdf(path: Path) -> Path:
-    """A one-page PDF whose DECLARED box has no width.
+def _declared_box_pdf(path: Path, box: str) -> Path:
+    """A one-page text PDF whose `/MediaBox` is written exactly as given."""
+    from tests.helpers.synthetic_pdf import _write_single_page_pdf
 
-    Ingestion refuses this box (`pdf_page_geometry`); PDFium interprets a
-    degenerate box as the default 612 pt width, so a preflight that trusts the
-    interpreted size renders a page the contract refuses.
-    """
-    from reportlab.pdfgen import canvas
+    return _write_single_page_pdf(
+        path,
+        ["BT /F1 12 Tf 72 720 Td (Declared page box) Tj ET"],
+        media_box=box,
+    )
 
-    source = path.with_name("declared-source.pdf")
-    document = canvas.Canvas(str(source), pagesize=(612, 792))
-    document.setFont("Helvetica", 12)
-    document.drawString(72, 720, "Zero width declared page")
-    document.save()
-    declared = source.read_bytes()
-    zero_width = declared.replace(b"/MediaBox [ 0 0 612 792 ]", b"/MediaBox [ 0 0 0 792 ]")
-    assert zero_width != declared, "the declared MediaBox was not found"
-    path.write_bytes(zero_width)
-    return path
+
+_UNUSABLE_DECLARED_BOXES = {
+    "no_width": "0 0 0 792",
+    "negative_width": "0 0 -612 792",
+    "negative_height": "0 0 612 -792",
+    "inverted_y": "0 792 612 0",
+    "usable_control": "0 0 612 792",
+}
 
 
 @pytest.mark.parametrize("owner", _RASTERIZERS)
+@pytest.mark.parametrize("box_name", [name for name in _UNUSABLE_DECLARED_BOXES if name != "usable_control"])
 def test_rasterizer_refuses_a_page_whose_declared_box_has_no_area(
-    owner: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    owner: str, box_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Issue #53: the geometry policy reads the declared box, not PDFium's guess.
 
-    The same file is refused by ingestion before any text extraction, so the
-    rasterizer must refuse it before page 1 allocates or renders even though
-    PDFium would happily interpret it at the default width.
+    Every one of these boxes is refused by ingestion before any text extraction;
+    a zero or negative side is already unusable, and pdfplumber swaps an inverted
+    box's corners into a normal 612x792 page. PDFium likewise interprets a
+    degenerate box as the default 612 pt width, so both rasterizers must refuse
+    the file before page 1 allocates or renders instead of trusting either
+    reading.
     """
     from app.resource_limits import DocumentLimitError
 
-    pdf = _zero_width_declared_pdf(tmp_path / "zero-width.pdf")
+    pdf = _declared_box_pdf(tmp_path / "declared-box.pdf", _UNUSABLE_DECLARED_BOXES[box_name])
     output_dir = tmp_path / "pages"
     output_dir.mkdir()
     counter = _counted_pdfium(monkeypatch)
@@ -1950,6 +1953,22 @@ def test_rasterizer_refuses_a_page_whose_declared_box_has_no_area(
     assert refusal.value.error_code == "pdf_page_geometry"
     assert counter.render_calls == 0, "the rendered size was not the policy reading"
     assert list(output_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("owner", _RASTERIZERS)
+def test_rasterizer_renders_a_page_whose_declared_box_is_usable(
+    owner: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control: the declared-box check refuses only what it names."""
+    pdf = _declared_box_pdf(tmp_path / "declared-box.pdf", _UNUSABLE_DECLARED_BOXES["usable_control"])
+    output_dir = tmp_path / "pages"
+    output_dir.mkdir()
+    counter = _counted_pdfium(monkeypatch)
+
+    _RASTERIZERS[owner](pdf, output_dir)
+
+    assert counter.render_calls == 1
+    assert len(list(output_dir.glob("*.png"))) == 1
 
 
 @pytest.mark.parametrize("owner", _RASTERIZERS)

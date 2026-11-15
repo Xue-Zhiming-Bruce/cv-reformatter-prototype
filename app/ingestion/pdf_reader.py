@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 import pdfplumber
+from pdfplumber.utils import resolve_all
 from pdfplumber.utils.exceptions import PdfminerException
 
-from app.resource_limits import bounded_pdf_pages
+from app.resource_limits import bounded_pdf_pages, check_declared_page_box
 
 
 class UnsupportedPdfTypeError(ValueError):
@@ -47,9 +48,18 @@ def read_pdf_pages(path: str | Path) -> list[PdfPage]:
 
 
 def read_pdf_page_sizes(path: str | Path) -> list[tuple[float, float]]:
-    """Read the declared page boxes only; no page text is extracted."""
+    """Read the declared page boxes only; no page text is extracted.
+
+    Each box is checked as declared before pdfplumber's own normalisation, which
+    swaps an inverted box's corners and would report a page the declaration does
+    not describe.
+    """
     with _open_pdf(path) as pdf:
-        return [(float(page.width), float(page.height)) for page in bounded_pdf_pages(pdf)]
+        sizes = []
+        for page in bounded_pdf_pages(pdf):
+            check_declared_page_box(resolve_all(page.page_obj.attrs.get("MediaBox")))
+            sizes.append((float(page.width), float(page.height)))
+        return sizes
 
 
 @contextmanager

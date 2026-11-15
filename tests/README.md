@@ -342,7 +342,8 @@ reads a document's page tree except through the bounded page helpers. Each case 
 bytes built in the test, not a corpus file, so they run offline and cannot
 exhaust machine memory. `integration/test_pipeline_rendering.py` covers both
 rasterizers (page count and page side — measured on the declared page box, so a
-page PDFium would interpret as usable is still refused — and, counting real
+page pdfplumber or PDFium would interpret as usable is still refused, whether it
+declares no width, a negative side or an inverted box — and, counting real
 render calls, that a document refused for its page count, a later page's
 geometry or the summed pixel budget renders nothing at all), the shared
 per-page wall-clock parse budget on
