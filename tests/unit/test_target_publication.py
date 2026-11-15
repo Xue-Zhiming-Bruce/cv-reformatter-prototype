@@ -18,13 +18,20 @@ from unittest.mock import patch
 
 import pytest
 
+from app import target_publication
 from app.extraction.candidate_schema import CandidateProfile
 from app.generation.artifact_manifest import identify_file
 from app.generation.contracts import TargetFormatMetadata
 from app.generation.service import write_debug_artifacts
 from app.generation.template_mapper import build_client_render_context
 from app.job_worker import NativeJobWorker, ROOT
-from app.target_publication import CURRENT_LINK_NAME, TARGETS_DIRNAME, publish_target_set
+from app.target_publication import (
+    CURRENT_LINK_NAME,
+    TARGETS_DIRNAME,
+    TargetPublicationBusy,
+    TargetSet,
+    publish_target_set,
+)
 
 DOCX_SET = ("target_format_template.docx", "layout_template_spec.json", "target_format.json")
 PDF_SET = (
@@ -593,30 +600,141 @@ PUBLISHING_CHILD = """
 import sys, threading
 from pathlib import Path
 
-from app.target_publication import publish_target_set
+from app.target_publication import TargetPublicationBusy, publish_target_set
 
 artifact_dir, filenames = Path(sys.argv[1]), sys.argv[2].split(",")
 for staging in (Path(value) for value in sys.argv[3:]):
-    publish_target_set(artifact_dir, staging, filenames, threading.Event())
+    try:
+        publish_target_set(artifact_dir, staging, filenames, threading.Event())
+    except TargetPublicationBusy:
+        print("busy")
+    else:
+        print("published")
 """
+
+#: Publishes one set, pausing inside the switch until a release file appears.
+PAUSED_PUBLISHER = """
+import os, sys, threading, time
+from pathlib import Path
+
+from app.target_publication import publish_target_set
+
+artifact_dir, staging_dir, ready, release = (Path(value) for value in sys.argv[1:5])
+replace = os.replace
+
+
+def pause_at_switch(source, destination):
+    if Path(destination).name == "current" and not release.exists():
+        ready.write_text("ready", encoding="utf-8")
+        while not release.exists():
+            time.sleep(0.01)
+    return replace(source, destination)
+
+
+os.replace = pause_at_switch
+publish_target_set(artifact_dir, staging_dir, sys.argv[5].split(","), threading.Event())
+"""
+
+#: Reads one file through a view and keeps the view while it waits to be released.
+HOLDING_READER = """
+import sys, time
+from pathlib import Path
+
+from app.target_publication import TargetSet
+
+artifact_dir, name, ready, release, result = (Path(value) for value in sys.argv[1:6])
+with TargetSet(artifact_dir) as view:
+    first = view.read(name)
+    ready.write_bytes(first.read_bytes() if first else b"")
+    while not release.exists():
+        time.sleep(0.01)
+    second = view.read(name)
+    result.write_bytes(second.read_bytes() if second else b"")
+"""
+
+#: Reads one file through a view and writes what it got.
+READING_CHILD = """
+import sys
+from pathlib import Path
+
+from app.target_publication import TargetSet
+
+artifact_dir, name, result = (Path(value) for value in sys.argv[1:4])
+with TargetSet(artifact_dir) as view:
+    found = view.read(name)
+    result.write_bytes(found.read_bytes() if found else b"")
+"""
+
+
+def _child_command(script: Path, *args: object) -> list[str]:
+    return [sys.executable, "-B", str(script), *(str(arg) for arg in args)]
+
+
+def _child_env() -> dict[str, str]:
+    return {**os.environ, "PYTHONPATH": str(ROOT)}
 
 
 def _publish_from_child(
     tmp_path: Path, artifact_dir: Path, filenames: tuple[str, ...], tags: tuple[str, ...]
-) -> list[dict[str, bytes]]:
-    """Publish whole sets from a separate process, as a second request would."""
+) -> tuple[list[dict[str, bytes]], list[str]]:
+    """Publish whole sets from a separate process, as a second request would.
+
+    Returns each set's contents and what the child reported for it: ``published``
+    when it switched the set, ``busy`` when another process was deciding.
+    """
     staged = [_staging(tmp_path, filenames, tag) for tag in tags]
     script = tmp_path / "child_publisher.py"
     script.write_text(PUBLISHING_CHILD, encoding="utf-8")
-    subprocess.run(
-        [sys.executable, "-B", str(script), str(artifact_dir), ",".join(filenames),
-         *(str(path) for path, _contents in staged)],
+    completed = subprocess.run(
+        _child_command(
+            script, artifact_dir, ",".join(filenames),
+            *(path for path, _contents in staged),
+        ),
         cwd=ROOT,
-        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        env=_child_env(),
         check=True,
+        capture_output=True,
+        text=True,
         timeout=HOLD_TIMEOUT_SECONDS,
     )
-    return [contents for _path, contents in staged]
+    outcomes = completed.stdout.split()
+    assert len(outcomes) == len(tags), completed.stdout
+    return [contents for _path, contents in staged], outcomes
+
+
+def _read_from_child(tmp_path: Path, artifact_dir: Path, name: str) -> subprocess.Popen:
+    """Start a separate process that reads one file through a view."""
+    script = tmp_path / "child_reader.py"
+    script.write_text(READING_CHILD, encoding="utf-8")
+    return subprocess.Popen(
+        _child_command(script, artifact_dir, name, tmp_path / "child_reader.out"),
+        cwd=ROOT,
+        env=_child_env(),
+    )
+
+
+def _child_result(tmp_path: Path, child: subprocess.Popen) -> bytes:
+    assert child.wait(timeout=HOLD_TIMEOUT_SECONDS) == 0, "the child reader failed"
+    return (tmp_path / "child_reader.out").read_bytes()
+
+
+def _flip_after_a_child_publication(
+    tmp_path: Path, artifact_dir: Path, filenames: tuple[str, ...], tag: str
+) -> tuple[object, list[str]]:
+    """A ``_flip_current`` that lets another process publish before it switches.
+
+    That is the window a sequence which checks ``current`` and then switches it
+    leaves open: at ``64a272b`` the resumed sequence reverted the newer set.
+    """
+    flip_current = target_publication._flip_current
+    reported: list[str] = []
+
+    def flip(sets_dir: Path, epoch_name: str | None) -> str | None:
+        if not reported:
+            reported.extend(_publish_from_child(tmp_path, artifact_dir, filenames, (tag,))[1])
+        return flip_current(sets_dir, epoch_name)
+
+    return flip, reported
 
 
 @pytest.mark.parametrize("shape", ["published", "plain files"])
@@ -678,7 +796,10 @@ def test_another_process_cannot_prune_a_set_a_view_holds(tmp_path: Path) -> None
     view = TargetSet(artifact_dir)
     try:
         assert view.read("target_format_template.docx").read_bytes() == first["target_format_template.docx"]
-        _publish_from_child(tmp_path, artifact_dir, DOCX_SET, ("second", "third"))
+        _staged_contents, reported = _publish_from_child(
+            tmp_path, artifact_dir, DOCX_SET, ("second", "third")
+        )
+        assert reported == ["published", "published"], reported
         held = view.read("target_format_template.docx")
         assert held is not None, "another process pruned a set this view holds"
         assert held.read_bytes() == first["target_format_template.docx"]
@@ -715,20 +836,18 @@ def test_a_dangling_current_beside_plain_files_is_adopted_not_read_in_place(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="the test publishes from a separate process")
-def test_a_staged_adoption_survives_a_publisher_in_another_process(
+def test_a_publication_during_an_adoption_reports_busy_instead_of_pruning_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A publisher cannot prune the set an adopter is about to switch to.
+    """Another process's publication waits outside the adoption or is refused.
 
-    At ``240eedb`` the adopter's copy was an ordinary unreferenced epoch: a child
-    that published meanwhile pruned it, the adopter flipped ``current`` to the
-    missing epoch, and every read of that artifact resolved nothing.
+    At ``240eedb`` the adopter's copy was an ordinary unreferenced epoch that the
+    child pruned; at ``64a272b`` the child could publish over the adoption at all.
+    Neither can happen while the decision lock is held, so the child is refused and
+    the adoption it interrupted still switches a complete set.
     """
-    from app import target_publication
-    from app.target_publication import TargetSet
-
     artifact_dir = tmp_path / "artifact_paused_adopter"
-    _legacy_artifact(tmp_path, artifact_dir, PDF_SET, "first")
+    legacy = _legacy_artifact(tmp_path, artifact_dir, PDF_SET, "first")
     copy_epoch = target_publication._copy_epoch
     paused, resume = threading.Event(), threading.Event()
 
@@ -753,18 +872,303 @@ def test_a_staged_adoption_survives_a_publisher_in_another_process(
     adopter.start()
     try:
         assert paused.wait(HOLD_TIMEOUT_SECONDS), "the adopter never reached its switch"
-        published = _publish_from_child(tmp_path, artifact_dir, PDF_SET, ("second",))
+        _staged_contents, reported = _publish_from_child(
+            tmp_path, artifact_dir, PDF_SET, ("second",)
+        )
     finally:
         resume.set()
         adopter.join(HOLD_TIMEOUT_SECONDS)
     monkeypatch.undo()
 
-    assert read_after, "the adopter never finished"
+    assert reported == ["busy"], "a publication interleaved with the adoption"
     held = read_after[0]
     assert held is not None, "the adoption published an epoch that was already pruned"
-    assert held.read_bytes() == published[0]["target_format_reference.pdf"]
+    assert held.read_bytes() == legacy["target_format_reference.pdf"]
     current = artifact_dir / TARGETS_DIRNAME / CURRENT_LINK_NAME
     assert current.is_symlink() and current.is_dir(), "the switch named a set that is not there"
+
+
+def test_a_rollback_leaves_a_set_another_process_holds(tmp_path: Path) -> None:
+    """An abandoned publication deletes only the set it can take exclusively.
+
+    At ``64a272b`` the rollback removed the abandoned set outright, so a reader
+    that had already pinned it lost every file its next read asked for.
+    """
+    artifact_dir = tmp_path / "artifact_rollback_held"
+    first = _publish(tmp_path, artifact_dir, DOCX_SET, "first")
+    abandoned_staging, abandoned_set = _staging(tmp_path, DOCX_SET, "second")
+    abandoned = threading.Event()
+    linked, resume = threading.Event(), threading.Event()
+    link_public_names = TargetSet._link_public_names
+
+    def link_then_pause(self: TargetSet, filenames: tuple[str, ...]) -> None:
+        link_public_names(self, filenames)
+        if self.artifact_dir == artifact_dir and not resume.is_set():
+            linked.set()
+            assert resume.wait(HOLD_TIMEOUT_SECONDS), "the test never resumed the publisher"
+
+    publisher = threading.Thread(
+        target=publish_target_set,
+        args=(artifact_dir, abandoned_staging, DOCX_SET, abandoned),
+    )
+    with patch.object(TargetSet, "_link_public_names", link_then_pause):
+        publisher.start()
+        try:
+            assert linked.wait(HOLD_TIMEOUT_SECONDS), "the publisher never linked its names"
+            script = tmp_path / "child_holding_reader.py"
+            script.write_text(HOLDING_READER, encoding="utf-8")
+            ready, release = tmp_path / "reader.ready", tmp_path / "reader.release"
+            result = tmp_path / "reader.result"
+            reader = subprocess.Popen(
+                _child_command(
+                    script, artifact_dir, "target_format_template.docx", ready, release, result
+                ),
+                cwd=ROOT,
+                env=_child_env(),
+            )
+            try:
+                _wait_for_switch(ready, reader)  # the reader pinned the abandoned set
+                assert reader.poll() is None
+                abandoned.set()
+            finally:
+                resume.set()
+                publisher.join(HOLD_TIMEOUT_SECONDS)
+                release.write_bytes(b"go")
+                assert reader.wait(timeout=HOLD_TIMEOUT_SECONDS) == 0
+        finally:
+            resume.set()
+            publisher.join(HOLD_TIMEOUT_SECONDS)
+
+    assert ready.read_bytes() == abandoned_set["target_format_template.docx"]
+    assert result.read_bytes() == abandoned_set["target_format_template.docx"], (
+        "the rollback deleted a set another process was reading"
+    )
+    assert abandoned.is_set()
+    # The previous set is published again and the abandoned one waits for a prune.
+    assert (artifact_dir / "target_format_template.docx").read_bytes() == first[
+        "target_format_template.docx"
+    ]
+    assert len(_epochs(artifact_dir)) == 2, _epochs(artifact_dir)
+    _publish(tmp_path, artifact_dir, DOCX_SET, "third")
+    assert len(_epochs(artifact_dir)) == 2, "a later publication did not collect the abandoned set"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the test publishes from a separate process")
+def test_an_adoption_never_reverts_a_publication_from_another_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A publication that lands while an adoption decides is not reverted by it.
+
+    At ``64a272b`` the adoption checked that ``current`` was still legacy and then
+    switched it on its own: a set published in between was replaced by the stale
+    copy the adoption had just made.
+    """
+    artifact_dir = tmp_path / "artifact_adoption_race"
+    _legacy_artifact(tmp_path, artifact_dir, DOCX_SET, "first")
+    flip, reported = _flip_after_a_child_publication(tmp_path, artifact_dir, DOCX_SET, "second")
+    monkeypatch.setattr(target_publication, "_flip_current", flip)
+
+    with TargetSet(artifact_dir) as view:
+        assert view.read("target_format_template.docx") is not None
+    monkeypatch.undo()
+
+    metadata = json.loads((artifact_dir / "target_format.json").read_text())
+    if reported == ["published"]:
+        assert metadata["input_filename"] == "second.docx", (
+            "the resumed adoption reverted the newer publication"
+        )
+    else:
+        assert reported == ["busy"], reported
+        assert metadata["input_filename"] == "first.docx"
+        assert _publish(tmp_path, artifact_dir, DOCX_SET, "third")["target_format.json"] == (
+            artifact_dir / "target_format.json"
+        ).read_bytes()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the test publishes from a separate process")
+def test_a_migration_never_reverts_a_publication_from_another_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A publication that lands while a migration decides is not reverted by it.
+
+    At ``64a272b`` the migration checked that the directory ``current`` named was
+    still the one it copied and then renamed and switched it: a set published in
+    between was renamed aside and replaced by the migrated copy.
+    """
+    copy_dir, _first = _dereferenced_copy(tmp_path, tmp_path / "artifact_migrate_race", PDF_SET, "first")
+    flip, reported = _flip_after_a_child_publication(tmp_path, copy_dir, PDF_SET, "second")
+    monkeypatch.setattr(target_publication, "_flip_current", flip)
+
+    with TargetSet(copy_dir) as view:
+        assert view.read("target_format_reference.pdf") is not None
+    monkeypatch.undo()
+
+    metadata = json.loads((copy_dir / "target_format.json").read_text())
+    if reported == ["published"]:
+        assert metadata["input_filename"] == "second.docx", (
+            "the resumed migration reverted the newer publication"
+        )
+    else:
+        assert reported == ["busy"], reported
+        assert metadata["input_filename"] == "first.docx"
+        assert _publish(tmp_path, copy_dir, PDF_SET, "third")["target_format.json"] == (
+            copy_dir / "target_format.json"
+        ).read_bytes()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the test publishes from a separate process")
+def test_a_publication_reports_busy_while_another_process_decides(tmp_path: Path) -> None:
+    """The decision lock is what serializes two publications, not luck.
+
+    At ``64a272b`` both publications ran their check-then-switch sequence at once;
+    the second one now waits outside or reports that it cannot take the lock.
+    """
+    artifact_dir = tmp_path / "artifact_two_publishers"
+    _publish(tmp_path, artifact_dir, DOCX_SET, "first")
+    staging, contents = _staging(tmp_path, DOCX_SET, "second")
+    ready, release = tmp_path / "publisher.ready", tmp_path / "publisher.release"
+    script = tmp_path / "paused_publisher.py"
+    script.write_text(PAUSED_PUBLISHER, encoding="utf-8")
+    child = subprocess.Popen(
+        _child_command(script, artifact_dir, staging, ready, release, ",".join(DOCX_SET)),
+        cwd=ROOT,
+        env=_child_env(),
+    )
+    try:
+        _wait_for_switch(ready, child)  # the child holds the decision lock
+        with pytest.raises(TargetPublicationBusy):
+            publish_target_set(artifact_dir, staging, DOCX_SET, threading.Event())
+    finally:
+        release.write_bytes(b"go")
+        assert child.wait(timeout=HOLD_TIMEOUT_SECONDS) == 0
+
+    assert (artifact_dir / "target_format_template.docx").read_bytes() == contents[
+        "target_format_template.docx"
+    ]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the test publishes from a separate process")
+def test_a_publication_during_a_paused_adoption_cannot_break_the_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An adopter copying the legacy layout keeps its source while it copies.
+
+    At ``64a272b`` a publication in another process replaced the plain files the
+    adopter was still copying with links to its own set, so the adopter switched a
+    set of two uploads into the epoch it was reading (and a name the publication
+    dropped made the copy raise ``FileNotFoundError``).
+    """
+    import shutil
+
+    artifact_dir = tmp_path / "artifact_paused_copy"
+    legacy = _legacy_artifact(tmp_path, artifact_dir, PDF_SET, "first")
+    copy_epoch = target_publication._copy_epoch
+    paused, resume = threading.Event(), threading.Event()
+
+    def copy_one_file_then_pause(
+        sets_dir: Path, source_dir: Path, names: tuple[str, ...]
+    ) -> tuple[Path, int]:
+        epoch, claim = copy_epoch(sets_dir, source_dir, names[:1])
+        if not paused.is_set():
+            paused.set()
+            assert resume.wait(HOLD_TIMEOUT_SECONDS), "the test never resumed the copy"
+            for name in names[1:]:
+                shutil.copy2(source_dir / name, epoch / name)
+        return epoch, claim
+
+    monkeypatch.setattr(target_publication, "_copy_epoch", copy_one_file_then_pause)
+    read_after: list[dict[str, bytes]] = []
+    failures: list[BaseException] = []
+
+    def adopt() -> None:
+        try:
+            with TargetSet(artifact_dir) as view:
+                read_after.append(
+                    {
+                        name: (found.read_bytes() if (found := view.read(name)) else b"")
+                        for name in PDF_SET
+                    }
+                )
+        except BaseException as exc:  # the failure under test is the point
+            failures.append(exc)
+
+    adopter = threading.Thread(target=adopt)
+    adopter.start()
+    reader: subprocess.Popen | None = None
+    try:
+        assert paused.wait(HOLD_TIMEOUT_SECONDS), "the adopter never reached its copy"
+        _staged_contents, reported = _publish_from_child(
+            tmp_path, artifact_dir, PDF_SET, ("second",)
+        )
+        reader = _read_from_child(tmp_path, artifact_dir, "target_format_reference.pdf")
+    finally:
+        resume.set()
+        adopter.join(HOLD_TIMEOUT_SECONDS)
+    monkeypatch.undo()
+
+    assert failures == [], f"a copy in progress lost its source: {failures!r}"
+    assert read_after == [legacy], "the adopter read a set it had not copied"
+    assert reported == ["busy"], reported
+    assert reader is not None
+    assert _child_result(tmp_path, reader) == legacy["target_format_reference.pdf"]
+    current = artifact_dir / TARGETS_DIRNAME / CURRENT_LINK_NAME
+    assert current.is_symlink() and current.is_dir()
+
+
+def test_a_view_of_an_unpublished_artifact_keeps_it_unpublished(tmp_path: Path) -> None:
+    """A view with nothing published pins that, not the artifact directory.
+
+    At ``64a272b`` the view pinned the artifact directory with no hold at all, so
+    metadata read before a publication sat beside a source read after another one.
+    """
+    artifact_dir = tmp_path / "artifact_empty_view"
+    artifact_dir.mkdir()
+    view = TargetSet(artifact_dir)
+    try:
+        assert view.read("target_format.json") is None
+        _staged_contents, reported = _publish_from_child(
+            tmp_path, artifact_dir, DOCX_SET, ("second",)
+        )
+        assert reported == ["busy"], "a publication appeared beneath an open view"
+        assert view.read("target_format.json") is None
+        assert view.read("target_format_template.docx") is None
+    finally:
+        view.close()
+
+    contents = _publish(tmp_path, artifact_dir, DOCX_SET, "third")
+    assert view.read("target_format.json").read_bytes() == contents["target_format.json"]
+    view.close()
+
+
+@pytest.mark.parametrize("shape", ["empty current only", "empty current beside plain files"])
+def test_an_empty_current_directory_names_no_set(tmp_path: Path, shape: str) -> None:
+    """An empty ``current`` directory is read and published like an absent one.
+
+    At ``64a272b`` the directory read as a published set with no files and
+    publication died in the switch with ``IsADirectoryError``.
+    """
+    artifact_dir = tmp_path / f"artifact_empty_current_{shape.replace(' ', '_')}"
+    legacy = (
+        {}
+        if shape == "empty current only"
+        else _legacy_artifact(tmp_path, artifact_dir, PDF_SET, "first")
+    )
+    targets = artifact_dir / TARGETS_DIRNAME
+    targets.mkdir(parents=True, exist_ok=True)
+    (targets / CURRENT_LINK_NAME).mkdir()
+
+    with TargetSet(artifact_dir) as view:
+        for name, payload in legacy.items():
+            assert view.read(name).read_bytes() == payload, name
+        if not legacy:
+            assert view.read("target_format.json") is None
+
+    contents = _publish(tmp_path, artifact_dir, DOCX_SET, "second")
+
+    current = targets / CURRENT_LINK_NAME
+    assert current.is_symlink() and current.is_dir()
+    assert (artifact_dir / "target_format.json").read_bytes() == contents["target_format.json"]
+
 
 
 def test_a_pruner_never_deletes_a_staged_set(tmp_path: Path) -> None:

@@ -606,6 +606,78 @@ def test_download_response_streams_the_set_it_resolved(
     assert not first_epoch.exists(), "the response kept holding the set it already sent"
 
 
+def test_a_download_whose_send_fails_releases_its_set(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """A response that could not send its body still lets go of the set.
+
+    At ``64a272b`` the view was released by a ``BackgroundTask``, which Starlette
+    does not run when ``send`` raises: the epoch stayed held for as long as the
+    response object lived, so nothing could prune it.
+    """
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    artifact_id = "artifact_download_send_failure"
+    artifact_dir = tmp_path / artifact_id
+    artifact_dir.mkdir()
+    _publish_target_pdf(tmp_path, artifact_dir, b"%PDF-1.4 first\n", "first")
+    first_epoch = (artifact_dir / ".targets" / "current").resolve()
+
+    response = main.download_generated_artifact(artifact_id, "target_format_reference.pdf")
+    _publish_target_pdf(tmp_path, artifact_dir, b"%PDF-1.4 second\n", "second")
+    _publish_target_pdf(tmp_path, artifact_dir, b"%PDF-1.4 third\n", "third")
+
+    async def send(message: dict) -> None:
+        if message["type"] == "http.response.body":
+            raise OSError("the client went away mid-body")
+
+    async def receive() -> dict:
+        return {"type": "http.disconnect"}
+
+    with pytest.raises(OSError):
+        asyncio.run(response(
+            {"type": "http", "method": "GET", "headers": [],
+             "asgi": {"version": "3.0", "spec_version": "2.4"}},
+            receive,
+            send,
+        ))
+
+    # The failed response let go, so the set it verified is prunable again.
+    _publish_target_pdf(tmp_path, artifact_dir, b"%PDF-1.4 fourth\n", "fourth")
+    assert not first_epoch.exists(), "a failed send kept holding the set it never sent"
+
+
+def test_a_target_upload_that_cannot_take_the_decision_lock_publishes_nothing(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """An upload refused by another process's decision answers 503 and changes nothing.
+
+    The refusal is what keeps two publications from interleaving, so it is
+    reported instead of being waited out or published through.
+    """
+    from app.target_publication import TargetPublicationBusy
+
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    artifact_id = "artifact_busy_upload"
+    artifact_dir = tmp_path / artifact_id
+    artifact_dir.mkdir()
+
+    def busy(*_args: object, **_kwargs: object) -> None:
+        raise TargetPublicationBusy("Another process is deciding the target set.")
+
+    monkeypatch.setattr(main, "publish_target_set", busy)
+    target_path = build_styled_target_pdf(tmp_path / "busy-target.pdf")
+    response = client.post(
+        "/api/target-format",
+        data={"artifact_id": artifact_id},
+        files={"file": ("target.pdf", target_path.read_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 503, response.text
+    assert "Another process is deciding" in response.json()["detail"]
+    assert not (artifact_dir / ".targets" / "current").exists()
+    assert not (artifact_dir / "target_format.json").exists()
+
+
 def test_uploaded_target_never_falls_back_to_built_in(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:

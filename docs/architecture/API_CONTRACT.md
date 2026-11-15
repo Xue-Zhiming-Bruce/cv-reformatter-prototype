@@ -227,20 +227,36 @@ under the artifact, and then makes that set current with one rename of the
 artifact's `current` pointer, which `target_format.json`, the stored source and
 the analysis files follow as symlinks. A reader therefore sees either the
 previous complete set or the new complete set: never one upload's metadata
-beside another upload's source. Uploads for the same `artifact_id` serialize on
-a per-artifact lock, so the later one publishes over the earlier one and the
-superseded set stops being published — after a PDF target supersedes a DOCX
-target, the DOCX template URL is no longer part of the current target. A
-refused, failed, cancelled or otherwise failed upload publishes nothing,
-including a cancellation or failure that lands while it was publishing: the
-previous set is put back and the staged one is discarded, and no upload can
-delete another request's staged source. A published set is retained while it is
-current, while it is the set the current one replaced, and while a reader still
-holds it: pruning never deletes a set an open view is reading, so a publication
-cannot pull bytes out from under an operation in progress. A publisher that
-starts up also drops what a dead publisher left behind, including the set the
-current one replaced, so a retention count settles at one live set once no view
-holds an older one.
+beside another upload's source. Two publications for the same artifact never
+interleave: in one process they serialize on a per-artifact lock, and across
+processes on the artifact's decision lock (below), so the later one publishes
+over the earlier one and the superseded set stops being published — after a PDF
+target supersedes a DOCX target, the DOCX template URL is no longer part of the
+current target. A refused, failed, cancelled or otherwise failed upload
+publishes nothing, including a cancellation or failure that lands while it was
+publishing: the previous set is put back and the staged one is discarded unless
+another process already holds it, and no upload can delete another request's
+staged source. A set a reader pinned before the rollback therefore keeps its
+bytes; it stops being published and the next publication prunes it. A published
+set is retained while it is current, while it is the set the current one
+replaced, and while a reader still holds it: pruning never deletes a set an open
+view is reading, so a publication cannot pull bytes out from under an operation
+in progress. A publisher that starts up also drops what a dead publisher left
+behind, including the set the current one replaced, so a retention count settles
+at one live set once no view holds an older one.
+
+Everything that decides what `current` means is one decision, serialized across
+processes by a `flock` on `.targets` itself, held exclusively by a publication,
+an adoption, a migration, a rollback and the cleanup that drops plain files. The
+check such a sequence makes and the switch it makes are inside that lock, so a
+sequence paused in the middle resumes into the state it produced instead of
+reverting a publication that landed meanwhile, and nothing replaces the files
+another sequence is copying. A publication that cannot take the lock publishes
+nothing and answers `503` with a `detail` saying another operation is deciding
+this artifact: a caller retries rather than having its upload interleave. A read
+that has to decide the same thing — adopting a legacy directory, migrating a
+dereferenced copy — waits for the sequence in progress and then reads the state
+it left, so a copy never races a publication that replaces its source.
 
 An artifact directory published before the switch existed keeps its target files
 as plain files, which no single rename can replace together. Its first read or
@@ -248,7 +264,8 @@ publication copies them into one complete immutable epoch and switches to it, so
 such a directory is either entirely legacy or a complete set, never half of
 each — a copy rather than a move, because an adoption that dies before the switch
 then still leaves the whole legacy set readable. The target file exists twice for
-the length of that adoption.
+the length of that adoption. The copy happens under the decision lock, so the
+plain files cannot be replaced while they are copied.
 
 The `current` pointer has one answer per form, so that a copied or restored
 artifact directory is read as the target it holds instead of failing:
@@ -257,13 +274,14 @@ artifact directory is read as the target it holds instead of failing:
 | --- | --- | --- |
 | link to an epoch (what a publication writes) | that epoch | switches to the new set |
 | real directory (`cp -rL`, `rsync -L`, `copytree` without links, a restored backup) | that directory is the set; its first use copies it into an epoch, links it and replaces the directory | migrates, then switches |
+| real directory with no files in it | no target; legacy plain names if any | drops the directory, then publishes |
 | absent (no upload yet, or a snapshot copied without `.targets`) | legacy plain names if any, otherwise no target | publishes the first set |
 | dangling link (an epoch the copy or restore did not bring) | no target; legacy plain names if any | replaces the link |
 | plain file (a tool that stored the link as its content) | no target; legacy plain names if any | replaces the file |
 | unreadable (permissions, unmounted volume) | the `OSError` reaches the caller | the `OSError` reaches the caller and nothing staged is moved |
 
-A copy tool produces the first five forms; the sixth is produced by a permission
-or mount failure and is never reported as an artifact that has no target, which
+A copy tool produces the first six forms; the last is produced by a permission or
+mount failure and is never reported as an artifact that has no target, which
 would silently drop a published set from every read.
 
 Consistency is per logical operation, not across time. A reader that needs more
@@ -280,11 +298,24 @@ The pin is a kernel `flock` on the epoch directory — shared to read, exclusive
 delete or to stage — so it is visible to every process, not only the one that
 took it: a child worker that publishes or prunes leaves the set its parent is
 reading alone, and the kernel drops the hold when the reader closes the view or
-its process dies. A pruner deletes only a set it can take exclusively itself, so
-a set being read, adopted or staged is never deleted, and a publisher holds its
-staged epoch exclusively until the switch and fails closed if that claim was
-lost, rather than publishing a name that points at nothing. Selecting a set and
-holding it are one critical section, so no publication lands in between.
+its process dies. A pruner and a rollback delete only a set they can take
+exclusively themselves, so a set being read, adopted or staged is never deleted,
+and a publisher holds its staged epoch exclusively until the switch and fails
+closed if that claim was lost, rather than publishing a name that points at
+nothing.
+
+What an artifact with nothing published pins is the layout itself: the view holds
+the decision lock shared for as long as it is open, so no publication can move
+the files it reads into an epoch beneath it — the artifact's public names cannot
+start resolving to a set the view never pinned. A publication attempted while
+such a view is open answers `503` like any other one that cannot take the lock.
+
+An epoch is selected and held in one step, and the selection retries until the
+view holds an epoch it named: two publications can land between one look and the
+next, and a retry — not a wider critical section — is what keeps them from
+leaving the view with nothing. The decision lock is what makes one publication
+sequence atomic; the per-artifact lock is process-local and only orders uploads
+within one process.
 
 The guarantees stop where the reader stops. A hold lives in the process that
 took it: when a worker dies its hold dies with it, and nothing protects a file
@@ -292,7 +323,8 @@ that another process still tries to read afterwards. Nothing protects a returned
 *path* either once its view is gone — a path names bytes a later publication may
 delete — so an operation that hands out a target path hands out the view with it
 or does its work inside it, and a download response keeps its view until the
-response has been sent.
+response has been sent and releases it when sending fails. A response object that
+is never sent and never collected keeps its view: nothing else can release it.
 
 ## Document Resource Limits — Both Uploads (issue #53)
 
