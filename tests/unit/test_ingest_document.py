@@ -204,5 +204,8 @@ def test_docx_read_splits_reported_images_from_unread_text(tmp_path: Path) -> No
 
     _text, reported, lost_text = read_ingested_document(path)
 
-    assert any("image" in message.lower() for message in reported)
+    # The split is the property, not the wording: one reported gap, and it is
+    # the non-blocking picture (#49 c16 rewrote the sentence).
+    assert len(reported) == 1
+    assert "visual element" in reported[0]
     assert lost_text == []
