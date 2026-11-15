@@ -771,13 +771,16 @@ def _write_single_page_pdf(
     bold_font: str = "Helvetica-Bold",
     width_pt: float = 612,
     height_pt: float = 792,
+    media_box: str | None = None,
 ) -> Path:
+    """Write a single-page text PDF, optionally declaring an exact `/MediaBox`."""
     content = "\n".join(operations).encode("ascii")
+    box = media_box or f"0 0 {width_pt:g} {height_pt:g}"
     objects = [
         b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
         b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n",
         (
-            f"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 {width_pt:g} {height_pt:g}] "
+            f"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [{box}] "
             "/Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >> endobj\n"
         ).encode("ascii"),
         (

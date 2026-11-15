@@ -1243,20 +1243,28 @@ Enforcement sits in the existing owners, not in each caller:
   so `check_pdf_pages` refuses page count and page geometry before any page text
   is extracted, and `app/ingestion/ingest_document.py` runs both the geometry
   step and the whole parse in a bounded child process (`run_bounded_child`)
-  because a timeout around a thread does not stop a blocked parser;
+  because a timeout around a thread does not stop a blocked parser. The reader
+  itself refuses a box whose own sides are unusable (`check_declared_page_box`:
+  `x1 <= x0`, `y1 <= y0`, or a non-finite side) before the parser can normalise
+  it, because PDF Reference 3.8.4 allows a rectangle drawn from any two opposite
+  corners and pdfplumber sorts the corners, reporting a declared `[0 0 -612 792]`
+  as a normal 612 pt page. An inverted box is therefore refused rather than
+  repaired: the conversion cannot say what such a page is, and normalising it
+  would erase the only evidence that its own declaration was unusable;
 - raster: the shared rasterizers (`app/pipeline/rendering._render_pages`,
   `app/template_analysis/visual_comparator._render_pdf`) apply the geometry
   policy to each page's DECLARED box — the reading `read_pdf_page_sizes` and
-  ingestion use, including a zero, negative, infinite or NaN side — before page
-  1 allocates anything. The bitmap itself allocates at PDFium's interpreted
-  size, so that interpreted size is what `RasterPixelBudget` charges; where the
-  two disagree the declared box decides the policy and the interpreted size
-  decides the pixels. This matters because PDFium can interpret a degenerate
-  box as a usable page (a zero-width `/MediaBox` becomes the default 612 pt
-  width) and would otherwise render a document ingestion refuses. Page count,
-  every page's geometry and the summed pixels are charged before page 1
-  allocates a bitmap, so a document that will be refused renders nothing; there
-  is no partial raster set to clean up;
+  ingestion use, including a zero, negative, infinite or NaN side and the
+  inverted box the reader refuses before pdfplumber can sort its corners into a
+  usable page — before page 1 allocates anything. The bitmap itself allocates
+  at PDFium's interpreted size, so that interpreted size is what
+  `RasterPixelBudget` charges; where the two disagree the declared box decides
+  the policy and the interpreted size decides the pixels. This matters because
+  PDFium can interpret a degenerate box as a usable page (a zero-width
+  `/MediaBox` becomes the default 612 pt width) and would otherwise render a
+  document ingestion refuses. Page count, every page's geometry and the summed
+  pixels are charged before page 1 allocates a bitmap, so a document that will
+  be refused renders nothing; there is no partial raster set to clean up;
 - in-process parses: `app/resource_limits.bounded_pdf_pages` is the only way a
   parent-side parse touches a `pdfplumber` or `pypdf` document's pages
   (measurement, rendering, evidence including the diagnostic `measure` tool,

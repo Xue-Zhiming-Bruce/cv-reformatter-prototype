@@ -324,6 +324,28 @@ def check_pdf_pages(page_sizes: Sequence[Sequence[float]]) -> None:
             )
 
 
+def check_declared_page_box(box: Sequence[float]) -> None:
+    """Refuse a declared page box whose own sides are not a usable size.
+
+    Read before the parser normalises it. PDF Reference 3.8.4 explicitly allows
+    a rectangle written from any two opposite corners, and pdfplumber swaps the
+    corners to suit its own coordinate space, which turns a declared
+    `[0 0 -612 792]` into a 612 pt wide page. The conversion cannot say what such
+    a page is, and the swap erases the only evidence that the declaration was
+    unusable, so the reader refuses it instead of normalising it.
+    """
+    x0, y0, x1, y1 = (float(value) for value in box)
+    width, height = x1 - x0, y1 - y0
+    if not (
+        math.isfinite(width) and math.isfinite(height) and width > 0 and height > 0
+    ):
+        _refuse(
+            "pdf_page_geometry",
+            f"A PDF page declares the box {x0:g} {y0:g} {x1:g} {y1:g}; every page box "
+            "must be a finite, positive size as declared.",
+        )
+
+
 def _parse_deadline() -> float:
     return time.monotonic() + LOCAL_PARSE_TIMEOUT_SECONDS
 
