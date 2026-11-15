@@ -14,6 +14,7 @@ from docx.shared import Inches
 
 from app.extraction.coverage_audit import audit_segmentation_lines
 from app.ingestion.docx_reader import (
+    ExtractedDocxContent,
     ExtractedTable,
     read_docx,
     unread_content_messages,
@@ -1535,31 +1536,23 @@ def test_read_docx_resolves_a_drawing_against_the_part_that_holds_it(
     assert limitation.blocks_source_review is False
 
 
-def test_read_docx_names_text_a_vector_image_holds(tmp_path: Path) -> None:
-    """An SVG is XML: a text node in it draws a character this reader never read."""
+def _drawing_of_vector_image(tmp_path: Path, svg: str) -> ExtractedDocxContent:
+    """A resume holding one drawing whose picture part is this vector image."""
     path = tmp_path / "resume.docx"
     document = Document()
-    paragraph = document.add_paragraph("Skills: Python")
-    svg_id = _add_xml_part(
-        document,
-        "/word/media/image1.svg",
-        "image/svg+xml",
+    document.add_paragraph("Skills: Python")
+    _add_svg_drawing(document, svg)
+    document.save(path)
+    return read_docx(path)
+
+
+def test_read_docx_names_text_a_vector_image_holds(tmp_path: Path) -> None:
+    """An SVG is XML: a text element in it draws a character this reader never read."""
+    content = _drawing_of_vector_image(
+        tmp_path,
         '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/>'
         "<text>SVG LABEL</text></svg>",
-        RT.IMAGE,
     )
-    paragraph._p.append(
-        parse_xml(
-            f'<w:r {nsdecls("w", "a", "wp", "r")}>'
-            "<w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic>"
-            '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
-            f'<a:blip r:embed="{svg_id}"/>'
-            "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
-        )
-    )
-    document.save(path)
-
-    content = read_docx(path)
 
     assert "SVG LABEL" not in content.plain_text
     (limitation,) = content.limitations
@@ -1567,30 +1560,75 @@ def test_read_docx_names_text_a_vector_image_holds(tmp_path: Path) -> None:
     assert limitation.blocks_source_review is True
 
 
+def test_read_docx_names_text_an_svg_prefix_does_not_hide(tmp_path: Path) -> None:
+    """A local name decides the element, so a namespace prefix cannot hide text."""
+    content = _drawing_of_vector_image(
+        tmp_path,
+        '<s:svg xmlns:s="http://www.w3.org/2000/svg"><s:text>LOST SVG TEXT</s:text>'
+        "</s:svg>",
+    )
+
+    assert "LOST SVG TEXT" not in content.plain_text
+    (limitation,) = content.limitations
+    assert limitation.kind == "embedded_part"
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_names_a_tspan_only_vector_image_holds(tmp_path: Path) -> None:
+    """A ``tspan`` draws a character too, so it is text as much as ``text`` is."""
+    content = _drawing_of_vector_image(
+        tmp_path,
+        '<svg xmlns="http://www.w3.org/2000/svg"><tspan>TSPAN TEXT</tspan></svg>',
+    )
+
+    (limitation,) = content.limitations
+    assert limitation.kind == "embedded_part"
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_names_a_vector_image_that_does_not_parse(tmp_path: Path) -> None:
+    """A part this reader cannot parse is not known to be pixels, so it is named."""
+    content = _drawing_of_vector_image(
+        tmp_path, '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1"'
+    )
+
+    (limitation,) = content.limitations
+    assert limitation.kind == "embedded_part"
+    assert limitation.blocks_source_review is True
+
+
 def test_read_docx_keeps_a_text_free_vector_image_as_pixels(tmp_path: Path) -> None:
     """A vector icon draws shapes, not characters, so it stays a reported picture."""
-    path = tmp_path / "resume.docx"
-    document = Document()
-    paragraph = document.add_paragraph("Skills: Python")
-    svg_id = _add_xml_part(
-        document,
-        "/word/media/image1.svg",
-        "image/svg+xml",
+    content = _drawing_of_vector_image(
+        tmp_path,
         '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h1v1z"/></svg>',
-        RT.IMAGE,
     )
-    paragraph._p.append(
-        parse_xml(
-            f'<w:r {nsdecls("w", "a", "wp", "r")}>'
-            "<w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic>"
-            '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
-            f'<a:blip r:embed="{svg_id}"/>'
-            "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
-        )
-    )
-    document.save(path)
 
-    content = read_docx(path)
+    (limitation,) = content.limitations
+    assert limitation.kind == "visual_element"
+    assert limitation.blocks_source_review is False
+
+
+def test_read_docx_keeps_an_svg_comment_naming_text_as_pixels(tmp_path: Path) -> None:
+    """A comment is not an element, so text inside one is not text that renders."""
+    content = _drawing_of_vector_image(
+        tmp_path,
+        '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/>'
+        "<!-- <text is only a comment --></svg>",
+    )
+
+    (limitation,) = content.limitations
+    assert limitation.kind == "visual_element"
+    assert limitation.blocks_source_review is False
+
+
+def test_read_docx_keeps_vector_metadata_as_pixels(tmp_path: Path) -> None:
+    """``title`` and ``desc`` describe the image; a viewer draws neither."""
+    content = _drawing_of_vector_image(
+        tmp_path,
+        '<svg xmlns="http://www.w3.org/2000/svg"><title>Star icon</title>'
+        "<desc>A star, not a word</desc><path d=\"M0 0h1v1z\"/></svg>",
+    )
 
     (limitation,) = content.limitations
     assert limitation.kind == "visual_element"
@@ -1702,6 +1740,22 @@ def _add_xml_part(
         PackURI(partname), content_type, xml.encode(), document.part.package
     )
     return document.part.relate_to(part, relationship)
+
+
+def _add_svg_drawing(document: object, svg: str) -> None:
+    """Append a drawing whose picture part is this vector image."""
+    svg_id = _add_xml_part(
+        document, "/word/media/image1.svg", "image/svg+xml", svg, RT.IMAGE
+    )
+    document.add_paragraph()._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp", "r")}>'
+            '<w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic>'
+            '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            f'<a:blip r:embed="{svg_id}"/>'
+            "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
+        )
+    )
 
 
 def _chart_part_xml(label: str) -> str:
