@@ -76,12 +76,14 @@ def enforce_uploaded_document(contents: bytes, suffix: str) -> None:
         enforce_document_path(path)
 
 
-def enforce_document_path(path: str | Path) -> None:
+def enforce_document_path(path: str | Path) -> list[tuple[float, float]] | None:
     """Refuse a document file past the same policy, before any in-process parse.
 
     Uploaded bytes are already counted; a path this process did not receive
     through an upload (an operator-supplied target, for example) is measured
-    here so its later in-process parses are bounded by construction.
+    here so its later in-process parses are bounded by construction. A PDF
+    answers its child-measured page sizes, so a caller never reopens it just to
+    learn its page count or geometry.
     """
     document = Path(path)
     if document.stat().st_size > MAX_UPLOAD_BYTES:
@@ -92,9 +94,10 @@ def enforce_document_path(path: str | Path) -> None:
             status_code=413,
         )
     if document.suffix.lower() == ".pdf":
-        _run_child("geometry", document)
-    else:
-        enforce_zip_file(document, DOCX_ZIP_LIMITS)
+        payload = _run_child("geometry", document)
+        return [(float(width), float(height)) for width, height in payload["page_sizes"]]
+    enforce_zip_file(document, DOCX_ZIP_LIMITS)
+    return None
 
 
 def _run_child(mode: str, path: Path) -> dict[str, Any]:

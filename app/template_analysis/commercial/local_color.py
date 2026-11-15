@@ -19,6 +19,7 @@ from statistics import median
 
 import pdfplumber
 
+from app.resource_limits import bounded_pdf_pages
 from app.template_analysis.commercial.models import (
     MeasurementProvenance,
     NormalizedBadgeCluster,
@@ -137,7 +138,7 @@ def enrich_rules_from_local_pdf(
     rules: list[NormalizedRule] = []
     lines_by_page: dict[int, list[dict[str, object]]] = {}
     with pdfplumber.open(pdf_path) as pdf:
-        for page_number, page in enumerate(pdf.pages, start=1):
+        for page_number, page in enumerate(bounded_pdf_pages(pdf.pages), start=1):
             width, height = float(page.width), float(page.height)
             words = page.extract_words()
             lines_by_page[page_number] = page.extract_text_lines(strip=True)
@@ -634,7 +635,7 @@ def enrich_badges_from_local_pdf(
     clusters: list[NormalizedBadgeCluster] = []
     warnings = list(normalized.warnings)
     with pdfplumber.open(pdf_path) as pdf:
-        for page_number, page in enumerate(pdf.pages, start=1):
+        for page_number, page in enumerate(bounded_pdf_pages(pdf.pages), start=1):
             width, height = float(page.width), float(page.height)
             words = page.extract_words(extra_attrs=["non_stroking_color"])
             candidates, unmeasured = _page_badge_candidates(page, words)

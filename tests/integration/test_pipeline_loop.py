@@ -11,7 +11,7 @@ import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 from pydantic import BaseModel
@@ -34,7 +34,7 @@ import app.pipeline.evidence as evidence
 from tests.helpers.pipeline import (
     ROOT, LOCAL_TARGET as TARGET_PDF, LOCAL_INPUTS,
     local_pipeline, run_pipeline_fixture as _run_e5,
-    _pipeline_e_semantic_findings, synthetic_pipeline_inputs, synthetic_pipeline_candidate,
+    _pipeline_e_semantic_findings, _pod, synthetic_pipeline_inputs, synthetic_pipeline_candidate,
 )
 
 
@@ -4351,3 +4351,284 @@ def test_diagnostic_run_refuses_an_over_limit_target_before_parsing(tmp_path: Pa
 
     assert refusal.value.error_code == "pdf_page_count"
     assert not (tmp_path / "run").exists(), "a refused target created no run directory"
+
+
+def test_diagnostic_parse_budget_refuses_a_target_that_parses_past_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #53: the geometry preflight is not the only bound.
+
+    A preflight that succeeds still leaves the parent's own pdfplumber parse
+    unbounded, so every page-iterating parse checks the shared wall-clock budget
+    between pages and refuses the run before it reaches a lane or an artifact.
+    """
+    from pypdf import PdfWriter
+
+    from app import resource_limits
+    from app.pipeline import service
+    from tests.helpers.pdf_parse_budget import slow_page_extraction
+
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    target = tmp_path / "slow-target.pdf"
+    writer = PdfWriter()
+    for _ in range(3):
+        writer.add_blank_page(width=612, height=792)
+    with target.open("wb") as output:
+        writer.write(output)
+    # The child preflight of this small file finishes well inside this budget;
+    # the injected page cost is what the parent parse has to refuse.
+    monkeypatch.setattr(resource_limits, "LOCAL_PARSE_TIMEOUT_SECONDS", 0.2)
+    slow_page_extraction(monkeypatch)
+
+    run_dir, terminal, record = service.run_e5(
+        target,
+        tmp_path / "run",
+        candidate=synthetic_pipeline_candidate("Synthetic Candidate"),
+        **{key: value for key, value in inputs.items() if key != "target_pdf"},
+    )
+
+    assert terminal == "operational_abort"
+    assert record["summary"]["abort"]["error_code"] == "local_processing_timeout"
+    assert record["summary"]["abort"]["operation"] == "compile_two_column_state"
+    assert not list(run_dir.glob("*.png")), "a refused parse rendered a page"
+    assert not list(run_dir.glob("*.pdf")), "a refused parse produced a document"
+    assert not (run_dir / "c2_layout_state.json").exists(), "a refused parse compiled a layout"
+    assert not (run_dir / "lane_a").exists(), "a refused parse started a lane"
+    assert not (run_dir / "manifest.json").exists(), "a refused parse published a manifest"
+
+
+def _document_limit_refusal(*_args: Any, **_kwargs: Any) -> NoReturn:
+    from app.resource_limits import DocumentLimitError
+
+    raise DocumentLimitError(
+        "local_processing_timeout",
+        "The target parse ran past the local parse budget.",
+    )
+
+
+def test_a_lane_document_limit_refusal_ends_the_run_as_an_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #53: a refusal inside a lane is not a lane failure.
+
+    The loop's measure, render and gate parses share the document budget. A
+    refusal must end the run with its own code, not be degraded into a lane
+    failure or a provider-call error.
+    """
+    from app.pipeline import service
+
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    monkeypatch.setattr(service, "_e5_run_lane", _document_limit_refusal)
+
+    run_dir, terminal, record = service.run_e5(
+        inputs["target_pdf"],
+        tmp_path / "run",
+        candidate=synthetic_pipeline_candidate("Synthetic Candidate"),
+        **{key: value for key, value in inputs.items() if key != "target_pdf"},
+    )
+
+    assert terminal == "operational_abort"
+    abort = record["summary"]["abort"]
+    assert abort["error_code"] == "local_processing_timeout"
+    assert abort["operation"] == "lane_a_document_limit"
+    # What the run wrote before the lane stays as the record; nothing of the
+    # refused lane or of the publication exists.
+    assert (run_dir / "c2_layout_state.json").exists(), "the compiled state precedes the lane"
+    assert list(run_dir.glob("*.png")), "the shared overview precedes the lane"
+    assert not (run_dir / "lane_a").exists(), "a refused lane wrote a lane directory"
+    assert not (run_dir / "manifest.json").exists(), "a refused run published an artifact manifest"
+    assert not list(run_dir.glob("*.pdf")), "a refused run produced a document"
+
+
+def test_an_in_lane_refusal_keeps_the_files_the_lane_already_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #53: an in-lane abort keeps the lane's own files as the record.
+
+    The probe gate is the lane's second bounded parse, so refusing there happens
+    after the initial render: the lane's PDFs stay while nothing of the
+    comparison or the owner package is written.
+    """
+    from app.pipeline import service
+
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    gate_calls = {"count": 0}
+    real_gate = quality.content_gate
+
+    def refusing_gate(*args: Any, **kwargs: Any) -> Any:
+        gate_calls["count"] += 1
+        if gate_calls["count"] == 2:  # call 1 is the initial render's gate
+            _document_limit_refusal()
+        return real_gate(*args, **kwargs)
+
+    monkeypatch.setattr(quality, "content_gate", refusing_gate)
+
+    run_dir, terminal, record = service.run_e5(
+        inputs["target_pdf"],
+        tmp_path / "run",
+        candidate=synthetic_pipeline_candidate("Synthetic Candidate"),
+        probe_candidates={"probe_normal": synthetic_pipeline_candidate("Probe Candidate")},
+        **{key: value for key, value in inputs.items() if key != "target_pdf"},
+    )
+
+    assert terminal == "operational_abort"
+    assert record["summary"]["abort"]["operation"] == "lane_a_document_limit"
+    assert record["summary"]["abort"]["error_code"] == "local_processing_timeout"
+    assert (run_dir / "lane_a" / "render_1.pdf").exists(), "an in-lane abort deleted the lane's files"
+    assert (run_dir / "c2_layout_state.json").exists(), "the compiled state precedes the lane"
+    assert not (run_dir / "manifest.json").exists(), "a refused lane published an artifact manifest"
+    assert not (run_dir / "comparison_report.json").exists(), "a refused lane wrote the comparison"
+    assert not (run_dir / "owner_review").exists(), "a refused lane wrote the owner package"
+
+
+def test_a_target_overview_refusal_ends_the_run_as_an_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #53: the shared target overview render is a bounded raster too."""
+    from app.pipeline import service
+
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    monkeypatch.setattr(service, "_overview_pngs", _document_limit_refusal)
+
+    run_dir, terminal, record = service.run_e5(
+        inputs["target_pdf"],
+        tmp_path / "run",
+        candidate=synthetic_pipeline_candidate("Synthetic Candidate"),
+        **{key: value for key, value in inputs.items() if key != "target_pdf"},
+    )
+
+    assert terminal == "operational_abort"
+    assert record["summary"]["abort"] == {
+        "operation": "target_measurement",
+        "error": "The target parse ran past the local parse budget.",
+        "error_code": "local_processing_timeout",
+    }
+    # The compile finished before the shared target reads; the refusal stops
+    # there, so the compiled state is the last artifact and no page is rendered.
+    assert (run_dir / "c2_layout_state.json").exists(), "the compile precedes the target reads"
+    assert not list(run_dir.glob("*.png")), "a refused overview rendered a page"
+    assert not list(run_dir.glob("*.pdf")), "a refused run produced a document"
+    assert not (run_dir / "lane_a").exists(), "a refused run started a lane"
+    assert not (run_dir / "manifest.json").exists(), "a refused run published an artifact manifest"
+
+
+def test_a_target_read_refusal_after_the_overview_keeps_what_it_rendered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #53: the abort keeps what the run already wrote.
+
+    The overview render precedes the body-color read in the same guarded block,
+    so refusing at the read must keep the compiled state AND that render as the
+    record, not roll the run directory back.
+    """
+    from app.pipeline import service
+
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    monkeypatch.setattr(service, "_target_body_text_color_context", _document_limit_refusal)
+
+    run_dir, terminal, record = service.run_e5(
+        inputs["target_pdf"],
+        tmp_path / "run",
+        candidate=synthetic_pipeline_candidate("Synthetic Candidate"),
+        **{key: value for key, value in inputs.items() if key != "target_pdf"},
+    )
+
+    assert terminal == "operational_abort"
+    assert record["summary"]["abort"]["operation"] == "target_measurement"
+    assert record["summary"]["abort"]["error_code"] == "local_processing_timeout"
+    assert (run_dir / "c2_layout_state.json").exists(), "the compile precedes the target reads"
+    assert list(run_dir.glob("*.png")), "the overview rendered before the refused read"
+    assert not list(run_dir.glob("*.pdf")), "a refused run produced a document"
+    assert not (run_dir / "lane_a").exists(), "a refused run started a lane"
+    assert not (run_dir / "manifest.json").exists(), "a refused run published an artifact manifest"
+
+
+def test_the_measure_tool_refusal_crosses_the_attribution_handler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #53: the live attribution batch is a provider call UNLESS the failure
+    is a document refusal.
+
+    `measure` is one of its tools, so a refusal raised there must leave the
+    handler unchanged instead of becoming `attribution_live_call_failed` with the
+    lane continuing into deterministic attribution. Only the round machinery
+    around the batch is stubbed; the tool, the refusal and the handler are real.
+    """
+    from app import resource_limits
+    from app.pipeline import service
+    from app.pipeline.evidence import _pod_tools
+    from app.pipeline.runtime import RunBudget, RunTrace
+    from app.resource_limits import DocumentLimitError
+
+    finding = _e5_finding("finding-limit", "section.01", "gap")
+    pod = _pod(tmp_path)
+    escalated: list[str] = []
+
+    class VirtualClock:
+        now = 0.0
+
+        def monotonic(self) -> float:
+            self.now += 20.0
+            return self.now
+
+    def measure_then_fail(*_args: Any, **_kwargs: Any) -> None:
+        # The agent's first tool turn: the real `measure` closure over the target.
+        tools = {tool.__name__: tool for tool in _pod_tools(pod, RunBudget(max_model_requests=4, max_tool_calls=8), RunTrace(tmp_path))}
+        tools["measure_local_pdf"]()
+
+    lane = SimpleNamespace(
+        lane="a",
+        run=SimpleNamespace(
+            live=True,
+            pod=pod,
+            state=SimpleNamespace(),
+            derived={},
+            builder_reserve_requests=2,
+            candidate_review_scope=None,
+        ),
+        lane_budget=RunBudget(max_model_requests=8, max_tool_calls=16),
+        counter={"request": 0},
+        measurement_results=[],
+        measured_by_finding={},
+        attributions=[],
+        attempted_strategies=[],
+        representation_by_version={},
+        trace=RunTrace(tmp_path),
+        ledger=SimpleNamespace(
+            entries={service._ledger_key(finding): SimpleNamespace(last_measured_version=None)},
+            observe=lambda *_args, **_kwargs: None,
+        ),
+    )
+    round_state = SimpleNamespace(
+        round_no=1,
+        selected=[finding],
+        current_pdf=pod.target_pdf,
+        current_plan=None,
+        current_version=SimpleNamespace(version_id="render-target-laneA-v1"),
+        render_section_pages={},
+    )
+
+    request_id = finding.requested_measurement.request_id
+    result = SimpleNamespace(request_id=request_id, status="confirmed", delta_pt=8.0)
+    monkeypatch.setattr(service, "_e5_region_catalog", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(service.finding_disposition, "disposition_scope", lambda *_args, **_kwargs: None)
+    disposition = SimpleNamespace(kind="confirmed_different", model_dump=lambda **_kwargs: {"kind": "confirmed_different"})
+    monkeypatch.setattr(service.finding_disposition, "dispose_finding", lambda *_args, **_kwargs: disposition)
+    monkeypatch.setattr(service.finding_disposition, "payable", lambda selected, _dispositions: list(selected))
+    monkeypatch.setattr(service, "_e5_execute_measurement", lambda *_args, **_kwargs: (result, SimpleNamespace(request_id=request_id)))
+    monkeypatch.setattr(service, "_e5_attribution_batches", lambda payable, _measured: [list(payable)])
+    monkeypatch.setattr(service, "_builder_reserve_intact", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(service, "_attribution_request_allowance", lambda *_args, **_kwargs: 4)
+    monkeypatch.setattr(service, "_attribution_budget", lambda budget, _reserve: budget)
+    monkeypatch.setattr(service, "_lane_a_attribution_layout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_e5_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_e5_escalate", lambda _lane, strategy: escalated.append(strategy))
+    monkeypatch.setattr(service, "_live_attribution_batch", measure_then_fail)
+    monkeypatch.setattr(resource_limits.time, "monotonic", VirtualClock().monotonic)
+    monkeypatch.setattr(resource_limits, "LOCAL_PARSE_TIMEOUT_SECONDS", 10.0)
+
+    with pytest.raises(DocumentLimitError) as refusal:
+        service._e5_round_measure_and_attribute(lane, round_state)
+
+    assert refusal.value.error_code == "local_processing_timeout"
+    assert escalated == [], "the refusal was degraded into a provider-call failure"

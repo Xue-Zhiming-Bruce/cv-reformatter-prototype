@@ -337,9 +337,21 @@ per-page geometry, and a bounded parse child that is killed on timeout. Package
 refusals report entry position and size, never an entry name. Each case uses
 bytes built in the test, not a corpus file, so they run offline and cannot
 exhaust machine memory. `integration/test_pipeline_rendering.py` covers both
-rasterizers (page count, page side, and removal of pages written before a budget
-refusal) and `integration/test_pipeline_loop.py` covers the diagnostic target
-preflight; `integration/test_api_process.py` covers a chunked direct upload above
+rasterizers (page count and page side, and — counting real render calls — that a
+document refused for its page count, a later page's geometry or the summed pixel
+budget renders nothing at all), the shared per-page wall-clock parse budget on
+the generation gates, `unit/test_resource_limits.py` covers the same budget on
+the diagnostic `measure` tool's all-page walk, and
+`integration/test_pipeline_loop.py` covers the
+diagnostic target preflight and the same budget on its own target parse, and
+that a refusal raised inside a lane ends the run as `operational_abort` with
+`local_processing_timeout` instead of a lane failure, and that the live
+attribution batch's `measure` refusal crosses its handler instead of being
+recorded as a provider-call failure, and which artifacts each refusal point
+leaves: a refused compile or input parse writes neither the compiled layout
+state nor a render, a target-read abort keeps the compiled state (and the
+overview, when it rendered first), and an in-lane abort keeps those and the
+lane's own files, in every case without a manifest or a PDF; `integration/test_api_process.py` covers a chunked direct upload above
 the app limit, the structured reader-error shape and an event-loop ticker kept
 ticking during a slow parse; `integration/test_api_generate.py` covers a target
 upload refused before provider analysis that keeps the prior target output and

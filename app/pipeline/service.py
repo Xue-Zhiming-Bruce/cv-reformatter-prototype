@@ -20,6 +20,7 @@ from app.pipeline.defect_ledger import (
     _record_ledger_attribution,
 )
 from app.template_analysis.schemas import LayoutTemplateSpec
+from app.resource_limits import DocumentLimitError
 from app.pipeline import finding_disposition
 from app.pipeline.rendering import RUNS, _export_pinned_html_to_pdf, _render_pages
 from app.pipeline.runtime import (
@@ -1425,7 +1426,11 @@ def _e5_abort(
     """Write the operational abort and return the coordinator's result shape."""
     record = E5LoopRecord(target_id="unknown", target_sha256="0" * 64)
     record.summary["terminal_state"] = "operational_abort"
-    record.summary["abort"] = {"operation": operation, "error": str(error)}
+    abort: dict[str, Any] = {"operation": operation, "error": str(error)}
+    if isinstance(error, DocumentLimitError):
+        # A refusal keeps the code the policy raised, not only its message.
+        abort["error_code"] = error.error_code
+    record.summary["abort"] = abort
     (out_dir / "e5_state.json").write_text(
         json.dumps(record.model_dump(mode="json"), ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -1706,6 +1711,9 @@ def _e5_lane_terminal(
             entry["html"] = probe_html_path.name
             entry["pdf"] = probe_pdf_path.name
             entry["passed"] = all(gates.values())
+        except DocumentLimitError:
+            # A refusal is a document limit, not a probe failure: it ends the run.
+            raise
         except Exception as error:  # a probe failure is recorded, never a crash
             entry["error"] = str(error)[:200]
         probes_ok = probes_ok and bool(entry.get("passed"))
@@ -2451,6 +2459,9 @@ def _e5_round_review(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopStep:
     except CheckpointBudgetExceeded:
         _e5_escalate(ls, "reviewer_budget_exhausted")
         return _e5_stop("budget_exhausted", "reviewer_budget")
+    except DocumentLimitError:
+        # Overview renders and the reviewer's page reads are bounded parses.
+        raise
     except Exception as error:
         import traceback as _tb2
         ls.trace.add(
@@ -2736,6 +2747,10 @@ def _e5_round_measure_and_attribute(ls: _E5LaneState, rs: _E5RoundState) -> _E5L
                         "reason": str(error),
                     },
                 )
+            except DocumentLimitError:
+                # The `measure` tool parses the target: a refusal is not a
+                # failed provider call and must not degrade into one.
+                raise
             except Exception as error:
                 _e5_escalate(ls, f"attribution_live_call_failed:{type(error).__name__}: {str(error)[:150]}")
     for finding in _e5_findings_needing_fallback_attribution(
@@ -3004,6 +3019,9 @@ def _e5_round_build_candidate(ls: _E5LaneState, rs: _E5RoundState) -> _E5LoopSte
     except CheckpointBudgetExceeded:
         _e5_escalate(ls, "builder_budget_exhausted")
         return _e5_stop("budget_exhausted", "builder_budget")
+    except DocumentLimitError:
+        # The candidate render's gates parse the PDF under the same budget.
+        raise
     except Exception as error:
         if rs.candidate_audit_index is not None:
             _e5_update_builder_candidate(ls,
@@ -3346,6 +3364,9 @@ def _e5_run_lane(run: _E5RunState, lane: str) -> E5LaneRecord:
     except CheckpointBudgetExceeded:
         _e5_escalate(ls, "builder_initial_budget_exhausted")
         return _e5_lane_terminal(ls, "budget_exhausted", reason="builder_initial_budget")
+    except DocumentLimitError:
+        # The initial render's gates parse the PDF under the same budget.
+        raise
     except Exception as error:
         import traceback as _tb
         detail = _tb.format_exc()[-600:]
@@ -3432,21 +3453,24 @@ def run_e5(
     # This operator-supplied target is parsed in-process by the stages below
     # (page geometry, text flow, comparison rasters), so the same bounded child
     # and page policy decide here, before any of them run. An unbounded
-    # document is refused rather than parsed here.
+    # document is refused rather than parsed here, and the child's measured page
+    # sizes are the parent's page count and geometry: nothing reopens the file
+    # for them. Every stage that does parse the target takes its pages from
+    # ``resource_limits.bounded_pdf_pages``, so the parse itself is bounded too.
     from app.ingestion.ingest_document import enforce_document_path
 
-    enforce_document_path(target_pdf)
+    page_sizes = enforce_document_path(target_pdf)
     target_sha256 = _sha256_file(target_pdf)
     template_state = None
     template_render = None
     template_label_catalog = None
     if layout_spec is not None:
-        import pdfplumber
+        if page_sizes is None:
+            raise ValueError("A LayoutTemplateSpec target must be a PDF document")
         layout_spec = LayoutTemplateSpec.model_validate(layout_spec.model_dump())
-        with pdfplumber.open(target_pdf) as document:
-            if any(abs(page.width - layout_spec.page.width_pt) > 0.1 or abs(page.height - layout_spec.page.height_pt) > 0.1 for page in document.pages):
-                raise ValueError("LayoutTemplateSpec page dimensions do not match the target PDF")
-            template_render = render_layout_template(layout_spec, candidate, target_sha256=target_sha256, page_count=len(document.pages))
+        if any(abs(width - layout_spec.page.width_pt) > 0.1 or abs(height - layout_spec.page.height_pt) > 0.1 for width, height in page_sizes):
+            raise ValueError("LayoutTemplateSpec page dimensions do not match the target PDF")
+        template_render = render_layout_template(layout_spec, candidate, target_sha256=target_sha256, page_count=len(page_sizes))
         template_state = template_render[0]
         template_label_catalog = [
             PresentationLabel(label_id=f"label.template.{node.node_id}", text=node.label,
@@ -3634,12 +3658,17 @@ def run_e5(
 
     store = EvidenceStore(out_dir)
     store.register_version("structure_draft_v1", out_dir / "structure_draft.json", "shared evidence-linked draft")
-    page_size = _page_pt_size(target_pdf, 1)
-    shared_target_images = _overview_pngs(target_pdf, out_dir, "builder_target_shared")
-    body_color_context = _target_body_text_color_context(target_pdf)
-    # Measured ONCE, target-only, before any plan or render exists: the initial
-    # Builder and every lane A structure application read this same answer.
-    target_contact_labels = target_header_contact_label_context(target_pdf, state=state)
+    try:
+        page_size = _page_pt_size(target_pdf, 1)
+        shared_target_images = _overview_pngs(target_pdf, out_dir, "builder_target_shared")
+        body_color_context = _target_body_text_color_context(target_pdf)
+        # Measured ONCE, target-only, before any plan or render exists: the initial
+        # Builder and every lane A structure application read this same answer.
+        target_contact_labels = target_header_contact_label_context(target_pdf, state=state)
+    except DocumentLimitError as error:
+        # The bounded overview raster and the target reads can refuse here, before
+        # any lane exists; answer with the same abort the other refusals get.
+        return _e5_abort(out_dir, "target_measurement", error)
     initial_builder_evidence = _e5_builder_evidence_package(
         draft=draft,
         state=state,
@@ -3739,7 +3768,12 @@ def run_e5(
     # -- 5. Run the lanes (fresh contexts; lane B never sees lane A output) --
     for lane in lanes:
         started_lane = time.time()
-        record = _e5_run_lane(run_state, lane)
+        try:
+            record = _e5_run_lane(run_state, lane)
+        except DocumentLimitError as error:
+            # A refusal raised inside a lane (measure, render or gate parse) ends
+            # the run with its own code, like every pre-lane refusal.
+            return _e5_abort(out_dir, f"lane_{lane}_document_limit", error)
         record.summary["elapsed_seconds"] = round(time.time() - started_lane, 1)
         record.summary["estimated_provider_cost"] = _estimate_lane_cost(record, pricing)
         lane_records[lane] = record
