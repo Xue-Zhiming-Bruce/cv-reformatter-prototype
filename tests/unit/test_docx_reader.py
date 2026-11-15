@@ -2,6 +2,7 @@ from collections import Counter
 from pathlib import Path
 import base64
 import io
+import zipfile
 
 import pytest
 from docx import Document
@@ -1623,11 +1624,11 @@ def test_read_docx_keeps_an_svg_comment_naming_text_as_pixels(tmp_path: Path) ->
 
 
 def test_read_docx_keeps_vector_metadata_as_pixels(tmp_path: Path) -> None:
-    """``title`` and ``desc`` describe the image; a viewer draws neither."""
+    """``title``, ``desc`` and ``metadata`` describe the image; no viewer draws them."""
     content = _drawing_of_vector_image(
         tmp_path,
         '<svg xmlns="http://www.w3.org/2000/svg"><title>Star icon</title>'
-        "<desc>A star, not a word</desc><path d=\"M0 0h1v1z\"/></svg>",
+        '<desc>A star, not a word</desc><metadata>edited by a tool</metadata></svg>',
     )
 
     (limitation,) = content.limitations
@@ -1651,10 +1652,10 @@ def test_read_docx_names_foreign_html_a_vector_image_holds(tmp_path: Path) -> No
     assert limitation.blocks_source_review is True
 
 
-def test_read_docx_keeps_a_vector_image_whose_foreign_html_is_empty(
+def test_read_docx_names_a_vector_image_whose_foreign_html_is_empty(
     tmp_path: Path,
 ) -> None:
-    """A ``foreignObject`` that holds no character draws no character."""
+    """A ``foreignObject`` holds HTML this reader does not read, empty or not."""
     content = _drawing_of_vector_image(
         tmp_path,
         '<svg xmlns="http://www.w3.org/2000/svg"><foreignObject width="1" height="1"/>'
@@ -1662,8 +1663,92 @@ def test_read_docx_keeps_a_vector_image_whose_foreign_html_is_empty(
     )
 
     (limitation,) = content.limitations
-    assert limitation.kind == "visual_element"
-    assert limitation.blocks_source_review is False
+    assert limitation.kind == "embedded_part"
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_names_a_vector_image_whose_foreign_html_is_whitespace(
+    tmp_path: Path,
+) -> None:
+    """Whitespace is not evidence: the markup beside it is still HTML."""
+    content = _drawing_of_vector_image(
+        tmp_path,
+        '<svg xmlns="http://www.w3.org/2000/svg"><foreignObject width="1" height="1">'
+        " \n </foreignObject></svg>",
+    )
+
+    (limitation,) = content.limitations
+    assert limitation.kind == "embedded_part"
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_names_a_vector_image_whose_foreign_input_holds_a_value(
+    tmp_path: Path,
+) -> None:
+    """An HTML ``input`` paints its value, which no character data holds."""
+    content = _drawing_of_vector_image(
+        tmp_path,
+        '<svg xmlns="http://www.w3.org/2000/svg"'
+        ' xmlns:xhtml="http://www.w3.org/1999/xhtml">'
+        '<foreignObject width="10" height="10">'
+        '<xhtml:input value="HIDDEN INPUT SENTENCE"/></foreignObject></svg>',
+    )
+
+    assert "HIDDEN INPUT SENTENCE" not in content.plain_text
+    (limitation,) = content.limitations
+    assert limitation.kind == "embedded_part"
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_names_an_entity_a_vector_image_expands_to_text(
+    tmp_path: Path,
+) -> None:
+    """An entity the parser never expands stands for text nobody read."""
+    content = _drawing_of_vector_image(
+        tmp_path,
+        '<!DOCTYPE svg [<!ENTITY label "HIDDEN SVG SENTENCE">]>'
+        '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/>'
+        "&label;</svg>",
+    )
+
+    assert "HIDDEN SVG SENTENCE" not in content.plain_text
+    (limitation,) = content.limitations
+    assert limitation.kind == "embedded_part"
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_names_an_entity_a_vector_image_expands_to_an_element(
+    tmp_path: Path,
+) -> None:
+    """An entity standing for a ``text`` element is that element's text, unread."""
+    content = _drawing_of_vector_image(
+        tmp_path,
+        '<!DOCTYPE svg [<!ENTITY label "<text>HIDDEN SVG TEXT</text>">]>'
+        '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/>'
+        "&label;</svg>",
+    )
+
+    assert "HIDDEN SVG TEXT" not in content.plain_text
+    (limitation,) = content.limitations
+    assert limitation.kind == "embedded_part"
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_names_an_entity_in_paragraph_text(tmp_path: Path) -> None:
+    """A ``w:t`` holding an entity drops text past the reference, so it blocks."""
+    path = _paragraph_entity_docx(tmp_path)
+
+    content = read_docx(path)
+
+    assert "Jay Candidate" in content.plain_text
+    assert "here" not in content.plain_text
+    (limitation,) = content.limitations
+    assert (limitation.kind, limitation.location, limitation.count) == (
+        "unknown_inline",
+        "body",
+        1,
+    )
+    assert limitation.blocks_source_review is True
 
 
 def test_read_docx_names_a_vector_part_that_is_not_svg(tmp_path: Path) -> None:
@@ -1705,6 +1790,7 @@ def test_read_docx_keeps_a_vector_image_of_recognised_shapes(tmp_path: Path) -> 
         '<svg xmlns="http://www.w3.org/2000/svg">'
         '<defs><linearGradient id="g"><stop offset="0"/></linearGradient>'
         '<clipPath id="c"><rect width="1" height="1"/></clipPath></defs>'
+        '<style>.s{fill:red}</style>'
         '<g clip-path="url(#c)"><path d="M0 0h1v1z" fill="url(#g)"/>'
         '<circle r="1"/><ellipse rx="1" ry="1"/><line x2="1"/><polygon points="0,0"/>'
         '<polyline points="0,0"/><image href="pixel.png"/><use href="#g"/></g>'
@@ -1841,6 +1927,30 @@ def _add_xml_part(
         PackURI(partname), content_type, xml.encode(), document.part.package
     )
     return document.part.relate_to(part, relationship)
+
+
+def _paragraph_entity_docx(tmp_path: Path) -> Path:
+    """A resume whose ``w:t`` holds an entity reference, which python-docx cannot write."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jay Candidate")
+    document.add_paragraph("Also ENTITY here")
+    document.save(path)
+
+    with zipfile.ZipFile(path) as package:
+        parts = [(item, package.read(item.filename)) for item in package.infolist()]
+    body = next(data for item, data in parts if item.filename == "word/document.xml")
+    body = body.replace(b"ENTITY", b"&sentence;").replace(
+        b"<w:document",
+        b'<!DOCTYPE document [<!ENTITY sentence "HIDDEN SENTENCE">]><w:document',
+        1,
+    )
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as package:
+        for item, data in parts:
+            package.writestr(
+                item, body if item.filename == "word/document.xml" else data
+            )
+    return path
 
 
 def _svg_drawing_run(svg_id: str) -> object:

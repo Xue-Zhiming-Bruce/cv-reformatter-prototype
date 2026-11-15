@@ -86,13 +86,18 @@ Response fields:
   a control whose content is none of the blocks, rows, cells or runs the reader
   places, such as one inside tracked change markup —, simple field
   result, embedded `w:altChunk` or `w:subDoc`, text-bearing block, table or
-  inline wrapper it cannot read in place, a referenced note or comment body the
+  inline wrapper it cannot read in place, an entity reference the parser never
+  expands — text the entity stands for is real source text, so it blocks wherever
+  the node sits —, a referenced note or comment body the
   reader did not read, a part a drawing points at that is not an image — a chart,
   a diagram or an embedded object, blocking because its text lives in that part —,
   a vector image the reader cannot prove draws shapes only — an SVG text element, a
-  `foreignObject` holding HTML, an element outside the SVG graphics this reader
-  recognises, and a part that does not parse or whose root is not SVG all block,
-  while `title`, `desc` and `metadata` do not count —, and drawings and pictures
+  `foreignObject` (whatever it holds, empty or not, because it holds HTML this
+  reader does not read), an entity reference, an element outside the SVG graphics
+  this reader recognises, and a part that does not parse or whose root is not SVG
+  all block, while `title`, `desc` and `metadata` do not count and a `style`
+  element is allowed, so text a CSS `content:` rule paints is not detected —, and
+  drawings and pictures
   that hold only art, not blocking because OCR is out of scope; a drawing that
   carries a character is a text box instead, and blocks. One entry per kind and
   document part, counting each element found, so two drawings that point at one
