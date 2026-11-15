@@ -2398,9 +2398,21 @@ def _comparison_images(
         for kind, filenames in (
             ("target", report.target_page_filenames),
             ("generated", report.generated_page_filenames),
-            ("difference", [page.difference_filename for page in report.pages]),
         )
         for page_number, filename in enumerate(filenames, start=1)
+    ]
+    # A difference image is numbered by the page it compares, which is not always
+    # its position in the report.
+    entries += [
+        _comparison_image(
+            artifact_id,
+            artifact_dir,
+            variant,
+            "difference",
+            page.page_number,
+            page.difference_filename,
+        )
+        for page in report.pages
     ]
     return [
         *entries,

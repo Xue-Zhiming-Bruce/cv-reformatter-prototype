@@ -344,6 +344,17 @@ Request JSON:
 designer to the measured artifact-root template. The fallback is recorded in
 both `production_render_plan.json` and `generation_metadata.json`.
 
+The artifact's saved `target_format.json` is the only source of a generation
+gate decision. A request `target_format` restates what that saved set already
+records and is cross-checked against its `artifact_id`, `role` and
+`used_as_template_source`; a contradiction is refused with HTTP 400
+`target_format_mismatch` rather than used, so a caller cannot restate an
+uploaded target as a non-template reference and skip its gate. An artifact that
+owns a saved uploaded target is never rendered with the built-in template: a run
+that resolves no compiled `LayoutTemplateSpec` fails with HTTP 400
+`measured_layout_spec_required`, and the built-in template stays a no-target
+choice.
+
 The legacy `profile` request field is ignored; generation always renders from
 the persisted profile revision, merged with the request's disclosure choices. There is no silent fallback to an
 unapproved template.
@@ -764,6 +775,8 @@ profile revision. Existing `approved_profile_*` error codes remain compatible:
 | The reader reported visible source text it could not read (`segmentation_audit.status=incomplete`) | 409 | `source_text_unread` |
 | Uploaded target analysis is unsupported (`analysis_status=fallback_to_built_in`) | 409 | `uploaded_target_fallback_removed` |
 | Uploaded target has only a legacy v1 artifact-level spec (`structure_contract=legacy`) | 409 | `measured_layout_spec_required` |
+| Request `target_format` contradicts the artifact's saved target metadata | 400 | `target_format_mismatch` |
+| Artifact owns a saved uploaded target but resolves no compiled `LayoutTemplateSpec` | 400 | `measured_layout_spec_required` |
 | Designer strategy (`claude_designer`/`openai_designer`) without an approved design or without explicit `allow_existing_template=true` | 409 | `fallback_requires_approval` |
 
 Target-based generation additionally requires an approved layout-proof set
