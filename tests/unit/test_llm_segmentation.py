@@ -67,8 +67,8 @@ def test_coverage_audit_catches_missing_and_invented_lines() -> None:
     assert [item.line for item in audit.invented_or_altered_lines] == ["Rust"]
 
 
-def test_coverage_audit_cannot_pass_while_source_stays_unread() -> None:
-    """A reader that knows it left content out cannot hand back a passing audit."""
+def test_coverage_audit_cannot_pass_while_source_text_stays_unread() -> None:
+    """A reader that knows it left text out cannot hand back a passing audit."""
     unread = [
         "body: 1 text box found; text-box content is not read. Review the source "
         "document before approving this profile."
@@ -79,19 +79,43 @@ def test_coverage_audit_cannot_pass_while_source_stays_unread() -> None:
     )
 
     audit = audit_segmentation_lines(
-        "Jane Candidate\n", ["Jane Candidate"], unread_source_content=unread
+        "Jane Candidate\n",
+        ["Jane Candidate"],
+        unread_source_content=unread,
+        unread_text_source_content=unread,
     )
 
     assert audit.status == "incomplete"
     assert audit.approval_blocked is False
     assert audit.unread_source_content == unread
+    assert audit.unread_text_source_content == unread
     assert audit.detail is not None and "could not read" in audit.detail
     assert (
         audit_segmentation_lines(
-            "Jane Candidate\nPython\n", ["Jane Candidate"], unread_source_content=unread
+            "Jane Candidate\nPython\n",
+            ["Jane Candidate"],
+            unread_source_content=unread,
+            unread_text_source_content=unread,
         ).status
         == "failed"
     )
+
+
+def test_coverage_audit_passes_over_reported_content_that_carries_no_text() -> None:
+    """A drawing is reported for review, but it is not lost text."""
+    drawing = [
+        "body: 1 visual element found; image, drawing and chart text is not read; "
+        "OCR is out of scope. Review the source document before approving this profile."
+    ]
+
+    audit = audit_segmentation_lines(
+        "Jane Candidate\n", ["Jane Candidate"], unread_source_content=drawing
+    )
+
+    assert audit.status == "passed"
+    assert audit.unread_source_content == drawing
+    assert audit.unread_text_source_content == []
+    assert audit.detail is not None and "carries no text" in audit.detail
 
 
 def test_segmentation_schema_rejects_malformed_output() -> None:

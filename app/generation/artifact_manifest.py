@@ -16,6 +16,12 @@ from app.final_acceptance import FinalOutputIdentity, current_output_identity, f
 from app.generation.composition_report import COMPOSITION_REPORT_FILENAME
 from app.profile_approval import ProfileApprovalError, ProfileRevisionRepository, draft_sha256, load_current_approved_profile
 from app.generation.template_mapper import CLIENT_DISCLOSURE_VERSION
+from app.target_publication import TARGETS_DIRNAME, TargetSet
+from app.template_analysis.artifacts import (
+    ADOBE_RAW_FILENAME,
+    NORMALIZED_LAYOUT_FILENAME,
+    TARGET_EVIDENCE_FILENAME,
+)
 from app.template_analysis.schemas import LayoutTemplateSpec
 
 
@@ -130,16 +136,35 @@ class GenerationRepository(Protocol):
 
 
 def identify_file(directory: Path, path: Path) -> FileIdentity:
+    # Containment is checked on the resolved path; the recorded name is the
+    # published one, so a target set published behind a symlink keeps a stable
+    # identity while its content is still hashed from the real file.
     root, resolved = directory.resolve(), path.resolve()
-    relative = resolved.relative_to(root).as_posix()
+    resolved.relative_to(root)
+    relative = _published_name(Path(path).relative_to(Path(directory)))
     return FileIdentity(path=relative, sha256=file_sha256(resolved), size_bytes=resolved.stat().st_size)
+
+
+def _published_name(relative: Path) -> str:
+    """A pinned epoch file records the public name a reader would use."""
+    if relative.parts[:1] == (TARGETS_DIRNAME,) and len(relative.parts) == 3:
+        return relative.parts[2]
+    return relative.as_posix()
+
+
+def _published_path(view: TargetSet, path: Path) -> Path:
+    """A published name reads from the pinned epoch; any other path is itself."""
+    if path.parent == view.artifact_dir:
+        return view.read(path.name) or path
+    return path
 
 
 def capture_generation_inputs(
     directory: Path, *, revision_id: str, layout_path: Path | None,
-    target_filename: str | None,
+    target_path: Path | None, target_set: TargetSet | None = None,
 ) -> dict[str, FileIdentity]:
     """Freeze existing inputs before rendering; absent legacy evidence stays absent."""
+    view = target_set or TargetSet(directory)
     paths = {
         "profile_revision": directory / "profiles" / f"approved_profile_{revision_id}.json",
         "source_draft": directory / "candidate_profile.json",
@@ -151,13 +176,15 @@ def capture_generation_inputs(
     ):
         if (directory / name).is_file():
             paths[name] = directory / name
-    if target_filename is not None:
-        paths["target_document"] = directory / target_filename
-        for name in ("adobe_raw_response.json", "normalized_layout_evidence.json", "target_layout_evidence.json"):
-            if (directory / name).is_file():
-                paths[name] = directory / name
+    if target_path is not None:
+        # The target document and its analysis evidence come from one epoch, so
+        # the frozen set is never two uploads mixed.
+        paths["target_document"] = target_path
+        for name in (ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME, TARGET_EVIDENCE_FILENAME):
+            if (target_path.parent / name).is_file():
+                paths[name] = target_path.parent / name
     if layout_path is not None:
-        paths["approved_layout"] = layout_path
+        paths["approved_layout"] = _published_path(view, layout_path)
         paths["layout_proof_approval"] = directory / "layout_proofs" / "approval.json"
         if (layout_path.parent / "design_state.json").is_file():
             paths["approved_design_state"] = layout_path.parent / "design_state.json"

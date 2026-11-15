@@ -11,13 +11,18 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Chromium is the PDF renderer (app/generation/chrome_html_to_pdf.py). The
-# fonts-* packages only supply fallback glyphs: Lato/Charter/Roboto come from
-# the bundled woff2 assets, not from the system font set.
+# Chromium is the PDF renderer (app/generation/chrome_html_to_pdf.py); its exact
+# Debian package version is pinned because the recorded renderer identity binds
+# proof validity to the browser build. Update procedure: bump the chromium pin
+# in the same commit as a rendering regression, because the changed browser
+# identity invalidates existing layout-proof approvals and must be re-approved
+# (security updates stay possible; they are deliberate, reviewed pin bumps).
+# The fonts-* packages only supply fallback glyphs: Lato/Charter/Roboto come
+# from the bundled woff2 assets, not from the system font set.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
-      chromium \
+      chromium=156.0.8078.79-1~deb12u1 \
       curl \
       fontconfig \
       fonts-dejavu-core \

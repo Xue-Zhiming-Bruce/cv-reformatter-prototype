@@ -10,6 +10,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
+from app.generation import chrome_html_to_pdf
 from app.generation.template_mapper import CONTACT_FIELD_SLOTS, CONTACT_LABEL_FIELDS
 from app.pipeline.evidence import (
     MeasurementRequest,
@@ -345,17 +346,17 @@ def header_contact_label_evidence(
 
 
 def pinned_export_environment(summary: dict[str, Any]) -> dict[str, Any]:
-    """Pinned Chrome export environment with font-load determinism forced on.
+    """The pipeline lane's recorded export environment, or the actionable
+    missing-browser error.
 
-    --virtual-time-budget lets the print run only after the renderer's virtual
-    clock has drained pending font loads; the data-URI @font-face injection is
-    synchronous to parse but Chrome still decodes/fonts asynchronously, which
-    measurably shifted the date column by ~3.7pt between renders (run
-    20260910T182945Z, thirteenth freeze).
+    The virtual-time budget that keeps asynchronously decoded data-URI web
+    fonts from shifting geometry (~3.7pt date-column drift between renders,
+    thirteenth freeze) is part of the shared export profile, not a lane-only
+    flag appended here. Resolving the browser happens before the lane starts,
+    so a missing renderer fails before any provider request is spent.
     """
-    environment = _pinned_chrome_environment(summary)
-    environment["flags"] = [*environment.get("flags", []), "--virtual-time-budget=10000"]
-    return environment
+    chrome_html_to_pdf.require_chrome_binary()
+    return _pinned_chrome_environment(summary)
 
 def _bind_role_gap_anchors(
     request: MeasurementRequest,

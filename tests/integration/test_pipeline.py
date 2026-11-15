@@ -2107,3 +2107,76 @@ def test_cli_product_pagination_keeps_heads_and_honors_breaks(tmp_path: Path, mo
         assert content_gate(plan, html, damaged_pdf)["passed"]
         assert not content_shape_verification(state, plan, None, {}, damaged, {}, pdf_path)["passed"]
         assert not content_shape_verification(state, plan, None, {}, html, {}, damaged_pdf)["passed"]
+
+
+def test_agentic_render_reads_a_pinned_target_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pinned set inside the artifact's .targets renders; the run stays in the artifact.
+
+    Issue #51: the caller now hands the renderer the pinned epoch directory as
+    its evidence, while the run is written under the artifact's ``pipeline_runs``.
+    At ``60ed109`` the containment guard compared the run against the epoch, so
+    every pinned render was refused before it measured anything.
+    """
+    import shutil
+    from app.generation.agentic import AgenticGenerationError, render_agentic
+    from app.generation.template_mapper import build_client_render_context
+    from app.pipeline import run_models, service
+    from app.target_publication import TARGETS_DIRNAME
+    from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
+    from tests.helpers.pipeline import header_contact_inputs
+
+    (tmp_path / "source").mkdir()
+    inputs, spec, profile = header_contact_inputs(tmp_path / "source")
+    artifact_dir = tmp_path / "artifact_pinned_render"
+    epoch = artifact_dir / TARGETS_DIRNAME / "set-pinned"
+    epoch.mkdir(parents=True)
+    shutil.copy2(inputs["target_pdf"], epoch / "target_format_reference.pdf")
+    shutil.copy2(inputs["adobe_json"], epoch / ADOBE_RAW_FILENAME)
+    shutil.copy2(inputs["normalized_evidence"], epoch / NORMALIZED_LAYOUT_FILENAME)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-model-boundary")
+    monkeypatch.setenv("AGENTIC_MAX_REPAIR_ROUNDS", "1")
+    monkeypatch.setenv("AGENTIC_MAX_MODEL_REQUESTS", "12")
+    monkeypatch.setenv("AGENTIC_MAX_TOOL_CALLS", "24")
+    monkeypatch.setattr(service, "_live_lane_a_builder", lambda _budget, _trace, *, payload,
+                        images, proposal_id, audit: run_models.LaneAStructureProposal(
+                            proposal_id=proposal_id, agent="llm", sections=[]))
+    monkeypatch.setattr(service, "_live_reviewer_findings", lambda _images, **kwargs: [])
+    output_dir = artifact_dir / "pipeline_runs" / "attempt-1"
+
+    html, pdf, report = render_agentic(
+        context=build_client_render_context(profile), layout_spec=spec,
+        target_pdf=epoch / "target_format_reference.pdf", evidence_dir=epoch,
+        output_dir=output_dir)
+
+    assert html.is_file() and pdf.is_file()
+    assert (artifact_dir / report["run_directory"]).is_dir()
+    assert report["client_ready"] is False
+
+
+def test_agentic_render_still_rejects_a_run_outside_the_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The containment guard still refuses a run that leaves the owning artifact."""
+    from app.generation.agentic import AgenticGenerationError, render_agentic
+    from app.generation.template_mapper import build_client_render_context
+    from app.target_publication import TARGETS_DIRNAME
+    from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
+    from tests.helpers.pipeline import header_contact_inputs
+
+    (tmp_path / "source").mkdir()
+    inputs, spec, profile = header_contact_inputs(tmp_path / "source")
+    artifact_dir = tmp_path / "artifact_pinned_escape"
+    epoch = artifact_dir / TARGETS_DIRNAME / "set-pinned"
+    epoch.mkdir(parents=True)
+    (epoch / "target_format_reference.pdf").write_bytes(inputs["target_pdf"].read_bytes())
+    (epoch / ADOBE_RAW_FILENAME).write_bytes(inputs["adobe_json"].read_bytes())
+    (epoch / NORMALIZED_LAYOUT_FILENAME).write_bytes(inputs["normalized_evidence"].read_bytes())
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-model-boundary")
+
+    with pytest.raises(AgenticGenerationError, match="must stay inside"):
+        render_agentic(
+            context=build_client_render_context(profile), layout_spec=spec,
+            target_pdf=epoch / "target_format_reference.pdf", evidence_dir=epoch,
+            output_dir=tmp_path / "elsewhere")

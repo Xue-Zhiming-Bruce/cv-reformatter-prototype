@@ -27,6 +27,7 @@ from app.extraction.coverage_audit import SegmentationCoverageAudit
 from app.extraction.llm_extractor import LLMConfigurationError, build_llm_client
 from app.final_acceptance import current_output_identity, is_final_acceptance_current
 from app.generation.agentic import AgenticGenerationError, generation_strategy
+from app.generation import chrome_html_to_pdf
 from app.generation.chrome_html_to_pdf import HtmlToPdfExportError, export_html_to_pdf
 from app.generation.composition_report import (
     COMPOSITION_REPORT_FILENAME,
@@ -120,6 +121,7 @@ from app.template_analysis.visual_comparator import (
     VisualComparisonError,
     compare_pdf_layouts,
 )
+from app.target_publication import TargetSet
 from app.validation.missing_fields import apply_missing_field_detection
 
 
@@ -156,14 +158,20 @@ def new_artifact_id() -> str:
     return f"artifact_{uuid.uuid4().hex}"
 
 
-def prepare_artifact_dir(
-    outputs_dir: Path, artifact_id: str, *, allow_existing: bool = False
-) -> Path:
+def resolve_artifact_dir(outputs_dir: Path, artifact_id: str) -> Path:
+    """Validate the artifact id and storage path without creating anything."""
     if not is_safe_artifact_id(artifact_id):
         raise GenerationError(400, "Invalid artifact_id.")
     artifact_dir = outputs_dir / artifact_id
     if artifact_dir.exists() and not artifact_dir.is_dir():
         raise GenerationError(400, "Invalid artifact storage path.")
+    return artifact_dir
+
+
+def prepare_artifact_dir(
+    outputs_dir: Path, artifact_id: str, *, allow_existing: bool = False
+) -> Path:
+    artifact_dir = resolve_artifact_dir(outputs_dir, artifact_id)
     if artifact_dir.exists() and not allow_existing:
         raise GenerationError(409, "Artifact already exists.")
     artifact_dir.mkdir(parents=True, exist_ok=allow_existing)
@@ -188,9 +196,9 @@ def requested_profile_revision_id(
     return revision_id or legacy_version_id
 
 
-def load_saved_target_format(artifact_dir: Path) -> TargetFormatMetadata | None:
-    metadata_path = artifact_dir / "target_format.json"
-    if not metadata_path.exists():
+def load_saved_target_format(target_set: TargetSet) -> TargetFormatMetadata | None:
+    metadata_path = target_set.read("target_format.json")
+    if metadata_path is None:
         return None
     try:
         payload = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -201,9 +209,10 @@ def load_saved_target_format(artifact_dir: Path) -> TargetFormatMetadata | None:
 
 def validate_target_format_reference(
     artifact_id: str,
-    artifact_dir: Path,
+    target_set: TargetSet,
     target_format: TargetFormatMetadata,
-) -> None:
+) -> Path:
+    """Reject a reference that is not this artifact's published target; return its file."""
     expected_filename_by_role = {
         "docx_template": "target_format_template.docx",
         "pdf_reference": "target_format_reference.pdf",
@@ -217,11 +226,12 @@ def validate_target_format_reference(
     ):
         raise GenerationError(400, "Invalid target format reference.")
 
-    stored_path = artifact_dir / target_format.stored_filename
-    if not stored_path.exists() or not stored_path.is_file():
+    stored_path = target_set.read(target_format.stored_filename)
+    if stored_path is None:
         raise GenerationError(
             400, "The target format reference has not been uploaded for this artifact."
         )
+    return stored_path
 
 
 def load_normalized_candidate_document(artifact_dir: Path) -> NormalizedCandidateDocument:
@@ -269,6 +279,25 @@ def validate_profile_source_review(
                         item.model_dump(mode="json")
                         for item in segmentation_audit.invented_or_altered_lines
                     ],
+                },
+            )
+        if segmentation_audit.unread_text:
+            # No acknowledgment path exists yet for source text the reader never
+            # supplied, so a lost-text gap fails closed instead of passing. Content
+            # that carries no text (an image) is reported only and never reaches
+            # this list.
+            raise GenerationError(
+                409,
+                {
+                    "error_code": "source_text_unread",
+                    "message": (
+                        "The ingestion reader reported visible source text it could not "
+                        "read, so this profile cannot be approved or generated. No "
+                        "acknowledgment path for unread source text exists yet: the "
+                        "content must be removed from the source document, or an "
+                        "acknowledgment mechanism must be approved first."
+                    ),
+                    "unread_text_source_content": segmentation_audit.unread_text,
                 },
             )
     normalized_document = load_normalized_candidate_document(artifact_dir)
@@ -479,7 +508,7 @@ def require_layout_proof_approval(
     *,
     artifact_dir: Path,
     artifact_id: str,
-    target_format: TargetFormatMetadata,
+    target_pdf: Path,
     style_spec: TemplateStyleSpec | LayoutTemplateSpec,
     required_execution: str = "agentic-provider/1",
 ) -> Any:
@@ -533,9 +562,8 @@ def require_layout_proof_approval(
                 "message": "The layout-proof approval does not belong to this artifact.",
             },
         )
-    stored_path = artifact_dir / target_format.stored_filename
     try:
-        target_checksum = target_checksum_from_bytes(stored_path.read_bytes())
+        target_checksum = target_checksum_from_bytes(target_pdf.read_bytes())
     except OSError as exc:
         raise GenerationError(400, "Target format file is missing.") from exc
     if approval.target_checksum != target_checksum:
@@ -643,9 +671,10 @@ def write_debug_artifacts(
     debug_artifacts["client_render_context"] = str(render_context_path)
 
     if target_format is not None:
-        target_format_path = artifact_dir / "target_format.json"
-        write_json(target_format_path, target_format.model_dump(mode="json"))
-        debug_artifacts["target_format"] = str(target_format_path)
+        # The published set owns this name. Writing through the public symlink
+        # would rewrite an epoch its readers treat as immutable, so only the
+        # path is recorded.
+        debug_artifacts["target_format"] = str(artifact_dir / "target_format.json")
 
     return debug_artifacts
 
@@ -678,6 +707,10 @@ class PreparedGeneration:
     artifact_id: str
     artifact_dir: Path
     target_format: TargetFormatMetadata | None
+    #: The pinned set every target file of this generation comes from; holding it
+    #: keeps the set retained until rendering is done with ``target_document``.
+    target_set: TargetSet | None
+    target_document: Path | None
     profile_revision: ApprovedProfileVersion
     reviewed_profile: CandidateProfile
     render_context: Any
@@ -727,8 +760,11 @@ def prepare_generation(
         artifact_id,
         allow_existing=request.artifact_id is not None or target_format is not None,
     )
+    # One pinned view for this whole preparation: the metadata, the source and
+    # the spec it names all come from the set published when it started.
+    target_set = TargetSet(artifact_dir)
     if target_format is None and request.artifact_id is not None:
-        target_format = load_saved_target_format(artifact_dir)
+        target_format = load_saved_target_format(target_set)
     if target_format is not None and target_format.artifact_id != artifact_id:
         raise GenerationError(400, "target_format.artifact_id must match artifact_id.")
     fallback_warnings: list[str] = []
@@ -738,8 +774,12 @@ def prepare_generation(
             "built-in template is a normal no-target choice only and is not "
             "an escape for an uploaded target (retired 2026-08-28)."
         )
+    target_document = (
+        validate_target_format_reference(artifact_id, target_set, target_format)
+        if target_format is not None
+        else None
+    )
     if target_format is not None:
-        validate_target_format_reference(artifact_id, artifact_dir, target_format)
         if target_format.analysis_status == "fallback_to_built_in":
             raise GenerationError(
                 409,
@@ -785,9 +825,10 @@ def prepare_generation(
         and target_format.used_as_template_source
     ):
         try:
-            style_spec = load_layout_template_spec(
-                artifact_dir / LAYOUT_SPEC_FILENAME
-            )
+            spec_path = target_set.read(LAYOUT_SPEC_FILENAME)
+            if spec_path is None:
+                raise TargetAnalysisArtifactError(LAYOUT_SPEC_FILENAME)
+            style_spec = load_layout_template_spec(spec_path)
         except TargetAnalysisArtifactError as exc:
             raise GenerationError(
                 400,
@@ -870,7 +911,7 @@ def prepare_generation(
             settings,
             artifact_dir=artifact_dir,
             artifact_id=artifact_id,
-            target_format=target_format,
+            target_pdf=target_document,
             style_spec=style_spec,
             required_execution=required_execution,
         )
@@ -901,7 +942,8 @@ def prepare_generation(
                 if uses_uploaded_target
                 else None
             ),
-            target_filename=target_format.stored_filename if target_format else None,
+            target_path=target_document,
+            target_set=target_set,
         )
     except (OSError, ValueError) as exc:
         raise GenerationError(
@@ -944,6 +986,13 @@ def prepare_generation(
                 if uses_uploaded_target
                 else PIPELINE_RENDERER_VERSION
             ),
+            # The browser/font environment that made this PDF; the uploaded-target
+            # identity already binds it through active_renderer_version().
+            "rendering_environment": (
+                None
+                if uses_uploaded_target
+                else chrome_html_to_pdf.chrome_environment()
+            ),
             "layout_template_version": effective_layout_spec.template_version,
             "layout_spec_sha256": production_render_plan.layout_spec_sha256,
             "layout_spec_filename": (
@@ -958,6 +1007,8 @@ def prepare_generation(
         artifact_id=artifact_id,
         artifact_dir=artifact_dir,
         target_format=target_format,
+        target_set=target_set,
+        target_document=target_document,
         profile_revision=profile_revision,
         reviewed_profile=reviewed_profile,
         render_context=render_context,
@@ -994,9 +1045,7 @@ def render_prepared_generation(
                 layout_spec=prepared.style_spec,
                 render_context=prepared.render_context,
                 output_dir=artifact_dir,
-                target_pdf=(
-                    artifact_dir / prepared.target_format.stored_filename
-                ),
+                target_pdf=prepared.target_document,
                 max_model_requests=max_model_requests,
                 max_tool_calls=max_tool_calls,
             )
@@ -1168,7 +1217,7 @@ def record_generation(
     if target_format is not None and target_format.role == "pdf_reference":
         try:
             visual_comparison = compare_pdf_layouts(
-                artifact_dir / target_format.stored_filename,
+                prepared.target_document,
                 rendered.pdf_path,
                 artifact_dir,
             )

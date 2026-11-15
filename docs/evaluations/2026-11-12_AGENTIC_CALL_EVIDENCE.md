@@ -565,3 +565,31 @@ owner, none of which this lane chooses unilaterally:
    candidates section 4 rules out (reviewer static-fact re-send, round compaction,
    investigator inspections) all require new prompt bytes or new provider calls,
    so they would need their own issue and an owner-authorized live run.
+
+### AC3 branch 2: the blocker, recorded
+
+AC3's second branch is satisfied by recording what was attempted and why the
+first branch cannot be met on this evidence. That record is:
+
+- **Attempted.** Named one hypothesis (H1, section 4), implemented it as
+  `measurement_reuse_key` plus the single `_e5_reusable_measurement` policy
+  helper (section 5), wrote the focused regressions (section 10), and priced one
+  key-identical repeat (section 6, 0.7 ms against ~180 ms of local work).
+- **Blocked by the evidence, not by a safety gate that was removed.** The
+  2026-11-12 recording contains no request pair its identity accepts (section 4),
+  so the measured effect against that baseline is 0 ms — a second measurement
+  would report the same zero. Recovering the closest recorded pair
+  (`measure_la-001` / `measure_la-003`) needs a per-metric input set that drops
+  `intent` for the contact-label metric, which is a different change with its own
+  safety argument; and any prompt, review or routing change would need new
+  provider calls, which this issue does not authorize.
+- **Nothing was bought with it.** No validation, gate, budget guard or review
+  coverage was deleted or loosened to make the AC fit; the guard was added rather
+  than removed because without it an unmeasurable request could be answered with
+  a passing `confirmed` delta 0.0. Review coverage is still every page of the
+  final PDF per round (section 7).
+- **What would close branch 1.** A recording that contains a key-identical repeat
+  — either an owner-authorized live run whose proofs contain one, or a supplied
+  dataset that does — measured through the same accounting path (section 8). Until
+  then the issue stays open by this criterion's own wording, and no savings
+  figure is promised.

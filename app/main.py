@@ -1,16 +1,17 @@
+import asyncio
 import json
 import logging
 import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterator, Literal
+from typing import Any, Callable, Iterator, Literal, TypeVar
 from urllib.parse import quote
 
-import anyio
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -19,6 +20,7 @@ from pdfplumber.utils.exceptions import PdfminerException
 from pydantic import BaseModel, Field, ValidationError, model_validator
 import httpx
 
+from app.blocking_work import BlockingWorkSaturated, run_blocking
 from app.extraction.candidate_document_analyzer import build_candidate_field_evidence
 from app.extraction.candidate_schema import CandidateProfile
 from app.extraction.llm_extractor import (
@@ -62,6 +64,7 @@ from app.generation.service import (
     prepare_artifact_dir,
     requested_profile_revision_id,
     require_profile_revision,
+    resolve_artifact_dir,
     validate_profile_source_review,
     write_json,
     write_profile_debug_artifacts,
@@ -146,6 +149,7 @@ from app.template_analysis.layout_proof_validation import (
     load_layout_proof_render_result,
     load_variant_evidence,
 )
+from app.target_publication import TargetSet, publish_target_set
 from app.template_analysis.artifacts import (
     ADOBE_RAW_FILENAME,
     LAYOUT_SPEC_FILENAME,
@@ -267,6 +271,11 @@ def _prepare_artifact_dir(artifact_id: str, *, allow_existing: bool = False) -> 
     return prepare_artifact_dir(GENERATED_OUTPUTS_DIR, artifact_id, allow_existing=allow_existing)
 
 
+def _resolve_artifact_dir(artifact_id: str) -> Path:
+    """Validate the artifact id and path without creating the directory."""
+    return resolve_artifact_dir(GENERATED_OUTPUTS_DIR, artifact_id)
+
+
 def _require_profile_revision(
     *, artifact_dir: Path, artifact_id: str, profile_revision_id: str | None
 ):
@@ -276,6 +285,18 @@ def _require_profile_revision(
         artifact_id=artifact_id,
         profile_revision_id=profile_revision_id,
     )
+
+
+TARGET_FORMAT_FILENAME = "target_format.json"
+# Per-request target uploads stage here until the whole analysis succeeded; the
+# name is not a safe artifact id, so nothing can download it.
+TARGET_STAGING_DIRNAME = ".staging"
+PDF_TARGET_EVIDENCE_FILENAMES = (
+    NORMALIZED_LAYOUT_FILENAME,
+    TARGET_EVIDENCE_FILENAME,
+    LAYOUT_SPEC_FILENAME,
+    ADOBE_RAW_FILENAME,
+)
 
 
 DOWNLOADABLE_ARTIFACT_FILENAMES = {
@@ -582,6 +603,31 @@ SEGMENTATION_FAILED_MESSAGE = (
     "output; no fallback segmenter exists."
 )
 
+# Saturation is a "nothing was started, try again" answer, not a provider fault.
+BLOCKING_WORK_BUSY_DETAIL = {
+    "error_code": "server_busy",
+    "message": (
+        "This server is already running the maximum number of document and "
+        "provider operations it allows. Nothing was sent to a provider; retry "
+        "shortly."
+    ),
+}
+
+_T = TypeVar("_T")
+
+
+async def _run_off_loop(call: Callable[..., _T], *args: Any) -> _T:
+    """Run one synchronous parse/provider call outside the event loop."""
+    try:
+        return await run_blocking(call, *args)
+    except BlockingWorkSaturated as exc:
+        logger.warning("Blocking-work capacity is saturated: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=BLOCKING_WORK_BUSY_DETAIL,
+            headers={"Retry-After": "5"},
+        ) from exc
+
 
 def _build_extraction_client(provider: str | None) -> LLMClient:
     """Build the run's client; the client itself is the source of the run's mode."""
@@ -662,49 +708,50 @@ async def process_resume(file: UploadFile = File(...)) -> ProcessResponse:
         )
 
     contents = await read_upload_bounded(file)
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        tmp.write(contents)
-        tmp_path = Path(tmp.name)
+    with _refused_document_errors():
+        # The parse is a bounded child process; waiting for it in this
+        # coroutine would stall every other request for its duration.
+        (
+            extracted_text,
+            ingestion_limitations,
+            unread_text_limitations,
+        ) = await _run_off_loop(_parse_candidate_upload, contents, suffix)
 
+    provider = os.getenv("API_LLM_PROVIDER")
+    llm_client = _build_extraction_client(provider)
+    segmentation_started = time.monotonic()
     try:
-        with _refused_document_errors():
-            # The parse is a bounded child process; waiting for it in this
-            # coroutine would stall every other request for its duration.
-            extracted_text, ingestion_limitations = await anyio.to_thread.run_sync(
-                read_ingested_document, tmp_path
-            )
-
-        provider = os.getenv("API_LLM_PROVIDER")
-        llm_client = _build_extraction_client(provider)
-        segmentation_started = time.monotonic()
-        try:
-            segmentation_output = segment_and_extract_resume(extracted_text, llm_client)
-            audit = audit_segmentation_lines(
-                extracted_text,
-                segmentation_output_line_evidence(segmentation_output),
-                unread_source_content=ingestion_limitations,
-            )
-            profile, normalized_document = materialize_llm_segmentation(
-                extracted_text, segmentation_output
-            )
-        except LLMExtractionError as exc:
-            raise _segmentation_failed(exc) from exc
-        segmentation_metadata = SegmentationRunMetadata(
-            requested_mode="llm_first",
-            selected_mode="llm_first",
-            prompt_version=LLM_SEGMENTATION_PROMPT_VERSION,
-            provider=type(llm_client).__name__,
-            model=getattr(llm_client, "model", None),
-            elapsed_seconds=round(time.monotonic() - segmentation_started, 6),
-            usage={
-                **dict(getattr(llm_client, "total_usage", {})),
-                "provider_request_count": int(
-                    getattr(llm_client, "request_count", 0)
-                ),
-            },
+        # The provider request is dispatched here. Cancelling this handler
+        # (server shutdown or explicit task cancellation, not a client
+        # disconnect) cannot undo it and nothing retries it.
+        segmentation_output = await _run_off_loop(
+            segment_and_extract_resume, extracted_text, llm_client
         )
-    finally:
-        tmp_path.unlink(missing_ok=True)
+        audit = audit_segmentation_lines(
+            extracted_text,
+            segmentation_output_line_evidence(segmentation_output),
+            unread_source_content=ingestion_limitations,
+            unread_text_source_content=unread_text_limitations,
+        )
+        profile, normalized_document = materialize_llm_segmentation(
+            extracted_text, segmentation_output
+        )
+    except LLMExtractionError as exc:
+        raise _segmentation_failed(exc) from exc
+    segmentation_metadata = SegmentationRunMetadata(
+        requested_mode="llm_first",
+        selected_mode="llm_first",
+        prompt_version=LLM_SEGMENTATION_PROMPT_VERSION,
+        provider=type(llm_client).__name__,
+        model=getattr(llm_client, "model", None),
+        elapsed_seconds=round(time.monotonic() - segmentation_started, 6),
+        usage={
+            **dict(getattr(llm_client, "total_usage", {})),
+            "provider_request_count": int(
+                getattr(llm_client, "request_count", 0)
+            ),
+        },
+    )
 
     artifact_id = new_artifact_id()
     artifact_dir = _prepare_artifact_dir(artifact_id)
@@ -789,6 +836,199 @@ def _raise_docx_target_error(exc: Exception) -> None:
     raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
+def _analyze_pdf_target(
+    contents: bytes, staging_dir: Path
+) -> tuple[NormalizedLayoutEvidence, dict[str, Any], LayoutTemplateSpec]:
+    """Run one blocking PDF target analysis: Adobe Extract, measurement, compile.
+
+    ``run_adobe_layout`` polls with ``time.sleep``, so the whole step is one unit
+    of off-loop work. A dispatched Adobe job cannot be recalled or retried here.
+    The measured evidence is staged, never written into the artifact directory.
+    """
+    with tempfile.TemporaryDirectory() as temporary_dir:
+        temporary_pdf = Path(temporary_dir) / "target.pdf"
+        temporary_pdf.write_bytes(contents)
+        # The Adobe response and the local color/badge/rule parses can both
+        # meet a corrupt PDF; either answers in the refused-document shape.
+        with _refused_document_errors():
+            normalized, adobe_raw, _adobe_zip = run_adobe_layout(temporary_pdf)
+            # ADR 0002 amendment: Adobe outputs no text fill colors;
+            # color is measured locally from the same PDF (provenance
+            # local_pdf) before compilation. Blocks that stay colorless
+            # still fail the bridge closed.
+            normalized = enrich_colors_from_local_pdf(normalized, temporary_pdf)
+            normalized = enrich_badges_from_local_pdf(normalized, temporary_pdf)
+            normalized = enrich_rules_from_local_pdf(normalized, temporary_pdf)
+    evidence, measured_style_spec = build_design_evidence_from_normalized(
+        normalized,
+        target_checksum=target_checksum_from_bytes(contents),
+    )
+    spec = compile_measured_layout_template_spec(evidence, measured_style_spec)
+    write_json(staging_dir / NORMALIZED_LAYOUT_FILENAME, normalized.model_dump(mode="json"))
+    write_json(staging_dir / TARGET_EVIDENCE_FILENAME, evidence.model_dump(mode="json"))
+    write_json(staging_dir / LAYOUT_SPEC_FILENAME, spec.model_dump(mode="json"))
+    write_json(staging_dir / ADOBE_RAW_FILENAME, adobe_raw)
+    return normalized, adobe_raw, spec
+
+
+def _pdf_target_warnings(
+    normalized: NormalizedLayoutEvidence, adobe_raw: dict[str, Any]
+) -> list[str]:
+    """Warnings plus the cleanup state, so unconfirmed deletion is never silent."""
+    warnings = list(normalized.warnings)
+    cleanup_evidence = adobe_raw.get("asset_cleanup")
+    if cleanup_evidence and cleanup_evidence.get("cleanup_state") != "confirmed":
+        warnings.append(describe_asset_cleanup(cleanup_evidence))
+    return warnings
+
+
+def _analyzed_target_metadata(
+    target_format: TargetFormatMetadata,
+    artifact_id: str,
+    spec: LayoutTemplateSpec,
+    warnings: list[str],
+) -> TargetFormatMetadata:
+    """Mark one analyzed target as this artifact's generation template source."""
+    urls = {"layout_spec": artifact_url(artifact_id, LAYOUT_SPEC_FILENAME)}
+    if target_format.role == "pdf_reference":
+        urls |= {
+            "normalized_layout": artifact_url(artifact_id, NORMALIZED_LAYOUT_FILENAME),
+            "target_evidence": artifact_url(artifact_id, TARGET_EVIDENCE_FILENAME),
+            "adobe_raw": artifact_url(artifact_id, ADOBE_RAW_FILENAME),
+        }
+    return target_format.model_copy(
+        update={
+            "used_as_template_source": True,
+            "analysis_status": "analyzed",
+            "style_spec_url": urls["layout_spec"],
+            "analysis_artifact_urls": urls,
+            "analysis_warnings": warnings,
+            "structure_contract": spec.structure_contract,
+            "unsupported_features": list(spec.unsupported_features),
+        }
+    )
+
+
+def _new_target_staging_dir() -> Path:
+    """One private staging directory per upload, on the outputs volume."""
+    staging_root = GENERATED_OUTPUTS_DIR / TARGET_STAGING_DIRNAME
+    staging_root.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix="target-", dir=staging_root))
+
+
+def _publish_staged_target(
+    artifact_id: str,
+    staging_dir: Path,
+    metadata: TargetFormatMetadata,
+    filenames: tuple[str, ...],
+    abandoned: threading.Event,
+) -> None:
+    """Write the metadata last, then publish the whole set in one rename.
+
+    Nothing is visible to a reader until the switch, so the metadata never
+    describes a source from a different upload.
+    """
+    write_json(staging_dir / TARGET_FORMAT_FILENAME, metadata.model_dump(mode="json"))
+    publish_target_set(
+        _resolve_artifact_dir(artifact_id),
+        staging_dir,
+        (*filenames, TARGET_FORMAT_FILENAME),
+        abandoned,
+    )
+
+
+def _stage_target_upload(
+    artifact_id: str,
+    staging_dir: Path,
+    input_filename: str,
+    suffix: str,
+    contents: bytes,
+) -> TargetFormatMetadata:
+    """Write one uploaded target into its request's private staging directory."""
+    return _store_target_format(
+        artifact_id=artifact_id,
+        artifact_dir=staging_dir,
+        input_filename=input_filename,
+        suffix=suffix,
+        contents=contents,
+    )
+
+
+def _publish_pdf_target(
+    artifact_id: str,
+    input_filename: str,
+    suffix: str,
+    contents: bytes,
+    abandoned: threading.Event,
+) -> tuple[TargetFormatMetadata, LayoutTemplateSpec]:
+    """Stage, analyze and publish one PDF target; an abandoned call publishes nothing."""
+    staging_dir = _new_target_staging_dir()
+    try:
+        target_format = _stage_target_upload(
+            artifact_id, staging_dir, input_filename, suffix, contents
+        )
+        normalized, adobe_raw, spec = _analyze_pdf_target(contents, staging_dir)
+        metadata = _analyzed_target_metadata(
+            target_format, artifact_id, spec, _pdf_target_warnings(normalized, adobe_raw)
+        )
+        _publish_staged_target(
+            artifact_id,
+            staging_dir,
+            metadata,
+            (target_format.stored_filename, *PDF_TARGET_EVIDENCE_FILENAMES),
+            abandoned,
+        )
+        return metadata, spec
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+def _publish_docx_target(
+    artifact_id: str,
+    input_filename: str,
+    suffix: str,
+    contents: bytes,
+    abandoned: threading.Event,
+) -> tuple[TargetFormatMetadata, LayoutTemplateSpec]:
+    """Stage, analyze and publish one DOCX target; an abandoned call publishes nothing."""
+    staging_dir = _new_target_staging_dir()
+    try:
+        target_format = _stage_target_upload(
+            artifact_id, staging_dir, input_filename, suffix, contents
+        )
+        spec = analyze_target_docx(
+            staging_dir / target_format.stored_filename, staging_dir
+        )
+        metadata = _analyzed_target_metadata(
+            target_format, artifact_id, spec, list(spec.warnings)
+        )
+        _publish_staged_target(
+            artifact_id,
+            staging_dir,
+            metadata,
+            (target_format.stored_filename, LAYOUT_SPEC_FILENAME),
+            abandoned,
+        )
+        return metadata, spec
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+async def _publish_off_loop(
+    abandoned: threading.Event, call: Callable[..., _T], *args: Any
+) -> _T:
+    """Run one target publish unit off the loop; a cancelled caller abandons it.
+
+    The worker checks ``abandoned`` before the single publication rename, so a
+    cancelled handler either publishes nothing or leaves a complete set.
+    """
+    try:
+        return await _run_off_loop(call, *args, abandoned)
+    except asyncio.CancelledError:
+        abandoned.set()
+        raise
+
+
 @app.post("/api/target-format")
 async def upload_target_format(
     file: UploadFile = File(...),
@@ -805,34 +1045,26 @@ async def upload_target_format(
         )
 
     resolved_artifact_id = artifact_id or new_artifact_id()
+    # Validation only: nothing is created before a blocking slot is secured.
+    artifact_dir = _resolve_artifact_dir(resolved_artifact_id)
     contents = await read_upload_bounded(file)
     # Same bounded child as the candidate parse; keep it off the event loop, and
     # answer its reader errors in the refused-document shape like the candidate
     # route instead of letting a corrupt PDF escape as a server error.
     with _refused_document_errors():
-        await anyio.to_thread.run_sync(enforce_uploaded_document, contents, suffix)
-    artifact_dir = _prepare_artifact_dir(resolved_artifact_id, allow_existing=True)
-    analyzed_style_spec: LayoutTemplateSpec | None = None
+        await _run_off_loop(enforce_uploaded_document, contents, suffix)
+    abandoned = threading.Event()
+    target_format: TargetFormatMetadata
+    analyzed_style_spec: LayoutTemplateSpec
     if suffix == ".pdf":
         try:
-            with tempfile.TemporaryDirectory() as temporary_dir:
-                temporary_pdf = Path(temporary_dir) / "target.pdf"
-                temporary_pdf.write_bytes(contents)
-                normalized, adobe_raw, _adobe_zip = run_adobe_layout(temporary_pdf)
-                # ADR 0002 amendment: Adobe outputs no text fill colors;
-                # color is measured locally from the same PDF (provenance
-                # local_pdf) before compilation. Blocks that stay colorless
-                # still fail the bridge closed.
-                with _refused_document_errors():
-                    normalized = enrich_colors_from_local_pdf(normalized, temporary_pdf)
-                    normalized = enrich_badges_from_local_pdf(normalized, temporary_pdf)
-                    normalized = enrich_rules_from_local_pdf(normalized, temporary_pdf)
-            evidence, measured_style_spec = build_design_evidence_from_normalized(
-                normalized,
-                target_checksum=target_checksum_from_bytes(contents),
-            )
-            analyzed_style_spec = compile_measured_layout_template_spec(
-                evidence, measured_style_spec
+            target_format, analyzed_style_spec = await _publish_off_loop(
+                abandoned,
+                _publish_pdf_target,
+                resolved_artifact_id,
+                file.filename,
+                suffix,
+                contents,
             )
         except AdobeConfigurationError as exc:
             raise HTTPException(
@@ -852,92 +1084,20 @@ async def upload_target_format(
                 status_code=422,
                 detail=f"This target could not be measured: {exc}",
             ) from exc
-        # Saved analysis evidence already carries the cleanup state; repeat it
-        # as a warning so unconfirmed deletion is never shown as clean success.
-        cleanup_evidence = adobe_raw.get("asset_cleanup")
-        cleanup_warnings = (
-            [describe_asset_cleanup(cleanup_evidence)]
-            if cleanup_evidence and cleanup_evidence.get("cleanup_state") != "confirmed"
-            else []
-        )
-
-        target_format = _store_target_format(
-            artifact_id=resolved_artifact_id,
-            artifact_dir=artifact_dir,
-            input_filename=file.filename,
-            suffix=suffix,
-            contents=contents,
-        )
-        write_json(
-            artifact_dir / NORMALIZED_LAYOUT_FILENAME,
-            normalized.model_dump(mode="json"),
-        )
-        write_json(
-            artifact_dir / TARGET_EVIDENCE_FILENAME,
-            evidence.model_dump(mode="json"),
-        )
-        write_json(
-            artifact_dir / LAYOUT_SPEC_FILENAME,
-            analyzed_style_spec.model_dump(mode="json"),
-        )
-        write_json(artifact_dir / ADOBE_RAW_FILENAME, adobe_raw)
-        target_format = target_format.model_copy(
-            update={
-                "used_as_template_source": True,
-                "analysis_status": "analyzed",
-                "style_spec_url": artifact_url(
-                    resolved_artifact_id,
-                    LAYOUT_SPEC_FILENAME,
-                ),
-                "analysis_artifact_urls": {
-                    "normalized_layout": artifact_url(resolved_artifact_id, NORMALIZED_LAYOUT_FILENAME),
-                    "target_evidence": artifact_url(resolved_artifact_id, TARGET_EVIDENCE_FILENAME),
-                    "layout_spec": artifact_url(resolved_artifact_id, LAYOUT_SPEC_FILENAME),
-                    "adobe_raw": artifact_url(resolved_artifact_id, ADOBE_RAW_FILENAME),
-                },
-                "analysis_warnings": list(normalized.warnings) + cleanup_warnings,
-                "structure_contract": analyzed_style_spec.structure_contract,
-                "unsupported_features": list(analyzed_style_spec.unsupported_features),
-            }
-        )
     else:
-        target_format = _store_target_format(
-            artifact_id=resolved_artifact_id,
-            artifact_dir=artifact_dir,
-            input_filename=file.filename,
-            suffix=suffix,
-            contents=contents,
-        )
         try:
-            analyzed_style_spec = analyze_target_docx(
-                artifact_dir / target_format.stored_filename,
-                artifact_dir,
+            target_format, analyzed_style_spec = await _publish_off_loop(
+                abandoned,
+                _publish_docx_target,
+                resolved_artifact_id,
+                file.filename,
+                suffix,
+                contents,
             )
         except (TargetDocxAnalysisError, FileNotFoundError) as exc:
-            (artifact_dir / target_format.stored_filename).unlink(missing_ok=True)
             _raise_docx_target_error(exc)
-        target_format = target_format.model_copy(
-            update={
-                "used_as_template_source": True,
-                "analysis_status": "analyzed",
-                "style_spec_url": artifact_url(
-                    resolved_artifact_id,
-                    LAYOUT_SPEC_FILENAME,
-                ),
-                "analysis_artifact_urls": {
-                    "layout_spec": artifact_url(
-                        resolved_artifact_id,
-                        LAYOUT_SPEC_FILENAME,
-                    )
-                },
-                "analysis_warnings": list(analyzed_style_spec.warnings),
-                "structure_contract": analyzed_style_spec.structure_contract,
-                "unsupported_features": list(analyzed_style_spec.unsupported_features),
-            }
-        )
 
-    metadata_path = artifact_dir / "target_format.json"
-    write_json(metadata_path, target_format.model_dump(mode="json"))
+    metadata_path = artifact_dir / TARGET_FORMAT_FILENAME
     debug_artifacts = {
         "target_format": str(metadata_path),
         target_format.role: str(artifact_dir / target_format.stored_filename),
@@ -1194,8 +1354,9 @@ def create_layout_proofs(
     """Create and validate all three synthetic proof variants for a target."""
     _require_artifact(artifact_id)
     artifact_dir = GENERATED_OUTPUTS_DIR / artifact_id
+    target_set = TargetSet(artifact_dir)
     _target_format, style_spec, target_pdf, target_checksum = _layout_proof_context(
-        artifact_dir, artifact_id, body.design_id
+        artifact_dir, artifact_id, body.design_id, target_set=target_set
     )
     try:
         create_proof_variants(
@@ -1230,7 +1391,7 @@ def create_layout_proofs(
                 "options": ["reanalyze_target", "upload_new_target"],
             },
         ) from exc
-    return _layout_proof_status(artifact_id, artifact_dir)
+    return _layout_proof_status(artifact_id, artifact_dir, target_set)
 
 
 @app.get("/api/artifacts/{artifact_id}/layout-proofs", response_model=LayoutProofStatusResponse)
@@ -1673,9 +1834,28 @@ def _build_ledger(profile: CandidateProfile) -> LedgerSummary:
     return LedgerSummary(extracted=extracted_count, placed=extracted_count, needs_review=needs_review)
 
 
-def _read_candidate_resume_text(path: Path) -> tuple[str, list[str]]:
-    """Extraction text plus the source content the reader could not read."""
+def _read_candidate_resume_text(path: Path) -> tuple[str, list[str], list[str]]:
+    """Extraction text, every reported limitation, and those that lost text."""
     return read_ingested_document(path)
+
+
+def _parse_candidate_upload(
+    contents: bytes, suffix: str
+) -> tuple[str, list[str], list[str]]:
+    """Write and parse one uploaded resume, deleting the temp file in this call.
+
+    The file must outlive the parser, so the handler never owns it: a cancelled
+    handler returns while this call is still reading it.
+    """
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(contents)
+        tmp_path = Path(tmp.name)
+    try:
+        return _read_candidate_resume_text(tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 
 
 def _count_populated(value: Any) -> int:
@@ -1770,7 +1950,9 @@ def _resolve_download_artifact(artifact_id: str, filename: str) -> Path:
         COMPOSITION_REPORT_FILENAME,
     }:
         directory, manifest = generations.selected_output(directory)
-    artifact_path = directory / filename
+    # The pinned epoch copy is what was verified and what goes out: the public
+    # target name may switch to another set while the caller reads it.
+    artifact_path = TargetSet(directory).read(filename) or directory / filename
     if not artifact_path.exists() or not artifact_path.is_file():
         raise HTTPException(status_code=404, detail="Generated artifact not found.")
     if directory != GENERATED_OUTPUTS_DIR / artifact_id and generations is not None:
@@ -1800,9 +1982,10 @@ def _profile_repository() -> ProfileRevisionRepository | None:
 
 def _load_design_evidence(artifact_dir: Path) -> tuple[Any, TemplateStyleSpec | None]:
     """Rebuild from persisted Adobe evidence; never rerun an analyzer."""
-    analysis_path = artifact_dir / NORMALIZED_LAYOUT_FILENAME
-    metadata_path = artifact_dir / "target_format.json"
-    if not analysis_path.exists() or not metadata_path.exists():
+    target_set = TargetSet(artifact_dir)
+    analysis_path = target_set.read(NORMALIZED_LAYOUT_FILENAME)
+    metadata_path = target_set.read(TARGET_FORMAT_FILENAME)
+    if analysis_path is None or metadata_path is None:
         return None, None
     try:
         normalized = NormalizedLayoutEvidence.model_validate_json(
@@ -1813,8 +1996,8 @@ def _load_design_evidence(artifact_dir: Path) -> tuple[Any, TemplateStyleSpec | 
         )
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise DesignServiceError(f"Saved target analysis is invalid: {exc}") from exc
-    stored_path = artifact_dir / target_format.stored_filename
-    if not stored_path.exists():
+    stored_path = target_set.read(target_format.stored_filename)
+    if stored_path is None:
         return None, None
     if target_format.role != "pdf_reference":
         return None, None
@@ -1902,22 +2085,24 @@ def _require_artifact(artifact_id: str) -> None:
 
 
 def _load_generation_style_spec(
-    artifact_dir: Path,
+    target_set: TargetSet,
 ) -> LayoutTemplateSpec:
     """Load the sole uploaded-target generation contract: artifact-root v2."""
-    return load_layout_template_spec(artifact_dir / LAYOUT_SPEC_FILENAME)
+    return load_layout_template_spec(target_set.published_dir / LAYOUT_SPEC_FILENAME)
 
 
 def _layout_proof_context(
     artifact_dir: Path,
     artifact_id: str,
     design_id: str | None,
+    target_set: TargetSet | None = None,
 ) -> tuple[TargetFormatMetadata, LayoutTemplateSpec, Path, str]:
     """Resolve target metadata, the template spec, the visual-comparison target
     PDF, and the target checksum for layout-proof operations."""
     try:
         return resolve_layout_proof_context(
-            artifact_dir, artifact_id, design_id, repository=design_repository(DATABASE_URL)
+            artifact_dir, artifact_id, design_id,
+            repository=design_repository(DATABASE_URL), target_set=target_set,
         )
     except LayoutProofContextError as exc:
         detail = str(exc) if exc.error_code is None else {"error_code": exc.error_code, "message": str(exc)}
@@ -1925,20 +2110,24 @@ def _layout_proof_context(
 
 
 def _layout_proof_status(
-    artifact_id: str, artifact_dir: Path
+    artifact_id: str, artifact_dir: Path, target_set: TargetSet | None = None
 ) -> LayoutProofStatusResponse:
+    """Report one target's proof state from one pinned set."""
     target_checksum = ""
-    target_format = load_saved_target_format(artifact_dir)
+    target_set = target_set or TargetSet(artifact_dir)
+    target_format = load_saved_target_format(target_set)
     if target_format is not None:
-        stored_path = artifact_dir / target_format.stored_filename
+        stored_path = target_set.read(target_format.stored_filename)
         try:
-            if stored_path.exists():
+            if stored_path is not None:
                 target_checksum = target_checksum_from_bytes(stored_path.read_bytes())
         except OSError:
             target_checksum = ""
     layout_checksum = ""
     try:
-        style_spec = _load_generation_style_spec(artifact_dir)
+        # One view for the whole status: metadata, source and spec come from one
+        # set even when an upload switches it while this runs.
+        style_spec = _load_generation_style_spec(target_set)
         layout_checksum = layout_spec_checksum(style_spec)
     except Exception:
         pass

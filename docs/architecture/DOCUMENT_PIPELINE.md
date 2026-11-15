@@ -253,6 +253,30 @@ context and provider-neutral layout contract. Badge items retain their measured
 rounded geometry directly in CSS. Headless Chrome produces the deliverable
 from that same HTML; there is no DOCX renderer or corner approximation.
 
+`app/generation/chrome_html_to_pdf.py` owns that export: one versioned
+`ChromeExportProfile` defines the authoritative inputs (the template CSS `@page`
+rule still decides page size and margins), background and color printing,
+header/footer suppression, locale/timezone, font readiness, timeout and cleanup,
+and the native, agentic and offline-worker paths call it instead of assembling
+their own flags. A missing browser fails with the actionable message before a
+lane starts, not after provider requests were spent on a run that cannot render.
+
+Each export records browser identity (version; how it was resolved — explicit
+override, system path or vendor default — is provenance only, because the same
+build renders the same PDF however it was found), the bundled-font asset digest
+and the installed fallback-font package versions where the host reports them
+(dpkg/apt; hosts without dpkg record none, so their fallback fonts stay outside
+the identity). Only those identity fields feed the existing manifest and proof
+identity, and none of them is cached: the browser version is re-probed whenever
+the executable file changes (in-place upgrade or replacement included) and the
+package versions are probed on every identity read, so a long-lived process
+cannot keep approving against a browser or font set that changed under it. A
+changed browser or font set therefore invalidates stored layout proofs through
+the normal renderer-version check; it never silently reuses or relabels them.
+Exports write a
+temporary file and replace the target only on success, so a timeout or crash
+keeps the previous output.
+
 The structure gate locates semantic HTML sections and entry articles by their
 renderer-authored identities, never by text equality. After Chrome export, the
 no-loss content gate extracts PDF text and verifies every approved source-owned

@@ -1,3 +1,4 @@
+from collections import Counter
 from pathlib import Path
 import base64
 import io
@@ -8,11 +9,15 @@ from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.opc.packuri import PackURI
 from docx.opc.part import Part
 from docx.oxml import parse_xml
-from docx.oxml.ns import nsdecls
+from docx.oxml.ns import nsdecls, qn
 from docx.shared import Inches
 
 from app.extraction.coverage_audit import audit_segmentation_lines
-from app.ingestion.docx_reader import ExtractedTable, read_docx
+from app.ingestion.docx_reader import (
+    ExtractedTable,
+    read_docx,
+    unread_content_messages,
+)
 from app.ingestion.file_validator import CorruptedFileError, UnsupportedFileTypeError, validate_docx_file
 
 
@@ -188,8 +193,8 @@ def test_read_docx_reads_a_block_content_control_in_place(tmp_path: Path) -> Non
     assert content.limitations == []
 
 
-def test_read_docx_reports_inline_content_controls(tmp_path: Path) -> None:
-    """A control wrapping runs, or sitting in a cell, keeps text the reader never sees."""
+def test_read_docx_reads_content_controls_where_they_sit(tmp_path: Path) -> None:
+    """A control's runs are read in place, in a paragraph and in a table cell."""
     path = tmp_path / "resume.docx"
     document = Document()
     phone = document.add_paragraph("Phone: ")
@@ -202,18 +207,123 @@ def test_read_docx_reports_inline_content_controls(tmp_path: Path) -> None:
 
     content = read_docx(path)
 
+    assert content.plain_text.splitlines() == ["Phone: 555 0100", "In-cell value"]
+    assert content.limitations == []
+
+
+def test_read_docx_reports_a_content_control_no_walk_descends(tmp_path: Path) -> None:
+    """A control inside tracked change content is named, never read or hidden."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Phone: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:ins {nsdecls("w")} w:id="1" w:author="a" w:date="2024-01-01T00:00:00Z">'
+            "<w:sdt><w:sdtPr/><w:sdtContent><w:r><w:t>555 0100</w:t></w:r>"
+            "</w:sdtContent></w:sdt>"
+            "</w:ins>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
     assert content.plain_text.splitlines() == ["Phone:"]
-    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
-        ("content_control", "body", 2)
+    assert sorted((item.kind, item.count) for item in content.limitations) == [
+        ("content_control", 1),
+        ("tracked_change", 1),
     ]
-    assert "a content control inside a paragraph" in content.limitations[0].message
-    assert "Review the source document" in content.limitations[0].message
-    # The coverage audit measures only the text the reader supplied, so it reports
-    # `incomplete` here instead of passing over the missing control text.
+    control = next(item for item in content.limitations if item.kind == "content_control")
+    assert "read in place" in control.message
+
+
+def test_read_docx_reads_property_wrapped_content_without_a_limitation(
+    tmp_path: Path,
+) -> None:
+    """A ``*Pr`` child describes its container, so it is never unread content."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        parse_xml(
+            f'<w:sdt {nsdecls("w")}><w:sdtPr><w:alias w:val="Summary"/></w:sdtPr>'
+            "<w:sdtContent><w:p><w:r><w:t>Block control</w:t></w:r></w:p>"
+            "</w:sdtContent><w:sdtEndPr/></w:sdt>"
+        ),
+    )
+    wrapper = document.add_paragraph("Wrapper: ")
+    wrapper._p.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="field"><w:customXmlPr>'
+            '<w:attr w:name="format" w:val="text"/>'
+            "</w:customXmlPr><w:r><w:t>Python</w:t></w:r>"
+            # a property element this reader has not named is still not content
+            "<w:novelPr/></w:customXml>"
+        )
+    )
+    wrapper._p.append(
+        parse_xml(
+            f'<w:smartTag {nsdecls("w")} w:uri="urn:x" w:element="skill">'
+            '<w:smartTagPr><w:attr w:name="format" w:val="text"/></w:smartTagPr>'
+            "<w:r><w:t>, SQL</w:t></w:r></w:smartTag>"
+        )
+    )
+    inline = document.add_paragraph("Control: ")
+    inline._p.append(
+        parse_xml(
+            f'<w:sdt {nsdecls("w")}><w:sdtPr><w:text/></w:sdtPr><w:sdtContent>'
+            "<w:r><w:t>555 0100</w:t></w:r></w:sdtContent></w:sdt>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Block control",
+        "Wrapper: Python, SQL",
+        "Control: 555 0100",
+    ]
+    assert content.limitations == []
     audit = audit_segmentation_lines(
         content.plain_text,
         content.plain_text.splitlines(),
-        [limitation.message for limitation in content.limitations],
+        *unread_content_messages(content.limitations),
+    )
+    assert audit.status == "passed"
+
+
+def test_read_docx_still_names_a_field_beside_property_wrappers(
+    tmp_path: Path,
+) -> None:
+    """Skipping properties must not silence a content gap in the same paragraph."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Ref: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="field">'
+            '<w:customXmlPr><w:attr w:name="format" w:val="text"/></w:customXmlPr>'
+            "<w:r><w:t>plain text</w:t></w:r></w:customXml>"
+        )
+    )
+    paragraph._p.append(
+        parse_xml(
+            f'<w:fldSimple {nsdecls("w")} w:instr=" REF candidate_name ">'
+            "<w:r><w:t>Field result</w:t></w:r></w:fldSimple>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Ref: plain text"]
+    assert [(item.kind, item.count) for item in content.limitations] == [("field", 1)]
+    audit = audit_segmentation_lines(
+        content.plain_text,
+        content.plain_text.splitlines(),
+        *unread_content_messages(content.limitations),
     )
     assert audit.status == "incomplete"
 
@@ -241,7 +351,7 @@ def test_read_docx_reports_a_field_result(tmp_path: Path) -> None:
     audit = audit_segmentation_lines(
         content.plain_text,
         content.plain_text.splitlines(),
-        [limitation.message for limitation in content.limitations],
+        *unread_content_messages(content.limitations),
     )
     assert audit.status == "incomplete"
 
@@ -338,6 +448,495 @@ def test_read_docx_reads_a_wrapper_of_paragraphs_and_tables(tmp_path: Path) -> N
         "After wrapper",
     ]
     assert content.limitations == []
+
+
+def test_read_docx_reads_a_wrapped_paragraph_inside_a_table_cell(tmp_path: Path) -> None:
+    """A cell's block content is read through the body walk, not its direct paragraphs."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    table = document.add_table(rows=1, cols=2)
+    table.rows[0].cells[0]._tc.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="field">'
+            "<w:p><w:r><w:t>CELL_WRAPPED</w:t></w:r></w:p></w:customXml>"
+        )
+    )
+    table.rows[0].cells[1]._tc.append(
+        _content_control("<w:p><w:r><w:t>CELL_CONTROL</w:t></w:r></w:p>")
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Jane Candidate",
+        "CELL_WRAPPED | CELL_CONTROL",
+    ]
+    assert content.limitations == []
+
+
+def test_read_docx_reads_rows_and_cells_a_content_control_wraps(tmp_path: Path) -> None:
+    """A control around a whole row or cell holds table text python-docx skips."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    table = document.add_table(rows=2, cols=2)
+    table.rows[0].cells[0].text = "Acme"
+    table.rows[0].cells[1].text = "Engineer"
+    table.rows[1].cells[0].text = "Led the migration"
+    table.rows[1].cells[1].text = "2024"
+    # ``Table.rows`` and ``Row.cells`` return only direct members, so a control
+    # around one of them took its text out of the reader's reach.
+    first_row, second_row = table._tbl.findall(qn("w:tr"))
+    first_row.replace(
+        first_row.findall(qn("w:tc"))[0],
+        _content_control(
+            "<w:tc><w:p><w:r><w:t>Cell wrapped</w:t></w:r></w:p></w:tc>"
+        ),
+    )
+    table._tbl.replace(
+        second_row,
+        _content_control(
+            "<w:tr><w:tc><w:p><w:r><w:t>Row wrapped</w:t></w:r></w:p></w:tc></w:tr>"
+        ),
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.tables[0].rows == [
+        ["Cell wrapped", "Engineer"],
+        ["Row wrapped"],
+    ]
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_header_table_row_a_content_control_wraps(
+    tmp_path: Path,
+) -> None:
+    """The header walk reaches a wrapped table row the same way the body walk does."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    header = document.sections[0].header
+    header.paragraphs[0].text = "Jane Candidate"
+    table = header.add_table(rows=1, cols=1, width=Inches(6))
+    table.rows[0].cells[0].text = "Contact row"
+    table._tbl.replace(
+        table._tbl.findall(qn("w:tr"))[0],
+        _content_control(
+            "<w:tr><w:tc><w:p><w:r><w:t>Header wrapped</w:t></w:r></w:p></w:tc></w:tr>"
+        ),
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert "Header wrapped" in content.plain_text
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_content_control_around_a_whole_table(tmp_path: Path) -> None:
+    """A control holding a table is a block control, read in the position it occupies."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    before = document.add_paragraph("Before table")
+    before._p.addnext(
+        _content_control(
+            "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Controlled entry</w:t></w:r></w:p>"
+            "</w:tc></w:tr></w:tbl>"
+        )
+    )
+    document.add_paragraph("After table")
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Before table",
+        "Controlled entry",
+        "After table",
+    ]
+    assert content.limitations == []
+
+
+def test_read_docx_names_a_table_wrapper_it_cannot_descend(tmp_path: Path) -> None:
+    """A table child holding text that is not a row or known wrapper is named."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    table = document.add_table(rows=1, cols=1)
+    table.rows[0].cells[0].text = "Readable cell"
+    table._tbl.append(
+        parse_xml(
+            f'<w:unknownWrapper {nsdecls("w")}>'
+            "<w:tr><w:tc><w:p><w:r><w:t>Unreachable row</w:t></w:r></w:p></w:tc>"
+            "</w:tr></w:unknownWrapper>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate", "Readable cell"]
+    (limitation,) = content.limitations
+    assert (limitation.kind, limitation.element) == ("unknown_block", "unknownWrapper")
+    assert limitation.location.startswith("body table child ")
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_reads_one_alternate_content_branch(tmp_path: Path) -> None:
+    """An mc:AlternateContent holds one content twice; only one branch is read."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    # ``wps`` is declared on the document root python-docx writes; ``wpx`` is not.
+    for requires in ("wps", "wpx"):
+        paragraph = document.add_paragraph("Alternative: ")
+        paragraph._p.append(
+            parse_xml(
+                "<mc:AlternateContent "
+                'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+                f'{nsdecls("w")}>'
+                f'<mc:Choice Requires="{requires}">'
+                "<w:r><w:t>CHOICE</w:t></w:r></mc:Choice>"
+                "<mc:Fallback><w:r><w:t>FALLBACK</w:t></w:r></mc:Fallback>"
+                "</mc:AlternateContent>"
+            )
+        )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Alternative: CHOICE",
+        "Alternative: FALLBACK",
+    ]
+    assert content.limitations == []
+
+
+def test_read_docx_reports_an_unrecognized_inline_wrapper(tmp_path: Path) -> None:
+    """An inline wrapper outside the pass-through set is named, never unwrapped."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Jane Candidate")
+    paragraph._p.append(
+        parse_xml(f'<w:foo {nsdecls("w")}><w:r><w:t>Unknown run</w:t></w:r></w:foo>')
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate"]
+    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
+        ("unknown_inline", "body child 1", 1)
+    ]
+    limitation = content.limitations[0]
+    assert limitation.element == "foo"
+    assert "an inline element this reader does not recognize is not read" in (
+        limitation.message
+    )
+
+
+def test_read_docx_names_a_wrapper_inside_a_pass_through_wrapper(tmp_path: Path) -> None:
+    """Read and report are one walk: a wrapper inside a wrapper is named, not lost."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Jane Candidate")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="odd">'
+            "<w:foo><w:r><w:t>Nested visible</w:t></w:r></w:foo>"
+            "</w:customXml>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate"]
+    assert [(item.kind, item.location, item.element) for item in content.limitations] == [
+        ("unknown_inline", "body child 1", "foo")
+    ]
+    assert content.limitations[0].blocks_source_review is True
+
+
+def test_read_docx_names_a_wrapper_inside_the_branch_it_reads(tmp_path: Path) -> None:
+    """The chosen alternative branch is inspected, so its own wrapper is named."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Alternative: ")
+    paragraph._p.append(
+        parse_xml(
+            '<mc:AlternateContent '
+            'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+            f'{nsdecls("w")}>'
+            '<mc:Choice Requires="wps">'
+            "<w:foo><w:r><w:t>CHOICE WRAPPED</w:t></w:r></w:foo>"
+            "</mc:Choice>"
+            "<mc:Fallback><w:r><w:t>FALLBACK</w:t></w:r></mc:Fallback>"
+            "</mc:AlternateContent>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Alternative:"]
+    assert [(item.kind, item.location, item.element) for item in content.limitations] == [
+        ("unknown_inline", "body child 1", "foo")
+    ]
+
+
+def test_read_docx_skips_the_alternative_branch_it_does_not_read(tmp_path: Path) -> None:
+    """The unread branch renders what was read, so its shapes are not reported."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Alternative: ")
+    paragraph._p.append(
+        parse_xml(
+            '<mc:AlternateContent '
+            'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+            f'{nsdecls("w")}>'
+            '<mc:Choice Requires="wps"><w:r><w:t>CHOICE</w:t></w:r></mc:Choice>'
+            "<mc:Fallback><w:sdt><w:sdtContent>"
+            "<w:r><w:t>FALLBACK</w:t></w:r>"
+            "<w:fldSimple w:instr='PAGE'><w:r><w:t>1</w:t></w:r></w:fldSimple>"
+            "</w:sdtContent></w:sdt></mc:Fallback>"
+            "</mc:AlternateContent>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Alternative: CHOICE"]
+    assert content.limitations == []
+
+
+def test_read_docx_reads_ruby_base_text_and_reports_the_annotation(tmp_path: Path) -> None:
+    """The base is the text in the line; the annotation is visible, unread text."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Name: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")}><w:ruby><w:rubyPr>'
+            "<w:lid w:val=\"ja-JP\"/><w:dirty w:val=\"0\"/>"
+            "</w:rubyPr>"
+            "<w:rt><w:r><w:t>タナカ</w:t></w:r></w:rt>"
+            "<w:rubyBase><w:r><w:t>田中</w:t></w:r></w:rubyBase>"
+            "</w:ruby></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Name: 田中"]
+    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
+        ("ruby", "body child 1", 1)
+    ]
+    assert "pronunciation annotation is not read" in content.limitations[0].message
+    assert content.limitations[0].blocks_source_review is True
+
+
+def test_read_docx_reads_runs_hyperlinks_and_revisions_without_inline_noise(
+    tmp_path: Path,
+) -> None:
+    """Run text, tabs, hyperlinks and revisions stay on their existing paths."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Jane ")
+    run = paragraph.add_run("Candidate")
+    run.add_tab()
+    run.add_text("Berlin")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:hyperlink {nsdecls("w")}>'
+            "<w:r><w:t>Linked</w:t></w:r></w:hyperlink>"
+        )
+    )
+    paragraph._p.append(
+        parse_xml(
+            f'<w:ins {nsdecls("w")} w:id="1" w:author="a" w:date="2024-01-01T00:00:00Z">'
+            "<w:r><w:t>Inserted</w:t></w:r></w:ins>"
+        )
+    )
+    paragraph._p.append(
+        parse_xml(
+            f'<w:del {nsdecls("w")} w:id="2" w:author="a" w:date="2024-01-01T00:00:00Z">'
+            "<w:r><w:delText>Deleted</w:delText></w:r></w:del>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Jane Candidate\tBerlinLinked"]
+    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
+        ("tracked_change", "body", 2)
+    ]
+
+
+def test_read_docx_decides_every_element_of_the_inline_content_model(
+    tmp_path: Path,
+) -> None:
+    """Guard: every inline element has a decision, so none can be dropped silently.
+
+    Each element of the enumerated model is placed in its own paragraph. The walk
+    must render, descend, count, ignore or report each one; an element added to
+    the model without a decision fails here instead of in a review round.
+    """
+    from app.ingestion.docx_reader import (
+        _INLINE_CONTENT_TAGS,
+        _INLINE_DECISIONS,
+        _MATH,
+        _MATH_PARAGRAPH,
+    )
+
+    assert set(_INLINE_DECISIONS) == _INLINE_CONTENT_TAGS
+    # Every math element has one entry, in the math namespace Word writes: a
+    # ``w:oMath`` copy beside ``m:oMath`` would never match a document.
+    assert {
+        tag for tag in _INLINE_CONTENT_TAGS if _local_name(tag) in {"oMath", "oMathPara"}
+    } == {_MATH, _MATH_PARAGRAPH}
+
+    rendered = {
+        "t": "",
+        "tab": "\t",
+        "ptab": "\t",
+        "br": "\n",
+        "cr": "\n",
+        "noBreakHyphen": "\u2011",
+        "softHyphen": "\u00ad",
+        "sym": "",
+        "lastRenderedPageBreak": "",
+        "oMath": "",
+        "oMathPara": "",
+    }
+    counted = {
+        "drawing": "visual_element",
+        "pict": "visual_element",
+        "fldSimple": "field",
+        "ins": "tracked_change",
+        "del": "tracked_change",
+        "moveFrom": "tracked_change",
+        "moveTo": "tracked_change",
+        "altChunk": "alt_chunk",
+        "subDoc": "alt_chunk",
+        "footnoteReference": "note",
+        "endnoteReference": "note",
+        "commentReference": "note",
+    }
+    path = tmp_path / "resume.docx"
+    document = Document()
+    order: list[tuple[str, str, str]] = []
+    for index, (tag, decision) in enumerate(_INLINE_DECISIONS.items(), start=1):
+        name = _local_name(tag)
+        paragraph = document.add_paragraph("A")
+        paragraph.add_run()._r.append(_bare_element(tag))
+        paragraph.add_run("B")
+        order.append((name, decision, f"body child {index}"))
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == [
+        f"A{rendered[name] if decision == 'render' else ''}B"
+        for name, decision, _ in order
+    ]
+    inline = {item.location: item for item in content.limitations if item.location != "body"}
+    part_counted = {
+        item.kind: item.count for item in content.limitations if item.location == "body"
+    }
+    for name, decision, location in order:
+        if decision == "render" or decision == "descend" or decision == "empty":
+            assert location not in inline, inline[location].message
+        elif decision == "report":
+            assert inline[location].kind == "unknown_inline"
+            assert inline[location].element == name
+        else:
+            assert counted[name], name
+            assert location not in inline
+    assert part_counted == dict(
+        Counter(counted[name] for name, decision, _ in order if decision == "counted")
+    )
+
+
+def test_read_docx_renders_symbol_characters_without_dropping_a_glyph(
+    tmp_path: Path,
+) -> None:
+    """A w:sym is a character in the font's code page, never a silent omission."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Contact: ")
+    paragraph.add_run()._r.append(
+        parse_xml(
+            f'<w:sym {nsdecls("w")} w:font="Wingdings" w:char="F028"/>'
+        )
+    )
+    paragraph.add_run(" 555-0100 ")
+    paragraph.add_run()._r.append(
+        parse_xml(f'<w:sym {nsdecls("w")} w:font="Segoe UI Symbol" w:char="2713"/>')
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Contact: \uf028 555-0100 \u2713"]
+    # Only the font-specific code page is reported: its glyph is not Unicode text.
+    (limitation,) = content.limitations
+    assert (limitation.kind, limitation.location, limitation.element) == (
+        "symbol",
+        "body child 1",
+        "Wingdings",
+    )
+    assert "font-specific" in limitation.message
+    # The code point did reach the text, so this is reported but never blocking.
+    assert limitation.blocks_source_review is False
+
+
+def test_read_docx_keeps_hyphen_characters_in_the_read_text(tmp_path: Path) -> None:
+    """A soft or no-break hyphen renders a character, so the run text keeps it."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph()
+    for text in ("pre", "post"):
+        paragraph.add_run(text)
+        if text == "pre":
+            paragraph.add_run()._r.append(
+                parse_xml(f'<w:softHyphen {nsdecls("w")}/>')
+            )
+    paragraph.add_run(" and no")
+    paragraph.add_run()._r.append(parse_xml(f'<w:noBreakHyphen {nsdecls("w")}/>'))
+    paragraph.add_run("break")
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["pre\u00adpost and no\u2011break"]
+    assert content.limitations == []
+
+
+def test_read_docx_reports_a_run_child_outside_the_content_model(
+    tmp_path: Path,
+) -> None:
+    """An unanticipated run child is named whether or not it holds a w:t."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Jane Candidate")
+    paragraph.add_run()._r.append(
+        parse_xml(f'<w:futureRunContent {nsdecls("w")}/>')
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Jane Candidate"]
+    assert [(item.kind, item.location, item.element) for item in content.limitations] == [
+        ("unknown_inline", "body child 1", "futureRunContent")
+    ]
+    assert content.limitations[0].blocks_source_review is True
 
 
 def test_read_docx_reports_an_unrecognized_block_wrapper(tmp_path: Path) -> None:
@@ -494,6 +1093,7 @@ def test_read_docx_with_embedded_image_preserves_text_extraction(tmp_path: Path)
     document = Document()
     document.add_paragraph("Jane Candidate")
     document.add_picture(io.BytesIO(_one_pixel_png()), width=Inches(0.25))
+    document.add_picture(io.BytesIO(_one_pixel_png()), width=Inches(0.25))
     document.add_paragraph("Skills: Python, SQL")
     document.save(path)
 
@@ -501,6 +1101,48 @@ def test_read_docx_with_embedded_image_preserves_text_extraction(tmp_path: Path)
 
     assert content.paragraphs == ["Jane Candidate", "Skills: Python, SQL"]
     assert content.plain_text == "Jane Candidate\nSkills: Python, SQL"
+    # One entry per part with the count, not one per image.
+    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
+        ("visual_element", "body", 2)
+    ]
+    assert "OCR is out of scope" in content.limitations[0].message
+    # Pixels are not lost text, so this gap is reported but never blocks review.
+    assert content.limitations[0].blocks_source_review is False
+
+
+def test_read_docx_names_text_a_drawing_carries_as_unread_text(tmp_path: Path) -> None:
+    """A drawing is not only pixels: the text it draws is named, not passed as a picture."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Name: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp")} '
+            'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            "<w:drawing><wp:inline><a:graphic><a:graphicData"
+            ' uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            "<wps:wsp><wps:txBody><a:p><a:r><a:t>DRAWN TEXT</a:t></a:r></a:p>"
+            "</wps:txBody></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing>"
+            "</w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Name:"]
+    # DrawingML text is visible content this reader does not read, so it is a text
+    # box that blocks review rather than a picture reported in passing.
+    assert [
+        (item.kind, item.count, item.blocks_source_review)
+        for item in content.limitations
+    ] == [("text_box", 1, True)]
+    audit = audit_segmentation_lines(
+        content.plain_text,
+        content.plain_text.splitlines(),
+        *unread_content_messages(content.limitations),
+    )
+    assert audit.status == "incomplete"
 
 
 def test_validate_docx_rejects_unsupported_extension(tmp_path: Path) -> None:
@@ -517,6 +1159,274 @@ def test_validate_docx_rejects_corrupted_file(tmp_path: Path) -> None:
 
     with pytest.raises(CorruptedFileError, match="corrupted"):
         validate_docx_file(path)
+
+
+def test_read_docx_reads_block_office_math(tmp_path: Path) -> None:
+    """Office Math carries its text in m:t, so an equation is visible source text."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Skills")
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        parse_xml(
+            f'<m:oMathPara {nsdecls("m", "w")}>'
+            "<m:oMath><m:r><m:t>LOST</m:t></m:r></m:oMath></m:oMathPara>"
+        ),
+    )
+    document.add_paragraph("After")
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Skills", "LOST", "After"]
+    assert content.limitations == []
+    audit = audit_segmentation_lines(
+        content.plain_text, content.plain_text.splitlines()
+    )
+    assert audit.status == "passed"
+
+
+def test_read_docx_reads_inline_office_math(tmp_path: Path) -> None:
+    """A math zone inside a paragraph is read in the position it occupies."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Function: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<m:oMath {nsdecls("m", "w")}><m:r><m:t>f(x)=x</m:t></m:r></m:oMath>'
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Function: f(x)=x"]
+    assert content.limitations == []
+
+
+def test_read_docx_names_a_wrapper_holding_office_math(tmp_path: Path) -> None:
+    """Text is detected in every text namespace, so a math-only wrapper is named."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Skills")
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        parse_xml(
+            f'<w:customXml {nsdecls("w", "m")} w:element="equation">'
+            "<m:oMathPara><m:oMath><m:r><m:t>LOST</m:t></m:r></m:oMath></m:oMathPara>"
+            "</w:customXml>"
+        ),
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Skills"]
+    assert [(item.kind, item.element) for item in content.limitations] == [
+        ("unknown_block", "customXml")
+    ]
+    assert content.limitations[0].blocks_source_review is True
+
+
+def test_read_docx_reports_a_math_child_the_walk_does_not_read(
+    tmp_path: Path,
+) -> None:
+    """A math zone is one more inline container, so an unread child is named."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Equation: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<m:oMath {nsdecls("m", "w")}>'
+            "<m:r><m:t>x+1</m:t></m:r>"
+            "<w:object><w:r><w:t>EMBEDDED</w:t></w:r></w:object>"
+            "</m:oMath>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Equation: x+1"]
+    (limitation,) = content.limitations
+    assert (limitation.kind, limitation.element) == ("unknown_inline", "object")
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_reads_wordprocessing_text_inside_a_math_zone(
+    tmp_path: Path,
+) -> None:
+    """The math walk renders w:t as well as m:t, so one collector cannot drop it."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Equation: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<m:oMath {nsdecls("m", "w")}>'
+            "<m:r><m:t>x=</m:t></m:r><w:r><w:t>y</w:t></w:r>"
+            "</m:oMath>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Equation: x=y"]
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_referenced_footnote(tmp_path: Path) -> None:
+    """A footnote's text is printed on the page, so it is read from its part."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Body text")
+    paragraph._p.append(
+        parse_xml(f'<w:r {nsdecls("w")}><w:footnoteReference w:id="1"/></w:r>')
+    )
+    _add_note_part(document, "footnotes", {"1": "Footnote text"})
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Body text", "Footnote text"]
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_referenced_endnote(tmp_path: Path) -> None:
+    """An endnote is read the same way, from its own part."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Body text")
+    paragraph._p.append(
+        parse_xml(f'<w:r {nsdecls("w")}><w:endnoteReference w:id="2"/></w:r>')
+    )
+    _add_note_part(document, "endnotes", {"2": "Endnote text"})
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Body text", "Endnote text"]
+    assert content.limitations == []
+
+
+def test_read_docx_names_a_referenced_note_without_its_part(tmp_path: Path) -> None:
+    """A reference whose note no part supplies is named, not ignored."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Body text")
+    paragraph._p.append(
+        parse_xml(f'<w:r {nsdecls("w")}><w:footnoteReference w:id="4"/></w:r>')
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Body text"]
+    (limitation,) = content.limitations
+    assert (limitation.kind, limitation.location, limitation.count) == ("note", "body", 1)
+    assert "not read" in limitation.message
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_names_a_comment_body_it_does_not_open(tmp_path: Path) -> None:
+    """A comment is a margin annotation, so a reference is reported per document."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Body text")
+    paragraph._p.append(
+        parse_xml(f'<w:r {nsdecls("w")}><w:commentReference w:id="3"/></w:r>')
+    )
+    _add_note_part(document, "comments", {"3": "Recruiter note"})
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.paragraphs == ["Body text"]
+    (limitation,) = content.limitations
+    assert (limitation.kind, limitation.count) == ("note", 1)
+    audit = audit_segmentation_lines(
+        content.plain_text,
+        content.plain_text.splitlines(),
+        *unread_content_messages(content.limitations),
+    )
+    assert audit.status == "incomplete"
+
+
+def test_read_docx_leaves_a_note_in_an_unselected_branch_unread(
+    tmp_path: Path,
+) -> None:
+    """Only a reference the walk reaches may bring a note's text into the read."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Body text ")
+    paragraph._p.append(
+        parse_xml(
+            "<mc:AlternateContent "
+            'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+            f'{nsdecls("w")}>'
+            '<mc:Choice Requires="wps"><w:r><w:t>CHOSEN</w:t></w:r></mc:Choice>'
+            '<mc:Fallback><w:r><w:footnoteReference w:id="1"/></w:r></mc:Fallback>'
+            "</mc:AlternateContent>"
+        )
+    )
+    selected = document.add_paragraph("Selected: ")
+    selected._p.append(
+        parse_xml(f'<w:r {nsdecls("w")}><w:footnoteReference w:id="2"/></w:r>')
+    )
+    _add_note_part(
+        document, "footnotes", {"1": "Discarded note", "2": "Selected note"}
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    # The discarded branch renders nothing, so its note may not print either.
+    assert content.paragraphs == ["Body text CHOSEN", "Selected:", "Selected note"]
+    assert "Discarded note" not in content.plain_text
+    assert content.limitations == []
+    audit = audit_segmentation_lines(
+        content.plain_text, content.plain_text.splitlines()
+    )
+    assert audit.status == "passed"
+
+
+def _add_note_part(document: object, root: str, items: dict[str, str]) -> None:
+    """Attach a footnotes/endnotes/comments part holding one paragraph per note."""
+    relationship = {
+        "footnotes": RT.FOOTNOTES,
+        "endnotes": RT.ENDNOTES,
+        "comments": RT.COMMENTS,
+    }[root]
+    item = root[:-1]
+    xml = f'<w:{root} {nsdecls("w")}>' + "".join(
+        f'<w:{item} w:id="{note_id}"><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:{item}>'
+        for note_id, text in items.items()
+    ) + f"</w:{root}>"
+    part = Part(
+        PackURI(f"/word/{root}.xml"),
+        f"application/vnd.openxmlformats-officedocument.wordprocessingml.{root}+xml",
+        xml.encode(),
+        document.part.package,
+    )
+    document.part.relate_to(part, relationship)
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _bare_element(tag: str) -> object:
+    name = _local_name(tag)
+    if "officeDocument/2006/math" in tag:
+        return parse_xml(f'<m:{name} {nsdecls("m")}/>')
+    if name == "AlternateContent":
+        return parse_xml(
+            '<mc:AlternateContent '
+            'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"/>'
+        )
+    return parse_xml(f'<w:{name} {nsdecls("w")}/>')
 
 
 def _content_control(inner_xml: str) -> object:

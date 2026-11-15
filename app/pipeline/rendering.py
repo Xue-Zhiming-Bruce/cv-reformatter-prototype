@@ -5,17 +5,15 @@ from __future__ import annotations
 import base64
 import hashlib
 import html as html_lib
-import os
 import re
 import statistics
-import subprocess
 from contextlib import closing
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 import pdfplumber
 from app import pdfium_native
-from app.generation.chrome_html_to_pdf import HtmlToPdfExportError, _find_chrome
+from app.generation import chrome_html_to_pdf
 from app.resource_limits import (
     RasterPixelBudget,
     bounded_pdf_pages,
@@ -32,57 +30,18 @@ FORMAT_SUMMARY_VERSION = "a-pipeline-format-summary/3"
 
 ANALYZER_VERSION = "a-pipeline-path-grouper/1"
 
-CHROME_FLAGS = (
-    "--headless=new",
-    "--disable-gpu",
-    "--disable-extensions",
-    "--disable-background-networking",
-    "--no-pdf-header-footer",
-    "--print-to-pdf-no-header",
-    "--window-size=1280,1600",
-    "--force-device-scale-factor=1",
-    "--lang=en-US",
-)
-
 def _pinned_chrome_environment(summary: dict[str, Any]) -> dict[str, Any]:
-    executable = _find_chrome()
-    version = subprocess.run(
-        [executable, "--version"], capture_output=True, text=True, check=True, timeout=10
-    ).stdout.strip()
+    """The shared export environment plus this run's measured fonts and the
+    local PDF capture renderer (the recorded pipeline-lane environment)."""
     return {
-        "executable": executable,
-        "version": version,
-        "viewport": {"width": 1280, "height": 1600},
-        "device_scale_factor": 1,
-        "locale": "en-US",
-        "timezone": "UTC",
-        "flags": list(CHROME_FLAGS),
+        **chrome_html_to_pdf.chrome_environment(),
         "required_fonts": sorted({row["font_family"] for row in summary.get("style_groups", {}).values() if row.get("font_family")}),
         "capture_renderer": f"pypdfium2 {getattr(pdfium_native.pdfium, '__version__', 'unknown')}",
     }
 
-def _export_pinned_html_to_pdf(html_path: Path, output_path: Path, environment: dict[str, Any]) -> Path:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    command = [
-        environment["executable"],
-        *environment["flags"],
-        # Owner ruling 2026-09-10 (E→F thirteenth freeze): web fonts load
-        # asynchronously after the load event — without waiting, date-column
-        # widths varied up to ~3.7pt between renders of the same artifact.
-        # The virtual-time budget blocks printing until pending work (incl.
-        # document.fonts loading) settles, making print geometry deterministic.
-        "--virtual-time-budget=10000",
-        f"--print-to-pdf={output_path}",
-        html_path.resolve().as_uri(),
-    ]
-    process_environment = {**os.environ, "LANG": "en_US.UTF-8", "TZ": environment["timezone"]}
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=120, env=process_environment)
-    except subprocess.TimeoutExpired as error:
-        raise HtmlToPdfExportError("Pinned Chrome PDF render timed out after 120 seconds") from error
-    if result.returncode or not output_path.exists() or output_path.stat().st_size == 0:
-        raise HtmlToPdfExportError(f"Pinned Chrome PDF render failed: {result.stderr.strip()[-500:]}")
-    return output_path
+def _export_pinned_html_to_pdf(html_path: Path, output_path: Path, environment: dict[str, Any] | None = None) -> Path:
+    """Pipeline-lane entry to the shared Chrome export contract."""
+    return chrome_html_to_pdf.export_html_to_pdf(html_path, output_path, environment=environment)
 
 class _TextParser(HTMLParser):
     def __init__(self) -> None:
@@ -555,7 +514,7 @@ def _line_stability(first: Path, second: Path, tolerance_pt: float = 1.0) -> dic
     return {"passed": worst <= tolerance_pt, "lines_compared": len(first_lines),
             "max_line_delta_pt": round(worst, 3), "tolerance_pt": tolerance_pt}
 
-_LOCAL_FONT_DIR = Path(__file__).with_name("assets") / "fonts"
+_LOCAL_FONT_DIR = chrome_html_to_pdf.FONT_ASSET_DIR
 
 _FONT_STYLE_FILES = (
     ("regular", "400", "normal"),

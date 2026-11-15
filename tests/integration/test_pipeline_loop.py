@@ -4300,6 +4300,30 @@ def test_agentic_block_names_the_presentation_label_catalog(tmp_path: Path) -> N
     assert agentic._presentation_label_block(run_dir) is None
 
 
+def test_missing_browser_fails_before_the_lane_spends_provider_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #52 QA finding 2: a missing renderer is a precondition. The lane
+    must raise the actionable browser message before any provider request is
+    spent, not fail mid-run on a broken command line."""
+    from app.generation.chrome_html_to_pdf import HtmlToPdfExportError
+
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    started: list[str] = []
+    monkeypatch.setattr(e5, "_e5_run_lane", lambda state, lane: started.append(lane))
+    monkeypatch.delenv("CHROME_EXECUTABLE", raising=False)
+    monkeypatch.setenv("CHROME_BIN", str(tmp_path / "not-a-chrome"))
+    with pytest.raises(HtmlToPdfExportError) as error:
+        e.run_e5(
+            **inputs, candidate=synthetic_pipeline_candidate("Candidate Alpha"),
+            out_dir=tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
+        )
+    message = str(error.value)
+    assert "No Chrome/Chromium binary found" in message
+    assert str(tmp_path / "not-a-chrome") in message
+    assert started == []
+    assert not (tmp_path / "run" / "lane_a").exists()
+
 def test_diagnostic_run_refuses_an_over_limit_target_before_parsing(tmp_path: Path) -> None:
     """Issue #53: the diagnostic target takes the same page policy as an upload
     before any in-process pdfplumber parse, instead of being parsed unbounded."""

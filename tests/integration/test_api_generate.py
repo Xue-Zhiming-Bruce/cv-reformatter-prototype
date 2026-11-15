@@ -1,9 +1,14 @@
 from pathlib import Path
 
+import asyncio
 import json
 import re
+import threading
+from unittest.mock import patch
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
+import httpx
 import pytest
 from docx import Document
 from docx.shared import Pt, RGBColor
@@ -15,13 +20,22 @@ from app.extraction.candidate_schema import CandidateProfile, WorkExperience
 from app.main import app
 from app.template_analysis import layout_proof_service
 from app.generation.render_plan import layout_spec_sha256
+from app.template_analysis.design_evidence import target_checksum_from_bytes
 from app.template_analysis.artifacts import load_layout_template_spec
 from app.generation import service as generation_service
 from tests.helpers.layout_proof import (
     create_and_approve_proofs,
     make_proof_pdf_exporter,
 )
-from tests.helpers.synthetic_pdf import build_styled_target_pdf
+from tests.helpers.synthetic_pdf import build_plain_target_pdf, build_styled_target_pdf
+from tests.helpers.event_loop_probe import (
+    HOLD_TIMEOUT_SECONDS,
+    assert_health_answers,
+    cancel_while_held,
+    occupied_blocking_work,
+    paused_publication,
+    wait_until,
+)
 
 client = TestClient(app)
 
@@ -121,7 +135,13 @@ def test_generate_outputs_saves_artifacts_and_returns_downloads(tmp_path: Path, 
         "model": "frozen-extraction-model", "prompt_version": "frozen-extraction/1",
     }
     assert manifest["schemas"]["candidate_segmentation"] == "candidate-segmentation-run/1"
-    assert json.loads((artifact_dir / "generation_metadata.json").read_text())["renderer_version"] == "lane-a-product-subset/17"
+    native_metadata = json.loads((artifact_dir / "generation_metadata.json").read_text())
+    assert native_metadata["renderer_version"] == "lane-a-product-subset/17"
+    # The native PDF records the browser/font environment that produced it.
+    environment = native_metadata["rendering_environment"]
+    assert environment["contract"] == "chrome-export/1"
+    assert environment["resolution"] in {"override", "macos_default", "system", "unresolved"}
+    assert environment["fonts"]["sha256"] and environment["digest"]
     assert "Boston" not in (artifact_dir / "candidate_profile.html").read_text().partition("</header>")[2]
     assert (artifact_dir / "raw_extracted_text.txt").read_bytes() == raw_text_before
     assert (artifact_dir / "raw_extracted_text.txt").read_text(encoding="utf-8") == draft_raw_text
@@ -773,7 +793,6 @@ def test_target_format_upload_accepts_docx_templates_and_pdf_references(
         in docx_body["target_format"]["unsupported_features"]
     )
     assert docx_body["target_format"]["download_url"] == f"/api/artifacts/{artifact_id}/target_format_template.docx"
-    assert (tmp_path / artifact_id / "target_format_template.docx").exists()
 
     assert pdf_response.status_code == 200
     pdf_body = pdf_response.json()
@@ -787,6 +806,9 @@ def test_target_format_upload_accepts_docx_templates_and_pdf_references(
     assert "normalized_layout" in pdf_body["target_format"]["analysis_artifact_urls"]
     assert "target_evidence" in pdf_body["target_format"]["analysis_artifact_urls"]
     assert (tmp_path / artifact_id / "target_format_reference.pdf").exists()
+    # The PDF upload published over the DOCX set: the current target is one set
+    # from one request, so the superseded DOCX template is no longer published.
+    assert not (tmp_path / artifact_id / "target_format_template.docx").exists()
     assert (tmp_path / artifact_id / "layout_template_spec.json").exists()
     assert not (tmp_path / artifact_id / "template_style_spec.json").exists()
     assert (tmp_path / artifact_id / "normalized_layout_evidence.json").exists()
@@ -1134,6 +1156,317 @@ def test_configured_database_failure_never_falls_back_or_exposes_credentials(
     assert response.status_code == 500, response.text
     assert "DO_NOT_EXPOSE_PASSWORD" not in response.text
     assert not sqlite_path.exists()
+
+
+def test_target_format_upload_keeps_event_loop_responsive_during_pdf_analysis(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Issue #51: Adobe analysis and local PDF measurement leave the event loop free.
+
+    The substitute waits on an event. A handler that still calls it directly
+    holds the loop, so the concurrent health probe never answers.
+    """
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    release = threading.Event()
+    entered = threading.Event()
+
+    def held_adobe(_path: Path):
+        entered.set()
+        assert release.wait(HOLD_TIMEOUT_SECONDS), "the Adobe substitute was never released"
+        raise main.AdobeAdapterError("synthetic substitute released")
+
+    monkeypatch.setattr(main, "run_adobe_layout", held_adobe)
+
+    with TestClient(app) as loop_client:
+        pool = ThreadPoolExecutor(max_workers=2)
+        try:
+            upload = pool.submit(
+                loop_client.post,
+                "/api/target-format",
+                files={
+                    "file": (
+                        "target.pdf",
+                        build_plain_target_pdf(tmp_path / "held_target.pdf").read_bytes(),
+                        "application/pdf",
+                    )
+                },
+            )
+            assert entered.wait(HOLD_TIMEOUT_SECONDS)
+            assert_health_answers(loop_client, pool)
+            release.set()
+            response = upload.result(timeout=HOLD_TIMEOUT_SECONDS)
+        finally:
+            release.set()
+            pool.shutdown(wait=True)
+
+    # The provider failure still reaches the caller through the boundary.
+    assert response.status_code == 503
+    assert "service unavailable" in response.json()["detail"].lower()
+
+
+DOCX_TARGET_TYPE = DOCX_MIME
+
+
+@pytest.mark.parametrize(
+    ("filename", "upload_type"),
+    [("target.pdf", "application/pdf"), ("target.docx", DOCX_TARGET_TYPE)],
+)
+def test_target_format_reports_busy_without_creating_an_artifact(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    filename: str,
+    upload_type: str,
+) -> None:
+    """Issue #51: a saturated refusal stores nothing, on either target branch."""
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")
+
+    # A conforming upload, so the refusal under test is saturation, not the
+    # document policy (#53) that runs before the slot is taken.
+    upload = (
+        build_plain_target_pdf(tmp_path / "saturated_target.pdf").read_bytes()
+        if filename.endswith(".pdf")
+        else _target_docx_bytes(tmp_path / "saturated_target.docx")
+    )
+
+    with occupied_blocking_work():
+        response = client.post(
+            "/api/target-format",
+            data={"artifact_id": "artifact_saturated_target"},
+            files={"file": (filename, upload, upload_type)},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["error_code"] == "server_busy"
+    assert response.headers["retry-after"] == "5"
+    # Refused before any storage: no artifact directory for the caller.
+    assert not (tmp_path / "outputs").exists()
+
+
+def _target_docx_bytes(path: Path, paragraph: str = "") -> bytes:
+    document = Document()
+    document.styles["Normal"].font.name = "Times New Roman"
+    if paragraph:
+        document.add_paragraph(paragraph)
+    document.save(path)
+    return path.read_bytes()
+
+
+def _published_upload(artifact_dir: Path) -> tuple[str, bytes] | None:
+    """What the artifact directory publishes now: metadata name and source bytes."""
+    metadata_path = artifact_dir / "target_format.json"
+    if not metadata_path.exists():
+        return None
+    metadata = json.loads(metadata_path.read_text())
+    return metadata["input_filename"], (artifact_dir / metadata["stored_filename"]).read_bytes()
+
+
+def _published_epochs(artifact_dir: Path) -> list[str]:
+    """The immutable sets kept under the artifact; older ones are pruned."""
+    return sorted(path.name for path in (artifact_dir / ".targets").glob("set-*"))
+
+
+def _held_target_analysis(
+    entered: threading.Event, release: threading.Event, held_bytes: bytes | None = None
+):
+    """Block target analysis until ``release``; with ``held_bytes``, only for that upload."""
+    from app.template_analysis.docx_style_analyzer import analyze_target_docx
+
+    def analysis(docx_path: Path, output_dir: Path):
+        if held_bytes is None or Path(docx_path).read_bytes() == held_bytes:
+            entered.set()
+            assert release.wait(HOLD_TIMEOUT_SECONDS), "the held upload was never released"
+        return analyze_target_docx(docx_path, output_dir)
+
+    return analysis
+
+
+def _assert_target_published(outputs: Path, artifact_id: str, expected: bytes) -> None:
+    """A published target owns its source, its spec and its metadata."""
+    artifact_dir = outputs / artifact_id
+    assert (artifact_dir / "target_format_template.docx").read_bytes() == expected
+    assert (artifact_dir / "layout_template_spec.json").exists()
+    assert (artifact_dir / "target_format.json").exists()
+    # Every staged copy was renamed out of its own staging directory.
+    assert list((outputs / ".staging").glob("*")) == []
+
+
+def test_concurrent_target_uploads_keep_their_own_source(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: a refused upload must not delete another upload's staged source.
+
+    At ``527ca0f`` the corrupt upload unlinked the good source, so the good
+    upload died with ``FileNotFoundError``.
+    """
+    outputs = tmp_path / "outputs"
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", outputs)
+    good_bytes = _target_docx_bytes(tmp_path / "good-target.docx")
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(
+        main, "analyze_target_docx", _held_target_analysis(entered, release, good_bytes)
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        good = pool.submit(
+            _upload_docx, good_bytes, "artifact_shared_target", "good-target.docx"
+        )
+        try:
+            assert entered.wait(HOLD_TIMEOUT_SECONDS), "the good upload never reached analysis"
+            bad_response = _upload_docx(
+                b"not a word document", "artifact_shared_target", "bad-target.docx"
+            )
+        finally:
+            release.set()
+        good_response = good.result(timeout=HOLD_TIMEOUT_SECONDS)
+
+    assert bad_response.status_code == 400
+    assert good_response.status_code == 200, good_response.text
+    _assert_target_published(outputs, "artifact_shared_target", good_bytes)
+
+
+def test_cancelled_target_upload_publishes_nothing(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: a cancelled analysis must leave no partial target artifact."""
+    outputs = tmp_path / "outputs"
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", outputs)
+    docx_bytes = _target_docx_bytes(tmp_path / "cancelled-target.docx")
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(
+        main, "analyze_target_docx", _held_target_analysis(entered, release)
+    )
+
+    async def attempt(async_client: httpx.AsyncClient) -> None:
+        await async_client.post(
+            "/api/target-format",
+            data={"artifact_id": "artifact_cancelled_target"},
+            files={"file": ("cancelled-target.docx", docx_bytes, DOCX_MIME)},
+        )
+
+    asyncio.run(cancel_while_held(attempt, entered=entered, release=release))
+
+    # Wait for the abandoned worker to finish, then check what it left behind.
+    wait_until(
+        lambda: not any((outputs / ".staging").glob("*")),
+        "the cancelled upload never cleaned its staging directory",
+    )
+    artifact_dir = outputs / "artifact_cancelled_target"
+    assert _published_upload(artifact_dir) is None
+    assert _published_epochs(artifact_dir) == []
+
+
+def _publish_baseline_target(
+    tmp_path: Path, monkeypatch: MonkeyPatch, artifact_dir: Path
+) -> tuple[bytes, bytes]:
+    """Publish one complete target set; return its bytes and a different second upload."""
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", artifact_dir.parent)
+    first = _target_docx_bytes(tmp_path / "first.docx", "first upload")
+    second = _target_docx_bytes(tmp_path / "second.docx", "second upload")
+    assert _upload_docx(first, artifact_dir.name, "first.docx").status_code == 200
+    return first, second
+
+
+def test_publication_switches_one_complete_set_at_a_time(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: no reader sees one upload's metadata beside another's source.
+
+    At ``22f9b79`` the first rename already replaced the published source while
+    the previous request's metadata was still in place.
+    """
+    outputs = tmp_path / "outputs"
+    artifact_dir = outputs / "artifact_single_switch"
+    first, second = _publish_baseline_target(tmp_path, monkeypatch, artifact_dir)
+    entered, release = threading.Event(), threading.Event()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with paused_publication(artifact_dir, entered, release):
+            upload = pool.submit(_upload_docx, second, artifact_dir.name, "second.docx")
+            try:
+                assert entered.wait(HOLD_TIMEOUT_SECONDS), "the second upload never published"
+                # Mid-publication the previous set is still the whole visible set.
+                assert _published_upload(artifact_dir) == ("first.docx", first)
+            finally:
+                release.set()
+        response = upload.result(timeout=HOLD_TIMEOUT_SECONDS)
+
+    assert response.status_code == 200, response.text
+    assert _published_upload(artifact_dir) == ("second.docx", second)
+    assert not any((outputs / ".staging").glob("*"))
+    # The live set and the one it replaced stay; the superseded one is pruned.
+    assert len(_published_epochs(artifact_dir)) == 2
+
+
+def test_layout_proof_status_reads_one_published_target_set(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: metadata, source and layout spec of one status come from one set.
+
+    At ``60ed109`` the status pinned the metadata and then built a second view for
+    the layout spec, so a publication in between reported A's target with B's
+    layout.
+    """
+    from app.template_analysis.layout_proof_artifacts import layout_spec_checksum
+
+    outputs = tmp_path / "outputs"
+    artifact_dir = outputs / "artifact_pinned_reader"
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", outputs)
+    target_pdf = build_styled_target_pdf(tmp_path / "target-reference.pdf")
+    first = target_pdf.read_bytes()
+    published = client.post(
+        "/api/target-format",
+        data={"artifact_id": artifact_dir.name},
+        files={"file": ("target-reference.pdf", first, "application/pdf")},
+    )
+    assert published.status_code == 200, published.text
+    first_layout = layout_spec_checksum(
+        load_layout_template_spec(artifact_dir / "layout_template_spec.json")
+    )
+    loaded = json.loads
+    switched: list[bool] = []
+
+    def switch_after_metadata(text, *args, **kwargs):
+        payload = loaded(text, *args, **kwargs)
+        if isinstance(payload, dict) and "stored_filename" in payload and not switched:
+            switched.append(True)
+            second = _target_docx_bytes(tmp_path / "second.docx", "second upload")
+            response = _upload_docx(second, artifact_dir.name, "second.docx")
+            assert response.status_code == 200, response.text
+        return payload
+
+    with patch.object(json, "loads", switch_after_metadata):
+        status = main._layout_proof_status(artifact_dir.name, artifact_dir)
+
+    assert switched, "the publication did not happen inside the status read"
+    assert status.target_checksum == target_checksum_from_bytes(first)
+    assert status.layout_spec_checksum == first_layout
+
+
+def test_cancellation_inside_the_publish_window_publishes_nothing(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #51: cancelling during publication must not replace the published set."""
+    outputs = tmp_path / "outputs"
+    artifact_dir = outputs / "artifact_switch_cancelled"
+    first, second = _publish_baseline_target(tmp_path, monkeypatch, artifact_dir)
+    entered, release = threading.Event(), threading.Event()
+
+    async def attempt(async_client: httpx.AsyncClient) -> None:
+        await async_client.post(
+            "/api/target-format",
+            data={"artifact_id": artifact_dir.name},
+            files={"file": ("second.docx", second, DOCX_MIME)},
+        )
+
+    with paused_publication(artifact_dir, entered, release):
+        asyncio.run(cancel_while_held(attempt, entered=entered, release=release))
+
+    wait_until(
+        lambda: not any((outputs / ".staging").glob("*")),
+        "the cancelled upload never cleaned its staging directory",
+    )
+    assert _published_upload(artifact_dir) == ("first.docx", first)
+    assert len(_published_epochs(artifact_dir)) == 1
 
 
 def test_target_format_upload_rejects_unsupported_files(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -1723,6 +2056,55 @@ def test_refused_target_upload_keeps_the_prior_target_output(
     assert refused.json()["detail"]["error_code"] == "pdf_page_geometry"
     assert stored.read_bytes() == stored_before
     assert (tmp_path / artifact_id / "target_format.json").read_bytes() == metadata_before
+
+def test_unread_source_text_blocks_generation(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #49: an audit over a partly read source names the text, not a pass."""
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    profile = CandidateProfile(full_name="Jane Candidate", skills=["Python"])
+    artifact_id = "artifact_generate_unread"
+    artifact_dir = tmp_path / artifact_id
+    artifact_dir.mkdir()
+    version_id = _approve_profile_via_api(artifact_dir, profile, artifact_id)
+    unread = ["body: 1 text box found; text-box content is not read."]
+    audit_path = artifact_dir / "segmentation_audit.json"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "status": "incomplete",
+                "unread_source_content": unread,
+                "unread_text_source_content": unread,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    request = {
+        "artifact_id": artifact_id,
+        "approved_profile_version_id": version_id,
+        "template_name": "apex_standard",
+    }
+    response = client.post("/api/generate", json=request)
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "source_text_unread"
+    assert detail["unread_text_source_content"] == unread
+    assert not (artifact_dir / "candidate_profile.html").exists()
+
+    # An audit written before the split carries no text subset, so the whole
+    # reported list is treated as lost text instead of silently passing.
+    audit_path.write_text(
+        json.dumps({"status": "incomplete", "unread_source_content": unread}),
+        encoding="utf-8",
+    )
+
+    legacy = client.post("/api/generate", json=request)
+
+    assert legacy.status_code == 409, legacy.text
+    assert legacy.json()["detail"]["error_code"] == "source_text_unread"
+    assert legacy.json()["detail"]["unread_text_source_content"] == unread
 
 
 def test_refused_docx_target_reports_no_archive_entry_name(

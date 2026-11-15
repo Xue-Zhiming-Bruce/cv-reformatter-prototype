@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.generation.content_validation import validate_generated_content, validate_output_structure
-from app.generation import template_mapper
+from app.generation import chrome_html_to_pdf, template_mapper
 from app.generation.template_mapper import ClientFacingRenderContext
 from app.pipeline.candidate_content import candidate_document_from_context
 from app.pipeline.evidence import (
@@ -25,6 +25,7 @@ from app.pipeline.layout_state import C2LayoutState
 from app.pipeline.runtime import RunBudget
 from app.pipeline.run_models import E5LoopRecord, PresentationLabelApproval
 from app.pipeline import finding_disposition, measurement, presentation_labels, prompts, quality, repair_policy, review, run_artifacts, service
+from app.target_publication import TARGETS_DIRNAME
 from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME
 from app.template_analysis.commercial.models import NormalizedLayoutEvidence
 from app.template_analysis.schemas import LayoutTemplateSpec
@@ -183,6 +184,10 @@ def renderer_contract() -> dict[str, Any]:
             "builder_reserve_model_requests": AGENTIC_BUILDER_RESERVE_REQUESTS,
         },
         "renderer": RENDERER_VERSION, "settings": {**_settings(), "max_request_bytes": MAX_REQUEST_BYTES},
+        # Browser build and bundled font assets: a changed rendering environment
+        # must not inherit an approval made under the old one. Where the same
+        # build was found and the timeout are provenance, not identity.
+        "chrome_export": chrome_html_to_pdf.chrome_export_identity(),
         "models": _model_identity(),
         "prompts": [prompts.E5_LANE_A_BUILDER_INSTRUCTIONS, prompts.E5_REVIEWER_INSTRUCTIONS,
                     prompts.E5_ATTRIBUTION_INSTRUCTIONS],
@@ -264,6 +269,15 @@ def _proof_label_approval(
     )
 
 
+def _owning_artifact_dir(evidence_dir: Path) -> Path:
+    """The artifact a render belongs to: a pinned target set sits in its ``.targets``."""
+    return (
+        evidence_dir.parent.parent
+        if evidence_dir.parent.name == TARGETS_DIRNAME
+        else evidence_dir
+    )
+
+
 def render_agentic(
     *, context: ClientFacingRenderContext, layout_spec: LayoutTemplateSpec,
     target_pdf: Path, evidence_dir: Path, output_dir: Path,
@@ -277,7 +291,10 @@ def render_agentic(
     settings = _settings()
     if not os.getenv("DEEPSEEK_API_KEY") and not (os.getenv("DEEPSEEK_BASE_URL") and os.getenv("OPENAI_API_KEY")):
         raise AgenticGenerationError("Configure DEEPSEEK_API_KEY, or an explicit compatible DEEPSEEK_BASE_URL and OPENAI_API_KEY")
-    if not output_dir.resolve().is_relative_to(evidence_dir.resolve()):
+    # The evidence may be a pinned target set inside the artifact's .targets; the
+    # run itself always belongs to the artifact that owns it.
+    artifact_dir = _owning_artifact_dir(evidence_dir)
+    if not output_dir.resolve().is_relative_to(artifact_dir.resolve()):
         raise AgenticGenerationError("Agentic run artifacts must stay inside their owning artifact directory")
     if target_pdf.suffix.lower() != ".pdf" or not target_pdf.is_file():
         raise AgenticGenerationError("Agentic generation requires an uploaded, measured target PDF")
@@ -366,12 +383,13 @@ def render_agentic(
         raise AgenticGenerationError("Agentic model, prompt or execution configuration changed during generation")
     selected_plan = run_dir/f"lane_a/{stem}_plan.json"
     report = {"renderer_version": identity, "generation_strategy": "agentic",
+        "rendering_environment": chrome_html_to_pdf.chrome_environment(),
         "terminal_state": terminal, "selected_version": version.version_id,
         "open_findings": lane.open_findings, "gate_validation": gate_validation, "budget": record.budget_state,
-        "summary": lane.summary, "run_directory": run_dir.resolve().relative_to(evidence_dir.resolve()).as_posix(),
+        "summary": lane.summary, "run_directory": run_dir.resolve().relative_to(artifact_dir.resolve()).as_posix(),
         # The selected version's own arrangement plan; its absence is reported as
         # an unknown arrangement, never as a missing-output failure.
-        **({"selected_plan": selected_plan.resolve().relative_to(evidence_dir.resolve()).as_posix()}
+        **({"selected_plan": selected_plan.resolve().relative_to(artifact_dir.resolve()).as_posix()}
            if selected_plan.is_file() else {}),
         "content_validation": content.model_dump(mode="json"),
         "structure_validation": structure.model_dump(mode="json"), "client_ready": False}

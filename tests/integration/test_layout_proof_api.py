@@ -24,6 +24,7 @@ from app.template_analysis.layout_proof_validation import (
     load_layout_proof_render_result,
     load_variant_evidence,
 )
+from app.generation.chrome_html_to_pdf import export_html_to_pdf as _chrome_exporter
 from tests.helpers.layout_proof import make_proof_pdf_exporter, create_and_approve_proofs as _create_and_approve
 from tests.helpers.synthetic_pdf import build_styled_target_pdf
 
@@ -136,12 +137,16 @@ def test_agentic_api_runs_real_loop_preserves_approval_and_fails_closed(
     from app.pipeline import (
         finding_disposition, measurement, quality, repair_policy, review, run_models, service,
     )
-    from app.generation import agentic
+    from app.generation import agentic, chrome_html_to_pdf
     monkeypatch.setattr(agentic, "render_agentic", a_generation_without_model_loop)
+    # This case keeps the agentic lane's Chrome real; the file's fake exporter
+    # covers only the deterministic lifecycle cases.
+    monkeypatch.setattr(chrome_html_to_pdf, "export_html_to_pdf", _chrome_exporter)
     from app.generation.artifact_manifest import write_artifact_manifest
     monkeypatch.setattr(generation_service, "write_artifact_manifest", write_artifact_manifest)
     from app.generation.agentic import agentic_renderer_version
     from app.generation import template_mapper
+    from app.target_publication import TargetSet
     from app.template_analysis.artifacts import ADOBE_RAW_FILENAME, NORMALIZED_LAYOUT_FILENAME, LAYOUT_SPEC_FILENAME
     from app.template_analysis.schemas import SectionLayoutSpec
     from tests.helpers.pipeline import synthetic_pipeline_inputs
@@ -306,6 +311,12 @@ print(json.dumps(response.json()))
     report = json.loads((directory / "agentic_generation.json").read_text())
     assert report["generation_strategy"] == "agentic" and report["client_ready"] is False
     assert report["renderer_version"] == agentic_renderer_version()
+    # The agentic artifact records the browser build/resolution and bundled
+    # fonts its renderer identity was computed from.
+    assert report["rendering_environment"]["digest"]
+    assert report["rendering_environment"]["contract"] == "chrome-export/1"
+    assert report["rendering_environment"]["resolution"] in {"override", "macos_default", "system", "unresolved"}
+    assert report["rendering_environment"]["fonts"]["files"]
     assert report["content_validation"]["passed"] and report["structure_validation"]["passed"]
     assert report["selected_version"] and report["summary"]["reviewed_pdf_sha256"]
     assert identity["debug_artifacts"]["agentic_generation"] == str(directory / "agentic_generation.json")
@@ -458,7 +469,11 @@ print(json.dumps(response.json()))
     assert spec_path.read_bytes() == original_spec
     assert {name: (directory / name).read_bytes() for name in source_bytes} == source_bytes
     calls.clear()
-    (directory / NORMALIZED_LAYOUT_FILENAME).unlink()
+    # The saved evidence lives in the published set, so deleting its public name
+    # would leave the set intact; remove what the artifact actually stores.
+    stored_evidence = TargetSet(directory).read(NORMALIZED_LAYOUT_FILENAME)
+    assert stored_evidence is not None
+    stored_evidence.unlink()
     missing = client.post("/api/generate", json=request)
     assert missing.status_code == 500 and "evidence" in missing.text and calls == [], missing.text
     assert {path: path.read_bytes() for path in published} == published
@@ -830,10 +845,11 @@ def test_approve_rejects_structurally_failed_proofs(tmp_path: Path) -> None:
     # consistent, then confirm approval recomputation refuses it.
     from app.template_analysis.layout_proof_artifacts import file_sha256, layout_spec_checksum
     from app.main import _load_generation_style_spec
+    from app.target_publication import TargetSet
     from tests.helpers.layout_proof import expected_proof_text
     from tests.helpers.synthetic_pdf import build_text_pdf
 
-    spec = _load_generation_style_spec(artifact_dir)
+    spec = _load_generation_style_spec(TargetSet(artifact_dir))
     long_dir = artifact_dir / "layout_proofs" / "variants" / "long"
     render_result = json.loads(
         (long_dir / "render_result.json").read_text(encoding="utf-8")

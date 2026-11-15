@@ -26,6 +26,7 @@ from app.profile_approval import ApprovedProfileVersion, load_profile_revision
 from app.storage.artifact_store import ArtifactStoreConflict, ArtifactStoreError
 from app.storage.job_queue import JobLeaseLost, PostgresJobQueue
 from app.storage.postgres import PostgresGenerationRepository, PostgresProfileRevisionRepository, artifact_sessions, postgres_engine
+from app.target_publication import TARGETS_DIRNAME, TargetSet
 from app.template_analysis.artifacts import (ADOBE_RAW_FILENAME, LAYOUT_SPEC_FILENAME,
                                             NORMALIZED_LAYOUT_FILENAME, load_layout_template_spec)
 from app.template_analysis.schemas import LayoutTemplateSpec, built_in_layout_template_spec
@@ -59,16 +60,18 @@ def execution_fingerprint() -> dict[str, str]:
     return {"native_application_and_runtime": digest.hexdigest()}
 
 
-def analysis_checksum(directory: Path) -> str:
+def analysis_checksum(target_set: TargetSet) -> str:
     """The frozen target-analysis identity: Adobe raw plus normalized evidence."""
-    adobe = (directory / ADOBE_RAW_FILENAME).read_bytes()
-    return hashlib.sha256(adobe + b"\0" + (directory / NORMALIZED_LAYOUT_FILENAME).read_bytes()).hexdigest()
+    published = target_set.published_dir
+    adobe = (published / ADOBE_RAW_FILENAME).read_bytes()
+    return hashlib.sha256(adobe + b"\0" + (published / NORMALIZED_LAYOUT_FILENAME).read_bytes()).hexdigest()
 
 
-def target_layout_path(directory: Path, design_id: str | None) -> Path:
+def target_layout_path(target_set: TargetSet, design_id: str | None) -> Path:
+    """The spec a target job freezes, from the same set as its target document."""
     if design_id is None:
-        return directory / LAYOUT_SPEC_FILENAME
-    return directory / "designs" / design_id / "layout_template_spec.json"
+        return target_set.published_dir / LAYOUT_SPEC_FILENAME
+    return target_set.artifact_dir / "designs" / design_id / "layout_template_spec.json"
 
 
 def native_submission(directory: Path, revision: ApprovedProfileVersion, request: NativeJobCreate) -> JobSubmission:
@@ -79,7 +82,7 @@ def native_submission(directory: Path, revision: ApprovedProfileVersion, request
     except ValueError as exc:
         raise ArtifactStoreError("Native jobs reject retired or unknown generation strategies; configure GENERATION_STRATEGY=agentic.") from exc
     inputs = capture_generation_inputs(directory, revision_id=revision.profile_revision_id,
-                                       layout_path=None, target_filename=None)
+                                       layout_path=None, target_path=None)
     return JobSubmission(idempotency_key=request.idempotency_key, payload=NativeGenerationPayload(
         artifact_id=directory.name, profile_revision_id=revision.profile_revision_id,
         profile_sha256=revision.profile_sha256, source_draft_sha256=revision.source_draft_sha256,
@@ -97,11 +100,13 @@ def target_proof_submission(directory: Path, revision: ApprovedProfileVersion, r
     if request.execution == "live":
         refuse_live_execution()
     approval = request.presentation_label_approval
+    target_set = TargetSet(directory, resolved=target_pdf.parent)
     return JobSubmission(idempotency_key=request.idempotency_key, payload=TargetProofPayload(
         artifact_id=directory.name, profile_revision_id=revision.profile_revision_id,
         profile_sha256=revision.profile_sha256, source_draft_sha256=revision.source_draft_sha256,
         target_sha256=target_checksum, target_stored_filename=target_pdf.name,
-        analysis_sha256=analysis_checksum(directory), layout_sha256=layout_spec_sha256(layout_spec),
+        analysis_sha256=analysis_checksum(target_set),
+        layout_sha256=layout_spec_sha256(layout_spec),
         design_id=request.design_id,
         presentation_label_catalog_sha256=approval.catalog_sha256 if approval is not None else None,
         presentation_label_approval=approval, renderer_version=active_renderer_version(),
@@ -121,14 +126,17 @@ def target_generation_submission(directory: Path, revision: ApprovedProfileVersi
     if approval is None or approval.approval_id != request.proof_approval_id or not approval.is_approved:
         raise ValueError("Target generation requires the approved proof set named by this request")
     require_review_evidence(approval, required_execution="offline-renderer/1")
-    inputs = capture_generation_inputs(directory, revision_id=revision.profile_revision_id,
-                                       layout_path=target_layout_path(directory, request.design_id),
-                                       target_filename=target_pdf.name)
+    target_set = TargetSet(directory, resolved=target_pdf.parent)
+    inputs = capture_generation_inputs(
+        directory, revision_id=revision.profile_revision_id,
+        layout_path=target_layout_path(target_set, request.design_id),
+        target_path=target_pdf, target_set=target_set)
     return JobSubmission(idempotency_key=request.idempotency_key, payload=TargetGenerationPayload(
         artifact_id=directory.name, profile_revision_id=revision.profile_revision_id,
         profile_sha256=revision.profile_sha256, source_draft_sha256=revision.source_draft_sha256,
         target_sha256=target_checksum, target_stored_filename=target_pdf.name,
-        analysis_sha256=analysis_checksum(directory), layout_sha256=layout_spec_sha256(layout_spec),
+        analysis_sha256=analysis_checksum(target_set),
+        layout_sha256=layout_spec_sha256(layout_spec),
         design_id=request.design_id,
         presentation_label_catalog_sha256=approval.presentation_label_catalog_sha256,
         presentation_label_approval=(approval.presentation_labels[0]
@@ -159,7 +167,7 @@ class NativeJobWorker:
         load_profile_revision(directory, payload.profile_revision_id,
                               repository=PostgresProfileRevisionRepository(self.queue.engine))
         current_inputs = capture_generation_inputs(directory, revision_id=payload.profile_revision_id,
-                                                   layout_path=None, target_filename=None)
+                                                   layout_path=None, target_path=None)
         if current_inputs != payload.inputs:
             raise ValueError("Saved source files changed")
         return directory
@@ -170,14 +178,17 @@ class NativeJobWorker:
 
         payload = claim.payload
         directory = self.outputs / payload.artifact_id
+        target_set = TargetSet(directory)
         if (execution_fingerprint() != payload.component_source_sha256
                 or active_renderer_version() != payload.renderer_version):
             raise ValueError("The frozen target execution inputs changed")
-        if (layout_spec_sha256(load_layout_template_spec(target_layout_path(directory, payload.design_id)))
+        if (layout_spec_sha256(load_layout_template_spec(target_layout_path(target_set, payload.design_id)))
                 != payload.layout_sha256):
             raise ValueError("The approved layout spec changed")
-        if (analysis_checksum(directory) != payload.analysis_sha256
-                or file_sha256(directory / payload.target_stored_filename) != payload.target_sha256):
+        target_document = target_set.read(payload.target_stored_filename)
+        if (analysis_checksum(target_set) != payload.analysis_sha256
+                or target_document is None
+                or file_sha256(target_document) != payload.target_sha256):
             raise ValueError("The target document or its analysis changed")
         revision = PostgresProfileRevisionRepository(self.queue.engine).current(payload.artifact_id)
         if (revision is None or revision.profile_revision_id != payload.profile_revision_id
@@ -203,13 +214,29 @@ class NativeJobWorker:
         return bundle
 
     def _snapshot_target(self, claim: JobClaim, directory: Path) -> Path:
-        """Freeze the artifact tree for one attempt; prior attempt bundles stay out."""
+        """Freeze the artifact tree for one attempt; prior attempt bundles stay out.
+
+        The published target names are copied from one pinned epoch as real
+        files, so the bundle never reads a set that switches or is pruned later
+        and no name the current set lacks is left as a dangling link.
+        """
         bundle = (directory / claim.bundle_path).resolve()
         bundle.relative_to(directory.resolve())
-        shutil.copytree(directory, bundle, symlinks=False,
-                        ignore=shutil.ignore_patterns("jobs", "*.sqlite3"))
+        target_set = TargetSet(directory)
+        shutil.copytree(directory, bundle, symlinks=True,
+                        ignore=shutil.ignore_patterns("jobs", "*.sqlite3", TARGETS_DIRNAME))
+        self._materialize_published(target_set, bundle)
         self._write_snapshot_index(claim, bundle)
         return bundle
+
+    @staticmethod
+    def _materialize_published(target_set: TargetSet, bundle: Path) -> None:
+        """Replace copied public names with the pinned epoch's real files."""
+        for link in [path for path in bundle.rglob("*") if path.is_symlink()]:
+            published = target_set.read(link.relative_to(bundle).as_posix())
+            link.unlink()
+            if published is not None:
+                link.write_bytes(published.read_bytes())
 
     @staticmethod
     def _write_snapshot_index(claim: JobClaim, bundle: Path) -> None:
@@ -319,7 +346,7 @@ class NativeJobWorker:
                 or TargetGenerationPayload.model_validate_json((bundle / "job_request.json").read_text()) != payload):
             raise ValueError("The child did not complete the frozen request cleanly")
         manifest = ArtifactManifest.model_validate_json((bundle / "artifact_manifest.json").read_text())
-        layout = load_layout_template_spec(target_layout_path(bundle, payload.design_id))
+        layout = load_layout_template_spec(target_layout_path(TargetSet(bundle), payload.design_id))
         identity = manifest.output_identity
         if (manifest.artifact_id != payload.artifact_id or manifest.execution.mode != "deterministic"
                 or identity.profile_revision_id != payload.profile_revision_id
@@ -612,7 +639,8 @@ def install_offline_renderer() -> None:
         source = directory / "render.html"
         source.write_text(html, encoding="utf-8")
         return source, chrome_html_to_pdf.export_html_to_pdf(source, directory / "render.pdf"), {
-            "execution": "local-job/offline", "model_requests": 0, "tool_calls": 0}
+            "execution": "local-job/offline", "model_requests": 0, "tool_calls": 0,
+            "rendering_environment": chrome_html_to_pdf.chrome_environment()}
 
     # The proof/render evidence records the renderer that actually ran; the
     # offline substitution is never mistaken for the agentic provider owner.
@@ -777,10 +805,11 @@ def render_proof_snapshot(bundle: Path) -> None:
 
 def _require_frozen_target(bundle: Path, payload) -> None:
     """The child re-checks the frozen identities before it renders anything."""
-    if (analysis_checksum(bundle) != payload.analysis_sha256
+    target_set = TargetSet(bundle)
+    if (analysis_checksum(target_set) != payload.analysis_sha256
             or file_sha256(bundle / payload.target_stored_filename) != payload.target_sha256
-            or layout_spec_sha256(load_layout_template_spec(target_layout_path(bundle, payload.design_id)))
-            != payload.layout_sha256):
+            or layout_spec_sha256(load_layout_template_spec(
+                target_layout_path(target_set, payload.design_id))) != payload.layout_sha256):
         raise ValueError("The snapshot disagrees with its frozen target identities")
     from app.template_analysis.layout_proof_rendering import active_renderer_version
 

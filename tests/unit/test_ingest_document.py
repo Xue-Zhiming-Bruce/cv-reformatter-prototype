@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
 import zipfile
 from pathlib import Path
 
 import pytest
+from docx import Document
+from docx.shared import Inches
 from pypdf import PdfWriter
 
 from app.ingestion import ingest_document
@@ -39,20 +42,23 @@ def _docx_bytes(path: Path) -> bytes:
 
 
 def test_candidate_pdf_read_returns_text_and_page_geometry(tmp_path: Path) -> None:
-    text, limitations = read_ingested_document(_text_pdf(tmp_path / "resume.pdf"))
+    text, limitations, lost_text = read_ingested_document(_text_pdf(tmp_path / "resume.pdf"))
 
     assert text == "Jane Candidate"
     assert limitations == []
+    # A text PDF has no unread content, so nothing is reported as lost text.
+    assert lost_text == []
 
 
 def test_candidate_docx_read_returns_text(tmp_path: Path) -> None:
     path = tmp_path / "resume.docx"
     path.write_bytes(_docx_bytes(path))
 
-    text, limitations = read_ingested_document(path)
+    text, limitations, lost_text = read_ingested_document(path)
 
     assert text == "Jane Candidate"
     assert limitations == []
+    assert lost_text == []
 
 
 @pytest.mark.parametrize(
@@ -181,3 +187,22 @@ def test_a_refused_upload_leaves_no_temporary_copy(
         enforce_uploaded_document(oversized, ".pdf")
 
     assert list(tmp_path.glob("cv-document-limit-*")) == []
+
+
+def test_docx_read_splits_reported_images_from_unread_text(tmp_path: Path) -> None:
+    """Issue #49: an image is reported, and lost text is the blocking subset."""
+    path = tmp_path / "resume_with_image.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    (tmp_path / "pixel.png").write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X3mNvwAAAABJRU5ErkJggg=="
+        )
+    )
+    document.add_picture(str(tmp_path / "pixel.png"), width=Inches(0.5))
+    document.save(path)
+
+    _text, reported, lost_text = read_ingested_document(path)
+
+    assert any("image" in message.lower() for message in reported)
+    assert lost_text == []

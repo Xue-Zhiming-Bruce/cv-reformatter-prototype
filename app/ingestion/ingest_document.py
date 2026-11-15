@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from app.ingestion.docx_reader import read_docx
+from app.ingestion.docx_reader import read_docx, unread_content_messages
 from app.ingestion.file_validator import CorruptedFileError, UnsupportedFileTypeError
 from app.ingestion.pdf_reader import (
     CorruptedPdfError,
@@ -52,10 +52,20 @@ _READER_ERRORS = {
 }
 
 
-def read_ingested_document(path: str | Path) -> tuple[str, list[str]]:
-    """Extracted text plus the source content the reader could not read."""
+def read_ingested_document(
+    path: str | Path,
+) -> tuple[str, list[str], list[str]]:
+    """Extracted text, every reported limitation, and those that lost text.
+
+    The split is the reader's own: ``reported`` is everything it recorded,
+    ``lost_text`` the subset where visible text was dropped (issue #49).
+    """
     payload = _run_child("candidate", Path(path))
-    return payload["text"], [str(item) for item in payload["limitations"]]
+    return (
+        payload["text"],
+        [str(item) for item in payload["limitations"]],
+        [str(item) for item in payload["unread_text"]],
+    )
 
 
 def enforce_uploaded_document(contents: bytes, suffix: str) -> None:
@@ -121,15 +131,19 @@ def _child_payload(mode: str, path: Path) -> dict[str, Any]:
         if mode == "geometry":
             return {"page_sizes": page_sizes}
         return {
+            "page_sizes": page_sizes,
             "text": pdf_page_text(read_pdf_pages(path), source=path),
             "limitations": [],
+            "unread_text": [],
         }
     if mode != "candidate":
         raise UnsupportedFileTypeError("Page geometry is only measured for PDF documents.")
     content = read_docx(path)
+    reported, lost_text = unread_content_messages(content.limitations)
     return {
         "text": content.plain_text,
-        "limitations": [limitation.message for limitation in content.limitations],
+        "limitations": reported,
+        "unread_text": lost_text,
     }
 
 

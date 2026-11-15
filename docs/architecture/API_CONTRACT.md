@@ -81,17 +81,62 @@ Response fields:
   name, model id, endpoint, credential or region;
 - `ingestion_limitations` — one attributed review requirement per visible DOCX
   shape the reader cannot read (nested table, text box, tracked insertion,
-  deletion or move, content control inside a paragraph, simple field result,
-  embedded `w:altChunk`, text-bearing block wrapper it cannot read in place),
-  naming its location and, for a wrapper, the element name and child position;
-  empty for PDFs and for DOCX files inside the supported shapes. The
-  `segmentation_audit.json` line-coverage audit only measures the text the
-  reader supplied, so it reports `incomplete` rather than `passed` whenever this
-  list is non-empty and never implies the source was read completely. The
-  reader's module docstring carries the enumerated read set — authored body
-  order, block wrappers of paragraphs/tables, runs held by a transparent inline
-  wrapper, and the default, displayed first-page and enabled even-page
-  headers/footers — and states that shapes outside it are not detectable.
+  deletion or move, content a content control holds where no walk descends it —
+  a control whose content is none of the blocks, rows, cells or runs the reader
+  places, such as one inside tracked change markup —, simple field
+  result, embedded `w:altChunk` or `w:subDoc`, text-bearing block, table or
+  inline wrapper it cannot read in place, a referenced note or comment body the
+  reader did not read, and drawings, pictures and charts that hold no text of
+  their own counted per part because OCR is out of scope — a drawing that carries
+  a character is a text box instead, and blocks), naming its location and, for a
+  wrapper, the element name and child position; empty for PDFs and for DOCX files
+  inside the supported shapes. The `segmentation_audit.json` line-coverage audit
+  only measures the text the reader supplied, so it never implies the source was
+  read completely: it records every reported limitation in
+  `unread_source_content` and the subset where visible text was lost in
+  `unread_text_source_content`. A reported image,
+  drawing or chart is pixels or an embedded chart part rather than lost text, so
+  it appears only in the first list and leaves the audit `passed`. Any entry in
+  the second list makes the audit `incomplete` and blocks profile revision
+  saving, approval and generation with 409 `source_text_unread` naming the text
+  the reader could not read: no acknowledgment path for unread source text
+  exists yet, so such an artifact has to be re-supplied with that content removed
+  instead of being approved on a partial read. The reader's module docstring carries the
+  enumerated read set — authored body order, table rows and cells walked on the
+  table's own XML so a control or structural wrapper around either is read,
+  cells read through the same block walk, a content control read in every
+  position the walk reaches (paragraphs and tables at block level, rows and
+  cells in a table, runs inline), block wrappers of paragraphs/tables,
+  inline text read by one walk with one explicit decision per element of the
+  inline content model (every character renders: `w:t`, tabs, breaks,
+  `w:noBreakHyphen`, `w:softHyphen`, `w:sym`'s code point, ruby base text; runs,
+  hyperlinks, pass-through inline wrappers and the selected
+  `mc:AlternateContent` branch are descended), an Office Math zone read by that
+  same walk (its `m:t` renders, its constructs are descended, a child outside the
+  math content model is reported), a referenced footnote or endnote read from its
+  own part after the body blocks and only from a reference the walk reached, and
+  the default, displayed first-page and enabled even-page headers/footers — and
+  states that shapes outside it are not detectable. "Holds text" is decided in
+  every text namespace, so a wrapper or block around `m:t` (Office Math) or `a:t`
+  (DrawingML) is seen like a `w:t` one instead of passing as empty. A referenced
+  note no part supplies, and a comment body, are counted per part as a `note`
+  limitation instead of being left to a docstring blind spot. Reading and
+  reporting are one traversal: every inline element the walk declines is named
+  where it is declined, at any nesting depth, and an element outside the decided
+  model is reported whatever it holds, so a wrapper, a ruby annotation or an
+  unanticipated run child is named rather than dropped. A symbol whose code point
+  is a font-specific glyph slot is reported but does not block, like a reported
+  image. A branch of
+  `mc:AlternateContent` that was not chosen is neither read nor reported, no
+  shape inside it is counted and a note it references is not read, because it
+  renders what was read. Every content control in a part that no walk descended
+  is counted as a limitation, so a
+  control in a position the reader cannot traverse is named rather than skipped.
+  Container properties are never content: the walk skips the `*Pr` children of
+  the containers it descends (`w:customXmlPr`, `w:smartTagPr`, `w:sdtPr`,
+  `w:sdtEndPr`, `w:dirPr`, `w:fldData`, `w:pPr`, `w:rPr`) and every other
+  property element by that suffix, so property metadata is never reported as
+  unread text while an element that holds content and is not a property still is.
 
 In addition to `raw_extracted_text.txt` and `candidate_profile.json`, processing
 persists two immutable source-analysis artifacts:
@@ -106,6 +151,25 @@ Consumers must preserve `artifact_id` across target analysis and generation.
 Original text remains available even when an original PDF preview exists.
 `POST /api/process` is the only operation that creates `raw_extracted_text.txt`
 and `candidate_profile.json`; both files are immutable after extraction.
+
+### Bounded upload capacity
+
+`POST /api/process` and `POST /api/target-format` run their file parsing and
+provider work on a bounded worker pool (capacity `API_BLOCKING_WORK_CAPACITY`,
+an integer from 1 to 64, default 4; an invalid value fails at startup) instead of
+the request event loop, so one upload cannot delay health, status or other
+requests while an SDK call or provider polling runs. When every slot is busy the
+upload is refused before any work starts: HTTP 503 with
+`{"error_code": "server_busy", "message": ...}` and `Retry-After: 5`. That
+refusal is capacity, not a provider failure: no artifact is created, nothing was
+sent to a provider, and no paid work is retried automatically.
+
+A refusal can land on the second hop: `POST /api/process` that already passed
+file parsing can be refused on the extraction hop, so the caller gets the 503
+with no parsed draft and must upload the candidate file again. Cancellation
+(server shutdown or explicit task cancellation; a non-streaming JSON handler is
+not cancelled by a client disconnect) cannot recall a provider call already
+dispatched, and the slot stays in use until that call returns.
 
 ## Upload Target Format
 
@@ -141,6 +205,45 @@ The `target_format` object includes:
 - `analysis_warnings`.
 
 Generation can reload the saved target format using the same `artifact_id`.
+
+Publication is all-or-nothing per request. Each upload stages privately under
+`.staging`, writes the complete analyzed set into an immutable set directory
+under the artifact, and then makes that set current with one rename of the
+artifact's `current` pointer, which `target_format.json`, the stored source and
+the analysis files follow as symlinks. A reader therefore sees either the
+previous complete set or the new complete set: never one upload's metadata
+beside another upload's source. Uploads for the same `artifact_id` serialize on
+a per-artifact lock, so the later one publishes over the earlier one and the
+superseded set stops being published — after a PDF target supersedes a DOCX
+target, the DOCX template URL is no longer part of the current target. A
+refused, failed, cancelled or otherwise failed upload publishes nothing,
+including a cancellation or failure that lands while it was publishing: the
+previous set is put back and the staged one is discarded, and no upload can
+delete another request's staged source. A published set is retained while it is
+current, while it is the set the current one replaced, and while a reader still
+holds it: pruning never deletes a set an open view is reading, so a publication
+cannot pull bytes out from under an operation in progress. A publisher that
+starts up also drops what a dead publisher left behind, including the set the
+current one replaced, so a retention count settles at one live set once no view
+holds an older one.
+
+An artifact directory published before the switch existed keeps its target files
+as plain files, which no single rename can replace together. Its first read or
+publication copies them into one complete immutable epoch and switches to it, so
+such a directory is either entirely legacy or a complete set, never half of
+each — a copy rather than a move, because an adoption that dies before the switch
+then still leaves the whole legacy set readable. The target file exists twice for
+the length of that adoption.
+
+Consistency is per logical operation, not across time. A reader that needs more
+than one file (metadata plus source, a proof plus its render, a worker input
+snapshot) pins the current set once — `app.target_publication.TargetSet` — and
+reads every file from that pinned epoch, and an operation that also renders
+keeps that view alive until it is done; a writer never writes through a public
+name, because a set is immutable once published. Two *separate* reads issued on
+either side of a publication may therefore legitimately see different sets;
+what cannot happen is one operation mixing upload A's metadata with upload B's
+bytes.
 
 ## Document Resource Limits — Both Uploads (issue #53)
 
@@ -658,6 +761,7 @@ profile revision. Existing `approved_profile_*` error codes remain compatible:
 | Revision belongs to a different artifact | 400 | `approved_profile_artifact_mismatch` |
 | Artifact's extraction draft changed since revision creation | 400 | `approved_profile_draft_mismatch` |
 | Optional/custom source content is unaccounted for or pending review | 409 | `source_content_unaccounted` |
+| The reader reported visible source text it could not read (`segmentation_audit.status=incomplete`) | 409 | `source_text_unread` |
 | Uploaded target analysis is unsupported (`analysis_status=fallback_to_built_in`) | 409 | `uploaded_target_fallback_removed` |
 | Uploaded target has only a legacy v1 artifact-level spec (`structure_contract=legacy`) | 409 | `measured_layout_spec_required` |
 | Designer strategy (`claude_designer`/`openai_designer`) without an approved design or without explicit `allow_existing_template=true` | 409 | `fallback_requires_approval` |
@@ -687,7 +791,13 @@ rewritten on read. New proof IDs include renderer and canonical-context identity
 so a version change preserves earlier proof files. Rolling back requires the
 matching implementation, approval record and original checksum-verified proof
 files; no automatic fallback grants an older approval. Generation metadata also
-records `renderer_version`. Current uploaded-target rendering uses
+records `renderer_version`. For native output `generation_metadata.json` records
+the `rendering_environment` (export contract version, browser version and
+resolution mode, locale/timezone, font readiness, bundled-font and fallback-font
+identity); on the uploaded-target/agentic path it records `null` because the
+versioned agentic identity already binds the environment, and the recorded
+environment for that output is in `agentic_generation.json` (proof render
+results carry their own copy). Current uploaded-target rendering uses
 `agentic-a/6+lane-a-product-subset/17+<configuration digest>`; `product-html/1`
 identifies historical records only. The six identity fields used for final-output
 acceptance remain unchanged.
