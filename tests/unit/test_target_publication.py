@@ -454,3 +454,135 @@ def test_interrupted_adoption_then_an_abandoned_upload_keeps_the_legacy_set(
         assert view.read("target_format_template.docx") is None
     finally:
         view.close()
+
+
+def _dereferenced_copy(
+    tmp_path: Path, artifact_dir: Path, filenames: tuple[str, ...], tag: str
+) -> tuple[Path, dict[str, bytes]]:
+    """A published artifact copied with its links dereferenced, as ``cp -rL`` leaves it."""
+    import shutil
+
+    contents = _publish(tmp_path, artifact_dir, filenames, tag)
+    copy_dir = tmp_path / f"{artifact_dir.name}-dereferenced"
+    shutil.copytree(artifact_dir, copy_dir)
+    assert (copy_dir / TARGETS_DIRNAME / CURRENT_LINK_NAME).is_dir()
+    assert not (copy_dir / TARGETS_DIRNAME / CURRENT_LINK_NAME).is_symlink()
+    return copy_dir, contents
+
+
+def test_dereferenced_copy_is_read_and_published_as_one_set(tmp_path: Path) -> None:
+    """A copy with its links dereferenced is a published artifact, not an error.
+
+    ``shutil.copytree`` without ``symlinks=True`` (like ``cp -rL`` or ``rsync -L``)
+    leaves a real directory where ``.targets/current`` should be. At ``d26fbfd``
+    the reader took that for an unpublished legacy directory, adopted the plain
+    names and died in the switch with ``IsADirectoryError``.
+    """
+    from app.target_publication import TargetSet
+
+    copy_dir, first = _dereferenced_copy(tmp_path, tmp_path / "artifact_deref_read", PDF_SET, "first")
+    view = TargetSet(copy_dir)
+    try:
+        for name, payload in first.items():
+            assert view.read(name).read_bytes() == payload, name
+    finally:
+        view.close()
+
+    second = _publish(tmp_path, copy_dir, PDF_SET, "second")
+
+    current = copy_dir / TARGETS_DIRNAME / CURRENT_LINK_NAME
+    assert current.is_symlink() and current.is_dir(), "the copy kept a directory at current"
+    assert (copy_dir / "target_format.json").read_bytes() == second["target_format.json"]
+    for name in PDF_SET:
+        public = copy_dir / name
+        assert public.is_symlink() and public.read_bytes() == second[name], name
+    plain = [
+        path.name
+        for path in copy_dir.iterdir()
+        if path.name in PDF_SET and path.is_file() and not path.is_symlink()
+    ]
+    assert plain == [], f"plain files stayed beside the copied links: {plain}"
+    assert not list((copy_dir / TARGETS_DIRNAME).glob(".migrating-*"))
+
+
+def _current_only_artifact(tmp_path: Path, tag: str, state: str) -> Path:
+    artifact_dir = tmp_path / f"artifact_current_{tag}"
+    artifact_dir.mkdir(parents=True)
+    if state != "absent":
+        targets = artifact_dir / TARGETS_DIRNAME
+        targets.mkdir()
+        current = targets / CURRENT_LINK_NAME
+        if state == "dangling":
+            current.symlink_to("set-gone")
+        else:
+            current.write_text("not a set")
+    return artifact_dir
+
+
+@pytest.mark.parametrize("state", ["absent", "dangling", "plain file"])
+def test_a_current_that_names_no_set_publishes_nothing(tmp_path: Path, state: str) -> None:
+    """A dangling link, a plain file and no ``current`` all read as no target.
+
+    Each is replaced by the next publication rather than reported as an error.
+    """
+    from app.target_publication import TargetSet
+
+    artifact_dir = _current_only_artifact(tmp_path, state.replace(" ", "_"), state)
+    with TargetSet(artifact_dir) as view:
+        assert view.read("target_format.json") is None
+
+    contents = _publish(tmp_path, artifact_dir, DOCX_SET, f"after-{state.replace(' ', '_')}")
+
+    assert (artifact_dir / TARGETS_DIRNAME / CURRENT_LINK_NAME).is_symlink()
+    assert (artifact_dir / "target_format.json").read_bytes() == contents["target_format.json"]
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="chmod denies nothing to root")
+def test_unreadable_current_is_an_error_not_an_unpublished_artifact(tmp_path: Path) -> None:
+    """A ``current`` the process cannot stat raises; it never reads as "no target".
+
+    Reporting "nothing uploaded" would silently drop a published set from every
+    read of the artifact.
+    """
+    from app.target_publication import TargetSet
+
+    artifact_dir = tmp_path / "artifact_current_unreadable"
+    _publish(tmp_path, artifact_dir, DOCX_SET, "first")
+    targets = artifact_dir / TARGETS_DIRNAME
+    os.chmod(targets, 0o000)
+    try:
+        with pytest.raises(OSError):
+            with TargetSet(artifact_dir) as view:
+                view.read("target_format.json")
+    finally:
+        os.chmod(targets, 0o755)
+    assert TargetSet(artifact_dir).read("target_format.json") is not None
+
+
+def test_a_migration_that_died_between_its_renames_is_recovered(tmp_path: Path) -> None:
+    """The set a died migration renamed aside is put back and served, not pruned.
+
+    A migration copies the directory into an epoch, renames it aside and then
+    links it; a death in that window must not lose the set.
+    """
+    import shutil
+
+    from app.target_publication import TargetSet
+
+    copy_dir, first = _dereferenced_copy(tmp_path, tmp_path / "artifact_deref_crash", PDF_SET, "first")
+    targets = copy_dir / TARGETS_DIRNAME
+    shutil.copytree(targets / CURRENT_LINK_NAME, targets / "set-made-before-the-crash")
+    for name in PDF_SET:  # a tree only partly dereferenced: the names follow current
+        public = copy_dir / name
+        public.unlink()
+        public.symlink_to(f"{TARGETS_DIRNAME}/{CURRENT_LINK_NAME}/{name}")
+    os.replace(targets / CURRENT_LINK_NAME, targets / ".migrating-dead")
+
+    with TargetSet(copy_dir) as view:
+        for name, payload in first.items():
+            served = view.read(name)
+            assert served is not None, f"the set the died migration renamed aside is lost: {name}"
+            assert served.read_bytes() == payload, name
+
+    assert not list(targets.glob(".migrating-*")), "the recovered directory stayed beside the set"
+    assert (targets / CURRENT_LINK_NAME).is_symlink()

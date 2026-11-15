@@ -21,7 +21,12 @@ An artifact directory published before the switch existed keeps plain files that
 no rename can replace together. Its first read or write copies them into one
 complete epoch and switches to it, so the directory is either entirely legacy or
 a complete epoch: never half of each, and an adoption that dies before the
-switch leaves the whole legacy set readable.
+switch leaves the whole legacy set readable. A copy of a published directory made
+with its links dereferenced (``cp -rL``, ``rsync -L``, a restored backup) has a
+real directory where ``current`` should be; that directory is the published set,
+migrated to an epoch the first time the copy is read or written. No form of
+``current`` is an error: a valid link names an epoch, a real directory is one, and
+an absent name, a dangling link or a plain file all mean nothing is published.
 
 Uploads for the same artifact id serialize on a per-artifact lock, so the later
 one publishes over the earlier one instead of interleaving with it, and a
@@ -34,6 +39,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import tempfile
 import threading
 import uuid
@@ -52,6 +58,8 @@ __all__ = ("CURRENT_LINK_NAME", "TARGETS_DIRNAME", "TargetSet", "publish_target_
 TARGETS_DIRNAME = ".targets"
 CURRENT_LINK_NAME = "current"
 _PENDING_PREFIX = ".pending-"
+#: Prefix of a ``current`` directory a migration renamed aside before linking it.
+_MIGRATING_PREFIX = ".migrating-"
 #: The artifact-root names one upload publishes. A directory published before
 #: the switch holds them as plain files, which adoption reads as one set.
 LEGACY_TARGET_FILENAMES = (
@@ -107,8 +115,48 @@ def _epoch_names(epoch: Path | None) -> list[str]:
 
 
 def _current_epoch_name(sets_dir: Path) -> str | None:
+    """The sibling epoch ``current`` names, or ``None`` when it names no epoch."""
+    mode = _current_mode(sets_dir)
+    if mode is None or not stat.S_ISLNK(mode):
+        return None
+    return Path(os.readlink(sets_dir / CURRENT_LINK_NAME)).name
+
+
+def _is_dir(path: Path) -> bool:
+    """``path`` is a directory; an unreadable path raises instead of reading as absent."""
+    try:
+        return stat.S_ISDIR(os.stat(path).st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _current_mode(sets_dir: Path) -> int | None:
+    """The mode of ``current`` itself, or ``None`` when nothing is there.
+
+    An unreadable ``current`` raises: it must not read as an artifact that never
+    had a target, which would silently drop a published set from every read.
+    """
+    try:
+        return os.lstat(sets_dir / CURRENT_LINK_NAME).st_mode
+    except FileNotFoundError:
+        return None
+
+
+def _current_set(sets_dir: Path) -> Path | None:
+    """The published set directory, whatever form ``current`` is in.
+
+    A link names an epoch; a real directory is a set copied out of one. A
+    dangling link, a plain file and an absent name publish nothing, so the
+    artifact keeps serving what was published before them.
+    """
+    mode = _current_mode(sets_dir)
     current = sets_dir / CURRENT_LINK_NAME
-    return os.readlink(current) if current.is_symlink() else None
+    if mode is None:
+        return None
+    if stat.S_ISLNK(mode):
+        epoch = sets_dir / Path(os.readlink(current)).name
+        return epoch if _is_dir(epoch) else None
+    return current if stat.S_ISDIR(mode) else None
 
 
 def _new_epoch_dir(sets_dir: Path) -> Path:
@@ -205,12 +253,7 @@ class TargetSet:
         if self._epoch is None:
             with _artifact_lock(self.artifact_dir.name):
                 self._adopt_legacy()
-                current = self.sets_dir / CURRENT_LINK_NAME
-                self._epoch = (
-                    self.sets_dir / os.readlink(current)
-                    if current.is_symlink()
-                    else self.artifact_dir
-                )
+                self._epoch = _current_set(self.sets_dir) or self.artifact_dir
         if self._pin is None:
             self._pin = self._epoch
             _lease(self._epoch)
@@ -256,13 +299,18 @@ class TargetSet:
             self._prune(keep=(epoch.name, previous))
 
     def _adopt_legacy(self) -> None:
-        """Give a directory published before the switch one complete epoch.
+        """Give a set that is not an epoch yet one complete epoch and a link.
 
-        Caller holds the lock. The plain files are copied rather than moved, so
-        an adoption that dies before the switch still leaves the whole legacy
-        set readable; the target file exists twice for the length of it.
+        Caller holds the lock. Two forms predate the switch: plain files at the
+        artifact root, and a ``current`` that is a real directory because the
+        artifact was copied with its links dereferenced.
         """
-        if (self.sets_dir / CURRENT_LINK_NAME).is_symlink():
+        self._recover_migration()
+        mode = _current_mode(self.sets_dir)
+        if mode is not None and stat.S_ISLNK(mode):
+            return  # a link names its epoch; a dangling one publishes nothing
+        if mode is not None and stat.S_ISDIR(mode):
+            self._migrate_current_dir()
             return
         legacy = [
             name
@@ -270,8 +318,16 @@ class TargetSet:
             if (self.artifact_dir / name).is_file()
             and not (self.artifact_dir / name).is_symlink()
         ]
-        if not legacy:
-            return
+        if legacy:
+            self._adopt_plain_files(legacy)
+
+    def _adopt_plain_files(self, legacy: Sequence[str]) -> None:
+        """Copy the plain root files into one epoch, switch to it and link them.
+
+        The copy rather than a move is what keeps the whole legacy set readable
+        when the switch fails; the target file exists twice for the length of
+        it.
+        """
         epoch = _copy_epoch(self.sets_dir, self.artifact_dir, legacy)
         try:
             _flip_current(self.sets_dir, epoch.name)
@@ -279,6 +335,34 @@ class TargetSet:
             shutil.rmtree(epoch, ignore_errors=True)  # nothing names it yet
             raise
         self._link_public_names(legacy)
+
+    def _migrate_current_dir(self) -> None:
+        """Turn a dereferenced ``current`` directory into an epoch and its link.
+
+        The directory is copied into an epoch first and renamed aside second, so
+        a migration that dies before the switch leaves the set where
+        ``_recover_migration`` puts it back; the target file exists twice for
+        the length of it.
+        """
+        current = self.sets_dir / CURRENT_LINK_NAME
+        names = _epoch_names(current)
+        epoch = _copy_epoch(self.sets_dir, current, names)
+        retired = self.sets_dir / f"{_MIGRATING_PREFIX}{uuid.uuid4().hex}"
+        os.replace(current, retired)
+        try:
+            _flip_current(self.sets_dir, epoch.name)
+        except BaseException:
+            os.replace(retired, current)  # the directory never stopped being it
+            shutil.rmtree(epoch, ignore_errors=True)
+            raise
+        shutil.rmtree(retired, ignore_errors=True)
+        self._link_public_names(names)
+
+    def _recover_migration(self) -> None:
+        """Put a ``current`` directory a died migration renamed aside back in place."""
+        retired = sorted(self.sets_dir.glob(f"{_MIGRATING_PREFIX}*"))
+        if retired and _current_mode(self.sets_dir) is None:
+            os.replace(retired[-1], self.sets_dir / CURRENT_LINK_NAME)
 
     def _switch(
         self,
