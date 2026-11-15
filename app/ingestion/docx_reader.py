@@ -87,6 +87,10 @@ location):
 - a block wrapper, or a table child, holding text in a shape that is not the
   blocks, rows or cells this reader handles — reported one per element with its
   name and child position;
+- an entity reference (``&name;``): the XML parser is configured never to
+  expand one, so the node stands for text this reader cannot see. Counted once
+  per part wherever it sits — block level, in a run, inside ``w:t`` — so a
+  document whose text lives in a DTD entity blocks instead of passing as read;
 - an inline element the walk does not read, at whatever depth it sits — reported
   one per element with its name and paragraph position, so a wrapper inside a
   pass-through wrapper, or inside the selected alternative branch, is named
@@ -123,9 +127,13 @@ location):
   that is not an image is reported as an ``embedded_part`` and blocks, whether or
   not this reader knows that part's format. A vector image is XML, so it counts as
   art only when every element in it draws a shape this reader recognises: an SVG
-  text element, a ``foreignObject`` holding HTML, and any construct added to the
-  format later all block instead of passing, as does a part that does not parse or
-  whose root is not SVG. Vector art is not read as a character stream at all, so an
+  text element, and any construct added to the format later, block instead of
+  passing, as does a part that does not parse or whose root is not SVG. A
+  ``foreignObject`` blocks whatever it holds, empty or not, because it holds HTML
+  this reader does not read; an entity reference blocks because the parser never
+  expands it, so its text is content nobody saw. A ``style`` element is allowed and
+  its rules are not read, so text a CSS ``content:`` rule paints is outside this
+  reader's claim. Vector art is not read as a character stream at all, so an
   outline that spells a word is art here, not text. Relationship ids are resolved
   against the part that owns the drawing, and the branch selection the walk uses
   also decides which of a drawing's own ``mc:AlternateContent`` branches contributes
@@ -176,6 +184,7 @@ from docx.oxml import parse_xml
 from docx.oxml.xmlchemy import BaseOxmlElement
 from docx.parts.hdrftr import FooterPart, HeaderPart
 from docx.section import Section as SectionObject
+from lxml import etree
 
 from app.ingestion.file_validator import validate_docx_file
 
@@ -495,7 +504,8 @@ _UNSUPPORTED_CONTENT_REVIEW: dict[LimitationKind, str] = {
     ),
     "unknown_block": "a block element this reader does not recognize is not read",
     "unknown_inline": (
-        "an inline element this reader does not recognize is not read"
+        "an inline element this reader does not recognize is not read, and neither "
+        "is text an entity reference would expand to"
     ),
     "ruby": "a ruby (furigana) pronunciation annotation is not read",
     "note": (
@@ -939,6 +949,8 @@ def _read_inline(
     than its text.
     """
     for child in container.iterchildren():
+        if _is_entity(child):
+            continue  # its expansion is unread text, counted once per part
         if _is_property(child):
             continue
         decision = _INLINE_DECISIONS.get(child.tag, "report")
@@ -1128,6 +1140,17 @@ def _local_name(element: BaseOxmlElement) -> str:
     return element.tag.rsplit("}", 1)[-1] if isinstance(element.tag, str) else "element"
 
 
+def _is_entity(node: BaseOxmlElement) -> bool:
+    """True for an entity reference: markup whose expansion this parser never makes.
+
+    python-docx parses with entity resolution off, so an entity stays a node and
+    what it stands for never reaches the tree. A node standing for text nobody can
+    read is unread text, so it blocks wherever it sits instead of passing as markup
+    that draws nothing.
+    """
+    return node.tag is etree.Entity
+
+
 def _namespace(element: BaseOxmlElement) -> str:
     tag = element.tag
     return tag[1:].split("}", 1)[0] if isinstance(tag, str) and tag.startswith("{") else ""
@@ -1268,7 +1291,9 @@ def _find_limitations(
     another part through a relationship id that only that part's relationships
     resolve. Drawings are decided first: selecting their branches registers the
     branches that render nothing, so the counts below skip what a discarded branch
-    holds.
+    holds. Entity references are counted here rather than at each walk position: an
+    entity node is text in whatever element holds it, block, run or ``w:t``, and one
+    count over the part cannot miss a position a walk does not reach.
     """
     drawings = _drawing_limitation_counts(element, account, namespaces, owner)
     counts: dict[LimitationKind, int] = {
@@ -1287,6 +1312,11 @@ def _find_limitations(
             for control in element.iter(_CONTENT_CONTROL)
             if control not in account.controls
             and not _inside(control, account.discarded)
+        ),
+        "unknown_inline": sum(
+            1
+            for item in element.iter()
+            if _is_entity(item) and not _inside(item, account.discarded)
         ),
         "field": _counted(element, _FIELD, account),
         "alt_chunk": _counted(element, _ALT_CHUNK, account)
@@ -1463,11 +1493,15 @@ def _svg_holds_text(blob: bytes) -> bool:
     construct this reader does not recognise must not pass as art. The part is art
     only when its root is an SVG ``svg`` and every element under it is a shape, a
     shape container or a filter primitive, with ``title``, ``desc`` and
-    ``metadata`` allowed and ignored because nothing draws them. ``foreignObject``
-    holds markup this reader cannot judge, so it is judged by what it holds: a
-    non-whitespace character there is page text. A part that does not parse, or
+    ``metadata`` allowed and ignored because nothing draws them. A ``foreignObject``
+    holds HTML this reader does not read, so it blocks whatever it holds, empty or
+    not: whether foreign markup paints a character is not a question character data
+    can answer. An entity reference blocks too, because this parser never expands
+    one, so what it stands for is text nobody read. A part that does not parse, or
     whose root is not SVG, is not known to be art either, so both are reported as
-    text this reader did not read.
+    text this reader did not read. A ``style`` element is allowed and its rules are
+    not read: text a CSS ``content:`` rule paints is art this reader cannot deny,
+    which is a limit of this reader rather than a claim about CSS.
 
     shortcut: vector art is not interpreted at all, so an outline that spells a word
     is art here rather than text, and so is a character drawn by a construct added
@@ -1486,6 +1520,8 @@ def _svg_holds_text(blob: bytes) -> bool:
 def _svg_element_holds_text(element: BaseOxmlElement) -> bool:
     """True when an SVG element or anything under it can draw a character."""
     for child in element.iterchildren():
+        if _is_entity(child):
+            return True  # an expansion nobody made may draw a character
         if not isinstance(child.tag, str):
             continue  # a comment or a processing instruction draws nothing
         name = _local_name(child)
@@ -1494,24 +1530,12 @@ def _svg_element_holds_text(element: BaseOxmlElement) -> bool:
         if name in _SVG_METADATA_LOCAL_NAMES or name == "style":
             continue  # describes or styles the image; neither draws a character
         if name == "foreignObject":
-            if _svg_foreign_holds_text(child):
-                return True
-            continue
+            return True  # HTML this reader does not read, whatever it holds
         if name not in _SVG_GRAPHICS_LOCAL_NAMES:
             return True  # an element that may draw a character this reader missed
         if _svg_element_holds_text(child):
             return True
     return False
-
-
-def _svg_foreign_holds_text(element: BaseOxmlElement) -> bool:
-    """True when foreign (HTML) content holds a character, which is page text."""
-    texts = [element.text]
-    for item in element.iter():
-        if item is element or not isinstance(item.tag, str):
-            continue
-        texts.extend((item.text, item.tail))
-    return any(text is not None and text.strip() for text in texts)
 
 
 def _selected_elements(

@@ -1791,11 +1791,11 @@ def test_foreign_html_text_in_a_vector_image_blocks_approval_revision_and_genera
     assert generated.json()["detail"]["error_code"] == "source_text_unread"
 
 
-def test_vector_image_without_foreign_text_approves_with_a_report(
+def test_foreign_object_without_content_in_a_vector_image_blocks_approval_revision_and_generation(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """An empty ``foreignObject`` holds no character, so nothing was lost."""
+    """A ``foreignObject`` holds HTML this reader does not read, empty or not."""
     body = _process_svg_resume(
         tmp_path,
         monkeypatch,
@@ -1804,20 +1804,87 @@ def test_vector_image_without_foreign_text_approves_with_a_report(
     )
 
     (limitation,) = body["ingestion_limitations"]
-    assert "OCR is out of scope" in limitation
+    assert "chart, diagram or embedded object" in limitation
     audit = json.loads(
         (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
             encoding="utf-8"
         )
     )
-    assert audit["status"] == "passed"
-    assert audit["unread_text_source_content"] == []
+    assert audit["status"] == "incomplete"
+    assert audit["unread_text_source_content"] == body["ingestion_limitations"]
 
     approval = client.post(
         f"/api/artifacts/{body['artifact_id']}/profiles/approve",
         json={"profile": body["profile"]},
     )
-    assert approval.status_code == 200, approval.text
+    assert approval.status_code == 409, approval.text
+    assert approval.json()["detail"]["error_code"] == "source_text_unread"
+
+    revision = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/revisions",
+        json={"profile": body["profile"]},
+    )
+    assert revision.status_code == 409, revision.text
+    assert revision.json()["detail"]["error_code"] == "source_text_unread"
+
+    generated = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": body["artifact_id"],
+            "profile_revision_id": body["profile_revision_id"],
+        },
+    )
+    assert generated.status_code == 409, generated.text
+    assert generated.json()["detail"]["error_code"] == "source_text_unread"
+
+
+def test_entity_text_in_a_vector_image_blocks_approval_revision_and_generation(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """An entity the parser never expands stands for text nobody read."""
+    body = _process_svg_resume(
+        tmp_path,
+        monkeypatch,
+        '<!DOCTYPE svg [<!ENTITY label "HIDDEN SVG SENTENCE">]>'
+        '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/>'
+        "&label;</svg>",
+    )
+
+    assert "HIDDEN SVG SENTENCE" not in body["original_text"]
+    (limitation,) = body["ingestion_limitations"]
+    assert "chart, diagram or embedded object" in limitation
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "incomplete"
+    assert audit["unread_text_source_content"] == body["ingestion_limitations"]
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 409, approval.text
+    assert approval.json()["detail"]["error_code"] == "source_text_unread"
+
+    revision = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/revisions",
+        json={"profile": body["profile"]},
+    )
+    assert revision.status_code == 409, revision.text
+    assert revision.json()["detail"]["error_code"] == "source_text_unread"
+
+    generated = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": body["artifact_id"],
+            "profile_revision_id": body["profile_revision_id"],
+        },
+    )
+    assert generated.status_code == 409, generated.text
+    assert generated.json()["detail"]["error_code"] == "source_text_unread"
 
 
 def test_drawing_with_an_unselected_text_branch_approves_with_a_report(
