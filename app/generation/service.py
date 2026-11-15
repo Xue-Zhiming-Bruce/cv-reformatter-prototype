@@ -207,10 +207,10 @@ def load_saved_target_format(target_set: TargetSet) -> TargetFormatMetadata | No
         raise GenerationError(400, "Saved target format metadata is invalid.") from exc
 
 
-def assert_target_format_assertion(
+def require_matching_target_format(
     saved: TargetFormatMetadata, requested: TargetFormatMetadata
 ) -> None:
-    """Refuse a request whose target reference asserts something the set does not.
+    """Refuse a request whose target reference contradicts the saved target.
 
     ``role`` and ``used_as_template_source`` decide whether this generation is
     driven by an uploaded target layout, so a caller may restate the saved
@@ -797,7 +797,7 @@ def prepare_generation(
     if target_format is None:
         target_format = saved_target_format
     elif saved_target_format is not None:
-        assert_target_format_assertion(saved_target_format, target_format)
+        require_matching_target_format(saved_target_format, target_format)
         target_format = saved_target_format
     if target_format is not None and target_format.artifact_id != artifact_id:
         raise GenerationError(400, "target_format.artifact_id must match artifact_id.")
@@ -956,7 +956,9 @@ def prepare_generation(
     if style_spec is None and saved_target_format is not None:
         # The built-in template is the layout of an artifact with no uploaded
         # target at all; substituting it for a saved target is exactly the
-        # silent fallback an uploaded target rules out.
+        # silent fallback an uploaded target rules out. No upload path publishes
+        # a target set without a compiled spec, so this guards hand-written or
+        # legacy artifact directories, not a reachable product request.
         raise GenerationError(
             400,
             {
