@@ -44,6 +44,37 @@ def _build_resume_docx(path: Path) -> None:
     document.save(path)
 
 
+def _add_xml_part(
+    document: object, partname: str, content_type: str, xml: str, relationship: str
+) -> str:
+    """Attach a part a drawing references and return its relationship id."""
+    part = Part(PackURI(partname), content_type, xml.encode(), document.part.package)
+    return document.part.relate_to(part, relationship)
+
+
+def _add_chart_drawing(document: object, label: str) -> None:
+    """Append a drawing whose chart part holds visible text the reader never opens."""
+    chart_id = _add_xml_part(
+        document,
+        "/word/charts/chart1.xml",
+        "application/vnd.openxmlformats-officedocument.drawingml.chart+xml",
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        "<c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r><a:t>"
+        f"{label}</a:t></a:r></a:p></c:rich></c:tx></c:title></c:chart></c:chartSpace>",
+        RT.CHART,
+    )
+    document.add_paragraph()._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp")}>'
+            '<w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic><a:graphicData'
+            ' uri="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+            f'<c:chart {nsdecls("c", "r")} r:id="{chart_id}"/>'
+            "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
+        )
+    )
+
+
 def _build_ordered_resume_docx(path: Path) -> None:
     """Issue #49: contact in the header/footer, a table between paragraphs, a header
     table between header paragraphs, a first-page header defined before the section
@@ -1509,6 +1540,129 @@ def test_drawing_text_blocks_approval_revision_and_generation(
     )
     assert generated.status_code == 409, generated.text
     assert generated.json()["detail"]["error_code"] == "source_text_unread"
+
+
+def test_chart_text_blocks_approval_revision_and_generation(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A chart title is text in another part: unread, so review fails closed."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    _add_chart_drawing(document, "CHART VISIBLE LABEL")
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "CHART VISIBLE LABEL" not in body["original_text"]
+    (limitation,) = body["ingestion_limitations"]
+    assert "chart, diagram or embedded object" in limitation
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "incomplete"
+    assert audit["unread_text_source_content"] == body["ingestion_limitations"]
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 409, approval.text
+    assert approval.json()["detail"]["error_code"] == "source_text_unread"
+
+    revision = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/revisions",
+        json={"profile": body["profile"]},
+    )
+    assert revision.status_code == 409, revision.text
+    assert revision.json()["detail"]["error_code"] == "source_text_unread"
+
+    generated = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": body["artifact_id"],
+            "profile_revision_id": body["profile_revision_id"],
+        },
+    )
+    assert generated.status_code == 409, generated.text
+    assert generated.json()["detail"]["error_code"] == "source_text_unread"
+
+
+def test_drawing_with_an_unselected_text_branch_approves_with_a_report(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Only the chosen branch renders: a picture reports and does not block."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    image_id, _image = document.part.get_or_add_image(io.BytesIO(_one_pixel_png()))
+    document.add_paragraph()._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp", "r", "pic")}>'
+            "<w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/>"
+            '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">'
+            '<mc:Choice Requires="wps"><a:graphic><a:graphicData'
+            ' uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            f'<pic:pic><pic:blipFill><a:blip r:embed="{image_id}"/></pic:blipFill></pic:pic>'
+            "</a:graphicData></a:graphic></mc:Choice>"
+            "<mc:Fallback><a:graphic><a:graphicData"
+            ' uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            "<a:t>DISCARDED TEXT</a:t></a:graphicData></a:graphic></mc:Fallback>"
+            "</mc:AlternateContent></wp:inline></w:drawing></w:r>"
+        )
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "DISCARDED TEXT" not in body["original_text"]
+    (limitation,) = body["ingestion_limitations"]
+    assert "OCR is out of scope" in limitation
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "passed"
+    assert audit["unread_text_source_content"] == []
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 200, approval.text
 
 
 def test_table_wrapper_the_reader_cannot_descend_is_named(

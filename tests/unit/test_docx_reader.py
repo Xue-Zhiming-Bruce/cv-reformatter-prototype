@@ -1392,6 +1392,339 @@ def test_read_docx_leaves_a_note_in_an_unselected_branch_unread(
     assert audit.status == "passed"
 
 
+def test_read_docx_names_text_a_part_a_drawing_references_holds(
+    tmp_path: Path,
+) -> None:
+    """A chart's title lives in the chart part, so it is unread text, not a picture."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Skills: Python")
+    chart_id = _add_xml_part(
+        document,
+        "/word/charts/chart1.xml",
+        "application/vnd.openxmlformats-officedocument.drawingml.chart+xml",
+        _chart_part_xml("CHART VISIBLE LABEL"),
+        RT.CHART,
+    )
+    paragraph._p.append(
+        _drawing_with(f'<c:chart {nsdecls("c", "r")} r:id="{chart_id}"/>')
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert "CHART VISIBLE LABEL" not in content.plain_text
+    (limitation,) = content.limitations
+    assert (
+        limitation.kind,
+        limitation.location,
+        limitation.count,
+    ) == ("embedded_part", "body", 1)
+    assert limitation.blocks_source_review is True
+    assert "chart, diagram or embedded object" in limitation.message
+    audit = audit_segmentation_lines(
+        content.plain_text,
+        content.plain_text.splitlines(),
+        *unread_content_messages(content.limitations),
+    )
+    assert audit.status == "incomplete"
+
+
+def test_read_docx_names_every_part_a_drawing_references_not_known_types(
+    tmp_path: Path,
+) -> None:
+    """The rule is the relationship target, not a list of part types."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Skills: Python")
+    data_id = _add_xml_part(
+        document,
+        "/word/diagrams/data1.xml",
+        "application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml",
+        f'<dgm:dataModel {nsdecls("dgm", "a")}><dgm:ptLst><dgm:pt><dgm:t>'
+        "<a:p><a:r><a:t>DIAGRAM NODE</a:t></a:r></a:p></dgm:t></dgm:pt></dgm:ptLst>"
+        "</dgm:dataModel>",
+        RT.DIAGRAM_DATA,
+    )
+    paragraph._p.append(
+        _drawing_with(
+            f'<dgm:relIds {nsdecls("dgm", "r")} r:dm="{data_id}"/>'
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert "DIAGRAM NODE" not in content.plain_text
+    (limitation,) = content.limitations
+    assert limitation.kind == "embedded_part"
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_names_a_drawing_reference_the_package_cannot_resolve(
+    tmp_path: Path,
+) -> None:
+    """An id the package cannot resolve is not known to be pixels either."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Skills: Python")
+    paragraph._p.append(
+        _drawing_with(f'<c:chart {nsdecls("c", "r")} r:id="rId404"/>')
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    (limitation,) = content.limitations
+    assert (limitation.kind, limitation.count) == ("embedded_part", 1)
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_ignores_text_in_a_drawing_choice_it_cannot_use(
+    tmp_path: Path,
+) -> None:
+    """The fallback renders when the choice needs a namespace the document lacks."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Skills: Python")
+    image_id, _image = document.part.get_or_add_image(io.BytesIO(_one_pixel_png()))
+    paragraph._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp", "r", "pic")}>'
+            "<w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/>"
+            '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">'
+            '<mc:Choice Requires="acme"><a:graphic><a:graphicData'
+            ' uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            "<a:t>UNUSABLE CHOICE TEXT</a:t></a:graphicData></a:graphic></mc:Choice>"
+            "<mc:Fallback><a:graphic><a:graphicData"
+            ' uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            f'<pic:pic><pic:blipFill><a:blip r:embed="{image_id}"/></pic:blipFill></pic:pic>'
+            "</a:graphicData></a:graphic></mc:Fallback>"
+            "</mc:AlternateContent></wp:inline></w:drawing></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    (limitation,) = content.limitations
+    assert limitation.kind == "visual_element"
+    assert limitation.blocks_source_review is False
+
+
+def test_read_docx_resolves_a_drawing_against_the_part_that_holds_it(
+    tmp_path: Path,
+) -> None:
+    """A header's picture is related to the header part, not to the body."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    header = document.sections[0].header
+    header.paragraphs[0].add_run().add_picture(
+        io.BytesIO(_one_pixel_png()), width=Inches(0.25)
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    (limitation,) = content.limitations
+    assert (limitation.kind, limitation.location) == (
+        "visual_element",
+        "default header of section 1",
+    )
+    assert limitation.blocks_source_review is False
+
+
+def test_read_docx_names_text_a_vector_image_holds(tmp_path: Path) -> None:
+    """An SVG is XML: a text node in it draws a character this reader never read."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Skills: Python")
+    svg_id = _add_xml_part(
+        document,
+        "/word/media/image1.svg",
+        "image/svg+xml",
+        '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/>'
+        "<text>SVG LABEL</text></svg>",
+        RT.IMAGE,
+    )
+    paragraph._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp", "r")}>'
+            "<w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic>"
+            '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            f'<a:blip r:embed="{svg_id}"/>'
+            "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert "SVG LABEL" not in content.plain_text
+    (limitation,) = content.limitations
+    assert limitation.kind == "embedded_part"
+    assert limitation.blocks_source_review is True
+
+
+def test_read_docx_keeps_a_text_free_vector_image_as_pixels(tmp_path: Path) -> None:
+    """A vector icon draws shapes, not characters, so it stays a reported picture."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Skills: Python")
+    svg_id = _add_xml_part(
+        document,
+        "/word/media/image1.svg",
+        "image/svg+xml",
+        '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h1v1z"/></svg>',
+        RT.IMAGE,
+    )
+    paragraph._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp", "r")}>'
+            "<w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic>"
+            '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            f'<a:blip r:embed="{svg_id}"/>'
+            "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    (limitation,) = content.limitations
+    assert limitation.kind == "visual_element"
+    assert limitation.blocks_source_review is False
+
+
+def test_read_docx_does_not_name_an_external_picture_link_as_text(
+    tmp_path: Path,
+) -> None:
+    """An externally linked picture holds no text in the package at all."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Skills: Python")
+    link_id = document.part.rels.get_or_add_ext_rel(
+        RT.IMAGE, "https://example.com/headshot.png"
+    )
+    paragraph._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")} xmlns:v="urn:schemas-microsoft-com:vml">'
+            f'<w:pict><v:shape><v:imagedata r:id="{link_id}"'
+            ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>'
+            "</v:shape></w:pict></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    (limitation,) = content.limitations
+    assert limitation.kind == "visual_element"
+    assert limitation.blocks_source_review is False
+
+
+def test_read_docx_ignores_text_in_a_drawing_branch_it_did_not_choose(
+    tmp_path: Path,
+) -> None:
+    """The drawing is one container: only the selected branch renders text."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Skills: Python")
+    image_id, _image = document.part.get_or_add_image(io.BytesIO(_one_pixel_png()))
+    paragraph._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp", "r", "pic")}>'
+            "<w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/>"
+            '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">'
+            '<mc:Choice Requires="wps"><a:graphic><a:graphicData'
+            ' uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            f'<pic:pic><pic:blipFill><a:blip r:embed="{image_id}"/></pic:blipFill></pic:pic>'
+            "</a:graphicData></a:graphic></mc:Choice>"
+            "<mc:Fallback><a:graphic><a:graphicData"
+            ' uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            "<a:t>DISCARDED TEXT</a:t></a:graphicData></a:graphic></mc:Fallback>"
+            "</mc:AlternateContent></wp:inline></w:drawing></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert "DISCARDED TEXT" not in content.plain_text
+    # The chosen branch is a picture: pixels, reported and never blocking.
+    assert [(item.kind, item.count) for item in content.limitations] == [
+        ("visual_element", 1)
+    ]
+    assert content.limitations[0].blocks_source_review is False
+    audit = audit_segmentation_lines(
+        content.plain_text, content.plain_text.splitlines()
+    )
+    assert audit.status == "passed"
+
+
+def test_read_docx_counts_text_in_the_drawing_branch_it_chooses(tmp_path: Path) -> None:
+    """Branch selection must not hide the chosen branch's own text."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Skills: Python")
+    image_id, _image = document.part.get_or_add_image(io.BytesIO(_one_pixel_png()))
+    paragraph._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp", "r", "pic")}>'
+            "<w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/>"
+            '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">'
+            '<mc:Choice Requires="wps"><a:graphic><a:graphicData'
+            ' uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            "<a:t>SELECTED TEXT</a:t></a:graphicData></a:graphic></mc:Choice>"
+            "<mc:Fallback><a:graphic><a:graphicData"
+            ' uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            f'<pic:pic><pic:blipFill><a:blip r:embed="{image_id}"/></pic:blipFill></pic:pic>'
+            "</a:graphicData></a:graphic></mc:Fallback>"
+            "</mc:AlternateContent></wp:inline></w:drawing></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert "SELECTED TEXT" not in content.plain_text
+    (limitation,) = content.limitations
+    assert limitation.kind == "text_box"
+    assert limitation.blocks_source_review is True
+
+
+def _add_xml_part(
+    document: object, partname: str, content_type: str, xml: str, relationship: str
+) -> str:
+    """Attach a part a drawing references and return its relationship id."""
+    part = Part(
+        PackURI(partname), content_type, xml.encode(), document.part.package
+    )
+    return document.part.relate_to(part, relationship)
+
+
+def _chart_part_xml(label: str) -> str:
+    """A chart part whose title is visible text, in the shape Word writes it."""
+    return (
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        "<c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r><a:t>"
+        f"{label}</a:t></a:r></a:p></c:rich></c:tx></c:title></c:chart>"
+        "</c:chartSpace>"
+    )
+
+
+def _drawing_with(reference_xml: str) -> object:
+    """A drawing whose graphic data holds one reference to another part."""
+    return parse_xml(
+        f'<w:r {nsdecls("w", "a", "wp")}>'
+        '<w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic><a:graphicData'
+        ' uri="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+        f"{reference_xml}</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
+    )
+
+
 def _add_note_part(document: object, root: str, items: dict[str, str]) -> None:
     """Attach a footnotes/endnotes/comments part holding one paragraph per note."""
     relationship = {

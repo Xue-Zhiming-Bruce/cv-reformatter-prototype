@@ -87,17 +87,20 @@ Response fields:
   places, such as one inside tracked change markup —, simple field
   result, embedded `w:altChunk` or `w:subDoc`, text-bearing block, table or
   inline wrapper it cannot read in place, a referenced note or comment body the
-  reader did not read, and drawings, pictures and charts that hold no text of
-  their own counted per part because OCR is out of scope — a drawing that carries
-  a character is a text box instead, and blocks), naming its location and, for a
+  reader did not read, a part a drawing points at that is not an image — a chart,
+  a diagram or an embedded object, counted per part and blocking, because its text
+  lives in that part — and drawings and pictures that hold only pixels, counted
+  per part and not blocking because OCR is out of scope; a drawing that carries a
+  character is a text box instead, and blocks. The branch selection the inline
+  walk makes also decides which of a drawing's `mc:AlternateContent` branches
+  contributes text), naming its location and, for a
   wrapper, the element name and child position; empty for PDFs and for DOCX files
   inside the supported shapes. The `segmentation_audit.json` line-coverage audit
   only measures the text the reader supplied, so it never implies the source was
   read completely: it records every reported limitation in
   `unread_source_content` and the subset where visible text was lost in
-  `unread_text_source_content`. A reported image,
-  drawing or chart is pixels or an embedded chart part rather than lost text, so
-  it appears only in the first list and leaves the audit `passed`. Any entry in
+  `unread_text_source_content`. A reported image or picture is pixels rather than
+  lost text, so it appears only in the first list and leaves the audit `passed`. Any entry in
   the second list makes the audit `incomplete` and blocks profile revision
   saving, approval and generation with 409 `source_text_unread` naming the text
   the reader could not read: no acknowledgment path for unread source text
