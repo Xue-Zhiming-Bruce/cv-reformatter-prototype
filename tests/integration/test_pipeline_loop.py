@@ -108,10 +108,11 @@ def test_measurement_binding_resolves_against_actual_final_pdf_objects(tmp_path:
     """Phase 0: binding resolves the semantic intent into REAL final-PDF
     objects (render anchors come from the render's own entry-head rows).
 
-    Corpus-only and irreducible: the synthetic bundle renders without a
-    measurable role gap, so a synthetic run yields NO confirmed measurement
-    (`_force_one_repair_action` has to inject one for the same reason). This
-    check needs a real target whose defect is genuinely measurable."""
+    Corpus-only: the current synthetic bundle does not carry the defect this
+    test proves — its render has no measurable role gap, so a synthetic run
+    records NO confirmed measurement (`_force_one_repair_action` has to inject
+    one for the same reason). Uncovered until a synthetic PDF with a real
+    measurable gap replaces the corpus (see `tests/README.md`, known gaps)."""
     run_dir, _terminal, record = _run_e5(
         TARGET_PDF, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
     )
@@ -2229,9 +2230,27 @@ def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
     assert (run_dir / "comparison_report.json").exists()
 
 
-def test_run_e5_rolls_back_regressions_and_records_the_ledger(tmp_path: Path) -> None:
+def test_run_e5_rolls_back_regressions_and_records_the_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repair that cannot improve is rolled back and recorded, never silently
+    kept: the ledger is non-empty, every executed attempt names its finding and
+    the rollback leaves the previous active version in place."""
+    # The synthetic bundle has no repairable defect of its own, so a bare run
+    # would repair nothing and pass this test with an empty attempt list. Force
+    # exactly one repair into the REAL selection (review, measurement and
+    # attribution keep running) and assert it actually executed.
+    _force_one_repair_action(monkeypatch)
     run_dir, terminal, record = _run_synthetic_e5(
         tmp_path, live=False, lanes=("a",), max_repair_rounds=2,
+    )
+    lane = record["lanes"]["a"]
+    assert lane["repair_attempts"], "no repair executed — nothing was rolled back"
+    assert lane["active_render_version"] != lane["render_versions"][-1]["version_id"], (
+        "the rejected candidate became active"
+    )
+    assert any("rolled_back" in strategy for strategy in lane["attempted_strategies"]), (
+        lane["attempted_strategies"]
     )
     for lane_id, lane in record["lanes"].items():
         assert lane["ledger"], "the persistent defect ledger is empty"
@@ -2445,6 +2464,10 @@ def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path)
     )
     package = run_dir / "owner_review"
     lanes = record["lanes"]
+    # The synthetic bundle always produces a best-valid render, so only the
+    # "best exists" path below runs here; the no-best labeling is a recorded
+    # gap, not an exercised case (see tests/README.md, known gaps).
+    assert lanes["a"]["best_render_version"] is not None
     for lane_id in ("a",):
         lane = lanes[lane_id]
         if lane["best_render_version"] is None and lane.get("best_defect_level_version"):
@@ -2794,11 +2817,12 @@ def test_run_e5_rollback_binds_next_round_to_the_active_version(
     against the OLD ACTIVE version — PDF, RenderPlan, and gates — and the
     rejected representation never enters the probe basis or best selection.
 
-    Corpus-only and irreducible: the forced attribution needs a CONFIRMED
-    measurement (`_force_scripted_builder_attribution`), and the synthetic
-    bundle renders without a measurable role gap — so a synthetic run repairs
-    nothing and ends `ready_for_owner_review`. This check needs a real target
-    whose defect is genuinely measurable in two consecutive rounds."""
+    Corpus-only: the current synthetic bundle does not carry the defect this
+    test proves — the forced attribution needs a CONFIRMED measurement, and the
+    synthetic render has no measurable role gap, so a synthetic run repairs
+    nothing and ends `ready_for_owner_review`. Uncovered until a synthetic PDF
+    with a real measurable gap replaces the corpus (see `tests/README.md`,
+    known gaps)."""
     _force_scripted_builder_attribution(monkeypatch)
 
     # The repair is a REAL rendering change — the offline Builder's rails at the

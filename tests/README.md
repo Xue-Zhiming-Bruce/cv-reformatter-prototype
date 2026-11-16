@@ -406,3 +406,29 @@ labels only. Independent PDF fixtures cover canonical uniform presence, mixed or
 unknown prefixes, missing contact evidence and source-value colons; geometry reads
 actual PDF bytes. Controlled model stubs exercise measured promotion and broader
 unmeasured contact styling. These are separate from default live Reviewer evidence.
+
+## Known coverage gaps
+
+Behaviours whose tests the default lane cannot reach. They are recorded as gaps,
+never reported as passes, and they stay candidates for a real fixture rather than
+for deletion.
+
+- `integration/test_pipeline_loop.py::test_measurement_binding_resolves_against_actual_final_pdf_objects`
+  and `::test_run_e5_rollback_binds_next_round_to_the_active_version` require a
+  render that produces a CONFIRMED measurement. The current synthetic input does
+  not carry that defect: it renders without a measurable role gap, so the run
+  records no confirmed measurement, repairs nothing and ends
+  `ready_for_owner_review`. Both stay behind `@local_pipeline` (2 skips) until a
+  synthetic target PDF with a genuinely measurable gap replaces the absent corpus.
+  `_force_one_repair_action` injects a confirmed measurement for exactly that
+  reason, so it cannot stand in for them.
+- `::test_run_e5_owner_package_labels_active_version_when_no_best`: the synthetic
+  bundle always yields a best-valid render, so only its "best exists" path runs.
+  The ACTIVE UNPROMOTED VERSION / ACTIVE DEFECT-LEVEL VERSION labels and the
+  "no best-valid render exists" report line need a target whose initial render
+  fails a hard gate — the same missing defect as above. The test now asserts the
+  path it actually takes, so the unexercised branch cannot look covered.
+- `::test_run_e5_rolls_back_regressions_and_records_the_ledger` is NOT a gap: it
+  forces one repair (`_force_one_repair_action`) and asserts the rollback
+  strategy, the non-promotion of the rejected candidate and a non-empty attempt
+  list, so its "every attempt names a finding" loop cannot pass vacuously.
