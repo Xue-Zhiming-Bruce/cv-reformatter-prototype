@@ -106,7 +106,12 @@ def test_role_gap_binding_does_not_measure_an_unrelated_visual_dimension() -> No
 @local_pipeline
 def test_measurement_binding_resolves_against_actual_final_pdf_objects(tmp_path: Path) -> None:
     """Phase 0: binding resolves the semantic intent into REAL final-PDF
-    objects (render anchors come from the render's own entry-head rows)."""
+    objects (render anchors come from the render's own entry-head rows).
+
+    Corpus-only and irreducible: the synthetic bundle renders without a
+    measurable role gap, so a synthetic run yields NO confirmed measurement
+    (`_force_one_repair_action` has to inject one for the same reason). This
+    check needs a real target whose defect is genuinely measurable."""
     run_dir, _terminal, record = _run_e5(
         TARGET_PDF, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
     )
@@ -1367,10 +1372,10 @@ def _e5_attribution(
 def _force_scripted_builder_attribution(monkeypatch: pytest.MonkeyPatch) -> None:
     default = e._e5_default_attribution
 
-    def scripted(finding, result, request):
+    def scripted(finding, result, request, **kwargs):
         if result.status == "confirmed" and abs(result.delta_pt or 0.0) > review.E2_IMPROVEMENT_TOLERANCE_PT:
             return _e5_attribution(finding, request_id=request.request_id)
-        return default(finding, result, request)
+        return default(finding, result, request, **kwargs)
 
     monkeypatch.setattr(e5, "_e5_default_attribution", scripted)
 
@@ -2192,12 +2197,23 @@ def test_lane_a_proposal_cites_only_known_state_nodes(tmp_path: Path) -> None:
     assert all(item.section_node_id in known for item in valid.sections)
 
 
-@pytest.mark.local_dataset
-@local_pipeline
+def _run_synthetic_e5(tmp_path: Path, *, inputs: dict | None = None, **kwargs):
+    """Run the offline E5 loop on the synthetic bundle, never the corpus."""
+    from tests.helpers.pipeline_candidates import independent_candidate_fixtures
+
+    inputs = inputs or synthetic_pipeline_inputs(tmp_path)
+    kwargs.setdefault("probe_candidates", independent_candidate_fixtures())
+    return e.run_e5(
+        **inputs, candidate=synthetic_pipeline_candidate("Candidate Alpha"),
+        out_dir=tmp_path / "run", **kwargs,
+    )
+
+
 def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
-    run_dir, terminal, record = _run_e5(
-        TARGET_PDF, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
-        presentation_label_approval=_simulated_approval_for_test_target_catalog(),
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    run_dir, terminal, record = _run_synthetic_e5(
+        tmp_path, inputs=inputs, live=False, lanes=("a",), max_repair_rounds=1,
+        presentation_label_approval=_simulated_approval_for_test_target_catalog(inputs=inputs),
     )
     # Terminal semantics (2026-09-23): `budget_exhausted` now means a
     # configured ceiling WAS reached. An offline lane that simply runs out of
@@ -2213,11 +2229,9 @@ def test_run_e5_offline_lane_a_runs_the_fixed_loop(tmp_path: Path) -> None:
     assert (run_dir / "comparison_report.json").exists()
 
 
-@pytest.mark.local_dataset
-@local_pipeline
 def test_run_e5_rolls_back_regressions_and_records_the_ledger(tmp_path: Path) -> None:
-    run_dir, terminal, record = _run_e5(
-        TARGET_PDF, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=2,
+    run_dir, terminal, record = _run_synthetic_e5(
+        tmp_path, live=False, lanes=("a",), max_repair_rounds=2,
     )
     for lane_id, lane in record["lanes"].items():
         assert lane["ledger"], "the persistent defect ledger is empty"
@@ -2375,8 +2389,6 @@ def test_probe_projection_preserves_each_noncontainer_leaf_once(size: str) -> No
     assert all(leaf.parent_leaf_id is None for leaf in projected.leaves if leaf.kind == "additional_item")
 
 
-@pytest.mark.local_dataset
-@local_pipeline
 def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
     tmp_path: Path,
 ) -> None:
@@ -2384,9 +2396,10 @@ def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
     PDF -> accounting/presence/blank/determinism/privacy gates) against the
     EXACT selected representation — recorded by id, with real PDF
     artifacts — never a default-state or string-fill-only claim."""
-    run_dir, _terminal, record = _run_e5(
-        TARGET_PDF, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
-        presentation_label_approval=_simulated_approval_for_test_target_catalog(),
+    inputs = synthetic_pipeline_inputs(tmp_path)
+    run_dir, _terminal, record = _run_synthetic_e5(
+        tmp_path, inputs=inputs, live=False, lanes=("a",), max_repair_rounds=1,
+        presentation_label_approval=_simulated_approval_for_test_target_catalog(inputs=inputs),
     )
     for lane_id in ("a",):
         lane = record["lanes"][lane_id]
@@ -2421,16 +2434,14 @@ def test_run_e5_probes_use_the_selected_representation_and_render_real_pdfs(
             assert selected_id == lane["active_render_version"]
 
 
-@pytest.mark.local_dataset
-@local_pipeline
 def test_run_e5_owner_package_labels_active_version_when_no_best(tmp_path: Path) -> None:
     """Without a best-valid render (and no defect-level promotion), the
     owner package shows the lane's ACTIVE version as ACTIVE UNPROMOTED
     VERSION — never a rolled-back attempt; BEST never appears for that lane;
     with a best render, the package copies exactly the best version's
     artifact."""
-    run_dir, _terminal, record = _run_e5(
-        TARGET_PDF, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=1,
+    run_dir, _terminal, record = _run_synthetic_e5(
+        tmp_path, live=False, lanes=("a",), max_repair_rounds=1,
     )
     package = run_dir / "owner_review"
     lanes = record["lanes"]
@@ -2781,7 +2792,13 @@ def test_run_e5_rollback_binds_next_round_to_the_active_version(
     """Version-bound rollback: after a rejected (non-improving) candidate,
     the next round's reviewer, measurement binding, and Builder all resolve
     against the OLD ACTIVE version — PDF, RenderPlan, and gates — and the
-    rejected representation never enters the probe basis or best selection."""
+    rejected representation never enters the probe basis or best selection.
+
+    Corpus-only and irreducible: the forced attribution needs a CONFIRMED
+    measurement (`_force_scripted_builder_attribution`), and the synthetic
+    bundle renders without a measurable role gap — so a synthetic run repairs
+    nothing and ends `ready_for_owner_review`. This check needs a real target
+    whose defect is genuinely measurable in two consecutive rounds."""
     _force_scripted_builder_attribution(monkeypatch)
 
     # The repair is a REAL rendering change — the offline Builder's rails at the
@@ -3133,7 +3150,7 @@ def _approval_for(
 
 
 def _simulated_approval_for_test_target_catalog(
-    target: Path | None = None,
+    target: Path | None = None, *, inputs: dict | None = None,
 ) -> run_models.PresentationLabelApproval:
     """Simulate owner approval so offline tests can exercise the approved path.
 
@@ -3151,11 +3168,12 @@ def _simulated_approval_for_test_target_catalog(
 
     from app.pipeline.rendering import build_format_summary
 
-    target = (target or TARGET_PDF).resolve()
-    cache = LOCAL_INPUTS
-    raw = json.loads((cache / "resume_I.adobe.json").read_text(encoding="utf-8"))
+    target = Path(inputs["target_pdf"] if inputs else (target or TARGET_PDF)).resolve()
+    adobe = inputs["adobe_json"] if inputs else LOCAL_INPUTS / "resume_I.adobe.json"
+    measured = inputs["normalized_evidence"] if inputs else LOCAL_INPUTS / "resume_I.normalized.json"
+    raw = json.loads(Path(adobe).read_text(encoding="utf-8"))
     normalized = NormalizedLayoutEvidence.model_validate_json(
-        (cache / "resume_I.normalized.json").read_text(encoding="utf-8")
+        Path(measured).read_text(encoding="utf-8")
     )
     summary = build_format_summary(normalized, raw, target)
     _state, derived = review.compile_two_column_state(target, summary, evidence=normalized)
@@ -4117,13 +4135,11 @@ def test_a_builder_content_free_shape_and_footprint_contracts() -> None:
             assert leaf.text not in serialized
 
 
-@pytest.mark.local_dataset
-@local_pipeline
 def test_initial_a_context_is_candidate_compatible_and_compact(tmp_path: Path) -> None:
     from app.generation.template_mapper import CONTACT_FIELD_SLOTS
 
-    run_dir, _terminal, _record = _run_e5(
-        TARGET_PDF, tmp_path / "run", live=False, lanes=("a",), max_repair_rounds=0,
+    run_dir, _terminal, _record = _run_synthetic_e5(
+        tmp_path, live=False, lanes=("a",), max_repair_rounds=0,
     )
     payload = json.loads((run_dir / "builder_evidence_initial.json").read_text())
     draft = payload["structure_draft"]
@@ -4132,7 +4148,11 @@ def test_initial_a_context_is_candidate_compatible_and_compact(tmp_path: Path) -
         assert target_only not in json.dumps(draft)
     assert "filled/hollow dot" not in json.dumps(draft)
     assert "4-column" not in json.dumps(draft)
-    assert payload["candidate_compatible_labels"]["ABOUT ME"] == "omit_entire_section"
+    # the synthetic target's sidebar headings are EXPERIENCE and SUMMARY; the
+    # candidate has no EXPERIENCE section, so that label is target-only
+    labels = payload["candidate_compatible_labels"]
+    assert labels["EXPERIENCE"] == "omit_entire_section"
+    assert labels["SUMMARY"] != "omit_entire_section"
     assert "slot_shape_contract" in payload
     assert "candidate_layout_footprint" in payload
     # AC2/AC3: the measured target contact-label context names the exact target
