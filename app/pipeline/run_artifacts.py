@@ -119,19 +119,21 @@ def _tracked_diff_sha256(root: Path, names: tuple[str, ...]) -> str | None:
 
 def _untracked_source_hashes() -> dict[str, str]:
     """Registered sources NOT tracked at HEAD (if any): recorded by their
-    SHA-256 so untracked experiment modules are still identity-bound."""
-    untracked: dict[str, str] = {}
-    for name in E5_SOURCE_FILES:
-        try:
-            tracked = subprocess.run(
-                ["git", "ls-files", "--error-unmatch", name],
-                capture_output=True, text=True, cwd=ROOT,
-            ).returncode == 0
-        except Exception:
-            tracked = False
-        if not tracked:
-            untracked[name] = _sha256_file(ROOT / name)
-    return untracked
+    SHA-256 so untracked experiment modules are still identity-bound.
+
+    One `git ls-files` for the whole registry instead of one per file: the
+    per-file `--error-unmatch` form spawned 41 processes per identity read.
+    When git is unavailable or fails, EVERY registered source is hashed as
+    untracked — the same conservative answer the per-file form gave."""
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z"],
+            capture_output=True, text=True, cwd=ROOT, check=True,
+        ).stdout
+    except Exception:
+        listed = None
+    tracked = {name for name in listed.split("\0") if name} if listed is not None else set()
+    return {name: _sha256_file(ROOT / name) for name in E5_SOURCE_FILES if name not in tracked}
 
 def _source_identity() -> dict[str, Any]:
     """The full source identity recorded in the frozen config: file hashes,

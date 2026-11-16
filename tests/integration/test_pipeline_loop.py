@@ -2702,6 +2702,73 @@ def test_source_diff_identity_ignores_unrelated_files(tmp_path: Path) -> None:
     assert run_artifacts._tracked_diff_sha256(repo, identity) != baseline
 
 
+def test_untracked_source_hashes_hashes_only_untracked_sources_in_one_git_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tracked status is read for the WHOLE registry in a single `git
+    ls-files`, and only the untracked registered sources are hashed. Their
+    hash is the drift signal, so a content change must move it."""
+    import subprocess as sp
+
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+
+    def git(*args: str) -> None:
+        sp.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    git("init", "-q")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (repo / "pkg/a.py").write_text("a = 1\n")
+    (repo / "pkg/b.py").write_text("b = 1\n")
+    git("add", "pkg/a.py")
+    git("commit", "-qm", "base")
+    monkeypatch.setattr(run_artifacts, "ROOT", repo)
+    monkeypatch.setattr(run_artifacts, "E5_SOURCE_FILES", ("pkg/a.py", "pkg/b.py"))
+    calls: list[list[str]] = []
+    real_run = sp.run
+
+    def counting_run(*args, **kwargs):
+        calls.append([str(part) for part in (args[0] if args else kwargs.get("args", []))])
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(run_artifacts.subprocess, "run", counting_run)
+    untracked = run_artifacts._untracked_source_hashes()
+    assert untracked == {"pkg/b.py": run_artifacts._sha256_file(repo / "pkg/b.py")}
+    assert len(calls) == 1, [call[:2] for call in calls]
+    assert calls[0][:2] == ["git", "ls-files"]
+    # the untracked source's hash is the identity signal: a content edit moves
+    # it, and the tracked source never enters `untracked_files`
+    (repo / "pkg/b.py").write_text("b = 2\n")
+    edited = run_artifacts._untracked_source_hashes()
+    assert edited["pkg/b.py"] != untracked["pkg/b.py"]
+    assert "pkg/a.py" not in edited
+
+
+def test_untracked_source_hashes_falls_back_to_every_source_when_git_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Git unavailable or failing must degrade to 'all registered sources are
+    untracked' — the per-file form's conservative answer — never to an empty
+    set (which would silently drop untracked experiment modules from the
+    identity) and never to an exception."""
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / "a.py").write_text("a = 1\n")
+    (root / "b.py").write_text("b = 1\n")
+    monkeypatch.setattr(run_artifacts, "ROOT", root)
+    monkeypatch.setattr(run_artifacts, "E5_SOURCE_FILES", ("a.py", "b.py"))
+    expected = {name: run_artifacts._sha256_file(root / name) for name in ("a.py", "b.py")}
+    # git runs but fails: this tree is not a repository
+    assert run_artifacts._untracked_source_hashes() == expected
+    # git is not installed at all
+    def missing_git(*_args, **_kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(run_artifacts.subprocess, "run", missing_git)
+    assert run_artifacts._untracked_source_hashes() == expected
+
+
 # --- E5 second correctness round: best vs defect-level, version-bound state,
 # --- fail-closed token fill, source identity, restricted metadata -------------
 
