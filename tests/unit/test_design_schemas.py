@@ -115,20 +115,24 @@ def test_section_mapping_rejects_invalid_confidence() -> None:
         DesignProposal.model_validate(payload)
 
 
-def test_design_proposal_layout_class_is_vocabulary_constrained() -> None:
+def test_model_accepts_unknown_layout_class_and_leaves_it_to_the_validator() -> None:
     """The model accepts strings; supported-class enforcement happens against
     the request vocabulary in the deterministic validator."""
     proposal = _valid_proposal()
     # A value outside the supported classes still models, but the validator
     # rejects it (covered in test_design_validator).
-    DesignProposal.model_validate({**proposal.model_dump(), "layout_class": "brochure"})
+    accepted = DesignProposal.model_validate(
+        {**proposal.model_dump(), "layout_class": "brochure"}
+    )
+    assert accepted.layout_class == "brochure"
 
 
-def test_design_proposal_overflow_policy_is_vocabulary_constrained() -> None:
+def test_model_accepts_unknown_overflow_policy_and_leaves_it_to_the_validator() -> None:
     proposal = _valid_proposal()
-    DesignProposal.model_validate(
+    accepted = DesignProposal.model_validate(
         {**proposal.model_dump(), "overflow_policy": "cram_everything"}
     )
+    assert accepted.overflow_policy == "cram_everything"
 
 
 def test_mapping_plan_is_strict() -> None:
