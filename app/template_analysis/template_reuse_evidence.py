@@ -130,19 +130,6 @@ def proven_layout_spec(
     return specs[0]
 
 
-def target_evidence(target_pdf: str | Path) -> TargetLayoutEvidence:
-    """Member 3's record: the target evidence stored beside the target PDF."""
-    path = Path(target_pdf).parent / TARGET_EVIDENCE_FILENAME
-    try:
-        return TargetLayoutEvidence.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ReusableTemplateEvidenceError(
-            f"the target evidence record '{path.name}' beside '{Path(target_pdf).name}' "
-            "is missing or unreadable; re-analyze the target",
-            member="target_evidence",
-        ) from exc
-
-
 def execution_identity(
     artifact_dir: str | Path, approval: LayoutProofApproval
 ) -> dict[str, object]:
@@ -252,19 +239,20 @@ def spec_font_families(spec: LayoutTemplateSpec | TemplateStyleSpec) -> list[str
     return sorted(found)
 
 
-def published_target(artifact_dir: str | Path) -> Path:
-    """The artifact's own published target PDF, read through its pinned epoch."""
-    from app.generation.service import (
-        load_saved_target_format,
-        validate_target_format_reference,
-    )
+def target_evidence(directory: str | Path) -> TargetLayoutEvidence:
+    """Member 3's record, read from an artifact's published target set.
 
-    view = TargetSet(Path(artifact_dir))
-    saved = load_saved_target_format(view)
-    if saved is None:
+    ``directory`` is the artifact directory, or the target-set epoch a caller
+    already pinned its target PDF from; the evidence record is published beside
+    the target it describes.
+    """
+    path = TargetSet(Path(directory)).read(TARGET_EVIDENCE_FILENAME)
+    try:
+        return TargetLayoutEvidence.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, AttributeError) as exc:
         raise ReusableTemplateEvidenceError(
-            f"artifact '{Path(artifact_dir).name}' publishes no uploaded target, so it "
-            "has no reusable template identity",
-            member="target_pdf_sha256",
-        )
-    return validate_target_format_reference(Path(artifact_dir).name, view, saved)
+            f"artifact '{Path(directory).name}' keeps no readable "
+            f"'{TARGET_EVIDENCE_FILENAME}' record, so no reuse identity can be "
+            "computed for it; re-analyze the target",
+            member="target_evidence",
+        ) from exc

@@ -5,19 +5,14 @@ the same local scope instead of being re-derived. The identity assembled here is
 the only key: every member of the ADR 0009 inventory must match, and a refusal
 names the differing member(s) before any candidate render.
 
-Boundaries:
-
-- this module owns identity assembly, reference recording and selection
-  resolution; it never renders, never writes to a source artifact's proof
-  directory, approval row or publications, and stores no candidate fact, source
-  text or review edit;
-- an approval recorded before this contract existed carries no reference and is
-  never treated as reusable: recording happens only on a new explicit approval
-  event, with no backfill and no silent upgrade;
-- ``local-synthetic`` is a single-user local development scope, not
-  authenticated multi-tenant isolation and not organization authorization.
-
-Stored evidence reads live in ``template_reuse_evidence``.
+Boundaries: identity assembly, reference recording and selection resolution live
+here; it never renders, never writes to a source artifact's proof directory,
+approval row or publications, and stores no candidate fact, source text or review
+edit. An approval recorded before this contract existed carries no reference and is
+never treated as reusable: recording happens only on a new explicit approval event,
+with no backfill and no silent upgrade. ``local-synthetic`` is a single-user local
+development scope, not authenticated multi-tenant isolation. Stored evidence reads
+live in ``template_reuse_evidence``.
 """
 
 from __future__ import annotations
@@ -53,7 +48,6 @@ from app.template_analysis.template_reuse_evidence import (
     execution_identity,
     font_asset_identity,
     proven_layout_spec,
-    published_target,
     source_approval,
     source_artifact_dir,
     spec_font_families,
@@ -63,17 +57,11 @@ from app.template_analysis.template_reuse_evidence import (
 #: The only scope a reference is recorded in or accepted from (ADR 0009).
 REUSABLE_TEMPLATE_SCOPE = "local-synthetic"
 
-#: What a recruiter can still do when a selection cannot be honoured.
-REFERENCE_OPTIONS = ("create_layout_proofs", "approve_layout_proofs")
-
-
 class ReusableTemplateError(RuntimeError):
     """A selection that cannot be honoured before any candidate render.
 
-    ``differing_members`` names every identity member that differs or is
-    absent (``reference_id``/``approval_id`` when the reference or its source
-    approval is gone), and ``options`` are the existing ways forward. Never a
-    silent fallback, never a 500.
+    ``differing_members`` names every identity member that differs or is absent,
+    and ``options`` are the existing ways forward. Never a silent fallback.
     """
 
     error_code = "reusable_template_mismatch"
@@ -83,7 +71,8 @@ class ReusableTemplateError(RuntimeError):
         message: str,
         *,
         differing_members: list[str],
-        options: tuple[str, ...] = REFERENCE_OPTIONS,
+        # The existing ways a recruiter can still prove a template for this target.
+        options: tuple[str, ...] = ("create_layout_proofs", "approve_layout_proofs"),
     ) -> None:
         super().__init__(message)
         self.differing_members = list(differing_members)
@@ -191,7 +180,7 @@ def recorded_identity(
 ) -> ReusableTemplateIdentity:
     """The identity this artifact's own stored evidence produces."""
     with _as_refusal():
-        evidence = target_evidence(published_target(artifact_dir))
+        evidence = target_evidence(artifact_dir)
         runs = execution_identity(artifact_dir, approval)
     return reusable_template_identity(
         scope_id=REUSABLE_TEMPLATE_SCOPE,
@@ -212,13 +201,12 @@ def resolve_reusable_template(
     target_pdf: str | Path,
     layout_spec: LayoutTemplateSpec | TemplateStyleSpec,
 ) -> LayoutProofApproval:
-    """Resolve an explicit reusable-template selection to its approved proof set.
+    """Resolve an explicit selection to its approved proof set, or refuse.
 
-    The selecting artifact's own target and template are compared first, then
-    the source artifact's stored evidence is re-derived and re-hashed, so a
-    changed target, spec, compiler, renderer, policy, prompt set, model routing,
-    budget or proof file refuses before any candidate render. ``artifact_id``
-    is the selecting artifact; nothing is copied and nothing is written.
+    The selecting artifact's own target and template are compared first, then the
+    source's stored evidence is re-derived, so a changed target, spec, compiler,
+    renderer, policy, prompt set, model routing, budget or proof file refuses
+    before any candidate render. Nothing is copied and nothing is written.
     """
     reference = stored_reference(repository, reference_id)
     differing = selecting_differences(reference, target_pdf, layout_spec)
@@ -247,32 +235,30 @@ def require_reference_store(
 ) -> ReusableTemplateRepository:
     """A selection needs the recorded reference table; without it, none exists."""
     if repository is None:
-        raise ReusableTemplateError(
-            f"no reusable template reference '{reference_id}' is recorded because this "
-            "deployment stores no reference table; approve a proof set for this "
-            "artifact, or generate without a selection",
-            differing_members=["reference_id"],
-        )
+        raise unknown_reference(reference_id, "this deployment stores none")
     return repository
+
+
+def unknown_reference(reference_id: str, reason: str) -> ReusableTemplateError:
+    return ReusableTemplateError(
+        f"no reusable template reference '{reference_id}' is recorded in the "
+        f"'{REUSABLE_TEMPLATE_SCOPE}' scope ({reason}); create and approve a proof "
+        "set, or generate without a selection", differing_members=["reference_id"]
+    )
 
 
 def stored_reference(
     repository: ReusableTemplateRepository, reference_id: str
 ) -> ReusableTemplateReference:
+    """The recorded reference for this id, in this artifact's own scope."""
     reference = repository.resolve(
         scope_id=REUSABLE_TEMPLATE_SCOPE, identity_sha256=reference_id
     )
     if reference is None:
-        raise ReusableTemplateError(
-            f"no reusable template reference '{reference_id}' is recorded in the "
-            f"'{REUSABLE_TEMPLATE_SCOPE}' scope, so it cannot be selected; create and "
-            "approve a proof set, or generate without a selection",
-            differing_members=["reference_id"],
-        )
+        raise unknown_reference(reference_id, "none matches")
     if reference.scope_id != REUSABLE_TEMPLATE_SCOPE:
         raise ReusableTemplateError(
-            f"reference scope '{reference.scope_id}' is not this artifact's scope "
-            f"'{REUSABLE_TEMPLATE_SCOPE}'",
+            f"reference scope '{reference.scope_id}' is not '{REUSABLE_TEMPLATE_SCOPE}'",
             differing_members=["scope_id"],
         )
     return reference
@@ -286,7 +272,7 @@ def selecting_differences(
     """Members the selecting artifact attests before any render."""
     stored = reference.identity.members()
     with _as_refusal():
-        evidence = target_evidence(target_pdf)
+        evidence = target_evidence(Path(target_pdf).parent)
     attested = {
         "scope_id": REUSABLE_TEMPLATE_SCOPE,
         "target_pdf_sha256": file_sha256(target_pdf),
