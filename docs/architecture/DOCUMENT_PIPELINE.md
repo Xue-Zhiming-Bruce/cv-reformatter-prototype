@@ -127,15 +127,21 @@ characters are the box's, whether a walk reached it or the part-level count name
 it, while a character whose nearest owner is a drawing is paint no walk read. Art
 (`visual_element`) never takes in a character, and a drawing or picture that
 another one holds is decided by the outermost one, so one shape is named once,
-not once per nesting level. Art the outermost drawing draws beside or inside a
-box this walk read is art nobody read, so that drawing keeps its own
-non-blocking `visual_element` entry; a drawing that holds nothing but the box
-reports nothing, whether a walk read the box or the part-level count names it.
+not once per nesting level. Art of the kinds listed below that the outermost
+drawing draws beside or inside a box this walk read is art nobody read, so that
+drawing keeps its own non-blocking `visual_element` entry. Art of any other kind
+it draws there is silent, so a filled autoshape beside a box (`a:solidFill` in a
+`wps:wsp`, or a `v:rect` in the same `w:pict` as the box) keeps no entry; a
+drawing that holds nothing but the box reports nothing, whether a walk read the
+box or the part-level count names it.
 
 The descent is bounded: wrappers, content controls, table cells and text boxes
 each cost one level of `_MAX_BLOCK_DEPTH`, and a descent past it is reported as
 a `nesting` limitation rather than followed, so a hostile package gets the same
 answer every time instead of whatever the interpreter's recursion limit allows.
+The drawing accounting beside that walk is bounded too: each outermost drawing is
+decided in one pass over its markup, so nesting drawings inside box bodies costs
+the size of that markup rather than a re-decision per nesting level.
 
 Still reported, and still blocking review: `nesting` content, a nested table or
 text box no walk reached, tracked insertions/deletions/moves, a content control
@@ -148,7 +154,9 @@ but do not block. The art this reader names is an image fill (DrawingML
 `a:blip`, VML `v:imagedata`), VML WordArt's character string `v:textpath`, which
 lives in an attribute no text node carries, and a drawing or picture that holds
 no box of its own, a nested one that is nothing but art included; a nested
-drawing that is only a box is not art, and neither is a box body's own text.
+drawing that is only a box is not art, neither is a box body's own text, and
+neither is a shape that shares the box's `w:drawing` or `w:pict` and fills with
+no image, carries no WordArt string and holds no box of its own.
 `tests/unit/test_docx_reader.py` pins this list cell by cell
 (`_DRAWING_TEXT_TRUTH_TABLE`), so a shape not named here is a missing row rather
 than a silent omission; synthetic tests establish these reader behaviours and are
