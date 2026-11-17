@@ -288,6 +288,77 @@ def test_read_docx_reads_a_text_box_through_its_own_blocks(tmp_path: Path) -> No
     assert content.limitations == []
 
 
+def test_read_docx_reads_a_text_box_anchored_by_another_text_box_once(
+    tmp_path: Path,
+) -> None:
+    """AC3: a box in a box is read once, in the outer box's own paragraph."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    anchor = document.add_paragraph("Anchor: ")
+    anchor._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")}>'
+            '<w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox>'
+            "<w:txbxContent>"
+            "<w:p><w:r><w:t>OUTER</w:t></w:r></w:p>"
+            "<w:p><w:r><w:pict>"
+            '<v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox>'
+            "<w:txbxContent><w:p><w:r><w:t>INNER</w:t></w:r></w:p></w:txbxContent>"
+            "</v:textbox></v:shape></w:pict></w:r></w:p>"
+            "</w:txbxContent>"
+            "</v:textbox></v:shape></w:pict></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Jane Candidate",
+        "Anchor:",
+        "OUTER",
+        "INNER",
+    ]
+    assert content.plain_text.count("INNER") == 1
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_text_box_in_a_table_in_a_text_box_once(
+    tmp_path: Path,
+) -> None:
+    """AC3: the outer box's table carries the inner box, which is still read once."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    anchor = document.add_paragraph()
+    anchor._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")}>'
+            '<w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox>'
+            "<w:txbxContent>"
+            "<w:p><w:r><w:t>OUTER</w:t></w:r></w:p>"
+            "<w:tbl><w:tr><w:tc><w:p><w:r><w:pict>"
+            '<v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox>'
+            "<w:txbxContent><w:p><w:r><w:t>BOX IN CELL</w:t></w:r></w:p></w:txbxContent>"
+            "</v:textbox></v:shape></w:pict></w:r></w:p></w:tc></w:tr></w:tbl>"
+            "</w:txbxContent>"
+            "</v:textbox></v:shape></w:pict></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Jane Candidate",
+        "OUTER",
+        "BOX IN CELL",
+    ]
+    assert content.plain_text.count("BOX IN CELL") == 1
+    assert content.limitations == []
+
+
 def test_read_docx_does_not_read_a_text_box_in_the_branch_it_skipped(
     tmp_path: Path,
 ) -> None:
@@ -1362,6 +1433,73 @@ def test_read_docx_names_text_a_drawing_carries_as_unread_text(tmp_path: Path) -
         *unread_content_messages(content.limitations),
     )
     assert audit.status == "incomplete"
+
+
+def test_read_docx_names_text_a_drawing_carries_beside_a_text_box(
+    tmp_path: Path,
+) -> None:
+    """AC5: reading a drawing's box does not silence the paint text beside it."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Shape: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp")} '
+            'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            "<w:drawing><wp:inline><a:graphic><a:graphicData"
+            ' uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            "<wps:wsp><wps:txBody><a:p><a:r><a:t>PAINT ONLY</a:t></a:r></a:p>"
+            "</wps:txBody>"
+            "<wps:txbx><w:txbxContent><w:p><w:r><w:t>BOXED</w:t></w:r></w:p>"
+            "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline>"
+            "</w:drawing></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    # The box is read; the shape's own paint text is not, so the drawing keeps a
+    # blocking text-box entry for it.
+    assert content.plain_text.splitlines() == ["Shape:", "BOXED"]
+    assert "PAINT ONLY" not in content.plain_text
+    assert [
+        (item.kind, item.count, item.blocks_source_review)
+        for item in content.limitations
+    ] == [("text_box", 1, True)]
+
+
+def test_read_docx_names_text_a_group_shape_carries_beside_a_text_box(
+    tmp_path: Path,
+) -> None:
+    """AC5: a group child's paint text is named even when a sibling child has a box."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Group: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp")} '
+            'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+            'xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">'
+            "<w:drawing><wp:inline><a:graphic><a:graphicData"
+            ' uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">'
+            "<wpg:wgp>"
+            "<wps:wsp><wps:txBody><a:p><a:r><a:t>PAINT ONLY</a:t></a:r></a:p>"
+            "</wps:txBody></wps:wsp>"
+            "<wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>GROUP BOX</w:t></w:r></w:p>"
+            "</w:txbxContent></wps:txbx></wps:wsp>"
+            "</wpg:wgp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Group:", "GROUP BOX"]
+    assert [
+        (item.kind, item.count, item.blocks_source_review)
+        for item in content.limitations
+    ] == [("text_box", 1, True)]
 
 
 def test_validate_docx_rejects_unsupported_extension(tmp_path: Path) -> None:

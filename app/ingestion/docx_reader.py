@@ -52,9 +52,12 @@ What this reader reads (the whole read set):
   paragraph, in the order the drawing's own selected markup holds its boxes. That
   is the one authored position the file records: it neither invents a page
   position nor splices box text into the middle of the anchoring line, and a
-  paragraph holding two boxes reads neither twice. A drawing whose text is
+  paragraph holding two boxes reads neither twice, and a box another box's
+  paragraph anchors is read where that inner paragraph sits rather than queued
+  again at the outer anchor. A drawing whose text is
   DrawingML shape text outside a ``w:txbxContent`` text body (``a:t``) is not read
-  this way and stays reported as a ``text_box``: it is not a Word text box, and
+  this way and stays reported as a ``text_box``, even when the same drawing or
+  group shape holds a box that was read: it is not a Word text box, and
   reading paint as candidate text would need a character-level claim this reader
   does not make;
 - "in place" is bounded: wrappers, content controls, table cells and text boxes
@@ -1226,12 +1229,17 @@ def _drawing_text_boxes(
     ``_selected_elements`` resolves the drawing's own ``mc:AlternateContent``, so a
     box in the branch that was not chosen is not read: it renders what the chosen
     branch renders.
+
+    Only the boxes this drawing anchors are returned. A box anchored by another
+    box's paragraph is read when that box body is walked, so queuing it here too
+    would read its text twice: once at the outer anchor and once in its own place.
     """
-    return [
+    boxes = [
         item
         for item in _selected_elements(drawing, account, namespaces)
         if item.tag == _TEXT_BOX
     ]
+    return [box for box in boxes if not _inside(box, set(boxes))]
 
 
 def _is_block_wrapper(element: BaseOxmlElement, depth: int = 0) -> bool:
@@ -1528,12 +1536,19 @@ def _drawing_limitation(
     reported the same way. A text box the drawing holds keeps its own text-box
     entry, so ``None`` sends that element to the text-box count instead of naming
     the same content twice.
+
+    Characters inside a ``w:txbxContent`` body belong to that box, which the walk
+    reads and the text-box count names if it did not. Characters anywhere else in
+    the drawing — DrawingML paint (``a:t``) — are text nobody read, so a drawing
+    keeps a ``text_box`` entry for them even when it also holds a readable box.
     """
     has_text = has_text_box = unread_part = False
     for item in _selected_elements(drawing, account, namespaces):
         if item.tag == _TEXT_BOX:
             has_text_box = True
-        elif _local_name(item) in _TEXT_LOCAL_NAMES:
+        elif _local_name(item) in _TEXT_LOCAL_NAMES and not _has_ancestor(
+            item, _TEXT_BOX
+        ):
             has_text = True
         for name, relationship_id in item.attrib.items():
             if name.startswith(_R) and _is_unread_target(owner, relationship_id):
@@ -1541,7 +1556,9 @@ def _drawing_limitation(
     if unread_part:
         return "embedded_part"
     if has_text:
-        return None if has_text_box else "text_box"
+        return "text_box"
+    if has_text_box:
+        return None
     return "visual_element"
 
 
