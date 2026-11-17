@@ -52,6 +52,16 @@ def _record(row: Mapping[str, Any]) -> JobRecord:
     })
 
 
+def _envelope_block(engine: Engine, artifact_id: str) -> dict[str, Any] | None:
+    """The artifact's conversion envelope as a job read reports it (ADR 0010)."""
+    from app.storage.execution_envelope import envelope_view
+    from app.storage.postgres import PostgresExecutionEnvelopeStore
+
+    store = PostgresExecutionEnvelopeStore(engine)
+    envelope = store.find_open(artifact_id)
+    return envelope_view(envelope["conversion_id"], store=store) if envelope else None
+
+
 class PostgresJobQueue:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
@@ -112,7 +122,8 @@ class PostgresJobQueue:
             if row is None:
                 return None
             _payload(row)
-            return _record(row)
+            record = _record(row)
+        return record.model_copy(update={"envelope": _envelope_block(self.engine, artifact_id)})
 
     def cancel(self, artifact_id: str, job_id: str) -> JobRecord | None:
         with self._transaction() as connection:

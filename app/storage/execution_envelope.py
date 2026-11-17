@@ -86,16 +86,6 @@ class EnvelopeRefused(RuntimeError):
         self.error_code = str(detail["error_code"])
 
 
-@dataclass(frozen=True)
-class _Scope:
-    conversion_id: str
-    stage: str
-    store: ExecutionEnvelopeStore
-
-
-_ACTIVE: ContextVar[_Scope | None] = ContextVar("conversion_envelope_scope", default=None)
-
-
 class _SpendSink:
     """RunBudget's pre-dispatch reservation hook; usage is observed, never capped."""
 
@@ -109,6 +99,17 @@ class _SpendSink:
     def observe(self, usage: Any) -> None:
         for name in self.observed:
             self.observed[name] += int(getattr(usage, name, 0) or 0)
+
+
+@dataclass
+class _Scope:
+    conversion_id: str
+    stage: str
+    store: ExecutionEnvelopeStore
+    sink: _SpendSink | None = None
+
+
+_ACTIVE: ContextVar[_Scope | None] = ContextVar("conversion_envelope_scope", default=None)
 
 
 def _envelope(store: ExecutionEnvelopeStore, conversion_id: str) -> dict[str, Any]:
@@ -319,10 +320,17 @@ def seed_budget(budget: RunBudget, *, store: ExecutionEnvelopeStore | None = Non
         return budget
     store = store or scope.store
     allocation = child_allocation(scope.conversion_id, scope.stage, store=store)
-    budget.max_model_requests = min(budget.max_model_requests, allocation.model_requests)
-    budget.max_tool_calls = min(budget.max_tool_calls, allocation.tool_calls)
-    budget.envelope = _SpendSink(scope.conversion_id, scope.stage, store)
+    # Never below one: an empty balance is then refused by the envelope with its
+    # own structured detail, instead of by this execution's bare ceiling.
+    budget.max_model_requests = max(1, min(budget.max_model_requests, allocation.model_requests))
+    budget.max_tool_calls = max(1, min(budget.max_tool_calls, allocation.tool_calls))
+    budget.envelope = scope.sink = _SpendSink(scope.conversion_id, scope.stage, store)
     return budget
+
+
+def _observed(scope: _Scope) -> dict[str, int] | None:
+    """The tokens this stage's budget reported: recorded, never compared with a cap."""
+    return dict(scope.sink.observed) if scope.sink is not None else None
 
 
 @contextmanager
@@ -332,15 +340,16 @@ def envelope_stage(conversion_id: str, stage: str, *,
     store = store or default_store()
     allocation = child_allocation(conversion_id, stage, store=store)
     _require_before_dispatch(_envelope(store, conversion_id), stage)
-    token = _ACTIVE.set(_Scope(conversion_id, stage, store))
+    scope = _Scope(conversion_id, stage, store)
+    token = _ACTIVE.set(scope)
     try:
         yield allocation
     except BaseException as exc:
-        settle_stage(conversion_id, stage, store=store,
+        settle_stage(conversion_id, stage, store=store, observed=_observed(scope),
                      kind="settled_unknown" if _unknown_outcome(exc) else "consumed")
         raise
     else:
-        settle_stage(conversion_id, stage, store=store)
+        settle_stage(conversion_id, stage, store=store, observed=_observed(scope))
     finally:
         _ACTIVE.reset(token)
 
@@ -370,6 +379,11 @@ def envelope_view(conversion_id: str, *, store: ExecutionEnvelopeStore | None = 
         "deadline_exceeded": datetime.fromisoformat(envelope["deadline_at"]) <= datetime.now(UTC),
         "covered_stages": list(COVERED_STAGES), "excluded_stages": list(EXCLUDED_STAGES),
         "reused_stages": sorted({str(event["stage"]) for event in events if event["kind"] == "reused"}),
+        # The attribution a reloaded page must show instead of an unexplained stop.
+        "refusal": (refusals[-1] if (refusals := [event["observed"]["refusal"] for event in events
+                                                  if event["kind"] == "refused"
+                                                  and (event.get("observed") or {}).get("refusal")])
+                    else None),
         "dimensions": {
             **{name: {"limit": limits.by_dimension()[name], "is_cap": True,
                       "consumed": state["consumed"][name],

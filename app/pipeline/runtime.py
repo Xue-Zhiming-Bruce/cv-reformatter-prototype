@@ -74,15 +74,15 @@ class RunBudget:
     ) -> None:
         """Hard pre-execution cap: reject BEFORE incrementing when the action
         would exceed the limit, so persisted executed counts never do."""
-        if requests and self.envelope is not None:
-            # Reserve against the persisted conversion balance before dispatch;
-            # the refusal is the envelope's, not this execution's.
-            self.envelope.reserve("model_requests", requests)
         if self.model_requests + requests > self.max_model_requests:
             raise BudgetExhausted(
                 f"global model budget exhausted: {self.model_requests}+{requests} "
                 f"would exceed {self.max_model_requests}"
             )
+        if requests and self.envelope is not None:
+            # Persist the reservation against the conversion balance BEFORE
+            # dispatch; the refusal is the envelope's, not this execution's.
+            self.envelope.reserve("model_requests", requests)
         if self.parent is not None:
             self.parent.spend_model(agent, requests=requests, usage=usage, mode=mode)
         self.model_requests += requests
@@ -99,12 +99,12 @@ class RunBudget:
 
     def spend_tool(self, tool: str) -> None:
         """Hard pre-execution cap, as spend_model."""
-        if self.envelope is not None:
-            self.envelope.reserve("tool_calls", 1)
         if self.tool_calls + 1 > self.max_tool_calls:
             raise BudgetExhausted(
                 f"global tool budget exhausted: {self.tool_calls}+1 would exceed {self.max_tool_calls}"
             )
+        if self.envelope is not None:
+            self.envelope.reserve("tool_calls", 1)
         if self.parent is not None:
             self.parent.spend_tool(tool)
         self.tool_calls += 1
