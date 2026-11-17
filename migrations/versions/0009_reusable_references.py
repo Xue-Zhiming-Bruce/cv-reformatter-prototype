@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0009_reusable_template_references"
+revision = "0009_reusable_references"
 down_revision = "0008_target_job_operations"
 branch_labels = None
 depends_on = None

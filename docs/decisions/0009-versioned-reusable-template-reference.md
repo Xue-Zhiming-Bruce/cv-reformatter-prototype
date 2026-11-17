@@ -248,7 +248,7 @@ passing unmodified except for additive cases.
 
 - Current head is `0008_target_job_operations`
   (`migrations/versions/0008_target_job_operations.py:9`), so this schema change
-  takes revision id `0009` (`0009_reusable_template_references`). Issue #43 owns
+  takes revision id `0009` (`0009_reusable_references`). Issue #43 owns
   the following envelope migration and takes whichever revision id is free
   after it.
 - A decision does **not** strictly require a stored-schema change. A reuse

@@ -904,7 +904,7 @@ production reliability remain open, so P2 and B1A stay unchecked.
 
 Issue #37 reusable approved template references: ADR 0009 is `Accepted`
 (owner `37批准复用`, 2026-11-17) and stages 3–4 are implemented. Migration
-`0009_reusable_template_references` adds one additive table keyed by
+`0009_reusable_references` adds one additive table keyed by
 `(scope_id, identity_sha256)` pointing at `(artifact_id, approval_id)`; no column
 is added to the append-only `layout_proof_approvals` and no existing row is
 backfilled or upgraded, so `approval/2` records stay artifact-local and

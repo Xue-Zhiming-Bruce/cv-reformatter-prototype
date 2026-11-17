@@ -14,7 +14,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from docx import Document
 from fastapi.testclient import TestClient
-from sqlalchemy import inspect, select, update
+from sqlalchemy import delete, inspect, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app import main
@@ -22,10 +22,14 @@ from app.generation import service as generation_service
 from app.extraction.candidate_schema import CandidateProfile, MissingField
 from app.final_acceptance import FinalOutputAcceptance
 from app.generation.artifact_manifest import ArtifactManifest
+from app.template_analysis.layout_proof_schemas import (
+    ReusableTemplateIdentity,
+    ReusableTemplateReference,
+)
 from app.generation.template_mapper import DEFAULT_TEMPLATE_NAME
 from app.profile_approval import draft_sha256, save_approved_profile
 from app.storage.artifact_store import ArtifactStoreError
-from app.storage.postgres import PostgresArtifactStore, PostgresFinalAcceptanceRepository, PostgresGenerationRepository, PostgresProfileRevisionRepository, artifact_sessions, final_output_acceptances, generation_versions, metadata, profile_revisions
+from app.storage.postgres import PostgresArtifactStore, PostgresFinalAcceptanceRepository, PostgresGenerationRepository, PostgresProfileRevisionRepository, PostgresReusableTemplateRepository, artifact_sessions, final_output_acceptances, generation_versions, layout_proof_approvals, metadata, profile_revisions
 from tests.helpers.postgres import migrate_database as _migrate
 
 
@@ -123,7 +127,7 @@ def test_postgres_migrations_are_explicit_reversible_and_match_repository(
     cli = subprocess.run([sys.executable, "-B", "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "current"],
         cwd=tmp_path, env={**os.environ, "DATABASE_URL": url, "PYTHONPATH": ""},
         capture_output=True, text=True, timeout=30)
-    assert cli.returncode == 0 and "0009_reusable_template_references" in cli.stdout, cli.stderr
+    assert cli.returncode == 0 and "0009_reusable_references" in cli.stdout, cli.stderr
     with engine.connect() as connection:
         assert compare_metadata(MigrationContext.configure(connection), metadata) == []
     _migrate(engine, "base", downgrade=True)
@@ -640,3 +644,84 @@ def test_postgres_job_completion_and_publication_share_one_fenced_transaction(
     with pytest.raises(IntegrityError):
         with engine.begin() as connection:
             connection.execute(update(workflow_jobs).where(workflow_jobs.c.job_id == job.job_id).values(state="queued"))
+
+
+# -- reusable approved template references (ADR 0009, issue #37) ---------------
+
+
+def _reusable_reference(artifact_id: str, approval_id: str, **members: str):
+    """A recorded reference for a stub approval row: the store, not the policy."""
+    identity = ReusableTemplateIdentity(
+        scope_id="local-synthetic",
+        target_pdf_sha256="a" * 64,
+        target_evidence={
+            "schema_version": "layout/evidence/1",
+            "evidence_version": "normalized-layout/1",
+            "evidence_checksum": "b" * 64,
+        },
+        layout_spec_sha256="c" * 64,
+        layout_contract={
+            "schema_version": "2.0",
+            "template_version": "1",
+            "structure_contract": "measured",
+        },
+        compiler_version="10",
+        renderer_version="agentic-a/1",
+        execution_identity={"mode": "agentic-provider/1", "frozen": None},
+        proof_content={
+            "schema_version": "layout/proof/context/1",
+            "context_checksums": {"short": "d" * 64, "medium": "d" * 64, "long": "d" * 64},
+        },
+        proof_schema_versions={},
+        proof_artifacts={},
+        font_asset_identity={
+            "template_font_families": ["Arial"],
+            "proof_rendering_environment": {},
+        },
+        presentation_labels={"catalog_sha256": None, "label_ids": []},
+    )
+    return ReusableTemplateReference(
+        reference_id=identity.identity_sha256,
+        scope_id="local-synthetic",
+        identity=identity,
+        artifact_id=artifact_id,
+        approval_id=approval_id,
+        created_at="2026-11-17T00:00:00+00:00",
+    )
+
+
+def test_postgres_reusable_reference_store_round_trip(
+    postgres_database, tmp_path: Path,
+) -> None:
+    url, engine = postgres_database
+    _migrate(engine)
+    artifact_id, approval_id = "synthetic_reuse", "approval_reuse"
+    with engine.begin() as connection:
+        connection.execute(artifact_sessions.insert().values(
+            artifact_id=artifact_id, artifact_dir=str(tmp_path / artifact_id), status="processed",
+        ))
+        connection.execute(layout_proof_approvals.insert().values(
+            artifact_id=artifact_id, approval_id=approval_id,
+            target_sha256="0" * 64, layout_sha256="0" * 64,
+            renderer_version="agentic-a/1", state="approved",
+            body_sha256="0" * 64, body="{}",
+        ))
+    repository = PostgresReusableTemplateRepository(engine)
+    reference = _reusable_reference(artifact_id, approval_id)
+    repository.save(reference)
+    repository.save(reference)  # a reference is immutable: one row per identity
+    assert repository.resolve(
+        scope_id="local-synthetic", identity_sha256=reference.reference_id
+    ) == reference
+    assert repository.resolve(
+        scope_id="tenant-2", identity_sha256=reference.reference_id
+    ) is None
+    assert repository.list_current(scope_id="local-synthetic") == [reference]
+    with pytest.raises(ArtifactStoreError, match="requires its source approval record"):
+        repository.save(_reusable_reference(artifact_id, "approval_missing"))
+    # The reference follows its source artifact's lifecycle; dependents then fail closed.
+    with engine.begin() as connection:
+        connection.execute(delete(artifact_sessions).where(
+            artifact_sessions.c.artifact_id == artifact_id
+        ))
+    assert repository.list_current(scope_id="local-synthetic") == []
