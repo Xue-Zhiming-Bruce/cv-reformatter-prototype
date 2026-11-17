@@ -117,10 +117,17 @@ and it neither invents a page position nor splices box text into the middle of
 the anchoring line. A box that another box's paragraph anchors is read where that
 inner paragraph sits, once: it is not also queued at the outer anchor, so a box in
 a box is neither duplicated nor detached from the paragraph that places it.
-A drawing whose text is DrawingML shape text outside a `w:txbxContent` text body
-(`a:t`) is not read this way and keeps its blocking `text_box` entry — also on a
-drawing or group shape that holds a box this walk did read: reading a box closes
-that box's entry only, never the paint text drawn beside it.
+A drawing whose text is DrawingML paint (`a:t`) is not read this way and keeps
+its blocking `text_box` entry wherever that character sits: beside a box this
+walk read, in the body of one, and in the inner box of a box in a box. Reading a
+body closes that body's own text — the characters in it the box walk renders —
+and nothing else, so suppression follows the nearest drawing or `w:txbxContent`
+body above a character, never "a box is somewhere above it": a box body's
+characters are the box's, whether a walk reached it or the part-level count names
+it, while a character whose nearest owner is a drawing is paint no walk read. Art
+(`visual_element`) never takes in a character, and a drawing or picture that
+another one holds is decided by the outermost one, so one shape is named once,
+not once per nesting level.
 
 The descent is bounded: wrappers, content controls, table cells and text boxes
 each cost one level of `_MAX_BLOCK_DEPTH`, and a descent past it is reported as
@@ -131,11 +138,13 @@ Still reported, and still blocking review: `nesting` content, a nested table or
 text box no walk reached, tracked insertions/deletions/moves, a content control
 no walk descends, a field's cached result, `w:altChunk`/`w:subDoc`, a wrapper or
 table child holding text outside those shapes, an entity reference, an unread
-note or comment body, a part a drawing points at that is not an image, and a
-vector image that cannot be proven to draw shapes only. Art (`visual_element`)
-and a font-specific symbol code point are reported but do not block. Synthetic
-tests establish these reader behaviours; they are not a claim of universal DOCX
-coverage or visual accuracy.
+note or comment body, DrawingML paint wherever it sits, a part a drawing points
+at that is not an image, and a vector image that cannot be proven to draw shapes
+only. Art (`visual_element`) and a font-specific symbol code point are reported
+but do not block. `tests/unit/test_docx_reader.py` pins this list cell by cell
+(`_DRAWING_TEXT_TRUTH_TABLE`), so a shape not named here is a missing row rather
+than a silent omission; synthetic tests establish these reader behaviours and are
+not a claim of universal DOCX coverage or visual accuracy.
 
 ## Target Analysis Boundary
 

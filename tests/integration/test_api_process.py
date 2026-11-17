@@ -1744,6 +1744,67 @@ def test_drawing_text_blocks_approval_revision_and_generation(
     assert generated.json()["detail"]["error_code"] == "source_text_unread"
 
 
+def test_paint_text_inside_a_read_text_box_blocks_approval(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Issue #56 AC5: reading a box body does not read the paint drawn inside it."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    document.add_paragraph("Contact: ")._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp")} '
+            'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            '<w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox>'
+            "<w:txbxContent><w:p><w:r><w:t>BOXED PHONE</w:t></w:r></w:p>"
+            "<w:p><w:r><w:drawing><wp:inline><a:graphic><a:graphicData"
+            ' uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            "<wps:wsp><wps:txBody><a:p><a:r><a:t>PAINT IN BOX</a:t></a:r></a:p>"
+            "</wps:txBody></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing>"
+            "</w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r>"
+        )
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # The box body was read, so its own text reached the preserved source text...
+    assert "BOXED PHONE" in body["original_text"].splitlines()
+    # ...while the paint drawn inside that same body did not.
+    assert "PAINT IN BOX" not in body["original_text"]
+    (limitation,) = body["ingestion_limitations"]
+    assert "text-box content is not read" in limitation
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "incomplete"
+    assert audit["unread_text_source_content"] == body["ingestion_limitations"]
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 409, approval.text
+    assert approval.json()["detail"]["error_code"] == "source_text_unread"
+
+
 def test_chart_text_blocks_approval_revision_and_generation(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

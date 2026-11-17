@@ -99,13 +99,19 @@ Response fields:
   all block, while `title`, `desc` and `metadata` do not count and a `style`
   element is allowed, so text a CSS `content:` rule paints is not detected —, and
   drawings and pictures
-  that hold only art, not blocking because OCR is out of scope; a drawing that
-  carries a character outside a text box it holds is a text box itself, and
-  blocks — also when the same drawing or group shape holds a box that was read,
-  because reading the box does not read the paint text beside it. One entry per
+  that hold only art, not blocking because OCR is out of scope; a character a
+  drawing paints — DrawingML `a:t` — makes the drawing a blocking entry, a text
+  box unless the same drawing also points at a part this reader cannot read,
+  which blocks as an embedded part, and it keeps that entry wherever the
+  character sits, including on a drawing nested inside a `w:txbxContent` body the
+  reader did read and on a drawing that also holds a box it read: reading a box
+  body reads that body's own text, never the paint drawn inside it or beside it,
+  and art never absorbs a character. One entry per
   kind and
   document part, counting each element found, so two drawings that point at one
-  unread part are two. The branch selection the inline walk makes also decides
+  unread part are two, while a drawing or picture another one holds is not counted
+  twice — the outermost one decides about the text and the parts inside it. The
+  branch selection the inline walk makes also decides
   which of a drawing's `mc:AlternateContent` branches contributes text), naming
   its location and, for a wrapper, the element name and child position; empty for
   PDFs and for DOCX files inside the supported shapes. The
