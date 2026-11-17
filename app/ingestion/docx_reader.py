@@ -55,11 +55,11 @@ What this reader reads (the whole read set):
   paragraph holding two boxes reads neither twice, and a box another box's
   paragraph anchors is read where that inner paragraph sits rather than queued
   again at the outer anchor. A drawing whose text is
-  DrawingML shape text outside a ``w:txbxContent`` text body (``a:t``) is not read
-  this way and stays reported as a ``text_box``, even when the same drawing or
-  group shape holds a box that was read: it is not a Word text box, and
-  reading paint as candidate text would need a character-level claim this reader
-  does not make;
+  DrawingML paint (``a:t``) is not read this way and stays reported as a
+  ``text_box`` wherever that character sits — including inside a box body this
+  walk read, and beside a box the same drawing or group shape holds: reading a
+  body closes that body's own characters only, and reading paint as candidate
+  text would need a character-level claim this reader does not make;
 - "in place" is bounded: wrappers, content controls, table cells and text boxes
   each cost one level of ``_MAX_BLOCK_DEPTH``, and a descent past that bound is
   reported as a ``nesting`` limitation instead of being followed. A package can
@@ -150,10 +150,13 @@ location):
   (``w:subDoc``), whose text lives in another part entirely;
 - drawings that hold only art (a legacy picture, a raster image, a drawing with no
   text of its own), one entry per kind and document part with the count of drawings
-  found: OCR is out of scope, so the reader never supplies it. Reported only: art
+  found — a drawing or picture another one holds is decided by the outermost one,
+  so a shape is named once: OCR is out of scope, so the reader never supplies it.
+  Reported only: art
   this reader does not interpret is not lost text, so these do not block approval.
   A drawing that carries a character is not one of them — its text is visible
-  content nobody read, so it is counted as a text box and blocks — and neither is a
+  content nobody read, so it is counted as a text box and blocks, wherever the
+  character sits: art never takes in a character — and neither is a
   drawing that points at another part: a chart, a diagram or an embedded object
   keeps its text in the part its relationship names, so every relationship target
   that is not an image is reported as an ``embedded_part`` and blocks, whether or
@@ -288,6 +291,10 @@ _TEXT_LOCAL_NAMES = frozenset(
     {"t", "delText", "sym", "tab", "ptab", "br", "cr", "noBreakHyphen", "softHyphen"}
 )
 
+#: The elements that own the characters they hold: a text-box body owns the text
+#: the box carries, a drawing owns the text it paints. The nearest one above a
+#: character decides who is answerable for it.
+_TEXT_OWNERS = frozenset({_DRAWING, _PICTURE, _TEXT_BOX})
 #: Block children one container walk reads in place.
 _READ_CHILD_TAGS = frozenset({_PARAGRAPH, _TABLE, _CONTENT_CONTROL})
 #: The mark in the text -> the kind of note it points at. Only a mark the walk
@@ -1492,13 +1499,20 @@ def _find_limitations(
 def _visual_elements(
     element: BaseOxmlElement, account: _ReadAccount
 ) -> list[BaseOxmlElement]:
-    """Top-level drawings and legacy pictures in a part, minus discarded branches."""
-    return [
+    """Outermost drawings and legacy pictures in a part, minus discarded branches.
+
+    A drawing or picture another one holds is not a gap of its own: the drawing
+    around it decides about the characters and the parts inside it, so counting
+    the inner one as well would name the same content twice.
+    """
+    found = [
         item
         for tag in (_DRAWING, _PICTURE)
         for item in element.iter(tag)
-        if not _has_ancestor(item, tag) and not _inside(item, account.discarded)
+        if not _inside(item, account.discarded)
     ]
+    owner = set(found)
+    return [item for item in found if not _inside(item, owner)]
 
 
 def _drawing_limitation_counts(
@@ -1507,7 +1521,7 @@ def _drawing_limitation_counts(
     namespaces: Mapping[str, str],
     owner: Part,
 ) -> dict[LimitationKind, int]:
-    """Drawings in a part, one entry per drawing by the one gap it is."""
+    """Drawings in a part, one entry per outermost drawing by the one gap it is."""
     counts: dict[LimitationKind, int] = {
         "text_box": 0,
         "embedded_part": 0,
@@ -1537,18 +1551,18 @@ def _drawing_limitation(
     entry, so ``None`` sends that element to the text-box count instead of naming
     the same content twice.
 
-    Characters inside a ``w:txbxContent`` body belong to that box, which the walk
-    reads and the text-box count names if it did not. Characters anywhere else in
-    the drawing — DrawingML paint (``a:t``) — are text nobody read, so a drawing
-    keeps a ``text_box`` entry for them even when it also holds a readable box.
+    A character belongs to the nearest drawing or ``w:txbxContent`` body above it
+    (``_text_box_owns``). A body's own text is that box's business: the box walk
+    reads it, and the text-box count names the body when no walk did. Every other
+    character is paint — DrawingML ``a:t``, also when the drawing that paints it
+    sits inside a box body the walk read — and no walk renders it, so the drawing
+    keeps a blocking ``text_box`` entry for it.
     """
     has_text = has_text_box = unread_part = False
     for item in _selected_elements(drawing, account, namespaces):
         if item.tag == _TEXT_BOX:
             has_text_box = True
-        elif _local_name(item) in _TEXT_LOCAL_NAMES and not _has_ancestor(
-            item, _TEXT_BOX
-        ):
+        elif _local_name(item) in _TEXT_LOCAL_NAMES and not _text_box_owns(item):
             has_text = True
         for name, relationship_id in item.attrib.items():
             if name.startswith(_R) and _is_unread_target(owner, relationship_id):
@@ -1560,6 +1574,23 @@ def _drawing_limitation(
     if has_text_box:
         return None
     return "visual_element"
+
+
+def _text_box_owns(element: BaseOxmlElement) -> bool:
+    """True when the nearest drawing or text-box body above it is a body.
+
+    Suppression is keyed on that owner, never on "a box is somewhere above": a
+    box body's own characters are the box's, while the paint of a drawing nested
+    in a body the walk read is still text nobody read. A body no walk reached is
+    counted by the text-box count whether or not it was read, so its text is named
+    once either way.
+    """
+    parent = element.getparent()
+    while parent is not None:
+        if parent.tag in _TEXT_OWNERS:
+            return parent.tag == _TEXT_BOX
+        parent = parent.getparent()
+    return False
 
 
 def _is_unread_target(owner: Part, relationship_id: str) -> bool:

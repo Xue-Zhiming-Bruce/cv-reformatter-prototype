@@ -1502,6 +1502,264 @@ def test_read_docx_names_text_a_group_shape_carries_beside_a_text_box(
     ] == [("text_box", 1, True)]
 
 
+#: Prefixes for the DrawingML shape markup the truth table builds.
+_SHAPE_NAMESPACES = (
+    'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+    'xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" '
+    'xmlns:v="urn:schemas-microsoft-com:vml"'
+)
+
+
+def _p(text: str) -> str:
+    return f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
+
+
+def _p_with(*runs: str) -> str:
+    return f"<w:p>{''.join(runs)}</w:p>"
+
+
+def _r(*content: str) -> str:
+    return f"<w:r>{''.join(content)}</w:r>"
+
+
+def _paint(text: str) -> str:
+    """A shape whose only text is DrawingML paint: no walk renders ``a:t``."""
+    return (
+        "<wps:wsp><wps:txBody><a:p><a:r>"
+        f"<a:t>{text}</a:t></a:r></a:p></wps:txBody></wps:wsp>"
+    )
+
+
+def _box(blocks: str) -> str:
+    """A shape holding a ``w:txbxContent`` body Word 2010 writes (``wps:txbx``)."""
+    return (
+        "<wps:wsp><wps:txbx><w:txbxContent>"
+        f"{blocks}</w:txbxContent></wps:txbx></wps:wsp>"
+    )
+
+
+def _legacy_box(blocks: str) -> str:
+    """A VML text box, the other body Word writes around a block body."""
+    return (
+        "<w:pict><v:shape><v:textbox>"
+        f"<w:txbxContent>{blocks}</w:txbxContent>"
+        "</v:textbox></v:shape></w:pict>"
+    )
+
+
+def _drawing(*shapes: str) -> str:
+    return (
+        '<w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic>'
+        '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/'
+        f'wordprocessingShape">{"".join(shapes)}</a:graphicData>'
+        "</a:graphic></wp:inline></w:drawing>"
+    )
+
+
+def _group_drawing(*shapes: str) -> str:
+    return (
+        '<w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic>'
+        '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/'
+        f'wordprocessingGroup"><wpg:wgp>{"".join(shapes)}</wpg:wgp>'
+        "</a:graphicData></a:graphic></wp:inline></w:drawing>"
+    )
+
+
+def _read_anchored_paragraph(tmp_path: Path, runs: str) -> ExtractedDocxContent:
+    """Read a resume whose one body paragraph anchors these runs."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        parse_xml(
+            f'<w:p {nsdecls("w", "a", "wp")} {_SHAPE_NAMESPACES}>'
+            f"<w:r><w:t>Anchor:</w:t></w:r>{runs}</w:p>"
+        ),
+    )
+    document.save(path)
+    return read_docx(path)
+
+
+#: The drawing/text-box truth table: every shape a probe found or can nest, with
+#: the text the walk must read and the gaps it must report. One row per cell, so a
+#: fourth nesting cannot pass as art or go silent with unread text: a character is
+#: quiet only when the walk read that exact content, and a box body's characters
+#: are the box's whether or not it was read.
+_DRAWING_TEXT_TRUTH_TABLE: list[tuple[str, str, list[str], list[tuple[str, int, bool]]]] = [
+    (
+        "paint_at_body_level",
+        _r(_drawing(_paint("PAINT"))),
+        ["Anchor:"],
+        [("text_box", 1, True)],
+    ),
+    (
+        "paint_beside_a_box_in_one_shape",
+        _r(_drawing(_paint("PAINT") + _box(_p("BOX")))),
+        ["Anchor:", "BOX"],
+        [("text_box", 1, True)],
+    ),
+    (
+        "paint_beside_a_box_in_a_group",
+        _r(_group_drawing(_paint("PAINT"), _box(_p("GROUP BOX")))),
+        ["Anchor:", "GROUP BOX"],
+        [("text_box", 1, True)],
+    ),
+    ("box_only", _r(_drawing(_box(_p("BOX")))), ["Anchor:", "BOX"], []),
+    (
+        "paint_inside_a_read_legacy_box",
+        _r(_legacy_box(_p("OUTER") + _p_with(_r(_drawing(_paint("PAINT IN BOX")))))),
+        ["Anchor:", "OUTER"],
+        [("text_box", 1, True)],
+    ),
+    (
+        "paint_inside_a_read_wps_box",
+        _r(_drawing(_box(_p("OUTER") + _p_with(_r(_drawing(_paint("PAINT IN BOX"))))))),
+        ["Anchor:", "OUTER"],
+        [("text_box", 1, True)],
+    ),
+    (
+        "box_and_paint_inside_a_read_legacy_box",
+        _r(
+            _legacy_box(
+                _p("OUTER")
+                + _p_with(_r(_drawing(_box(_p("INNER BOX")) + _paint("PAINT BESIDE"))))
+            )
+        ),
+        ["Anchor:", "OUTER", "INNER BOX"],
+        [("text_box", 1, True)],
+    ),
+    (
+        "box_and_paint_inside_a_read_wps_box",
+        _r(
+            _drawing(
+                _box(
+                    _p("OUTER")
+                    + _p_with(
+                        _r(_drawing(_box(_p("INNER BOX")) + _paint("PAINT BESIDE")))
+                    )
+                )
+            )
+        ),
+        ["Anchor:", "OUTER", "INNER BOX"],
+        [("text_box", 1, True)],
+    ),
+    (
+        "paint_inside_the_inner_box_of_a_read_legacy_box",
+        _r(
+            _legacy_box(
+                _p("OUTER")
+                + _p_with(
+                    _r(
+                        _drawing(
+                            _box(
+                                _p("INNER BOX")
+                                + _p_with(_r(_drawing(_paint("DEEP PAINT"))))
+                            )
+                        )
+                    )
+                )
+            )
+        ),
+        ["Anchor:", "OUTER", "INNER BOX"],
+        [("text_box", 1, True)],
+    ),
+    (
+        "box_in_box",
+        _r(_legacy_box(_p("OUTER") + _p_with(_r(_legacy_box(_p("INNER")))))),
+        ["Anchor:", "OUTER", "INNER"],
+        [],
+    ),
+    (
+        "box_in_a_table_in_a_box",
+        _r(
+            _legacy_box(
+                _p("OUTER")
+                + "<w:tbl><w:tr><w:tc>"
+                + _p_with(_r(_legacy_box(_p("BOX IN CELL"))))
+                + "</w:tc></w:tr></w:tbl>"
+            )
+        ),
+        ["Anchor:", "OUTER", "BOX IN CELL"],
+        [],
+    ),
+    (
+        "box_under_a_tracked_insertion",
+        f'<w:ins w:id="1" w:author="recruiter">'
+        f'{_r(_legacy_box(_p("TRACKED BOX")))}</w:ins>',
+        ["Anchor:"],
+        [("text_box", 1, True), ("tracked_change", 1, True)],
+    ),
+    (
+        "paint_inside_an_unread_box_under_a_tracked_insertion",
+        f'<w:ins w:id="1" w:author="recruiter">'
+        f'{_r(_legacy_box(_p("UNREAD BOX") + _p_with(_r(_drawing(_paint("UNREAD PAINT"))))))}'
+        "</w:ins>",
+        ["Anchor:"],
+        [("text_box", 2, True), ("tracked_change", 1, True)],
+    ),
+    (
+        "paint_written_straight_into_a_read_box_body",
+        _r(_legacy_box(_p_with("<w:r><a:t>BARE PAINT</a:t></w:r>"))),
+        ["Anchor:"],
+        [("unknown_inline", 1, True)],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("runs", "lines", "limitations"),
+    [row[1:] for row in _DRAWING_TEXT_TRUTH_TABLE],
+    ids=[row[0] for row in _DRAWING_TEXT_TRUTH_TABLE],
+)
+def test_read_docx_keeps_drawing_text_blocking_until_the_walk_reads_it(
+    tmp_path: Path,
+    runs: str,
+    lines: list[str],
+    limitations: list[tuple[str, int, bool]],
+) -> None:
+    """AC5/AC7: every cell of the truth table, one row per shape."""
+    content = _read_anchored_paragraph(tmp_path, runs)
+
+    assert content.plain_text.splitlines() == lines
+    assert [
+        (item.kind, item.count, item.blocks_source_review)
+        for item in content.limitations
+    ] == limitations
+    # Art is never the bucket unread text falls into, so no cell may report one.
+    assert all(item.kind != "visual_element" for item in content.limitations)
+
+
+def test_read_docx_reports_paint_text_in_a_header_and_footer_box(tmp_path: Path) -> None:
+    """AC3/AC5: a header/footer box is read, and the paint inside it still blocks."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    for location, marker in (("header", "HEADER"), ("footer", "FOOTER")):
+        anchor = getattr(document.sections[0], location).paragraphs[0]
+        anchor.text = f"{marker.title()} anchor"
+        anchor._p.append(
+            parse_xml(
+                f'<w:r {nsdecls("w", "a", "wp")} {_SHAPE_NAMESPACES}>'
+                f'{_legacy_box(_p(f"{marker} BOX") + _p_with(_r(_drawing(_paint(f"{marker} PAINT")))))}'
+                "</w:r>"
+            )
+        )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert [(item.location, item.text) for item in content.header_footer] == [
+        ("header", "Header anchor\nHEADER BOX"),
+        ("footer", "Footer anchor\nFOOTER BOX"),
+    ]
+    assert content.paragraphs == ["Jane Candidate"]
+    assert [
+        (item.kind, item.count, item.blocks_source_review)
+        for item in content.limitations
+    ] == [("text_box", 1, True), ("text_box", 1, True)]
+
+
 def test_validate_docx_rejects_unsupported_extension(tmp_path: Path) -> None:
     path = tmp_path / "resume.txt"
     path.write_text("not a docx", encoding="utf-8")
