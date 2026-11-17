@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
 
 import pytest
 
+from app.target_publication import TargetSet, publish_target_set
 from app.template_analysis import layout_proof_rendering
 from app.template_analysis.artifacts import TARGET_EVIDENCE_FILENAME
 from app.template_analysis.design_schemas import TargetLayoutEvidence
@@ -142,6 +144,28 @@ def _selecting_artifact(tmp_path: Path, source: dict[str, object]) -> tuple[Path
     target_pdf = build_styled_target_pdf(artifact_dir / "target.pdf")
     _target_evidence(artifact_dir, target_pdf)
     return artifact_dir, target_pdf
+
+
+def _published_selecting_artifact(tmp_path: Path) -> tuple[Path, Path]:
+    """A second artifact whose target set is published under ``.targets``, as an upload leaves it.
+
+    The returned target PDF is the published one a caller pins its generation
+    from: a file inside ``<artifact>/.targets/set-...``, not the artifact root.
+    """
+    artifact_dir = tmp_path / "artifact_second"
+    staging = tmp_path / ".staging_second"
+    staging.mkdir()
+    target_pdf = build_styled_target_pdf(staging / "target_format_reference.pdf")
+    _target_evidence(staging, target_pdf)
+    publish_target_set(
+        artifact_dir,
+        staging,
+        ("target_format_reference.pdf", TARGET_EVIDENCE_FILENAME),
+        threading.Event(),
+    )
+    pinned = TargetSet(artifact_dir).read("target_format_reference.pdf")
+    assert pinned is not None
+    return artifact_dir, pinned
 
 
 # Every member, with a value that is deliberately not the recorded one. The
@@ -382,6 +406,20 @@ def _tree_checksums(directory: Path) -> dict[str, str]:
     }
 
 
+def _tree_entries(directory: Path) -> dict[str, str]:
+    """Every entry under ``directory``: a link's target, a file's hash, a directory."""
+    entries: dict[str, str] = {}
+    for path in sorted(directory.rglob("*")):
+        relative = path.relative_to(directory).as_posix()
+        if path.is_symlink():
+            entries[relative] = f"-> {path.readlink()}"
+        elif path.is_file():
+            entries[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+        else:
+            entries[relative] = "<dir>"
+    return entries
+
+
 def test_recording_and_using_a_reference_leaves_the_source_artifact_unchanged(
     tmp_path: Path, source: dict[str, object]
 ) -> None:
@@ -406,6 +444,30 @@ def test_recording_and_using_a_reference_leaves_the_source_artifact_unchanged(
     assert _tree_checksums(artifact_dir) == before
     assert json.loads(approval_path_for(artifact_dir).read_text(encoding="utf-8")) == before_approval
     assert _tree_checksums(selecting_dir) != before
+
+
+def test_a_resolution_leaves_the_selecting_artifacts_published_set_unchanged(
+    tmp_path: Path, source: dict[str, object]
+) -> None:
+    """A resolution reads the pinned set; it does not publish a set inside it.
+
+    At 94d2a1c the selection handed the pinned epoch to ``TargetSet`` as an
+    artifact root, so the read adopted the epoch as a legacy artifact: its
+    published files moved into ``<epoch>/.targets/set-...`` and were replaced by
+    symlinks, one more level per generation.
+    """
+    artifact_dir, target_pdf = _published_selecting_artifact(tmp_path)
+    before = _tree_entries(artifact_dir)
+    resolved = resolve_reusable_template(
+        artifact_dir=artifact_dir,
+        artifact_id="artifact_second",
+        reference_id=source["reference"].reference_id,
+        repository=source["repository"],
+        target_pdf=target_pdf,
+        layout_spec=source["spec"],
+    )
+    assert resolved.approval_id == source["approval"].approval_id
+    assert _tree_entries(artifact_dir) == before
 
 
 def test_recorded_reference_stores_no_candidate_content(source: dict[str, object]) -> None:

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from app.pipeline.fonts import installed_font_families
-from app.target_publication import TargetSet
+from app.target_publication import TARGETS_DIRNAME, TargetSet
 from app.template_analysis.artifacts import (
     LAYOUT_SPEC_FILENAME,
     TARGET_EVIDENCE_FILENAME,
@@ -248,10 +248,18 @@ def target_evidence(directory: str | Path) -> TargetLayoutEvidence:
 
     ``directory`` is the artifact directory, or the target-set epoch a caller
     already pinned its target PDF from; the evidence record is published beside
-    the target it describes.
+    the target it describes. A pinned epoch is read where it is, as the set it
+    already is: handed to a view as an artifact root it would read as a legacy
+    artifact and adopt itself into its own ``.targets`` on every resolution.
     """
-    path = TargetSet(Path(directory)).read(TARGET_EVIDENCE_FILENAME)
+    pinned = Path(directory)
+    view = (
+        TargetSet(pinned.parent.parent, resolved=pinned)
+        if pinned.parent.name == TARGETS_DIRNAME
+        else TargetSet(pinned)
+    )
     try:
+        path = view.read(TARGET_EVIDENCE_FILENAME)
         return TargetLayoutEvidence.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, AttributeError) as exc:
         raise ReusableTemplateEvidenceError(

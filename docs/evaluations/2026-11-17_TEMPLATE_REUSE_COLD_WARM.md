@@ -85,6 +85,14 @@ Different facts in, different output identities out, one shared template:
 `4acfd5fc8dc7f76f3bd43a306420cc167b3d29f37729ecc4ff3e62bf4bb732af` on both
 sides, `profile_sha256` `89d4e3c3…` (E) vs `ab0f2aec…` (A).
 
+The warm artifact's tree on disk also holds
+`<artifact>/.targets/set-…/.targets/set-…`: at the judged revision the
+resolution handed its pinned epoch to `TargetSet` as an artifact root, so a read
+adopted the epoch inside itself. That nesting was a read-path defect fixed at
+`c11` (`app/template_analysis/template_reuse_evidence.py` now reads a pinned set
+where it is); no number, count or identity quoted here depends on it, although
+stage 11's 0.067 s includes the writes it made.
+
 ## 3. Replay / controlled-substitute label
 
 Stages **not** re-run live in this record:
