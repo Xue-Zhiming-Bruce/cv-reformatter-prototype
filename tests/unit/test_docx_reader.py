@@ -118,33 +118,39 @@ def test_read_docx_reads_a_linked_header_once_at_its_defining_section(
     assert content.plain_text.count("Synthetic Candidate Contact") == 1
 
 
-def test_read_docx_reports_a_nested_table_instead_of_dropping_its_cell(tmp_path: Path) -> None:
-    """python-docx returns no text for a cell that holds a table; say so."""
+def test_read_docx_reads_a_nested_table_in_its_parent_cell(tmp_path: Path) -> None:
+    """Issue #56: a table in a cell keeps its own columns and its parent position."""
     path = tmp_path / "resume.docx"
     document = Document()
     document.add_paragraph("Before table")
-    outer = document.add_table(rows=1, cols=1)
-    nested = outer.rows[0].cells[0].add_table(rows=1, cols=1)
-    nested.rows[0].cells[0].text = "Nested entry"
+    outer = document.add_table(rows=1, cols=2)
+    nested = outer.rows[0].cells[0].add_table(rows=1, cols=2)
+    nested.rows[0].cells[0].text = "Nested one"
+    nested.rows[0].cells[1].text = "Nested two"
+    outer.rows[0].cells[1].text = "Sibling cell"
     document.add_paragraph("After table")
     document.save(path)
 
     content = read_docx(path)
 
-    assert "Nested entry" not in content.plain_text
-    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
-        ("nested_table", "body", 1)
+    assert content.plain_text.splitlines() == [
+        "Before table",
+        "Nested one | Nested two | Sibling cell",
+        "After table",
     ]
-    assert "not read" in content.limitations[0].message
-    assert "Review the source document" in content.limitations[0].message
+    # The nested table was read where it sat, so its own gap is closed.
+    assert content.limitations == []
+    assert content.plain_text.count("Nested one") == 1
 
 
-def test_read_docx_reports_text_boxes_and_tracked_changes(tmp_path: Path) -> None:
+def test_read_docx_reads_text_box_text_at_its_anchor_and_flags_tracked_changes(
+    tmp_path: Path,
+) -> None:
     """Visible content outside the supported shapes is attributed, never silent."""
     path = tmp_path / "resume.docx"
     document = Document()
     document.add_paragraph("Jane Candidate")
-    boxed = document.add_paragraph()
+    boxed = document.add_paragraph("Contact: ")
     boxed._p.append(
         parse_xml(
             f'<w:r {nsdecls("w")}>'
@@ -164,9 +170,220 @@ def test_read_docx_reports_text_boxes_and_tracked_changes(tmp_path: Path) -> Non
 
     content = read_docx(path)
 
-    assert "Boxed contact" not in content.plain_text
-    assert "Python" not in content.plain_text
-    assert sorted(item.kind for item in content.limitations) == ["text_box", "tracked_change"]
+    # The box's text follows the paragraph that anchors it; a tracked insertion is
+    # still a revision this reader does not resolve.
+    assert content.plain_text.splitlines() == [
+        "Jane Candidate",
+        "Contact:",
+        "Boxed contact",
+        "Skills:",
+    ]
+    assert sorted(item.kind for item in content.limitations) == ["tracked_change"]
+
+
+def test_read_docx_reads_a_paragraph_nested_in_two_wrappers(tmp_path: Path) -> None:
+    """Issue #56 AC2: ``customXml > smartTag > w:p`` is read once, with no limitation."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    document.element.body.insert(
+        len(document.element.body) - 1,
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="resume">'
+            '<w:smartTag w:uri="urn:example" w:element="skills">'
+            "<w:p><w:r><w:t>Inside smart tag</w:t></w:r></w:p>"
+            "</w:smartTag></w:customXml>"
+        ),
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate", "Inside smart tag"]
+    assert content.plain_text.count("Inside smart tag") == 1
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_table_nested_in_wrappers_in_a_cell(tmp_path: Path) -> None:
+    """A wrapper of wrappers is walked the same way at block, row and cell level."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    table = document.add_table(rows=1, cols=1)
+    table.rows[0].cells[0]._tc.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="resume">'
+            "<w:smartTag w:uri=\"urn:x\" w:element=\"role\">"
+            "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>NESTED_WRAPPED</w:t></w:r></w:p>"
+            "</w:tc></w:tr></w:tbl>"
+            "</w:smartTag></w:customXml>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate", "NESTED_WRAPPED"]
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_text_box_in_a_header(tmp_path: Path) -> None:
+    """AC3: the same walk reads a box in a header, with the header's provenance."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    header = document.sections[0].header
+    header.paragraphs[0].text = "Header anchor"
+    header.paragraphs[0]._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")}>'
+            '<w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml">'
+            "<v:textbox><w:txbxContent><w:p><w:r><w:t>Header boxed</w:t></w:r></w:p>"
+            "</w:txbxContent></v:textbox></v:shape></w:pict></w:r>"
+        )
+    )
+    document.add_paragraph("Jane Candidate")
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.header_footer[0].text.splitlines() == ["Header anchor", "Header boxed"]
+    assert content.plain_text.splitlines() == [
+        "Header anchor",
+        "Header boxed",
+        "Jane Candidate",
+    ]
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_text_box_through_its_own_blocks(tmp_path: Path) -> None:
+    """A box holds blocks, so its table and its paragraph keep their own order."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    anchor = document.add_paragraph()
+    anchor._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")}>'
+            '<w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml">'
+            "<v:textbox><w:txbxContent>"
+            "<w:p><w:r><w:t>Box first</w:t></w:r></w:p>"
+            "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Box cell</w:t></w:r></w:p>"
+            "</w:tc></w:tr></w:tbl>"
+            "<w:p><w:r><w:t>Box last</w:t></w:r></w:p>"
+            "</w:txbxContent></v:textbox></v:shape></w:pict></w:r>"
+        )
+    )
+    document.add_paragraph("After box")
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Jane Candidate",
+        "Box first",
+        "Box cell",
+        "Box last",
+        "After box",
+    ]
+    assert content.limitations == []
+
+
+def test_read_docx_does_not_read_a_text_box_in_the_branch_it_skipped(
+    tmp_path: Path,
+) -> None:
+    """Branch selection decides the box too, so the box is not read twice."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Alternative: ")
+    paragraph._p.append(
+        parse_xml(
+            '<mc:AlternateContent '
+            'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+            f'{nsdecls("w")}>'
+            '<mc:Choice><w:r><w:t>CHOSEN</w:t></w:r></mc:Choice>'
+            "<mc:Fallback><w:r><w:pict>"
+            '<v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox>'
+            "<w:txbxContent><w:p><w:r><w:t>SKIPPED BOX</w:t></w:r></w:p>"
+            "</w:txbxContent></v:textbox></v:shape></w:pict></w:r></mc:Fallback>"
+            "</mc:AlternateContent>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Alternative: CHOSEN"]
+    assert content.limitations == []
+
+
+def test_read_docx_names_a_field_inside_a_text_box_it_reads(tmp_path: Path) -> None:
+    """AC5: reading a box does not start reading a field's cached result."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    anchor = document.add_paragraph()
+    anchor._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")}>'
+            '<w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml">'
+            "<v:textbox><w:txbxContent><w:p><w:r><w:t>Read me</w:t></w:r>"
+            '<w:fldSimple w:instr=" REF candidate_name ">'
+            "<w:r><w:t>Field result</w:t></w:r></w:fldSimple>"
+            "</w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate", "Read me"]
+    assert [(item.kind, item.count) for item in content.limitations] == [("field", 1)]
+
+
+def test_read_docx_bounds_a_deeply_nested_table_chain(tmp_path: Path) -> None:
+    """AC6: deep nesting is declined at a bound, not by the interpreter's limit."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    inner = "<w:p><w:r><w:t>DEEP TEXT</w:t></w:r></w:p>"
+    for _ in range(59):
+        inner = f"<w:tbl><w:tr><w:tc>{inner}</w:tc></w:tr></w:tbl>"
+    document.element.body.insert(
+        len(document.element.body) - 1,
+        parse_xml(f'<w:tbl {nsdecls("w")}><w:tr><w:tc>{inner}</w:tc></w:tr></w:tbl>'),
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert "Jane Candidate" in content.plain_text
+    kinds = {item.kind for item in content.limitations}
+    assert "nesting" in kinds
+    assert content.plain_text.count("DEEP TEXT") == 0
+    assert all(item.blocks_source_review for item in content.limitations)
+
+
+def test_read_docx_bounds_a_deeply_nested_wrapper_chain(tmp_path: Path) -> None:
+    """AC6: a wrapper chain past the bound is named once instead of recursed into."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    inner = "<w:p><w:r><w:t>DEEP WRAPPED</w:t></w:r></w:p>"
+    for _ in range(119):
+        inner = f'<w:customXml w:element="level">{inner}</w:customXml>'
+    document.element.body.insert(
+        len(document.element.body) - 1,
+        parse_xml(f'<w:customXml {nsdecls("w")} w:element="level">{inner}</w:customXml>'),
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate"]
+    (limitation,) = content.limitations
+    assert limitation.kind == "unknown_block"
+    assert limitation.element == "customXml"
+    assert limitation.blocks_source_review is True
 
 
 def test_read_docx_reads_a_block_content_control_in_place(tmp_path: Path) -> None:
