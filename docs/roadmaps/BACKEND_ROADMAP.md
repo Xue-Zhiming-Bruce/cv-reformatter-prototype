@@ -914,10 +914,19 @@ re-verified from the source artifact's stored evidence on every use, and a
 refusal is a structured 409 `reusable_template_mismatch` naming the differing
 member(s). `GET /api/templates/reusable` lists the selectable references of the
 `local-synthetic` scope, which is documented as **not** authenticated
-multi-tenant isolation. Every per-candidate stage still runs; the source
-artifact is never written. AC3 (`live cold-vs-warm` provider evidence) and AC10
-(the cold-vs-warm record) stay open: this lane made no paid provider call, so
-both are reported unsatisfied rather than replayed. Multi-tenant reuse remains
+multi-tenant isolation. Every per-candidate stage still runs; a selecting
+artifact still analyzes its own uploaded target and reuses only the approved
+proof set, and the source artifact is never written. AC10 asks for a cold-vs-warm
+record and is satisfied by a replay-labelled offline run under its own replay
+clause, not by a paid run: the record is
+[`docs/evaluations/2026-11-17_TEMPLATE_REUSE_COLD_WARM.md`](../evaluations/2026-11-17_TEMPLATE_REUSE_COLD_WARM.md)
+(stage timing, `0` / `n/a (no provider call, replay)` requests and tokens,
+validation results, no human review, no savings percentage). AC3's amended
+clause — zero new proof renders for the second artifact, its own target-analysis
+call counted as made, its own render/review calls reported separately — is
+covered by the same record. What stays open is live provider measurement: no
+paid run is authorized here, so the filing evidence's 28 requests/179,596 tokens
+and ~291 s remain the earlier, separate measurement. Multi-tenant reuse remains
 P3 work with its own decision.
 
 ### P3 — Authentication, Organizations And Candidate Privacy

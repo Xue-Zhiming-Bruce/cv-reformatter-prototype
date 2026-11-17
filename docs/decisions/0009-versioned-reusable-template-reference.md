@@ -80,10 +80,13 @@ migration consequences.
 
 Reuse one explicitly approved layout-proof set across candidate artifacts
 **in one local scope**, keyed by the identity recorded in
-[Reuse Identity Inventory](#reuse-identity-inventory). Reuse skips the target
-analysis and proof-render provider calls only. Every per-candidate stage still
-runs for the candidate being generated: extraction, recruiter review, rendering,
-content/privacy/structure checks and its own exact final acceptance.
+[Reuse Identity Inventory](#reuse-identity-inventory). Reuse skips the
+short/medium/long proof-render provider calls only. A selecting artifact still
+uploads, analyzes and compiles its **own** target — the identity's target bytes
+and target evidence can only be attested from that artifact's own upload — and
+every per-candidate stage still runs for the candidate being generated:
+extraction, recruiter review, rendering, content/privacy/structure checks and its
+own exact final acceptance.
 
 Reuse is opt-in per generation request. Without a selection, an artifact that
 owns an approved artifact-local proof generates exactly as today.
@@ -305,9 +308,11 @@ From the filing evidence, one run on 2026-11-12, not a benchmark:
 - Candidate data: the reference stores identities, a scope and a pointer to an
   approval — never a candidate fact, source text or recruiter edit. Two resumes
   rendered from one reference keep distinct facts and disclosure choices.
-- Target bytes: reuse means one target's already-approved analysis is not re-sent
-  to the analyzer for a second candidate. Stage-3 evidence must record zero new
-  target bytes sent for the reused stage.
+- Target bytes: a selecting artifact still analyzes its own uploaded target, so
+  those bytes do reach the analyzer for that artifact; reuse never re-runs the
+  referenced artifact's analysis and never re-sends a target for a proof render.
+  Stage-3 evidence must record the selecting artifact's own analyzer call as
+  made, and the avoided work as its own short/medium/long proof renders.
 - Retention and deletion: reference rows follow the source artifact's lifecycle
   and are removed with it (foreign key cascade), and dependents then fail closed
   naming the missing identity.
@@ -360,10 +365,10 @@ resume formatted into the same target. This is what answering `no` keeps.
 ## Consequences
 
 Benefits: a second candidate can be generated against an already approved,
-versioned template without repeating target analysis or proof rendering, while
-its own extraction, rendering, checks and acceptance still run. The artifact-local
-path, the approval lifecycle and every stored approval record keep their current
-meaning.
+versioned template without repeating the short/medium/long proof rendering,
+while its own target analysis, extraction, rendering, checks and acceptance still
+run. The artifact-local path, the approval lifecycle and every stored approval
+record keep their current meaning.
 
 Costs and obligations:
 

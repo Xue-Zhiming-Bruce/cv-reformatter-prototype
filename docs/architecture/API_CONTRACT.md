@@ -1059,7 +1059,10 @@ renderer/compiler/policy/prompt/model-routing/budget change, and a `legacy` or
 candidate render. It is never a 500 and never a silent fallback to an
 artifact-local unapproved template, the built-in template or a v1 template.
 
-Reuse skips the target analysis and proof-render provider calls only. The
+Reuse skips the short/medium/long proof-render provider calls only. A selecting
+artifact still uploads, analyzes and compiles its **own** target (the request's
+target upload path is unchanged, and the identity's target bytes/target evidence
+must be attested from that artifact), then renders its own candidate. The
 candidate's own extraction, recruiter review, rendering, content/privacy/
 structure checks and exact final acceptance still run, the source artifact's
 proof directory, approval row and publications are never written, and the
