@@ -2485,3 +2485,62 @@ def test_selection_for_a_different_target_names_the_differing_member(
     assert detail["error_code"] == "reusable_template_mismatch"
     assert "target_pdf_sha256" in detail["differing_members"]
     assert not (artifact_dir / "candidate_profile.pdf").exists()
+
+
+def test_generate_is_refused_before_any_provider_io_when_the_envelope_is_spent(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #43 AC6: the refusal is observed through the API, not a counter.
+
+    The artifact's one conversion envelope is spent, so ``/api/generate`` answers
+    409 with the structured refusal and the renderer is never entered: nothing
+    was dispatched to a provider.
+    """
+    from app.storage import execution_envelope as envelope
+    from app.storage.envelope_store import default_store
+
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    artifact_id = "artifact_envelope_spent"
+    artifact_dir = tmp_path / artifact_id
+    artifact_dir.mkdir()
+    profile = CandidateProfile(full_name="Jane Candidate", email="jane@example.org",
+                               skills=["Python"])
+    version_id = _approve_profile_via_api(artifact_dir, profile, artifact_id)
+    target = build_styled_target_pdf(tmp_path / "client-format.pdf")
+    uploaded = client.post("/api/target-format", data={"artifact_id": artifact_id},
+                           files={"file": ("client-format.pdf", target.read_bytes(), "application/pdf")})
+    assert uploaded.status_code == 200, uploaded.text
+    create_and_approve_proofs(client, artifact_id, artifact_dir)
+
+    # One Adobe Extract operation was counted in its own unit for this artifact.
+    store = default_store()
+    view = envelope.envelope_view(envelope.conversion_for(artifact_id, store=store)["conversion_id"],
+                                  store=store)
+    assert view["dimensions"]["analyzer_operations"]["consumed"] == 1
+    # Spend the rest of the balance the way a previous attempt would have.
+    conversion_id = view["conversion_id"]
+    for _ in range(view["dimensions"]["model_requests"]["remaining"]):
+        envelope.reserve(conversion_id, envelope.STAGE_CANDIDATE_GENERATION, "model_requests",
+                         store=store)
+
+    dispatched: list[str] = []
+    monkeypatch.setattr(layout_proof_service, "render_generation_into",
+                        lambda *args, **kwargs: dispatched.append("render"))
+    response = client.post("/api/generate", json={
+        "artifact_id": artifact_id, "approved_profile_version_id": version_id,
+        "original_text": "Jane Candidate\nSkills: Python"})
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "budget_exceeded"
+    assert detail["stage"] == "candidate_generation"
+    assert detail["dimension"] == "model_requests"
+    assert detail["provider_outcome"] == "none_sent"
+    # Every unit the earlier attempts reserved is still charged and unattributed:
+    # the balance is 36 minus the protected 5, and nothing is left for this stage.
+    assert detail["reserved"] == view["dimensions"]["model_requests"]["limit"] \
+        - view["protected_model_requests"]["limit"]
+    assert detail["consumed"] == 0
+    assert detail["remaining"] == 0
+    assert dispatched == []
+    assert not (artifact_dir / "candidate_profile.pdf").exists()

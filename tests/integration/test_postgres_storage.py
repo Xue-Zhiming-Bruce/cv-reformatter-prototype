@@ -725,3 +725,55 @@ def test_postgres_reusable_reference_store_round_trip(
             artifact_sessions.c.artifact_id == artifact_id
         ))
     assert repository.list_current(scope_id="local-synthetic") == []
+
+
+def test_conversion_envelopes_are_additive_append_only_and_survive_a_retry(postgres_database) -> None:
+    """Issue #43 AC7: the envelope is additive, append-only and never reset.
+
+    A fresh store over the same database continues the same balance, so a reload,
+    a resubmission or a re-claimed job cannot start over; the downgrade refuses
+    to discard the recorded history.
+    """
+    from app.storage import execution_envelope as envelope
+    from app.storage.postgres import PostgresExecutionEnvelopeStore, conversion_envelope_events
+    from tests.helpers.postgres import migrate_database
+
+    url, engine = postgres_database
+    migrate_database(engine)
+    store = PostgresExecutionEnvelopeStore(engine)
+    opened = envelope.open_envelope(artifact_id="artifact_envelope_storage", store=store)
+    conversion_id = opened["conversion_id"]
+    with envelope.envelope_stage(conversion_id, envelope.STAGE_CANDIDATE_GENERATION, store=store):
+        _grant_tokens(store, conversion_id)
+    view = envelope.envelope_view(conversion_id, store=store)
+    assert view["dimensions"]["model_requests"]["consumed"] == 2
+    assert view["dimensions"]["input_tokens"] == {"limit": None, "is_cap": False, "observed": 1200}
+    assert view["dimensions"]["currency"]["limit"] is None
+
+    # Durable and never reset: a new store, the same balance and identity.
+    reloaded = PostgresExecutionEnvelopeStore(engine)
+    assert envelope.conversion_for("artifact_envelope_storage", store=reloaded)["conversion_id"] == conversion_id
+    assert envelope.envelope_view(conversion_id, store=reloaded)["dimensions"]["model_requests"]["consumed"] == 2
+
+    with engine.begin() as connection:
+        with pytest.raises(Exception):
+            connection.execute(update(conversion_envelope_events).values(amount=99))
+    with engine.begin() as connection:
+        with pytest.raises(Exception):
+            connection.execute(delete(conversion_envelope_events))
+    with pytest.raises(RuntimeError, match="not reconstructable"):
+        migrate_database(engine, "0009_reusable_references", downgrade=True)
+
+
+def _grant_tokens(store, conversion_id: str) -> None:
+    """Spend two requests and observe tokens through the real budget hook."""
+    from types import SimpleNamespace
+
+    from app.pipeline.runtime import RunBudget
+    from app.storage.execution_envelope import seed_budget
+
+    budget = seed_budget(RunBudget(max_model_requests=12, max_tool_calls=24), store=store)
+    for _ in range(2):
+        budget.spend_model("builder")
+    budget.spend_model("builder", requests=0, mode="live",
+                       usage=SimpleNamespace(input_tokens=1200, output_tokens=300))

@@ -1132,7 +1132,8 @@ async def upload_target_format(
         try:
             # One Adobe Extract operation is one analyzer operation: its own unit,
             # reserved before dispatch and never counted as model tokens.
-            with envelope_stage(conversion_id, STAGE_TARGET_ANALYSIS, store=store):
+            with envelope_stage(conversion_id, STAGE_TARGET_ANALYSIS, store=store,
+                                requires="analyzer_operations"):
                 reserve(conversion_id, STAGE_TARGET_ANALYSIS, "analyzer_operations", store=store)
                 target_format, analyzed_style_spec = await _publish_off_loop(
                     abandoned,

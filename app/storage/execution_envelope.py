@@ -335,11 +335,18 @@ def _observed(scope: _Scope) -> dict[str, int] | None:
 
 @contextmanager
 def envelope_stage(conversion_id: str, stage: str, *,
-                   store: ExecutionEnvelopeStore | None = None) -> Iterator[StageAllocation]:
-    """Run one covered stage: refuse past the deadline, then settle what it spent."""
+                   store: ExecutionEnvelopeStore | None = None,
+                   requires: str = "model_requests") -> Iterator[StageAllocation]:
+    """Run one covered stage: refuse past the deadline or at zero capacity, then settle.
+
+    The entry check is what a synchronous route can honestly do — refuse to
+    *start* — because an in-flight provider request cannot be un-sent.
+    """
     store = store or default_store()
     allocation = child_allocation(conversion_id, stage, store=store)
     _require_before_dispatch(_envelope(store, conversion_id), stage)
+    if getattr(allocation, requires) < 1:
+        _refuse(store, _envelope(store, conversion_id), stage, requires)
     scope = _Scope(conversion_id, stage, store)
     token = _ACTIVE.set(scope)
     try:
@@ -355,13 +362,14 @@ def envelope_stage(conversion_id: str, stage: str, *,
 
 
 @contextmanager
-def nested_stage(stage: str) -> Iterator[StageAllocation | None]:
+def nested_stage(stage: str, *, requires: str = "model_requests") -> Iterator[StageAllocation | None]:
     """A child stage under the ambient conversion scope; a no-op outside one."""
     scope = _ACTIVE.get()
     if scope is None:
         yield None
         return
-    with envelope_stage(scope.conversion_id, stage, store=scope.store) as allocation:
+    with envelope_stage(scope.conversion_id, stage, store=scope.store,
+                        requires=requires) as allocation:
         yield allocation
 
 
