@@ -451,6 +451,15 @@ def test_job_reads_carry_the_envelope_and_a_spent_balance_refuses_before_render(
     # The completed proof evidence survives the refusal untouched.
     assert ctx["client"].get(endpoint + "/layout-proofs").json() == published
 
+    # A job attempt on the same spent artifact continues that one envelope and
+    # stops with the same refusal; a retry is never a second balance.
+    queued = ctx["client"].post(endpoint + "/layout-proof-jobs", json=_target_body(ctx, "proof-spent"))
+    assert queued.status_code == 202, queued.text
+    attempt = ctx["worker"].run_once()
+    assert (attempt.state, attempt.error_code) == ("failed", "budget_exceeded")
+    assert envelope.conversion_for(ctx["artifact_id"], store=store)["conversion_id"] == conversion_id
+    assert ctx["client"].get(endpoint + "/layout-proofs").json() == published
+
 
 def test_proof_child_reuses_matched_evidence_and_rerenders_drift(target_jobs, monkeypatch):
     """AC5: a resumed stage re-renders only variants whose identities drifted."""
