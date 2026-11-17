@@ -1,7 +1,7 @@
 """Versioned local job contracts; payloads reference facts without copying them."""
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -253,6 +253,9 @@ class JobRecord(JobModel):
     created_at: datetime
     updated_at: datetime
     deadline_at: datetime
+    #: Additive, read-only conversion envelope block (ADR 0010); absent for an
+    #: artifact that has not started an enveloped stage yet.
+    envelope: dict[str, Any] | None = None
 
     _variants = field_validator("variants", mode="before")(_variant_states)
 

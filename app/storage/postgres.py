@@ -3,6 +3,7 @@
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from functools import lru_cache
+from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -10,12 +11,13 @@ from typing import Any, Literal
 import uuid
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, DateTime, ForeignKey, ForeignKeyConstraint, Identity, Index, Integer, MetaData, Select, Table, Text, UniqueConstraint, create_engine, func, select, text, update
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, DateTime, ForeignKey, ForeignKeyConstraint, Identity, Index, Integer, MetaData, Select, Table, Text, UniqueConstraint, create_engine, func, null, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.engine import Connection, Engine, URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.storage.artifact_store import ArtifactStore, ArtifactStoreConflict, ArtifactStoreError
+from app.storage.envelope_store import EnvelopeUnavailable
 from app.profile_approval import ApprovedProfileVersion, ProfileApprovalError, profile_sha256
 from app.final_acceptance import FinalOutputAcceptance, FinalOutputIdentity
 from app.generation.artifact_manifest import ArtifactManifest
@@ -217,6 +219,55 @@ job_attempts = Table(
     CheckConstraint("attempt_number BETWEEN 1 AND 3", name="ck_attempt_number"),
     CheckConstraint("state IN ('running', 'abandoned', 'succeeded', 'failed', 'cancelled', 'needs_attention')", name="ck_attempt_state"),
     CheckConstraint("(state = 'running') = (finished_at IS NULL)", name="ck_attempt_finished"),
+)
+#: One conversion envelope per artifact (ADR 0010). No artifact FK: the envelope
+#: is opened before the first paid call, so extraction's envelope precedes the
+#: artifact row it will describe.
+conversion_envelopes = Table(
+    "conversion_envelopes", metadata,
+    Column("conversion_id", Text, primary_key=True),
+    Column("artifact_id", Text, nullable=False),
+    Column("scope_id", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("limits", JSONB, nullable=False),
+    Column("protected_model_requests", Integer, nullable=False),
+    Column("opened_at", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
+    Column("deadline_at", DateTime(timezone=True), nullable=False),
+    Column("closed_at", DateTime(timezone=True)),
+    Column("supersedes_conversion_id", Text),
+    CheckConstraint("conversion_id ~ '^env_[0-9a-f]{32}$'", name="ck_envelope_id"),
+    CheckConstraint("scope_id = 'local-synthetic'", name="ck_envelope_scope"),
+    CheckConstraint("state IN ('open', 'exhausted', 'closed', 'superseded')", name="ck_envelope_state"),
+    CheckConstraint("jsonb_typeof(limits) = 'object'", name="ck_envelope_limits"),
+    CheckConstraint("protected_model_requests >= 0", name="ck_envelope_protected"),
+)
+Index("ix_conversion_envelope_artifact", conversion_envelopes.c.artifact_id,
+      conversion_envelopes.c.opened_at)
+conversion_envelope_events = Table(
+    "conversion_envelope_events", metadata,
+    Column("conversion_id", Text, ForeignKey("conversion_envelopes.conversion_id", ondelete="CASCADE"),
+           primary_key=True),
+    Column("sequence", Integer, primary_key=True),
+    Column("stage", Text, nullable=False),
+    Column("dimension", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("amount", Integer, nullable=False, server_default="0"),
+    Column("provider_outcome", Text, nullable=False),
+    Column("observed", JSONB),
+    Column("job_id", Text),
+    Column("attempt_number", Integer),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
+    CheckConstraint("kind IN ('opened', 'reserved', 'consumed', 'settled_unknown', 'reused', 'refused', 'closed')",
+                    name="ck_envelope_event_kind"),
+    CheckConstraint("dimension IN ('model_requests', 'tool_calls', 'analyzer_operations', 'deadline')",
+                    name="ck_envelope_event_dimension"),
+    CheckConstraint("amount >= 0", name="ck_envelope_event_amount"),
+    CheckConstraint("provider_outcome IN ('none_sent', 'confirmed', 'unknown')",
+                    name="ck_envelope_event_outcome"),
+    CheckConstraint("observed IS NULL OR jsonb_typeof(observed) = 'object'",
+                    name="ck_envelope_event_observed"),
+    CheckConstraint("attempt_number IS NULL OR attempt_number BETWEEN 1 AND 3",
+                    name="ck_envelope_event_attempt"),
 )
 
 
@@ -770,3 +821,98 @@ class PostgresDesignRepository:
         except SQLAlchemyError as exc:
             raise ArtifactStoreError("Design could not be read from PostgreSQL; verify availability and migrations.") from exc
         return _design_state(row) if row is not None else None
+
+
+class PostgresExecutionEnvelopeStore:
+    """Durable conversion envelope and its append-only event history (ADR 0010)."""
+
+    def __init__(self, engine: Engine) -> None:
+        self.engine = engine
+
+    def create_envelope(self, body: Mapping[str, Any]) -> None:
+        try:
+            with self.engine.begin() as connection:
+                connection.execute(insert(conversion_envelopes).values(
+                    conversion_id=body["conversion_id"], artifact_id=body["artifact_id"],
+                    scope_id=body["scope_id"], state=body["state"], limits=body["limits"],
+                    protected_model_requests=body["protected_model_requests"],
+                    deadline_at=datetime.fromisoformat(body["deadline_at"]),
+                    supersedes_conversion_id=body["supersedes_conversion_id"],
+                ))
+        except SQLAlchemyError as exc:
+            raise EnvelopeUnavailable("The conversion envelope could not be opened in PostgreSQL.") from exc
+
+    def get_envelope(self, conversion_id: str) -> dict[str, Any] | None:
+        try:
+            with self.engine.connect() as connection:
+                row = connection.execute(select(conversion_envelopes).where(
+                    conversion_envelopes.c.conversion_id == conversion_id)).mappings().first()
+        except SQLAlchemyError as exc:
+            raise EnvelopeUnavailable("The conversion envelope could not be read from PostgreSQL.") from exc
+        return _envelope_record(row) if row is not None else None
+
+    def find_open(self, artifact_id: str) -> dict[str, Any] | None:
+        try:
+            with self.engine.connect() as connection:
+                row = connection.execute(select(conversion_envelopes).where(
+                    conversion_envelopes.c.artifact_id == artifact_id,
+                    conversion_envelopes.c.state.in_(["open", "exhausted"]),
+                ).order_by(conversion_envelopes.c.opened_at.desc()).limit(1)).mappings().first()
+        except SQLAlchemyError as exc:
+            raise EnvelopeUnavailable("The conversion envelope could not be read from PostgreSQL.") from exc
+        return _envelope_record(row) if row is not None else None
+
+    def set_state(self, conversion_id: str, state: str, closed_at: datetime | None) -> None:
+        try:
+            with self.engine.begin() as connection:
+                connection.execute(update(conversion_envelopes).where(
+                    conversion_envelopes.c.conversion_id == conversion_id,
+                ).values(state=state, closed_at=closed_at))
+        except SQLAlchemyError as exc:
+            raise EnvelopeUnavailable("The conversion envelope state could not be recorded.") from exc
+
+    def append_event(self, conversion_id: str, event: Mapping[str, Any]) -> None:
+        """One append-only row; the envelope row serializes sequence allocation."""
+        try:
+            with self.engine.begin() as connection:
+                owned = connection.execute(select(conversion_envelopes.c.conversion_id).where(
+                    conversion_envelopes.c.conversion_id == conversion_id,
+                ).with_for_update()).first()
+                if owned is None:
+                    raise EnvelopeUnavailable("The conversion envelope is unknown, so no event may be recorded.")
+                sequence = connection.scalar(select(func.coalesce(func.max(
+                    conversion_envelope_events.c.sequence), 0) + 1).where(
+                        conversion_envelope_events.c.conversion_id == conversion_id)) or 1
+                connection.execute(insert(conversion_envelope_events).values(
+                    conversion_id=conversion_id, sequence=int(sequence), stage=event["stage"],
+                    dimension=event["dimension"], kind=event["kind"], amount=int(event["amount"]),
+                    provider_outcome=event["provider_outcome"],
+                    # A SQL NULL, never JSON 'null': "absent" is a value the check accepts.
+                    observed=event.get("observed") if event.get("observed") is not None else null(),
+                    job_id=event.get("job_id"), attempt_number=event.get("attempt_number"),
+                ))
+        except SQLAlchemyError as exc:
+            raise EnvelopeUnavailable("The conversion envelope event could not be recorded.") from exc
+
+    def list_events(self, conversion_id: str) -> list[dict[str, Any]]:
+        try:
+            with self.engine.connect() as connection:
+                rows = connection.execute(select(conversion_envelope_events).where(
+                    conversion_envelope_events.c.conversion_id == conversion_id,
+                ).order_by(conversion_envelope_events.c.sequence)).mappings().all()
+        except SQLAlchemyError as exc:
+            raise EnvelopeUnavailable("The conversion envelope history could not be read.") from exc
+        return [{key: row[key] for key in ("sequence", "stage", "dimension", "kind", "amount",
+                                          "provider_outcome", "observed", "job_id", "attempt_number")}
+                for row in rows]
+
+
+def _envelope_record(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "conversion_id": row["conversion_id"], "artifact_id": row["artifact_id"],
+        "scope_id": row["scope_id"], "state": row["state"], "limits": dict(row["limits"]),
+        "protected_model_requests": row["protected_model_requests"],
+        "opened_at": row["opened_at"].isoformat(), "deadline_at": row["deadline_at"].isoformat(),
+        "closed_at": row["closed_at"].isoformat() if row["closed_at"] else None,
+        "supersedes_conversion_id": row["supersedes_conversion_id"],
+    }

@@ -1438,17 +1438,29 @@ Adobe analysis has its own operation unit and is not counted at all
 only for uploaded-target jobs (`app/job_worker.py:473-496`); synchronous routes
 have per-request timeouts (`app/pipeline/runtime.py:220`).
 
-[ADR 0010](../decisions/0010-conversion-execution-envelope.md) proposes one
-provider-neutral envelope per artifact spanning candidate extraction, target
+[ADR 0010](../decisions/0010-conversion-execution-envelope.md) (accepted
+2026-11-17 for a phased direction) is implemented for issue #43 in
+`app/storage/execution_envelope.py` and `app/storage/envelope_store.py`: one
+provider-neutral envelope per artifact spans candidate extraction, target
 analysis, every proof variant, repair/review and candidate generation, with
 reservation before external I/O, child stage allocations bounded by the parent
 balance, append-only consumption that is never reset by reload, resubmission or
-job retry, the protected repair/review reserve from issue #41, one
-deadline/cancellation boundary, and a structured refusal that preserves eligible
-prior output. Nothing of it is implemented: this section records the boundary the
-current code does not have, and stage 2 stays blocked on the owner's answers
-recorded in that ADR. No conversion token, currency or runtime bound may be
-claimed until it is accepted and enforced.
+job retry, the protected repair/review reserve delegated to issue #41's
+predicate in `app/pipeline/repair_policy.py`, one deadline/cancellation boundary,
+and a structured refusal that preserves eligible prior output.
+
+The three proof variants are the concrete correction: `create_proof_variants`
+and the job child open ONE parent for the artifact and give each variant a child
+allocation, so one attempt's proof stage can no longer reach three times the
+payload ceiling with three fresh root budgets. Candidate extraction reserves its
+model request before the provider call, and target analysis reserves one Adobe
+analyzer operation — a different unit that is never converted into model tokens.
+
+Tokens, currency and elapsed time stay observations: they are recorded with
+`limit: null`, never compared with a ceiling, and currency stays `unknown`
+without verified pricing. No conversion token ceiling, currency ceiling or
+guaranteed total runtime is implemented or claimed; a strict bound is deferred
+to issue #57.
 
 Issue #38's uploaded-target job path runs the same queue/child boundary for
 `target-proof-job/1` (`proof-local/1`) and `target-generation-job/1`

@@ -32,6 +32,12 @@ from app.extraction.llm_extractor import (
 from app.ingestion.pdf_reader import read_pdf_text
 from app.generation import service as generation_service
 from app.resource_limits import MAX_UPLOAD_BYTES, UPLOAD_ENVELOPE_BYTES
+from app.storage.envelope_store import memory_store
+from app.storage.execution_envelope import (
+    STAGE_CANDIDATE_EXTRACTION,
+    conversion_for,
+    envelope_view,
+)
 from tests.helpers.event_loop_probe import (
     HOLD_TIMEOUT_SECONDS,
     assert_health_answers,
@@ -596,6 +602,98 @@ def test_process_reports_the_mode_of_the_client_it_built(
 
     assert response.status_code == 200, response.text
     assert response.json()["extraction_mode"] == "mock"
+
+
+def test_process_reserves_and_settles_the_extraction_request_in_the_envelope(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """AC6: the route opens the artifact's envelope, reserves the extraction request
+    before the provider call and settles what the provider reported."""
+    envelope_store = memory_store()  # the offline lane's store, emptied for this case
+    reserved_at_dispatch: list[int] = []
+
+    class TokenReportingClient(MockLLMClient):
+        def complete_json(self, *args: object, **kwargs: object) -> str:
+            # Reserve-before-I/O, seen from the provider's side of the seam.
+            reserved_at_dispatch.append(sum(
+                event["kind"] == "reserved" and event["stage"] == STAGE_CANDIDATE_EXTRACTION
+                for events in envelope_store.events.values() for event in events))
+            output = super().complete_json(*args, **kwargs)
+            self.total_usage = {"input_tokens": 900, "output_tokens": 120}
+            return output
+
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "build_llm_client", lambda **_kwargs: TokenReportingClient())
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+
+    response = client.post("/api/process", files={"file": (
+        "resume.docx", resume_path.read_bytes(),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document")})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert reserved_at_dispatch == [1]
+    conversion_id = conversion_for(body["artifact_id"], store=envelope_store)["conversion_id"]
+    stage_events = [event for event in envelope_store.list_events(conversion_id)
+                    if event["stage"] == STAGE_CANDIDATE_EXTRACTION]
+    # Reserved `none_sent` before the call, settled `confirmed` after it: nothing left open.
+    assert [(event["kind"], event["dimension"], event["amount"], event["provider_outcome"])
+            for event in stage_events] == [("reserved", "model_requests", 1, "none_sent"),
+                                           ("consumed", "model_requests", 1, "confirmed")]
+    view = envelope_view(conversion_id, store=envelope_store)
+    assert view["artifact_id"] == body["artifact_id"]
+    assert view["dimensions"]["model_requests"]["limit"] == 36
+    assert view["dimensions"]["model_requests"]["consumed"] == 1
+    assert view["dimensions"]["model_requests"]["reserved"] == 0
+    # Tokens arrive with the response: recorded as observations, never as a cap.
+    assert view["dimensions"]["input_tokens"] == {"limit": None, "is_cap": False, "observed": 900}
+    assert view["dimensions"]["output_tokens"] == {"limit": None, "is_cap": False, "observed": 120}
+    assert view["dimensions"]["currency"]["status"] == "unknown"
+
+
+def test_process_keeps_the_extraction_reservation_when_the_provider_never_answers(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """AC6: an extraction attempt whose answer never arrived stays charged and is
+    terminal — the route fails closed instead of requesting the provider again."""
+    envelope_store = memory_store()
+    calls: list[str] = []
+
+    class UnansweringClient(MockLLMClient):
+        def complete_json(self, *args: object, **kwargs: object) -> str:
+            calls.append("complete_json")
+            raise LLMExtractionError(
+                "OpenAI extraction failed before a structured profile was returned."
+            ) from TimeoutError("read timed out")
+
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "build_llm_client", lambda **_kwargs: UnansweringClient())
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path / "outputs")
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+
+    response = client.post("/api/process", files={"file": (
+        "resume.docx", resume_path.read_bytes(),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document")})
+
+    # The existing fail-closed answer, unchanged: no fallback extraction.
+    assert response.status_code == 502
+    assert response.json()["detail"]["error_code"] == "candidate_segmentation_failed"
+    assert calls == ["complete_json"]
+    [conversion_id] = list(envelope_store.envelopes)
+    stage_events = [event for event in envelope_store.list_events(conversion_id)
+                    if event["stage"] == STAGE_CANDIDATE_EXTRACTION]
+    assert [(event["kind"], event["provider_outcome"]) for event in stage_events] == [
+        ("reserved", "none_sent"), ("settled_unknown", "unknown")]
+    dimensions = envelope_view(conversion_id, store=envelope_store)["dimensions"]
+    assert dimensions["model_requests"] == {
+        "limit": 36, "is_cap": True, "consumed": 1, "reserved": 0, "remaining": 30}
+    assert not (tmp_path / "outputs").exists()
 
 
 def test_followup_endpoint_still_drafts_a_message(monkeypatch: MonkeyPatch) -> None:

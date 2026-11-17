@@ -336,6 +336,9 @@ def target_jobs(postgres_database, tmp_path: Path, monkeypatch: pytest.MonkeyPat
     url, engine = postgres_database
     migrate_database(engine)
     monkeypatch.setattr(main, "DATABASE_URL", url)
+    # The worker child resolves its conversion envelope from its own environment;
+    # the in-process inline child must see the same database the API uses.
+    monkeypatch.setenv("DATABASE_URL", url)
     monkeypatch.setattr(main, "LOCAL_DATABASE_PATH", tmp_path / "local.sqlite3")
     monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
     monkeypatch.setenv("LOCAL_JOBS_ENABLED", "1")
@@ -411,6 +414,42 @@ def test_target_proof_job_reports_progress_and_survives_reconnect(target_jobs):
     conflict = ctx["client"].post(endpoint + "/layout-proof-jobs",
         json={**_target_body(ctx, "proof-1"), "profile_revision_id": edited.json()["profile_revision_id"]})
     assert conflict.status_code == 409 and "create_proofs" in conflict.text, conflict.text
+
+
+def test_job_reads_carry_the_envelope_and_a_spent_balance_refuses_before_render(target_jobs):
+    """Issue #43 AC2/AC5: the job names its one balance, and a spent one publishes nothing."""
+    from app.storage import execution_envelope as envelope
+    from app.storage.postgres import PostgresExecutionEnvelopeStore
+
+    ctx = target_jobs
+    endpoint = f"/api/artifacts/{ctx['artifact_id']}"
+    store = PostgresExecutionEnvelopeStore(ctx["engine"])
+    posted = ctx["client"].post(endpoint + "/layout-proof-jobs", json=_target_body(ctx, "proof-envelope"))
+    assert posted.status_code == 202, posted.text
+    job = posted.json()
+    completed = ctx["worker"].run_once()
+    assert completed.state == "succeeded", completed
+    read = ctx["client"].get(endpoint + f"/jobs/{job['job_id']}").json()
+    block = read["envelope"]
+    assert block["artifact_id"] == ctx["artifact_id"]
+    assert block["dimensions"]["model_requests"]["limit"] == 36
+    assert block["dimensions"]["currency"]["limit"] is None
+    assert block["dimensions"]["currency"]["status"] == "unknown"
+    conversion_id = block["conversion_id"]
+
+    # A reload and a re-claimed attempt continue the same balance, never a new one.
+    assert envelope.conversion_for(ctx["artifact_id"], store=store)["conversion_id"] == conversion_id
+
+    # Spend the remaining balance, then submit the next operation of this artifact.
+    for _ in range(block["dimensions"]["model_requests"]["remaining"]):
+        envelope.reserve(conversion_id, envelope.STAGE_LAYOUT_PROOFS, "model_requests", store=store)
+    published = ctx["client"].get(endpoint + "/layout-proofs").json()
+    second = ctx["client"].post(endpoint + "/layout-proofs", json={"presentation_label_approval": None})
+    assert second.status_code == 409, second.text
+    assert second.json()["detail"]["error_code"] == "budget_exceeded"
+    assert second.json()["detail"]["provider_outcome"] == "none_sent"
+    # The completed proof evidence survives the refusal untouched.
+    assert ctx["client"].get(endpoint + "/layout-proofs").json() == published
 
 
 def test_proof_child_reuses_matched_evidence_and_rerenders_drift(target_jobs, monkeypatch):

@@ -1,20 +1,65 @@
 # ADR 0010: Conversion Execution Envelope
 
-Status: `Proposed` — draft recording the decision request in issue #43; **no
-owner approval exists**. Stage 2 of issue #43 (implementation and boundary
-tests) is blocked until the owner answers
-[Decisions Required From The Owner](#decisions-required-from-the-owner) and this
-record is marked `Accepted` with the approving message and date.
+Status: `Accepted` — phased approval given by the product owner on 2026-11-17
+(see [Owner Approval](#owner-approval-2026-11-17)). Items 1, 3 and 4 are
+approved; items 2, 5, 6, 7 and 8 are **carried as implementation contract
+details under this record's own recommendation, not separately answered by the
+owner**. There is no blanket approval of every item, and no numeric limit or
+reservation size was supplied by the owner.
 
-Date: 2026-11-13
+Date: 2026-11-13 (decision request) — 2026-11-17 (phased approval)
 
 Owner: Backend maintainer
 
-Approver: Product owner — not yet given. The exact answers requested are the
-eight numbered items in
-[Decisions Required From The Owner](#decisions-required-from-the-owner).
+Approver: Product owner — phased approval, 2026-11-17, quoted verbatim in
+[Owner Approval](#owner-approval-2026-11-17).
 
-Review date: before the first stage 2 implementation commit
+Review date: before the first implementation commit; re-read after the first
+bounded inventoried-document run (issue #43 AC8).
+
+## Owner Approval, 2026-11-17
+
+The product owner approved the following direction in Codex chat:
+
+> 批准“整条流程统一预算”的方向，先落实调用次数、工具／分析操作次数和总截止时间；Token 与金额先如实记录。严格金额上限需要可靠的定价和调用前预估，可以后续实现。
+
+English translation: “Approve the direction of a unified budget across the
+entire workflow. First enforce call counts, tool/analyzer operation counts, and
+an overall deadline; record tokens and monetary amounts honestly for now. A
+strict monetary cap requires reliable pricing and pre-dispatch estimates and may
+be implemented later.”
+
+The owner answered the **direction**, not the eight numbered items one by one.
+This record therefore records exactly:
+
+| Item | Status after 2026-11-17 |
+| --- | --- |
+| 1. One envelope covers the whole conversion, not proofs only | **approved** |
+| 2. `/api/process` may mint the artifact identity and open the envelope before the first paid call | **carried as an implementation contract detail under this record's own recommendation, not separately answered by the owner** — still redirectable by the owner |
+| 3. Tokens/currency observed-only now, strict reserved bound deferred | **approved** (the strict posture is deferred, not refused) |
+| 4. One `deadline_at` per envelope | **approved** for the deadline itself; what synchronous routes do on expiry is **carried as an implementation contract detail under this record's own recommendation, not separately answered by the owner** |
+| 5. Never reset, with an explicit recorded new-envelope escape hatch | **carried as an implementation contract detail under this record's own recommendation, not separately answered by the owner** |
+| 6. Additive envelope tables rather than job-only `progress_detail` state | **carried as an implementation contract detail under this record's own recommendation, not separately answered by the owner** |
+| 7. Refusal contract: reuse `budget_exceeded` with additive detail fields | **carried as an implementation contract detail under this record's own recommendation, not separately answered by the owner** |
+| 8. Protected repair/review allocation size and its place in the frozen execution identity | **carried as an implementation contract detail under this record's own recommendation, not separately answered by the owner** |
+
+The carried items are not owner-approved individually. They are implemented as
+this record's own recommendation because the approved direction cannot be built
+without them; any of them may be redirected by the owner without reopening
+items 1, 3 and 4.
+
+**Numeric limits and reservation sizes were not supplied.** The implementation
+reuses the ceilings the tree already has and records them rather than inventing
+values: `TARGET_MAX_MODEL_REQUESTS = 36` and `TARGET_MAX_TOOL_CALLS = 72`
+(`app/jobs.py`), the Agentic defaults 12 requests / 24 tool calls
+(`app/generation/agentic.py`), and the 900 s job deadline (`app/jobs.py`
+`TARGET_TIMEOUT_SECONDS`). It presents none of them as an approved conversion
+limit.
+
+**Deleted (not carried, not approved): any strict aggregate token cap and any
+currency cap or guarantee.** They are follow-up issue #57. Nothing in this
+repository may advertise, enforce or promise a token ceiling, a currency ceiling
+or a guaranteed total runtime until that issue is approved and implemented.
 
 ## Context
 
@@ -144,9 +189,13 @@ Reused and therefore not re-charged, when the existing identity checks allow it:
 identity-matched proof variant checkpoints
 (`app/job_worker.py:733-737`, `reusable_variant_evidence`), a target analysis
 already owned by the artifact, the saved profile revision, and — if ADR 0009 is
-accepted — a reused approved template reference. A reused stage is recorded in
-the envelope as `reused`, with zero reservation, so the refusal payload never
-implies work that did not run.
+accepted — a reused approved template reference. Only the identity-matched proof
+variant checkpoint has a skip path in the tree today: it is recorded in the
+envelope as `reused`, with zero reservation (`record_reused`,
+`app/job_worker.py:760`), so the refusal payload never implies work that did not
+run. The other three classes have no path that skips the dispatch, so they
+record no `reused` event; nothing is dispatched for them and nothing is charged,
+and `envelope_view(...)["reused_stages"]` stays empty until such a path exists.
 
 ### Ownership And Allocation
 
@@ -310,9 +359,9 @@ and new nullable columns; append-only history protected by triggers; downgrade
 refuses to discard recorded history — see
 `migrations/versions/0008_target_job_operations.py:16-51`):
 
-- current Alembic head is `0008_target_job_operations`
-  (`tests/integration/test_postgres_storage.py:126`), so the revision id is
-  `0009_conversion_envelopes`;
+- the Alembic head this record adds after issue #37's `0009_reusable_references`
+  (`tests/integration/test_postgres_storage.py:130`) is
+  `0010_conversion_envelopes`;
 - new table `conversion_envelopes`: `conversion_id`, `scope_id`,
   `artifact_id` (FK to the existing artifact/revision identity), `state`
   (`open`/`exhausted`/`closed`/`superseded`), `limits` JSONB, `opened_at`,
@@ -408,10 +457,24 @@ order of magnitude and that the proof set alone does not describe the conversion
 
 ### Validation For This Record
 
-Documentation-only stage: no test asserts the envelope, because no envelope is
-implemented. The gate for the commit that adds this record is that nothing else
-changed — `ruff` clean and the unit lane green (see the roadmap progress
-paragraph for the exact commands and result).
+Documentation-only stage: no test asserted the envelope, because no envelope was
+implemented. The gate for the commit that added this record was that nothing
+else changed — `ruff` clean and the unit lane green. Implementation evidence
+belongs to issue #43's commits, not to this section.
+
+### Recorded Implementation Contract (after acceptance)
+
+The accepted direction fixes what may be claimed; these are the shapes it was
+implemented with, all of them reusing existing tree values:
+
+| Contract detail | Implemented value and source |
+| --- | --- |
+| Parent ceilings per conversion | `model_requests: 36`, `tool_calls: 72` (`app/jobs.py`) |
+| Analyzer operations | `3` per conversion (`EnvelopeLimits.analyzer_operations`, `app/storage/execution_envelope.py`) — one Adobe Extract operation is dispatched per target analysis attempt (`app/main.py` `_analyze_pdf_target` → `run_adobe_layout`), and the reused bound is the one the tree already applies to a repeated uploaded-target operation, `TARGET_MAX_ATTEMPTS`; never counted as model tokens |
+| One deadline | 900 s (`app/jobs.py` `TARGET_TIMEOUT_SECONDS`), checked before dispatch and between stages |
+| Protected repair/review reserve | delegated to issue #41's predicate `app/pipeline/repair_policy.py::_repair_request_requirement` with `AGENTIC_BUILDER_RESERVE_REQUESTS` — never re-derived here |
+| Tokens | observed values with `limit: null`; never a cap |
+| Currency | `unknown` unless verified pricing is supplied; never a cap |
 
 ## Privacy And Operations
 
@@ -469,8 +532,8 @@ completed variant evidence survive refusal untouched.
 Costs and obligations:
 
 - one additive migration plus a repository; the head assertion at
-  `tests/integration/test_postgres_storage.py:126` moves to
-  `0009_conversion_envelopes` in the same commit;
+  `tests/integration/test_postgres_storage.py:130` moves to
+  `0010_conversion_envelopes` in the same commit;
 - every stage's `RunBudget` must be seeded from the stored balance: the seams are
   `app/generation/agentic.py:314-317`, the proof variant calls at
   `app/template_analysis/layout_proof_service.py:504-535`, and the job child at
@@ -518,12 +581,12 @@ as today, with no retroactive envelope and no retroactive spend estimate.
 
 ## Follow-Up Work
 
-Blocked until this record is `Accepted` with the owner's approving message and
-date, and until #41's corrected protected-reserve enforcement exists:
+Unblocked by the 2026-11-17 phased approval and by issue #41's corrected
+protected-reserve enforcement:
 
 - `app/storage/execution_envelope.py` — envelope repository, append-only events,
   seeding helper for stage budgets;
-- migration `0009_conversion_envelopes` and the metadata/SQLAlchemy models in
+- migration `0010_conversion_envelopes` and the metadata/SQLAlchemy models in
   `app/storage/postgres.py`, with the head assertion update;
 - seeding and reservation at `app/generation/agentic.py:314-317`,
   `app/template_analysis/layout_proof_service.py:504-535`,
@@ -539,13 +602,17 @@ date, and until #41's corrected protected-reserve enforcement exists:
   inventoried-document run reporting the frozen envelope with per-stage mode,
   usage and terminal evidence.
 
-Documentation for this stage-1 record: the roadmap B1A item, the architecture
-paragraph and the API-contract paragraph land with this ADR and all say
-"proposed, not implemented".
+Documentation after acceptance: the roadmap B1A/P2 item, the architecture
+paragraph and the API-contract paragraph state what is enforced (request, tool
+and analyzer-operation counts; one deadline) and that tokens and currency are
+observed and uncapped.
 
 ## Decisions Required From The Owner
 
 Each item states the recommendation, then what refusing (or not answering) costs.
+Status after 2026-11-17: items 1, 3 and 4 approved; items 2, 5, 6, 7 and 8
+carried as implementation contract details under the recommendation below, not
+separately answered by the owner.
 
 1. **Scope: does one envelope cover the whole conversion, or stay proof-scoped?**
    Recommendation: the whole conversion — extraction, target analysis, each proof

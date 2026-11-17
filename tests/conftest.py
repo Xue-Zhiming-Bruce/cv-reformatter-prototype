@@ -77,6 +77,9 @@ def postgres_restore_commands(postgres_database):
 def _offline_storage_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """An inherited developer DATABASE_URL must never redirect ordinary tests."""
     monkeypatch.setattr(main, "DATABASE_URL", None)
+    # The same applies to the value a developer's `.env` puts in the process
+    # environment: the conversion envelope resolves its store from it.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
 
 
 @pytest.fixture(autouse=True)

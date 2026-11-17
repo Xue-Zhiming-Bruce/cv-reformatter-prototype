@@ -52,6 +52,16 @@ def _record(row: Mapping[str, Any]) -> JobRecord:
     })
 
 
+def _envelope_block(engine: Engine, artifact_id: str) -> dict[str, Any] | None:
+    """The artifact's conversion envelope as a job read reports it (ADR 0010)."""
+    from app.storage.execution_envelope import envelope_view
+    from app.storage.postgres import PostgresExecutionEnvelopeStore
+
+    store = PostgresExecutionEnvelopeStore(engine)
+    envelope = store.find_open(artifact_id)
+    return envelope_view(envelope["conversion_id"], store=store) if envelope else None
+
+
 class PostgresJobQueue:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
@@ -63,6 +73,11 @@ class PostgresJobQueue:
                 yield connection
         except (SQLAlchemyError, ValidationError, ValueError) as exc:
             raise ArtifactStoreError("Job storage failed; verify PostgreSQL availability, migrations and saved identities.") from exc
+
+    def _with_envelope(self, record: JobRecord) -> JobRecord:
+        """Every job read carries the artifact's conversion envelope block (ADR 0010)."""
+        return record.model_copy(update={
+            "envelope": _envelope_block(self.engine, record.artifact_id)})
 
     def submit(self, submission: JobSubmission) -> JobRecord:
         payload = submission.payload
@@ -86,7 +101,7 @@ class PostgresJobQueue:
                 if existing["request_sha256"] != digest:
                     raise ArtifactStoreConflict(
                         f"The idempotency key already refers to different {operation} inputs or execution settings.")
-                return _record(existing)
+                return self._with_envelope(_record(existing))
             revision = connection.execute(select(profile_revisions).where(
                 profile_revisions.c.artifact_id == payload.artifact_id,
                 profile_revisions.c.profile_revision_id == payload.profile_revision_id)).mappings().first()
@@ -103,7 +118,7 @@ class PostgresJobQueue:
                 state="queued", max_attempts=payload.max_attempts,
                 deadline_at=now + timedelta(seconds=payload.timeout_seconds),
             ).returning(workflow_jobs)).mappings().one()
-            return _record(row)
+            return self._with_envelope(_record(row))
 
     def get(self, artifact_id: str, job_id: str) -> JobRecord | None:
         with self._transaction() as connection:
@@ -112,7 +127,8 @@ class PostgresJobQueue:
             if row is None:
                 return None
             _payload(row)
-            return _record(row)
+            record = _record(row)
+        return self._with_envelope(record)
 
     def cancel(self, artifact_id: str, job_id: str) -> JobRecord | None:
         with self._transaction() as connection:
@@ -122,13 +138,13 @@ class PostgresJobQueue:
             if row is None:
                 return None
             if row["state"] not in {"queued", "running"}:
-                return _record(row)
+                return self._with_envelope(_record(row))
             values: dict[str, Any] = {"cancel_requested": True, "updated_at": func.clock_timestamp()}
             if row["state"] == "queued":
                 values.update(state="cancelled", error_code="cancelled")
             updated = connection.execute(update(workflow_jobs).where(
                 workflow_jobs.c.job_id == job_id).values(**values).returning(workflow_jobs)).mappings().one()
-            return _record(updated)
+            return self._with_envelope(_record(updated))
 
     def recover_expired(self) -> int:
         """Reap expired work without accidentally claiming the next job."""
@@ -184,7 +200,7 @@ class PostgresJobQueue:
                 state="running", attempt_count=attempt, lease_token=token, lease_expires_at=expires,
                 updated_at=now, progress=0,
             ).returning(workflow_jobs)).mappings().one()
-            return JobClaim(job=_record(updated), payload=payload, lease_token=token,
+            return JobClaim(job=self._with_envelope(_record(updated)), payload=payload, lease_token=token,
                             lease_expires_at=expires, bundle_path=bundle)
 
     def _owned(self, connection: Connection, claim: JobClaim) -> Mapping[str, Any]:
@@ -232,7 +248,7 @@ class PostgresJobQueue:
             lease_expires_at=None, updated_at=now, progress=100 if state == "succeeded" else row["progress"],
             **{result_column.key: result},
         ).returning(workflow_jobs)).mappings().one()
-        return _record(updated)
+        return self._with_envelope(_record(updated))
 
     def fail(self, claim: JobClaim, *, error: JobError,
              state: Literal["failed", "needs_attention"] = "failed") -> JobRecord:
