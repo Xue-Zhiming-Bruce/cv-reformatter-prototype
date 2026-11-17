@@ -31,6 +31,7 @@ from app.template_analysis.layout_proof_artifacts import (
     layout_spec_checksum,
 )
 from app.template_analysis.layout_proof_rendering import active_renderer_version
+from app.template_analysis.layout_proof_service import LayoutProofRepository
 from app.template_analysis.layout_proof_schemas import (
     LayoutContractIdentity,
     LayoutProofApproval,
@@ -200,6 +201,7 @@ def resolve_reusable_template(
     repository: ReusableTemplateRepository,
     target_pdf: str | Path,
     layout_spec: LayoutTemplateSpec | TemplateStyleSpec,
+    proof_repository: LayoutProofRepository | None = None,
 ) -> LayoutProofApproval:
     """Resolve an explicit selection to its approved proof set, or refuse.
 
@@ -214,7 +216,7 @@ def resolve_reusable_template(
         raise _refusal(artifact_id, differing)
     with _as_refusal():
         source_dir = source_artifact_dir(artifact_dir, reference.artifact_id)
-        approval = source_approval(source_dir, reference, repository)
+        approval = source_approval(source_dir, reference, proof_repository)
     differing = source_differences(reference, source_dir, approval)
     if differing:
         raise _refusal(artifact_id, differing)
@@ -233,7 +235,7 @@ def _refusal(artifact_id: str, differing: list[str]) -> ReusableTemplateError:
 def require_reference_store(
     repository: ReusableTemplateRepository | None, reference_id: str
 ) -> ReusableTemplateRepository:
-    """A selection needs the recorded reference table; without it, none exists."""
+    """A selection needs the recorded reference table."""
     if repository is None:
         raise unknown_reference(reference_id, "this deployment stores none")
     return repository

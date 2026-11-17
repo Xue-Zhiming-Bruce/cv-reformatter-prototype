@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from app.pipeline.fonts import installed_font_families
 from app.target_publication import TargetSet
@@ -78,7 +79,7 @@ def source_artifact_dir(artifact_dir: str | Path, artifact_id: str) -> Path:
 def source_approval(
     source_dir: Path,
     reference: ReusableTemplateReference,
-    repository: object,
+    repository: Any | None,
 ) -> LayoutProofApproval:
     """Load and re-verify the referenced approval from the source artifact."""
     try:
@@ -108,18 +109,21 @@ def source_approval(
 def proven_layout_spec(
     artifact_dir: str | Path, approval: LayoutProofApproval
 ) -> LayoutTemplateSpec:
-    """Members 4-5: the compiled spec the proof set actually proved.
+    """Members 5 and 12's template side: the spec the proof set was rendered from.
 
     Read from the proof directories rather than the artifact root, so recording
-    and re-checking a reference see the same proven template. A v1
-    ``TemplateStyleSpec`` or a non-``measured`` contract is never reusable
+    and re-checking a reference see the same proven template. The exact spec
+    bytes stay bound by member 4 (the approval's checksum) and by member 11 (the
+    rendered proof bytes); a JSON round trip through the proof directory can
+    renormalise numbers, so agreeing specs are compared with each other here. A
+    v1 ``TemplateStyleSpec`` or a non-``measured`` contract is never reusable
     (rule 5), so this refuses instead of reporting a narrower template.
     """
     specs = [_proof_spec(artifact_dir, evidence) for evidence in approval.variants.values()]
-    if {layout_spec_checksum(spec) for spec in specs} != {approval.layout_spec_checksum}:
+    if len({layout_spec_checksum(spec) for spec in specs}) != 1:
         raise ReusableTemplateEvidenceError(
-            "the stored proof specs do not share the approved LayoutTemplateSpec checksum",
-            member="layout_spec_sha256",
+            "the proof variants were rendered from different LayoutTemplateSpecs",
+            member="layout_contract",
         )
     if specs[0].structure_contract != "measured":
         raise ReusableTemplateEvidenceError(

@@ -692,6 +692,7 @@ def _selected_layout_proof_approval(
             repository=repository,
             target_pdf=target_pdf,
             layout_spec=style_spec,
+            proof_repository=layout_proof_repository(settings.database_url),
         )
     except ReusableTemplateError as exc:
         raise reusable_template_refusal(exc) from exc
