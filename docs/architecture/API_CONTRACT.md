@@ -1219,18 +1219,41 @@ publication transaction, so a cancel that arrives after the last provider call
 still publishes nothing; a provider request already sent cannot be undone or
 un-billed, and cancellation grants no acceptance.
 
-Proposed, not implemented (issue #43, [ADR 0010](../decisions/0010-conversion-execution-envelope.md)):
-this contract has no whole-conversion limit. The observable limits today are the
-per-execution request/tool ceilings above, the uploaded-target job
-deadline/attempts and per-request provider timeouts; token totals, currency and
-elapsed time are recorded observations, never enforced caps. If ADR 0010 is
-accepted, stage 2 would add three additive surfaces: the refusal detail
-(`error_code` `budget_exceeded` plus `stage`, `dimension`, `limit`, `reserved`,
-`consumed`, `provider_outcome` in `none_sent`/`confirmed`/`unknown`), an
-`envelope` block on job reads, and an optional read-only
-`GET /api/artifacts/{artifact_id}/conversion-envelope`. None of them exists yet;
-clients must not depend on them, and no conversion token, currency or runtime
-bound may be promised before then.
+Implemented for issue #43 ([ADR 0010](../decisions/0010-conversion-execution-envelope.md),
+accepted 2026-11-17): one conversion envelope per artifact spans candidate
+extraction, target analysis, every proof variant, repair/review and candidate
+generation. What is enforced is request, tool and analyzer-operation capacity,
+reserved before external I/O against the artifact's stored balance, plus one
+deadline per envelope (900 s, the existing uploaded-target figure) checked before
+dispatch and between stages. Analyzer operations are the Adobe adapter's own
+unit and are never converted into model tokens.
+
+Token totals, currency and elapsed time are recorded observations. They carry
+`limit: null`, `is_cap: false`, and a token total is never compared with a
+ceiling: post-response usage cannot bound a request that was already sent.
+Currency stays `unknown` unless verified pricing was supplied, so no client may
+read a token ceiling, a currency ceiling or a guaranteed total runtime from this
+contract. A strict aggregate token or currency cap is deferred to issue #57 and
+is not implemented, enforced or promised here.
+
+Three additive surfaces exist for the frontend:
+
+- a structured refusal with the existing safe code `budget_exceeded` (capacity)
+  or `deadline_exceeded` (expiry), plus `stage`, `dimension`, `limit`, `reserved`,
+  `consumed`, `remaining`, `provider_outcome` (`none_sent`, `confirmed`,
+  `unknown`), `conversion_id` and `envelope_state`. `provider_outcome: none_sent`
+  means nothing left the server. Synchronous routes answer `409` with that
+  detail object; a job stops with the same code and state instead.
+- an additive `envelope` block on job reads (`job/1`), carrying the same
+  dimensions, the observed tokens, the `unknown` currency, the `reused_stages`
+  and the last `refusal`. It is absent until the artifact starts an enveloped
+  stage.
+- `GET /api/artifacts/{artifact_id}/conversion-envelope` is **not** implemented;
+  the block on job reads is the only read surface today.
+
+An unknown provider outcome (`provider_outcome: unknown`) stays terminal for
+that stage: `needs_attention`, no automatic duplicate provider request, and the
+reservation stays charged because it may have been billed.
 `POST /api/artifacts/{artifact_id}/layout-proofs`, `.../layout-proofs/approve`
 and `POST /api/generate` remain the deliberate synchronous paths with unchanged
 request/response shapes and no fallback between them and the job operations.

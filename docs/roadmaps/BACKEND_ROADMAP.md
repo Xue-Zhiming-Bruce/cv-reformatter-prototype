@@ -536,9 +536,19 @@ generation manifest slice is implemented; the production exit remains open.
       deadline/cancellation boundary. Token and currency values stay observed
       unless a strict bound is explicitly approved and reserved before dispatch.
       This also closes this section's performance/cost-budget item. Design:
-      [ADR 0010](../decisions/0010-conversion-execution-envelope.md) (`Proposed`).
-      Stage 2 is blocked until the owner answers that ADR and it is `Accepted`; no
-      whole-conversion enforcement exists today.
+      [ADR 0010](../decisions/0010-conversion-execution-envelope.md) (`Accepted`
+      2026-11-17 for the owner's phased direction; items 2, 5, 6, 7 and 8 are
+      carried implementation details, not separately approved). Implemented in
+      `app/storage/execution_envelope.py` with migration
+      `0010_conversion_envelopes`: request, tool and analyzer-operation capacity
+      is reserved before dispatch against one stored balance per artifact, the
+      three proof variants are children of one parent, candidate extraction and
+      Adobe target analysis are counted, and one 900 s deadline is checked before
+      dispatch and between stages. Tokens and currency stay observed with
+      `limit: null` — no token ceiling, currency ceiling or guaranteed total
+      runtime is enforced, advertised or promised; the strict bound is issue #57.
+      Issue #43 AC8 (one bounded inventoried-document run reporting the frozen
+      envelope) is still the owner's separately authorized step.
 
 Exit: provider failure/retry preserves state, provenance and policy boundaries.
 Current opt-in local integration is not acceptance of these production controls.
@@ -836,8 +846,10 @@ Status: `[ ]` Builds on B1A and P1.
       request body, DOCX 512 entries/16 MiB per entry/64 MiB total/100:1, PDF
       20 pages and 2000 pt per side, 64 MP raster, 60 s bounded parse. The
       bytes/pages/pixels/local CPU scope closes here;
-      [ADR 0010](../decisions/0010-conversion-execution-envelope.md) (#43) still
-      owns the token, currency and provider-runtime budget. Values are constants
+      [ADR 0010](../decisions/0010-conversion-execution-envelope.md) (#43) now
+      enforces request, tool and analyzer-operation counts and one conversion
+      deadline; tokens and currency there are recorded observations with no
+      ceiling, and the strict bound stays deferred to #57. Values are constants
       with corpus basis in `app/resource_limits.py`; per-identity quotas,
       concurrent admission and private storage remain open, so this line stays
       unchecked.
