@@ -1264,22 +1264,23 @@ Three additive surfaces exist for the frontend:
   detail object; a job stops with the same code and state instead.
 - an additive `envelope` block on job reads (`job/1`), carrying the same
   dimensions, the observed tokens, the `unknown` currency, the `reused_stages`,
-  the last `refusal`, and `supersedes_conversion_id`: `null` for the artifact's
-  first envelope, otherwise the envelope this one replaced. It is absent until
-  the artifact starts an enveloped stage.
+  the last `refusal`, and `supersedes_conversion_id`: `null` for an artifact's
+  first envelope, otherwise the envelope an explicit new-conversion action
+  replaced. It is absent until the artifact starts an enveloped stage.
 - `GET /api/artifacts/{artifact_id}/conversion-envelope` is **not** implemented;
   the block on job reads is the only read surface today.
 
-An operation boundary, not a reload boundary: one synchronous request, one job
-attempt or one explicit new conversion resolves one envelope at its first
-covered stage. An envelope that is still open and inside its deadline is
-continued, so a refresh, resubmission or re-claimed attempt of the same
-operation never re-arms the balance. Once it is `exhausted` or past its deadline,
-the operation it belonged to has had its answer — a later request opens a new
-envelope, records the previous `conversion_id` in `supersedes_conversion_id`
-(and marks the previous one `superseded`, keeping its refusal), and spends its
-own balance. A refusal therefore always describes the request that ran out, not
-a request that inherited a dead balance.
+One envelope per artifact, never reset by a request: a reload, a resubmission and
+re-claimed job attempt all continue the artifact's current envelope, so the same
+balance and the same `deadline_at` answer them. Once that envelope is
+`exhausted` or past its deadline, those paths keep answering `409` with that
+envelope's recorded refusal or expiry — they never open a fresh balance. The
+record's only escape hatch is an explicit, recorded action that marks the
+previous envelope `superseded` (keeping its refusal, spend and deadline
+history) and opens a successor naming it in `supersedes_conversion_id`. No route
+performs it and there is deliberately no request field for it: exposing it to a
+recruiter is a product decision that has not been taken, so today it exists only
+as an internal operation for a future API.
 
 An unknown provider outcome (`provider_outcome: unknown`) stays terminal for
 that stage: `needs_attention`, no automatic duplicate provider request, and the
