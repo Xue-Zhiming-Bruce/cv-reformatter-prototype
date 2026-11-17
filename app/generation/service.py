@@ -642,7 +642,13 @@ def require_layout_proof_approval(
                 "message": "The layout-proof approval does not cover this LayoutTemplateSpec.",
             },
         )
-    stale = stale_variant_proofs(artifact_dir, artifact_id, approval)
+    # The stored-set check belongs to an artifact's own approval; a reusable
+    # reference's proofs live in the source artifact and never here.
+    stale = (
+        stale_variant_proofs(artifact_dir, artifact_id, approval)
+        if approval.artifact_id == artifact_id
+        else {}
+    )
     if stale:
         raise GenerationError(
             409,

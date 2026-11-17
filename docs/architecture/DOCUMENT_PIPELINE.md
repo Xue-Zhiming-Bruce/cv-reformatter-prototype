@@ -306,6 +306,40 @@ only one reaching the pipeline's `run_models` / `layout_compiler` contracts, so
 a lifecycle change never has to reach renderer internals and a renderer change
 never has to reach approval policy.
 
+### Reusable approved template reference (ADR 0009, issue #37)
+
+The artifact-scoped boundary above stays the default. One explicit selection
+adds a read-only reference in front of the proof gate, and it never becomes a
+second template platform: the approval lifecycle, `LayoutProofApproval`, the
+artifact-scoped `layout_proofs/` layout, `load_layout_proof_approval`,
+`verify_approval_files`, `CandidateProfile`, `LayoutTemplateSpec`,
+`state_from_layout_template`, publications, manifests and final acceptance are
+reused unchanged.
+
+| Owner | Responsibility |
+| --- | --- |
+| `app/template_analysis/template_reuse.py` | identity assembly, reference recording on a new explicit approval, selection resolution, the refusal type and its `differing_members` |
+| `app/template_analysis/template_reuse_evidence.py` | read-only reads of the stored evidence an identity is derived from: proof-dir spec, target evidence, frozen `run_config.json`, recorded rendering environment |
+| `app/template_analysis/layout_proof_service.py` | `render_candidate_document` accepts a verified reference: the approval belongs to this artifact **or** is the approval the reference names |
+| `app/storage/postgres.py` | `reusable_template_references` rows and `PostgresReusableTemplateRepository` (`save`, `resolve`, `list_current`) |
+
+Every member of the reuse identity names its producer: the scope literal
+(`ck_job_local_scope`), `target_pdf_sha256`/`layout_spec_sha256`/`renderer_version`
+from the approval, target evidence from `TargetLayoutEvidence` plus
+`evidence_checksum`, layout contract from the compiled `LayoutTemplateSpec`,
+`DESIGN_COMPILER_VERSION`, the frozen run configuration of the proof runs, proof
+content constants and per-variant context checksums, proof schema constants, the
+re-rendered proof HTML/PDF checksums and page counts, the template/presentation
+font families plus the recorded rendering environment, the approved
+presentation-label catalog, and the referenced `approval_id`. Each artifact-scoped
+check that previously blocked reuse is still in place and now reads the source
+artifact's directory: the artifact-equality check in
+`render_candidate_document`/`require_layout_proof_approval`, the per-artifact
+load in `load_layout_proof_approval`, and the artifact-scoped proof directory in
+`layout_proof_artifacts`. Resolution only reads; a reference never writes to the
+source artifact's proof directory, approval row or publications, and no candidate
+fact, source text or review edit is stored in it.
+
 ## Retained Pipeline Implementation
 
 Implementation inventory, October 19, 2026; ownership table re-verified

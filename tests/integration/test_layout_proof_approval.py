@@ -41,6 +41,12 @@ from app.template_analysis.layout_proof_validation import (
     LayoutProofValidationError,
     expected_heading_labels,
 )
+from app.template_analysis.design_schemas import TargetLayoutEvidence
+from app.template_analysis.template_reuse import (
+    ReusableTemplateError,
+    record_reusable_template_reference,
+    resolve_reusable_template,
+)
 from app.template_analysis.schemas import (
     built_in_layout_template_spec,
 )
@@ -937,3 +943,109 @@ def test_partial_section_template_can_be_approved(
             check.name == "synthetic_content_complete" and check.passed
             for check in evidence.structural.checks
         ), variant
+
+
+# -- reusable approved templates (ADR 0009, issue #37) -------------------------
+
+
+class _RecordedReferences:
+    """The reference store seam in memory; PostgreSQL has its own integration cases."""
+
+    def __init__(self) -> None:
+        self.rows = {}
+
+    def save(self, reference) -> None:  # type: ignore[no-untyped-def]
+        self.rows.setdefault((reference.scope_id, reference.reference_id), reference)
+
+    def resolve(self, *, scope_id: str, identity_sha256: str):  # type: ignore[no-untyped-def]
+        return self.rows.get((scope_id, identity_sha256))
+
+    def list_current(self, *, scope_id: str) -> list:  # type: ignore[type-arg]
+        return [row for (scope, _), row in self.rows.items() if scope == scope_id]
+
+
+def _recorded_reference(tmp_path: Path, target_pdf: Path):
+    """Approve a proof set in one artifact and record its reusable reference."""
+    source_dir = tmp_path / "artifact-1"
+    source_dir.mkdir()
+    evidence = TargetLayoutEvidence(
+        evidence_version="normalized-layout/1",
+        target_checksum=file_sha256(target_pdf),
+        target_format="pdf",
+        page_count=1,
+        text_block_count=3,
+    ).model_dump_json()
+    # The evidence record is published beside the target it describes, so both the
+    # source artifact and a selecting artifact read the same record.
+    (source_dir / "target_layout_evidence.json").write_text(evidence, encoding="utf-8")
+    (tmp_path / "target_layout_evidence.json").write_text(evidence, encoding="utf-8")
+    _render_all_variants(source_dir, target_pdf=target_pdf)
+    approval = approve_layout_proof(
+        artifact_dir=source_dir,
+        artifact_id="artifact-1",
+        target_checksum=file_sha256(target_pdf),
+        layout_spec=_spec(),
+        target_pdf=target_pdf,
+        reviewer_id="reviewer-1",
+    )
+    repository = _RecordedReferences()
+    reference = record_reusable_template_reference(
+        artifact_dir=source_dir,
+        artifact_id="artifact-1",
+        approval=approval,
+        repository=repository,
+    )
+    assert reference is not None
+    return source_dir, approval, reference, repository
+
+
+def test_a_reference_lets_a_second_artifact_render_from_the_source_approval(
+    tmp_path: Path, fake_pdf: None
+) -> None:
+    target_pdf = build_styled_target_pdf(tmp_path / "target.pdf")
+    source_dir, approval, reference, _repository = _recorded_reference(tmp_path, target_pdf)
+    output_dir = tmp_path / "artifact-2"
+    html_path, pdf_path = render_candidate_document(
+        approval=approval,
+        artifact_id="artifact-2",
+        layout_spec=_spec(),
+        render_context=_candidate_context(),
+        output_dir=output_dir,
+        target_pdf=target_pdf,
+        reference=reference,
+    )
+    assert html_path.exists() and pdf_path.exists()
+    assert html_path.parent == output_dir
+    # Without the selection the same approval is still refused for another artifact.
+    with pytest.raises(LayoutProofMismatchError, match="does not belong to this artifact"):
+        render_candidate_document(
+            approval=approval,
+            artifact_id="artifact-2",
+            layout_spec=_spec(),
+            render_context=_candidate_context(),
+            output_dir=output_dir,
+            target_pdf=target_pdf,
+        )
+
+
+def test_a_missing_source_approval_refuses_before_any_candidate_render(
+    tmp_path: Path, fake_pdf: None
+) -> None:
+    target_pdf = build_styled_target_pdf(tmp_path / "target.pdf")
+    source_dir, approval, reference, repository = _recorded_reference(tmp_path, target_pdf)
+    (source_dir / "layout_proofs" / "approval.json").unlink()
+    selecting_dir = tmp_path / "artifact-2"
+    selecting_dir.mkdir()
+    with pytest.raises(ReusableTemplateError) as refusal:
+        resolve_reusable_template(
+            artifact_dir=selecting_dir,
+            artifact_id="artifact-2",
+            reference_id=reference.reference_id,
+            repository=repository,
+            target_pdf=target_pdf,
+            layout_spec=_spec(),
+        )
+    assert refusal.value.differing_members == ["approval_id"]
+    assert refusal.value.options == ["create_layout_proofs", "approve_layout_proofs"]
+    assert not (selecting_dir / "candidate_profile.pdf").exists()
+    assert approval.is_approved
