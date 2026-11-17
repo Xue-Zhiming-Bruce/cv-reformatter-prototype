@@ -29,16 +29,43 @@ What this reader reads (the whole read set):
   held by a content control or a structural wrapper (``w:customXml``,
   ``w:smartTag``) is read in the position it occupies instead of vanishing; a
   cell's block content then goes through the same block walk as the body, so a
-  cell's block content control or wrapped paragraph is read where it sits; a
-  table nested in a cell stays reported (see below);
+  cell's block content control or wrapped paragraph is read where it sits, and so
+  is a table nested in the cell: its rows keep their columns, it is emitted in the
+  cell that holds it rather than flattened into the parent row, and it is read
+  once (issue #56);
 - a content control (``w:sdt``) in every position the walk reaches: its
   paragraphs and tables at block level, its rows and cells in a table, its runs
   inline, each read in the position the control occupies, nested controls
   included. A control is recorded as read when the walk descends it, so the
   part-level ``content_control`` count below names only the controls left
   unread;
-- any other block wrapper whose own children are only paragraphs, tables or
-  content controls (``w:customXml`` and friends), read in place recursively;
+- any other block wrapper whose own children are only paragraphs, tables, content
+  controls or further such wrappers (``w:customXml`` and friends), read in place
+  recursively: a wrapper holding a wrapper is a block wrapper too, so
+  ``w:customXml > w:smartTag > w:p`` is read where it sits instead of being
+  declined by a test that only looked one level down (issue #56);
+- the text of a text box (``w:txbxContent``) a paragraph anchors, read through the
+  same block walk as the body, so a paragraph, table or wrapper inside the box is
+  read by the same rules. A text box floats relative to its anchor: the package
+  records where it is anchored, not where a viewer paints it, so the convention is
+  that box text is emitted as blocks of its own directly after the anchoring
+  paragraph, in the order the drawing's own selected markup holds its boxes. That
+  is the one authored position the file records: it neither invents a page
+  position nor splices box text into the middle of the anchoring line, and a
+  paragraph holding two boxes reads neither twice, and a box another box's
+  paragraph anchors is read where that inner paragraph sits rather than queued
+  again at the outer anchor. A drawing whose text is
+  DrawingML paint (``a:t``) is not read this way and stays reported as a
+  ``text_box`` wherever that character sits — including inside a box body this
+  walk read, and beside a box the same drawing or group shape holds: reading a
+  body closes that body's own characters only, and reading paint as candidate
+  text would need a character-level claim this reader does not make;
+- "in place" is bounded: wrappers, content controls, table cells and text boxes
+  each cost one level of ``_MAX_BLOCK_DEPTH``, and a descent past that bound is
+  reported as a ``nesting`` limitation instead of being followed. A package can
+  nest thousands of levels; the reader's bound, not the interpreter's recursion
+  limit, decides where reading stops, so the same document always gets the same
+  answer (issue #56);
 - an Office Math zone (``m:oMath``, ``m:oMathPara``), block or inline: its
   children go through the same inline walk as a paragraph's, so ``m:t`` renders
   in order, the math constructs (``m:r``, ``m:f``, ``m:sSup`` and the rest of
@@ -75,10 +102,15 @@ What this reader reads (the whole read set):
 What it reports instead of dropping (the whole limitation set, each naming its
 location):
 
-- a table inside a table cell, text-box content, and tracked insertions,
-  deletions and moves (``w:ins``, ``w:del``, ``w:moveFrom``, ``w:moveTo``): a
-  move is reported rather than read because Word keeps both the source and the
-  destination copy under markup, so reading one would guess which is current;
+- a table inside a table cell, or a text box, that the walk did not reach — one
+  past ``_MAX_BLOCK_DEPTH``, one inside content the walk declines — and tracked
+  insertions, deletions and moves (``w:ins``, ``w:del``, ``w:moveFrom``,
+  ``w:moveTo``): a move is reported rather than read because Word keeps both the
+  source and the destination copy under markup, so reading one would guess which
+  is current. A gap this reader reads keeps no entry: the entry names only what is
+  still unread;
+- content the depth bound declined (``nesting``): the container the walk stopped at
+  is named, because text past ``_MAX_BLOCK_DEPTH`` is source text nobody read;
 - content held by a content control no walk descends: a control whose content is
   none of the blocks, rows, cells or runs the walks place (for example one inside
   tracked change markup, which is itself reported). Counted once per part, so a
@@ -118,10 +150,13 @@ location):
   (``w:subDoc``), whose text lives in another part entirely;
 - drawings that hold only art (a legacy picture, a raster image, a drawing with no
   text of its own), one entry per kind and document part with the count of drawings
-  found: OCR is out of scope, so the reader never supplies it. Reported only: art
+  found — a drawing or picture another one holds is decided by the outermost one,
+  so a shape is named once: OCR is out of scope, so the reader never supplies it.
+  Reported only: art
   this reader does not interpret is not lost text, so these do not block approval.
   A drawing that carries a character is not one of them — its text is visible
-  content nobody read, so it is counted as a text box and blocks — and neither is a
+  content nobody read, so it is counted as a text box and blocks, wherever the
+  character sits: art never takes in a character — and neither is a
   drawing that points at another part: a chart, a diagram or an embedded object
   keeps its text in the part its relationship names, so every relationship target
   that is not an image is reported as an ``embedded_part`` and blocks, whether or
@@ -256,6 +291,14 @@ _TEXT_LOCAL_NAMES = frozenset(
     {"t", "delText", "sym", "tab", "ptab", "br", "cr", "noBreakHyphen", "softHyphen"}
 )
 
+#: The elements that own the characters they hold: a text-box body owns the text
+#: the box carries, a drawing owns the text it paints. The nearest one above a
+#: character decides who is answerable for it.
+_TEXT_OWNERS = frozenset({_DRAWING, _PICTURE, _TEXT_BOX})
+#: Local names of the markup that draws content this reader never calls text: a
+#: DrawingML image fill, a VML image fill, and VML WordArt, whose characters live
+#: in a ``string`` attribute no text node carries.
+_ART_LOCAL_NAMES = frozenset({"blip", "imagedata", "textpath"})
 #: Block children one container walk reads in place.
 _READ_CHILD_TAGS = frozenset({_PARAGRAPH, _TABLE, _CONTENT_CONTROL})
 #: The mark in the text -> the kind of note it points at. Only a mark the walk
@@ -478,6 +521,7 @@ _RUN_CHARACTERS: dict[str, str] = {
 LimitationKind = Literal[
     "nested_table",
     "text_box",
+    "nesting",
     "tracked_change",
     "content_control",
     "field",
@@ -494,6 +538,7 @@ LimitationKind = Literal[
 _UNSUPPORTED_CONTENT_REVIEW: dict[LimitationKind, str] = {
     "nested_table": "a table inside a table cell is not read",
     "text_box": "text-box content is not read",
+    "nesting": "content nested deeper than this reader reads is not read",
     "tracked_change": "tracked insertions, deletions and moves are not resolved",
     "content_control": (
         "content inside a content control this reader cannot read in place is not read"
@@ -535,6 +580,7 @@ _BLOCKING_KINDS: frozenset[LimitationKind] = frozenset(
     {
         "nested_table",
         "text_box",
+        "nesting",
         "tracked_change",
         "content_control",
         "field",
@@ -647,6 +693,13 @@ class ExtractedDocxContent:
         return "\n".join(parts).strip()
 
 
+#: How many block containers one descent may open — wrappers, content controls,
+#: table cells and text boxes each cost one level. A package can nest thousands;
+#: past this bound the walk reports what it declines instead of recursing until the
+#: interpreter's own limit decides, which is neither deterministic nor recoverable.
+_MAX_BLOCK_DEPTH = 24
+
+
 @dataclass
 class _ReadAccount:
     """What one part's walks read, so the counts can name only what they left.
@@ -664,6 +717,10 @@ class _ReadAccount:
 
     controls: set[BaseOxmlElement] = field(default_factory=set)
     discarded: set[BaseOxmlElement] = field(default_factory=set)
+    #: Tables read where they sat — a nested table among them — and ``w:txbxContent``
+    #: bodies read, so the part-level counts name only what no walk reached.
+    tables: set[BaseOxmlElement] = field(default_factory=set)
+    text_boxes: set[BaseOxmlElement] = field(default_factory=set)
     #: ``(kind, id)`` of every note reference the walk reached, in walk order.
     referenced_notes: dict[tuple[str, str], None] = field(default_factory=dict)
     #: ``(kind, id)`` of every referenced note whose text this walk read.
@@ -825,42 +882,54 @@ def _read_blocks(
     document: DocumentObject,
     location: str,
     account: _ReadAccount,
-    *,
-    read_tables: bool = True,
+    depth: int = 0,
 ) -> tuple[list[ExtractedParagraph | ExtractedTable], list[ExtractedContentLimitation]]:
     """Blocks of one container in authored order, plus what it cannot read.
 
     A child is read in place when it is a paragraph, a table, a content control,
-    or a wrapper whose own children are only those shapes (``w:customXml`` and
-    friends). A text-bearing child outside that set is named in a limitation
-    instead of being skipped; a child carrying no text has nothing to lose.
+    or a wrapper whose own children are only those shapes or further such wrappers
+    (``w:customXml`` and friends). A text-bearing child outside that set is named
+    in a limitation instead of being skipped; a child carrying no text has nothing
+    to lose.
 
-    ``read_tables`` is off for a table cell: a nested table is reported rather
-    than read, because flattening one into its parent cell loses its columns.
-    Every control this walk descends is recorded in ``account``, and a control it
-    does not is named by ``_find_limitations``.
+    A cell's block content comes back here too, so a table nested in a cell is read
+    where it sits rather than flattened into its parent: its rows keep their
+    columns and its text keeps the cell it belongs to. ``depth`` bounds that
+    descent at ``_MAX_BLOCK_DEPTH``. Every control and text box this walk descends
+    is recorded in ``account``, and a control it does not is named by
+    ``_find_limitations``.
     """
+    if depth > _MAX_BLOCK_DEPTH:
+        return [], (
+            [_nesting_limitation(location, container)] if _carries_text(container) else []
+        )
     blocks: list[ExtractedParagraph | ExtractedTable] = []
     limitations: list[ExtractedContentLimitation] = []
     for index, child in enumerate(container.iterchildren(), start=1):
-        if child.tag == _PARAGRAPH:
+        child_location = f"{location} child {index}"
+        if child.tag in (_PARAGRAPH, _MATH, _MATH_PARAGRAPH):
+            text_boxes: list[BaseOxmlElement] = []
             text, inline_limitations = _read_inline_text(
                 child,
-                f"{location} child {index}",
+                child_location,
                 document.element.nsmap,
                 account,
+                text_boxes,
             )
             limitations.extend(inline_limitations)
             if text:
                 blocks.append(ExtractedParagraph(text=text))
-        elif child.tag == _TABLE and read_tables:
-            rows, table_limitations = _read_rows(child, document, location, account)
+            box_blocks, box_limitations = _read_text_boxes(
+                text_boxes, document, child_location, account, depth
+            )
+            blocks.extend(box_blocks)
+            limitations.extend(box_limitations)
+        elif child.tag == _TABLE:
+            account.tables.add(child)
+            rows, table_limitations = _read_rows(child, document, location, account, depth)
             limitations.extend(table_limitations)
             if rows:
                 blocks.append(ExtractedTable(rows=rows))
-        elif child.tag == _TABLE:
-            # A nested table stays unread, so nothing inside it is reached either.
-            continue
         elif child.tag in _TRACKED_WRAPPERS:
             continue
         elif child.tag == _CONTENT_CONTROL:
@@ -868,39 +937,21 @@ def _read_blocks(
             if content is not None:
                 account.controls.add(child)
                 sub_blocks, sub_limitations = _read_blocks(
-                    content,
-                    document,
-                    f"{location} child {index}",
-                    account,
-                    read_tables=read_tables,
+                    content, document, child_location, account, depth + 1
                 )
                 blocks.extend(sub_blocks)
                 limitations.extend(sub_limitations)
         elif _is_block_wrapper(child):
             sub_blocks, sub_limitations = _read_blocks(
-                child,
-                document,
-                f"{location} child {index}",
-                account,
-                read_tables=read_tables,
+                child, document, child_location, account, depth + 1
             )
             blocks.extend(sub_blocks)
             limitations.extend(sub_limitations)
-        elif child.tag in (_MATH, _MATH_PARAGRAPH):
-            text, math_limitations = _read_inline_text(
-                child,
-                f"{location} child {index}",
-                document.element.nsmap,
-                account,
-            )
-            limitations.extend(math_limitations)
-            if text:
-                blocks.append(ExtractedParagraph(text=text))
         elif _carries_text(child):
             limitations.append(
                 ExtractedContentLimitation(
                     kind="unknown_block",
-                    location=f"{location} child {index}",
+                    location=child_location,
                     element=_local_name(child),
                     count=1,
                 )
@@ -908,11 +959,52 @@ def _read_blocks(
     return blocks, limitations
 
 
+def _read_text_boxes(
+    text_boxes: Sequence[BaseOxmlElement],
+    document: DocumentObject,
+    location: str,
+    account: _ReadAccount,
+    depth: int,
+) -> tuple[list[ExtractedParagraph | ExtractedTable], list[ExtractedContentLimitation]]:
+    """Text-box bodies a paragraph anchors, read after the paragraph itself.
+
+    A text box floats relative to its anchor, so its page position is not in the
+    package; the anchoring paragraph is the one authored position the file records.
+    Reading the box as blocks of its own, directly after that paragraph, is the
+    convention: it neither invents a page position nor splices box text into the
+    middle of the anchoring line. Two boxes in one paragraph keep the order the
+    drawing's own selected markup holds them.
+    """
+    blocks: list[ExtractedParagraph | ExtractedTable] = []
+    limitations: list[ExtractedContentLimitation] = []
+    for box in text_boxes:
+        account.text_boxes.add(box)
+        box_blocks, box_limitations = _read_blocks(
+            box, document, f"{location} text box", account, depth + 1
+        )
+        blocks.extend(box_blocks)
+        limitations.extend(box_limitations)
+    return blocks, limitations
+
+
+def _nesting_limitation(
+    location: str, container: BaseOxmlElement
+) -> ExtractedContentLimitation:
+    """One descent this reader declined at ``_MAX_BLOCK_DEPTH``."""
+    return ExtractedContentLimitation(
+        kind="nesting",
+        location=location,
+        element=_local_name(container),
+        count=1,
+    )
+
+
 def _read_inline_text(
     container: BaseOxmlElement,
     location: str,
     namespaces: Mapping[str, str],
     account: _ReadAccount,
+    text_boxes: list[BaseOxmlElement],
 ) -> tuple[str, list[ExtractedContentLimitation]]:
     """Text of one inline container and every inline shape the walk declined to read.
 
@@ -927,7 +1019,9 @@ def _read_inline_text(
     """
     pieces: list[str] = []
     limitations: list[ExtractedContentLimitation] = []
-    _read_inline(container, pieces, limitations, location, namespaces, account)
+    _read_inline(
+        container, pieces, limitations, location, namespaces, account, text_boxes
+    )
     return "".join(pieces).strip(), limitations
 
 
@@ -938,6 +1032,7 @@ def _read_inline(
     location: str,
     namespaces: Mapping[str, str],
     account: _ReadAccount,
+    text_boxes: list[BaseOxmlElement],
 ) -> None:
     """Append one inline container's text in authored order, deciding every child.
 
@@ -960,15 +1055,22 @@ def _read_inline(
             if child.tag == _CONTENT_CONTROL:
                 # Read in place, so the part-level count must not call it unread.
                 account.controls.add(child)
+            target = (
+                _live_branch(child, namespaces, account)
+                if child.tag == _ALTERNATE_CONTENT
+                else child
+            )
+            if target is None:
+                continue  # no branch to read: nothing renders to render again
             if child.tag == _RUBY:
-                _read_ruby(child, pieces, limitations, location, namespaces, account)
-            elif child.tag == _ALTERNATE_CONTENT:
-                branch = _live_branch(child, namespaces, account)
-                if branch is not None:
-                    _read_inline(branch, pieces, limitations, location, namespaces, account)
+                _read_ruby(child, pieces, limitations, location, namespaces, account, text_boxes)
             else:
-                _read_inline(child, pieces, limitations, location, namespaces, account)
+                _read_inline(target, pieces, limitations, location, namespaces, account, text_boxes)
         elif decision == "counted":
+            if child.tag in (_DRAWING, _PICTURE):
+                # The drawing itself is left to the part-level count; the text boxes
+                # it holds are ordinary blocks, collected for the block walk.
+                text_boxes.extend(_drawing_text_boxes(child, namespaces, account))
             note_kind = _NOTE_REFERENCES.get(child.tag)
             if note_kind is not None:
                 # Recorded where the walk reaches it, so only a reference the
@@ -1069,6 +1171,7 @@ def _read_ruby(
     location: str,
     namespaces: Mapping[str, str],
     account: _ReadAccount,
+    text_boxes: list[BaseOxmlElement],
 ) -> None:
     """Read a ruby's base text and report its pronunciation annotation.
 
@@ -1078,7 +1181,7 @@ def _read_ruby(
     """
     base = ruby.find(_RUBY_BASE)
     if base is not None:
-        _read_inline(base, pieces, limitations, location, namespaces, account)
+        _read_inline(base, pieces, limitations, location, namespaces, account, text_boxes)
     if ruby.find(_RUBY_TEXT) is not None:
         limitations.append(
             ExtractedContentLimitation(kind="ruby", location=location, count=1)
@@ -1127,11 +1230,44 @@ def _requires_declared(
     )
 
 
-def _is_block_wrapper(element: BaseOxmlElement) -> bool:
-    """True when every child is a block shape this reader handles, or carries no text."""
+def _drawing_text_boxes(
+    drawing: BaseOxmlElement,
+    namespaces: Mapping[str, str],
+    account: _ReadAccount,
+) -> list[BaseOxmlElement]:
+    """The text-box bodies one drawing holds, in the order its selected markup has them.
+
+    ``_selected_elements`` resolves the drawing's own ``mc:AlternateContent``, so a
+    box in the branch that was not chosen is not read: it renders what the chosen
+    branch renders.
+
+    Only the boxes this drawing anchors are returned. A box anchored by another
+    box's paragraph is read when that box body is walked, so queuing it here too
+    would read its text twice: once at the outer anchor and once in its own place.
+    """
+    boxes = [
+        item
+        for item in _selected_elements(drawing, account, namespaces)
+        if item.tag == _TEXT_BOX
+    ]
+    return [box for box in boxes if not _inside(box, set(boxes))]
+
+
+def _is_block_wrapper(element: BaseOxmlElement, depth: int = 0) -> bool:
+    """True when every child is a block shape this reader handles, or carries no text.
+
+    A structural wrapper holding only further structural wrappers is a block wrapper
+    too, so ``w:customXml > w:smartTag > w:p`` is read instead of being declined by a
+    test that only looked one level down; the recursion is bounded by
+    ``_MAX_BLOCK_DEPTH``, past which the wrapper is reported rather than read.
+    """
+    if depth > _MAX_BLOCK_DEPTH:
+        return False
     children = list(element.iterchildren())
     return bool(children) and all(
-        child.tag in _READ_CHILD_TAGS or not _carries_text(child)
+        child.tag in _READ_CHILD_TAGS
+        or (child.tag in _STRUCTURAL_WRAPPERS and _is_block_wrapper(child, depth + 1))
+        or not _carries_text(child)
         for child in children
     )
 
@@ -1161,6 +1297,7 @@ def _read_rows(
     document: DocumentObject,
     location: str,
     account: _ReadAccount,
+    depth: int,
 ) -> tuple[list[list[str]], list[ExtractedContentLimitation]]:
     """Rows of one table in authored order, whatever wraps them.
 
@@ -1168,17 +1305,23 @@ def _read_rows(
     content control or a structural wrapper disappeared without even being named.
     The table's own XML is walked instead; a child that holds text but is neither
     a row nor a wrapper this reader descends is reported with its name and
-    position.
+    position, and ``depth`` bounds a chain of such wrappers.
     """
+    if depth > _MAX_BLOCK_DEPTH:
+        return [], (
+            [_nesting_limitation(location, table)] if _carries_text(table) else []
+        )
     rows: list[list[str]] = []
     limitations: list[ExtractedContentLimitation] = []
     for index, child in enumerate(table.iterchildren(), start=1):
         if child.tag == _ROW:
-            cells, cell_limitations = _read_cells(child, document, location, account)
+            cells, cell_limitations = _read_cells(
+                child, document, location, account, depth
+            )
             limitations.extend(cell_limitations)
             if any(cells):
                 rows.append(cells)
-        elif child.tag == _CONTENT_CONTROL or child.tag in _STRUCTURAL_WRAPPERS:
+        elif child.tag in (_CONTENT_CONTROL, *_STRUCTURAL_WRAPPERS):
             holder = (
                 child.find(_CONTROL_CONTENT)
                 if child.tag == _CONTENT_CONTROL
@@ -1188,7 +1331,9 @@ def _read_rows(
                 continue
             if child.tag == _CONTENT_CONTROL:
                 account.controls.add(child)
-            sub_rows, sub_limitations = _read_rows(holder, document, location, account)
+            sub_rows, sub_limitations = _read_rows(
+                holder, document, location, account, depth + 1
+            )
             rows.extend(sub_rows)
             limitations.extend(sub_limitations)
         elif _carries_text(child):
@@ -1208,26 +1353,30 @@ def _read_cells(
     document: DocumentObject,
     location: str,
     account: _ReadAccount,
+    depth: int,
 ) -> tuple[list[str], list[ExtractedContentLimitation]]:
     """Cells of one row in authored order, reading each one through the block walk.
 
     ``Row.cells`` returns only direct ``w:tc`` children, so a cell held by a
     content control or a structural wrapper was skipped the same way a wrapped
     row was. A cell holds paragraphs and nested tables, so the block walk reads
-    it: a cell-level content control or wrapped paragraph is read in place. Cell
-    content keeps the container's location, so repeated gaps stay one entry per
-    container.
+    it: a cell-level content control or wrapped paragraph is read in place, and a
+    table inside the cell keeps its rows, columns and parent-cell position.
+    Cell content keeps the container's location, so repeated gaps stay one entry
+    per container.
     """
+    if depth > _MAX_BLOCK_DEPTH:
+        return [], ([_nesting_limitation(location, row)] if _carries_text(row) else [])
     cells: list[str] = []
     limitations: list[ExtractedContentLimitation] = []
     for index, child in enumerate(row.iterchildren(), start=1):
         if child.tag == _CELL:
             cell_blocks, cell_limitations = _read_blocks(
-                child, document, location, account, read_tables=False
+                child, document, location, account, depth + 1
             )
             limitations.extend(cell_limitations)
             cells.append("\n".join(_block_text(block) for block in cell_blocks).strip())
-        elif child.tag == _CONTENT_CONTROL or child.tag in _STRUCTURAL_WRAPPERS:
+        elif child.tag in (_CONTENT_CONTROL, *_STRUCTURAL_WRAPPERS):
             holder = (
                 child.find(_CONTROL_CONTENT)
                 if child.tag == _CONTENT_CONTROL
@@ -1238,7 +1387,7 @@ def _read_cells(
             if child.tag == _CONTENT_CONTROL:
                 account.controls.add(child)
             sub_cells, sub_limitations = _read_cells(
-                holder, document, location, account
+                holder, document, location, account, depth + 1
             )
             cells.extend(sub_cells)
             limitations.extend(sub_limitations)
@@ -1264,10 +1413,17 @@ def _block_text(block: ExtractedParagraph | ExtractedTable) -> str:
     return "\n".join(_table_lines(block))
 
 
-def _counted(element: BaseOxmlElement, tag: str, account: _ReadAccount) -> int:
+def _counted(
+    element: BaseOxmlElement,
+    tag: str,
+    account: _ReadAccount,
+    read: frozenset[BaseOxmlElement] | set[BaseOxmlElement] = frozenset(),
+) -> int:
     """Elements with this tag that no walk read and no discarded branch holds."""
     return sum(
-        1 for item in element.iter(tag) if not _inside(item, account.discarded)
+        1
+        for item in element.iter(tag)
+        if item not in read and not _inside(item, account.discarded)
     )
 
 
@@ -1283,7 +1439,9 @@ def _find_limitations(
     ``content_control`` counts every control the walks did not descend, so a
     control in a position this reader cannot traverse — body, cell, row, table,
     header or footer — is named instead of disappearing. A control the walk did
-    descend is read, and naming it again would be false alarm. A shape inside an
+    descend is read, and naming it again would be false alarm. A nested table or a
+    text box works the same way: ``account`` holds the ones a walk read, and only
+    the rest are counted. A shape inside an
     alternative branch that was not chosen is not counted: the chosen branch
     renders the same content, so it is not missing.
 
@@ -1297,13 +1455,17 @@ def _find_limitations(
     """
     drawings = _drawing_limitation_counts(element, account, namespaces, owner)
     counts: dict[LimitationKind, int] = {
+        # A table or a text box the walk read keeps no entry: the gap is closed, so
+        # naming it again would refuse a document whose text was read.
         "nested_table": sum(
             1
             for table in element.iter(_TABLE)
             if _has_ancestor(table, _TABLE)
+            and table not in account.tables
             and not _inside(table, account.discarded)
         ),
-        "text_box": _counted(element, _TEXT_BOX, account) + drawings["text_box"],
+        "text_box": _counted(element, _TEXT_BOX, account, account.text_boxes)
+        + drawings["text_box"],
         "tracked_change": sum(
             _counted(element, tag, account) for tag in _TRACKED_WRAPPERS
         ),
@@ -1341,13 +1503,20 @@ def _find_limitations(
 def _visual_elements(
     element: BaseOxmlElement, account: _ReadAccount
 ) -> list[BaseOxmlElement]:
-    """Top-level drawings and legacy pictures in a part, minus discarded branches."""
-    return [
+    """Outermost drawings and legacy pictures in a part, minus discarded branches.
+
+    A drawing or picture another one holds is not a gap of its own: the drawing
+    around it decides about the characters and the parts inside it, so counting
+    the inner one as well would name the same content twice.
+    """
+    found = [
         item
         for tag in (_DRAWING, _PICTURE)
         for item in element.iter(tag)
-        if not _has_ancestor(item, tag) and not _inside(item, account.discarded)
+        if not _inside(item, account.discarded)
     ]
+    owner = set(found)
+    return [item for item in found if not _inside(item, owner)]
 
 
 def _drawing_limitation_counts(
@@ -1356,7 +1525,7 @@ def _drawing_limitation_counts(
     namespaces: Mapping[str, str],
     owner: Part,
 ) -> dict[LimitationKind, int]:
-    """Drawings in a part, one entry per drawing by the one gap it is."""
+    """Drawings in a part, one entry per outermost drawing by the one gap it is."""
     counts: dict[LimitationKind, int] = {
         "text_box": 0,
         "embedded_part": 0,
@@ -1384,22 +1553,76 @@ def _drawing_limitation(
     whose target is external, is not known to be pixels either, so both are
     reported the same way. A text box the drawing holds keeps its own text-box
     entry, so ``None`` sends that element to the text-box count instead of naming
-    the same content twice.
+    the same content twice — unless the drawing also draws art no box accounts
+    for, which nothing else names: an image fill, VML WordArt's characters, or a
+    nested drawing or picture with no box body below it.
+
+    Art is decided in the same pass that decides the rest, because a nested drawing
+    is not re-decided: every drawing inside this one is answered by the flags this
+    scan collects, so the cost stays the size of the subtree instead of doubling
+    per nesting level.
+
+    A character belongs to the nearest drawing or ``w:txbxContent`` body above it
+    (``_text_box_owns``). A body's own text is that box's business: the box walk
+    reads it, and the text-box count names the body when no walk did. Every other
+    character is paint — DrawingML ``a:t``, also when the drawing that paints it
+    sits inside a box body the walk read — and no walk renders it, so the drawing
+    keeps a blocking ``text_box`` entry for it.
     """
-    has_text = has_text_box = unread_part = False
+    has_text = has_text_box = unread_part = art = False
+    boxed = {drawing}
+    nested: list[BaseOxmlElement] = []
     for item in _selected_elements(drawing, account, namespaces):
         if item.tag == _TEXT_BOX:
             has_text_box = True
-        elif _local_name(item) in _TEXT_LOCAL_NAMES:
+            _mark_boxed_drawings(item, boxed)
+        elif _local_name(item) in _ART_LOCAL_NAMES:
+            art = True
+        elif _local_name(item) in _TEXT_LOCAL_NAMES and not _text_box_owns(item):
             has_text = True
+        elif item.tag in (_DRAWING, _PICTURE):
+            nested.append(item)
         for name, relationship_id in item.attrib.items():
             if name.startswith(_R) and _is_unread_target(owner, relationship_id):
                 unread_part = True
     if unread_part:
         return "embedded_part"
     if has_text:
-        return None if has_text_box else "text_box"
+        return "text_box"
+    if has_text_box and not (art or any(item not in boxed for item in nested)):
+        return None
     return "visual_element"
+
+
+def _mark_boxed_drawings(box: BaseOxmlElement, boxed: set[BaseOxmlElement]) -> None:
+    """Add the drawings a text-box body below them accounts for.
+
+    ``boxed`` holds the outermost drawing already, so walking up from a body to the
+    first drawing in it also means every drawing above that one is in it: the walk
+    stops there instead of climbing the whole nesting level by level.
+    """
+    parent = box.getparent()
+    while parent is not None and parent not in boxed:
+        if parent.tag in (_DRAWING, _PICTURE):
+            boxed.add(parent)
+        parent = parent.getparent()
+
+
+def _text_box_owns(element: BaseOxmlElement) -> bool:
+    """True when the nearest drawing or text-box body above it is a body.
+
+    Suppression is keyed on that owner, never on "a box is somewhere above": a
+    box body's own characters are the box's, while the paint of a drawing nested
+    in a body the walk read is still text nobody read. A body no walk reached is
+    counted by the text-box count whether or not it was read, so its text is named
+    once either way.
+    """
+    parent = element.getparent()
+    while parent is not None:
+        if parent.tag in _TEXT_OWNERS:
+            return parent.tag == _TEXT_BOX
+        parent = parent.getparent()
+    return False
 
 
 def _is_unread_target(owner: Part, relationship_id: str) -> bool:

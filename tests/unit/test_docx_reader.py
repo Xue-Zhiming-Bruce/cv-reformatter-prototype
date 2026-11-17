@@ -1,11 +1,14 @@
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 import base64
 import io
+import time
 import zipfile
 
 import pytest
 from docx import Document
+from docx.document import Document as DocumentObject
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.opc.packuri import PackURI
 from docx.opc.part import Part
@@ -118,33 +121,39 @@ def test_read_docx_reads_a_linked_header_once_at_its_defining_section(
     assert content.plain_text.count("Synthetic Candidate Contact") == 1
 
 
-def test_read_docx_reports_a_nested_table_instead_of_dropping_its_cell(tmp_path: Path) -> None:
-    """python-docx returns no text for a cell that holds a table; say so."""
+def test_read_docx_reads_a_nested_table_in_its_parent_cell(tmp_path: Path) -> None:
+    """Issue #56: a table in a cell keeps its own columns and its parent position."""
     path = tmp_path / "resume.docx"
     document = Document()
     document.add_paragraph("Before table")
-    outer = document.add_table(rows=1, cols=1)
-    nested = outer.rows[0].cells[0].add_table(rows=1, cols=1)
-    nested.rows[0].cells[0].text = "Nested entry"
+    outer = document.add_table(rows=1, cols=2)
+    nested = outer.rows[0].cells[0].add_table(rows=1, cols=2)
+    nested.rows[0].cells[0].text = "Nested one"
+    nested.rows[0].cells[1].text = "Nested two"
+    outer.rows[0].cells[1].text = "Sibling cell"
     document.add_paragraph("After table")
     document.save(path)
 
     content = read_docx(path)
 
-    assert "Nested entry" not in content.plain_text
-    assert [(item.kind, item.location, item.count) for item in content.limitations] == [
-        ("nested_table", "body", 1)
+    assert content.plain_text.splitlines() == [
+        "Before table",
+        "Nested one | Nested two | Sibling cell",
+        "After table",
     ]
-    assert "not read" in content.limitations[0].message
-    assert "Review the source document" in content.limitations[0].message
+    # The nested table was read where it sat, so its own gap is closed.
+    assert content.limitations == []
+    assert content.plain_text.count("Nested one") == 1
 
 
-def test_read_docx_reports_text_boxes_and_tracked_changes(tmp_path: Path) -> None:
+def test_read_docx_reads_text_box_text_at_its_anchor_and_flags_tracked_changes(
+    tmp_path: Path,
+) -> None:
     """Visible content outside the supported shapes is attributed, never silent."""
     path = tmp_path / "resume.docx"
     document = Document()
     document.add_paragraph("Jane Candidate")
-    boxed = document.add_paragraph()
+    boxed = document.add_paragraph("Contact: ")
     boxed._p.append(
         parse_xml(
             f'<w:r {nsdecls("w")}>'
@@ -164,9 +173,291 @@ def test_read_docx_reports_text_boxes_and_tracked_changes(tmp_path: Path) -> Non
 
     content = read_docx(path)
 
-    assert "Boxed contact" not in content.plain_text
-    assert "Python" not in content.plain_text
-    assert sorted(item.kind for item in content.limitations) == ["text_box", "tracked_change"]
+    # The box's text follows the paragraph that anchors it; a tracked insertion is
+    # still a revision this reader does not resolve.
+    assert content.plain_text.splitlines() == [
+        "Jane Candidate",
+        "Contact:",
+        "Boxed contact",
+        "Skills:",
+    ]
+    assert sorted(item.kind for item in content.limitations) == ["tracked_change"]
+
+
+def test_read_docx_reads_a_paragraph_nested_in_two_wrappers(tmp_path: Path) -> None:
+    """Issue #56 AC2: ``customXml > smartTag > w:p`` is read once, with no limitation."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    document.element.body.insert(
+        len(document.element.body) - 1,
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="resume">'
+            '<w:smartTag w:uri="urn:example" w:element="skills">'
+            "<w:p><w:r><w:t>Inside smart tag</w:t></w:r></w:p>"
+            "</w:smartTag></w:customXml>"
+        ),
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate", "Inside smart tag"]
+    assert content.plain_text.count("Inside smart tag") == 1
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_table_nested_in_wrappers_in_a_cell(tmp_path: Path) -> None:
+    """A wrapper of wrappers is walked the same way at block, row and cell level."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    table = document.add_table(rows=1, cols=1)
+    table.rows[0].cells[0]._tc.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="resume">'
+            "<w:smartTag w:uri=\"urn:x\" w:element=\"role\">"
+            "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>NESTED_WRAPPED</w:t></w:r></w:p>"
+            "</w:tc></w:tr></w:tbl>"
+            "</w:smartTag></w:customXml>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate", "NESTED_WRAPPED"]
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_text_box_in_a_header(tmp_path: Path) -> None:
+    """AC3: the same walk reads a box in a header, with the header's provenance."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    header = document.sections[0].header
+    header.paragraphs[0].text = "Header anchor"
+    header.paragraphs[0]._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")}>'
+            '<w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml">'
+            "<v:textbox><w:txbxContent><w:p><w:r><w:t>Header boxed</w:t></w:r></w:p>"
+            "</w:txbxContent></v:textbox></v:shape></w:pict></w:r>"
+        )
+    )
+    document.add_paragraph("Jane Candidate")
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.header_footer[0].text.splitlines() == ["Header anchor", "Header boxed"]
+    assert content.plain_text.splitlines() == [
+        "Header anchor",
+        "Header boxed",
+        "Jane Candidate",
+    ]
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_text_box_through_its_own_blocks(tmp_path: Path) -> None:
+    """A box holds blocks, so its table and its paragraph keep their own order."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    anchor = document.add_paragraph()
+    anchor._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")}>'
+            '<w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml">'
+            "<v:textbox><w:txbxContent>"
+            "<w:p><w:r><w:t>Box first</w:t></w:r></w:p>"
+            "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Box cell</w:t></w:r></w:p>"
+            "</w:tc></w:tr></w:tbl>"
+            "<w:p><w:r><w:t>Box last</w:t></w:r></w:p>"
+            "</w:txbxContent></v:textbox></v:shape></w:pict></w:r>"
+        )
+    )
+    document.add_paragraph("After box")
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Jane Candidate",
+        "Box first",
+        "Box cell",
+        "Box last",
+        "After box",
+    ]
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_text_box_anchored_by_another_text_box_once(
+    tmp_path: Path,
+) -> None:
+    """AC3: a box in a box is read once, in the outer box's own paragraph."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    anchor = document.add_paragraph("Anchor: ")
+    anchor._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")}>'
+            '<w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox>'
+            "<w:txbxContent>"
+            "<w:p><w:r><w:t>OUTER</w:t></w:r></w:p>"
+            "<w:p><w:r><w:pict>"
+            '<v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox>'
+            "<w:txbxContent><w:p><w:r><w:t>INNER</w:t></w:r></w:p></w:txbxContent>"
+            "</v:textbox></v:shape></w:pict></w:r></w:p>"
+            "</w:txbxContent>"
+            "</v:textbox></v:shape></w:pict></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Jane Candidate",
+        "Anchor:",
+        "OUTER",
+        "INNER",
+    ]
+    assert content.plain_text.count("INNER") == 1
+    assert content.limitations == []
+
+
+def test_read_docx_reads_a_text_box_in_a_table_in_a_text_box_once(
+    tmp_path: Path,
+) -> None:
+    """AC3: the outer box's table carries the inner box, which is still read once."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    anchor = document.add_paragraph()
+    anchor._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")}>'
+            '<w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox>'
+            "<w:txbxContent>"
+            "<w:p><w:r><w:t>OUTER</w:t></w:r></w:p>"
+            "<w:tbl><w:tr><w:tc><w:p><w:r><w:pict>"
+            '<v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox>'
+            "<w:txbxContent><w:p><w:r><w:t>BOX IN CELL</w:t></w:r></w:p></w:txbxContent>"
+            "</v:textbox></v:shape></w:pict></w:r></w:p></w:tc></w:tr></w:tbl>"
+            "</w:txbxContent>"
+            "</v:textbox></v:shape></w:pict></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == [
+        "Jane Candidate",
+        "OUTER",
+        "BOX IN CELL",
+    ]
+    assert content.plain_text.count("BOX IN CELL") == 1
+    assert content.limitations == []
+
+
+def test_read_docx_does_not_read_a_text_box_in_the_branch_it_skipped(
+    tmp_path: Path,
+) -> None:
+    """Branch selection decides the box too, so the box is not read twice."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Alternative: ")
+    paragraph._p.append(
+        parse_xml(
+            '<mc:AlternateContent '
+            'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+            f'{nsdecls("w")}>'
+            '<mc:Choice><w:r><w:t>CHOSEN</w:t></w:r></mc:Choice>'
+            "<mc:Fallback><w:r><w:pict>"
+            '<v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox>'
+            "<w:txbxContent><w:p><w:r><w:t>SKIPPED BOX</w:t></w:r></w:p>"
+            "</w:txbxContent></v:textbox></v:shape></w:pict></w:r></mc:Fallback>"
+            "</mc:AlternateContent>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Alternative: CHOSEN"]
+    assert content.limitations == []
+
+
+def test_read_docx_names_a_field_inside_a_text_box_it_reads(tmp_path: Path) -> None:
+    """AC5: reading a box does not start reading a field's cached result."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    anchor = document.add_paragraph()
+    anchor._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")}>'
+            '<w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml">'
+            "<v:textbox><w:txbxContent><w:p><w:r><w:t>Read me</w:t></w:r>"
+            '<w:fldSimple w:instr=" REF candidate_name ">'
+            "<w:r><w:t>Field result</w:t></w:r></w:fldSimple>"
+            "</w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate", "Read me"]
+    assert [(item.kind, item.count) for item in content.limitations] == [("field", 1)]
+
+
+def test_read_docx_bounds_a_deeply_nested_table_chain(tmp_path: Path) -> None:
+    """AC6: deep nesting is declined at a bound, not by the interpreter's limit."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    inner = "<w:p><w:r><w:t>DEEP TEXT</w:t></w:r></w:p>"
+    for _ in range(59):
+        inner = f"<w:tbl><w:tr><w:tc>{inner}</w:tc></w:tr></w:tbl>"
+    document.element.body.insert(
+        len(document.element.body) - 1,
+        parse_xml(f'<w:tbl {nsdecls("w")}><w:tr><w:tc>{inner}</w:tc></w:tr></w:tbl>'),
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert "Jane Candidate" in content.plain_text
+    kinds = {item.kind for item in content.limitations}
+    assert "nesting" in kinds
+    assert content.plain_text.count("DEEP TEXT") == 0
+    assert all(item.blocks_source_review for item in content.limitations)
+
+
+def test_read_docx_bounds_a_deeply_nested_wrapper_chain(tmp_path: Path) -> None:
+    """AC6: a wrapper chain past the bound is named once instead of recursed into."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    inner = "<w:p><w:r><w:t>DEEP WRAPPED</w:t></w:r></w:p>"
+    for _ in range(119):
+        inner = f'<w:customXml w:element="level">{inner}</w:customXml>'
+    document.element.body.insert(
+        len(document.element.body) - 1,
+        parse_xml(f'<w:customXml {nsdecls("w")} w:element="level">{inner}</w:customXml>'),
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Jane Candidate"]
+    (limitation,) = content.limitations
+    assert limitation.kind == "unknown_block"
+    assert limitation.element == "customXml"
+    assert limitation.blocks_source_review is True
 
 
 def test_read_docx_reads_a_block_content_control_in_place(tmp_path: Path) -> None:
@@ -1145,6 +1436,465 @@ def test_read_docx_names_text_a_drawing_carries_as_unread_text(tmp_path: Path) -
         *unread_content_messages(content.limitations),
     )
     assert audit.status == "incomplete"
+
+
+def test_read_docx_names_text_a_drawing_carries_beside_a_text_box(
+    tmp_path: Path,
+) -> None:
+    """AC5: reading a drawing's box does not silence the paint text beside it."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Shape: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp")} '
+            'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            "<w:drawing><wp:inline><a:graphic><a:graphicData"
+            ' uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            "<wps:wsp><wps:txBody><a:p><a:r><a:t>PAINT ONLY</a:t></a:r></a:p>"
+            "</wps:txBody>"
+            "<wps:txbx><w:txbxContent><w:p><w:r><w:t>BOXED</w:t></w:r></w:p>"
+            "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline>"
+            "</w:drawing></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    # The box is read; the shape's own paint text is not, so the drawing keeps a
+    # blocking text-box entry for it.
+    assert content.plain_text.splitlines() == ["Shape:", "BOXED"]
+    assert "PAINT ONLY" not in content.plain_text
+    assert [
+        (item.kind, item.count, item.blocks_source_review)
+        for item in content.limitations
+    ] == [("text_box", 1, True)]
+
+
+def test_read_docx_names_text_a_group_shape_carries_beside_a_text_box(
+    tmp_path: Path,
+) -> None:
+    """AC5: a group child's paint text is named even when a sibling child has a box."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    paragraph = document.add_paragraph("Group: ")
+    paragraph._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp")} '
+            'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+            'xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">'
+            "<w:drawing><wp:inline><a:graphic><a:graphicData"
+            ' uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">'
+            "<wpg:wgp>"
+            "<wps:wsp><wps:txBody><a:p><a:r><a:t>PAINT ONLY</a:t></a:r></a:p>"
+            "</wps:txBody></wps:wsp>"
+            "<wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>GROUP BOX</w:t></w:r></w:p>"
+            "</w:txbxContent></wps:txbx></wps:wsp>"
+            "</wpg:wgp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
+        )
+    )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert content.plain_text.splitlines() == ["Group:", "GROUP BOX"]
+    assert [
+        (item.kind, item.count, item.blocks_source_review)
+        for item in content.limitations
+    ] == [("text_box", 1, True)]
+
+
+#: Prefixes for the DrawingML shape markup the truth table builds.
+_SHAPE_NAMESPACES = (
+    'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+    'xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" '
+    'xmlns:v="urn:schemas-microsoft-com:vml" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+)
+
+
+def _p(text: str) -> str:
+    return f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
+
+
+def _p_with(*runs: str) -> str:
+    return f"<w:p>{''.join(runs)}</w:p>"
+
+
+def _r(*content: str) -> str:
+    return f"<w:r>{''.join(content)}</w:r>"
+
+
+def _paint(text: str) -> str:
+    """A shape whose only text is DrawingML paint: no walk renders ``a:t``."""
+    return (
+        "<wps:wsp><wps:txBody><a:p><a:r>"
+        f"<a:t>{text}</a:t></a:r></a:p></wps:txBody></wps:wsp>"
+    )
+
+
+def _box(blocks: str) -> str:
+    """A shape holding a ``w:txbxContent`` body Word 2010 writes (``wps:txbx``)."""
+    return (
+        "<wps:wsp><wps:txbx><w:txbxContent>"
+        f"{blocks}</w:txbxContent></wps:txbx></wps:wsp>"
+    )
+
+
+def _legacy_box(blocks: str) -> str:
+    """A VML text box, the other body Word writes around a block body."""
+    return (
+        "<w:pict><v:shape><v:textbox>"
+        f"<w:txbxContent>{blocks}</w:txbxContent>"
+        "</v:textbox></v:shape></w:pict>"
+    )
+
+
+def _drawing(*shapes: str) -> str:
+    return (
+        '<w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic>'
+        '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/'
+        f'wordprocessingShape">{"".join(shapes)}</a:graphicData>'
+        "</a:graphic></wp:inline></w:drawing>"
+    )
+
+
+def _group_drawing(*shapes: str) -> str:
+    return (
+        '<w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic>'
+        '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/'
+        f'wordprocessingGroup"><wpg:wgp>{"".join(shapes)}</wpg:wgp>'
+        "</a:graphicData></a:graphic></wp:inline></w:drawing>"
+    )
+
+
+def _nested_box_chain(depth: int, leaf: str) -> str:
+    """``depth`` drawings, each anchored in the box body of the one outside it."""
+    for _ in range(depth):
+        leaf = _r(_drawing(_box(_p_with(leaf))))
+    return leaf
+
+
+def _read_anchored_paragraph(
+    tmp_path: Path, runs: str | Callable[[DocumentObject], str]
+) -> ExtractedDocxContent:
+    """Read a resume whose one body paragraph anchors these runs.
+
+    A row that has to point at a part builds its runs against the document, so an
+    image relationship id can be the one this package actually holds.
+    """
+    path = tmp_path / "resume.docx"
+    document = Document()
+    body = document.element.body
+    markup = runs(document) if callable(runs) else runs
+    body.insert(
+        len(body) - 1,
+        parse_xml(
+            f'<w:p {nsdecls("w", "a", "wp")} {_SHAPE_NAMESPACES}>'
+            f"<w:r><w:t>Anchor:</w:t></w:r>{markup}</w:p>"
+        ),
+    )
+    document.save(path)
+    return read_docx(path)
+
+
+def _image_id(document: DocumentObject) -> str:
+    """A relationship id the package resolves to an image, so a shape draws art."""
+    return document.part.get_or_add_image(io.BytesIO(_one_pixel_png()))[0]
+
+
+#: The drawing/text-box truth table: every shape a probe found or can nest, with
+#: the text the walk must read and the gaps it must report. One row per cell, so a
+#: fourth nesting cannot pass as art or go silent with unread text: a character is
+#: quiet only when the walk read that exact content, and a box body's characters
+#: are the box's whether or not it was read. A row whose markup points at a part
+#: builds it against the document, so the id resolves the way a package does.
+_DRAWING_TEXT_TRUTH_TABLE: list[
+    tuple[
+        str,
+        str | Callable[[DocumentObject], str],
+        list[str],
+        list[tuple[str, int, bool]],
+    ]
+] = [
+    (
+        "paint_at_body_level",
+        _r(_drawing(_paint("PAINT"))),
+        ["Anchor:"],
+        [("text_box", 1, True)],
+    ),
+    (
+        "paint_beside_a_box_in_one_shape",
+        _r(_drawing(_paint("PAINT") + _box(_p("BOX")))),
+        ["Anchor:", "BOX"],
+        [("text_box", 1, True)],
+    ),
+    (
+        "paint_beside_a_box_in_a_group",
+        _r(_group_drawing(_paint("PAINT"), _box(_p("GROUP BOX")))),
+        ["Anchor:", "GROUP BOX"],
+        [("text_box", 1, True)],
+    ),
+    ("box_only", _r(_drawing(_box(_p("BOX")))), ["Anchor:", "BOX"], []),
+    (
+        "paint_inside_a_read_legacy_box",
+        _r(_legacy_box(_p("OUTER") + _p_with(_r(_drawing(_paint("PAINT IN BOX")))))),
+        ["Anchor:", "OUTER"],
+        [("text_box", 1, True)],
+    ),
+    (
+        "paint_inside_a_read_wps_box",
+        _r(_drawing(_box(_p("OUTER") + _p_with(_r(_drawing(_paint("PAINT IN BOX"))))))),
+        ["Anchor:", "OUTER"],
+        [("text_box", 1, True)],
+    ),
+    (
+        "box_and_paint_inside_a_read_legacy_box",
+        _r(
+            _legacy_box(
+                _p("OUTER")
+                + _p_with(_r(_drawing(_box(_p("INNER BOX")) + _paint("PAINT BESIDE"))))
+            )
+        ),
+        ["Anchor:", "OUTER", "INNER BOX"],
+        [("text_box", 1, True)],
+    ),
+    (
+        "box_and_paint_inside_a_read_wps_box",
+        _r(
+            _drawing(
+                _box(
+                    _p("OUTER")
+                    + _p_with(
+                        _r(_drawing(_box(_p("INNER BOX")) + _paint("PAINT BESIDE")))
+                    )
+                )
+            )
+        ),
+        ["Anchor:", "OUTER", "INNER BOX"],
+        [("text_box", 1, True)],
+    ),
+    (
+        "paint_inside_the_inner_box_of_a_read_legacy_box",
+        _r(
+            _legacy_box(
+                _p("OUTER")
+                + _p_with(
+                    _r(
+                        _drawing(
+                            _box(
+                                _p("INNER BOX")
+                                + _p_with(_r(_drawing(_paint("DEEP PAINT"))))
+                            )
+                        )
+                    )
+                )
+            )
+        ),
+        ["Anchor:", "OUTER", "INNER BOX"],
+        [("text_box", 1, True)],
+    ),
+    (
+        "box_in_box",
+        _r(_legacy_box(_p("OUTER") + _p_with(_r(_legacy_box(_p("INNER")))))),
+        ["Anchor:", "OUTER", "INNER"],
+        [],
+    ),
+    (
+        "box_in_a_table_in_a_box",
+        _r(
+            _legacy_box(
+                _p("OUTER")
+                + "<w:tbl><w:tr><w:tc>"
+                + _p_with(_r(_legacy_box(_p("BOX IN CELL"))))
+                + "</w:tc></w:tr></w:tbl>"
+            )
+        ),
+        ["Anchor:", "OUTER", "BOX IN CELL"],
+        [],
+    ),
+    (
+        "box_under_a_tracked_insertion",
+        f'<w:ins w:id="1" w:author="recruiter">'
+        f'{_r(_legacy_box(_p("TRACKED BOX")))}</w:ins>',
+        ["Anchor:"],
+        [("text_box", 1, True), ("tracked_change", 1, True)],
+    ),
+    (
+        "paint_inside_an_unread_box_under_a_tracked_insertion",
+        f'<w:ins w:id="1" w:author="recruiter">'
+        f'{_r(_legacy_box(_p("UNREAD BOX") + _p_with(_r(_drawing(_paint("UNREAD PAINT"))))))}'
+        "</w:ins>",
+        ["Anchor:"],
+        [("text_box", 2, True), ("tracked_change", 1, True)],
+    ),
+    (
+        "paint_written_straight_into_a_read_box_body",
+        _r(_legacy_box(_p_with("<w:r><a:t>BARE PAINT</a:t></w:r>"))),
+        ["Anchor:"],
+        [("unknown_inline", 1, True)],
+    ),
+    (
+        "image_inside_a_read_box_body",
+        lambda document: _r(
+            _legacy_box(
+                _p("OUTER")
+                + _p_with(
+                    _r(
+                        '<w:pict><v:shape><v:imagedata r:id="'
+                        f'{_image_id(document)}"/></v:shape></w:pict>'
+                    )
+                )
+            )
+        ),
+        ["Anchor:", "OUTER"],
+        [("visual_element", 1, False)],
+    ),
+    (
+        "image_beside_a_read_box",
+        lambda document: _r(
+            _drawing(
+                _box(_p("BOX")),
+                '<wps:wsp><a:graphic><a:graphicData'
+                ' uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+                f'<a:blip r:embed="{_image_id(document)}"/>'
+                "</a:graphicData></a:graphic></wps:wsp>",
+            )
+        ),
+        ["Anchor:", "BOX"],
+        [("visual_element", 1, False)],
+    ),
+    (
+        "filled_shape_beside_a_read_box",
+        _r(
+            _drawing(
+                _box(_p("BOX")),
+                "<wps:wsp><wps:spPr><a:solidFill>"
+                '<a:srgbClr val="FF0000"/></a:solidFill></wps:spPr></wps:wsp>',
+            )
+        ),
+        ["Anchor:", "BOX"],
+        [],
+    ),
+    (
+        "legacy_shape_inside_a_read_box_body",
+        _r(
+            _legacy_box(
+                _p("OUTER")
+                + _p_with(
+                    _r(
+                        '<w:pict><v:shape><v:line from="0,0" to="1,1"/>'
+                        "</v:shape></w:pict>"
+                    )
+                )
+            )
+        ),
+        ["Anchor:", "OUTER"],
+        [("visual_element", 1, False)],
+    ),
+    (
+        "wordart_inside_a_read_box_body",
+        _r(
+            _drawing(
+                _box(
+                    _p("OUTER")
+                    + _p_with(
+                        _r(
+                            '<w:pict><v:shape><v:textpath string="WORDART"/>'
+                            "</v:shape></w:pict>"
+                        )
+                    )
+                )
+            )
+        ),
+        ["Anchor:", "OUTER"],
+        [("visual_element", 1, False)],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("runs", "lines", "limitations"),
+    [row[1:] for row in _DRAWING_TEXT_TRUTH_TABLE],
+    ids=[row[0] for row in _DRAWING_TEXT_TRUTH_TABLE],
+)
+def test_read_docx_keeps_drawing_text_blocking_until_the_walk_reads_it(
+    tmp_path: Path,
+    runs: str,
+    lines: list[str],
+    limitations: list[tuple[str, int, bool]],
+) -> None:
+    """AC5/AC7: every cell of the truth table, one row per shape."""
+    content = _read_anchored_paragraph(tmp_path, runs)
+
+    assert content.plain_text.splitlines() == lines
+    assert [
+        (item.kind, item.count, item.blocks_source_review)
+        for item in content.limitations
+    ] == limitations
+    # Art is never the bucket unread text falls into: it is reported, never blocking.
+    assert all(
+        not item.blocks_source_review
+        for item in content.limitations
+        if item.kind == "visual_element"
+    )
+
+
+def test_read_docx_bounds_a_deep_drawing_chain_inside_boxes(tmp_path: Path) -> None:
+    """AC6: deep drawing nesting costs one pass, not one more pass per level.
+
+    ``_MAX_BLOCK_DEPTH`` bounds the walk, so the art accounting beside it has to
+    stay bounded too: a hostile package nests drawings this deep. ``prompt`` is a
+    wide margin over the ~0.02s this takes; re-deciding every nested drawing grew
+    by a factor of two per level instead (18s at depth 20, minutes at depth 24).
+    """
+    prompt = 10.0
+    for leaf, lines, limitations in (
+        ("<w:t>DEEP BOX</w:t>", ["Anchor:", "DEEP BOX"], []),
+        (_r(_drawing(_paint("DEEP PAINT"))), ["Anchor:"], [("text_box", 1, True)]),
+        (_drawing(), ["Anchor:"], [("visual_element", 1, False)]),
+    ):
+        started = time.perf_counter()
+        content = _read_anchored_paragraph(tmp_path, _nested_box_chain(24, leaf))
+        elapsed = time.perf_counter() - started
+
+        assert elapsed < prompt
+        assert content.plain_text.splitlines() == lines
+        assert [
+            (item.kind, item.count, item.blocks_source_review)
+            for item in content.limitations
+        ] == limitations
+
+
+def test_read_docx_reports_paint_text_in_a_header_and_footer_box(tmp_path: Path) -> None:
+    """AC3/AC5: a header/footer box is read, and the paint inside it still blocks."""
+    path = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("Jane Candidate")
+    for location, marker in (("header", "HEADER"), ("footer", "FOOTER")):
+        anchor = getattr(document.sections[0], location).paragraphs[0]
+        anchor.text = f"{marker.title()} anchor"
+        anchor._p.append(
+            parse_xml(
+                f'<w:r {nsdecls("w", "a", "wp")} {_SHAPE_NAMESPACES}>'
+                f'{_legacy_box(_p(f"{marker} BOX") + _p_with(_r(_drawing(_paint(f"{marker} PAINT")))))}'
+                "</w:r>"
+            )
+        )
+    document.save(path)
+
+    content = read_docx(path)
+
+    assert [(item.location, item.text) for item in content.header_footer] == [
+        ("header", "Header anchor\nHEADER BOX"),
+        ("footer", "Footer anchor\nFOOTER BOX"),
+    ]
+    assert content.paragraphs == ["Jane Candidate"]
+    assert [
+        (item.kind, item.count, item.blocks_source_review)
+        for item in content.limitations
+    ] == [("text_box", 1, True), ("text_box", 1, True)]
 
 
 def test_validate_docx_rejects_unsupported_extension(tmp_path: Path) -> None:

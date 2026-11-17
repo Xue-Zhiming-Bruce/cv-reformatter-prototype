@@ -112,8 +112,9 @@ def _build_ordered_resume_docx(path: Path) -> None:
     that enables it, a wrapped paragraph and an inline wrapper around runs, a wrapped
     paragraph and a content control inside table cells, an inline content control
     whose ``sdtPr`` must not report as content, one branch of an inline alternative,
-    and five visible shapes this reader cannot read (nested table, field, tracked
-    move, embedded chunk, images)."""
+    the shapes issue #56 recovered in place (a table inside a cell, with its own
+    rows and a wrapped paragraph beside it), and four visible shapes this reader
+    still cannot read (field, tracked move, embedded chunk, images)."""
     document = Document()
     section = document.sections[0]
     header = section.header
@@ -365,24 +366,26 @@ def test_process_returns_profile_and_ledger(tmp_path: Path, monkeypatch: MonkeyP
     assert "Alternative: Choice branch" in lines
     # The nested table's cell, the field result, the moved block and the embedded
     # chunk are not readable, so each must be named instead of passing as absent.
+    # Issue #56: the nested table is read in its parent cell, so its text is now in
+    # the preserved text and its gap is closed.
+    assert "Nested entry" in lines
     for missing in (
-        "Nested entry",
         "Field result",
         "Moved line",
         "Chunk text",
         "Fallback branch",
     ):
         assert missing not in body["original_text"]
-    assert len(body["ingestion_limitations"]) == 5
+    assert len(body["ingestion_limitations"]) == 4
     limitation_text = " ".join(body["ingestion_limitations"])
     for shape in (
-        "nested table",
         "field",
         "moves",
         "alternate-format chunk",
         "OCR is out of scope",
     ):
         assert shape in limitation_text
+    assert "nested table" not in limitation_text
     assert "content control" not in limitation_text
     assert "Review the source document" in limitation_text
     assert (artifact_dir / "candidate_profile.json").exists()
@@ -1225,6 +1228,174 @@ def test_table_rows_and_cells_held_by_a_content_control_are_read(
 
 
 @pytest.mark.usefixtures("a_generation_without_model_loop")
+def test_process_reads_recovered_wrapper_nested_table_and_text_box(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Issue #56 AC4: the recovered shapes reach the preserved text, audit and gates."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    exporter = make_proof_pdf_exporter()
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", exporter)
+    monkeypatch.setattr("app.generation.chrome_html_to_pdf.export_html_to_pdf", exporter)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    body_element = document.element.body
+    body_element.insert(
+        len(body_element) - 1,
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="resume">'
+            '<w:smartTag w:uri="urn:example" w:element="skills">'
+            "<w:p><w:r><w:t>Wrapped skill</w:t></w:r></w:p>"
+            "</w:smartTag></w:customXml>"
+        ),
+    )
+    holder = document.add_table(rows=1, cols=1)
+    nested = holder.rows[0].cells[0].add_table(rows=1, cols=2)
+    nested.rows[0].cells[0].text = "Nested company"
+    nested.rows[0].cells[1].text = "Nested role"
+    boxed = document.add_paragraph("Contact: ")
+    boxed._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w")}>'
+            '<w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml">'
+            "<v:textbox><w:txbxContent><w:p><w:r><w:t>Boxed phone</w:t></w:r></w:p>"
+            "</w:txbxContent></v:textbox></v:shape></w:pict></w:r>"
+        )
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    lines = body["original_text"].splitlines()
+    assert "Wrapped skill" in lines
+    assert "Nested company | Nested role" in lines
+    assert "Boxed phone" in lines
+    assert body["original_text"].count("Nested company") == 1
+    # Only those shapes used to be unread, so nothing is left to report and the
+    # source-text refusal no longer applies to this document.
+    assert body["ingestion_limitations"] == []
+    artifact_dir = tmp_path / body["artifact_id"]
+    audit = json.loads(
+        (artifact_dir / "segmentation_audit.json").read_text(encoding="utf-8")
+    )
+    assert audit["status"] == "passed"
+    assert audit["unread_source_content"] == []
+    evidence = json.loads(
+        (artifact_dir / "candidate_field_evidence.json").read_text(encoding="utf-8")
+    )
+    assert evidence["source_text_sha256"] == json.loads(
+        (artifact_dir / "normalized_candidate_document.json").read_text(
+            encoding="utf-8"
+        )
+    )["source_text_sha256"]
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 200, approval.text
+
+    generated = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": body["artifact_id"],
+            "approved_profile_version_id": approval.json()["profile_version_id"],
+            "template_name": "apex_standard",
+        },
+    )
+    assert generated.status_code == 200, generated.text
+
+
+def test_mixed_recovered_and_unread_shapes_blocks_approval(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Issue #56 AC5: recovering a shape must not silence what is still unread."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    holder = document.add_table(rows=1, cols=1)
+    nested = holder.rows[0].cells[0].add_table(rows=1, cols=1)
+    nested.rows[0].cells[0].text = "Nested entry"
+    wrapper = document.add_paragraph("Wrapper: ")
+    wrapper._p.append(
+        parse_xml(
+            f'<w:customXml {nsdecls("w")} w:element="field">'
+            "<w:r><w:t>Wrapped value</w:t></w:r>"
+            # a field nested in the wrapper stays unread, however deep it sits
+            '<w:fldSimple w:instr=" REF candidate_name ">'
+            "<w:r><w:t>Field result</w:t></w:r></w:fldSimple>"
+            "</w:customXml>"
+        )
+    )
+    tracked = document.add_paragraph("Skills: ")
+    tracked._p.append(
+        parse_xml(
+            f'<w:ins {nsdecls("w")} w:id="1" w:author="recruiter">'
+            "<w:r><w:t>Tracked skill</w:t></w:r></w:ins>"
+        )
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    lines = body["original_text"].splitlines()
+    # The recovered text is read where it sat.
+    assert "Nested entry" in lines
+    assert "Wrapper: Wrapped value" in lines
+    # The field inside that wrapper and the tracked insertion are still unread and
+    # still named, so approval keeps failing closed.
+    assert "Field result" not in body["original_text"]
+    assert "Tracked skill" not in body["original_text"]
+    limitation_text = " ".join(body["ingestion_limitations"])
+    assert "field's cached visible result" in limitation_text
+    assert "tracked insertions, deletions and moves" in limitation_text
+    assert "nested table" not in limitation_text
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "incomplete"
+    assert audit["unread_text_source_content"] == body["ingestion_limitations"]
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 409, approval.text
+    assert approval.json()["detail"]["error_code"] == "source_text_unread"
+
+
+@pytest.mark.usefixtures("a_generation_without_model_loop")
 def test_property_wrappers_do_not_block_approval_or_generation(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -1571,6 +1742,67 @@ def test_drawing_text_blocks_approval_revision_and_generation(
     )
     assert generated.status_code == 409, generated.text
     assert generated.json()["detail"]["error_code"] == "source_text_unread"
+
+
+def test_paint_text_inside_a_read_text_box_blocks_approval(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Issue #56 AC5: reading a box body does not read the paint drawn inside it."""
+    monkeypatch.setenv("API_LLM_PROVIDER", "mock")
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    resume_path = tmp_path / "resume.docx"
+    _build_resume_docx(resume_path)
+    document = Document(resume_path)
+    document.add_paragraph("Contact: ")._p.append(
+        parse_xml(
+            f'<w:r {nsdecls("w", "a", "wp")} '
+            'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            '<w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox>'
+            "<w:txbxContent><w:p><w:r><w:t>BOXED PHONE</w:t></w:r></w:p>"
+            "<w:p><w:r><w:drawing><wp:inline><a:graphic><a:graphicData"
+            ' uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+            "<wps:wsp><wps:txBody><a:p><a:r><a:t>PAINT IN BOX</a:t></a:r></a:p>"
+            "</wps:txBody></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing>"
+            "</w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r>"
+        )
+    )
+    document.save(resume_path)
+
+    with resume_path.open("rb") as resume_file:
+        response = client.post(
+            "/api/process",
+            files={
+                "file": (
+                    "resume.docx",
+                    resume_file,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # The box body was read, so its own text reached the preserved source text...
+    assert "BOXED PHONE" in body["original_text"].splitlines()
+    # ...while the paint drawn inside that same body did not.
+    assert "PAINT IN BOX" not in body["original_text"]
+    (limitation,) = body["ingestion_limitations"]
+    assert "text-box content is not read" in limitation
+    audit = json.loads(
+        (tmp_path / body["artifact_id"] / "segmentation_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "incomplete"
+    assert audit["unread_text_source_content"] == body["ingestion_limitations"]
+
+    approval = client.post(
+        f"/api/artifacts/{body['artifact_id']}/profiles/approve",
+        json={"profile": body["profile"]},
+    )
+    assert approval.status_code == 409, approval.text
+    assert approval.json()["detail"]["error_code"] == "source_text_unread"
 
 
 def test_chart_text_blocks_approval_revision_and_generation(

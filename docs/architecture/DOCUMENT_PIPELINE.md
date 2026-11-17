@@ -91,6 +91,77 @@ Each LLM section is assigned stable `source_block_id` lineage when persisted.
 Optional/custom entries retain that lineage and must still receive the existing
 review and show/hide disposition before profile approval.
 
+### DOCX Reader Read/Report Inventory — issue #56
+
+The reader (`app/ingestion/docx_reader.py`) reads these shapes in authored
+order, each in the position it occupies: body paragraphs and top-level tables;
+table rows and cells walked on the table's own XML, so a control or structural
+wrapper around either is read; a cell's block content through the same block walk
+as the body, a table nested in a cell included — its rows keep their columns and
+it stays in the cell that holds it instead of being flattened into the parent
+row; a content control in every position the walk reaches; a structural wrapper
+whose children are paragraphs, tables, content controls or further such wrappers,
+so `w:customXml > w:smartTag > w:p` is read once and reports nothing; an Office
+Math zone; a referenced footnote or endnote; inline text by one decision table;
+one `mc:AlternateContent` branch; and the same shapes inside a header/footer read
+once per displayed variant.
+
+Text boxes (`w:txbxContent`) are read through that same block walk, so a
+paragraph, table or wrapper inside a box follows the rules above. **Source-order
+convention:** a text box floats relative to its anchor — the package records the
+anchor, not the page position a viewer paints — so box text is emitted as blocks
+of its own directly after the paragraph that anchors the drawing, in the order
+the drawing's own selected markup holds its boxes. That is the one authored
+position the file records: it does not reconstruct visual page reading order,
+and it neither invents a page position nor splices box text into the middle of
+the anchoring line. A box that another box's paragraph anchors is read where that
+inner paragraph sits, once: it is not also queued at the outer anchor, so a box in
+a box is neither duplicated nor detached from the paragraph that places it.
+A drawing whose text is DrawingML paint (`a:t`) is not read this way and keeps
+its blocking `text_box` entry wherever that character sits: beside a box this
+walk read, in the body of one, and in the inner box of a box in a box. Reading a
+body closes that body's own text — the characters in it the box walk renders —
+and nothing else, so suppression follows the nearest drawing or `w:txbxContent`
+body above a character, never "a box is somewhere above it": a box body's
+characters are the box's, whether a walk reached it or the part-level count names
+it, while a character whose nearest owner is a drawing is paint no walk read. Art
+(`visual_element`) never takes in a character, and a drawing or picture that
+another one holds is decided by the outermost one, so one shape is named once,
+not once per nesting level. Art of the kinds listed below that the outermost
+drawing draws beside or inside a box this walk read is art nobody read, so that
+drawing keeps its own non-blocking `visual_element` entry. Art of any other kind
+it draws there is silent, so a filled autoshape beside a box (`a:solidFill` in a
+`wps:wsp`, or a `v:rect` in the same `w:pict` as the box) keeps no entry; a
+drawing that holds nothing but the box reports nothing, whether a walk read the
+box or the part-level count names it.
+
+The descent is bounded: wrappers, content controls, table cells and text boxes
+each cost one level of `_MAX_BLOCK_DEPTH`, and a descent past it is reported as
+a `nesting` limitation rather than followed, so a hostile package gets the same
+answer every time instead of whatever the interpreter's recursion limit allows.
+The drawing accounting beside that walk is bounded too: each outermost drawing is
+decided in one pass over its markup, so nesting drawings inside box bodies costs
+the size of that markup rather than a re-decision per nesting level.
+
+Still reported, and still blocking review: `nesting` content, a nested table or
+text box no walk reached, tracked insertions/deletions/moves, a content control
+no walk descends, a field's cached result, `w:altChunk`/`w:subDoc`, a wrapper or
+table child holding text outside those shapes, an entity reference, an unread
+note or comment body, DrawingML paint wherever it sits, a part a drawing points
+at that is not an image, and a vector image that cannot be proven to draw shapes
+only. Art (`visual_element`) and a font-specific symbol code point are reported
+but do not block. The art this reader names is an image fill (DrawingML
+`a:blip`, VML `v:imagedata`), VML WordArt's character string `v:textpath`, which
+lives in an attribute no text node carries, and a drawing or picture that holds
+no box of its own, a nested one that is nothing but art included; a nested
+drawing that is only a box is not art, neither is a box body's own text, and
+neither is a shape that shares the box's `w:drawing` or `w:pict` and fills with
+no image, carries no WordArt string and holds no box of its own.
+`tests/unit/test_docx_reader.py` pins this list cell by cell
+(`_DRAWING_TEXT_TRUTH_TABLE`), so a shape not named here is a missing row rather
+than a silent omission; synthetic tests establish these reader behaviours and are
+not a claim of universal DOCX coverage or visual accuracy.
+
 ## Target Analysis Boundary
 
 `TargetLayoutAnalyzer` records measurable page and element evidence. It does not

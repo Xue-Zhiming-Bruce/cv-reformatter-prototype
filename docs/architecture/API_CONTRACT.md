@@ -80,7 +80,9 @@ Response fields:
   mock extraction client or a configured AI provider. It carries no provider
   name, model id, endpoint, credential or region;
 - `ingestion_limitations` — one attributed review requirement per visible DOCX
-  shape the reader cannot read (nested table, text box, tracked insertion,
+  shape the reader cannot read (a nested table or text box the walk did not reach
+  — one past the reader's nesting bound, or one inside content it declines —,
+  content past that nesting bound (`nesting`), tracked insertion,
   deletion or move, content a content control holds where no walk descends it —
   a control whose content is none of the blocks, rows, cells or runs the reader
   places, such as one inside tracked change markup —, simple field
@@ -97,10 +99,23 @@ Response fields:
   all block, while `title`, `desc` and `metadata` do not count and a `style`
   element is allowed, so text a CSS `content:` rule paints is not detected —, and
   drawings and pictures
-  that hold only art, not blocking because OCR is out of scope; a drawing that
-  carries a character is a text box instead, and blocks. One entry per kind and
+  that hold only art, not blocking because OCR is out of scope; the art this
+  reader names is an image fill (DrawingML `a:blip`, VML `v:imagedata`), VML
+  WordArt's `v:textpath` string, and a drawing or picture that holds no box of
+  its own. It keeps that non-blocking `visual_element` entry when the drawing also
+  holds a text box the reader did read, whether the art sits in that box body or
+  beside it, while a drawing whose content is only that box reports nothing; a
+  character a drawing paints — DrawingML `a:t` — makes the drawing a blocking
+  entry, a text box unless the same drawing also points at a part this reader
+  cannot read, which blocks as an embedded part, and it keeps that entry wherever
+  the character sits, including on a drawing nested inside a `w:txbxContent` body
+  the reader did read and on a drawing that also holds a box it read: reading a
+  box body reads that body's own text, never the paint drawn inside it or beside
+  it, and art never absorbs a character. One entry per kind and
   document part, counting each element found, so two drawings that point at one
-  unread part are two. The branch selection the inline walk makes also decides
+  unread part are two, while a drawing or picture another one holds is not counted
+  twice — the outermost one decides about the text and the parts inside it. The
+  branch selection the inline walk makes also decides
   which of a drawing's `mc:AlternateContent` branches contributes text), naming
   its location and, for a wrapper, the element name and child position; empty for
   PDFs and for DOCX files inside the supported shapes. The
@@ -121,7 +136,10 @@ Response fields:
   table's own XML so a control or structural wrapper around either is read,
   cells read through the same block walk, a content control read in every
   position the walk reaches (paragraphs and tables at block level, rows and
-  cells in a table, runs inline), block wrappers of paragraphs/tables,
+  cells in a table, runs inline), block wrappers of paragraphs, tables and further
+  wrappers, a table nested in a cell read in the cell that holds it, the text of a
+  text box read after the paragraph that anchors it (see
+  `docs/architecture/DOCUMENT_PIPELINE.md` for the source-order convention), and
   inline text read by one walk with one explicit decision per element of the
   inline content model (every character renders: `w:t`, tabs, breaks,
   `w:noBreakHyphen`, `w:softHyphen`, `w:sym`'s code point, ruby base text; runs,
