@@ -147,6 +147,26 @@ def test_an_unsettled_attempt_stays_charged() -> None:
     assert view["dimensions"]["model_requests"]["reserved"] == 4
 
 
+def test_an_unknown_provider_outcome_keeps_its_reservation_and_is_never_retried() -> None:
+    """A sent request whose answer never arrived may have been billed: charged, not reset."""
+    store, conversion_id = _store()
+    with pytest.raises(RuntimeError):
+        with envelope_stage(conversion_id, STAGE_CANDIDATE_GENERATION, store=store):
+            reserve(conversion_id, STAGE_CANDIDATE_GENERATION, "model_requests", store=store)
+            raise RuntimeError("the provider never answered") from TimeoutError("read timed out")
+    stage_events = [event for event in store.list_events(conversion_id)
+                    if event["stage"] == STAGE_CANDIDATE_GENERATION]
+    # One reservation, one unknown settlement: the failure started no second request.
+    assert [(event["kind"], event["provider_outcome"]) for event in stage_events] == [
+        ("reserved", "none_sent"), ("settled_unknown", "unknown")]
+    dimensions = envelope_view(conversion_id, store=store)["dimensions"]
+    assert (dimensions["model_requests"]["consumed"],
+            dimensions["model_requests"]["reserved"]) == (1, 0)
+    assert dimensions["model_requests"]["remaining"] == 36 - 5 - 1
+    # Terminal for the stage: a retry resolves the same envelope and keeps the charge.
+    assert conversion_for("artifact_one", store=store)["conversion_id"] == conversion_id
+
+
 def test_deadline_expiry_refuses_the_next_stage_before_dispatch() -> None:
     store = InMemoryExecutionEnvelopeStore()
     conversation = open_envelope(artifact_id="artifact_late", store=store,
