@@ -138,6 +138,42 @@ def test_a_retry_continues_the_same_envelope_and_never_resets_it() -> None:
     assert view["dimensions"]["model_requests"]["reserved"] == 0
 
 
+def test_an_exhausted_envelope_is_superseded_by_the_next_operation() -> None:
+    """ADR 0010 Decision 5: the explicit new-envelope escape hatch, recorded.
+
+    The refusal belongs to the operation that ran out, so a later operation opens
+    its own envelope and the superseded one keeps its attribution.
+    """
+    store, conversion_id = _store()
+    for _ in range(36 - 5):
+        reserve(conversion_id, STAGE_CANDIDATE_GENERATION, "model_requests", store=store)
+    with pytest.raises(EnvelopeRefused):
+        reserve(conversion_id, STAGE_CANDIDATE_GENERATION, "model_requests", store=store)
+
+    later = conversion_for("artifact_one", store=store)
+    assert later["conversion_id"] != conversion_id
+    assert later["supersedes_conversion_id"] == conversion_id
+    assert later["state"] == "open"
+    # The new operation can pay; the superseded envelope keeps its refusal.
+    reserve(later["conversion_id"], STAGE_CANDIDATE_GENERATION, "model_requests", store=store)
+    assert envelope_view(conversion_id, store=store)["state"] == "superseded"
+    detail = envelope_view(conversion_id, store=store)["refusal"]
+    assert (detail["error_code"], detail["envelope_state"]) == ("budget_exceeded", "exhausted")
+    assert envelope_view(later["conversion_id"], store=store)["supersedes_conversion_id"] == conversion_id
+
+
+def test_an_expired_envelope_is_superseded_instead_of_bricking_the_artifact() -> None:
+    store = InMemoryExecutionEnvelopeStore()
+    expired = open_envelope(artifact_id="artifact_one", store=store,
+                            deadline_at=datetime.now(UTC) - timedelta(seconds=1))
+    later = conversion_for("artifact_one", store=store)
+    assert later["conversion_id"] != expired["conversion_id"]
+    assert later["supersedes_conversion_id"] == expired["conversion_id"]
+    with envelope_stage(later["conversion_id"], STAGE_LAYOUT_PROOFS, store=store):
+        seed_budget(RunBudget(max_model_requests=12, max_tool_calls=24), store=store)
+    assert envelope_view(expired["conversion_id"], store=store)["state"] == "superseded"
+
+
 def test_an_unsettled_attempt_stays_charged() -> None:
     """A process that died mid-request keeps its reservation: it may have been billed."""
     store, conversion_id = _store()

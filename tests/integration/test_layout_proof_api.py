@@ -2427,3 +2427,46 @@ def test_comparison_image_page_numbers_come_from_the_stored_report(tmp_path: Pat
         image for image in entry["comparison_images"] if image["filename"] == gap_page.difference_filename
     )
     assert client.get(gap_entry["url"]).status_code == 200
+
+
+def test_a_later_proof_request_opens_a_new_envelope_after_an_exhausted_one(
+    postgres_database, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #43: a spent balance decides its own operation, not the next one.
+
+    The durable envelope outlives the request that spent it, so a second proof
+    request for the same artifact must not inherit ``budget_exceeded``. It opens
+    a new envelope, records the one it supersedes, and renders; the superseded
+    envelope keeps the refusal it recorded for its own operation.
+    """
+    from app.storage import execution_envelope as envelope
+    from app.storage.postgres import PostgresExecutionEnvelopeStore
+    from tests.helpers.postgres import migrate_database
+
+    url, engine = postgres_database
+    migrate_database(engine)
+    monkeypatch.setattr(main, "DATABASE_URL", url)
+    # The store the proof service resolves: deliberately the durable one.
+    monkeypatch.setenv("DATABASE_URL", url)
+    artifact_id = "artifact_proof_repeat_operation"
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+
+    store = PostgresExecutionEnvelopeStore(engine)
+    spent = envelope.conversion_for(artifact_id, store=store)
+    while True:
+        try:
+            envelope.reserve(spent["conversion_id"], envelope.STAGE_LAYOUT_PROOFS,
+                             "model_requests", store=store)
+        except envelope.EnvelopeRefused:
+            break
+    assert envelope.envelope_view(spent["conversion_id"], store=store)["state"] == "exhausted"
+
+    rendered = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})
+    assert rendered.status_code == 200, rendered.text
+    later = envelope.conversion_for(artifact_id, store=store)
+    assert later["conversion_id"] != spent["conversion_id"]
+    assert later["supersedes_conversion_id"] == spent["conversion_id"]
+    superseded = envelope.envelope_view(spent["conversion_id"], store=store)
+    assert superseded["state"] == "superseded"
+    assert superseded["refusal"]["error_code"] == "budget_exceeded"

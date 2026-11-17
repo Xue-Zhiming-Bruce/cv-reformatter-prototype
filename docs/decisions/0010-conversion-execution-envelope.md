@@ -248,12 +248,12 @@ and `envelope_view(...)["reused_stages"]` stays empty until such a path exists.
 
 ### Retries, Reload, Resubmission And Job Retry
 
-- **Never reset.** The envelope balance is read from storage at the start of any
-  stage and written back as events; a new attempt, a reloaded page, a resubmitted
-  request or a re-claimed job continues the same envelope. A fresh child process
-  with a fresh `RunBudget` must be *seeded* from the stored balance — that is the
-  concrete change, because today a retried attempt would start from the
-  configured ceiling again.
+- **Never reset within one operation.** The envelope balance is read from
+  storage at the start of any stage and written back as events; a reloaded page,
+  a resubmitted request or a re-claimed job that belongs to the same operation
+  continues the same envelope. A fresh child process with a fresh `RunBudget`
+  must be *seeded* from the stored balance — that is the concrete change,
+  because today a retried attempt would start from the configured ceiling again.
 - Existing retry surface that stays as it is: job attempts append rows and are
   bounded (`app/storage/postgres.py:187-199`, `ck_attempt_number` ≤ 3), the
   payload is frozen and re-verified (`app/job_worker.py:265-271`), and an
@@ -267,6 +267,21 @@ and `envelope_view(...)["reused_stages"]` stays empty until such a path exists.
   charged. No automatic duplicate provider work.
 - Opening a new envelope is explicit and recorded, never implicit — see
   [Decision 5](#decisions-required-from-the-owner).
+
+**Operation boundary (implemented 2026-11-18).** One operation — a synchronous
+request, a job attempt, an explicit new conversion — resolves one envelope at its
+first covered stage (`conversion_for`). An envelope that is still `open` and
+inside its `deadline_at` is *continued*, so a reload or a resubmission inside the
+operation never re-arms it. An envelope that is `exhausted` or past its deadline
+has already answered for the operation it belonged to: the new operation opens a
+new envelope, records the old `conversion_id` in `supersedes_conversion_id` (row
+and `opened` event), and the old envelope becomes `superseded` with its refusal
+and deadline evidence intact. This is Decision 5's escape hatch and the record's
+only reset: no history is rewritten, and a refusal always names the operation
+that actually ran out. The rejected alternative is the obvious one — reusing a
+dead envelope forever — which turns the next unrelated operation of the same
+artifact into a `budget_exceeded`/`deadline_exceeded` refusal about work it never
+ran.
 
 ### Token And Currency Semantics
 
@@ -371,7 +386,11 @@ refuses to discard recorded history — see
   (`opened`/`reserved`/`consumed`/`settled_unknown`/`reused`/`refused`/`closed`),
   `amount`, `provider_outcome`, `job_id`/`attempt_number` when applicable,
   `created_at`), with a trigger rejecting update/delete, matching the pattern of
-  `immutable_layout_proof_approval` and the job history triggers;
+  `immutable_layout_proof_approval` and the job history triggers. The event key is
+  the pair `(conversion_id, sequence)` and `sequence` is allocated per envelope:
+  `0010_conversion_envelopes` created it as the single-column primary key, which
+  collided on the second envelope in a database, so
+  `0011_envelope_event_sequence` re-keys the table without touching a row;
 - no column is added to any existing table except, if
   [Decision 6](#decisions-required-from-the-owner) selects it, an additive
   `conversion_id` on `workflow_jobs` so a job names its envelope;
@@ -653,7 +672,11 @@ separately answered by the owner.
    through an explicit, recorded action that closes and retains the previous one
    (`state: superseded`, `supersedes_conversion_id`). Cost of refusal: choose
    between permanently blocking a recruiter after exhaustion and allowing a
-   silent reset on resubmission — the latter violates issue #43 AC2.
+   silent reset on resubmission — the latter violates issue #43 AC2. Implemented
+   reading (see [Retries, Reload, Resubmission And Job Retry](#retries-reload-resubmission-and-job-retry)):
+   the recorded action is a *new operation*, taken when the live envelope is
+   already `exhausted` or past its deadline; a live envelope is never reset, so
+   AC2's no-reset-on-resubmission still holds inside an operation.
 
 6. **Persistence: additive tables, or job-only state?** Recommendation: the two
    additive tables and the repository described in

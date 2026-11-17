@@ -1263,11 +1263,23 @@ Three additive surfaces exist for the frontend:
   means nothing left the server. Synchronous routes answer `409` with that
   detail object; a job stops with the same code and state instead.
 - an additive `envelope` block on job reads (`job/1`), carrying the same
-  dimensions, the observed tokens, the `unknown` currency, the `reused_stages`
-  and the last `refusal`. It is absent until the artifact starts an enveloped
-  stage.
+  dimensions, the observed tokens, the `unknown` currency, the `reused_stages`,
+  the last `refusal`, and `supersedes_conversion_id`: `null` for the artifact's
+  first envelope, otherwise the envelope this one replaced. It is absent until
+  the artifact starts an enveloped stage.
 - `GET /api/artifacts/{artifact_id}/conversion-envelope` is **not** implemented;
   the block on job reads is the only read surface today.
+
+An operation boundary, not a reload boundary: one synchronous request, one job
+attempt or one explicit new conversion resolves one envelope at its first
+covered stage. An envelope that is still open and inside its deadline is
+continued, so a refresh, resubmission or re-claimed attempt of the same
+operation never re-arms the balance. Once it is `exhausted` or past its deadline,
+the operation it belonged to has had its answer — a later request opens a new
+envelope, records the previous `conversion_id` in `supersedes_conversion_id`
+(and marks the previous one `superseded`, keeping its refusal), and spends its
+own balance. A refusal therefore always describes the request that ran out, not
+a request that inherited a dead balance.
 
 An unknown provider outcome (`provider_outcome: unknown`) stays terminal for
 that stage: `needs_attention`, no automatic duplicate provider request, and the

@@ -218,18 +218,42 @@ def open_envelope(*, artifact_id: str, limits: EnvelopeLimits | None = None,
     store.create_envelope(envelope)
     store.append_event(envelope["conversion_id"], {
         "stage": "conversion", "dimension": "model_requests", "kind": "opened", "amount": 0,
-        "provider_outcome": NONE_SENT, "observed": {"limits": envelope["limits"]}})
+        "provider_outcome": NONE_SENT,
+        "observed": {"limits": envelope["limits"],
+                     "supersedes_conversion_id": supersedes_conversion_id}})
     return envelope
 
 
-def conversion_for(artifact_id: str, *, store: ExecutionEnvelopeStore | None = None) -> dict[str, Any]:
-    """The artifact's live envelope, else a new one opened at this first covered stage.
+def _serves_a_new_operation(envelope: dict[str, Any]) -> bool:
+    """Whether this envelope can still carry the operation starting now.
 
-    An ``exhausted`` envelope is found on purpose: a reload, resubmission or job
-    retry continues it and stays refused instead of starting over.
+    An open envelope inside its deadline is continued, so a reload, a
+    resubmission or a re-claimed job never resets the balance. An exhausted or
+    expired one has already answered for the operation it belonged to and must
+    not answer for a later one.
+    """
+    return (envelope["state"] == "open"
+            and datetime.fromisoformat(envelope["deadline_at"]) > datetime.now(UTC))
+
+
+def conversion_for(artifact_id: str, *, store: ExecutionEnvelopeStore | None = None) -> dict[str, Any]:
+    """The envelope of the operation starting now (ADR 0010 Decision 5).
+
+    Each covered entry point -- a synchronous request, a job attempt, an explicit
+    new conversion -- is one operation and resolves one envelope. A live envelope
+    is continued. One that is exhausted or past its deadline is superseded by a
+    new envelope that records it, so a dead balance never turns a later operation
+    into a refusal about work that request never ran, and its own refusal and
+    deadline evidence survives on the superseded envelope.
     """
     store = store or default_store()
-    return store.find_open(artifact_id) or open_envelope(artifact_id=artifact_id, store=store)
+    live = store.find_open(artifact_id)
+    if live is not None and _serves_a_new_operation(live):
+        return live
+    if live is not None:
+        store.set_state(live["conversion_id"], "superseded", datetime.now(UTC))
+    return open_envelope(artifact_id=artifact_id, store=store,
+                         supersedes_conversion_id=live["conversion_id"] if live else None)
 
 
 def child_allocation(conversion_id: str, stage: str, *,
@@ -384,6 +408,9 @@ def envelope_view(conversion_id: str, *, store: ExecutionEnvelopeStore | None = 
         "conversion_id": conversion_id, "artifact_id": envelope["artifact_id"],
         "state": envelope["state"], "opened_at": envelope["opened_at"],
         "deadline_at": envelope["deadline_at"],
+        # Set when this envelope replaced one that was exhausted or expired: a
+        # reloaded page reads which operation came before it instead of guessing.
+        "supersedes_conversion_id": envelope["supersedes_conversion_id"],
         "deadline_exceeded": datetime.fromisoformat(envelope["deadline_at"]) <= datetime.now(UTC),
         "covered_stages": list(COVERED_STAGES), "excluded_stages": list(EXCLUDED_STAGES),
         "reused_stages": sorted({str(event["stage"]) for event in events if event["kind"] == "reused"}),
