@@ -80,7 +80,9 @@ Response fields:
   mock extraction client or a configured AI provider. It carries no provider
   name, model id, endpoint, credential or region;
 - `ingestion_limitations` — one attributed review requirement per visible DOCX
-  shape the reader cannot read (nested table, text box, tracked insertion,
+  shape the reader cannot read (a nested table or text box the walk did not reach
+  — one past the reader's nesting bound, or one inside content it declines —,
+  content past that nesting bound (`nesting`), tracked insertion,
   deletion or move, content a content control holds where no walk descends it —
   a control whose content is none of the blocks, rows, cells or runs the reader
   places, such as one inside tracked change markup —, simple field
@@ -121,7 +123,10 @@ Response fields:
   table's own XML so a control or structural wrapper around either is read,
   cells read through the same block walk, a content control read in every
   position the walk reaches (paragraphs and tables at block level, rows and
-  cells in a table, runs inline), block wrappers of paragraphs/tables,
+  cells in a table, runs inline), block wrappers of paragraphs, tables and further
+  wrappers, a table nested in a cell read in the cell that holds it, the text of a
+  text box read after the paragraph that anchors it (see
+  `docs/architecture/DOCUMENT_PIPELINE.md` for the source-order convention), and
   inline text read by one walk with one explicit decision per element of the
   inline content model (every character renders: `w:t`, tabs, breaks,
   `w:noBreakHyphen`, `w:softHyphen`, `w:sym`'s code point, ruby base text; runs,

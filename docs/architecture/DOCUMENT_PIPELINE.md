@@ -91,6 +91,48 @@ Each LLM section is assigned stable `source_block_id` lineage when persisted.
 Optional/custom entries retain that lineage and must still receive the existing
 review and show/hide disposition before profile approval.
 
+### DOCX Reader Read/Report Inventory — issue #56
+
+The reader (`app/ingestion/docx_reader.py`) reads these shapes in authored
+order, each in the position it occupies: body paragraphs and top-level tables;
+table rows and cells walked on the table's own XML, so a control or structural
+wrapper around either is read; a cell's block content through the same block walk
+as the body, a table nested in a cell included — its rows keep their columns and
+it stays in the cell that holds it instead of being flattened into the parent
+row; a content control in every position the walk reaches; a structural wrapper
+whose children are paragraphs, tables, content controls or further such wrappers,
+so `w:customXml > w:smartTag > w:p` is read once and reports nothing; an Office
+Math zone; a referenced footnote or endnote; inline text by one decision table;
+one `mc:AlternateContent` branch; and the same shapes inside a header/footer read
+once per displayed variant.
+
+Text boxes (`w:txbxContent`) are read through that same block walk, so a
+paragraph, table or wrapper inside a box follows the rules above. **Source-order
+convention:** a text box floats relative to its anchor — the package records the
+anchor, not the page position a viewer paints — so box text is emitted as blocks
+of its own directly after the paragraph that anchors the drawing, in the order
+the drawing's own selected markup holds its boxes. That is the one authored
+position the file records: it does not reconstruct visual page reading order,
+and it neither invents a page position nor splices box text into the middle of
+the anchoring line. A drawing whose text is DrawingML shape text outside a
+`w:txbxContent` text body (`a:t`) is not read this way and stays a reported
+`text_box`.
+
+The descent is bounded: wrappers, content controls, table cells and text boxes
+each cost one level of `_MAX_BLOCK_DEPTH`, and a descent past it is reported as
+a `nesting` limitation rather than followed, so a hostile package gets the same
+answer every time instead of whatever the interpreter's recursion limit allows.
+
+Still reported, and still blocking review: `nesting` content, a nested table or
+text box no walk reached, tracked insertions/deletions/moves, a content control
+no walk descends, a field's cached result, `w:altChunk`/`w:subDoc`, a wrapper or
+table child holding text outside those shapes, an entity reference, an unread
+note or comment body, a part a drawing points at that is not an image, and a
+vector image that cannot be proven to draw shapes only. Art (`visual_element`)
+and a font-specific symbol code point are reported but do not block. Synthetic
+tests establish these reader behaviours; they are not a claim of universal DOCX
+coverage or visual accuracy.
+
 ## Target Analysis Boundary
 
 `TargetLayoutAnalyzer` records measurable page and element evidence. It does not
