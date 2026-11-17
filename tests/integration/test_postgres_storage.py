@@ -127,7 +127,7 @@ def test_postgres_migrations_are_explicit_reversible_and_match_repository(
     cli = subprocess.run([sys.executable, "-B", "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "current"],
         cwd=tmp_path, env={**os.environ, "DATABASE_URL": url, "PYTHONPATH": ""},
         capture_output=True, text=True, timeout=30)
-    assert cli.returncode == 0 and "0010_conversion_envelopes" in cli.stdout, cli.stderr
+    assert cli.returncode == 0 and "0011_envelope_event_sequence" in cli.stdout, cli.stderr
     with engine.connect() as connection:
         assert compare_metadata(MigrationContext.configure(connection), metadata) == []
     _migrate(engine, "base", downgrade=True)
@@ -777,3 +777,28 @@ def _grant_tokens(store, conversion_id: str) -> None:
         budget.spend_model("builder")
     budget.spend_model("builder", requests=0, mode="live",
                        usage=SimpleNamespace(input_tokens=1200, output_tokens=300))
+
+
+def test_envelope_event_numbers_are_per_conversion_and_never_collide(postgres_database) -> None:
+    """Issue #43: the event number belongs to its envelope, so appends never collide.
+
+    The durable store allocates ``sequence`` per conversion. Keyed by the number
+    alone, the second envelope's first event collided with the first envelope's
+    and every later append was refused as ``EnvelopeUnavailable``.
+    """
+    from app.storage import execution_envelope as envelope
+    from app.storage.postgres import PostgresExecutionEnvelopeStore
+    from tests.helpers.postgres import migrate_database
+
+    url, engine = postgres_database
+    migrate_database(engine)
+    store = PostgresExecutionEnvelopeStore(engine)
+    first = envelope.open_envelope(artifact_id="artifact_sequence_one", store=store)
+    second = envelope.open_envelope(artifact_id="artifact_sequence_two", store=store)
+    with envelope.envelope_stage(first["conversion_id"], envelope.STAGE_CANDIDATE_GENERATION,
+                                 store=store):
+        _grant_tokens(store, first["conversion_id"])
+    numbers = [event["sequence"] for event in store.list_events(first["conversion_id"])]
+    assert numbers == sorted(set(numbers)), numbers
+    assert len(numbers) > 2
+    assert [event["sequence"] for event in store.list_events(second["conversion_id"])] == [1]

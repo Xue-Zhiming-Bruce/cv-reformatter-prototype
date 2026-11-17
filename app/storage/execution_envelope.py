@@ -203,6 +203,7 @@ def _refuse(store: ExecutionEnvelopeStore, envelope: dict[str, Any], stage: str,
 
 def open_envelope(*, artifact_id: str, limits: EnvelopeLimits | None = None,
                   deadline_at: datetime | None = None, supersedes_conversion_id: str | None = None,
+                  reason: str | None = None,
                   store: ExecutionEnvelopeStore | None = None) -> dict[str, Any]:
     """Open one envelope for an artifact's whole conversion; explicit, never implicit."""
     store, limits = store or default_store(), limits or EnvelopeLimits()
@@ -218,18 +219,44 @@ def open_envelope(*, artifact_id: str, limits: EnvelopeLimits | None = None,
     store.create_envelope(envelope)
     store.append_event(envelope["conversion_id"], {
         "stage": "conversion", "dimension": "model_requests", "kind": "opened", "amount": 0,
-        "provider_outcome": NONE_SENT, "observed": {"limits": envelope["limits"]}})
+        "provider_outcome": NONE_SENT,
+        "observed": {"limits": envelope["limits"], "reason": reason,
+                     "supersedes_conversion_id": supersedes_conversion_id}})
     return envelope
 
 
 def conversion_for(artifact_id: str, *, store: ExecutionEnvelopeStore | None = None) -> dict[str, Any]:
-    """The artifact's live envelope, else a new one opened at this first covered stage.
+    """The artifact's ONE conversion envelope, else a new one at its first covered stage.
 
-    An ``exhausted`` envelope is found on purpose: a reload, resubmission or job
-    retry continues it and stays refused instead of starting over.
+    An ``exhausted`` or expired envelope is returned on purpose: a reload, a
+    resubmission and a re-claimed job attempt all continue it and stay refused
+    with its own recorded detail instead of starting over with a fresh balance.
+    Nothing in the request or job path opens a second envelope for an artifact;
+    ``supersede_and_open`` is the one action that does, and it is explicit.
     """
     store = store or default_store()
     return store.find_open(artifact_id) or open_envelope(artifact_id=artifact_id, store=store)
+
+
+def supersede_and_open(artifact_id: str, reason: str, *,
+                       limits: EnvelopeLimits | None = None, deadline_at: datetime | None = None,
+                       store: ExecutionEnvelopeStore | None = None) -> dict[str, Any]:
+    """Close the artifact's envelope and open its successor, both recorded (ADR 0010 Decision 5).
+
+    The record's only escape hatch from a spent balance or a passed deadline, and
+    an action of its own: the previous envelope becomes ``superseded`` with its
+    refusal, spend and deadline evidence retained, and the successor records
+    ``supersedes_conversion_id`` and this ``reason`` in its ``opened`` event. No
+    route, resubmission or job attempt calls this -- a recruiter-visible request
+    field for it is a product decision that is not taken here.
+    """
+    store = store or default_store()
+    previous = store.find_open(artifact_id)
+    if previous is not None:
+        store.set_state(previous["conversion_id"], "superseded", datetime.now(UTC))
+    return open_envelope(artifact_id=artifact_id, limits=limits, deadline_at=deadline_at,
+                         supersedes_conversion_id=previous["conversion_id"] if previous else None,
+                         reason=reason, store=store)
 
 
 def child_allocation(conversion_id: str, stage: str, *,
@@ -384,6 +411,9 @@ def envelope_view(conversion_id: str, *, store: ExecutionEnvelopeStore | None = 
         "conversion_id": conversion_id, "artifact_id": envelope["artifact_id"],
         "state": envelope["state"], "opened_at": envelope["opened_at"],
         "deadline_at": envelope["deadline_at"],
+        # Set when this envelope replaced one that was exhausted or expired: a
+        # reloaded page reads which operation came before it instead of guessing.
+        "supersedes_conversion_id": envelope["supersedes_conversion_id"],
         "deadline_exceeded": datetime.fromisoformat(envelope["deadline_at"]) <= datetime.now(UTC),
         "covered_stages": list(COVERED_STAGES), "excluded_stages": list(EXCLUDED_STAGES),
         "reused_stages": sorted({str(event["stage"]) for event in events if event["kind"] == "reused"}),

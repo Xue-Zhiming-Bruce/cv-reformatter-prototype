@@ -539,8 +539,10 @@ generation manifest slice is implemented; the production exit remains open.
       [ADR 0010](../decisions/0010-conversion-execution-envelope.md) (`Accepted`
       2026-11-17 for the owner's phased direction; items 2, 5, 6, 7 and 8 are
       carried implementation details, not separately approved). Implemented in
-      `app/storage/execution_envelope.py` with migration
-      `0010_conversion_envelopes`: request, tool and analyzer-operation capacity
+      `app/storage/execution_envelope.py` with migrations
+      `0010_conversion_envelopes` and `0011_envelope_event_sequence` (the event
+      key is the pair, so per-envelope numbering cannot collide): request, tool
+      and analyzer-operation capacity
       is reserved before dispatch against one stored balance per artifact, the
       three proof variants are children of one parent, candidate extraction and
       Adobe target analysis are counted, and one 900 s deadline is checked before

@@ -2427,3 +2427,56 @@ def test_comparison_image_page_numbers_come_from_the_stored_report(tmp_path: Pat
         image for image in entry["comparison_images"] if image["filename"] == gap_page.difference_filename
     )
     assert client.get(gap_entry["url"]).status_code == 200
+
+
+def test_a_resubmitted_proof_request_is_refused_on_the_same_envelope(
+    postgres_database, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Issue #43 AC2: a spent conversion stays spent; only an explicit supersede re-arms it.
+
+    The durable envelope outlives the request that spent it, so re-issuing
+    ``POST /api/artifacts/{id}/layout-proofs`` must inherit that balance and be
+    refused before any provider I/O — never open a fresh one. ``supersede_and_open``
+    is the record's escape hatch: called explicitly, it closes the spent envelope
+    (keeping its refusal) and lets the next request render on a new balance.
+    """
+    from app.storage import execution_envelope as envelope
+    from app.storage.postgres import PostgresExecutionEnvelopeStore
+    from tests.helpers.postgres import migrate_database
+
+    url, engine = postgres_database
+    migrate_database(engine)
+    monkeypatch.setattr(main, "DATABASE_URL", url)
+    # The store the proof service resolves: deliberately the durable one.
+    monkeypatch.setenv("DATABASE_URL", url)
+    artifact_id = "artifact_proof_repeat_operation"
+    _upload_target(tmp_path, artifact_id)
+    _create_proof_set(artifact_id)
+
+    store = PostgresExecutionEnvelopeStore(engine)
+    spent = envelope.conversion_for(artifact_id, store=store)
+    while True:
+        try:
+            envelope.reserve(spent["conversion_id"], envelope.STAGE_LAYOUT_PROOFS,
+                             "model_requests", store=store)
+        except envelope.EnvelopeRefused:
+            break
+    assert envelope.envelope_view(spent["conversion_id"], store=store)["state"] == "exhausted"
+
+    refused = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})
+    assert refused.status_code == 409, refused.text
+    detail = refused.json()["detail"]
+    assert (detail["error_code"], detail["conversion_id"]) == ("budget_exceeded",
+                                                               spent["conversion_id"])
+    assert detail["provider_outcome"] == "none_sent"
+    assert envelope.conversion_for(artifact_id, store=store)["conversion_id"] == spent["conversion_id"]
+
+    successor = envelope.supersede_and_open(
+        artifact_id, "operator restarted a spent conversion", store=store)
+    assert successor["supersedes_conversion_id"] == spent["conversion_id"]
+    rendered = client.post(f"/api/artifacts/{artifact_id}/layout-proofs", json={})
+    assert rendered.status_code == 200, rendered.text
+    assert envelope.conversion_for(artifact_id, store=store)["conversion_id"] == successor["conversion_id"]
+    replaced = envelope.envelope_view(spent["conversion_id"], store=store)
+    assert replaced["state"] == "superseded"
+    assert replaced["refusal"]["error_code"] == "budget_exceeded"

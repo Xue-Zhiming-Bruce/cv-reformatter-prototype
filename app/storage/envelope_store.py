@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 
 class EnvelopeUnavailable(RuntimeError):
@@ -22,11 +22,11 @@ class ExecutionEnvelopeStore(Protocol):
 
     def create_envelope(self, body: dict[str, Any]) -> None: ...
     def get_envelope(self, conversion_id: str) -> dict[str, Any] | None: ...
+    #: The artifact's current envelope: ``open`` or ``exhausted``, never a superseded one.
     def find_open(self, artifact_id: str) -> dict[str, Any] | None: ...
     def set_state(self, conversion_id: str, state: str, closed_at: datetime | None) -> None: ...
     def append_event(self, conversion_id: str, event: dict[str, Any]) -> None: ...
     def list_events(self, conversion_id: str) -> list[dict[str, Any]]: ...
-
 
 class InMemoryExecutionEnvelopeStore:
     """Process-wide store for the offline lane and unit tests: bounded but not durable."""
@@ -58,6 +58,13 @@ class InMemoryExecutionEnvelopeStore:
 
 
 _MEMORY_STORE = InMemoryExecutionEnvelopeStore()
+_configured_database_url: Callable[[], str | None] = lambda: os.getenv("DATABASE_URL")
+
+
+def configure_database_url(provider: Callable[[], str | None]) -> None:
+    """Let the application own the envelope backend the services resolve."""
+    global _configured_database_url
+    _configured_database_url = provider
 
 
 def memory_store() -> InMemoryExecutionEnvelopeStore:
@@ -68,8 +75,14 @@ def memory_store() -> InMemoryExecutionEnvelopeStore:
 
 
 def default_store() -> ExecutionEnvelopeStore:
-    """PostgreSQL when configured, else the bounded in-process store."""
-    url = os.getenv("DATABASE_URL")
+    """PostgreSQL when the application is configured with a database, else in-process.
+
+    One source of truth: the URL the application configured, never a mutable
+    environment value that a late ``load_dotenv`` can repopulate underneath a
+    caller. Otherwise a process could open an envelope in one store and read it
+    from another, which is exactly what must never happen to a refusal.
+    """
+    url = _configured_database_url()
     if not url:
         return _MEMORY_STORE
     from app.storage.postgres import PostgresExecutionEnvelopeStore, postgres_engine

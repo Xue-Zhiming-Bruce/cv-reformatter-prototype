@@ -872,7 +872,7 @@ class PostgresExecutionEnvelopeStore:
             raise EnvelopeUnavailable("The conversion envelope state could not be recorded.") from exc
 
     def append_event(self, conversion_id: str, event: Mapping[str, Any]) -> None:
-        """One append-only row; the envelope row serializes sequence allocation."""
+        """One append-only row; the envelope row serializes this envelope's numbering."""
         try:
             with self.engine.begin() as connection:
                 owned = connection.execute(select(conversion_envelopes.c.conversion_id).where(

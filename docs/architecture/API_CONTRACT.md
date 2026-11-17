@@ -1263,11 +1263,24 @@ Three additive surfaces exist for the frontend:
   means nothing left the server. Synchronous routes answer `409` with that
   detail object; a job stops with the same code and state instead.
 - an additive `envelope` block on job reads (`job/1`), carrying the same
-  dimensions, the observed tokens, the `unknown` currency, the `reused_stages`
-  and the last `refusal`. It is absent until the artifact starts an enveloped
-  stage.
+  dimensions, the observed tokens, the `unknown` currency, the `reused_stages`,
+  the last `refusal`, and `supersedes_conversion_id`: `null` for an artifact's
+  first envelope, otherwise the envelope an explicit new-conversion action
+  replaced. It is absent until the artifact starts an enveloped stage.
 - `GET /api/artifacts/{artifact_id}/conversion-envelope` is **not** implemented;
   the block on job reads is the only read surface today.
+
+One envelope per artifact, never reset by a request: a reload, a resubmission and
+re-claimed job attempt all continue the artifact's current envelope, so the same
+balance and the same `deadline_at` answer them. Once that envelope is
+`exhausted` or past its deadline, those paths keep answering `409` with that
+envelope's recorded refusal or expiry — they never open a fresh balance. The
+record's only escape hatch is an explicit, recorded action that marks the
+previous envelope `superseded` (keeping its refusal, spend and deadline
+history) and opens a successor naming it in `supersedes_conversion_id`. No route
+performs it and there is deliberately no request field for it: exposing it to a
+recruiter is a product decision that has not been taken, so today it exists only
+as an internal operation for a future API.
 
 An unknown provider outcome (`provider_outcome: unknown`) stays terminal for
 that stage: `needs_attention`, no automatic duplicate provider request, and the

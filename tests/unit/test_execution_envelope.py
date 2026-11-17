@@ -33,7 +33,25 @@ from app.storage.execution_envelope import (
     reserve,
     seed_budget,
     settle,
+    supersede_and_open,
 )
+
+
+def test_the_store_follows_the_configured_database_url_not_a_late_environment_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One backend per process: a repopulated ``DATABASE_URL`` must not redirect it.
+
+    ``load_dotenv`` can put the developer's database back into the environment
+    after a test disabled it, which used to split the writer and the reader of an
+    envelope across two stores. The application's own value decides.
+    """
+    from app import main
+    from app.storage import envelope_store
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://ignored@127.0.0.1:1/ignored")
+    monkeypatch.setattr(main, "DATABASE_URL", None)
+    assert isinstance(envelope_store.default_store(), InMemoryExecutionEnvelopeStore)
 
 
 def _store() -> tuple[InMemoryExecutionEnvelopeStore, str]:
@@ -136,6 +154,70 @@ def test_a_retry_continues_the_same_envelope_and_never_resets_it() -> None:
     view = envelope_view(conversion_id, store=store)
     assert view["dimensions"]["model_requests"]["consumed"] == 3
     assert view["dimensions"]["model_requests"]["reserved"] == 0
+
+
+def test_an_exhausted_envelope_is_continued_by_a_resubmission_not_reset() -> None:
+    """Issue #43 AC2: the next request spends the same balance, or is refused by it."""
+    store, conversion_id = _store()
+    for _ in range(36 - 5):
+        reserve(conversion_id, STAGE_CANDIDATE_GENERATION, "model_requests", store=store)
+    with pytest.raises(EnvelopeRefused):
+        reserve(conversion_id, STAGE_CANDIDATE_GENERATION, "model_requests", store=store)
+
+    later = conversion_for("artifact_one", store=store)
+    assert later["conversion_id"] == conversion_id
+    assert later["state"] == "exhausted"
+    # The resubmission is refused before dispatch instead of re-arming the balance.
+    with pytest.raises(EnvelopeRefused) as refused:
+        reserve(conversion_id, STAGE_CANDIDATE_GENERATION, "model_requests", store=store)
+    assert (refused.value.detail["error_code"], refused.value.detail["remaining"]) \
+        == ("budget_exceeded", 0)
+    assert len([body for body in store.envelopes.values()
+                if body["artifact_id"] == "artifact_one"]) == 1
+
+
+def test_supersede_and_open_is_the_recorded_way_to_a_second_envelope() -> None:
+    """ADR 0010 Decision 5: explicit, recorded, and it retains the envelope it replaced."""
+    store, conversion_id = _store()
+    for _ in range(36 - 5):
+        reserve(conversion_id, STAGE_CANDIDATE_GENERATION, "model_requests", store=store)
+    with pytest.raises(EnvelopeRefused):
+        reserve(conversion_id, STAGE_CANDIDATE_GENERATION, "model_requests", store=store)
+
+    successor = supersede_and_open("artifact_one", "operator restarted a spent conversion",
+                                   store=store)
+    assert successor["conversion_id"] != conversion_id
+    assert successor["supersedes_conversion_id"] == conversion_id
+    assert successor["state"] == "open"
+    opened = [event for event in store.list_events(successor["conversion_id"])
+              if event["kind"] == "opened"]
+    assert opened[0]["observed"]["reason"] == "operator restarted a spent conversion"
+    assert opened[0]["observed"]["supersedes_conversion_id"] == conversion_id
+    # The successor can pay; the envelope it replaced keeps its own refusal.
+    reserve(successor["conversion_id"], STAGE_CANDIDATE_GENERATION, "model_requests", store=store)
+    assert conversion_for("artifact_one", store=store)["conversion_id"] == successor["conversion_id"]
+    replaced = envelope_view(conversion_id, store=store)
+    assert replaced["state"] == "superseded"
+    assert (replaced["refusal"]["error_code"], replaced["refusal"]["envelope_state"]) \
+        == ("budget_exceeded", "exhausted")
+
+
+def test_an_expired_envelope_stays_refused_until_it_is_explicitly_superseded() -> None:
+    store = InMemoryExecutionEnvelopeStore()
+    expired = open_envelope(artifact_id="artifact_one", store=store,
+                            deadline_at=datetime.now(UTC) - timedelta(seconds=1))
+    assert conversion_for("artifact_one", store=store)["conversion_id"] == expired["conversion_id"]
+    with pytest.raises(EnvelopeRefused) as refused:
+        with envelope_stage(expired["conversion_id"], STAGE_LAYOUT_PROOFS, store=store):
+            pytest.fail("an expired deadline must not be renewed by the next request")
+    assert refused.value.detail["error_code"] == "deadline_exceeded"
+
+    successor = supersede_and_open("artifact_one", "operator restarted an expired conversion",
+                                   store=store)
+    assert successor["supersedes_conversion_id"] == expired["conversion_id"]
+    with envelope_stage(successor["conversion_id"], STAGE_LAYOUT_PROOFS, store=store):
+        seed_budget(RunBudget(max_model_requests=12, max_tool_calls=24), store=store)
+    assert envelope_view(expired["conversion_id"], store=store)["state"] == "superseded"
 
 
 def test_an_unsettled_attempt_stays_charged() -> None:

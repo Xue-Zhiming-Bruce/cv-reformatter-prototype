@@ -248,10 +248,11 @@ and `envelope_view(...)["reused_stages"]` stays empty until such a path exists.
 
 ### Retries, Reload, Resubmission And Job Retry
 
-- **Never reset.** The envelope balance is read from storage at the start of any
-  stage and written back as events; a new attempt, a reloaded page, a resubmitted
-  request or a re-claimed job continues the same envelope. A fresh child process
-  with a fresh `RunBudget` must be *seeded* from the stored balance — that is the
+- **Never reset.** The envelope balance is read from storage at the start of
+  any stage and written back as events; a reloaded page, a resubmitted request,
+  a re-claimed job and a job retry all continue the same envelope — including
+  after a refusal and after the deadline has passed. A fresh child process with
+  a fresh `RunBudget` must be *seeded* from the stored balance — that is the
   concrete change, because today a retried attempt would start from the
   configured ceiling again.
 - Existing retry surface that stays as it is: job attempts append rows and are
@@ -267,6 +268,23 @@ and `envelope_view(...)["reused_stages"]` stays empty until such a path exists.
   charged. No automatic duplicate provider work.
 - Opening a new envelope is explicit and recorded, never implicit — see
   [Decision 5](#decisions-required-from-the-owner).
+
+**Reset policy (implemented 2026-11-18).** `conversion_for` returns the
+artifact's current envelope whatever its state, so a reload, a resubmission, a
+re-claimed job and a job retry spend the same balance and, once it is
+`exhausted` or past its deadline, keep receiving that envelope's own refusal.
+An exhausted conversion stays exhausted: nothing in the request or job path
+re-arms it, and a refused request therefore cannot authorise a second full
+balance. The escape hatch is `supersede_and_open(artifact_id, reason)`: an
+explicit action that marks the current envelope `superseded` (its refusals,
+spend and deadline evidence intact), opens a successor that records
+`supersedes_conversion_id` and the `reason` in its `opened` event, and gives
+that successor a fresh balance. It has no caller in the product today — no
+route, resubmission or job attempt invokes it, and no request field exposes it,
+because a recruiter-visible "start over" is a product decision the owner has not
+taken (Decision 5 is carried, not answered). Cost of that refusal: a recruiter
+must contact the operator to continue a spent conversion, which is the price of
+AC2's no-reset rule.
 
 ### Token And Currency Semantics
 
@@ -371,7 +389,11 @@ refuses to discard recorded history — see
   (`opened`/`reserved`/`consumed`/`settled_unknown`/`reused`/`refused`/`closed`),
   `amount`, `provider_outcome`, `job_id`/`attempt_number` when applicable,
   `created_at`), with a trigger rejecting update/delete, matching the pattern of
-  `immutable_layout_proof_approval` and the job history triggers;
+  `immutable_layout_proof_approval` and the job history triggers. The event key is
+  the pair `(conversion_id, sequence)` and `sequence` is allocated per envelope:
+  `0010_conversion_envelopes` created it as the single-column primary key, which
+  collided on the second envelope in a database, so
+  `0011_envelope_event_sequence` re-keys the table without touching a row;
 - no column is added to any existing table except, if
   [Decision 6](#decisions-required-from-the-owner) selects it, an additive
   `conversion_id` on `workflow_jobs` so a job names its envelope;
@@ -654,6 +676,12 @@ separately answered by the owner.
    (`state: superseded`, `supersedes_conversion_id`). Cost of refusal: choose
    between permanently blocking a recruiter after exhaustion and allowing a
    silent reset on resubmission — the latter violates issue #43 AC2.
+   **Implemented as recommended:** `conversion_for` never re-arms a spent or
+   expired envelope, and `supersede_and_open` is the recorded action of
+   [Retries, Reload, Resubmission And Job Retry](#retries-reload-resubmission-and-job-retry).
+   It is internal for now: no route calls it and no request field exposes it, so
+   *when* a recruiter may start over stays the owner's unanswered question, while
+   the no-reset rule itself is enforced.
 
 6. **Persistence: additive tables, or job-only state?** Recommendation: the two
    additive tables and the repository described in

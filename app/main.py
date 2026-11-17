@@ -103,7 +103,7 @@ from app.storage.artifact_store import (
     ArtifactStoreError,
 )
 from app.storage.local_db import DEFAULT_DATABASE_PATH
-from app.storage.envelope_store import ExecutionEnvelopeStore
+from app.storage.envelope_store import ExecutionEnvelopeStore, configure_database_url
 from app.storage.execution_envelope import (
     STAGE_CANDIDATE_EXTRACTION,
     STAGE_TARGET_ANALYSIS,
@@ -296,6 +296,9 @@ GENERATED_OUTPUTS_DIR = Path(
 )
 LOCAL_DATABASE_PATH = Path(os.getenv("LOCAL_DATABASE_PATH", str(DEFAULT_DATABASE_PATH)))
 DATABASE_URL = os.getenv("DATABASE_URL")
+# The envelope services resolve their store from this one value, so a test that
+# patches ``main.DATABASE_URL`` patches the backend they actually use.
+configure_database_url(lambda: DATABASE_URL)
 
 
 def _generation_settings() -> GenerationSettings:
