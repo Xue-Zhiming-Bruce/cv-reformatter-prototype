@@ -99,15 +99,19 @@ Response fields:
   all block, while `title`, `desc` and `metadata` do not count and a `style`
   element is allowed, so text a CSS `content:` rule paints is not detected —, and
   drawings and pictures
-  that hold only art, not blocking because OCR is out of scope; a character a
-  drawing paints — DrawingML `a:t` — makes the drawing a blocking entry, a text
-  box unless the same drawing also points at a part this reader cannot read,
-  which blocks as an embedded part, and it keeps that entry wherever the
-  character sits, including on a drawing nested inside a `w:txbxContent` body the
-  reader did read and on a drawing that also holds a box it read: reading a box
-  body reads that body's own text, never the paint drawn inside it or beside it,
-  and art never absorbs a character. One entry per
-  kind and
+  that hold only art, not blocking because OCR is out of scope; the art this
+  reader names is an image fill (DrawingML `a:blip`, VML `v:imagedata`), VML
+  WordArt's `v:textpath` string, and a drawing or picture that holds no box of
+  its own. It keeps that non-blocking `visual_element` entry when the drawing also
+  holds a text box the reader did read, whether the art sits in that box body or
+  beside it, while a drawing whose content is only that box reports nothing; a
+  character a drawing paints — DrawingML `a:t` — makes the drawing a blocking
+  entry, a text box unless the same drawing also points at a part this reader
+  cannot read, which blocks as an embedded part, and it keeps that entry wherever
+  the character sits, including on a drawing nested inside a `w:txbxContent` body
+  the reader did read and on a drawing that also holds a box it read: reading a
+  box body reads that body's own text, never the paint drawn inside it or beside
+  it, and art never absorbs a character. One entry per kind and
   document part, counting each element found, so two drawings that point at one
   unread part are two, while a drawing or picture another one holds is not counted
   twice — the outermost one decides about the text and the parts inside it. The

@@ -127,7 +127,10 @@ characters are the box's, whether a walk reached it or the part-level count name
 it, while a character whose nearest owner is a drawing is paint no walk read. Art
 (`visual_element`) never takes in a character, and a drawing or picture that
 another one holds is decided by the outermost one, so one shape is named once,
-not once per nesting level.
+not once per nesting level. Art the outermost drawing draws beside or inside a
+box this walk read is art nobody read, so that drawing keeps its own
+non-blocking `visual_element` entry; a drawing that holds nothing but the box
+reports nothing, whether a walk read the box or the part-level count names it.
 
 The descent is bounded: wrappers, content controls, table cells and text boxes
 each cost one level of `_MAX_BLOCK_DEPTH`, and a descent past it is reported as
@@ -141,7 +144,12 @@ table child holding text outside those shapes, an entity reference, an unread
 note or comment body, DrawingML paint wherever it sits, a part a drawing points
 at that is not an image, and a vector image that cannot be proven to draw shapes
 only. Art (`visual_element`) and a font-specific symbol code point are reported
-but do not block. `tests/unit/test_docx_reader.py` pins this list cell by cell
+but do not block. The art this reader names is an image fill (DrawingML
+`a:blip`, VML `v:imagedata`), VML WordArt's character string `v:textpath`, which
+lives in an attribute no text node carries, and a drawing or picture that holds
+no box of its own, a nested one that is nothing but art included; a nested
+drawing that is only a box is not art, and neither is a box body's own text.
+`tests/unit/test_docx_reader.py` pins this list cell by cell
 (`_DRAWING_TEXT_TRUTH_TABLE`), so a shape not named here is a missing row rather
 than a silent omission; synthetic tests establish these reader behaviours and are
 not a claim of universal DOCX coverage or visual accuracy.
