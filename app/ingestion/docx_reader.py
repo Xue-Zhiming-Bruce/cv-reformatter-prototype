@@ -1041,26 +1041,17 @@ def _read_inline(
             if child.tag == _CONTENT_CONTROL:
                 # Read in place, so the part-level count must not call it unread.
                 account.controls.add(child)
+            target = (
+                _live_branch(child, namespaces, account)
+                if child.tag == _ALTERNATE_CONTENT
+                else child
+            )
+            if target is None:
+                continue  # no branch to read: nothing renders to render again
             if child.tag == _RUBY:
-                _read_ruby(
-                    child, pieces, limitations, location, namespaces, account, text_boxes
-                )
-            elif child.tag == _ALTERNATE_CONTENT:
-                branch = _live_branch(child, namespaces, account)
-                if branch is not None:
-                    _read_inline(
-                        branch,
-                        pieces,
-                        limitations,
-                        location,
-                        namespaces,
-                        account,
-                        text_boxes,
-                    )
+                _read_ruby(child, pieces, limitations, location, namespaces, account, text_boxes)
             else:
-                _read_inline(
-                    child, pieces, limitations, location, namespaces, account, text_boxes
-                )
+                _read_inline(target, pieces, limitations, location, namespaces, account, text_boxes)
         elif decision == "counted":
             if child.tag in (_DRAWING, _PICTURE):
                 # The drawing itself is left to the part-level count; the text boxes
@@ -1403,10 +1394,17 @@ def _block_text(block: ExtractedParagraph | ExtractedTable) -> str:
     return "\n".join(_table_lines(block))
 
 
-def _counted(element: BaseOxmlElement, tag: str, account: _ReadAccount) -> int:
+def _counted(
+    element: BaseOxmlElement,
+    tag: str,
+    account: _ReadAccount,
+    read: frozenset[BaseOxmlElement] | set[BaseOxmlElement] = frozenset(),
+) -> int:
     """Elements with this tag that no walk read and no discarded branch holds."""
     return sum(
-        1 for item in element.iter(tag) if not _inside(item, account.discarded)
+        1
+        for item in element.iter(tag)
+        if item not in read and not _inside(item, account.discarded)
     )
 
 
@@ -1447,12 +1445,7 @@ def _find_limitations(
             and table not in account.tables
             and not _inside(table, account.discarded)
         ),
-        "text_box": sum(
-            1
-            for box in element.iter(_TEXT_BOX)
-            if box not in account.text_boxes
-            and not _inside(box, account.discarded)
-        )
+        "text_box": _counted(element, _TEXT_BOX, account, account.text_boxes)
         + drawings["text_box"],
         "tracked_change": sum(
             _counted(element, tag, account) for tag in _TRACKED_WRAPPERS
