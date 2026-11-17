@@ -4807,3 +4807,39 @@ def test_the_measure_tool_refusal_crosses_the_attribution_handler(
 
     assert refusal.value.error_code == "local_processing_timeout"
     assert escalated == [], "the refusal was degraded into a provider-call failure"
+
+
+def test_an_expired_conversion_deadline_starts_no_further_stage() -> None:
+    """Issue #43 AC4: one deadline per conversion, checked before dispatch and between stages.
+
+    An in-flight provider request cannot be un-sent or un-billed, so the only
+    honest boundary is to start nothing new: the stage refuses, records the
+    refusal and stays out of the provider loop.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from app.storage.envelope_store import InMemoryExecutionEnvelopeStore
+    from app.storage.execution_envelope import (
+        STAGE_CANDIDATE_GENERATION,
+        STAGE_LAYOUT_PROOFS,
+        EnvelopeRefused,
+        envelope_stage,
+        envelope_view,
+        open_envelope,
+    )
+
+    store = InMemoryExecutionEnvelopeStore()
+    conversion = open_envelope(
+        artifact_id="artifact_deadline",
+        deadline_at=datetime.now(UTC) - timedelta(seconds=1),
+        store=store,
+    )
+    for stage in (STAGE_LAYOUT_PROOFS, STAGE_CANDIDATE_GENERATION):
+        with pytest.raises(EnvelopeRefused) as refused:
+            with envelope_stage(conversion["conversion_id"], stage, store=store):
+                raise AssertionError("no stage may start past the conversion deadline")
+        assert refused.value.detail["error_code"] == "deadline_exceeded"
+        assert refused.value.detail["provider_outcome"] == "none_sent"
+    view = envelope_view(conversion["conversion_id"], store=store)
+    assert view["deadline_exceeded"] is True
+    assert view["dimensions"]["model_requests"]["consumed"] == 0
