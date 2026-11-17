@@ -119,12 +119,12 @@ they are read from the run's own counters and the product's own
 
 | # | Stage | Seconds | Provider requests | Tokens |
 | --- | --- | --- | --- | --- |
-| 1 | Candidate extraction, `resume_E.pdf` (`POST /api/process`) | 0.179 | 0 (mock client reports 1 request) | 0 (mock client reports 0/0/0) |
+| 1 | Candidate extraction, `resume_E.pdf` (`POST /api/process`) | 0.179 | 0 (substitute: 1 mock-client request) | 0 (mock client reports 0/0/0) |
 | 2 | Recruiter review/approval (`POST /api/artifacts/{id}/profiles/approve`) | 0.003 | 0 | n/a (no provider call, replay) |
-| 3 | Target analysis: upload + analyze + compile (`POST /api/target-format`) | 0.132 | 0 (1 mock analyzer call) | n/a (no provider call, replay) |
-| 4 | Short/medium/long proof render (`POST /api/artifacts/{id}/layout-proofs`) | 8.271 | 0 (3 substituted renders) | n/a (no provider call, replay) |
+| 3 | Target analysis: upload + analyze + compile (`POST /api/target-format`) | 0.132 | 0 (substitute: 1 mock analyzer call) | n/a (no provider call, replay) |
+| 4 | Short/medium/long proof render (`POST /api/artifacts/{id}/layout-proofs`) | 8.271 | 0 (substitute: 3 renders) | n/a (no provider call, replay) |
 | 5 | Proof approval + reusable reference record (`…/layout-proofs/approve`) | 3.824 | 0 | n/a (no provider call, replay) |
-| 6 | Candidate render + review + gates (`POST /api/generate`, artifact-local path) | 2.058 | 0 (1 substituted render) | n/a (no provider call, replay) |
+| 6 | Candidate render + review + gates (`POST /api/generate`, artifact-local path) | 2.058 | 0 (substitute: 1 render) | n/a (no provider call, replay) |
 | 7 | Exact final acceptance (`POST /api/artifacts/{id}/final-acceptance`) | 0.003 | 0 | n/a (no provider call, replay) |
 
 Cold onboarding alone (stages 1–5) measured **12.409 s**; cold side total
@@ -134,11 +134,11 @@ Cold onboarding alone (stages 1–5) measured **12.409 s**; cold side total
 
 | # | Stage | Seconds | Provider requests | Tokens |
 | --- | --- | --- | --- | --- |
-| 8 | Candidate extraction, `resume_A.pdf` (`POST /api/process`) | 0.218 | 0 (mock client reports 1 request) | 0 (mock client reports 0/0/0) |
+| 8 | Candidate extraction, `resume_A.pdf` (`POST /api/process`) | 0.218 | 0 (substitute: 1 mock-client request) | 0 (mock client reports 0/0/0) |
 | 9 | Recruiter review/approval, incl. one explicit omit decision (section 5) | 0.005 | 0 | n/a (no provider call, replay) |
-| 10 | **Its own** target analysis: upload + analyze + compile | 0.141 | 0 (1 mock analyzer call — **made, not avoided**) | n/a (no provider call, replay) |
+| 10 | **Its own** target analysis: upload + analyze + compile | 0.141 | 0 (substitute: 1 mock analyzer call — **made, not avoided**) | n/a (no provider call, replay) |
 | 11 | Reference resolution inside `POST /api/generate` (`resolve_reusable_template`) | 0.067 | 0 | n/a (no provider call, replay) |
-| 12 | Its own candidate render + review + gates | 1.971 (whole request, incl. stage 11) | 0 (1 substituted render) | n/a (no provider call, replay) |
+| 12 | Its own candidate render + review + gates | 1.971 (whole request, incl. stage 11) | 0 (substitute: 1 render) | n/a (no provider call, replay) |
 | 13 | Its own exact final acceptance | 0.006 | 0 | n/a (no provider call, replay) |
 
 Warm side total (stages 8–13) measured **2.408 s**. In this substitute run the
@@ -155,6 +155,7 @@ candidate by `app/generation/service.py`. In this run its model loop is
 substituted (section 3); the count of *invocations* is what the run measured.
 
 **Avoided by the warm artifact (`artifact_ddedcd3981544befbc957aebd4fa378c`):**
+zero new proof renders — none of short, medium or long was rendered for it.
 
 | Not rendered | Call | Invocations not made | Provider requests not made |
 | --- | --- | --- | --- |
@@ -166,8 +167,9 @@ Recorded facts behind that table: `run.json`
 `proof_render_invocations_for_the_warm_artifact = 0`,
 `warm_artifact_has_layout_proofs_directory = false` (the artifact tree contains
 no `layout_proofs/` directory), and the warm artifact's file list has no
-`layout_proofs/*` entry while the cold artifact's has 18 proof files plus
-`layout_proofs/approval.json`.
+`layout_proofs/*` entry while the cold artifact's `layout_proofs/` holds 48 files
+(the three proof directories with their HTML/PDF and pipeline runs, the
+per-variant evidence, and `approval.json`).
 
 **Made by the warm artifact, counted explicitly (not avoided):**
 
@@ -205,15 +207,20 @@ the cold candidate, which needed none.
 
 ## 6. Validation results
 
-Run from the worktree at `cac369c` plus this record; Python 3.12 virtualenv, local
-PostgreSQL container `cv-reformatter-postgres-20261026` at
-`127.0.0.1:65150`.
+Run from the worktree holding `cac369c` plus this record's documentation commits;
+Python 3.12 virtualenv, local PostgreSQL container
+`cv-reformatter-postgres-20261026` at `127.0.0.1:65150`.
 
 | Command | Result | Log |
 | --- | --- | --- |
-| `.venv/bin/ruff check app` | exit 0 — `All checks passed!` | `tests/test_results/pytest/20261117T1553_eng37_ruff.txt` |
-| `.venv/bin/python -m pytest tests/unit/test_template_reuse.py tests/unit/test_layout_proof_schemas.py tests/unit/test_layout_proof_invalidation.py tests/unit/test_layout_proof_content.py -q` | exit 0 — 79 passed in 124.63 s | `tests/test_results/pytest/20261117T1553_eng37_unit_reuse_schemas.txt` |
+| `.venv/bin/ruff check app` | exit 0 — `All checks passed!` | `tests/test_results/pytest/20261117T1625_eng37_ruff.txt` |
+| `.venv/bin/python -m pytest tests/unit/test_template_reuse.py -q` | exit 0 — 24 passed in 141.47 s | `tests/test_results/pytest/20261117T1625_eng37_unit_template_reuse.txt` |
+| `.venv/bin/python -m pytest tests/unit/test_layout_proof_schemas.py tests/unit/test_layout_proof_invalidation.py tests/unit/test_layout_proof_content.py -q` | exit 0 — 55 passed in 0.16 s | `tests/test_results/pytest/20261117T1625_eng37_unit_proof_schemas.txt` |
 | `TEST_DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:65150/cv_reformatter_test_issue37_round2 TEST_POSTGRES_CONTAINER=cv-reformatter-postgres-20261026 .venv/bin/python -m pytest tests/integration/test_layout_proof_approval.py tests/integration/test_api_generate.py tests/integration/test_postgres_storage.py -q` | exit 0 — 102 passed in 217.61 s, no case skipped | `tests/test_results/pytest/20261117T1610_eng37_integration_postgres.txt` |
+
+The three documentation commits after `cac369c` change no application or test
+code, so the integration log above is the same tree's run; it was not re-run a
+second time.
 
 Per-artifact gates from the run itself (files under each artifact directory):
 
