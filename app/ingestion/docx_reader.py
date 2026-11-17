@@ -1553,8 +1553,14 @@ def _drawing_limitation(
     whose target is external, is not known to be pixels either, so both are
     reported the same way. A text box the drawing holds keeps its own text-box
     entry, so ``None`` sends that element to the text-box count instead of naming
-    the same content twice — unless the drawing also draws art the box does not
-    account for (``_drawing_carries_art``), which nothing else names.
+    the same content twice — unless the drawing also draws art no box accounts
+    for, which nothing else names: an image fill, VML WordArt's characters, or a
+    nested drawing or picture with no box body below it.
+
+    Art is decided in the same pass that decides the rest, because a nested drawing
+    is not re-decided: every drawing inside this one is answered by the flags this
+    scan collects, so the cost stays the size of the subtree instead of doubling
+    per nesting level.
 
     A character belongs to the nearest drawing or ``w:txbxContent`` body above it
     (``_text_box_owns``). A body's own text is that box's business: the box walk
@@ -1563,12 +1569,19 @@ def _drawing_limitation(
     sits inside a box body the walk read — and no walk renders it, so the drawing
     keeps a blocking ``text_box`` entry for it.
     """
-    has_text = has_text_box = unread_part = False
+    has_text = has_text_box = unread_part = art = False
+    boxed = {drawing}
+    nested: list[BaseOxmlElement] = []
     for item in _selected_elements(drawing, account, namespaces):
         if item.tag == _TEXT_BOX:
             has_text_box = True
+            _mark_boxed_drawings(item, boxed)
+        elif _local_name(item) in _ART_LOCAL_NAMES:
+            art = True
         elif _local_name(item) in _TEXT_LOCAL_NAMES and not _text_box_owns(item):
             has_text = True
+        elif item.tag in (_DRAWING, _PICTURE):
+            nested.append(item)
         for name, relationship_id in item.attrib.items():
             if name.startswith(_R) and _is_unread_target(owner, relationship_id):
                 unread_part = True
@@ -1576,33 +1589,23 @@ def _drawing_limitation(
         return "embedded_part"
     if has_text:
         return "text_box"
-    if has_text_box and not _drawing_carries_art(drawing, account, namespaces, owner):
+    if has_text_box and not (art or any(item not in boxed for item in nested)):
         return None
     return "visual_element"
 
 
-def _drawing_carries_art(
-    drawing: BaseOxmlElement,
-    account: _ReadAccount,
-    namespaces: Mapping[str, str],
-    owner: Part,
-) -> bool:
-    """True when a drawing draws art a text box in it does not account for.
+def _mark_boxed_drawings(box: BaseOxmlElement, boxed: set[BaseOxmlElement]) -> None:
+    """Add the drawings a text-box body below them accounts for.
 
-    An image fill, VML WordArt's characters and a nested drawing that is itself
-    nothing but art all paint content no walk reads, whether they sit in a box body
-    the walk read or beside that box. Nothing else names them, so the drawing keeps
-    its own ``visual_element`` entry; a nested drawing that is only a box is
-    accounted for by that box and is not art.
+    ``boxed`` holds the outermost drawing already, so walking up from a body to the
+    first drawing in it also means every drawing above that one is in it: the walk
+    stops there instead of climbing the whole nesting level by level.
     """
-    for item in _selected_elements(drawing, account, namespaces):
-        if _local_name(item) in _ART_LOCAL_NAMES:
-            return True
-        if item.tag in (_DRAWING, _PICTURE) and _drawing_limitation(
-            item, account, namespaces, owner
-        ) == "visual_element":
-            return True
-    return False
+    parent = box.getparent()
+    while parent is not None and parent not in boxed:
+        if parent.tag in (_DRAWING, _PICTURE):
+            boxed.add(parent)
+        parent = parent.getparent()
 
 
 def _text_box_owns(element: BaseOxmlElement) -> bool:

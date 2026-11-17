@@ -3,6 +3,7 @@ from collections.abc import Callable
 from pathlib import Path
 import base64
 import io
+import time
 import zipfile
 
 import pytest
@@ -1568,6 +1569,13 @@ def _group_drawing(*shapes: str) -> str:
     )
 
 
+def _nested_box_chain(depth: int, leaf: str) -> str:
+    """``depth`` drawings, each anchored in the box body of the one outside it."""
+    for _ in range(depth):
+        leaf = _r(_drawing(_box(_p_with(leaf))))
+    return leaf
+
+
 def _read_anchored_paragraph(
     tmp_path: Path, runs: str | Callable[[DocumentObject], str]
 ) -> ExtractedDocxContent:
@@ -1758,6 +1766,34 @@ _DRAWING_TEXT_TRUTH_TABLE: list[
         [("visual_element", 1, False)],
     ),
     (
+        "filled_shape_beside_a_read_box",
+        _r(
+            _drawing(
+                _box(_p("BOX")),
+                "<wps:wsp><wps:spPr><a:solidFill>"
+                '<a:srgbClr val="FF0000"/></a:solidFill></wps:spPr></wps:wsp>',
+            )
+        ),
+        ["Anchor:", "BOX"],
+        [],
+    ),
+    (
+        "legacy_shape_inside_a_read_box_body",
+        _r(
+            _legacy_box(
+                _p("OUTER")
+                + _p_with(
+                    _r(
+                        '<w:pict><v:shape><v:line from="0,0" to="1,1"/>'
+                        "</v:shape></w:pict>"
+                    )
+                )
+            )
+        ),
+        ["Anchor:", "OUTER"],
+        [("visual_element", 1, False)],
+    ),
+    (
         "wordart_inside_a_read_box_body",
         _r(
             _drawing(
@@ -1803,6 +1839,32 @@ def test_read_docx_keeps_drawing_text_blocking_until_the_walk_reads_it(
         for item in content.limitations
         if item.kind == "visual_element"
     )
+
+
+def test_read_docx_bounds_a_deep_drawing_chain_inside_boxes(tmp_path: Path) -> None:
+    """AC6: deep drawing nesting costs one pass, not one more pass per level.
+
+    ``_MAX_BLOCK_DEPTH`` bounds the walk, so the art accounting beside it has to
+    stay bounded too: a hostile package nests drawings this deep. ``prompt`` is a
+    wide margin over the ~0.02s this takes; re-deciding every nested drawing grew
+    by a factor of two per level instead (18s at depth 20, minutes at depth 24).
+    """
+    prompt = 10.0
+    for leaf, lines, limitations in (
+        ("<w:t>DEEP BOX</w:t>", ["Anchor:", "DEEP BOX"], []),
+        (_r(_drawing(_paint("DEEP PAINT"))), ["Anchor:"], [("text_box", 1, True)]),
+        (_drawing(), ["Anchor:"], [("visual_element", 1, False)]),
+    ):
+        started = time.perf_counter()
+        content = _read_anchored_paragraph(tmp_path, _nested_box_chain(24, leaf))
+        elapsed = time.perf_counter() - started
+
+        assert elapsed < prompt
+        assert content.plain_text.splitlines() == lines
+        assert [
+            (item.kind, item.count, item.blocks_source_review)
+            for item in content.limitations
+        ] == limitations
 
 
 def test_read_docx_reports_paint_text_in_a_header_and_footer_box(tmp_path: Path) -> None:
