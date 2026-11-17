@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import asyncio
+import hashlib
 import json
 import re
 import threading
@@ -2300,3 +2301,187 @@ def test_refused_docx_target_reports_no_archive_entry_name(
     assert detail["error_code"] == "zip_expansion_ratio"
     assert "CANDIDATE_SECRET" not in detail["message"]
     assert list(tmp_path.iterdir()) == [], "a refused target upload writes no artifact"
+
+
+# -- reusable approved templates (ADR 0009, issue #37) -------------------------
+# The reference store is the PostgreSQL table; these cases keep the API surface
+# and the generation path real by installing the same repository seam in memory.
+
+
+class _MemoryReusableRepository:
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, str], object] = {}
+
+    def save(self, reference) -> None:  # type: ignore[no-untyped-def]
+        self.rows.setdefault((reference.scope_id, reference.reference_id), reference)
+
+    def resolve(self, *, scope_id: str, identity_sha256: str):  # type: ignore[no-untyped-def]
+        return self.rows.get((scope_id, identity_sha256))
+
+    def list_current(self, *, scope_id: str) -> list:  # type: ignore[type-arg]
+        return [row for (scope, _), row in self.rows.items() if scope == scope_id]
+
+
+def _uploaded_target_artifact(
+    tmp_path: Path,
+    artifact_id: str,
+    target_bytes: bytes | None = None,
+    *,
+    approve_artifacts_own_proofs: bool = True,
+) -> tuple[Path, str, bytes]:
+    """An artifact with an uploaded target and an approved profile.
+
+    ``approve_artifacts_own_proofs`` distinguishes the template source from a
+    selecting artifact, which must never need a proof set of its own.
+    """
+    artifact_dir = tmp_path / artifact_id
+    artifact_dir.mkdir()
+    profile = CandidateProfile(
+        full_name="Jane Candidate", email="jane@example.com", location="Boston",
+        skills=["Python", "SQL"],
+    )
+    version_id = _approve_profile_via_api(artifact_dir, profile, artifact_id)
+    content = target_bytes or _synthetic_target_upload(tmp_path)
+    response = client.post(
+        "/api/target-format",
+        data={"artifact_id": artifact_id},
+        files={"file": (f"{artifact_id}.pdf", content, "application/pdf")},
+    )
+    assert response.status_code == 200, response.text
+    if approve_artifacts_own_proofs:
+        create_and_approve_proofs(client, artifact_id, artifact_dir)
+    return artifact_dir, version_id, content
+
+
+def _artifact_tree(directory: Path) -> dict[str, str]:
+    return {
+        path.relative_to(directory).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
+    }
+
+
+@pytest.fixture()
+def reusable_store(monkeypatch: MonkeyPatch) -> _MemoryReusableRepository:
+    store = _MemoryReusableRepository()
+    monkeypatch.setattr(main, "reusable_template_repository", lambda _url: store)
+    monkeypatch.setattr(generation_service, "reusable_template_repository", lambda _url: store)
+    return store
+
+
+def test_second_artifact_generates_from_a_selected_reusable_template(
+    tmp_path: Path, monkeypatch: MonkeyPatch, reusable_store: _MemoryReusableRepository
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
+    monkeypatch.setattr(
+        "app.generation.chrome_html_to_pdf.export_html_to_pdf", _fake_pdf_export
+    )
+    source_dir, source_version, target_bytes = _uploaded_target_artifact(
+        tmp_path, "artifact_source"
+    )
+    # The source is onboarded and generated once, so its proof files, approval row
+    # and publication are all in place before the second candidate selects it.
+    onboarded = client.post(
+        "/api/generate",
+        json={"artifact_id": "artifact_source", "approved_profile_version_id": source_version},
+    )
+    assert onboarded.status_code == 200, onboarded.text
+
+    listed = client.get("/api/templates/reusable")
+    assert listed.status_code == 200, listed.text
+    listing = listed.json()
+    assert listing["scope_id"] == "local-synthetic"
+    assert "not authenticated multi-tenant isolation" in listing["scope_note"]
+    assert [row["source_artifact_id"] for row in listing["references"]] == ["artifact_source"]
+    reference = listing["references"][0]
+    assert reference["approval_id"].startswith("approval_")
+    assert reference["target_pdf_sha256"] == hashlib.sha256(target_bytes).hexdigest()
+
+    second_dir, second_version, _ = _uploaded_target_artifact(
+        tmp_path, "artifact_second", target_bytes, approve_artifacts_own_proofs=False
+    )
+    assert not (second_dir / "layout_proofs").exists()
+    source_before = _artifact_tree(source_dir)
+
+    response = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": "artifact_second",
+            "approved_profile_version_id": second_version,
+            "reusable_template_id": reference["reusable_template_id"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert (second_dir / "candidate_profile.html").exists()
+    assert (second_dir / "candidate_profile.pdf").exists()
+    # The selection is this artifact's own record; the source proof set stays put.
+    assert (second_dir / "reusable_template_reference.json").exists()
+    assert not (second_dir / "layout_proofs").exists()
+    # Rendering the second candidate leaves the source proof files, approval row
+    # and publications byte-identical (AC8).
+    assert _artifact_tree(source_dir) == source_before
+
+    # Each artifact keeps its own output identity and acceptance.
+    identity = {key: response.json()[key] for key in (
+        "profile_revision_id", "profile_sha256", "layout_template_version",
+        "layout_spec_sha256", "html_sha256", "pdf_sha256",
+    )}
+    assert client.post("/api/artifacts/artifact_second/final-acceptance", json=identity).status_code == 200
+    cross = client.post("/api/artifacts/artifact_source/final-acceptance", json=identity)
+    assert cross.status_code == 409
+    assert cross.json()["detail"]["error_code"] == "final_acceptance_identity_mismatch"
+
+
+def test_selection_of_an_unrecorded_reference_is_a_structured_409(
+    tmp_path: Path, monkeypatch: MonkeyPatch, reusable_store: _MemoryReusableRepository
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
+    monkeypatch.setattr(
+        "app.generation.chrome_html_to_pdf.export_html_to_pdf", _fake_pdf_export
+    )
+    artifact_dir, version_id, _ = _uploaded_target_artifact(tmp_path, "artifact_local")
+    response = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": "artifact_local",
+            "approved_profile_version_id": version_id,
+            "reusable_template_id": "0" * 64,
+        },
+    )
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "reusable_template_mismatch"
+    assert detail["differing_members"] == ["reference_id"]
+    assert detail["options"] == ["create_layout_proofs", "approve_layout_proofs"]
+    assert not (artifact_dir / "candidate_profile.pdf").exists()
+
+
+def test_selection_for_a_different_target_names_the_differing_member(
+    tmp_path: Path, monkeypatch: MonkeyPatch, reusable_store: _MemoryReusableRepository
+) -> None:
+    monkeypatch.setattr(main, "GENERATED_OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(generation_service, "export_html_to_pdf", _fake_pdf_export)
+    monkeypatch.setattr(
+        "app.generation.chrome_html_to_pdf.export_html_to_pdf", _fake_pdf_export
+    )
+    _uploaded_target_artifact(tmp_path, "artifact_source")
+    reference = client.get("/api/templates/reusable").json()["references"][0]
+    other_target = build_plain_target_pdf(tmp_path / "other-target.pdf").read_bytes()
+    artifact_dir, version_id, _ = _uploaded_target_artifact(
+        tmp_path, "artifact_other_target", other_target, approve_artifacts_own_proofs=False
+    )
+    response = client.post(
+        "/api/generate",
+        json={
+            "artifact_id": "artifact_other_target",
+            "approved_profile_version_id": version_id,
+            "reusable_template_id": reference["reusable_template_id"],
+        },
+    )
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "reusable_template_mismatch"
+    assert "target_pdf_sha256" in detail["differing_members"]
+    assert not (artifact_dir / "candidate_profile.pdf").exists()

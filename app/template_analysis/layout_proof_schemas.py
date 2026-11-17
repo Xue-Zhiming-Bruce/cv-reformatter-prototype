@@ -34,6 +34,8 @@ synthetic content values.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from enum import Enum
 from typing import Any, Literal
@@ -65,6 +67,10 @@ LAYOUT_PROOF_STRUCTURAL_SCHEMA_VERSION = "layout/proof/structural/1"
 LAYOUT_PROOF_VISUAL_SCHEMA_VERSION = "layout/proof/visual/1"
 LAYOUT_PROOF_VARIANT_SCHEMA_VERSION = "layout/proof/variant/1"
 LAYOUT_PROOF_APPROVAL_SCHEMA_VERSION = "layout/proof/approval/2"
+# Additive contracts for the ADR 0009 reusable reference. No approval/2 record
+# is rewritten: an approval without these stays artifact-local and non-reusable.
+REUSABLE_TEMPLATE_IDENTITY_SCHEMA_VERSION = "layout/reusable/identity/1"
+REUSABLE_TEMPLATE_REFERENCE_SCHEMA_VERSION = "layout/reusable/reference/1"
 
 #: Provenance of the renderer that produced stored proof evidence. This is
 #: additive to the render contract: ``unrecorded/1`` is the safe default for
@@ -431,3 +437,225 @@ class LayoutProofApproval(LayoutProofModel):
     @property
     def is_approved(self) -> bool:
         return self.state == "approved"
+
+
+class TargetEvidenceIdentity(LayoutProofModel):
+    """Member 3: the target-evidence record the compiled template came from."""
+
+    schema_version: str
+    evidence_version: str
+    evidence_checksum: str
+
+    @classmethod
+    def of(cls, evidence: Any) -> "TargetEvidenceIdentity":
+        return cls(
+            schema_version=evidence.schema_version,
+            evidence_version=evidence.evidence_version,
+            evidence_checksum=_evidence_checksum(evidence),
+        )
+
+
+def _evidence_checksum(evidence: Any) -> str:
+    """Checksum of a normalized evidence record, excluding raw page bytes."""
+    payload = json.dumps(
+        evidence.model_dump(mode="json", exclude={"pages"}),
+        sort_keys=True,
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+class LayoutContractIdentity(LayoutProofModel):
+    """Member 5: the compiled layout contract, not its rendered output."""
+
+    schema_version: str
+    template_version: str
+    structure_contract: str
+
+    @classmethod
+    def of(cls, spec: Any) -> "LayoutContractIdentity":
+        return cls(
+            schema_version=spec.schema_version,
+            template_version=spec.template_version,
+            structure_contract=spec.structure_contract,
+        )
+
+
+
+
+class ProofContentIdentity(LayoutProofModel):
+    """Member 9: canonical proof-content version and per-variant context."""
+
+    schema_version: str
+    context_checksums: dict[str, str]
+
+    @classmethod
+    def of(cls, approval: "LayoutProofApproval") -> "ProofContentIdentity":
+        return cls(
+            schema_version=LAYOUT_PROOF_CONTEXT_SCHEMA_VERSION,
+            context_checksums={
+                variant.value: evidence.render_result.context_checksum
+                for variant, evidence in sorted(approval.variants.items())
+            },
+        )
+
+
+class ProofSchemaVersions(LayoutProofModel):
+    """Member 10: every proof contract version the approval was written under."""
+
+    approval: str = LAYOUT_PROOF_APPROVAL_SCHEMA_VERSION
+    variant: str = LAYOUT_PROOF_VARIANT_SCHEMA_VERSION
+    render_result: str = LAYOUT_PROOF_RENDER_RESULT_SCHEMA_VERSION
+    structural: str = LAYOUT_PROOF_STRUCTURAL_SCHEMA_VERSION
+    visual: str = LAYOUT_PROOF_VISUAL_SCHEMA_VERSION
+
+
+class ProofArtifactIdentity(LayoutProofModel):
+    """Member 11: one variant's proof bytes and measured page count."""
+
+    proof_id: str
+    html_sha256: str
+    pdf_sha256: str
+    page_count: int = Field(ge=1)
+
+    @classmethod
+    def of(cls, approval: "LayoutProofApproval") -> dict[str, "ProofArtifactIdentity"]:
+        return {
+            variant.value: cls(
+                proof_id=evidence.render_result.proof_id,
+                html_sha256=evidence.render_result.html_checksum,
+                pdf_sha256=evidence.render_result.pdf_checksum,
+                page_count=evidence.render_result.page_count or 1,
+            )
+            for variant, evidence in sorted(approval.variants.items())
+        }
+
+
+class FontAssetIdentity(LayoutProofModel):
+    """Member 12: template font families and the renderer's recorded fonts."""
+
+    template_font_families: list[str]
+    proof_rendering_environment: dict[str, Any]
+
+
+class PresentationLabelIdentity(LayoutProofModel):
+    """Member 13: the approved presentation-label catalog identity."""
+
+    catalog_sha256: str | None = None
+    label_ids: list[str] = Field(default_factory=list)
+
+    @classmethod
+    def of(cls, approval: "LayoutProofApproval") -> "PresentationLabelIdentity":
+        return cls(
+            catalog_sha256=approval.presentation_label_catalog_sha256,
+            label_ids=sorted(
+                {
+                    label_id
+                    for approval_row in approval.presentation_labels
+                    for label_id in approval_row.approved_label_ids
+                }
+            ),
+        )
+
+
+#: Members 1-13 of the ADR 0009 identity, in the order ``members()`` returns
+#: them. Member 14 is the referenced approval, which is never hashed.
+REUSABLE_TEMPLATE_IDENTITY_MEMBERS = (
+    "scope_id",
+    "target_pdf_sha256",
+    "target_evidence",
+    "layout_spec_sha256",
+    "layout_contract",
+    "compiler_version",
+    "renderer_version",
+    "execution_identity",
+    "proof_content",
+    "proof_schema_versions",
+    "proof_artifacts",
+    "font_asset_identity",
+    "presentation_labels",
+)
+
+
+class ReusableTemplateIdentity(LayoutProofModel):
+    """The hashed identity of one reusable approved template (ADR 0009).
+
+    Every member must match for a reference to be selectable, and a refusal
+    names the differing member(s). ``identity_sha256`` is derived, never
+    stored on the identity, so a stored reference cannot carry a digest that
+    disagrees with its own members.
+    """
+
+    schema_version: Literal["layout/reusable/identity/1"] = (
+        REUSABLE_TEMPLATE_IDENTITY_SCHEMA_VERSION
+    )
+    scope_id: str
+    target_pdf_sha256: str
+    target_evidence: TargetEvidenceIdentity
+    layout_spec_sha256: str
+    layout_contract: LayoutContractIdentity
+    compiler_version: str
+    renderer_version: str
+    execution_identity: dict[str, Any]
+    proof_content: ProofContentIdentity
+    proof_schema_versions: ProofSchemaVersions
+    proof_artifacts: dict[str, ProofArtifactIdentity]
+    font_asset_identity: FontAssetIdentity
+    presentation_labels: PresentationLabelIdentity
+
+    def members(self) -> dict[str, Any]:
+        """Members 1-13 as canonical-JSON values, keyed by member name."""
+        return {
+            "scope_id": self.scope_id,
+            "target_pdf_sha256": self.target_pdf_sha256,
+            "target_evidence": self.target_evidence.model_dump(mode="json"),
+            "layout_spec_sha256": self.layout_spec_sha256,
+            "layout_contract": self.layout_contract.model_dump(mode="json"),
+            "compiler_version": self.compiler_version,
+            "renderer_version": self.renderer_version,
+            "execution_identity": self.execution_identity,
+            "proof_content": self.proof_content.model_dump(mode="json"),
+            "proof_schema_versions": self.proof_schema_versions.model_dump(mode="json"),
+            "proof_artifacts": {
+                variant: artifact.model_dump(mode="json")
+                for variant, artifact in sorted(self.proof_artifacts.items())
+            },
+            "font_asset_identity": self.font_asset_identity.model_dump(mode="json"),
+            "presentation_labels": self.presentation_labels.model_dump(mode="json"),
+        }
+
+    @property
+    def identity_sha256(self) -> str:
+        payload = json.dumps(
+            self.members(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+class ReusableTemplateReference(LayoutProofModel):
+    """One recorded, immutable selection target: an identity plus its approval.
+
+    The reference stores the identity's member values so a refusal can name
+    what differs, and it points at the source artifact's approval instead of
+    copying it. It holds no candidate fact, source text or review edit.
+    """
+
+    schema_version: Literal["layout/reusable/reference/1"] = (
+        REUSABLE_TEMPLATE_REFERENCE_SCHEMA_VERSION
+    )
+    reference_id: str
+    scope_id: str
+    identity: ReusableTemplateIdentity
+    artifact_id: str
+    approval_id: str
+    created_at: str
+
+    @model_validator(mode="after")
+    def _identity_is_the_reference(self) -> "ReusableTemplateReference":
+        if self.identity.scope_id != self.scope_id:
+            raise ValueError("a reusable reference carries exactly one scope")
+        if self.reference_id != self.identity.identity_sha256:
+            raise ValueError(
+                "reusable reference id must be its identity_sha256"
+            )
+        return self

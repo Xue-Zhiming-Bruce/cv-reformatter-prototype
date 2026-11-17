@@ -110,6 +110,7 @@ from app.storage.repository import (
     generation_repository,
     layout_proof_repository,
     profile_revision_repository,
+    reusable_template_repository,
 )
 from app.jobs import (JobRecord, LiveExecutionRefused, NativeJobCreate, TargetGenerationJobCreate,
                       TargetJobCreate, TargetProofJobCreate, refuse_live_execution)
@@ -131,6 +132,7 @@ from app.template_analysis.layout_proof_schemas import (
     LengthVariant,
     VariantProofEvidence,
 )
+from app.template_analysis.template_reuse import REUSABLE_TEMPLATE_SCOPE
 from app.template_analysis.layout_proof_rendering import (
     LayoutProofMismatchError,
     LayoutProofPresentationLabelError,
@@ -1474,6 +1476,7 @@ def approve_layout_proofs(
                 presentation_label_catalog_sha256=body.catalog_sha256,
                 repository=layout_proof_repository(DATABASE_URL),
                 design_id=body.design_id,
+                reusable_repository=reusable_template_repository(DATABASE_URL),
             )
         else:
             reject_layout_proof(
@@ -1661,6 +1664,45 @@ def _local_job_queue():
     from app.storage.job_queue import PostgresJobQueue
     from app.storage.postgres import postgres_engine
     return PostgresJobQueue(postgres_engine(DATABASE_URL))
+
+
+@app.get("/api/templates/reusable")
+def list_reusable_templates() -> dict[str, object]:
+    """Selectable reusable templates in the only recorded scope (ADR 0009).
+
+    ``local-synthetic`` is this local single-user development workspace. It is
+    not authenticated multi-tenant isolation and not organization
+    authorization: do not read this list as permission for two customers to
+    share a template.
+    """
+    repository = reusable_template_repository(DATABASE_URL)
+    references = (
+        repository.list_current(scope_id=REUSABLE_TEMPLATE_SCOPE)
+        if repository is not None
+        else []
+    )
+    return {
+        "scope_id": REUSABLE_TEMPLATE_SCOPE,
+        "scope_note": (
+            "local-synthetic is a local single-user scope. It is not "
+            "authenticated multi-tenant isolation and not organization "
+            "authorization."
+        ),
+        "references": [
+            {
+                "reusable_template_id": reference.reference_id,
+                "source_artifact_id": reference.artifact_id,
+                "approval_id": reference.approval_id,
+                "target_pdf_sha256": reference.identity.target_pdf_sha256,
+                "layout_spec_sha256": reference.identity.layout_spec_sha256,
+                "template_version": reference.identity.layout_contract.template_version,
+                "compiler_version": reference.identity.compiler_version,
+                "renderer_version": reference.identity.renderer_version,
+                "recorded_at": reference.created_at,
+            }
+            for reference in references
+        ],
+    }
 
 
 @app.post("/api/artifacts/{artifact_id}/generation-jobs", response_model=JobRecord, status_code=202)

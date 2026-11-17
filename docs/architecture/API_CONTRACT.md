@@ -429,6 +429,9 @@ Request JSON:
 - `artifact_id` — must reference the artifact that owns the approved profile;
 - optional `target_format`;
 - optional `design_id` (approved designer template);
+- optional `reusable_template_id` — an explicit selection of a recorded reusable
+  approved template (ADR 0009). Absent, the artifact-local proof gate applies
+  exactly as before and nothing is reused implicitly;
 - optional `allow_existing_template`.
 - deprecated `allow_built_in_fallback` — retained for request compatibility but
   never honored for an uploaded target. Unsupported targets must be replaced or
@@ -1013,6 +1016,59 @@ agentic route requires `agentic-provider/1`, while local synthetic generation
 keeps requiring `offline-renderer/1`. Matching identities never let an offline
 proof set satisfy a live-review requirement or inherit a live-reviewed
 approval (ADR 0011).
+
+### Reusable approved templates (ADR 0009, issue #37)
+
+```text
+GET /api/templates/reusable
+```
+
+Lists the reusable approved templates a generation may select, each with
+`reusable_template_id` (the identity sha256), `source_artifact_id`,
+`approval_id`, `target_pdf_sha256`, `layout_spec_sha256`, `template_version`,
+`compiler_version`, `renderer_version` and `recorded_at`. A reference is
+recorded only by a new explicit proof approval; an approval recorded before this
+contract carries no reference, is never upgraded by inference, and is not
+listed.
+
+`scope_id` is always the literal `local-synthetic`. The response carries a
+`scope_note`: that scope is this local single-user development workspace and is
+**not** authenticated multi-tenant isolation and **not** organization
+authorization. It makes no claim that two customers may share a template;
+cross-tenant sharing needs the P3 authentication/organization work and its own
+decision.
+
+`POST /api/generate` with `reusable_template_id` resolves the reference to the
+source artifact's approved proof set instead of requiring this artifact's own
+approval. Every member of the ADR 0009 identity must match — scope, target PDF
+checksum, target-evidence version and checksum, compiled spec checksum and
+layout contract, compiler version, renderer version composite, frozen execution
+identity (models, sampling, budgets, prompt sha256 set, permitted tools, gate
+policy), canonical proof content and per-variant context checksums, proof schema
+versions, per-variant proof HTML/PDF checksums and page counts, template/font
+asset identity, the approved presentation-label catalog identity, and the
+referenced `approval_id` in state `approved`.
+
+A refused selection is HTTP 409 with the structured code
+`reusable_template_mismatch`: `differing_members` names every member that
+differs or is absent, and `options` lists the existing
+`create_layout_proofs`/`approve_layout_proofs` path. A missing, unreadable or
+edited source proof file, a source approval row or bundle that disappeared, a
+renderer/compiler/policy/prompt/model-routing/budget change, and a `legacy` or
+`limited_capability` structure contract all refuse the same way before any
+candidate render. It is never a 500 and never a silent fallback to an
+artifact-local unapproved template, the built-in template or a v1 template.
+
+Reuse skips the short/medium/long proof-render provider calls only. A selecting
+artifact still uploads, analyzes and compiles its **own** target (the request's
+target upload path is unchanged, and the identity's target bytes/target evidence
+must be attested from that artifact), then renders its own candidate. The
+candidate's own extraction, recruiter review, rendering, content/privacy/
+structure checks and exact final acceptance still run, the source artifact's
+proof directory, approval row and publications are never written, and the
+selecting artifact keeps its own `reusable_template_reference.json` selection
+record. Reference rows have no local (SQLite) store: without `DATABASE_URL` the
+listing is empty and a selection is refused with the same 409.
 
 ## Final Output Acceptance
 

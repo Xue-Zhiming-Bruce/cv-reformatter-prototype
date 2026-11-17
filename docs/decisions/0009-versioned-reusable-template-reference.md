@@ -1,18 +1,31 @@
 # ADR 0009: Versioned Reusable Approved Template Reference
 
-Status: `Proposed` — draft recording the decision request in issue #37; no
-owner approval claimed. Stages 3–4 of issue #37 stay blocked until the owner
-answers and this record is marked `Accepted` with the approving message and
-date.
+Status: `Accepted` — approved by the product owner on 2026-11-17; issue #37
+stages 3–4 are unblocked. See [Approval Record](#approval-record).
 
 Date: 2026-11-12
 
 Owner: Backend maintainer
 
-Approver: Product owner — not yet given. The exact answer requested is recorded
-under [Decisions Required](#decisions-required-from-the-owner).
+Approver: Product owner (`Xue-Zhiming-Bruce`) — approved 2026-11-17 with the
+message quoted in [Approval Record](#approval-record).
 
-Review date: before the first stage 3 implementation commit
+Review date: before the first stage 3 implementation commit (approved
+2026-11-17; then reviewed again before the first stage 3 commit landed)
+
+## Approval Record
+
+| Field | Value |
+| --- | --- |
+| Approver | Product owner (`Xue-Zhiming-Bruce`) |
+| Approved | 2026-11-17 |
+| Approving message | `37批准复用` — “Approve reuse for #37.” |
+| Recorded in | Issue #37, owner-decision comment dated 2026-11-17 |
+| Identity rule | Approved as specified: the 13 hashed identity members plus the referenced `approval_id` in state `approved` (§[Reuse Key](#reuse-key), §[Reuse Identity Inventory](#reuse-identity-inventory)) |
+| Scope rule | Approved as specified: reuse limited to `scope_id` `local-synthetic`, documented as **not** authenticated multi-tenant isolation (§[Scope](#scope)) |
+| Invalidation rules | Approved as specified: all seven rules, including refusing before any candidate render with a structured `reusable_template_mismatch` naming the differing member(s) (§[Invalidation Rules](#invalidation-rules)) |
+| Compatibility rule | Approved as specified: additive stored change, no backfill, and existing `approval/2` records staying artifact-local and never silently upgraded (§[Migration And Compatibility](#migration-and-compatibility)) |
+| Not approved here | Any specific proof PDF or candidate output, any paid provider run, any frontend edit, and any multi-tenant or hosted sharing |
 
 ## Context
 
@@ -65,12 +78,15 @@ migration consequences.
 
 ## Decision
 
-When approved, reuse one explicitly approved layout-proof set across candidate
-artifacts **in one local scope**, keyed by the identity recorded in
-[Reuse Identity Inventory](#reuse-identity-inventory). Reuse skips the target
-analysis and proof-render provider calls only. Every per-candidate stage still
-runs for the candidate being generated: extraction, recruiter review, rendering,
-content/privacy/structure checks and its own exact final acceptance.
+Reuse one explicitly approved layout-proof set across candidate artifacts
+**in one local scope**, keyed by the identity recorded in
+[Reuse Identity Inventory](#reuse-identity-inventory). Reuse skips the
+short/medium/long proof-render provider calls only. A selecting artifact still
+uploads, analyzes and compiles its **own** target — the identity's target bytes
+and target evidence can only be attested from that artifact's own upload — and
+every per-candidate stage still runs for the candidate being generated:
+extraction, recruiter review, rendering, content/privacy/structure checks and its
+own exact final acceptance.
 
 Reuse is opt-in per generation request. Without a selection, an artifact that
 owns an approved artifact-local proof generates exactly as today.
@@ -233,8 +249,11 @@ passing unmodified except for additive cases.
 
 ### Migration And Reversibility
 
-- Current head is `0007_generation_bundles` (`migrations/versions/0007_generation_bundles.py:7`),
-  so a schema change takes revision id `0008`.
+- Current head is `0008_target_job_operations`
+  (`migrations/versions/0008_target_job_operations.py:9`), so this schema change
+  takes revision id `0009` (`0009_reusable_references`). Issue #43 owns
+  the following envelope migration and takes whichever revision id is free
+  after it.
 - A decision does **not** strictly require a stored-schema change. A reuse
   identity can be recomputed on each selection from stored approval bodies and
   their proof files. The costs are real: `layout_proof_approvals` keeps the
@@ -289,9 +308,11 @@ From the filing evidence, one run on 2026-11-12, not a benchmark:
 - Candidate data: the reference stores identities, a scope and a pointer to an
   approval — never a candidate fact, source text or recruiter edit. Two resumes
   rendered from one reference keep distinct facts and disclosure choices.
-- Target bytes: reuse means one target's already-approved analysis is not re-sent
-  to the analyzer for a second candidate. Stage-3 evidence must record zero new
-  target bytes sent for the reused stage.
+- Target bytes: a selecting artifact still analyzes its own uploaded target, so
+  those bytes do reach the analyzer for that artifact; reuse never re-runs the
+  referenced artifact's analysis and never re-sends a target for a proof render.
+  Stage-3 evidence must record the selecting artifact's own analyzer call as
+  made, and the avoided work as its own short/medium/long proof renders.
 - Retention and deletion: reference rows follow the source artifact's lifecycle
   and are removed with it (foreign key cascade), and dependents then fail closed
   naming the missing identity.
@@ -344,10 +365,10 @@ resume formatted into the same target. This is what answering `no` keeps.
 ## Consequences
 
 Benefits: a second candidate can be generated against an already approved,
-versioned template without repeating target analysis or proof rendering, while
-its own extraction, rendering, checks and acceptance still run. The artifact-local
-path, the approval lifecycle and every stored approval record keep their current
-meaning.
+versioned template without repeating the short/medium/long proof rendering,
+while its own target analysis, extraction, rendering, checks and acceptance still
+run. The artifact-local path, the approval lifecycle and every stored approval
+record keep their current meaning.
 
 Costs and obligations:
 
@@ -393,8 +414,8 @@ gates are untouched.
 
 ## Follow-Up Work
 
-Blocked until this record is `Accepted` with the owner's approving message and
-date (issue #37 stages 3–4):
+Stages 3–4 (unblocked by the 2026-11-17 approval in
+[Approval Record](#approval-record)):
 
 - `app/template_analysis/template_reuse.py`: identity assembly and reference
   resolution;
@@ -404,7 +425,7 @@ date (issue #37 stages 3–4):
   (`app/template_analysis/layout_proof_service.py`);
 - `GenerateRequest.reusable_template_id` (`app/generation/contracts.py`) and the
   pass-through in `app/generation/service.py:require_layout_proof_approval`;
-- `PostgresReusableTemplateRepository` and the `0008` migration
+- `PostgresReusableTemplateRepository` and the `0009` migration
   (`app/storage/postgres.py`, `migrations/versions/`);
 - `GET /api/templates/reusable` (`app/main.py`) and the co-founder UI selection
   handoff;
@@ -415,5 +436,4 @@ date (issue #37 stages 3–4):
 Documentation: an additive `## Layout Proof Boundary` subsection in
 `docs/architecture/DOCUMENT_PIPELINE.md` naming the reuse boundary, and the
 `local-synthetic` non-isolation statement in `docs/architecture/API_CONTRACT.md`,
-land when this record is accepted. They are deferred here because this draft
-documents a decision that is not yet approved.
+land with the stages 3–4 implementation change.
